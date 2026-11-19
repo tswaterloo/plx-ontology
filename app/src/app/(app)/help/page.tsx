@@ -6,6 +6,7 @@ import { useAuth } from "@/components/auth";
 import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import { RoleGuide } from "@/components/role-guide";
 import { Toolbar } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
 import { cn } from "@/lib/cn";
 import { desktopBridge } from "@/lib/desktop";
 import { GUIDES, guideFor, guideLabel, roleKey, type GuideRole } from "@/lib/onboarding";
@@ -55,6 +56,7 @@ function Help() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar title="Help" heading />
+      <PageIntro path="/help" />
       <div className="mx-auto w-full max-w-[52rem] space-y-6 px-5 py-5">
         <section aria-labelledby="help-role" className="space-y-2">
           <h2 id="help-role" className="text-[13px] font-semibold">

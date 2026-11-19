@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CardActions } from "@/components/card-actions";
 import { Button } from "@/components/ui/button";
-import { decideAutopilotItem, getAutopilot, prepareMyWorkWrite } from "@/lib/api";
+import { Pending } from "@/components/ui/skeleton";
+import { decideAutopilotItem, getAutopilot, getReplies, prepareMyWorkWrite } from "@/lib/api";
 import { dueWords, itemLive, outcomeWords, systemLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
@@ -178,17 +179,56 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
   );
 }
 
+/** The prepared items alone, for Home's one list: past due, due today, later; nothing when none
+ * (no counters, no side column: the merged Home, ARCH 16). */
+export function PreparedList({ work }: { work: MyWork }) {
+  const [states, setStates] = useState<Record<string, ActionResult>>({});
+  const [area, setArea] = useState<AutopilotArea | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    getAutopilot(ctl.signal).then(setArea, () => setArea(null));
+    return () => ctl.abort();
+  }, []);
+  const now = useMemo(() => new Date(), []);
+  const groups = groupsOf(work.items ?? [], now);
+  if (!groups.length) return null;
+  return (
+    <div data-testid="home-prepared-list">
+      {work.status === "off" && <p className="px-5 pt-2 text-[13px]">The autopilot is switched off: nothing new is prepared and nothing can be approved.</p>}
+      {groups.map((g) => (
+        <section key={g.key} aria-label={`Prepared, ${g.label.toLowerCase()}`} className="px-5">
+          <h3 className={cn("pt-3 pb-1 text-[12px] font-medium text-muted", g.key === "past" && "text-late")}>
+            Prepared, {g.label.toLowerCase()} <span className="font-normal text-faint num">{g.items.length}</span>
+          </h3>
+          <ul className="border-t border-border">
+            {g.items.map((item) => (
+              <Item key={item.item_id} item={item} area={area} now={now} state={states[item.card_id ?? ""] ?? null} onDone={(r) => setStates((s) => ({ ...s, [item.card_id as string]: r }))} />
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function MyWorkList({ work }: { work: MyWork }) {
   const w = useReaderWords();
   const [states, setStates] = useState<Record<string, ActionResult>>({});
   const [area, setArea] = useState<AutopilotArea | null>(null);
+  // the messages waiting on your reply: undefined while they are read (never "nothing is
+  // waiting" before then: owner walk 11-17 saw it, then two items appear), null unreadable
+  const [replies, setReplies] = useState<number | null | undefined>(undefined);
   useEffect(() => {
     const ctl = new AbortController();
     // the one-click accept needs the studio's view of the item (live or dry run); none
     // when it cannot be read
     getAutopilot(ctl.signal).then(setArea, () => setArea(null));
+    // the messages waiting on your reply: the same count Home's Reply tab shows (unknown when
+    // it cannot be read, never zero)
+    getReplies(ctl.signal).then((r) => setReplies(typeof r?.total === "number" ? r.total : null), () => setReplies(null));
     return () => ctl.abort();
   }, []);
+
   const now = useMemo(() => new Date(), []);
   const items = work.items ?? [];
   const groups = groupsOf(items, now);
@@ -208,6 +248,7 @@ export function MyWorkList({ work }: { work: MyWork }) {
               ["Open", work.digest.open, ""],
               ["Due today", work.digest.due_today, ""],
               ["Past due", past, past ? "text-late" : ""],
+              ...(replies ? ([["To reply", replies, ""]] as const) : []),
             ] as const
           ).map(([k, v, tone]) => (
             <div key={k}>
@@ -216,8 +257,15 @@ export function MyWorkList({ work }: { work: MyWork }) {
             </div>
           ))}
         </header>
+        {replies ? (
+          <p className="text-[13px]" data-testid="my-work-replies">
+            <Link href="/?view=reply" className="text-accent hover:underline">
+              {plural(replies, "message")} {replies === 1 ? "waits" : "wait"} on {w.your} reply
+            </Link>
+          </p>
+        ) : null}
         {items.length === 0 ? (
-          <p className="text-[13px] text-muted">Nothing is waiting on {w.you}.</p>
+          replies === undefined ? <Pending label={`Reading ${w.your} inbox`} /> : replies ? null : <p className="text-[13px] text-muted">Nothing is waiting on {w.you}.</p>
         ) : (
           groups.map((g) => (
             <section key={g.key} aria-label={g.label}>

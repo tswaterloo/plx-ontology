@@ -53,8 +53,27 @@ export function itemFacts(item: BriefingItem): string[] {
   return out;
 }
 
+/** A "waits on your reply" line said plainly: who sent it and which orders it names; the subject
+ * is the row's title and how long it waits is the row's day count, so neither is said twice.
+ * "a message of Wed 21 Oct from Acme waits on your reply, 18 business days" -> "From Acme". */
+/** The "last checked" note is the item's own field (carried), never part of its line. */
+export function withoutCarried(summary: string): string {
+  return summary.replace(/\s*\((?:not rechecked|last checked)[^)]*\)\s*$/i, "");
+}
+
+export function replyLine(summary: string): string | null {
+  const m = /^(?:(.+?):\s+)?an? (?:Teams )?(?:message|email|mail)\b.*?(?:\bfrom (.+?))?\s+waits on (?:your|their) reply\b[^;]*(?:;\s*(.*))?$/i.exec(summary.trim());
+  if (!m) return null;
+  const [, orders, from, rest] = m;
+  return [from ? `From ${from.trim()}` : null, orders ? `about ${orders.trim()}` : null, rest ? rest.trim().replace(/\.$/, "") : null]
+    .filter(Boolean).join(" · ");
+}
+
 /** An item's summary said short ("Needed by 24 Jun; no confirmed date."). */
 export function shortSummary(summary: string): string {
+  summary = withoutCarried(summary);
+  const reply = replyLine(summary);
+  if (reply != null) return reply;
   const m = /^An open purchase order needed by (\d{4}-\d{2}-\d{2}) has no supplier confirmation\.?$/i.exec(summary.trim());
   if (m) return `Needed by ${formatDate(m[1], { short: true })}; no supplier date.`;
   if (/^An open purchase order has no due date recorded\.?$/i.test(summary.trim())) return "No due date on record.";

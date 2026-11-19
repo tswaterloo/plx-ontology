@@ -42,6 +42,9 @@ CREATE TABLE search.chunks (
         || setweight(to_tsvector('simple'::regconfig, body), 'D')) STORED,
     embedding halfvec({{embed_dim}}) NULL, embed_model text NULL,
     updated_at timestamptz NOT NULL);
+-- the clusters live beside the chunks (migration 0037); search.chunks.dup_group stays empty
+CREATE TABLE search.chunk_groups (chunk_id text PRIMARY KEY, dup_group text NOT NULL,
+    content_sha text NOT NULL);
 CREATE INDEX chunks_tsv_gin ON search.chunks USING gin (tsv);
 CREATE INDEX chunks_embedding_hnsw ON search.chunks
     USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64);
@@ -137,8 +140,12 @@ class FixtureDb:
                        VALUES (%(chunk_id)s, %(source_handle)s, %(object_id)s, %(kind)s,
                         %(title)s, %(author_role)s, %(occurred_at)s, %(header)s, %(body)s,
                         %(content_sha)s, %(linked_ids)s, %(audience_key)s, %(markings)s,
-                        %(dup_group)s, %(authority)s, %(embedding)s::halfvec,
+                        NULL, %(authority)s, %(embedding)s::halfvec,
                         %(embed_model)s, now())""", row)
+                if row["dup_group"]:
+                    conn.execute("INSERT INTO search.chunk_groups (chunk_id, dup_group, "
+                                 "content_sha) VALUES (%(chunk_id)s, %(dup_group)s, "
+                                 "%(content_sha)s)", row)
 
 
 def _t(days_ago: int) -> dt.datetime:

@@ -28,7 +28,10 @@ code that produced it, and this module compares that with the version deployed n
 Computing a version reads the repository's source (seconds for a large closure), so
 versions are cached per source tree (:func:`tree_key`: the bytes of every module and data
 file) in the state directory (``derived-code/``) or the user cache; a deploy writes them
-before the API restarts (``versions --write``).
+before the API restarts (``versions --write``). A release carries its own
+(:data:`RELEASE_FILE` at the tree's root, written by ``versions --release`` when the
+release is built): every unit's user can read it, so an API started on a release reads its
+versions in milliseconds instead of parsing the code (24-58 s) on its first page.
 
 Stdlib only. Never reads a business system or a credential; writes only the state
 directory's ``derived-code/`` files and, through the producers, their own artifacts.
@@ -57,6 +60,8 @@ from ontology import parent_watch
 
 SCHEME = "plx-derived-code/v1"
 CODE_DIR = "derived-code"
+# a release's own versions, beside its code (outside PACKAGES: not part of its tree key)
+RELEASE_FILE = "DERIVED-CODE.json"
 SIDECAR = ".code.json"
 ROOT = Path(__file__).resolve().parents[1]
 # packages whose modules and data files make up the source tree (:func:`tree_key`)
@@ -357,10 +362,43 @@ def _shared(state_dir: Path | None, write: bool) -> Iterator[None]:
         handle.close()   # releases the lock
 
 
+def _stored(state_dir: Path | None, root: Path, key: str) -> dict[str, Any]:
+    """The versions stored for tree ``key``: the cache files, then the release's own file
+    (:data:`RELEASE_FILE`); each counts only when it names this tree and scheme."""
+    found: dict[str, Any] = {}
+    for path in [d / f"deployed-{key}.json" for d in _cache_dirs(state_dir)]:
+        doc = _read_json(path)
+        if isinstance(doc, dict) and doc.get("scheme") == SCHEME:
+            found = {**doc.get("versions", {}), **found}
+    # a release file is trusted only for the very tree it was computed from: a copied or
+    # edited tree has another key, and its versions are computed again
+    doc = _read_json(root / RELEASE_FILE)
+    if (isinstance(doc, dict) and doc.get("scheme") == SCHEME and doc.get("tree") == key
+            and isinstance(doc.get("versions"), dict)):
+        found = {**doc["versions"], **found}
+    return found
+
+
+def write_release(root: Path | None = None) -> Path:
+    """Compute the tree at ``root``'s versions (all artifacts) and write them to its
+    :data:`RELEASE_FILE` (``versions --release``: the release build, before the tree is
+    sealed)."""
+    root = Path(root or ROOT)
+    key = tree_key(root)
+    versions = _compute_all([a for a in ARTIFACTS if a.roots], root)
+    path = root / RELEASE_FILE
+    if not _write_json(path, {"scheme": SCHEME, "tree": key, "versions": versions,
+                              "at": _iso(_now())}):
+        raise OSError(f"cannot write {path}")
+    return path
+
+
 def deployed(names: Iterable[str] | None = None, *, state_dir: Path | None = None,
              root: Path | None = None, write: bool = True) -> dict[str, str | None]:
     """Each artifact's version in the deployed tree (this process's source): from memory,
-    the tree's cache file, else computed (and cached when ``write``)."""
+    the tree's cache file or the release's own file, else computed (and cached when
+    ``write``). Stored versions are read before any lock is waited for: a process
+    starting beside one that is computing reads them at once."""
     root = Path(root or ROOT)
     wanted = [BY_NAME[n] for n in (names or BY_NAME)]
     key = _tree(root)
@@ -377,12 +415,13 @@ def deployed(names: Iterable[str] | None = None, *, state_dir: Path | None = Non
             out[artifact.name] = None
     if not missing:
         return out
+    stored = _stored(state_dir, root, key)
+    if all(a.name in stored for a in missing):
+        for artifact in missing:
+            _VERSIONS[(key, artifact.name)] = out[artifact.name] = stored[artifact.name]
+        return out
     with _LOCK, _shared(state_dir, write):
-        cached: dict[str, Any] = {}
-        for directory in _cache_dirs(state_dir):
-            doc = _read_json(directory / f"deployed-{key}.json")
-            if isinstance(doc, dict) and doc.get("scheme") == SCHEME:
-                cached = {**doc.get("versions", {}), **cached}
+        cached = _stored(state_dir, root, key)
         todo = [a for a in missing if a.name not in cached]
         fresh = bool(todo)
         cached.update(_compute_all(todo, root))
@@ -704,8 +743,9 @@ _WARMING: dict[str, threading.Thread] = {}
 
 def _ready(state_dir: Path) -> bool:
     """Whether this tree's versions are known without computing them on a request: from
-    memory or a cache file; else they are computed once in a background thread (a deploy
-    writes them before the API restarts, ``versions --write``)."""
+    memory, the cache files or the release's own file; else they are computed once in a
+    background thread (a deploy writes them before the API restarts, ``versions --write``;
+    a release build, ``versions --release``)."""
     key = _tree(ROOT)
     if all((key, a.name) in _VERSIONS or a.name in OVERRIDES or not a.roots
            for a in ARTIFACTS):
@@ -715,11 +755,8 @@ def _ready(state_dir: Path) -> bool:
     # compute the rest inside a page read, where a cold tree held it for minutes
     needed = {a.name for a in ARTIFACTS
               if a.roots and a.name not in OVERRIDES and (key, a.name) not in _VERSIONS}
-    for directory in _cache_dirs(state_dir):
-        doc = _read_json(directory / f"deployed-{key}.json")
-        if isinstance(doc, dict) and doc.get("scheme") == SCHEME \
-                and needed <= set(doc.get("versions") or ()):
-            return True
+    if needed <= set(_stored(state_dir, ROOT, key)):
+        return True
     thread = _WARMING.get(key)
     if thread is None:
         thread = threading.Thread(target=deployed, kwargs={"state_dir": state_dir},
@@ -999,6 +1036,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         one.add_argument("--only", action="append", choices=sorted(BY_NAME))
     sub.choices["versions"].add_argument("--write", action="store_true",
                                          help="cache this tree's versions in the state dir")
+    sub.choices["versions"].add_argument(
+        "--release", action="store_true",
+        help=f"compute this tree's versions into its own {RELEASE_FILE} (release build)")
     r = sub.choices["refresh"]
     r.add_argument("--units", action="store_true",
                    help="refresh an artifact with a systemd unit by starting it and waiting")
@@ -1012,6 +1052,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     c.add_argument("--wait", type=float, default=0.0, help="seconds to wait for current")
     c.add_argument("--poll", type=float, default=30.0)
     args = parser.parse_args(argv)
+    if args.cmd == "versions" and args.release:
+        print(json.dumps({"tree": _tree(ROOT), "written": str(write_release(ROOT))}))
+        return 0
     if args.cmd == "versions":
         versions = deployed(args.only, state_dir=args.state_dir if args.write else None,
                             write=args.write)

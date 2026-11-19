@@ -133,6 +133,9 @@ _STOP_WORDS = frozenset({"and", "but", "or", "nor", "while", "whereas", "against
 _NEGATIONS = frozenset({"not", "never", "no"})
 # A word between a negation and a type word that keeps it negated ("not fully received").
 _NEGATED_THROUGH = frozenset({"longer", "yet", "fully", "completely", "entirely"})
+# A word right after one of these names a status value ("the status Received", "state
+# Shipped"): the records' recorded state, never a quantity's type.
+_STATUS_NOUNS = frozenset({"status", "state", "stage"})
 _WORD_TOKEN = re.compile(
     r"(?P<num>" + NUMBER.pattern + r")|(?P<word>[A-Za-z_][A-Za-z0-9_']*)|(?P<open>\()"
     r"|(?P<stop>[\n;!?)\[\],]|\.(?=\s|$)|^\s*[-*]\s)", re.M)
@@ -216,8 +219,9 @@ def wording_check(text: str, claims: Sequence[Mapping[str, Any]],
             negated = bool(tokens) and (tokens[-1].get("lower") in _NEGATIONS or (
                 tokens[-1].get("lower") in _NEGATED_THROUGH and len(tokens) > 1
                 and tokens[-2].get("lower") in _NEGATIONS))
+            named = bool(tokens) and tokens[-1].get("lower") in _STATUS_NOUNS
             tokens.append({"t": "word", "text": word, "lower": lower, "sent": sentence,
-                           "typed": None if negated else _TYPE_WORDS.get(lower)})
+                           "typed": None if negated or named else _TYPE_WORDS.get(lower)})
         elif match.group("open") is not None:
             tokens.append({"t": "open", "sent": sentence})
         else:

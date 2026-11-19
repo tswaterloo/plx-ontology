@@ -349,7 +349,11 @@ def match(ctx: Any, index: Mapping[str, Any], inv: Received,
     for oid in found:
         ctx.cite(heads.get(oid), "sage_po_number", "po_number")
     # the supplier on both sides: the PO's and the Sage vendor's Portal supplier
-    vendors = ctx.find("RelSageApVendor", "vendorid", inv.vendor)
+    from .autopilot_handlers import FindUnavailable
+    try:
+        vendors = ctx.find("RelSageApVendor", "vendorid", inv.vendor)
+    except FindUnavailable:
+        vendors = []        # the Sage vendor not looked up: the supplier stays "not_told"
     ctx.objects.update(vendors)
     ours = _one_supplier(ctx, vendors, "RelSageApVendor.portal_supplier") if vendors else set()
     theirs = _one_supplier(ctx, found, "PurchaseOrder.ordered_from")

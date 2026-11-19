@@ -10,6 +10,24 @@ import { togglePin, usePins } from "@/lib/pins";
 import { useSaved } from "@/lib/saved";
 import { cn } from "@/lib/cn";
 
+/** Home's Ask box, on top of the list: the question opens Ask. */
+export function HomeAsk({ className }: { className?: string }) {
+  const router = useRouter();
+  return (
+    <div className={cn("w-full", className)} data-testid="home-ask">
+      <AskBox
+        size="md"
+        label="Ask or tell the Workbench"
+        placeholder="Ask about an order, supplier, customer or lot"
+        onSubmit={(question, chosen) => {
+          stashPending(question, chosen);
+          router.push(`/ask?q=${encodeURIComponent(question)}`);
+        }}
+      />
+    </div>
+  );
+}
+
 /**
  * My work's second part, after what needs you: the Ask box, then the person's pinned pages
  * (their role's defaults until they pin or unpin anything; any page's pin button adds one).

@@ -887,8 +887,9 @@ class EngineTest(Engine):
                      if g["kind"] == "late_order"}
         self.assertNotIn(orders["0"], line_late)
         self.assertNotIn(orders["4"], line_late)
-        self.assertEqual(summary["not_evaluated"]["late_order"]["draft_dates_nothing"], 1)
-        self.assertEqual(summary["not_evaluated"]["late_order"]["order_not_late"], 1)
+        # neither is "cannot check": a draft is out of the rule's scope (one scope note)
+        # and an order the purchase-order rule does not call late passed the check
+        self.assertEqual(summary["not_evaluated"].get("late_order", {}), {})
 
     def test_one_bc_order_with_two_portal_twins_is_one_order(self):
         w = World()

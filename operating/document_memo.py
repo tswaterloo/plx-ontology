@@ -14,7 +14,11 @@ Fresh for ``MEMO_FRESH_SECONDS``; past it and inside ``MEMO_STALE_SECONDS`` the 
 answers while one read renews it in the background (a read that fails keeps the old one);
 past stale, or never read, the step is read and the request waits at most
 ``MEMO_PAGE_WAIT`` for it, else answers ``StillReading`` (the view says so: never an empty
-list in its place). On a Postgres store a step is read on its own thread (the connection
+list in its place). The wait is counted from the read's start: a request that comes while
+a read started earlier is still going (the app asking again) waits only what is left of
+it, so a poll never holds a read worker for the whole wait again. ``StillReading`` names
+the read it waited on by an opaque token (``running(token)``): the caller may answer its
+next poll "still reading" from that alone, without reading anything. On a Postgres store a step is read on its own thread (the connection
 serves one statement at a time to any thread), outside the request's SQL deadline, so a
 request that stops waiting never throws the read away; on SQLite (one thread per
 connection) it is read on the request. One read per key at a time. Only
@@ -27,6 +31,9 @@ from collections import Counter
 import contextvars
 import hashlib
 import json
+import logging
+import os
+import secrets
 import threading
 import time
 from typing import Any, Callable, Sequence
@@ -38,7 +45,15 @@ MEMO_PAGE_WAIT = 3.0      # a request waits at most this long for a step being r
 
 
 class StillReading(Exception):
-    """A step is being read in the background and was not ready within the wait."""
+    """A step is being read in the background and was not ready within the wait;
+    ``token``: that read (``Memo.running``), None when not named."""
+
+    def __init__(self, name: str, token: str | None = None) -> None:
+        super().__init__(name)
+        self.token = token
+
+
+MEMO_TOKENS_MOST = 256    # tokens of reads still going, named to callers (oldest out first)
 
 
 class _Kept:
@@ -60,6 +75,8 @@ class Memo:
         self.lock = threading.Lock()
         self.kept: dict[tuple, _Kept] = {}
         self.reading: dict[tuple, threading.Event] = {}
+        self.since: dict[tuple, float] = {}     # when each read going on started
+        self.tokens: dict[str, tuple] = {}      # opaque token -> the read it names
         self.failed: set[tuple] = set()
         self.threads: Callable[[Any], bool] = lambda conn: bool(getattr(conn, "postgres",
                                                                         False))
@@ -68,20 +85,27 @@ class Memo:
         with self.lock:
             self.kept.clear()
             self.reading.clear()
+            self.since.clear()
+            self.tokens.clear()
             self.failed.clear()
 
     def _read(self, key: tuple, compute: Callable[[Any], Any], gate: Any,
               view: str) -> _Kept:
         scratch = self.scratch(gate, view)
+        began = time.monotonic()
         try:
             value = compute(scratch)
         except BaseException:
             with self.lock:
                 self.failed.add(key)
                 done = self.reading.pop(key, None)
+                self.since.pop(key, None)
             if done is not None:
                 done.set()
             raise
+        if os.environ.get("PLX_STAGE_TIMING") == "1":
+            logging.getLogger("operator_api.stages").info(
+                "memo step %s read in %.2f s", key[-1], time.monotonic() - began)
         kept = _Kept(value, scratch, self.clock())
         with self.lock:
             self.kept[key] = kept
@@ -90,6 +114,7 @@ class Memo:
                                         key=lambda kv: kv[1].at)[-MEMO_MOST:])
             self.failed.discard(key)
             done = self.reading.pop(key, None)
+            self.since.pop(key, None)
         if done is not None:
             done.set()
         return kept
@@ -105,11 +130,13 @@ class Memo:
             if kept is not None and age is not None and age <= MEMO_STALE_SECONDS:
                 if age > MEMO_FRESH_SECONDS and background and key not in self.reading:
                     start = self.reading[key] = threading.Event()
+                    self.since[key] = self.clock()
                 out: tuple[_Kept | None, threading.Event | None] = (kept, None)
             else:
                 running = self.reading.get(key)
                 if running is None and background:
                     running = start = self.reading[key] = threading.Event()
+                    self.since[key] = self.clock()
                 out = (None, running)
         if start is not None:
             # the read runs in a copy of the request's context (its reader's grants and
@@ -127,6 +154,28 @@ class Memo:
             threading.Thread(target=context.run, args=(run,), name="business-documents-step",
                              daemon=True).start()
         return out
+
+    def _token(self, key: tuple) -> str | None:
+        """An opaque token for the read of ``key`` going on now (None when none is)."""
+        with self.lock:
+            if key not in self.reading:
+                return None
+            token = secrets.token_urlsafe(18)
+            self.tokens[token] = key
+            while len(self.tokens) > MEMO_TOKENS_MOST:
+                self.tokens.pop(next(iter(self.tokens)))
+            return token
+
+    def running(self, token: str | None) -> bool:
+        """The read ``token`` names (``StillReading.token``) is still going on."""
+        if not token:
+            return False
+        with self.lock:
+            key = self.tokens.get(token)
+            if key is not None and key in self.reading:
+                return True
+            self.tokens.pop(token, None)
+            return False
 
     def prefetch(self, reader: str | None, conn: Any, gate: Any, view: str,
                  steps: Sequence[tuple[str, Callable[[Any], Any]]]) -> None:
@@ -149,8 +198,13 @@ class Memo:
         elif kept is None:
             from operating import call_limits
             left = call_limits.seconds_left()
-            wait = MEMO_PAGE_WAIT if left is None else max(0.0, min(MEMO_PAGE_WAIT, left))
-            if running is not None:
+            with self.lock:
+                began = self.since.get(key)
+            # counted from the read's start: a later request waits only what is left
+            wait = MEMO_PAGE_WAIT if began is None else \
+                max(0.0, MEMO_PAGE_WAIT - (self.clock() - began))
+            wait = wait if left is None else max(0.0, min(wait, left))
+            if running is not None and wait > 0:
                 running.wait(wait)
             with self.lock:
                 still = key in self.reading
@@ -161,7 +215,7 @@ class Memo:
             if kept is None and failed:
                 return compute(ans)   # the read failed: read it here, its error shown
             if kept is None:
-                raise StillReading(name)
+                raise StillReading(name, self._token(key))
         ans.counts.update(kept.counts)
         ans.withheld.update(kept.withheld)
         ans.complete = ans.complete and kept.complete

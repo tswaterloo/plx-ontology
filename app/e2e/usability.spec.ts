@@ -25,7 +25,6 @@ const ALL_PAGES = [
   "/activity",
   "/team",
   "/ops",
-  "/rd-projects",
   "/feedback",
   "/ask",
   "/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412",
@@ -101,7 +100,7 @@ test("loading and error states are worded and line up with the page", async ({ p
     return r.continue().catch(() => {});
   });
   const faults: string[] = [];
-  for (const route of ["/my-work", "/late", "/autopilot", "/meetings", "/watching", "/activity", "/team", "/ops", "/rd-projects", "/feedback"]) {
+  for (const route of ["/my-work", "/late", "/autopilot", "/meetings", "/watching", "/activity", "/team", "/ops", "/feedback"]) {
     fail = false;
     await page.goto(route);
     const pending = page.locator("main [data-pending]").first();

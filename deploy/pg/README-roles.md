@@ -6,10 +6,11 @@ Who logs in as what, so no routine session is a superuser. Times are ET.
 |---|---|---|---|
 | `plx_api` | served (5432), db `plx` | read ontology/search/plx_meta; write its query log and feedback; append to each person's memory log and keep their memory items (migration 0030, no DELETE) | `plx_api_role.sql` (SEC-S-13) |
 | `plx_loader` | served (5432), db `plx` | runs as `plx_owner`: owns the tables and sequences of the data schemas (ontology, search, plx_meta, memory, delta_stage, steps_stage), creates tables there; `temp_file_limit` | `plx_loader_role.sql` |
+| `plx_eval` | served and test | every eval and harness (`scripts/eval_guard.py` sets `PGUSER`): SELECT on the read schemas, its own temporary tables, every transaction read-only by default; no write to any shared table | `plx_eval_role.sql` (ops-hardening-1117) |
 | `plx_test` | test (5433) | create and drop its own throwaway databases (CREATEDB only) | `plx_test_role.sql` |
 | `<host user>` (superuser) | both | migrations, the ingest host, agents' ad hoc work, the role files themselves | - |
 
-None of the three has a SUPERUSER or CREATEROLE attribute or a superuser's membership. The
+None of them has a SUPERUSER or CREATEROLE attribute or a superuser's membership. The
 loader owns tables, which superuser sessions (migrations, the ingest host, agents, and the API
 until it runs as `plx_api`) still read and write; a table owner who could define code (a
 trigger, rule, policy, view, function, operator or type) could make such a session run it as
@@ -35,18 +36,22 @@ Each OS user maps to the role in `pg_ident.conf`, and a `pg_hba.conf` line above
 `local all all peer` uses the map:
 ```
 # served cluster /etc/postgresql/17/main
-pg_ident.conf:  plxapi     plx-workbench  plx_api
+pg_ident.conf:  plxeval    <host user>         plx_eval
+                plxapi     plx-workbench  plx_api
                 plxapi     <host user>         plx_api
                 plxloader  <host user>         plx_loader
-pg_hba.conf:    local  plx  plx_api     peer map=plxapi
+pg_hba.conf:    local  plx  plx_eval    peer map=plxeval
+                local  plx  plx_api     peer map=plxapi
                 local  plx  plx_loader  peer map=plxloader
 # test cluster /etc/postgresql/17/test
-pg_ident.conf:  plxtest    <host user>  plx_test
+pg_ident.conf:  plxeval    <host user>  plx_eval
+                plxtest    <host user>  plx_test
                 plxloader  <host user>  plx_loader      (rehearsals only)
-pg_hba.conf:    local  all  plx_test    peer map=plxtest
+pg_hba.conf:    local  all  plx_eval    peer map=plxeval
+                local  all  plx_test    peer map=plxtest
                 local  all  plx_loader  peer map=plxloader
 ```
-Backups of the files before each change: `*.bak-s13` (API), `*.bak-t7` (loader, tests).
+Backups of the files before each change: `*.bak-s13` (API), `*.bak-t7` (loader, tests), `*.bak-eval` (eval role, 11-17).
 `sudo pg_ctlcluster 17 <main|test> reload` applies them; nothing restarts.
 
 ## Tests

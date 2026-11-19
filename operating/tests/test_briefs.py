@@ -94,6 +94,10 @@ class Store:
                 return False
             if f["op"] == "lt" and not value < f["value"]:
                 return False
+            if f["op"] == "eq" and value != f["value"]:
+                return False
+            if f["op"] == "contains" and str(f["value"]).casefold() not in value.casefold():
+                return False
         return True
 
     def __call__(self, tool: str, args: dict) -> dict:
@@ -921,10 +925,20 @@ class UpcomingCalendar(unittest.TestCase):
             st.link(oid, "CalendarEvent.with_supplier", self.SUP)
         return st
 
-    def read(self, st: Store, people=PEOPLE, held=frozenset(FIN)) -> list[dict]:
+    def read(self, st: Store, people=PEOPLE, held=frozenset(FIN), reader=None) -> list[dict]:
         st.held = held
         return br.upcoming_meetings(st, held, now=NOW, people=people,
-                                    since=datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc))
+                                    since=datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc),
+                                    reader=reader)
+
+    def test_an_invitations_join_footer_is_never_its_agenda(self):
+        footer = ("_" * 80 + " Microsoft Teams meeting Join: https://teams.microsoft.com/meet/1?p=x "
+                  "Meeting ID: 269 116 Passcode: abc " + "_" * 16)
+        for body, agenda in ((footer, None), ("Q4 volumes\n" + footer, "Q4 volumes"),
+                             ("Pricing\nJoin Zoom Meeting https://zoom.us/j/1", "Pricing"),
+                             ("1. Orders\n2. Quality", "1. Orders 2. Quality")):
+            [e] = self.read(self.cal(body_preview=body))
+            self.assertEqual(e["agenda"], agenda, body)
 
     def test_each_event_names_its_people_place_agenda_and_parties_cited(self):
         st = self.cal()
@@ -976,6 +990,43 @@ class UpcomingCalendar(unittest.TestCase):
         self.assertNotIn("Marked", json.dumps(e))
         # a cancelled event is not listed
         self.assertEqual(self.read(self.cal(is_cancelled="true")), [])
+
+    def test_only_the_readers_own_meetings_each_once(self):
+        """Owner walk 11-17: a reader who may read every calendar was to be shown everyone's
+        events; theirs are found by who they are, each shared meeting listed once."""
+        me = "nr@synth-home.example"
+        st = self.cal(1, ical_uid="uid-0")
+        # the same meeting held in a colleague's mailbox: listed once
+        st.add("CalendarEvent:meetings.calendar_events:synth-twin", "Review 0",
+               subject="Review 0", start="2026-11-10T08:00:00", is_cancelled="false",
+               mailbox="boss@synth-home.example", ical_uid="uid-0", content="read",
+               organizer=json.dumps({"name": "Org Person", "address": "org@synth-home.example"}),
+               attendees=json.dumps([{"name": "No Reply", "address": me}]))
+        # a colleague's own lunch, and an address of which the reader's is a part
+        st.add("CalendarEvent:meetings.calendar_events:synth-lunch", "Lunch", subject="Lunch",
+               start="2026-11-10T12:00:00", is_cancelled="false", content="read",
+               mailbox="boss@synth-home.example", ical_uid="uid-lunch",
+               organizer=json.dumps({"name": "Boss", "address": "boss@synth-home.example"}),
+               attendees=json.dumps([{"name": "Z", "address": "xnr@synth-home.example"}]))
+        # in the reader's own mailbox (by its object id), no one else named
+        st.add("CalendarEvent:meetings.calendar_events:synth-focus", "Focus", subject="Focus",
+               start="2026-11-11T09:00:00", is_cancelled="false", content="read",
+               mailbox="0000aaaa-0000-0000-0000-00000000000a", ical_uid="uid-focus",
+               organizer=json.dumps({"name": "Me", "address": "someone@synth-home.example"}))
+        mine = self.read(st, reader={me, "0000aaaa-0000-0000-0000-00000000000a"})
+        self.assertEqual([e["label"] for e in mine], ["Review 0", "Focus"])
+        # the shared meeting from the reader's own mailbox when it is there
+        both = self.read(st, reader={me, "boss@synth-home.example"})
+        self.assertNotIn("Focus", [e["label"] for e in both])
+        self.assertEqual([e["object_id"] for e in both if e["label"] == "Review 0"],
+                         ["CalendarEvent:meetings.calendar_events:synth-twin"])
+        # no reader named: every event the grant shows, each shared meeting once
+        self.assertEqual(sorted(e["label"] for e in self.read(st)),
+                         ["Focus", "Lunch", "Review 0"])
+        # N=1/10/60: none lost, none twice
+        for n in (1, 10, 60):
+            got = self.read(self.cal(n), reader={me})
+            self.assertEqual(len({e["object_id"] for e in got}), n, n)
 
     def test_cardinality_no_event_lost_or_duplicated(self):
         for n in (1, 10, 60):

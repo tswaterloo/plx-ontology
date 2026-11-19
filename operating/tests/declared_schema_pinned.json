@@ -230,6 +230,12 @@
    ],
    [
     "table",
+    "chat_asks",
+    "chat_asks",
+    "CREATE TABLE chat_asks (message_id TEXT NOT NULL,\n                reader TEXT NOT NULL, asks INTEGER NOT NULL, reason TEXT, model TEXT,\n                at TEXT NOT NULL, PRIMARY KEY (message_id, reader))"
+   ],
+   [
+    "table",
     "events",
     "events",
     "CREATE TABLE events (\n                event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, object_id TEXT NOT NULL,\n                object_type TEXT NOT NULL, at TEXT, landed_at TEXT, seen_at TEXT NOT NULL,\n                body TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'new', reason TEXT,\n                processed_at TEXT)"
@@ -401,6 +407,12 @@
     "mailbox_folders",
     "mailbox_folders",
     "CREATE TABLE mailbox_folders (\n    mailbox_id TEXT NOT NULL,\n    folder_id TEXT NOT NULL,\n    total INTEGER,\n    listed_at TEXT NOT NULL,\n    PRIMARY KEY (mailbox_id, folder_id))"
+   ],
+   [
+    "table",
+    "mailbox_purpose",
+    "mailbox_purpose",
+    "CREATE TABLE mailbox_purpose (\n    mailbox_id TEXT PRIMARY KEY,\n    purpose TEXT NOT NULL CHECK (purpose IN ('shared', 'personal')),\n    decided_at TEXT NOT NULL,\n    personal_at TEXT)"
    ],
    [
     "table",

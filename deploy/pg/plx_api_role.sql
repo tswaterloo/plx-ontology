@@ -94,3 +94,18 @@ BEGIN
         ALTER DEFAULT PRIVILEGES IN SCHEMA memory GRANT SELECT ON SEQUENCES TO plx_api;
     END IF;
 END $$;
+-- comms-1117: the mail and Teams views the search and open read as this role
+-- (operating/pg/sql_views.py COMMS_READERS / PERSON_READERS; the same grants
+-- `python3 -m operating.pg.sql_views install` makes), for a role made after the install:
+-- USAGE on the guarded and person schemas and SELECT on their communications views only.
+DO $$
+DECLARE r record;
+BEGIN
+    FOR r IN SELECT n.nspname, c.relname FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind = 'v' AND c.relname IN ('emails', 'teams_messages')
+               AND (n.nspname LIKE '%\_sql' OR n.nspname LIKE '%\_person') LOOP
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO plx_api', r.nspname);
+        EXECUTE format('GRANT SELECT ON %I.%I TO plx_api', r.nspname, r.relname);
+    END LOOP;
+END $$;

@@ -609,6 +609,19 @@ def _qty(value: str) -> str:
 
 # ----------------------------------------------------------------------------- customer PO
 
+def _orders_of_customer(ctx: Any, orders: Sequence[str], number: str) -> list[str]:
+    """The sales orders of ``orders`` placed by the customer numbered ``number``: each
+    order's own ``SalesOrder.ordered_by`` customer carries that number (a twin record of
+    the customer counts; an order with no customer, or another's, never does)."""
+    want = number.strip().upper()
+    by_order = {o: [c for c in ctx.linked(o, ("SalesOrder.ordered_by",))
+                    if c.startswith("Customer:")] for o in orders}
+    custs = sorted({c for cs in by_order.values() for c in cs})
+    codes = {c: autopilot_records._v(r, "erp_code").strip().upper()
+             for c, r in (ctx.read(custs, ("erp_code",)) if custs else {}).items()}
+    return [o for o in orders if any(codes.get(c) == want for c in by_order[o])]
+
+
 def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     subject = event.get("subject") or ""
     body = body_text(ctx, event)
@@ -622,8 +635,31 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     if named and all(o.startswith(("PurchaseOrder:", "Receipt:")) for o in named):
         return {"skip": "names_our_purchase_order"}
     entered = [o for o in named if o.startswith("SalesOrder:")]
-    for po in pos:
-        entered += [o for o in ctx.find("SalesOrder", "customer_po", po)]
+    # the BC order's PO number: the one the whole mail states (``document_lines.the_po_number``,
+    # as order entry cites it); a thread naming another PO, anywhere in it, is never written
+    # under one of them (W4 11-17: 5 of 7 wrong cited PO numbers were such threads). The
+    # "already entered" check looks it up too: the PO a write would key is never keyed twice.
+    the_po = dl.the_po_number([*((f["text"] or "", f["name"]) for f in files),
+                               (body, "mail body"), (subject, "subject")])["number"]
+    try:
+        for po in dl.unique([*pos, *([the_po] if the_po else [])]):
+            entered += [o for o in ctx.find("SalesOrder", "customer_po", po)]
+    except autopilot_handlers.FindUnavailable:
+        # cannot tell whether the order is keyed: prepare nothing (never a second order)
+        return {"skip": "entered_check_unavailable"}
+    sources = [(f["name"], f["form"], f["text"], f["handle"]) for f in files] + \
+        [("mail body", "text", body, None)]
+    po_text = "\n".join(t for _n, _f, t, _h in sources)
+    customer = resolve_customer(ctx, event, po_text[:20000])
+    entered = list(dict.fromkeys(entered))
+    if entered:
+        # only an order THIS customer placed is "already entered": a customer PO number is
+        # no key across customers (a short one is carried by 678 records live), and another
+        # customer's order is never named to this one. No customer resolved: cannot tell
+        # whose order matched, so nothing is prepared (never a draft, never a 2nd order).
+        if not customer.get("number"):
+            return {"skip": "entered_check_ambiguous"}
+        entered = _orders_of_customer(ctx, entered, customer["number"])
     if entered:
         f = autopilot_handlers._order_facts(ctx, entered[0])
         atp = autopilot_handlers.availability(ctx, entered[0])
@@ -640,21 +676,20 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                 "availability": atp,
                 "links": [{"label": "Open the order", "href": f"/object/{entered[0]}"}],
                 "done_hint": "order_entered", "gaps": []}
-    sources = [(f["name"], f["form"], f["text"], f["handle"]) for f in files] + \
-        [("mail body", "text", body, None)]
     lines, read_from = [], None
     for name, form, text, handle in sources:
         got = dl.read_lines(text, form)
         if got:
             lines, read_from = got, {"name": name, "handle": handle}
             break
-    po_text = "\n".join(t for _n, _f, t, _h in sources)
-    customer = resolve_customer(ctx, event, po_text[:20000])
     found = resolve_items(ctx, [t for ln in lines for t in ln["tokens"]])
     for ln in lines:                    # an item code the identifier table lacks: its record
         if not any(found.get(t.upper()) for t in ln["tokens"]):
             for t in ln["tokens"][:3]:
-                hits = ctx.find("Product", "code", t)
+                try:
+                    hits = ctx.find("Product", "code", t)
+                except autopilot_handlers.FindUnavailable:
+                    hits = []           # the line stays unresolved: never a guessed item
                 if hits:
                     found[t.upper()] = hits
     prices = last_prices(ctx, customer["records"]) if customer.get("number") else {}
@@ -679,15 +714,21 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     checked: dict[str, dict[str, Any]] = {}
     for ln, (code, records) in resolved:
         last = prices.get(code)
-        stated = ln.get("unit_price")
+        # the PO's own price only when it is per the line's unit, in the customer's currency
+        # and plainly a unit price (document_lines.stated_unit_price); a price stated any
+        # other way ("@ $4.50 each" on cases, "@ $4.50 USD", "@ $45 for 10") is unresolved:
+        # no order is prepared, the stated price is never written nor replaced by another
+        stated, unusable = dl.stated_unit_price(ln, want_currency)
         # a last price is reused only in the line's unit and the customer's currency
         # (AUTOMATION-007): a USD price per case is no CAD price per kg
         reusable = bool(last and want_currency and
                         currency_code(last.get("currency") or "")[0] == want_currency and
                         unit_token(last.get("uom") or "") is not None and
                         unit_token(last.get("uom") or "") == unit_token(ln.get("unit") or ""))
-        price = stated or ((last or {}).get("price") if reusable else None)
-        if not stated and last and not reusable:
+        price = stated or ((last or {}).get("price") if reusable and not unusable else None)
+        if unusable:
+            priced_out += 1
+        elif not stated and last and not reusable:
             # a last price we hold but may not reuse: never left for BC to fill silently
             priced_out += 1
         if code not in checked:
@@ -698,7 +739,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         out_lines.append({"item": code, "quantity": ln["quantity"], "unit": ln.get("unit"),
                           "po_unit_price": stated, "last_price": last,
                           "unit_price": price,
-                          "price_basis": "the PO's price" if stated else
+                          "price_basis": "the PO's price" if stated else unusable or
                           ((last or {}).get("basis") if reusable else
                            "not found" if not last else
                            "the last price is in another unit or currency"),
@@ -716,6 +757,8 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         out["gaps"].append("customer_not_resolved:" + customer.get("reason", ""))
     if not pos:
         out["gaps"].append("po_number_not_found")
+    if pos and not the_po:
+        out["gaps"].append("po_number_unsettled")
     if priced_out:
         out["gaps"].append("price_unresolved")
     if not out_lines and not customer.get("number"):
@@ -729,13 +772,13 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     confirmed = bool(customer.get("number")) and list(said) == [customer["number"].upper()]
     if customer.get("number") and not confirmed:
         out["gaps"].append("customer_not_stated_in_po")
-    ready = bool(customer.get("number") and confirmed and pos and out_lines
+    ready = bool(customer.get("number") and confirmed and the_po and out_lines
                  and not unresolved and not priced_out)
     if ready:
         out["write"] = {
             "system": "bc", "operation": "sales_order_create",
             "payload": {"customerNumber": customer["number"],
-                        "externalDocumentNumber": pos[0][:35],
+                        "externalDocumentNumber": the_po[:35],
                         "orderDate": ctx.as_of.isoformat(),
                         "salesOrderLines": [
                             {"lineType": "Item", "lineObjectNumber": ln["item"],
@@ -743,7 +786,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                              **({"unitPrice": ln["unit_price"]} if ln["unit_price"] else {}),
                              **({"unitOfMeasureCode": ln["unit"]} if ln["unit"] else {})}
                             for ln in out_lines]},
-            "reason": f"Customer PO {pos[0]} received by mail; {len(out_lines)} lines read "
+            "reason": f"Customer PO {the_po} received by mail; {len(out_lines)} lines read "
                       f"from {(read_from or {}).get('name') or 'the message'}.",
             "precondition": {"party": customer["number"]}}
     n = len(out_lines)
@@ -1035,7 +1078,10 @@ def h_supplier_eta(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     pos = [o for o in event.get("records") or () if o.startswith("PurchaseOrder:")]
     pos += [o for o in autopilot_handlers.identified(ctx, subject, own) if o.startswith("PurchaseOrder:")]
     for no in autopilot_handlers._numbers(autopilot_queue.PO_NUMBER, subject, own):
-        pos += ctx.find("PurchaseOrder", "po_number", no)
+        try:
+            pos += ctx.find("PurchaseOrder", "po_number", no)
+        except autopilot_handlers.FindUnavailable:
+            return {"skip": "po_lookup_unavailable"}
     pos = list(dict.fromkeys(pos))
     via_items: dict[str, list[str]] = {}
     if not pos:                 # the supplier's own item numbers -> our item -> its open PO
@@ -1224,6 +1270,14 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         return out
     orders = _current(ctx, orders)
     if orders and ({"status_request", "document_request"} & intents or "?" in own):
+        # only the sender's customer's own orders are answered (a shared PO or order number
+        # never names another customer's order); unresolved sender: hold, no draft
+        mine = autopilot_handlers.senders_own(ctx, {**event, "text": own}, orders)
+        if mine is None:
+            return {"skip": "status_customer_ambiguous"}
+        if not mine:
+            return {"skip": "no_own_record_named"}
+        orders = mine
         lines, facts = _status_lines(ctx, orders)
         if not lines:
             return {"skip": "named_orders_state_nothing"}
@@ -1259,6 +1313,11 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
            if o.startswith("PurchaseOrder:")]
     records = list(dict.fromkeys([*named, *pos]))[:6]
     orders = _current(ctx, [o for o in records if o.startswith("SalesOrder:")])
+    # the drafted answer names only the sender's customer's own orders (never another
+    # customer's under a shared number); unresolved sender: no draft (the card keeps the
+    # records for the owner)
+    mine = autopilot_handlers.senders_own(ctx, {**event, "text": own}, orders)
+    orders = mine or []
     lines, facts = _status_lines(ctx, orders) if orders else ([], {})
     out: dict[str, Any] = {
         "kind": "reply", "asked": asked, "thread": {
@@ -1266,7 +1325,8 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             "correspondent": bool(event.get("correspondent"))},
         "records": [{"object_id": o} for o in records],
         "links": [{"label": "Open the record", "href": f"/object/{o}"} for o in records[:3]],
-        "gaps": [] if lines else ["no_record_states_the_answer"]}
+        "gaps": [] if lines else ["sender_customer_unresolved"] if mine is None
+        else ["no_record_states_the_answer"]}
     if lines and event.get("channel") == "mail":
         msg = draft(event.get("sender") or "", subject, lines, facts,
                     in_reply_to=event["object_id"], today=ctx.as_of,

@@ -1,21 +1,20 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, BellRing, Bookmark, Bot, Briefcase, Database, Inbox, List, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, BookMarked, Bookmark, Bot, CalendarClock, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { getHome, getLateList, getOpsAlarms, getOpsHealth, type OpsAlarms, type OpsCheck, type OpsHealth } from "@/lib/api";
+import { getHome, getLateList, getOpsAlarms, type OpsAlarms, type OpsCheck } from "@/lib/api";
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
-import { LISTS as ALL_LISTS, listsFor } from "@/lib/lists";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
-import { eastern, opsHeadline, plainServerNote, SYSTEM_LABEL } from "@/lib/format";
+import { eastern, plainServerNote, SYSTEM_LABEL } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
 import { useSaved } from "@/lib/saved";
-import { usePins, type PinReader } from "@/lib/pins";
+import { usePins, type PinnedPage, type PinReader } from "@/lib/pins";
 import { readAllLate } from "@/lib/late";
 import { readAheadRoute } from "@/lib/route-reads";
 import { onSessionReset } from "@/lib/session-cache";
@@ -165,12 +164,32 @@ export function loadLate(fresh = false): Promise<LatePo[]> {
   return loadLateRead(fresh).then((r) => r.items);
 }
 
+/** Home's one count (late, alerts, replies and prepared items, ARCH 16): published by Home when
+ * every part of it was read, shown by the sidebar's Home item; never a partial or guessed number
+ * (null: unknown, nothing shown). */
+let needsCount: number | null = null;
+const needsListeners = new Set<(n: number | null) => void>();
+export function publishNeedsCount(n: number | null) {
+  needsCount = n;
+  for (const f of needsListeners) f(n);
+}
+export function useNeedsCount(): number | null {
+  const [n, setN] = useState<number | null>(needsCount);
+  useEffect(() => {
+    setN(needsCount);
+    needsListeners.add(setN);
+    return () => void needsListeners.delete(setN);
+  }, []);
+  return n;
+}
+
 let homeOnce: Promise<HomeResponse> | null = null;
 const homeListeners = new Set<(h: HomeResponse) => void>();
 // read for the person signed in: dropped when they sign out or someone else signs in
 onSessionReset(() => {
   lateOnce = null;
   homeOnce = null;
+  publishNeedsCount(null);
 });
 /** /api/home read once per page load, shared by Today, the sidebar and Ask: never tied to one
  * caller's abort (a caller that leaves ignores the answer), so leaving Today early, or React
@@ -236,94 +255,84 @@ export interface NavPlace {
   late?: boolean;
   ops?: boolean;
   admin?: boolean;
-  /** Quality and production-planning readers, ops readers and the owner (seesQuality). */
-  quality?: boolean;
+  /** Only for a reader with a team grant (hasTeamGrant, an ops reader or the owner): Team. */
+  grant?: boolean;
 }
 
-/** A top-level section: where its own link goes, the places under it, and the paths it holds. */
+/** A sidebar item: where its own link goes, its tabs (the places drawn as tabs under the
+ * page's title, never in the sidebar) and the paths it holds. */
 export interface NavSection extends NavPlace {
   key: string;
-  /** PlaceIcon's key for the section (its own icon). */
+  /** PlaceIcon's key for the item (its own icon). */
   place: string;
   icon: LucideIcon;
+  /** The item's tabs; none or one: the page has no tab strip. */
   children: NavPlace[];
-  /** Path prefixes that belong to the section (its children's paths are added). */
+  /** Path prefixes that belong to the item (its tabs' paths are added). */
   holds: string[];
+  /** Where the sidebar draws it: the main list, last (Admin), or not at all ("account":
+   * Memory, Templates and Work log are in the account menu beside the person's name). */
+  group: "main" | "last" | "account";
 }
 
 /**
- * The places, in six sections and Records. Every old page is still here, under the section it
- * belongs to; nothing was removed and every old URL still opens. Team shows to every reader
- * (their own row at least); Admin only to an ops reader or a feedback admin, each of its
- * places to the readers it serves.
+ * The sidebar (the owner, 11-17: "items move depending on the page"; 11-18: "simpler tabs"):
+ * one fixed list, the same on every page, the current page highlighted: Home, Ask, Records,
+ * Meetings, Autopilot, Team, then Admin last. A page's sub-pages are tabs under its title
+ * (SectionTabs), never sidebar rows. Home is one page with three tabs: what needs you, the
+ * alerts (was Watching) and the late POs (was its own page); /watching, /late and /my-work
+ * redirect into it (next.config). Memory, Templates and Work log are in the account menu.
+ * Team shows only to a reader with a team grant (the owner, a full-read grant, an ops
+ * reader); Admin only to an ops reader or a feedback admin, each of its tabs to the readers
+ * it serves.
  */
+export const ALERTS_HREF = "/?show=alerts";
+export const LATE_HREF = "/?show=late";
 export const NAV_SECTIONS: NavSection[] = [
   {
-    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/activity"],
+    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late"], group: "main",
     children: [
-      { href: "/", label: "My work" },
-      { href: "/my-work", label: "Prepared for you" },
-      { href: "/activity", label: "Your actions" },
+      { href: "/", label: "Needs you" },
+      { href: ALERTS_HREF, label: "Alerts" },
+      { href: LATE_HREF, label: "Late POs", late: true },
     ],
   },
+  { key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: [], group: "main", children: [] },
   {
-    key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: ["/help"],
-    children: [
-      { href: "/ask", label: "Ask" },
-      { href: "/memory", label: "Memory" },
-      { href: "/templates", label: "Templates" },
-    ],
-  },
-  {
-    key: "watching", href: "/watching", label: "Watching", place: "/watching", icon: BellRing, holds: [],
-    children: [
-      { href: "/watching", label: "Alerts" },
-      { href: "/late", label: "Late POs", late: true },
-      { href: "/watching#data-health", label: "Data health" },
-      { href: "/qc", label: "Quality", quality: true },
-    ],
-  },
-  {
-    key: "autopilot", href: "/autopilot", label: "Autopilot", place: "/autopilot", icon: Bot, holds: [],
-    children: [
-      { href: "/autopilot", label: "Autopilot" },
-      { href: "/team#approvals", label: "Approvals" },
-    ],
-  },
-  {
-    key: "work", href: "/meetings", label: "Work", place: "/work", icon: Briefcase, holds: [],
-    children: [
-      { href: "/meetings", label: "Meetings" },
-      { href: "/work-log", label: "Work log" },
-      { href: "/team", label: "Team" },
-      { href: "/team#workload", label: "Workload" },
-    ],
-  },
-  {
-    key: "records", href: "/records", label: "Records", place: "/records", icon: Database,
-    holds: ["/customer", "/supplier", "/po", "/ao", "/object", "/source"],
+    key: "records", href: "/records", label: "Records", place: "/records", icon: Database, group: "main",
+    holds: ["/customer", "/supplier", "/po", "/ao", "/object", "/source", "/account", "/order"],
     children: [],
   },
+  { key: "meetings", href: "/meetings", label: "Meetings", place: "/meetings", icon: CalendarClock, holds: [], group: "main", children: [] },
+  { key: "autopilot", href: "/autopilot", label: "Autopilot", place: "/autopilot", icon: Bot, holds: [], group: "main", children: [] },
+  { key: "team", href: "/team", label: "Team", place: "/team", icon: Users, holds: [], group: "main", grant: true, children: [] },
+  { key: "memory", href: "/memory", label: "Memory", place: "/memory", icon: BookMarked, holds: [], group: "account", children: [] },
+  { key: "templates", href: "/templates", label: "Templates", place: "/templates", icon: FileText, holds: [], group: "account", children: [] },
   {
-    key: "admin", href: "/ops", label: "Admin", place: "/admin", icon: Activity, holds: [],
+    key: "work-log", href: "/work-log", label: "Work log", place: "/work-log", icon: History, holds: [], group: "account",
+    children: [
+      { href: "/work-log", label: "Everything" },
+      { href: "/activity", label: "Messages and tasks" },
+    ],
+  },
+  {
+    key: "admin", href: "/ops", label: "Admin", place: "/admin", icon: Activity, holds: [], group: "last",
     children: [
       { href: "/ops", label: "Reliability", ops: true },
+      { href: `${ALERTS_HREF}#data-health`, label: "Data health", ops: true },
       { href: "/trust", label: "Trust", ops: true },
+      { href: "/autopilot-log", label: "Autopilot log", ops: true },
       { href: "/feedback", label: "Feedback triage", admin: true },
     ],
   },
 ];
 
+/** Linked at the sidebar's foot (and in the phone's More menu), beside Give feedback. */
+export const HELP: NavPlace = { href: "/help", label: "Help" };
+
 type NavReader = (Parameters<typeof hasTeamGrant>[0] & { ops_reader?: boolean; feedback_admin?: boolean; owner?: boolean; roles?: string[] | null }) | null | undefined;
 
-/** Whether the QC packs are for this reader: quality or production planning by role, an ops
- * reader or the owner. The nav's gate only; the server shows the lines to quality_controlled readers. */
-export function seesQuality(me: NavReader): boolean {
-  return !!me && (isOpsReader(me) || !!me.owner || (me.roles ?? []).some((r) => r === "quality" || r === "production_planning"));
-}
-
 function placeFor(p: NavPlace, me: NavReader): boolean {
-  if (p.quality && !seesQuality(me)) return false;
   if (p.ops && p.admin) return isOpsReader(me) || !!me?.feedback_admin;
   if (p.ops) return isOpsReader(me);
   if (p.admin) return !!me?.feedback_admin;
@@ -335,6 +344,7 @@ function placeFor(p: NavPlace, me: NavReader): boolean {
 export function navSectionsFor(me: NavReader): NavSection[] {
   const out: NavSection[] = [];
   for (const s of NAV_SECTIONS) {
+    if (s.grant && !(hasTeamGrant(me) || isOpsReader(me) || !!me?.owner)) continue;
     const children = s.children.filter((c) => placeFor(c, me));
     if (s.children.length && !children.length) continue;
     const gated = s.children.length > 0 && s.children.every((c) => c.ops || c.admin);
@@ -349,16 +359,15 @@ export function navFor(me: NavReader): NavPlace[] {
   for (const s of navSectionsFor(me)) {
     for (const p of [s, ...s.children]) if (!out.some((o) => o.href === p.href)) out.push(p);
   }
-  for (const p of listsFor(me)) if (!out.some((o) => o.href === p.href)) out.push(p);
   return out;
 }
 
-/** The section a path belongs to (null: none, e.g. the sign-in page). */
-export function sectionOf(path: string, sections: NavSection[] = NAV_SECTIONS, hash = ""): NavSection | null {
+/** The section a path belongs to (null: none, e.g. the sign-in page). `search` (the
+ * location's ?query) is checked against a tab's own query when given. */
+export function sectionOf(path: string, sections: NavSection[] = NAV_SECTIONS, hash = "", search?: string): NavSection | null {
   const under = (prefix: string) => (prefix === "/" ? path === "/" : path === prefix || path.startsWith(`${prefix}/`));
-  // a #fragment place names its section only on that exact fragment (/team#approvals is
-  // Autopilot's); otherwise the page's own section wins (/team is Work's, not Autopilot's)
-  const exact = sections.find((s) => s.children.some((c) => c.href.includes("#") && isOn(path, c.href, hash)));
+  // a #fragment tab names its item on that exact fragment; otherwise the page's own item wins
+  const exact = sections.find((s) => s.children.some((c) => c.href.includes("#") && isOn(path, c.href, hash, search)));
   if (exact) return exact;
   for (const s of sections) {
     const prefixes = [s.href, ...s.holds, ...s.children.filter((c) => !c.href.includes("#")).map((c) => c.href.split("?")[0])];
@@ -381,13 +390,22 @@ export function isOpsReader(me: { ops_reader?: boolean } | null | undefined): bo
   return !!me?.ops_reader;
 }
 
-/** Phone tabs: Home, Ask, Watching, Work, then More for the rest. */
-export const TABS = ["home", "ask", "watching", "work"];
+/** Phone tabs: the sidebar's first items (Home, Ask, Records, Autopilot), in its order,
+ * then More for the rest in the same order. */
+export const TABS = ["home", "ask", "records", "autopilot"];
 
-function isOn(path: string, href: string, hash = "") {
-  const [base, frag] = href.split("#");
+/** Whether the location (path, #fragment, ?query) is the place `href`: its path (or a page
+ * under it), its #fragment when it names one, and every key of its ?query when `search` is
+ * given (Home's tabs: /?show=alerts is Alerts, plain / is what needs you). */
+function isOn(path: string, href: string, hash = "", search?: string) {
+  const [rest, frag] = href.split("#");
+  const [base, query] = rest.split("?");
+  if (query !== undefined && search !== undefined) {
+    const have = new URLSearchParams(search);
+    for (const [k, v] of new URLSearchParams(query)) if (have.get(k) !== v) return false;
+  }
   if (frag !== undefined) return (base === "/" ? path === "/" : path === base) && hash === `#${frag}`;
-  return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
+  return base === "/" ? path === "/" : path === base || path.startsWith(`${base}/`);
 }
 
 /** The location's #fragment, kept current as it changes (a sub-place like /team#workload). */
@@ -403,24 +421,63 @@ export function useHash(): string {
   return hash;
 }
 
-/** The sidebar's sync line: when the data was read, the systems that are behind, each system on click. */
-function SyncStatus({ home }: { home: HomeResponse | null }) {
+/** The systems each page reads, by route prefix: the "Data as of" line turns amber only for a
+ * source the open page uses. Pages that read every system (Ask, records) list them all; a page
+ * not listed reads no captured source (Memory, Templates, Help...). */
+export const PAGE_SOURCES: [string, readonly string[]][] = [
+  ["/ask", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/records", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/object", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/source", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/customer", ["BC", "Sage", "Portal", "Email", "File"]],
+  ["/supplier", ["BC", "Email", "File"]],
+  ["/po", ["BC", "Email", "File"]],
+  ["/ao", ["BC", "MC"]],
+  ["/meetings", ["Teams", "Email"]],
+  ["/team", ["Email", "Teams", "BC"]],
+  ["/", ["Email", "Teams", "BC", "Sage", "MC"]],
+];
+
+/** The systems the page at `path` reads (the longest matching prefix; "/" only for Home itself). */
+export function pageSources(path: string): readonly string[] {
+  for (const [prefix, systems] of PAGE_SOURCES) {
+    if (prefix === "/" ? path === "/" : path === prefix || path.startsWith(`${prefix}/`)) return systems;
+  }
+  return [];
+}
+
+/** More than an hour old, or its last capture failed or never ran: "behind" on the quiet line. */
+export const BEHIND_SECONDS = 3600;
+type SourceAge = { system: string; age_seconds?: number | null; capture?: string | null; as_of?: string | null };
+export function isBehind(s: SourceAge): boolean {
+  return s.capture === "failed" || s.capture === "never_captured" || !s.as_of || (s.age_seconds ?? 0) > BEHIND_SECONDS;
+}
+
+const sourceName = (s: string) => (s === "File" ? "Files" : s === "Email" ? "Mail" : (SYSTEM_LABEL as Record<string, string>)[s] ?? s);
+
+/** The one quiet line under the sidebar: "Data as of 10:42 AM ET"; amber, naming them, only when
+ * a source the open page reads is more than an hour behind. Each system's time on click; every
+ * reliability detail is on the Admin page. */
+export function DataAsOf({ home }: { home: HomeResponse | null }) {
+  const path = usePathname() ?? "/";
   const f = home?.freshness;
   if (!f?.as_of) return null;
   const sources = f.sources ?? [];
-  const behind = sources.filter((s) => s.stale || s.capture === "failed");
-  const name = (s: string) => (s === "File" ? "Files" : s === "Email" ? "Mail" : (SYSTEM_LABEL as Record<string, string>)[s] ?? s);
+  const used = new Set(pageSources(path));
+  const behind = sources.filter((s) => used.has(s.system) && isBehind(s));
+  const late = behind.length > 0;
   return (
     <Menu.Root>
       <Menu.Trigger
         className="group flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer"
-        title={`Updated ${eastern(f.as_of)}`}
+        title={late ? `Data as of ${eastern(f.as_of)}; over an hour behind: ${behind.map((s) => sourceName(s.system)).join(", ")}` : `Data as of ${eastern(f.as_of)}`}
         data-testid="home-freshness"
+        data-behind={late ? "" : undefined}
       >
-        <RefreshCw className={cn("size-[14px] shrink-0", behind.length ? "text-faint" : "text-live")} strokeWidth={2} aria-hidden />
-        <span className="min-w-0 text-[12px] leading-4 max-xl:hidden">
-          <span className="block text-muted">Updated {eastern(f.as_of)}</span>
-          {behind.length > 0 && <span className="block truncate text-faint">{behind.map((s) => name(s.system)).join(" and ")} behind</span>}
+        <RefreshCw className={cn("size-[14px] shrink-0", late ? "text-risk" : "text-faint")} strokeWidth={2} aria-hidden />
+        <span className={cn("min-w-0 line-clamp-2 text-[12px] leading-4 max-xl:hidden", late ? "text-risk" : "text-muted")}>
+          Data as of {eastern(f.as_of)}
+          {late && ` · ${behind.map((s) => sourceName(s.system)).join(" and ")} behind`}
         </span>
       </Menu.Trigger>
       <Menu.Portal>
@@ -428,11 +485,10 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
           {sources.map((s) => (
             <div key={s.system} className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-row">
               <SystemCode system={s.system} size={18} />
-              <span className="flex-1 truncate">{name(s.system)}</span>
-              {!(s.stale || s.capture === "failed") && s.as_of && <span className="size-1.5 shrink-0 bg-live" aria-hidden data-testid="fresh-mark" />}
-              <span className={cn("text-meta tabular-nums", s.stale || s.capture === "failed" ? "text-fg" : "text-muted")}>
+              <span className="flex-1 truncate">{sourceName(s.system)}</span>
+              <span className={cn("text-meta tabular-nums", isBehind(s) ? "text-fg" : "text-muted")}>
                 {s.as_of ? eastern(s.as_of) : "never"}
-                {(s.stale || s.capture === "failed") && " · behind"}
+                {isBehind(s) && " · behind"}
               </span>
             </div>
           ))}
@@ -440,6 +496,39 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
       </Menu.Portal>
     </Menu.Root>
   );
+}
+
+/** Whether a reliability problem is open, for an ops reader only (the Admin item's dot); polled
+ * like the Admin banner. Anyone else: never asked, false. */
+export function useOpsProblem(ops: boolean, every = 60_000): boolean {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!ops) return setOpen(false);
+    let live = true;
+    const ctl = new AbortController();
+    const load = () =>
+      getOpsAlarms(ctl.signal).then(
+        (a) => live && setOpen(!!a?.configured && (a.open ?? []).length > 0),
+        (e) => {
+          if (live && e instanceof ApiError && (e.status === 401 || e.status === 403)) clearInterval(id);
+        },
+      );
+    load();
+    const id: ReturnType<typeof setInterval> = setInterval(load, every);
+    return () => {
+      live = false;
+      ctl.abort();
+      clearInterval(id);
+    };
+  }, [ops, every]);
+  return open;
+}
+
+/** True on the Admin screens (Reliability, Trust, Feedback triage): the only place ops detail shows. */
+export function useAdminScreen(): boolean {
+  const path = usePathname() ?? "/";
+  const hash = useHash();
+  return sectionOf(path, NAV_SECTIONS, hash)?.key === "admin";
 }
 
 const OPS_LABEL: Record<string, string> = {
@@ -498,68 +587,96 @@ export function opsValue(c: OpsCheck) {
   return `${c.value} ${c.unit} (target ${c.target})`;
 }
 
-/** The ops line: any freshness target breached (delta, captures, Postgres, proactive,
- * truth check, AI watcher, page time), polled from the public health route. Shown only to an
- * ops reader; nothing when every target holds. */
-export function OpsStatus({ every = 60_000 }: { every?: number }) {
-  const { state } = useAuth();
-  const owner = state.status === "signed-in" && isOpsReader(state.me);
-  const [ops, setOps] = useState<OpsHealth | null>(null);
-  useEffect(() => {
-    if (!owner) return;
-    let live = true;
-    const ctl = new AbortController();
-    const load = () => getOpsHealth(ctl.signal).then((o) => live && setOps(o)).catch(() => undefined);
-    load();
-    const id = setInterval(load, every);
-    return () => {
-      live = false;
-      ctl.abort();
-      clearInterval(id);
-    };
-  }, [owner, every]);
-  if (!owner || !ops || ops.breaches.length === 0) return null;
-  const breached = ops.checks.filter((c) => c.state === "breach");
-  return (
-    <Menu.Root>
-      <Menu.Trigger
-        className="group flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer"
-        title={`${breached.length} ops target${breached.length === 1 ? "" : "s"} missed`}
-        data-testid="ops-status"
-      >
-        <TriangleAlert className="size-[14px] shrink-0 text-fg" strokeWidth={2} aria-hidden />
-        <span className="min-w-0 text-[12px] leading-4 max-xl:hidden">
-          <span className="block text-fg">{breached.length} ops target{breached.length === 1 ? "" : "s"} missed</span>
-          <span className="block truncate text-faint">{breached.map((c) => opsLabel(c.name)).join(", ")}</span>
-        </span>
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Content side="top" align="start" sideOffset={6} className="z-50 w-80 rounded-xl bg-raised p-1.5 shadow-pop" data-testid="ops-detail">
-          {breached.map((c) => (
-            <div key={c.name} className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-row">
-              <span className="flex-1 truncate">{opsLabel(c.name)}</span>
-              <span className="text-meta tabular-nums text-fg">{opsValue(c)}</span>
-            </div>
-          ))}
-        </Menu.Content>
-      </Menu.Portal>
-    </Menu.Root>
-  );
-}
-
 export { eastern };
 
-/** The red alarm line across the top of every page, the only place alarms reach anyone (no
- * paging): open reliability incidents (a stopped refresh, a failed or
- * OOM-killed unit, Postgres, disk, memory, backups), or the checks themselves not running.
- * Ops readers only (the owner and the Team readers); nothing for anyone else (the route
- * answers 403) or when all is well. */
+/** What a person calls each captured source, for the one banner line. */
+const SOURCE_WORDS: Record<string, string> = {
+  mail: "Mail", teams: "Teams messages", portal: "Customer Portal records", bc: "Business Central records",
+  mc: "Mission Control", meetings: "Meetings", sharepoint: "SharePoint files", sharepoint_lists: "SharePoint lists",
+};
+const SINGULAR = new Set(["mail", "mc"]);
+
+/** "40 minutes", "2 hours", "3 days": how far behind, in words. */
+function behindBy(hours: number): string {
+  if (hours < 1) {
+    const m = Math.max(1, Math.round(hours * 60));
+    return `${m} minute${m === 1 ? "" : "s"}`;
+  }
+  if (hours < 48) {
+    const h = Math.round(hours);
+    return `${h} hour${h === 1 ? "" : "s"}`;
+  }
+  const d = Math.round(hours / 24);
+  return `${d} days`;
+}
+
+/** The one plain line a person sees at the top of the page, or null: only problems that change
+ * what they see (a source behind or not updating, alerts or records not updating, search behind)
+ * and planned maintenance. Everything else (units, disk, memory, Postgres, backups, the job queue,
+ * the checks themselves) stays on the Admin page. `calm` marks planned maintenance. */
+export function personNotice(alarms: OpsAlarms | null): { text: string; calm: boolean } | null {
+  if (!alarms || !alarms.configured) return null;
+  const checks = new Map((alarms.checks ?? []).map((c) => [c.name, c]));
+  const hoursOf = (key: string): number | null => {
+    const c = checks.get(key);
+    if (!c || typeof c.value !== "number") return null;
+    return c.unit === "h" ? c.value : c.unit === "min" ? c.value / 60 : null;
+  };
+  // per source the worst: how far behind (hours), or not updating at all (Infinity)
+  const behind = new Map<string, number>();
+  const note = (source: string, hours: number) => behind.set(source, Math.max(behind.get(source) ?? 0, hours));
+  let records = false;
+  let alerts = false;
+  let search = false;
+  for (const i of alarms.open ?? []) {
+    const [kind, source] = i.key.split(":");
+    if ((kind === "capture_newest" || kind === "served_lag" || kind === "capture") && source && SOURCE_WORDS[source]) {
+      note(source, hoursOf(i.key) ?? 0);
+    } else if (kind === "capture_failing" && source && SOURCE_WORDS[source]) {
+      note(source, Number.POSITIVE_INFINITY);
+    } else if (kind === "delta_last_cycle") {
+      records = true;
+    } else if (kind === "proactive_last_pass" || kind === "proactive_detectors" || /^unit:plx-proactive/.test(i.key)) {
+      alerts = true;
+    } else if (kind === "search_follow_lag" || kind === "search_follow_last_pass") {
+      search = true;
+    }
+  }
+  const parts: string[] = [];
+  const sources = [...behind.entries()];
+  if (sources.length > 2) {
+    const names = sources.map(([s]) => SOURCE_WORDS[s]);
+    parts.push(`${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} are behind`);
+  } else {
+    for (const [s, h] of sources) {
+      const name = SOURCE_WORDS[s];
+      const are = SINGULAR.has(s) ? "is" : "are";
+      parts.push(h === Number.POSITIVE_INFINITY ? `${name} ${are} not updating` : h > 0 ? `${name} ${are} ${behindBy(h)} behind` : `${name} ${are} behind`);
+    }
+  }
+  if (records) parts.push("Records may be out of date");
+  // what it means for the person and that it mends itself, never an alarm they can do nothing about
+  if (alerts) parts.push("Alerts show the last check's findings; new ones follow when the check runs again");
+  if (search) parts.push("Search may not find the newest items yet; it catches up on its own");
+  const m = alarms.maintenance;
+  if (parts.length === 0 && m?.state === "in_window") {
+    return { text: `Planned maintenance until ${eastern(m.until)}: alerts and updates are paused.`, calm: true };
+  }
+  if (m?.state === "overrun") parts.unshift("Maintenance is taking longer than planned");
+  if (parts.length === 0) return null;
+  // alerts or search catching up mend themselves: a calm line, never the red one
+  const urgent = sources.length > 0 || records || m?.state === "overrun";
+  return { text: `${parts.join(". ")}.`, calm: !urgent };
+}
+
+/** The one line across the top of every page for an ops reader (the owner and the Team
+ * readers): only problems that change what they see, said plainly ("Mail is 2 hours behind"),
+ * or one calm line for planned maintenance; linked to Admin, where every check is listed.
+ * Nothing for anyone else (the route answers 403) or when all is well. */
 export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; className?: string }) {
   const { state } = useAuth();
   const owner = state.status === "signed-in" && isOpsReader(state.me);
   const [alarms, setAlarms] = useState<OpsAlarms | null>(null);
-  // the last poll failed: the alarms shown (if any) are the last ones read, not current
-  const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
     if (!owner) return;
     let live = true;
@@ -567,19 +684,12 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
     const load = () =>
       getOpsAlarms(ctl.signal).then(
         (a) => {
-          if (!live) return;
-          setAlarms(a);
-          setUnavailable(false);
+          if (live) setAlarms(a);
         },
         (e) => {
-          if (!live) return;
-          // a refusal means "not an ops reader": say nothing and stop asking; only a failed
-          // read (network, 5xx) is "Monitoring unavailable"
-          if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-            clearInterval(id);
-            return;
-          }
-          setUnavailable(true);
+          // a refusal means "not an ops reader": say nothing and stop asking; a failed read keeps
+          // the last line (the Admin page says when monitoring cannot be read)
+          if (live && e instanceof ApiError && (e.status === 401 || e.status === 403)) clearInterval(id);
         },
       );
     load();
@@ -590,40 +700,32 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
       clearInterval(id);
     };
   }, [owner, every]);
-  // no poll has succeeded yet: say the monitoring cannot be read rather than show nothing
-  const seen = alarms ?? (unavailable ? ({ configured: true, open: [], running: true } as unknown as OpsAlarms) : null);
-  if (!owner || !seen || !seen.configured) return null;
-  const open = seen.open ?? [];
-  if (open.length === 0 && seen.running && !unavailable) return null;
-  // one line: the count first, so a narrow window that cuts the line keeps it, then every
-  // problem by its headline (the server's line up to its first "; "); the detail is in the
-  // tooltip and on the Reliability page. Never "A · B · N more".
-  const headline = opsHeadline;
-  const base = open.length > 0
-    ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.map((i) => headline(i.line)).join(" · ")}`
-    : seen.running
-      ? ""
-      : `Reliability checks are not running${seen.checked_at ? ` (last ${eastern(seen.checked_at)})` : ""}; a new problem would not show here.`;
-  // a failed poll keeps the last alarms on screen and says they may be out of date
-  const lost = `Monitoring unavailable: the last check could not be read${seen.checked_at ? ` (alarms shown are from ${eastern(seen.checked_at)})` : ""}.`;
-  // the failed poll is said first: a long problem line must not truncate it away
-  const text = unavailable ? (base ? `${lost} ${base}` : lost) : base;
-  const full = open.length > 0 ? [`${open.length} reliability problem${open.length === 1 ? "" : "s"}:`, ...open.map((i) => i.line)].join("\n") : base;
+  const notice = owner ? personNotice(alarms) : null;
+  if (!notice) return null;
   return (
     <Link
       href="/ops"
-      role="alert"
-      title={unavailable && full ? `${lost}\n${full}` : unavailable ? lost : full}
-      className={cn("flex items-center gap-1.5 border-b border-late-line bg-late-soft px-5 py-1 text-[12px] leading-4 text-late hover:underline", className)}
+      role={notice.calm ? "status" : "alert"}
+      title="Details on the Admin page"
+      className={cn(
+        "flex items-center gap-1.5 border-b px-5 py-1 text-[12px] leading-4 hover:underline",
+        notice.calm ? "border-border bg-subtle text-muted" : "border-late-line bg-late-soft text-late",
+        className,
+      )}
       data-testid="ops-alarm-banner"
     >
-      <TriangleAlert className="size-3 shrink-0" strokeWidth={2} aria-hidden />
-      <span className="min-w-0 truncate">{text}</span>
+      {!notice.calm && <TriangleAlert className="size-3 shrink-0" strokeWidth={2} aria-hidden />}
+      <span className="min-w-0 truncate">{notice.text}</span>
     </Link>
   );
 }
 
-function NavItem({ href, label, place, count, on, onNavigate }: { href: string; label: string; place?: string; count?: number | null; on?: boolean; onNavigate?: () => void }) {
+/** The reliability line, on the Admin screens only: everyone else sees the sidebar's quiet "Data as of". */
+export function AdminAlarm() {
+  return useAdminScreen() ? <OpsAlarmBanner /> : null;
+}
+
+function NavItem({ href, label, place, count, countWords = "late", dot, on, onNavigate }: { href: string; label: string; place?: string; count?: number | null; countWords?: string; dot?: string; on?: boolean; onNavigate?: () => void }) {
   const path = usePathname();
   const current = on ?? isOn(path, href);
   return (
@@ -642,76 +744,80 @@ function NavItem({ href, label, place, count, on, onNavigate }: { href: string; 
       <PlaceIcon href={place ?? href} className={current ? undefined : "opacity-85 group-hover:opacity-100"} />
       <span className="flex-1 truncate max-xl:sr-only">{label}</span>
       {typeof count === "number" && count > 0 && (
-        <span className="num text-[12px] text-muted max-xl:hidden" aria-label={`${count} late`}>
+        <span className="num text-[12px] text-muted max-xl:hidden" aria-label={`${count} ${countWords}`}>
           {count}
         </span>
       )}
+      {dot && <span className="size-1.5 shrink-0 rounded-full bg-dot-risk" role="img" aria-label={dot} title={dot} data-testid="admin-dot" />}
     </Link>
   );
 }
 
-/** The place under a section that this location is: a #fragment place first, else the longest path match. */
-export function currentChild(children: NavPlace[], path: string, hash: string): string | null {
-  const exact = children.find((c) => c.href.includes("#") && isOn(path, c.href, hash));
+/** The place under a section that this location is: a #fragment place first, else the
+ * place whose ?query the location carries (most keys first), else the longest path match. */
+export function currentChild(children: NavPlace[], path: string, hash: string, search = ""): string | null {
+  const exact = children.find((c) => c.href.includes("#") && isOn(path, c.href, hash, search));
   if (exact) return exact.href;
-  const plain = children.filter((c) => !c.href.includes("#") && isOn(path, c.href.split("?")[0]));
-  plain.sort((a, b) => b.href.length - a.href.length);
+  const keys = (href: string) => [...new URLSearchParams(href.split("?")[1] ?? "").keys()].length;
+  const plain = children.filter((c) => !c.href.includes("#") && isOn(path, c.href, "", search));
+  plain.sort((a, b) => keys(b.href) - keys(a.href) || b.href.length - a.href.length);
   return plain[0]?.href ?? null;
 }
 
-/** The sidebar's sections; the open section lists its places under it (wide sidebar only). */
-function SectionNav({ me, late }: { me: NavReader; late: number | null }) {
+/** The sidebar's items in one group: the same rows on every page; only which one is
+ * highlighted follows the page (never a row added, moved or dropped by the page). */
+function SectionNav({ me, late, group }: { me: NavReader; late: number | null; group: NavSection["group"] }) {
   const path = usePathname();
   const hash = useHash();
   const sections = navSectionsFor(me);
   const open = sectionOf(path, sections, hash);
+  const mine = sections.filter((s) => s.group === group);
+  const needs = useNeedsCount();
+  const problem = useOpsProblem(isOpsReader(me));
+  if (!mine.length) return null;
   return (
-    <div className="space-y-0.5" data-testid="nav-sections">
-      {sections.map((s) => {
-        const isOpen = open?.key === s.key;
-        const child = isOpen ? currentChild(s.children, path, hash) : null;
-        const lateChild = s.children.find((c) => c.late);
-        return (
-          <div key={s.key}>
-            <NavItem href={s.href} label={s.label} place={s.place} on={isOpen && (!s.children.length || child === s.href)} count={lateChild && !isOpen ? late : undefined} />
-            {isOpen && s.children.length > 1 && (
-              <ul className="mt-px mb-1 space-y-px pl-[26px] max-xl:hidden" aria-label={s.label} data-testid={`nav-${s.key}`}>
-                {s.children.filter((c) => c.href !== s.href).map((c) => {
-                  const on = child === c.href;
-                  return (
-                    <li key={c.href}>
-                      <Link
-                        href={c.href}
-                        onPointerEnter={() => readAheadRoute(c.href)}
-                        aria-current={on ? "page" : undefined}
-                        className={cn("flex h-7 items-center rounded-[2px] px-2 text-[13px]", on ? "bg-nav-on font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg")}
-                      >
-                        <span className="flex-1 truncate">{c.label}</span>
-                        {c.late && typeof late === "number" && late > 0 && <span className="num text-[12px] text-muted" aria-label={`${late} late`}>{late}</span>}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        );
-      })}
+    <div className={cn("space-y-0.5", group === "last" && "mt-0.5")} data-testid={group === "main" ? "nav-sections" : "nav-last"}>
+      {mine.map((s) => (
+        <NavItem
+          key={s.key}
+          href={s.href}
+          label={s.label}
+          place={s.place}
+          on={open?.key === s.key}
+          count={s.key === "home" ? needs : s.children.some((c) => c.late) ? late : undefined}
+          countWords={s.key === "home" ? "need you" : "late"}
+          dot={s.key === "admin" && problem ? "A reliability problem is open: see Admin" : undefined}
+        />
+      ))}
     </div>
   );
 }
 
-/** A section's places as tabs: Watching's own pages draw it under their title at every width
- * (Alerts, Late POs, Data health, Quality: the owner's "Late POs as a tab"); the shell draws
- * it for the other sections where the sidebar is a rail and cannot list them (1024 to 1279). */
-export function SectionTabs({ section, className }: { section: string; className?: string }) {
+/** A sidebar item's tabs, drawn by each of its pages under the title at every width (Home:
+ * Needs you, Alerts, Late POs; Work log: Everything, Messages and tasks; Admin: Reliability,
+ * Data health, Trust, Autopilot log, Feedback triage). */
+export function SectionTabs(props: { section: string; className?: string }) {
+  // the ?query names Home's tab; until it is read (a static render) no tab is marked
+  return (
+    <Suspense fallback={<SectionTabsAt {...props} search={null} />}>
+      <SectionTabsHere {...props} />
+    </Suspense>
+  );
+}
+
+function SectionTabsHere(props: { section: string; className?: string }) {
+  const params = useSearchParams();
+  return <SectionTabsAt {...props} search={params?.toString() ?? ""} />;
+}
+
+function SectionTabsAt({ section, className, search }: { section: string; className?: string; search: string | null }) {
   const { state } = useAuth();
   const me = state.status === "signed-in" ? state.me : null;
   const path = usePathname() ?? "";
   const hash = useHash();
   const s = navSectionsFor(me).find((x) => x.key === section);
   if (!s || s.children.length < 2) return null;
-  const current = currentChild(s.children, path, hash);
+  const current = search === null ? null : currentChild(s.children, path, hash, search);
   return (
     <nav aria-label={s.label} className={cn("flex h-10 shrink-0 items-stretch gap-5 overflow-x-auto border-b border-border px-4 [scrollbar-width:none] lg:px-5 [&::-webkit-scrollbar]:hidden", className)} data-testid={`section-tabs-${s.key}`}>
       {s.children.map((c) => {
@@ -732,72 +838,19 @@ export function SectionTabs({ section, className }: { section: string; className
   );
 }
 
-/** The shell's strip of the open section's places, on the rail widths only (Watching draws its own). */
-function RailSectionTabs() {
-  const { state } = useAuth();
-  const me = state.status === "signed-in" ? state.me : null;
-  const path = usePathname() ?? "";
-  const hash = useHash();
-  const open = sectionOf(path, navSectionsFor(me), hash);
-  if (!open || open.key === "watching") return null;
-  return <SectionTabs section={open.key} className="hidden lg:flex xl:hidden" />;
-}
-
-/** What is the reader's own, a click away from every section (the owner's nav decision,
- * 11-14): memory, templates and the logs. A place the open section already lists is left
- * out there; the autopilot's run log is the owner's only. */
-export const YOURS: NavPlace[] = [
-  { href: "/memory", label: "Memory" },
-  { href: "/templates", label: "Templates" },
-  { href: "/work-log", label: "Work log" },
-];
-
-/** The lists, under "Lists" on every page (the owner, 11-16: the block went away on the Work
- * pages, which also named them, so it seemed to come and go). No section names them, so the
- * sidebar is the same on every route; each page shows only the items its reader may open.
- * The MRP testing list is gone (the owner, 11-17: not ours). */
-export const LISTS: NavPlace[] = ALL_LISTS;
-
-/** No search params read. Each list only for its readers (lib/lists); none: no block at all. */
-export function ListsNav({ me }: { me: NavReader }) {
-  const path = usePathname() ?? "";
-  const lists = listsFor(me);
-  if (!lists.length) return null;
-  return (
-    <div className="mt-4 space-y-px max-xl:mt-3 max-xl:border-t max-xl:border-border max-xl:pt-3" data-testid="nav-lists">
-      <div className="px-2 pb-1 text-[11px] font-medium leading-4 tracking-[0.01em] text-faint max-xl:sr-only">Lists</div>
-      {lists.map((p) => <NavItem key={p.href} href={p.href} label={p.label} place={p.href} on={isOn(path, p.href)} />)}
-    </div>
-  );
-}
-
-export function yoursFor(me: NavReader, open: NavSection | null): NavPlace[] {
-  const listed = new Set((open?.children ?? []).map((c) => c.href));
-  const all = me?.owner ? [...YOURS, { href: "/autopilot?tab=audit", label: "Autopilot log" }] : YOURS;
-  return all.filter((p) => !listed.has(p.href));
-}
-
-function YoursNav({ me }: { me: NavReader }) {
-  const path = usePathname() ?? "";
-  const params = useSearchParams();
-  const places = yoursFor(me, sectionOf(path, navSectionsFor(me)));
-  if (!places.length) return null;
-  return (
-    <div className="mt-4 space-y-px max-xl:mt-3 max-xl:border-t max-xl:border-border max-xl:pt-3" data-testid="nav-yours">
-      <div className="px-2 pb-1 text-[11px] font-medium leading-4 tracking-[0.01em] text-faint max-xl:sr-only">Yours</div>
-      {places.map((p) => {
-        const [base, query] = p.href.split("?");
-        // a place with a query (the run log, a tab of Autopilot) never claims the page: its section does
-        const on = !query && isOn(path, base) && !params.get("tab");
-        return <NavItem key={p.href} href={p.href} label={p.label} place={base} on={on} />;
-      })}
-    </div>
-  );
+/** The pins the sidebar lists: a pin to a place the nav already names (an item or one of its
+ * tabs, the #fragment aside) is not repeated (the owner, 11-17: "Approvals", "Autopilot
+ * approvals" and "Alerts" were there twice; 11-18: simpler). A pin with its own filter
+ * (?for=purchasing) is a view of its own and stays. */
+export function sidebarPins(pins: PinnedPage[], me: NavReader): PinnedPage[] {
+  const fixed = new Set([...navSectionsFor(me).flatMap((s) => [s.href, ...s.children.map((c) => c.href.split("#")[0])]), HELP.href]);
+  return pins.filter((p) => !fixed.has(p.href.split("#")[0]));
 }
 
 /** The person's pinned pages in the sidebar (their role's defaults until they change them). */
-function PinnedNav({ me }: { me: PinReader | null }) {
-  const { pins, defaults } = usePins(me);
+function PinnedNav({ me }: { me: (PinReader & NonNullable<NavReader>) | null }) {
+  const { pins: all, defaults } = usePins(me);
+  const pins = sidebarPins(all, me);
   if (!pins.length) return null;
   return (
     <SidebarSection title={defaults ? "Pinned for your role" : "Pinned"}>
@@ -833,12 +886,12 @@ export function LateBySupplier() {
   const counts = new Map<string, number>();
   for (const p of late) if (p.supplier) counts.set(p.supplier, (counts.get(p.supplier) ?? 0) + 1);
   const rows = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  const current = path === "/" ? params.get("supplier") : null;
+  const current = path === "/" && !params.get("show") ? params.get("supplier") : null;
   return (
     <SidebarSection title="Late by supplier">
       <div className="space-y-px" data-testid="late-by-supplier">
         {partial && read && (
-          <Link href="/late" className="block px-2 pb-1 text-[12px] leading-4 text-muted hover:text-fg" data-testid="late-by-supplier-partial">
+          <Link href={LATE_HREF} className="block px-2 pb-1 text-[12px] leading-4 text-muted hover:text-fg" data-testid="late-by-supplier-partial">
             Counts from the first {read.items.length} of {read.total} late orders; all are on Late orders
           </Link>
         )}
@@ -857,12 +910,24 @@ export function LateBySupplier() {
           );
         })}
         {rows.length > 7 && (
-          <Link href="/late" className="flex h-7 items-center rounded-md px-2 pl-[40px] text-[12px] text-muted hover:text-fg">
+          <Link href={LATE_HREF} className="flex h-7 items-center rounded-md px-2 pl-[40px] text-[12px] text-muted hover:text-fg">
             {rows.length - 7} more
           </Link>
         )}
       </div>
     </SidebarSection>
+  );
+}
+
+/** The sidebar's places: the main items, Yours, Admin and the pins. The same rows in the
+ * same order on every page; the page only decides which row is highlighted. */
+export function SidebarNav({ me, late }: { me: (PinReader & NonNullable<NavReader>) | null; late: number | null }) {
+  return (
+    <>
+      <SectionNav me={me} late={late} group="main" />
+      <SectionNav me={me} late={late} group="last" />
+      <PinnedNav me={me} />
+    </>
   );
 }
 
@@ -891,7 +956,7 @@ function Sidebar() {
   return (
     <aside className="hidden w-[60px] shrink-0 flex-col border-r border-border bg-sidebar lg:flex xl:w-[240px]" aria-label="Sidebar">
       <div className="flex h-[52px] shrink-0 items-center justify-center xl:justify-start xl:px-5">
-        <Link href="/" aria-label="PLX Workbench, My work">
+        <Link href="/" aria-label="PLX Workbench, Home">
           <Logo className="max-xl:[&>[data-wm=rest]]:hidden max-xl:text-[16px]" />
         </Link>
       </div>
@@ -914,12 +979,7 @@ function Sidebar() {
         </button>
       </div>
       <nav aria-label="Main" className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
-        <SectionNav me={signedIn} late={late} />
-        <ListsNav me={signedIn} />
-        <Suspense>
-          <YoursNav me={signedIn} />
-        </Suspense>
-        <PinnedNav me={signedIn} />
+        <SidebarNav me={signedIn} late={late} />
         <Suspense>
           <LateBySupplier />
         </Suspense>
@@ -960,11 +1020,31 @@ function Sidebar() {
       </nav>
       <div className="shrink-0 space-y-0.5 border-t border-border px-3 py-2.5">
         <FeedbackButton />
-        <SyncStatus home={home} />
-        <OpsStatus />
+        <HelpLink />
+        <DataAsOf home={home} />
         <UserMenu />
       </div>
     </aside>
+  );
+}
+
+/** Help, at the sidebar's foot on every page: the first-week guide for the reader's role. */
+function HelpLink() {
+  const path = usePathname() ?? "";
+  const on = isOn(path, HELP.href);
+  return (
+    <Link
+      href={HELP.href}
+      aria-current={on ? "page" : undefined}
+      className={cn("flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-[13px] max-xl:justify-center max-xl:px-0", on ? "bg-nav-on font-medium text-fg" : "text-fg/90 hover:bg-hover")}
+      title="Help"
+      data-testid="nav-help"
+    >
+      <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
+        <CircleHelp className="size-[15px] text-muted" strokeWidth={2} />
+      </span>
+      <span className="flex-1 truncate max-xl:sr-only">Help</span>
+    </Link>
   );
 }
 
@@ -1009,6 +1089,15 @@ function AccountMenuContent({ name, email, onViewAs }: { name: string; email?: s
         <Menu.Separator className="mx-2 my-1 h-px bg-border" />
         <Menu.Item onSelect={feedback.open} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
           Give feedback
+        </Menu.Item>
+        <Menu.Item onSelect={() => router.push("/memory")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="memory-open">
+          Memory
+        </Menu.Item>
+        <Menu.Item onSelect={() => router.push("/templates")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="templates-open">
+          Templates
+        </Menu.Item>
+        <Menu.Item onSelect={() => router.push("/work-log")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="work-log-open">
+          Work log
         </Menu.Item>
         <Menu.Item onSelect={() => router.push("/feedback")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
           Feedback list
@@ -1071,15 +1160,14 @@ export function TabBar() {
   const { state } = useAuth();
   const reader = state.status === "signed-in" ? state.me : null;
   const sections = navSectionsFor(reader);
-  const lists = listsFor(reader);
   const open = sectionOf(path, sections);
   const tabs = TABS.map((key) => sections.find((s) => s.key === key)).filter((s): s is NavSection => !!s)
     .map((s) => ({ ...s, late: s.children.some((c) => c.late) }));
   // More: every other section, and each place under a section that is not its own link
   const rest = sections.flatMap((s) => (TABS.includes(s.key) ? s.children.filter((c) => c.href !== s.href).map((c) => ({ ...c, section: s })) : [s, ...s.children.filter((c) => c.href !== s.href).map((c) => ({ ...c, section: s }))]))
     .map((p) => ({ href: p.href, label: p.label, icon: ("icon" in p && p.icon) || ("section" in p ? p.section.icon : Inbox), sub: "section" in p }))
-    .concat(lists.map((p) => ({ href: p.href, label: p.label, icon: List, sub: false })));
-  const moreOn = (!!open && !TABS.includes(open.key)) || lists.some((p) => isOn(path ?? "", p.href));
+    .concat([{ href: HELP.href, label: HELP.label, icon: CircleHelp, sub: false }]);
+  const moreOn = (!!open && !TABS.includes(open.key)) || isOn(path ?? "", HELP.href);
   return (
     <nav
       aria-label="Main"
@@ -1156,7 +1244,7 @@ function MobileTitleBar() {
   if (path === "/" || TOOLBAR_PAGES.some((p) => path === p || path.startsWith(`${p}/`))) return null;
   return (
     <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-bg-subtle px-4 lg:hidden">
-      <Link href="/" aria-label="My work">
+      <Link href="/" aria-label="Home">
         <Logo />
       </Link>
       <div className="flex-1" />
@@ -1167,12 +1255,14 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/qc"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/autopilot", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/account", "/order"];
 
+/** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
+ * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */
 function ShellSkeleton() {
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-4 pt-8 sm:px-8">
-      <Pending label="Signing in" after={600} />
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-8 sm:px-8 animate-fade-in [animation-delay:600ms]" data-testid="shell-opening">
+      <Pending page label="Opening" />
     </div>
   );
 }
@@ -1199,10 +1289,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main id="main" className="relative flex min-w-0 flex-1 flex-col overflow-y-auto max-lg:[&>*:not([data-own-scroll])]:basis-auto max-lg:[&>*:not([data-own-scroll])]:shrink-0 pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
           <MobileTitleBar />
           <ViewAsBar />
-          <OpsAlarmBanner />
-          <Suspense>
-            <RailSectionTabs />
-          </Suspense>
+          <AdminAlarm />
           {signOutError && (
             <div role="alert" className="border-b border-late-line bg-late-soft px-5 py-1.5 text-[13px] leading-5 text-late" data-testid="sign-out-failed">
               {signOutError}{" "}

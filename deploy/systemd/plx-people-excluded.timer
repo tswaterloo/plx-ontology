@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX people-exclusion set update, every 10 minutes (decides only the versions the delta added)
+
+[Timer]
+OnBootSec=12min
+OnCalendar=*:2/10
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

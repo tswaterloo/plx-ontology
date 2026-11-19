@@ -96,10 +96,17 @@ class FakeTeamsGraph:
         # The chat listing's lastUpdatedDateTime (members or name changed), when set.
         self.chat_updated: str | None = None
         # The chat's lastMessagePreview, answered only to a listing that expands it
-        # (unset: the key is absent; None: Graph's null for a chat without messages).
-        self.chat_preview: dict | None | str = "absent"
+        # ("absent": the key is absent; None: Graph's null for a chat without messages).
+        # Default: an old preview, as Graph lists for a chat with messages (the live check
+        # counts the chats listed with one, ``discovery.chat_previews``).
+        self.chat_preview: dict | None | str = {"id": "1500000000000",
+                                                "createdDateTime": "2020-01-01T00:00:00.000Z"}
         # Empty listing pages served before the chat (Graph pages the expanded listing).
         self.chat_listing_pad = 0
+        # The chat ids each of those pages lists (by page; unset pages are empty), and the
+        # page whose nextLink loops back to the second page (a server pagination loop).
+        self.chat_listing_ids: list[list[str]] = []
+        self.chat_listing_loop_at: int | None = None
         # The HTTP status a listing that expands lastMessagePreview answers (None: served).
         self.chat_expand_status: int | None = None
         # Channels whose delta, while they hold no message, answers an empty page and a
@@ -195,8 +202,11 @@ class FakeTeamsGraph:
             at = int(query.get("$skiptoken", ["0"])[0])
             if at < self.chat_listing_pad:
                 rest = {k: v[0] for k, v in query.items() if k != "$skiptoken"}
-                return j(200, {"value": [], "@odata.nextLink": base + "?" + urlencode(
-                    {**rest, "$skiptoken": str(at + 1)})})
+                ids = self.chat_listing_ids[at] if at < len(self.chat_listing_ids) else []
+                following = 1 if at == self.chat_listing_loop_at else at + 1
+                return j(200, {"value": [{"id": i, "chatType": "group"} for i in ids],
+                               "@odata.nextLink": base + "?" + urlencode(
+                                   {**rest, "$skiptoken": str(following)})})
             return j(200, {"value": [item]})
         if re.fullmatch(r"/v1\.0/users/[^/]+/chats", path):
             return j(200, {"value": []})
@@ -650,6 +660,111 @@ class ScheduleTests(CaptureCase):
         self.assertEqual(run["discovery"]["reasons"],
                          ["blocked:missing_permission:Chat.ReadBasic.All"])
         self.assertNotEqual(run["discovery"]["status"], "complete")
+
+    def chat_listings(self) -> list[str]:
+        return [unquote(u) for u in self.graph.gets()
+                if u.split("?")[0].endswith(f"/users/{U_COS}/chats")]
+
+    def test_a_chat_listing_cut_at_the_page_cap_is_counted_and_named_never_silent(self):
+        """Every chat listing (discovery's, its plain fallback's and the census's) asks
+        Graph for 50 a page and follows it in guarded segments up to 200 pages. A listing still
+        cut there leaves the chats past it undiscovered: discovery and the census each name it
+        (``cap:chat_listing_page_cap``, not a resumed read's ``cap:page_cap``) and count
+        it; a listing that ends on its last allowed page is whole."""
+        cap = capture_teams.CHAT_LISTING_MAX_PAGES
+        self.assertGreaterEqual(cap, 66)   # one mailbox's 2,608 chats at 50 a page, live
+        for pad, capped in ((cap - 1, 0), (cap, 1)):
+            with self.subTest(pad=pad):
+                self.graph.chat_listing_pad = pad
+                self.graph.calls.clear()
+                run = self.capture.run(scope())
+                listings = self.chat_listings()
+                self.assertEqual(len(listings), cap)
+                self.assertTrue(all("$top=50" in u and "$expand=lastMessagePreview" in u
+                                    for u in listings), listings[:1])
+                found = run["discovery"]
+                self.assertEqual(found["chat_listings_capped"], capped)
+                self.assertEqual("cap:chat_listing_page_cap" in found["reasons"], bool(capped))
+                self.assertNotIn("cap:page_cap", found["reasons"])
+                self.assertEqual(found["status"], "incomplete" if capped else "complete")
+                self.assertEqual(CHAT in self.listed(), not capped)
+                census, _private = self.capture.census(scope(), [])
+                self.assertEqual((census["chat_listings_capped"], census["chats"]),
+                                 (capped, 1 - capped))
+                self.assertEqual("cap:chat_listing_page_cap" in census["reasons"],
+                                 bool(capped))
+        # The plain listing of a refused expand asks for 50 a page too.
+        self.graph.chat_listing_pad = 0
+        self.graph.chat_expand_status = 400
+        self.graph.calls.clear()
+        run = self.capture.run(scope())
+        self.assertEqual(["$expand" in u for u in self.chat_listings()], [True, False])
+        self.assertTrue(all("$top=50" in u for u in self.chat_listings()))
+        self.assertEqual(run["discovery"]["chat_preview_fallbacks"], 1)
+        # The GET-only client's own read is untouched: one get_pages follows at most 50
+        # pages and 5,000 items (the listing goes past it in segments, never by a raise).
+        url = grammar.url("graph.user_chats", user=U_COS)
+        self.graph.calls.clear()
+        for caps in ({"max_pages": 51, "max_items": 1}, {"max_pages": 1, "max_items": 5001}):
+            with self.assertRaises(ValueError):
+                self.capture.api.get_pages(url, **caps)
+        self.assertEqual(self.graph.gets(), [])
+
+    def test_a_long_chat_listing_continues_in_guarded_segments_to_its_end(self):
+        """Live 2026-11-17: one mailbox listed 2,608 chats over 66 pages at 50 a page, past
+        the 50 pages of one guarded read. The listing continues from the nextLink left at
+        the end of each segment and reads every chat once (discovery and the census), not
+        cut and not counted as capped; a nextLink that loops back fails the member's
+        listing (never a silent partial listing)."""
+        per_page = [[f"19:vince{p:02d}x{i:02d}@thread.v2" for i in range(41 if p < 7 else 40)]
+                    for p in range(65)]
+        ids = [chat for page in per_page for chat in page]
+        self.assertEqual((len(per_page) + 1, len(ids) + 1), (66, 2608))
+        self.graph.chat_listing_pad, self.graph.chat_listing_ids = 65, per_page
+        fallbacks: list[str] = []
+        reasons: set[str] = set()
+        listed, capped = self.capture._chat_listing(U_COS, reasons, fallbacks)
+        found = [item["id"] for item in listed]
+        self.assertEqual((len(self.chat_listings()), capped, reasons, fallbacks),
+                         (66, False, set(), []))
+        self.assertEqual(found, ids + [CHAT])
+        census, _private = self.capture.census(scope(census={"max_chats": 1}), [])
+        self.assertEqual((census["chats"], census["chat_listings_capped"]), (2608, 0))
+        self.assertFalse(any(r.startswith("cap:chat_listing") for r in census["reasons"]))
+        # A loop (page 60 links back to page 1) is refused, in segment two as in one.
+        for loop_at in (60, 3):
+            with self.subTest(loop_at=loop_at):
+                self.graph.chat_listing_loop_at = loop_at
+                self.graph.calls.clear()
+                with self.assertRaisesRegex(capture_teams.SourceUnavailable, "loop"):
+                    self.capture._chat_listing(U_COS, set(), [])
+                # the expanded listing, then its plain fallback, each refused at the loop
+                self.assertEqual(len(self.chat_listings()), 2 * (loop_at + 1))
+
+    def test_a_census_cleared_content_run_schedules_on_the_census_listing_previews(self):
+        """The CLI and the host read content only of what the census cleared, and that
+        run lists no member's chats: the census's own listing carries the previews, so
+        the first message of a dormant chat is read on the next invocation there too; a
+        refused expand falls back in the census and is counted there."""
+        self.capture.run(scope(refresh_hours=12))
+        for expand_status, due, previews, fallbacks in ((None, [CHAT], 1, 0),
+                                                        (403, [], 0, 1)):
+            with self.subTest(expand_status=expand_status):
+                self.graph.chat_expand_status = expand_status
+                self.age(CHAT, seen=3, activity=200)
+                self.preview(5)
+                fresh = TeamsCapture(self.store, self.capture.api, self.audience, CAPTURE)
+                census, private = fresh.census(scope(refresh_hours=12), [])
+                self.assertEqual((census["chat_previews"], census["chat_preview_fallbacks"],
+                                  census["chats"]), (previews, fallbacks, 1))
+                content, _left = capture_teams.confirmed_scope(
+                    scope(refresh_hours=12), private,
+                    {"form": capture_teams.ALL_CENSUS_CLEARED})
+                self.graph.calls.clear()
+                run = fresh.run(content)
+                self.assertEqual(self.chat_listings(), [])   # the content run lists none
+                self.assertEqual(self.listed(), due)
+                self.assertEqual(run["discovery"]["chat_previews"], previews)
 
     def test_the_ledger_keys_on_ids_so_added_or_removed_conversations_skip_nothing(self):
         threads = [f"19:rot{n:03d}@thread.tacv2" for n in range(1, 10)]

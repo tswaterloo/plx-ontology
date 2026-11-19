@@ -143,6 +143,29 @@ FULL_READ_MAIL_SCOPES = ("all", "shared_only")
 # The markings the ``finance`` scope holds (``ontology.store_ddl.MARKINGS``): finance and
 # the purchase-order prices; never pii, l5 or quality_controlled.
 FULL_READ_MARKINGS = ("finance", "purchasing_prices")
+# The configured full readers ("Vince needs everything"): a
+# comma-separated list of Entra object ids and exact mail addresses, read once at start.
+# A listed employee holds a full-read grant over every source and mailbox
+# (``FullReadGrant.listed``): no audience, marking or item-permission check, only the people
+# exclusion (which must be usable and must not name them) and the egress rules. Matched only
+# against the identities the Portal and Entra rows confirm for the signed-in employee, never
+# a name or a pattern; an entry that is neither an object id nor an address is ignored.
+FULL_READERS_ENV = "PLX_FULL_READERS"
+_STARTED = datetime.now(timezone.utc).isoformat(timespec="seconds")
+_FULL_READER_ADDRESS = re.compile(r"^[^@\s*,]+@[^@\s*,]+\.[^@\s*,]+$")
+
+
+def full_readers_from(value: Any) -> frozenset[str]:
+    """``PLX_FULL_READERS``'s entries (lower-cased object ids and exact addresses)."""
+    out = set()
+    for entry in str(value or "").split(","):
+        entry = entry.strip().lower()
+        if _GUID_TEXT.fullmatch(entry) or _FULL_READER_ADDRESS.fullmatch(entry):
+            out.add(entry)
+    return frozenset(out)
+
+
+_GUID_TEXT = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # What the app shows on everything it serves under a full-read grant.
 FULL_READ_LABEL = "Viewing with full-read access"
 # The item scheme -> the full-read scope that covers it. Mission Control and BC carry no
@@ -654,6 +677,15 @@ class FullReadGrant:
     reason: str
     scopes: frozenset[str]
     mail_scope: str = "all"
+    # Granted by the configured full-reader list (``FULL_READERS_ENV``), not declared in the
+    # policy: the same reads, but its code is not the owner's (``feedback.owner_open``), so
+    # the owner's own views (view as, team view, autopilot settings) stay the owner's.
+    listed: bool = False
+
+    @classmethod
+    def listed_reader(cls, object_id: str) -> "FullReadGrant":
+        return cls(object_id, "config:" + FULL_READERS_ENV, _STARTED,
+                   "configured full reader", frozenset(FULL_READ_SCOPES), "all", True)
 
     @classmethod
     def from_json(cls, doc: Any) -> "FullReadGrant":
@@ -685,7 +717,8 @@ class FullReadGrant:
     def code(self) -> str:
         """An enum-only summary (scopes, mail scope) for journals and fingerprints."""
         mail = f":mail_{self.mail_scope}" if "mail" in self.scopes else ""
-        return "full_read:" + "+".join(sorted(self.scopes)) + mail
+        return "full_read:" + "+".join(sorted(self.scopes)) + mail \
+            + (":listed" if self.listed else "")
 
 
 def _people_excluded(guard: Any, identities: Iterable[Any]) -> bool:
@@ -1178,7 +1211,7 @@ class EmployeeEntitlement:
     file_clearance: frozenset[str] = frozenset()    # restricted classes readable
     library_security_classes: Mapping[str, str] = field(default_factory=dict)
     rights_unresolved: bool = False   # denied because a provider failed, not a refusal
-    qc_document_reader: bool = False  # reads Batches QC documents (admin or QC department)
+    qc_document_reader: bool = False  # admin/QC department; decides no file (2026-11-17)
     # Where work is routed (``operating.briefing``), never what may be read: the Portal
     # department codes the system of record confirms, with the Entra department's code;
     # and the Portal role. Empty when unknown: nothing is routed by a guess.
@@ -1264,12 +1297,11 @@ class EmployeeEntitlement:
         read their own Finance or Business Central file. Not adopted: the capture holds no
         Portal ``uploadedById`` for a drive item, so this side only narrows.
 
-        QC documents (access.ts@1d3eaf2:88-93, e2728afe6 TASK-1929): a record that may be
-        a BATCH COA or WAIVER (``taxonomy.may_be_qc_document``: in a Batches folder, with no
-        column but BATCH_RECORD, as a waiver's is OTHER) is read, on top of its class, only by a
-        ``qc_document_reader``: an admin in both Portal modes, or a member of a QUALITY,
-        QA or QC department the Portal confirms and the Entra department names. An unread
-        membership or directory, or an eval principal, reads none.
+        QC documents: not restricted (decision 2026-11-17, permissions simplified). A
+        Batches COA or waiver is a business document every employee reads; its class
+        alone decides, as for any file. This holds whatever ``PLX_STAFF_SCOPE`` says: the
+        switch turns the staff unit and item rules off, never this QC restriction back on
+        (the Portal's own QC rule, access.ts@1d3eaf2:88-93, is not mirrored here).
         """
         if self.actor is None:
             return False
@@ -1277,15 +1309,15 @@ class EmployeeEntitlement:
             record, self.library_security_classes)
         if self.unrestricted():
             return True   # every class and QC document (the exclusion is the item gate's)
-        qc_ok = self.qc_document_reader or not taxonomy.may_be_qc_document(record)
+        # No QC-document restriction (decision 2026-11-17, permissions simplified; not
+        # behind PLX_STAFF_SCOPE): a Batches COA or waiver is decided by its class alone.
         if self.full_read_covers("sharepoint"):
             # A full-read grant reads every class; Finance, Business Central and an
             # unresolved class (which may be either) only with its ``finance`` scope too.
-            # Quality is not granted: a Batches QC document still needs a QC reader.
             restricted = security_class in taxonomy.RESTRICTED_CLASS_READERS \
                 or security_class == taxonomy.UNRESOLVED_CLASS
             if not restricted or self.full_read_covers("finance"):
-                return qc_ok
+                return True
         if security_class == "SCRATCH":
             return owner is not None and bool(self.portal_user_id) \
                 and owner == self.portal_user_id
@@ -1294,7 +1326,7 @@ class EmployeeEntitlement:
         if security_class in taxonomy.RESTRICTED_CLASS_READERS \
                 and security_class not in self.file_clearance:
             return False
-        return self.qc_document_reader or not taxonomy.may_be_qc_document(record)
+        return True
 
 
 def _portal_decision(rule: PrincipalRule, access: PortalAccessRead,
@@ -1348,8 +1380,11 @@ class EmployeePermissionResolver:
                  portal_access: PortalAccessProvider,
                  groups: GroupProvider = groups_unavailable, *,
                  directory: DirectoryProvider | None = None,
-                 people_exclusion: Any = None) -> None:
-        """``policy``: fixed, or a ``PolicyFile`` read again when its file changes."""
+                 people_exclusion: Any = None,
+                 full_readers: Iterable[str] | None = None) -> None:
+        """``policy``: fixed, or a ``PolicyFile`` read again when its file changes.
+        ``full_readers``: the configured full readers (``FULL_READERS_ENV``, read here at
+        start when not given)."""
         if not isinstance(policy, (EmployeePermissionPolicy, PolicyFile)):
             raise TypeError("employee permission policy required")
         if not callable(portal_access) or not callable(groups) or not (
@@ -1366,6 +1401,9 @@ class EmployeePermissionResolver:
         # principal whose rule declares entra_job_title_keywords; without a usable one no
         # job title grants anything (the Portal department path still decides).
         self._exclusion = people_exclusion
+        self._full_readers = full_readers_from(
+            os.environ.get(FULL_READERS_ENV) if full_readers is None
+            else ",".join(full_readers))
 
     @property
     def policy(self) -> EmployeePermissionPolicy:
@@ -1563,6 +1601,10 @@ class EmployeePermissionResolver:
         actor = Actor(p.tenant, held, clearance)
         full_read = None
         grant = p.full_read.get(principal.object_id)
+        if grant is None and self._full_readers & {
+                str(v).strip().lower() for v in identities if isinstance(v, str)
+                and not v.startswith("group:")}:
+            grant = FullReadGrant.listed_reader(principal.object_id)
         if grant is not None:
             # The people exclusion must be usable and must not name the grantee; else the
             # grant applies to nothing (the employee keeps their own entitlement).

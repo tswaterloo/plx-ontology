@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -71,6 +72,7 @@ class FakeGraph:
     """A tiny Graph: two mailboxes, one folder each, message delta with change log."""
 
     def __init__(self) -> None:
+        self.refuse_select = None   # a $select field the /users listing refuses (400)
         self.users = {
             BOX_A: {"id": BOX_A, "userPrincipalName": UPN_A, "mail": UPN_A,
                     "proxyAddresses": [f"SMTP:{UPN_A}"]},
@@ -171,10 +173,16 @@ class FakeGraph:
                 return j(403, {"error": {"code": "Authorization_RequestDenied"}})
             return j(200, {"value": self.group_members[found[1].lower()]})
         if path == "/v1.0/users":
-            listed = [{"id": u["id"], "mail": u["mail"], "userType": u.get("userType", "Member"),
-                       "userPrincipalName": u["userPrincipalName"]}
-                      for u in self.users.values()]
             select = query.get("$select", ["id,mail,userType"])[0]
+            # the account fields a user carries, when the listing selects them
+            extra = ("accountEnabled", "assignedLicenses", "givenName", "surname", "jobTitle",
+                     "employeeId", "employeeHireDate", "department")
+            if self.refuse_select and self.refuse_select in select:
+                return j(400, {"error": {"code": "Request_BadRequest"}})
+            listed = [{"id": u["id"], "mail": u["mail"], "userType": u.get("userType", "Member"),
+                       "userPrincipalName": u["userPrincipalName"],
+                       **{f: u[f] for f in extra if f in u and f in select.split(",")}}
+                      for u in self.users.values()]
             skip = int(query.get("$skiptoken", ["0"])[0])
             body = {"value": listed[skip:skip + self.users_page]}
             if skip + self.users_page < len(listed):
@@ -1306,6 +1314,41 @@ class StorageTests(unittest.TestCase):
 
 
 class ScopeAndCliTests(unittest.TestCase):
+    def test_the_host_runs_every_stand_alone_command_as_main_without_a_kind_conflict(self):
+        # The ingest host runs ``python3 -m integrations.capture_mail backlog`` (its
+        # ``mail_backlog`` source, operating/ingest_forever.py ``_backlog_argv``). The
+        # commands live in capture_mail_cli, which imports this module again; run as
+        # ``__main__`` that was a second copy registering a second ``graph_mail`` kind:
+        # 2026-11-17 every backlog run died ``uncaught:ValueError``
+        # (``source_kind_conflict``) before reading anything. The exact host argv with
+        # a refused budget stops at the argument check: no store, no Graph call.
+        from operating import ingest_forever
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("AZURE_", "PLX_WORKBENCH_API"))}
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ingest_forever._backlog_argv(
+                Path(tmp) / "state", {"live_audience": str(Path(tmp) / "audience.json"),
+                                      "budget_seconds": 0})
+            runs = [argv] + [[sys.executable, "-m", "integrations.capture_mail", command,
+                              "--help"]
+                             for command in ("compact", "sender-index", "ocr-deferred",
+                                             "deferred-attachments")]
+            for run in runs:
+                with self.subTest(command=run[3]):
+                    done = subprocess.run(run, cwd=root, env=env, capture_output=True,
+                                          timeout=120)
+                    self.assertNotIn(b"source_kind_conflict", done.stderr)
+                    self.assertEqual(ingest_forever._stderr_code(done.stderr), (None, None),
+                                     done.stderr[-400:])
+                    if run is argv:
+                        self.assertEqual(done.returncode, 2)
+                        self.assertEqual(json.loads(done.stdout),
+                                         {"ok": False,
+                                          "error": "budget_seconds_must_be_positive"})
+                    else:
+                        self.assertEqual(done.returncode, 0, done.stderr[-400:])
+
     def test_scope_validation(self):
         scope = CaptureScope.from_file(capture_mail.DEFAULT_SCOPE)
         self.assertEqual(scope.window_days, 90)
@@ -1337,6 +1380,141 @@ class ScopeAndCliTests(unittest.TestCase):
                 self.assertTrue(run["complete"])
                 self.assertEqual(run["directory"], "complete")
                 self.assertEqual(len(run["mailboxes"]), 2)
+            finally:
+                store.close()
+
+    SHARED_BOX = {"accountEnabled": False, "assignedLicenses": [], "givenName": None,
+                  "surname": None, "jobTitle": None, "employeeId": None,
+                  "employeeHireDate": None, "department": None}
+
+    def _kinds_run(self, graph, store, capture=None):
+        """One all-mailboxes capture run recording kinds; the capture is returned."""
+        scope = CaptureScope([], all_mailboxes=True, all_mailbox_folders=["inbox"],
+                             allowlist=SYNTHETIC)
+        api, _t = graph_read.build_graph(ENV, sender=graph)
+        capture = capture or MailCapture(store, GraphMailReader(api, capture_audience()),
+                                         CAPTURE)
+        capture.last_run = capture.run(scope, directory=lambda: capture_mail.directory_mailboxes(
+            api, scope.directory_allows, kinds=capture.mailbox_kinds))
+        return capture
+
+    def _graph(self, **fields):
+        graph = FakeGraph()
+        graph.users[BOX_A].update(fields)
+        graph.users[BOX_B].update(givenName="Sam", surname="Doe", accountEnabled=True,
+                                  assignedLicenses=[{"skuId": "y"}])
+        graph.put(BOX_A, "MSG-1", "CK-1-1")
+        return graph
+
+    def test_directory_listing_records_shared_mailboxes_fail_closed(self):
+        """The listing records each mailbox's kind from the user object alone (sign-in
+        disabled, no license, none of a person's attributes, an address not made of a
+        directory name: shared); a departed employee's disabled, unlicensed account keeps
+        its name, title, id, hire date, department or a name-shaped address and stays
+        personal; a field the listing did not return is personal too. Staff then read
+        only the shared one."""
+        from operating.staff_scope import shared_mailboxes
+        shared = self.SHARED_BOX
+        cases = {
+            "shared": (shared, {BOX_A}),
+            "departed": ({**shared, "givenName": "Pat", "surname": "Lee"}, set()),
+            "departed_title": ({**shared, "jobTitle": "Buyer"}, set()),
+            "departed_id": ({**shared, "employeeId": "1042"}, set()),
+            "departed_hired": ({**shared, "employeeHireDate": "2021-03-01T00:00:00Z"}, set()),
+            "departed_dept": ({**shared, "department": "Sales"}, set()),
+            # names cleared, but the address is a directory name's (first.last; initial
+            # and surname run together)
+            "first_last": ({**shared, "mail": "sam.doe@example-plx.com"}, set()),
+            "name_token": ({**shared, "mail": "doe@example-plx.com"}, set()),
+            "initial_surname": ({**shared, "mail": "jdoeson@example-plx.com"}, set()),
+            "licensed": ({**shared, "assignedLicenses": [{"skuId": "x"}]}, set()),
+            "enabled": ({**shared, "accountEnabled": True}, set()),
+            "fields_missing": ({"accountEnabled": False}, set()),
+            "hire_field_missing": ({k: v for k, v in shared.items()
+                                    if k != "employeeHireDate"}, set()),
+            "licenses_malformed": ({**shared, "assignedLicenses": None}, set()),
+        }
+        for name, (fields, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                graph = self._graph(**fields)
+                if name == "initial_surname":
+                    graph.users[BOX_B]["surname"] = "Doeson"
+                store = MailCaptureStore(Path(tmp) / "s")
+                try:
+                    capture = self._kinds_run(graph, store)
+                    self.assertEqual(capture.last_run["mailboxes_shared"], len(expected))
+                    self.assertEqual(shared_mailboxes(store.db), frozenset(expected))
+                    kinds = dict(store.db.execute(
+                        "SELECT mailbox_id, purpose FROM mailbox_purpose").fetchall())
+                    self.assertEqual(set(kinds), {BOX_A, BOX_B})   # every listed one
+                    self.assertEqual(kinds[BOX_B], "personal")
+                    # a later listing that sees a license on it takes the shared kind back
+                    graph.users[BOX_A].update(accountEnabled=True,
+                                              assignedLicenses=[{"skuId": "x"}])
+                    self._kinds_run(graph, store, capture)
+                    self.assertEqual(shared_mailboxes(store.db), frozenset())
+                finally:
+                    store.close()
+
+    def test_a_mailbox_once_personal_never_turns_shared_without_an_allow_entry(self):
+        """A departed employee's mailbox recorded personal, whose person fields an admin
+        clears later, keeps reading as personal; only an allow entry by object id opens
+        it. A mailbox a complete listing no longer names is unknown (personal) again."""
+        from operating.staff_scope import SHARED_ALLOW_ENV, shared_mailboxes
+        with tempfile.TemporaryDirectory() as tmp:
+            graph = self._graph(**{**self.SHARED_BOX, "givenName": "Pat", "surname": "Lee",
+                                   "jobTitle": "Buyer"})
+            store = MailCaptureStore(Path(tmp) / "s")
+            try:
+                capture = self._kinds_run(graph, store)
+                self.assertEqual(shared_mailboxes(store.db, allowed=()), frozenset())
+                graph.users[BOX_A].update(self.SHARED_BOX)   # the account is cleared
+                self._kinds_run(graph, store, capture)
+                self.assertEqual(capture.last_run["mailboxes_shared"], 1)  # looks shared now
+                with unittest.mock.patch.dict(os.environ, {SHARED_ALLOW_ENV: ""}):
+                    self.assertEqual(shared_mailboxes(store.db), frozenset())
+                for entry in ("orders@example-plx.com", "junk", BOX_B):
+                    with unittest.mock.patch.dict(os.environ, {SHARED_ALLOW_ENV: entry}):
+                        self.assertEqual(shared_mailboxes(store.db), frozenset(), entry)
+                with unittest.mock.patch.dict(os.environ, {SHARED_ALLOW_ENV: f" {BOX_A.upper()} ,x"}):
+                    self.assertEqual(shared_mailboxes(store.db), frozenset({BOX_A}))
+                # the allow entry never outranks the kind itself
+                graph.users[BOX_A]["jobTitle"] = "Buyer"
+                self._kinds_run(graph, store, capture)
+                with unittest.mock.patch.dict(os.environ, {SHARED_ALLOW_ENV: BOX_A}):
+                    self.assertEqual(shared_mailboxes(store.db), frozenset())
+            finally:
+                store.close()
+        with tempfile.TemporaryDirectory() as tmp:
+            graph = self._graph(**self.SHARED_BOX)
+            store = MailCaptureStore(Path(tmp) / "s")
+            try:
+                capture = self._kinds_run(graph, store)
+                self.assertEqual(shared_mailboxes(store.db, allowed=()), frozenset({BOX_A}))
+                del graph.users[BOX_A]          # deleted from the directory
+                self._kinds_run(graph, store, capture)
+                self.assertEqual(shared_mailboxes(store.db, allowed=()), frozenset())
+                graph.users[BOX_A] = FakeGraph().users[BOX_A] | self.SHARED_BOX
+                self._kinds_run(graph, store, capture)   # back, never a person's: shared
+                self.assertEqual(shared_mailboxes(store.db, allowed=()), frozenset({BOX_A}))
+            finally:
+                store.close()
+
+    def test_a_listing_refusing_the_kind_fields_still_captures_and_decides_no_kind(self):
+        """Fail open for the capture, closed for access: the listing is read again
+        without the kind fields, the run captures, and nothing new reads as shared."""
+        from operating.staff_scope import shared_mailboxes
+        with tempfile.TemporaryDirectory() as tmp:
+            graph = self._graph(**self.SHARED_BOX)
+            graph.refuse_select = "employeeHireDate"
+            store = MailCaptureStore(Path(tmp) / "s")
+            try:
+                capture = self._kinds_run(graph, store)
+                self.assertEqual(capture.last_run["directory"], "complete")
+                self.assertEqual(capture.last_run["mailboxes_shared"], 0)
+                self.assertGreater(store.db.execute(
+                    "SELECT count(*) FROM messages").fetchone()[0], 0)
+                self.assertEqual(shared_mailboxes(store.db, allowed=()), frozenset())
             finally:
                 store.close()
 

@@ -11,10 +11,9 @@ export function headline(home: HomeResponse | null, briefing: Briefing | null): 
     return { text: "No department on record for you, so nothing is routed to you." };
   if (!na || na.status !== "read") return null;
   const late = na.late_total ?? (na.late_pos ?? []).length;
-  // checks last run on older data than the records show: their items are held back, so
-  // nothing is called "not late" until they re-run on the latest data
-  const refreshing = Boolean(na.refreshing || briefing?.refreshing);
-  if (late === 0 && refreshing) return { text: "Rechecking against the latest data.", sub: refreshingLine(na.checked_on ?? briefing?.checked_on) };
+  // the late-PO check last ran on older data or code than the records show and is
+  // re-running: what it found then is shown (marked), so "none late" is said as of that check
+  if (late === 0 && na.refreshing) return { text: "No late POs at the last check.", sub: lateCheckLine(na.checked_on) };
   if (late === 0) {
     const n = briefing?.count ?? 0;
     return { text: "No late POs.", sub: n > 0 ? `${plural(n, "other item")} open.` : undefined };
@@ -27,13 +26,26 @@ export function headline(home: HomeResponse | null, briefing: Briefing | null): 
   return { text: `${first} ${calls} to call today.` };
 }
 
-/** Why a list is held back: its checks last ran on older data and are re-running. */
-export function refreshingLine(checkedOn?: string | null): string {
+/** When a check last ran, in Eastern time ("17 Nov, 2:13 PM ET"); null when unknown. */
+function checkedAt(checkedOn?: string | null): string | null {
   const day = checkedOn ? new Date(checkedOn) : null;
-  const when = day && !Number.isNaN(day.getTime())
-    ? ` (last checked ${day.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/Toronto" }).replace("Sept", "Sep")})`
-    : "";
-  return `Some checks are re-running on the latest data${when}. Results appear here when they finish.`;
+  if (!day || Number.isNaN(day.getTime())) return null;
+  const date = day.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/Toronto" }).replace("Sept", "Sep");
+  const clock = day.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
+  return `${date}, ${clock} ET`;
+}
+
+/** Under "No late POs at the last check": when it ran and that a new run follows. */
+export function lateCheckLine(checkedOn?: string | null): string {
+  const at = checkedAt(checkedOn);
+  return `${at ? `Checked ${at}. ` : ""}The check runs again on the newest data; a late PO it finds shows here.`;
+}
+
+/** An empty list while some checks re-run on newer data: nothing needed action as of their
+ * last runs (what they found then is listed, marked), never a list still loading. */
+export function refreshingLine(checkedOn?: string | null): string {
+  const at = checkedAt(checkedOn);
+  return `Nothing needs action as of the last checks${at ? ` (${at})` : ""}. Some run again on the newest data; what they find shows here.`;
 }
 
 /**

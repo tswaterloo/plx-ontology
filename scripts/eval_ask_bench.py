@@ -202,4 +202,6 @@ def main(argv: Sequence[str] | None = None, *, planner: Any = None) -> int:
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

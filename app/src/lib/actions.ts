@@ -62,7 +62,7 @@ const LOCAL_CONFIRM: Partial<Record<ActionKind, string>> = {
 /** The confirm button's words: "Send" only when the message really goes. */
 export function confirmLabel(preview: ActionPreview): string {
   if (!preview.outbound) return LOCAL_CONFIRM[preview.kind] ?? "Confirm";
-  return (preview.missing ?? []).length ? "Record dry run" : "Send";
+  return (preview.missing ?? []).length ? "Save without sending" : "Send";
 }
 
 /** Why the confirm button is off, or null when it may be pressed. */
@@ -79,17 +79,24 @@ export function confirmBlocked(
   return null;
 }
 
+/** A name a person can tell apart, or null for the placeholder a draft gets with no subject
+ * ("Draft email", "Draft action"). */
+export function realName(name: string | null | undefined): string | null {
+  const s = (name ?? "").trim();
+  return s && !/^draft(?: (?:email|message|action|follow-up|task))?$/i.test(s) ? s : null;
+}
+
 /** A card's latest action as a status chip; no action yet on a drafted card reads "Drafted". */
 export function actionChip(state: ActionResult | null | undefined, drafted: boolean): (Shown & { title?: string }) | null {
   if (!state) return drafted ? { status: "neutral", label: "Drafted" } : null;
-  const missing = (state.missing ?? []).join("; ");
   switch (state.status) {
     case "sent":
       return { status: "ok", label: "Sent", title: state.text };
     case "failed":
       return { status: "late", label: "Send failed", title: state.text };
     case "dry_run":
-      return { status: "suspect", label: "Dry run: permission missing", title: missing || state.text };
+      // what was missing (a setting, an app permission) is the admin's; the person reads plain words
+      return { status: "suspect", label: "Not sent", title: "Sending is off for your mailbox, so this was saved and not sent." };
     case "pending":
       return { status: "risk", label: "Sending", title: state.text };
     case "unknown":

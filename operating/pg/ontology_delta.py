@@ -202,11 +202,94 @@ def _match(cur: Any, table: str, key: str, sequence: str, columns: Sequence[str]
     return out
 
 
-def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
-                ) -> dict[str, Any]:
+READ_STATES = ("complete", "capped", "skipped")
+
+
+def merge_reads(held: Any, incoming: Any, *, settled: bool) -> dict[str, dict[str, Any]]:
+    """The served data's reach into each source's capture (``ontology.store_meta``
+    ``delta_reads``) after a cycle's reads (``ontology.delta.cycle_reads``) reached
+    Postgres. Per source: ``served_through`` moves to the cycle's ``read_from`` only when
+    the cycle read it completely and every earlier layer is in Postgres too (``settled``);
+    a capped, skipped or unsettled read, or a state not known here, keeps the earlier
+    ``served_through`` and says why (``state``: ``waiting`` when unsettled, ``unknown`` for
+    an unknown state). An older cycle's read never moves a newer one back. Unreadable
+    input counts as nothing held or nothing read."""
+    try:
+        out = json.loads(held) if isinstance(held, str) else {}
+    except ValueError:
+        out = {}
+    out = {k: v for k, v in out.items() if isinstance(v, dict)} if isinstance(out, dict) else {}
+    for source, entry in (incoming.items() if isinstance(incoming, Mapping) else ()):
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("read_from"), str):
+            continue
+        before = out.get(source, {})
+        if str(before.get("read_from") or "") > entry["read_from"]:
+            continue
+        state = entry.get("state")
+        through = before.get("served_through")
+        if state == "complete":
+            if settled:
+                through = entry["read_from"]
+            else:
+                state = "waiting"
+        elif state not in READ_STATES:
+            state = "unknown"
+        left = entry.get("left")
+        reason = entry.get("reason")
+        out[source] = {"read_from": entry["read_from"], "state": state,
+                       "left": left if isinstance(left, int) and left > 0 else 0,
+                       "reason": reason if isinstance(reason, str) else None,
+                       "served_through": through if isinstance(through, str) else None}
+    return out
+
+
+def _note_reads(cur: Any, reads: Any, settled: bool) -> int:
+    """``merge_reads`` into ``ontology.store_meta`` (the row held for update); the sources
+    noted."""
+    from ontology.delta import READS_KEY
+    if not reads:
+        return 0
+    cur.execute("SELECT value FROM ontology.store_meta WHERE key = %s FOR UPDATE",
+                (READS_KEY,))
+    row = cur.fetchone()
+    merged = merge_reads(row[0] if row else None, reads, settled=settled)
+    cur.execute("INSERT INTO ontology.store_meta (key, value) VALUES (%s, %s) ON CONFLICT "
+                "(key) DO UPDATE SET value = excluded.value",
+                (READS_KEY, json.dumps(merged, sort_keys=True)))
+    return len(reads)
+
+
+def _layer_reads(conn: sqlite3.Connection) -> Any:
+    from ontology.delta import READS_KEY
+    try:
+        value = _meta(conn, READS_KEY)
+        return json.loads(value) if value else None
+    except (ValueError, sqlite3.Error):
+        return None
+
+
+def note_reads(dsn: str, reads: Mapping[str, Any], layers: Sequence[str]) -> dict[str, Any]:
+    """A cycle that published nothing: its reads (``ontology.delta.cycle_reads``) into
+    Postgres, settled only when every layer of the pointer (``layers``, file names) is
+    applied (``delta:<name>`` in ``load_state``): then each record its scans found is in
+    the served data. Under the delta's lock, after any apply in flight."""
+    import psycopg
+    if not reads:
+        return {"noted": 0}
+    with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg, pg.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('ontology_delta'))")
+        cur.execute("SELECT count(*) FROM ontology.load_state WHERE name = ANY(%s)",
+                    ([f"delta:{name}" for name in layers],))
+        settled = cur.fetchone()[0] == len(set(layers))
+        return {"noted": _note_reads(cur, reads, settled), "settled": settled}
+
+
+def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = (),
+                settled: bool = True) -> dict[str, Any]:
     """Replace the layer's owned objects' rows in ``ontology.*`` (module docstring).
     ``newer``: layers above this one (a fold applied after the layers added while it ran):
-    the objects they own keep their rows."""
+    the objects they own keep their rows. ``settled``: every layer below this one is in
+    Postgres, so the reads the layer records (``note_reads``) move the served position."""
     import psycopg
 
     layer = Path(layer)
@@ -294,10 +377,15 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                 report["feed"] = change_feed.record_delta(
                     cur, f"delta:{layer.name}", digest,
                     (_stage_schema(), _link_step(digest, layer.name)))
+            # the person links' own run starts its mark before the first layer that leaves
+            # them to it (``operating.pg.people_scope``)
+            from operating.pg import people_scope
+            people_scope.start_mark(cur)
             ontology_migrate.log_owned(cur, layer.name, owned)
             if not held_out:   # under the served schema: no longer to be projected again
                 ontology_migrate.done(cur)
             report["meta"] = _freshness(conn, cur)
+            report["reads"] = _note_reads(cur, _layer_reads(conn), settled)
             cur.execute("INSERT INTO ontology.load_state (name, value) VALUES (%s, %s)",
                         (f"delta:{layer.name}", json.dumps({"owned": len(owned),
                                                             "content_digest": digest})))
@@ -1221,19 +1309,27 @@ def _keep_facts(dsn: str, report: dict[str, Any], text_store: Path | None = None
     return kept
 
 
-def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
-                 ) -> dict[str, Any]:
+def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None,
+                 state_dir: str | Path | None = None,
+                 environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Apply every layer of a delta pointer's list (``stores``, newest first) Postgres has
-    not applied, oldest first, each with the layers above it as ``newer``."""
+    not applied, oldest first, each with the layers above it as ``newer``. ``state_dir``:
+    the capture's (the people directory's own run reads it; None: that run waits).
+    ``environ``: the delta's settings, which the people directory's and the person links'
+    runs read (None: the process environment)."""
     stores = [str(s) for s in stores]
     # the change feed's last cycle before these layers: the bare mentions refresh, once per
     # cycle after everything readers wait on, reads the records changed since
     # (``refresh_bare_cycle``)
     bare_since = _feed_mark(dsn)
     results = []
+    settled = True   # every layer below is in Postgres (one of another generation never is)
     for index in range(len(stores) - 1, -1, -1):
-        result = apply_layer(stores[index], dsn, newer=stores[:index])
+        result = apply_layer(stores[index], dsn, newer=stores[:index], settled=settled)
         results.append(result)
+        if not result.get("applied") and result.get("reason") not in (
+                "already_applied", "other_generation"):
+            settled = False
         if log is not None:
             print(json.dumps(result, sort_keys=True), file=log, flush=True)
     newly = [r for r in results if r.get("applied")]
@@ -1250,6 +1346,12 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
         # the whole-store steps re-judged links over the layers: the layers' pairs again
         owned = _layers_owned(stores, {r.get("layer") for r in newly})
         out["mention_repeats"] = refresh_repeats(dsn, sorted(owned))
+    # the outside contacts first seen since the load get their Person before the person
+    # links of the layers' objects are judged (``operating.pg.people_directory_scope``)
+    if state_dir is not None:
+        out["people_directory"] = recompute_people_directory(dsn, state_dir, log=log,
+                                                             environ=environ)
+    out["person_links"] = recompute_person_links(dsn, log=log, environ=environ)
     stalled = [r for r in results if r.get("reason") in STALLS]
     if stalled:
         out["stalled"] = stall(stalled[0])
@@ -1347,6 +1449,44 @@ def recompute_whole_steps(dsn: str, *, log: Any = None) -> dict[str, Any]:
         print(f"ONTOLOGY WHOLE STEPS FAILED: {report['error']}", file=sys.stderr, flush=True)
     if log is not None and report != {"pending": False}:
         print(json.dumps({"whole_steps": report}, sort_keys=True), file=log, flush=True)
+    return report
+
+
+def recompute_people_directory(dsn: str, state_dir: str | Path, *, log: Any = None,
+                               environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The Persons of the outside contacts the layers' mail names that Postgres lacks
+    (``operating.pg.people_directory_scope``): its report, ``{"pending": False}``, or
+    ``{"error": ...}`` (alarmed: ``ops_alarms_delta``; the mark stays)."""
+    from operating.pg import people_directory_scope
+    try:
+        report = people_directory_scope.recompute(dsn, state_dir, environ=environ)
+    except Exception as exc:   # the layers are committed: report, keep the mark, go on
+        report = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        print(f"ONTOLOGY PEOPLE DIRECTORY FAILED: {report['error']}", file=sys.stderr,
+              flush=True)
+    if log is not None and report != {"pending": False}:
+        print(json.dumps({"people_directory": report}, sort_keys=True), file=log, flush=True)
+    return report
+
+
+def recompute_person_links(dsn: str, *, log: Any = None,
+                           environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The person links of the objects the layers replaced since the last run judged again
+    over the whole people directory (``operating.pg.people_scope``): its report,
+    ``{"pending": False}`` when nothing is to be done, or ``{"error": ...}`` (nothing
+    changed, the mark stays and the next cycle tries again). The mention repeats of the
+    objects whose person links changed are marked again."""
+    from operating.pg import people_scope
+    try:
+        report = people_scope.recompute(dsn, environ=environ)
+    except Exception as exc:   # the layers are committed: report, keep the mark, go on
+        report = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        print(f"ONTOLOGY PERSON LINKS FAILED: {report['error']}", file=sys.stderr, flush=True)
+    ends = report.pop("ends", None) if isinstance(report, dict) else None
+    if ends:
+        report["mention_repeats"] = refresh_repeats(dsn, ends)
+    if log is not None and report != {"pending": False}:
+        print(json.dumps({"person_links": report}, sort_keys=True), file=log, flush=True)
     return report
 
 
@@ -1594,6 +1734,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(apply_layer(layer, dsn), sort_keys=True), flush=True)
     if args.layers:   # the whole-store steps over what they applied (``whole_steps``)
         print(json.dumps({"whole_steps": recompute_whole_steps(dsn)}, sort_keys=True,
+                         default=str), flush=True)
+        print(json.dumps({"person_links": recompute_person_links(dsn)}, sort_keys=True,
                          default=str), flush=True)
     return 0
 

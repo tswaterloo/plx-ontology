@@ -139,6 +139,25 @@ class Rule(Engine):
         self.assertEqual(len(keys), 2)                  # thread 3 has two customers: dropped
         self.assertEqual(len(set(keys)), 1)             # threads 1 and 2: one project
 
+    def test_one_customer_in_two_records_is_one_customer_only_with_two_signals(self):
+        # the same customer kept as two records (two business-central companies): a shared
+        # same-record chain AND the same name make one project; a name alone, a chain with
+        # another name, or no name make two customers and no line
+        for name_b, twin, want in (("Synth customer a", True, 1), ("Synth customer a", False, 0),
+                                   ("Synth other", True, 0), (None, True, 0)):
+            with self.subTest(name_b=name_b, twin=twin):
+                w = World()
+                a = self.customer(w, "a")
+                b = w.obj("Customer", {"name": name_b} if name_b else {"code": "X"})
+                if twin:
+                    portal = w.obj("Customer", {"name": "Synth portal"})
+                    w.link("Customer.same_record_as", a, portal, tier="lead")
+                    w.link("Customer.same_record_as", b, portal, tier="lead")
+                for m_ in self.thread(w, 1, last=3):
+                    w.link("Email.sent_by_customer", m_, b)
+                self.run_rules(w)
+                self.assertEqual(len(self.lines()), want)
+
     def test_excluded_person_thread_is_not_judged_and_guard_down_blocks(self):
         w = World()
         self.thread(w, 1, last=12)

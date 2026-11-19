@@ -577,6 +577,25 @@ class DeltaCycleAlarmsTest(unittest.TestCase):
         self.cycles(*best, *slow)
         self.assertIn("8.0 then 8.0 ms per record", self.opened(Fake())["delta_apply_cost"])
 
+    def test_a_reading_older_than_a_day_is_unknown_never_the_apply_now(self) -> None:
+        # 11-17 live: two catch-up cycles of 11-16 (7.9 then 40.2 ms) kept it in breach a
+        # day on, no cycle of 10,000+ records having run since
+        r = self.run_record
+        best = [r(60, 700_000, 1400.0, {}), r(50, 100_000, 300.0, {})]   # 2 ms, 3 ms
+        slow = [r(30, 146_215, 1155.0, {}), r(25, 18_701, 752.0, {})]    # 7.9, 40.2 ms
+        small = [r(1, 150, 40.0, {}), r(0.5, 20, 21.0, {})]   # fixed costs: never counted
+        self.cycles(*best, *slow, *small)
+        found = {c["name"]: c for c in ops_alarms.delta_cycle_checks(
+            self.root, NOW, ops_health.targets({}))}
+        self.assertEqual(found["delta_apply_cost"]["state"], "unknown")
+        self.assertIn("then 7.9 and 40.2 ms per record", found["delta_apply_cost"]["detail"])
+        self.assertIn("no applied cycle of 10,000+ records since",
+                      found["delta_apply_cost"]["detail"])
+        self.assertNotIn("delta_apply_cost", self.opened(Fake()))
+        # the same two inside the day still breach
+        self.cycles(*best, r(5, 146_215, 1155.0, {}), r(1, 18_701, 752.0, {}), *small)
+        self.assertIn("7.9 then 40.2 ms per record", self.opened(Fake(), 5)["delta_apply_cost"])
+
     def test_too_few_cycles_say_nothing_and_unknown_inputs_never_pass(self) -> None:
         checks = ops_alarms.delta_cycle_checks(self.root, NOW, ops_health.targets({}))
         self.assertEqual(checks, [], "no cycle file: no delta here")
@@ -631,6 +650,36 @@ class DeltaCycleAlarmsTest(unittest.TestCase):
         check = {c["name"]: c for c in ops_alarms.delta_cycle_checks(
             self.root, NOW, ops_health.targets({}))}["delta_backlog"]
         self.assertEqual((check["state"], check["value"]), ("ok", 0))
+
+    def test_a_whole_store_step_failing_after_the_layers_opens_a_high_incident(self) -> None:
+        """11-18: the person links, whole steps and people
+        directory runs after the layers report ``{"error": ...}`` and the cycle stays
+        green; until one succeeds new mail gets no person links. Each failure opens a high
+        incident naming the step, held while it keeps failing, recovered by a success."""
+        def cycle(hours, **steps):
+            record = self.run_record(hours, 10, 1.0, {})
+            record["postgres"].update(steps)
+            return record
+        bad = {"error": "Refused: exclusion_unavailable"}
+        good = {"mode": "incremental", "links": {"added": 3}}
+        self.cycles(cycle(5, person_links={"pending": False}, whole_steps={"pending": False}))
+        self.assertFalse([k for k in self.opened(Fake()) if k.startswith("delta_step_failed")])
+        self.cycles(cycle(5, person_links=good), cycle(4, person_links=bad),
+                    cycle(3, person_links=bad, whole_steps={"pending": False},
+                          people_directory=bad), {"command": "run", "error": "torn cycle"})
+        status = self.run_at(Fake(), 5)
+        opened = {i["key"]: i for i in status["open"]}
+        self.assertEqual(opened["delta_step_failed:person_links"]["level"], "high")
+        self.assertIn("2 cycle(s) in a row", opened["delta_step_failed:person_links"]["line"])
+        self.assertIn("exclusion_unavailable", opened["delta_step_failed:person_links"]["line"])
+        self.assertIn("delta_step_failed:people_directory", opened)
+        self.assertNotIn("delta_step_failed:whole_steps", opened)
+        self.cycles(cycle(4, person_links=bad), cycle(2, person_links=good,
+                                                      people_directory={"pending": False}))
+        self.run_at(Fake(), 10)
+        status = self.run_at(Fake(), 15)
+        self.assertFalse([i["key"] for i in status["open"]
+                          if i["key"].startswith("delta_step_failed")], status["open"])
 
 
 class MemoryConsumersTest(unittest.TestCase):

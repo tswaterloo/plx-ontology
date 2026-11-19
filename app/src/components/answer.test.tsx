@@ -674,7 +674,7 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
     const pick = vi.fn();
     const { unmount } = render(<AnswerCard onPick={pick} turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: late }} />);
     expect(screen.getByTestId("show-all")).toHaveTextContent("12 of 34 shown. Show all");
-    expect(screen.getByTestId("show-all")).toHaveAttribute("href", "/late");
+    expect(screen.getByTestId("show-all")).toHaveAttribute("href", "/?show=late");
     await userEvent.click(screen.getByRole("button", { name: /DIVE11/ }));
     expect(pick).toHaveBeenCalledWith({ object_id: "Customer:a", type: "Customer", label: "Diversified (DIVE11)" });
     unmount();
@@ -690,16 +690,24 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
       "fetch",
       vi.fn(async (url: string) => {
         calls.push(String(url));
-        if (String(url).includes("quick=1"))
-          return new Response(JSON.stringify({
-            object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1", summary: "Supplier X",
-            status: { state: "open", text: "Open", sources: [] }, freshness: { as_of: "2026-10-29T11:00:00Z" }, complete: true,
-          }), { status: 200 });
+        const whole = {
+          object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1", summary: "Supplier X",
+          status: { state: "open", text: "Open", sources: [] }, freshness: { as_of: "2026-10-29T11:00:00Z" }, complete: true,
+        };
+        // the page is kept whole: the core read answers it (no core flag) before the quick read
+        if (String(url).includes("core=1")) return new Response(JSON.stringify(whole), { status: 200 });
+        if (String(url).includes("quick=1")) {
+          await new Promise((r) => setTimeout(r, 30));
+          return new Response(JSON.stringify(whole), { status: 200 });
+        }
         return new Response(JSON.stringify({ status: "read", items: [], cards: {} }), { status: 200 });
       }),
     );
     render(<ObjectView type="PurchaseOrder" id="PurchaseOrder:1" />);
     expect(await screen.findByTestId("object-title")).toHaveTextContent("PO 1");
+    await waitFor(() => expect(calls.filter((u) => u.includes("quick=1") && !u.includes("core=1"))).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(calls.filter((u) => u.includes("core=1"))).toHaveLength(1);
     expect(calls.filter((u) => u.startsWith("/api/object-section/"))).toEqual([]);
     expect(screen.queryByTestId("checking")).toBeNull();
   });

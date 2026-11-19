@@ -4,8 +4,10 @@
 and the in-process case opener (``operating/case_workspace_live.py``) serve for one actor:
 
 * the store: a built projection (``--ontology-store``), or an empty projection of the
-  compiled schema when none exists, so the host is never blind (a filter or listing
-  ``plx.find`` on it answers ``complete: false`` with a ``projection_not_built`` gap);
+  compiled schema when none was ever built, so the host is never blind (a filter or listing
+  ``plx.find`` on it answers ``complete: false`` with a ``projection_not_built`` gap); a
+  state folder whose committed generation's SQLite store is gone, read without
+  ``PLX_ONTOLOGY_PG=only``, is refused (``no_projection_store``), never served empty;
 * ``sources``: find-live's ``ontology.resolve.SourceResolver`` over the readers the
   runtime already holds (the source mirror, and Business Central when configured).
   ``plx.find`` falls back to it when the store has no visible match: the typed keys of
@@ -64,6 +66,7 @@ import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import private_tmp
+from .kept_policy import KeptPolicies
 from .ontology_tools import OntologyTools, StoreReader, default_schema
 from .ontology_tools_identity import _error
 from .ontology_tools_policy import (_ITEM_ACL_SCHEMES, TOOL_NAMES, ReadPolicy, _envelope_bytes,
@@ -72,6 +75,33 @@ from .ontology_tools_results import item_gate_from_case_runtime
 
 # Why plx.object answers object_not_found (``CaseHostTools.not_found_reason``).
 NOT_FOUND_REASONS = ("withheld", "no_current_version", "gate_error", "absent")
+
+
+class NoProjectionStore(RuntimeError):
+    """The host has no store to serve (``no_projection_store``): never an empty one in
+    its place, which answers every record "not in the projection" as if it were read."""
+    code = "no_projection_store"
+
+
+def missing_projection_store(store_path: str | Path | None, runtime: Any) -> str | None:
+    """Why a host that does not read Postgres alone (``PLX_ONTOLOGY_PG`` other than
+    ``only``) has no projection store to serve, else None. A store path that is no file;
+    or no store path while the runtime's state folder names a committed generation
+    (``projection/CURRENT``) whose SQLite store (``projection/ontology.sqlite``) is gone:
+    the SQLite generations are retired and that host serves Postgres only. A state
+    folder with no committed generation (a fixture, a host before its first build) keeps
+    the empty placeholder store."""
+    if store_path is not None:
+        return None if Path(store_path).is_file() else \
+            "the ontology store path is not a file"
+    state = getattr(runtime, "state_dir", None)
+    if not isinstance(state, (str, Path)):
+        return None
+    projection = Path(state) / "projection"
+    if (projection / "CURRENT").is_file() and not (projection / "ontology.sqlite").is_file():
+        return ("the state folder names a projection generation whose SQLite store is "
+                "gone, and Postgres is not configured as the store (PLX_ONTOLOGY_PG=only)")
+    return None
 
 
 def _review_store_gap(result: Any, error: Any, contract: Mapping[str, Any] | None,
@@ -105,12 +135,15 @@ def _review_store_gap(result: Any, error: Any, contract: Mapping[str, Any] | Non
 def table_tool_names() -> frozenset[str]:
     """The tools ``tool_table`` serves (``CaseHostTools.table``): none may be registered
     over them (``CaseHostTools.register_tool``)."""
-    from . import (meeting_agenda, ontology_query, ontology_tools_changes,
-                   ontology_tools_investigate, ontology_tools_process, ontology_tools_traverse)
+    from . import (meeting_agenda, ontology_query, ontology_tools_changes, page_reads,
+                   ontology_tools_business, ontology_tools_investigate, ontology_tools_sql,
+                   ontology_tools_process, ontology_tools_table, ontology_tools_traverse)
     return frozenset(TOOL_NAMES) | frozenset(ontology_tools_traverse.TOOL_NAMES) | frozenset(
         ontology_tools_process.TOOL_NAMES) | frozenset(ontology_tools_investigate.TOOL_NAMES) \
         | frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES) \
-        | frozenset(ontology_query.TOOL_NAMES)
+        | frozenset(ontology_query.TOOL_NAMES) | frozenset(ontology_tools_table.TOOL_NAMES) \
+        | frozenset(ontology_tools_business.TOOL_NAMES) | frozenset(ontology_tools_sql.TOOL_NAMES) \
+        | frozenset({page_reads.TOOL_NAME})
 
 
 class _LazyProcess:
@@ -199,6 +232,18 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     # plx.query: one composable read (resolve, traverse, filter, aggregate) over this table.
     from . import ontology_query
     ontology_query.register(table, tools)
+    # plx.table: one computed read (filter, group, count, sum, rank, list) in Postgres.
+    from . import ontology_tools_table
+    ontology_tools_table.register(table, tools)
+    # plx.business: one read over a curated business view (biz.<view>), each thing once.
+    from . import ontology_tools_business
+    ontology_tools_business.register(table, tools)
+    # plx.sql: one read-only SELECT over the reader-scoped business views (<biz>_sql.<view>).
+    from . import ontology_tools_sql
+    ontology_tools_sql.register(table, tools)
+    # plx.page: a page's named reads through plx.sql's door (the API's pages only, no agent)
+    from . import page_reads
+    page_reads.register(table, tools)
     return table
 
 
@@ -416,7 +461,8 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
                      bc_lookup: Any = None,
                      bc_units: Mapping[str, str] | None = None,
                      knowledge_namespaces: str | Path | None = None,
-                     marking_grants: Mapping[str, frozenset[str]] | None = None
+                     marking_grants: Mapping[str, frozenset[str]] | None = None,
+                     staff_units: Mapping[str, Any] | None = None
                      ) -> ReadPolicy:
     """The actor's ``ReadPolicy`` from the audiences the readers enforce, decided now
     and default deny: ``api:<relation>`` for every mirror relation the schema binds or
@@ -446,6 +492,15 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
     held only by the principals the host config grants it (``marking_grants``, checked by
     ``check_marking_grants``); none granted: held by nobody."""
     principals = frozenset(actor.principals)
+    full = _full_reader_policy(runtime, actor, principals, audience_keys, bc_units,
+                               marking_grants)
+    if full is not None:
+        return full
+    if staff_units is not None:
+        staff = _staff_policy(runtime, actor, principals, audience_keys, bc_units,
+                              knowledge_namespaces, marking_grants, staff_units)
+        if staff is not None:
+            return staff
     audience = runtime.mirror._audience()
     grants: dict[str, frozenset[str]] = {}
     relations = set()
@@ -528,17 +583,8 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
             allowed = sep and LIST_KIND.unit(path) == unit and all(
                 live.audience.allows(gated, resource) for resource in LIST_KIND.resources(path))
             grants[unit] = principals if allowed else frozenset()
-    brain_units = sorted(str(k) for k in audience_keys if str(k).startswith(_BRAIN))
-    if brain_units and knowledge_namespaces is not None:
-        from integrations.knowledge_source import NamespaceAuthority
-        try:
-            authority = NamespaceAuthority.from_file(knowledge_namespaces)
-        except (OSError, ValueError):
-            authority = None  # unreadable or malformed: no namespace is granted
-        if authority is not None:
-            gated = runtime.employee_gate(actor)
-            for unit in brain_units:
-                grants[unit] = principals if authority.allows(gated, unit) else frozenset()
+    grants.update(_brain_grants(runtime, actor, principals, audience_keys,
+                                knowledge_namespaces))
     # A declared full-read grant with its ``finance`` scope holds the finance and price
     # markings (``employee_permissions.full_read_marking_grants``); anyone else: the host's.
     from .employee_permissions import full_read_marking_grants
@@ -608,6 +654,141 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
     return ReadPolicy(actor.tenant, grants,
                       full_read_marking_grants(marking_grants, entitlement), units,
                       unrestricted=entitlement is not None and entitlement.unrestricted())
+
+
+def _full_reader_policy(runtime: Any, actor: Any, principals: frozenset[str],
+                        audience_keys: Iterable[str], bc_units: Mapping[str, str] | None,
+                        marking_grants: Mapping[str, frozenset[str]] | None
+                        ) -> ReadPolicy | None:
+    """The full reader's policy (the owner and the configured full readers,
+    ``EmployeeEntitlement.unrestricted``; business rule 2026-11-02, 2026-11-17): every source
+    family granted and every marking held, with no audience read per unit (no mirror, BC
+    company, MC, Teams, list or namespace check, and no live GET). Only the people exclusion
+    stays: a mailbox, calendar or organizer unit of a person it names (or whose owner is not
+    an object id it can decide) is denied by an exact entry, and the item gates still decide
+    every record by it. None for anyone else (decided as before) and whenever the
+    entitlement or the exclusion cannot be decided now."""
+    from .employee_permissions import full_read_marking_grants
+    from .ontology_tools_evidence import people_excluded
+    from integrations.people_exclusion import is_object_id
+    gate = getattr(runtime, "employee_gate", None)
+    try:
+        entitlement = gate.entitlement(actor) if gate is not None else None
+        if entitlement is None or entitlement.unrestricted() is not True:
+            return None
+    except Exception:  # noqa: BLE001 - undecidable: decided as for anyone
+        return None
+    guard = getattr(runtime, "people_exclusion", None)
+    keys = sorted({str(k) for k in audience_keys})
+    # Meetings units are granted one by one (a unit outside its kind's grammar, such as
+    # ``meetings:plan:*``, is never a pattern); every other family by its wildcard.
+    families = ({k.partition(":")[0] for k in keys if ":" in k} | set(_FULL_READ_FAMILIES)) \
+        - {_MEETINGS[:-1]}
+    grants: dict[str, frozenset[str]] = {f"{f}:*": principals for f in sorted(families) if f}
+    from integrations.capture_meetings import EVENT_KIND, TASK_KIND, TRANSCRIPT_KIND
+    kinds = {"calendar": EVENT_KIND, "plan": TASK_KIND, "organizer": TRANSCRIPT_KIND}
+    for key in keys:
+        if key.startswith("mail:"):
+            owner = key[len("mail:"):]
+        elif key.startswith(_MEETINGS):
+            part, _, owner = key[len(_MEETINGS):].partition(":")
+            kind = kinds.get(part)
+            try:
+                valid = kind is not None and bool(owner) and kind.unit((owner,)) == key
+                if valid:
+                    kind.canonical_path((owner, owner) if kind is TASK_KIND
+                                        else (owner, "0", "0")[:kind.path_parts])
+            except (ValueError, TypeError):
+                valid = False
+            if not valid:
+                continue   # not a meetings unit: never granted
+            if kind is TASK_KIND:
+                grants[key] = principals   # a plan: its item gate decides each task
+                continue
+        else:
+            continue
+        # a person's mailbox, calendar or transcripts: never an excluded person's
+        grants[key] = frozenset() if not is_object_id(owner.strip().lower()) \
+            or people_excluded(guard, [owner]) else principals
+    units: dict[str, tuple[str, ...]] = {}
+    if bc_units:
+        units["bc"] = tuple(sorted(bc_units))
+    return ReadPolicy(actor.tenant, grants,
+                      full_read_marking_grants(marking_grants, entitlement), units,
+                      unrestricted=True)
+
+
+def _brain_grants(runtime: Any, actor: Any, principals: frozenset[str],
+                  audience_keys: Iterable[str], knowledge_namespaces: Any
+                  ) -> dict[str, frozenset[str]]:
+    """Every brain knowledge unit the store holds, granted when the namespace document
+    (read now) lets the employee-gated actor read it; none without a readable document."""
+    grants: dict[str, frozenset[str]] = {}
+    brain_units = sorted(str(k) for k in audience_keys if str(k).startswith(_BRAIN))
+    if brain_units and knowledge_namespaces is not None:
+        from integrations.knowledge_source import NamespaceAuthority
+        try:
+            authority = NamespaceAuthority.from_file(knowledge_namespaces)
+        except (OSError, ValueError):
+            authority = None  # unreadable or malformed: no namespace is granted
+        if authority is not None:
+            gated = runtime.employee_gate(actor)
+            for unit in brain_units:
+                grants[unit] = principals if authority.allows(gated, unit) else frozenset()
+    return grants
+
+
+def _staff_policy(runtime: Any, actor: Any, principals: frozenset[str],
+                  audience_keys: Iterable[str], bc_units: Mapping[str, str] | None,
+                  knowledge_namespaces: Any,
+                  marking_grants: Mapping[str, frozenset[str]] | None,
+                  units: Mapping[str, Any]) -> ReadPolicy | None:
+    """A staff reader's policy (``operating.staff_scope``; decision 2026-11-17): a resolved
+    employee who is not a full reader reads every business family whole and their own
+    mail, chats, OneDrive and calendar, decided once from ``units`` (the precomputed
+    ``search.audience_units``) with no live audience call per unit. The people exclusion
+    denies every unit naming an excluded person (not usable: business families only).
+    Markings stay the host's (``marking_grants``); brain namespaces their document's. None
+    for anyone else (a full reader is decided before; a non-employee or an unresolved
+    employee is decided as before)."""
+    from .employee_permissions import full_read_marking_grants
+    from .ontology_tools_evidence import people_excluded
+    from .staff_scope import staff_grants
+    gate = getattr(runtime, "employee_gate", None)
+    try:
+        entitlement = gate.entitlement(actor) if gate is not None else None
+        if entitlement is None or entitlement.actor is None or entitlement.unrestricted():
+            return None
+        own = str(entitlement.principal.object_id).strip().lower()
+    except Exception:  # noqa: BLE001 - undecidable: decided as before
+        return None
+    guard = getattr(runtime, "people_exclusion", None)
+    usable = guard is not None and not getattr(guard, "unavailable", True)
+    keys = [str(k) for k in audience_keys]
+    try:
+        shared = runtime.staff_shared_mailboxes() if usable else frozenset()
+    except Exception:  # noqa: BLE001 - an unreadable capture opens no shared mailbox
+        shared = frozenset()
+    decided = staff_grants(keys, units, own=own, mailboxes=shared, excluded=(
+        (lambda people: people_excluded(guard, sorted(people))) if usable else None))
+    grants: dict[str, frozenset[str]] = {
+        key: principals if allowed else frozenset() for key, allowed in decided.items()}
+    grants.update(_brain_grants(runtime, actor, principals, keys, knowledge_namespaces))
+    held: dict[str, tuple[str, ...]] = {}
+    if bc_units:
+        held["bc"] = tuple(sorted(bc_units))
+    for family in ("mail", "sharepoint"):
+        listed = [k for k in keys if k.startswith(family + ":")]
+        if listed:
+            held[family] = tuple(listed)
+    return ReadPolicy(actor.tenant, grants,
+                      full_read_marking_grants(marking_grants, entitlement), held,
+                      staff=True)
+
+
+# Every audience family a store serves (``ontology_tools_policy._AUDIENCE_SOURCE``).
+_FULL_READ_FAMILIES = ("api", "bc", "mail", "mail-any", "sharepoint", "sharepoint-list",
+                       "original", "workbench", "mc", "brain", "teams", "meetings")
 
 
 # A granted principal: ``<kind>:<name>``, both parts non-empty, no whitespace.
@@ -836,6 +1017,10 @@ class CaseHostTools:
         self._pg_checked = 0.0   # when ``_store_moved`` last asked Postgres
         # One answer's policy (``policy_pinned``): (actor, policy, until), else None.
         self._pin: tuple[Any, ReadPolicy, float] | None = None
+        # A session host (the MCP server's): every call's policy kept while its inputs
+        # are unchanged (``operating.kept_policy``)
+        self.keep_policy = False
+        self.kept_policies = KeptPolicies()
         self._answers: Any = None  # plx.aggregate / plx.compare, built on first use
         # The versioned mail capture plx.read reads first (else the live reader): the
         # runtime's (``CaseRuntime.mail_capture_dir``), the one the claim gate and a case's
@@ -1004,13 +1189,17 @@ class CaseHostTools:
             from ontology import identifiers
             from ontology.project import build_store
             from ontology.resolve import ReviewedAliases, SourceResolver
+            from operating.pg import ontology_reader
+            only = ontology_reader.pg_only()
+            missing = None if only else missing_projection_store(self.store_path,
+                                                                  self.runtime)
+            if missing is not None:   # fail closed: never an empty store in its place
+                raise NoProjectionStore(missing)
             # named with this process's id; a killed host's leftovers are swept (an API
             # lives for days: an unnamed one goes only after a week)
             self._temp = private_tmp.TemporaryDirectory("plx-case-find-",
                                                         unnamed_age=7 * 86400)
             work = Path(self._temp.name)
-            from operating.pg import ontology_reader
-            only = ontology_reader.pg_only()
             store = self.store_path
             if only:
                 pass   # Postgres is the only store: no SQLite file is read
@@ -1098,7 +1287,29 @@ class CaseHostTools:
                                 audience_keys=self._reader_keys, bc_lookup=bc_lookup,
                                 bc_units=self._bc_units,
                                 knowledge_namespaces=self.knowledge_namespaces,
-                                marking_grants=self.marking_grants)
+                                marking_grants=self.marking_grants,
+                                staff_units=self._staff_units())
+
+    def _staff_units(self) -> Mapping[str, Any] | None:
+        """The precomputed audience units the staff scope is decided from
+        (``staff_scope.load_units``: Postgres, one read per write generation); None on a
+        SQLite store or when they cannot be read (every reader decided as before).
+        ``PLX_STAFF_SCOPE=off`` turns the staff scope off."""
+        if os.environ.get("PLX_STAFF_SCOPE", "").strip().lower() == "off":
+            return None
+        from .staff_scope import load_units
+        return load_units(self._reader)
+
+    def _staff_shared(self) -> tuple[str, ...] | None:
+        """The shared mailboxes the staff scope opens now (sorted); None when the staff
+        scope is off or the runtime keeps none."""
+        held = getattr(self.runtime, "staff_shared_mailboxes", None)
+        if held is None or os.environ.get("PLX_STAFF_SCOPE", "").strip().lower() == "off":
+            return None
+        try:
+            return tuple(sorted(held()))
+        except Exception:  # noqa: BLE001 - unreadable: none open
+            return ()
 
     def policy_inputs(self, actor: Any) -> tuple[tuple, tuple] | None:
         """What ``policy_now(actor)`` is decided from now, for a caller that keeps the
@@ -1122,13 +1333,17 @@ class CaseHostTools:
                   None if entitlement is None else (entitlement.fingerprint or None),
                   entitlement is None, self._store_identity,
                   None if self._overlay is None else self._overlay.stamp,
-                  _file_stamp(self.knowledge_namespaces))
+                  _file_stamp(self.knowledge_namespaces),
+                  # the shared mailboxes the staff scope opens (re-read once a minute)
+                  self._staff_shared())
         if entitlement is not None and not entitlement.fingerprint:
             return None   # an entitlement that names no fingerprint: never kept
         objects = (self._reader, mirror,
                    getattr(getattr(self.runtime, "live", None), "audience", None),
                    getattr(self.runtime, "people_exclusion", None),
-                   getattr(self.runtime, "mail_scope", None), load_exclusion())
+                   getattr(self.runtime, "mail_scope", None), load_exclusion(),
+                   # the staff scope's units (a new object per write generation)
+                   self._staff_units())
         return values, objects
 
     @contextmanager
@@ -1154,11 +1369,15 @@ class CaseHostTools:
 
     def policy_for(self, actor: Any) -> ReadPolicy:
         """The policy for ``actor`` this call reads under: the answer's pinned one
-        (``policy_pinned``) while it holds for this actor, else ``policy_now``."""
+        (``policy_pinned``) while it holds for this actor, else on a session host
+        (``keep_policy``) the one kept while its inputs are unchanged
+        (``operating.kept_policy``), else ``policy_now``."""
         pin = self._pin
         if pin is not None and pin[0] == actor:
             if time.monotonic() < pin[2]:
                 return pin[1]
+        if self.keep_policy:
+            return self.kept_policies.policy(self, actor)
         return self.policy_now(actor)
 
     def policy_settled(self, actor: Any) -> bool:
@@ -1235,7 +1454,11 @@ class CaseHostTools:
             return result
 
     def _call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
-        tools = self.tools
+        try:
+            tools = self.tools
+        except NoProjectionStore as error:
+            return _error(NoProjectionStore.code, str(error), "serve the Postgres ontology "
+                          "(PLX_ONTOLOGY_PG=only and PLX_PG_FACTS_DIR, as the API runs)")
         stale = tools.store.format_problem()
         if stale is not None:   # an older projection: never read under this code's queries
             return _error("rebuild_required", stale, "rebuild the ontology projection (a "
@@ -1765,5 +1988,5 @@ class CaseHostTools:
         return self._table
 
 
-__all__ = ["NOT_FOUND_REASONS", "CaseHostTools", "case_host_policy", "check_marking_grants",
-           "live_lookups", "store_bc_units", "table_tool_names", "tool_table"]
+__all__ = ["NOT_FOUND_REASONS", "CaseHostTools", "NoProjectionStore", "case_host_policy",
+           "check_marking_grants", "live_lookups", "missing_projection_store", "store_bc_units", "table_tool_names", "tool_table"]

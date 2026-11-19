@@ -76,6 +76,7 @@
       
     ], "timeout_seconds": 900, "measured_seconds": 350.0},
     {"name": "ontology-tools", "paths": ["tools/gate-checks.json"], "command": "python3 -m unittest", "modules": [
+      "operating.tests.test_ontology_tools_table",
       "tests.test_ontology_tools_process",
       "tests.test_process_risks",
       "tests.test_process_three_way",

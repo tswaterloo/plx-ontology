@@ -187,7 +187,8 @@ class GuardSqlTests(unittest.TestCase):
         self.assertEqual(seen, [True, True])
         root = Path(__file__).resolve().parents[2]
         for writer in ("ontology/delta.py", "ontology/pg_step_inplace.py",
-                       "operating/pg/whole_steps.py", "ontology/link_keys.py"):
+                       "operating/pg/whole_steps.py", "operating/pg/people_scope.py",
+                       "ontology/link_keys.py"):
             self.assertNotIn("link_guard", (root / writer).read_text("utf-8"), writer)
 
 

@@ -39,7 +39,14 @@
 
 * ``needs_reply`` (per signed-in user: "Needs my reply"). Mail naming no order is judged
   too (``_Population._read_recent``: inbound, non-automated, from an outside address): a
-  lead, low priority, no order facts. An inbound message in one
+  lead, low priority, no order facts. Machine and bulk mail is skipped by the one test
+  triage shares (``inbox_triage.automated_mail``: a sender's form, a notice, a mailing
+  platform, a feed among the window's mail), a message To more than ``inbox_triage.MAX_TO``
+  people is a mailing, and a lead that is a stranger's first note asking the reader nothing
+  directly is outreach (``outreach``): marketing, onboarding and cold mail once waited here
+  as "Needs your reply". Mail headers are not projected (the capture keeps only their
+  ``automation`` signals, ``integrations.graph_read``): the form is what the rule reads.
+  An inbound message in one
   person's own mailbox (``Email.mailbox``, its audience ``mail:<mailbox>``) addressed TO
   them (their address in ``to_addresses``; the tenant's directory gives each mailbox's
   addresses), from anyone else, whose own text asks a question or a request (``asks``),
@@ -93,6 +100,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .copy_gate import count as _count, say_date as _say
 from .proactive_business import _tick
+from .inbox_triage import (FIRST_CONTACT, MAX_TO, Seen, automated_mail, by_platform,
+                           greets_another, inquiry, mentions_another,
+                           population as _triage_population, reply_ask)
+from .proactive_threads import _own as _own_text
 from .proactive_chasers import (AUTOMATED, CUSTOMER_MAIL, CUSTOMER_PO, CUSTOMER_TWINS, MENTIONS_CPO,
                                 PUBLIC_MAIL, SETTLED_MENTION, SO, _FORWARD, _OID, _REPLY, _addr,
                                 _customers, _instant, _order_facts, _touch, _words)
@@ -1193,6 +1204,76 @@ def _recent_promise(st: Any, as_of: date, pop: _Population, m: Mapping[str, Any]
 
 # --------------------------------------------------------------------------- needs my reply
 
+def outreach(m: Mapping[str, Any], messages: Iterable[Mapping[str, Any]],
+             thread: Callable[[str], list[tuple]] = lambda _c: []) -> bool:
+    """A stranger's first note: Outlook's first-contact banner on its text (the sender
+    seldom writes to this mailbox: ``inbox_triage.FIRST_CONTACT``), no earlier message in
+    its conversation from anyone else in any mailbox triage reads (``thread``:
+    ``_thread_mail``; this rule's own messages too), and no inquiry about the reader's own
+    goods or work (``inbox_triage.inquiry``: a quote, prices, samples; not a pitch, a
+    pleasantry or a newsletter's question). A reply subject alone proves no thread: cold
+    mail wears one ("Re: Machining support"); a supplier's new contact answering a thread
+    held in another mailbox has that thread's earlier messages, so it is kept."""
+    if not FIRST_CONTACT.search(m["text"] or ""):
+        return False
+    if m["conversation"] and (any(
+            x is not m and x["channel"] == "mail" and x.get("conversation") == m["conversation"]
+            and x["at"] < m["at"] and x["sender"] != m["sender"] for x in messages) or any(
+            at < m["at"] and who != m["sender"] for at, who, _to in thread(m["conversation"]))):
+        return False
+    return not inquiry(_lead_text(m))
+
+
+def _lead_text(m: Mapping[str, Any]) -> str:
+    """A lead's text as triage reads it: its subject (unless a reply's or a forward's) and
+    its own text, quoted history removed."""
+    own = _own_text(m["text"])
+    head = "" if m["reply"] or m["forward"] else (m["subject_text"] or "")
+    return f"{head}.\n{own}" if head else own
+
+
+def _thread_mail(st: Any, as_of: date, people: Any) -> Callable[[str], list[tuple]]:
+    """conversation -> [(time, sender, To addresses)] of every message triage reads in its
+    window (``inbox_triage.population``: every cleared mailbox's mail, the owner's own sent
+    mail and a hand-off to a colleague too, which this rule's population does not hold).
+    Read once per run (memoised with triage's); a message it does not hold proves nothing."""
+    rows = _triage_population(st, as_of, people)["rows"]
+    by: dict[str, list[tuple]] = defaultdict(list)
+    for row in rows.values():
+        get = lambda p: str((row.get(p) or {}).get("value") or "")   # noqa: E731
+        at, conversation = _instant(get("sent_at")), get("conversation_id")
+        if at is None or not conversation:
+            continue
+        by[conversation].append((at, _addr(get("sender")), set(_addresses(get("to_addresses")))))
+    return lambda conversation: by.get(conversation or "", [])
+
+
+def _correspondent_key(address: str) -> str:
+    """Who a correspondent is: an address's domain, or the whole address on a public mail
+    domain (gmail.com is no one's company)."""
+    domain = address.rsplit("@", 1)[-1]
+    return address if domain in PUBLIC_MAIL else domain
+
+
+def _correspondents(st: Any, as_of: date, people: Any, pop: Any) -> set[str]:
+    """Every outside party a colleague wrote to (To or Cc) among the mail triage reads
+    (``inbox_triage.population``) and this rule's own (``_Population.messages``): a domain,
+    or an address on a public mail domain (``_correspondent_key``)."""
+    out: set[str] = set()
+    for row in _triage_population(st, as_of, people)["rows"].values():
+        get = lambda p: (row.get(p) or {}).get("value")   # noqa: E731
+        if pop.internal(_addr(str(get("sender") or ""))):
+            out.update(_correspondent_key(a) for a in (
+                *_addresses(str(get("to_addresses") or "")),
+                *_addresses(str(get("cc_addresses") or "")))
+                if not pop.internal(a))
+    for m in pop.messages.values():
+        if m["channel"] == "mail" and m["ours"]:
+            out.update(_correspondent_key(a) for a in (*m["to"], *m["cc"])
+                       if not pop.internal(a))
+    return out
+
+
 def needs_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
                 settled: Sequence[str], skips: Callable, people: Any, orders: Callable,
                 absence: Callable[[Sequence[str]], list[str]]) -> dict[str, Any]:
@@ -1215,6 +1296,26 @@ def needs_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
             chat_by[(m["audience"], m["sender"])].append(m["at"])
     members = getattr(people, "chat_members", None) or {}
     since = as_of - timedelta(days=REPLY_DAYS)
+    # the one machine-mail test triage shares (a sender's form, a notice, a mailing platform,
+    # a feed among the window's mail): an order's portal notice is owed no reply either
+    machine = automated_mail([Seen(m["sender"], m["to"], m["subject_text"], m["text"])
+                              for m in pop.messages.values() if m["channel"] == "mail"],
+                             {a for xs in pop.addresses_of.values() for a in xs})
+    later = _thread_mail(st, as_of, people)
+    staff = sorted({a for xs in pop.addresses_of.values() for a in xs})
+    wrote_to = _correspondents(st, as_of, people, pop)   # a party we write to is no stranger
+
+    def earlier_ours(oid: str) -> bool:   # one of ours wrote in its conversation before it
+        m = pop.messages[oid]
+        return bool(m["conversation"]) and (any(
+            at < m["at"] for at in ours_in.get(m["conversation"], ())) or any(
+            at < m["at"] and pop.internal(who) for at, who, _to in later(m["conversation"])))
+    # mail a mailing platform sent by its stored envelope (a person-like sender's bulk mail),
+    # not a relay of one person's message (``inbox_triage.by_platform``)
+    platform_sent = by_platform(people, [
+        (oid, m["text"]) for oid, m in pop.messages.items()
+        if m["channel"] == "mail" and not m["ours"] and not m["automated"]
+        and m["day"] >= since], earlier_ours)
     found: dict[tuple[str, str], tuple[dict, str]] = {}   # (owner, dedupe) -> message
     for oid in sorted(pop.messages):
         _tick(st)
@@ -1222,6 +1323,17 @@ def needs_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         if (m["ours"] and m["channel"] == "mail") or m["automated"] or m["day"] < since \
                 or m["channel"] == "meeting":
             continue   # ours, a machine's, too old, or a meeting (addressed to nobody)
+        if m["channel"] == "mail" and (len(m["to"]) > MAX_TO or machine(
+                m["sender"], m["text"], m["subject_text"]) or oid in platform_sent):
+            counts["automated"] += 1   # a mailing, a notice, a platform's or a feed's mail
+            continue
+        lead = m["channel"] == "mail" and not any(o in pop.by_top for o in m["named"])
+        if lead and _correspondent_key(m["sender"]) not in wrote_to and outreach(
+                m, pop.messages.values(), later):
+            counts["unsolicited"] += 1   # a stranger's first note about no order
+            continue
+        if lead and not reply_ask(_lead_text(m)):
+            continue   # a lead asks by the shared test (``inbox_triage.reply_ask``)
         if m["forward"]:
             skipped["forward_not_judged"] += 1
             continue
@@ -1238,9 +1350,16 @@ def needs_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
                 continue
             if m["sender"] in mine or not any(a in mine for a in m["to"]):
                 continue   # theirs, or not addressed to them (a copy only)
-            if any(at > m["at"] for at in ours_in.get(m["conversation"] or "", ())):
-                counts["answered"] += 1
+            others = [*m["to"], *m["cc"], *staff]
+            if mentions_another(m["text"], mine, others) or greets_another(
+                    m["text"], mine, others, m["to"]):
+                counts["addressed_to_another"] += 1   # "@Maria can you", "Tina, can you"
                 continue
+            if any(at > m["at"] for at in ours_in.get(m["conversation"] or "", ())) or any(
+                    at > m["at"] and (who in mine or (pop.internal(who) and m["sender"] in to))
+                    for at, who, to in later(m["conversation"])):
+                counts["answered"] += 1   # the owner wrote in it since (to anyone, a
+                continue                  # colleague too), or a colleague to the asker
         else:
             if m["type"] != "TeamsChatMessage":
                 continue   # a channel post is addressed to nobody in particular

@@ -547,11 +547,46 @@ class Commitments(Engine):
              conversation="q-6", mailbox=EXCLUDED_OID, n=7)       # an excluded mailbox
         sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,),
              body="Thanks, received.", conversation="q-7", n=8)   # asks nothing
+        # what once waited here as "Needs your reply": a vendor's onboarding mail from its
+        # sending subdomain, a workshop invite padded as a mailing, a list To many, a cold
+        # pitch under Outlook's first-contact banner; never a reply owed
+        sent(w, day(9), sender="brand@communication.synth-vendor.example", to=(OURS,),
+             body="New here? Chat helps you start strong. Want a tour?", conversation="q-8",
+             n=9)
+        sent(w, day(9), sender="events@synth-vendor.example", to=(OURS,),
+             body="What could a bot take off your plate? \u034f \u034f \u034f \u034f \u034f",
+             conversation="q-9", n=10)
+        sent(w, day(9), sender="buyer@synth-stranger.example",
+             to=(OURS, *(f"p{i}@synth-tenant.example" for i in range(6))), body=ask,
+             conversation="q-10", n=11)
+        sent(w, day(9), sender="rep@synth-pitch.example", to=(OURS,),
+             body="You don't often get email from rep@synth-pitch.example. Learn why this is "
+                  "important Hi there, find our 3D showroom via this link. Would you be "
+                  "interested in a quick call?", conversation="q-11", n=12)
+        # answered by the owner's hand-off to a colleague (internal only: this rule's own
+        # population does not hold it; triage's window does)
+        sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,), body=ask,
+             conversation="q-13", n=14)
+        sent(w, day(8), sender=OURS, to=("colleague@synth-tenant.example",),
+             body="Can you take this one?", conversation="q-13", n=15)
+        # a pleasantry with a question mark asks nothing by the shared test
+        sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,),
+             body="How was your weekend? Here is the file.", conversation="q-14", n=16)
+        # a supplier's reply whose signature carries zero-width spaces is a person's
+        supplier = sent(w, day(9), sender="rep@synth-supplier.example", to=(OURS,),
+                        body="Could you confirm the freight terms? Rep \u200b \u200b \u200b "
+                             "\u200b \u200b Sales", conversation="q-15", n=17)
+        # a stranger's first note that asks the reader directly is kept (a prospect)
+        inquiry = sent(w, day(9), sender="buyer@synth-prospect.example", to=(OURS,),
+                       body="You don't often get email from buyer@synth-prospect.example. "
+                            "Learn why this is important Hi, could you quote 5,000 units of "
+                            "the 300 ml bottle?", conversation="q-12", n=13)
         summary = self.run_rules(w)
         self.assertEqual(summary["detectors"][pcm.NEEDS_REPLY], "complete")
         gaps = self.kinds(pcm.NEEDS_MY_REPLY, reader=OWNER)
-        self.assertEqual([g["object_id"] for g in gaps], [waiting])
-        gap = gaps[0]
+        self.assertEqual(sorted(g["object_id"] for g in gaps),
+                         sorted([waiting, inquiry, supplier]))
+        gap = next(g for g in gaps if g["object_id"] == waiting)
         self.assertEqual(gap["follow_up"]["priority"], "low")
         self.assertEqual(gap["event"]["orders_affected"], 0)
         self.assertNotIn("open order", gap["follow_up"]["why"])
@@ -603,6 +638,46 @@ class Commitments(Engine):
         self.assertEqual([g["object_id"] for g in self.kinds(pcm.NEEDS_MY_REPLY,
                                                              reader=OWNER)], [asked])
         self.assertEqual(summary["not_evaluated"][pcm.NEEDS_REPLY]["chat_not_one_to_one"], 1)
+
+    def test_mail_a_mailing_platform_sent_waits_on_no_one_unless_relayed_or_in_our_thread(self):
+        # a person-like sender's mail whose stored envelope names a mailing platform is
+        # bulk; a platform relaying one person's message, and a contact who sends through a
+        # platform in a conversation we wrote in first, still wait on the owner
+        w = World()
+        so = order(w, customer(w), (AS_OF + timedelta(days=30)).isoformat())
+        asks = "Could you confirm the date?"
+        bulk = mail(w, so, day(8), sender=CUSTOMER_MAIL, to=(OURS,), body=asks,
+                    conversation="c1", n=1)
+        relay = mail(w, so, day(8), sender=CUSTOMER_MAIL, to=(OURS,), conversation="c2", n=2,
+                     body=asks + "\nFor your safety, always communicate through the site.")
+        mail(w, so, day(10), sender=OURS, to=(CUSTOMER_MAIL,), body="Here is the order.",
+             conversation="c3", n=3)
+        threaded = mail(w, so, day(8), sender=CUSTOMER_MAIL, to=(OURS,), body=asks,
+                        conversation="c3", n=4)
+        unknown = mail(w, so, day(8), sender=CUSTOMER_MAIL, to=(OURS,), body=asks,
+                       conversation="c4", n=5)
+        platform = {bulk: True, relay: True, threaded: True}
+        asked: list[list[str]] = []
+
+        def reader(oids):
+            oids = list(oids)
+            asked.append(oids)
+            return {o: platform[o] for o in oids if o in platform}
+
+        guard = people()
+        guard.mail_platform = reader
+        self.run_rules(w, people=guard)
+        waiting = {g["object_id"] for g in self.kinds(pcm.NEEDS_MY_REPLY, reader=OWNER)}
+        self.assertEqual(waiting, {relay, threaded, unknown})
+        self.assertEqual(len(asked), 1)                      # one read per run
+        self.assertNotIn(relay, asked[0])                    # a relay is never looked up
+        # an unreadable capture, or an answer that is no verdict, drops nothing
+        for broken in (lambda oids: 1 / 0, lambda oids: {o: "yes" for o in oids}):
+            with self.subTest(reader=broken):
+                guard.mail_platform = broken
+                self.run_rules(w, people=guard)
+                self.assertEqual({g["object_id"] for g in self.kinds(
+                    pcm.NEEDS_MY_REPLY, reader=OWNER)}, {bulk, relay, threaded, unknown})
 
     # ------------------------------------------------------------ briefing
 

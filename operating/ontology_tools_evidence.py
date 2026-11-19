@@ -2605,19 +2605,23 @@ class EvidenceTools:
     def _matched_chunks(self, words: str, families: Sequence[str]
                         ) -> contextlib.AbstractContextManager[Iterator[int]]:
         """The ids, ascending, of the chunks matching ``words`` (``StoreReader.word_rows``): those
-        in the chunk runs of ``families`` (``chunk_families``) when the store's runs are
-        known and these families hold at most ``CHUNK_NARROW_SHARE`` of the chunks
-        (``_chunk_runs``), else every match (the scan's audience term drops another
-        source's chunk unread anyway)."""
+        in the chunk runs of ``families`` when they are known (``_chunk_runs``), else every
+        match (the scan's audience term drops another source's chunk unread anyway). On
+        Postgres the runs also bound the index's reads (each a key range of its own)."""
         runs = self._chunk_runs(families)
         keep = None
+        spans = None
         if runs is not None:
             lows, highs = runs
+            if not lows:
+                return contextlib.nullcontext(iter(()))   # these families hold no chunk
+            if self._pg_chunks():
+                spans = list(zip(lows, highs))
 
             def keep(chunk: int) -> bool:
                 at = bisect.bisect_right(lows, chunk) - 1
                 return at >= 0 and chunk <= highs[at]
-        return self.store.word_rows("chunk_text", words, keep=keep)
+        return self.store.word_rows("chunk_text", words, spans, keep=keep)
 
     def _capped_scan(self, scope: Any, matched: Iterator[int], scan: str, ahead: str,
                      params: Mapping[str, Any], *, conn: Any = None) -> list[Any]:
@@ -2639,15 +2643,43 @@ class EvidenceTools:
             rows += (conn or self.store.word_conn).execute(scan, sliced).fetchall()
         return rows
 
+    def _pg_chunks(self) -> bool:
+        """Whether the document word index is read on Postgres (its chunk ids are
+        Postgres's: ``TraverseTools.chunk_span``)."""
+        loaded = getattr(self.store, "chunk_words_loaded", None)
+        return getattr(self.store, "family_chunk_span", None) is not None \
+            and loaded is not None and bool(loaded())
+
     def _chunk_runs(self, families: Sequence[str]) -> tuple[list[int], list[int]] | None:
-        """(run starts, run ends) of ``families``' chunks (and of chunks of no known
-        family), ascending; None when the store's runs are not known yet (read online, in
-        the background for a big store, and only for the file as it is now:
-        ``ontology.chunk_families.runs_for``), its chunks are not in runs, or ``families``
-        hold more than ``CHUNK_NARROW_SHARE`` of all chunks."""
+        """(run starts, run ends) of ``families``' chunks, ascending; None when they are
+        not known (the search reads every match). On Postgres the families' runs
+        (``TraverseTools.chunk_span``: kept per data version, folded per delta layer; a
+        chunk with no field or object never passes the scan's audience term, so none is
+        added for it). On SQLite the store file's runs (and those of chunks of no known
+        family: ``ontology.chunk_families.runs_for``, read in the background for a big
+        file), only when ``families`` hold at most ``CHUNK_NARROW_SHARE`` of all chunks.
+        Never the SQLite read over Postgres's tables: one statement grouping every chunk
+        (26M, past 2 minutes live, again after every layer) on the request path."""
+        if self._pg_chunks():
+            from operating.pg.ontology_reader import merge_runs
+            try:
+                with self.store.lock:
+                    spans = [self.traverse.chunk_span(f) for f in sorted(set(families))]
+            except sqlite3.Error:
+                return None
+            if any(runs is None for runs in spans):
+                return None
+            joined = merge_runs(run for runs in spans for run in runs)
+            return [lo for lo, _hi in joined], [hi for _lo, hi in joined]
+        try:
+            conn = self.store.chunk_conn
+        except Exception:  # noqa: BLE001 - no index to read: the word read raises it itself
+            return None
+        if getattr(conn, "postgres", False) or getattr(conn, "_pg", None) is not None:
+            return None   # Postgres's tables with no word index read there: not known
         from ontology.chunk_families import ANY_FAMILY, runs_for
         try:
-            rows = runs_for(self.store.word_conn)
+            rows = runs_for(conn)
         except sqlite3.Error:
             return None
         if not rows:
@@ -2750,14 +2782,16 @@ class EvidenceTools:
             return False
 
     def _cell_spans(self, families: Sequence[str]) -> list[tuple[int, int]] | None:
-        """The value-cell rowid spans of ``families`` (``TraverseTools.cell_span``; a family
-        with no cell has none), or None when they cannot be read (search unnarrowed)."""
+        """The value-cell rowid runs of ``families`` (``TraverseTools.cell_span``; a family
+        with no cell has none), joined and ascending (at most ``CELL_RUNS``: each run a
+        word-index read), or None when they cannot be read (search unnarrowed)."""
+        from operating.pg.ontology_reader import merge_runs
         try:
             with self.store.lock:
                 spans = [self.traverse.cell_span(f) for f in sorted(set(families))]
         except sqlite3.Error:
             return None
-        return [span for span in spans if span is not None]
+        return list(merge_runs(run for runs in spans if runs is not None for run in runs))
 
     def _text_hits(self, scope: Any, token: str, families: Sequence[str],
                    snippets: dict[str, dict[str, Any]]) -> tuple[set[str], bool]:

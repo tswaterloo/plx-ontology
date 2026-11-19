@@ -101,6 +101,8 @@ class Drafted:
     kind: str
     subject: str
     body: str
+    to: tuple[str, ...] = ()     # an email's addresses the instruction itself wrote
+    cc: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,6 +264,7 @@ Use: <the key of one listed meeting whose notes would settle it, only when one f
 [[END]]
 2. Otherwise draft what the instruction asks for. A message:
 [[DRAFT email]]
+To: <the recipient's address, only when the instruction writes it; else leave this line out>
 Subject: <one line>
 <the message, written as the employee, ready to send>
 [[END]]
@@ -418,12 +421,14 @@ def read_reply(said: Any, text: str, candidates: Sequence[Candidate],
             if parts.get("label") and parts.get("do"):
                 workflow = {"label": parts["label"][:120], "do": parts["do"][:300]}
         elif kind in DRAFT_KINDS and len(drafts) < MAX_DRAFTS:
-            subject = ""
-            first, _, rest = inner.partition("\n")
-            if kind == "email" and first.lower().startswith("subject:"):
-                subject, inner = first.split(":", 1)[1].strip(), rest.strip()
+            subject, to, cc = "", [], []
+            if kind == "email":
+                # its To/Cc/Subject lines are the draft's fields, never words of its body
+                from .email_headers import split
+                subject, to, cc, inner = split(inner, [text])
             if inner:
-                drafts.append(Drafted(kind, " ".join(subject.split())[:200], inner))
+                drafts.append(Drafted(kind, " ".join(subject.split())[:200], inner,
+                                      tuple(to), tuple(cc)))
     lead = " ".join(_BLOCK.sub("", said).split())[:400]
     if questions:
         question, use, options = questions[0]
@@ -499,7 +504,7 @@ def humanized(outcome: Outcome, *, person: Optional[str] = None,
     (``operating.humanize``, in ``person``'s learned style): a change is kept only when
     every fact, placeholder included, stays exactly as the grounded text had it."""
     from operating import humanize
-    drafts = tuple(Drafted(d.kind, d.subject, humanize.polish(
+    drafts = tuple(dataclasses.replace(d, body=humanize.polish(
         d.body, kind="draft", person=person, rewrite=rewrite).text) for d in outcome.drafts)
     said = humanize.polish(outcome.said, kind="answer", rewrite=rewrite).text
     return dataclasses.replace(outcome, drafts=drafts, said=said)
@@ -515,7 +520,7 @@ def ground_outcome(outcome: Outcome, given: str) -> Outcome:
     for d in outcome.drafts:
         subject, a = ground(d.subject, given)
         body, b = ground(d.body, given)
-        drafts.append(Drafted(d.kind, subject, body))
+        drafts.append(dataclasses.replace(d, subject=subject, body=body))
         used += a + b
     for doc in outcome.documents:
         content, c = ground(doc["content"], given)

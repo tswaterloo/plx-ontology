@@ -21,7 +21,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from datetime import date
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import quote
 from unittest import mock
 
@@ -320,6 +320,29 @@ class FixtureBackend(unittest.TestCase):
                          [body["object_id"]])
         self.assertEqual(answer["trail"]["trails"][0]["steps"], po["steps"])
 
+    def test_a_bare_code_resolves_from_the_identifier_table_for_its_reader_only(self):
+        """``/purchase_order/<number>``: the identifier table names the record (no whole
+        ``plx.find``); a reader who may not read it gets not found, as for any record."""
+        seen: list = []
+        real = objects.HostAccess.identifier_records
+
+        def recorded(access, code, object_type):
+            got = real(access, code, object_type)
+            seen.append((access.actor, code, got))
+            return got
+        ref = case_fixtures.PO_NUMBER.lower()   # a reference no earlier read resolved
+        with mock.patch.object(objects.HostAccess, "identifier_records", recorded):
+            page = self.ops.client.get(f"/api/object/PurchaseOrder/{ref}")
+            self.assertEqual(page.status_code, 200, page.text)
+            self.assertEqual([got for _actor, code, got in seen if code == ref],
+                             [frozenset({page.json()["object_id"]})])
+            seen.clear()
+            hidden = self.outsider.client.get(f"/api/object/PurchaseOrder/{ref}")
+            self.assertEqual(hidden.status_code, 404, hidden.text)
+            self.assertNotIn(page.json()["object_id"], hidden.text)
+            self.assertTrue(seen)
+            self.assertTrue(all(not got for _actor, _code, got in seen), seen)
+
     def test_a_source_lists_the_records_citing_it_for_its_reader_only(self):
         ops = self.ops.client
         po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
@@ -382,6 +405,73 @@ class FixtureBackend(unittest.TestCase):
         answer = json.loads(bodies[0])[-1][1]
         self.assertEqual(answer["facts"], [])
 
+    def test_core_read_is_the_card_alone_and_says_nothing_the_walk_decides(self):
+        """C1 (owner 11-17): a record page's core read (?core=1) is served from the card
+        alone, before the walk: it reads no link, timeline or document (each patched to
+        fail here), states only the card's own cited facts (the same ones the quick read
+        states) and says nothing the walk decides: status "reading", no timeline, links,
+        "not found" or conflicts, never "none captured" while those are pending. It is
+        kept per reader: another reader's core read of the same record is not found."""
+        from operator_api.workspace import object_workspace as ow
+        ops = self.ops.client
+        po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}?quick=1").json()
+        oid = quote(po["object_id"], safe="")
+
+        def walked(*args, **kwargs):
+            raise AssertionError("the core read walked the record")
+
+        cache = self.ops.app.state.backend.page_cache
+        held = cache.get
+
+        def not_whole(key):   # an earlier test may have kept this page whole
+            return None if key and isinstance(key[0], str) else held(key)
+
+        with mock.patch.object(cache, "get", not_whole), \
+                mock.patch.object(ow.ObjectWorkspace, "_around", walked), \
+                mock.patch.object(ow.ObjectWorkspace, "_timeline", walked), \
+                mock.patch.object(ow.ObjectWorkspace, "_documents", walked), \
+                mock.patch.object(ow.ObjectWorkspace, "_process", walked):
+            got = ops.get(f"/api/object/PurchaseOrder/{oid}?quick=1&core=1")
+            again = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}?core=1")
+        self.assertEqual(got.status_code, 200, got.text)
+        core = got.json()
+        self.assertEqual(again.json(), core)   # a business reference resolves the same
+        self.assertTrue(core["core"])
+        self.assertFalse(core["complete"])
+        self.assertEqual((core["object_id"], core["type"]), (po["object_id"], po["type"]))
+        self.assertEqual(core["status"]["state"], "reading")
+        for pending in ("timeline", "linked", "related", "links", "not_found", "conflicts"):
+            self.assertEqual(core[pending], [], pending)
+        self.assertTrue(core["facts"])
+        quick_facts = {f["text"] for f in po["facts"]}
+        for fact in core["facts"]:
+            self.assertIn(fact["text"], quick_facts)
+            self.assertTrue(fact["sources"], fact["text"])
+        self.assertFalse(po.get("core", False))   # the quick read is never marked core
+        hidden = self.outsider.client.get(f"/api/object/PurchaseOrder/{oid}?core=1")
+        self.assertEqual(hidden.status_code, 404)
+        self.assertEqual(hidden.json()["error"]["code"], "not_found")
+
+    def test_core_read_of_a_page_kept_whole_is_the_whole_page(self):
+        """Review 847e4e97f4: a page this reader already holds whole is answered whole by
+        the core read too (not marked core, complete), so the app asks for no section;
+        another reader still finds nothing."""
+        ops = self.ops.client
+        whole = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}")
+        self.assertEqual(whole.status_code, 200, whole.text)
+        page = whole.json()
+        self.assertNotEqual(page.get("complete"), False)
+        oid = quote(page["object_id"], safe="")
+        got = ops.get(f"/api/object/PurchaseOrder/{oid}?quick=1&core=1")
+        self.assertEqual(got.status_code, 200, got.text)
+        core = got.json()
+        self.assertFalse(core.get("core", False))
+        self.assertNotEqual(core.get("complete"), False)
+        self.assertEqual(core["facts"], page["facts"])
+        self.assertEqual(core["timeline"], page["timeline"])
+        hidden = self.outsider.client.get(f"/api/object/PurchaseOrder/{oid}?core=1")
+        self.assertEqual(hidden.status_code, 404)
+
     def test_only_a_record_not_found_is_404_and_a_crash_in_the_read_is_a_500(self):
         """serve-1115d V-19: the record routes read ANY KeyError as "not found", so a crash
         inside a record read was a 404 for days. Only ``RecordNotFound`` is a 404 now; a
@@ -394,6 +484,7 @@ class FixtureBackend(unittest.TestCase):
         oid = quote(po["object_id"], safe="")
         missing = quote("PurchaseOrder:po-synth:no-such-order", safe="")
         routes = ("/api/object/PurchaseOrder/{}", "/api/object/PurchaseOrder/{}?quick=1",
+                  "/api/object/PurchaseOrder/{}?quick=1&core=1",
                   "/api/explore/PurchaseOrder/{}", "/api/history/PurchaseOrder/{}",
                   "/api/as-of/PurchaseOrder/{}?at=2026-10-01",
                   "/api/object-impact/why/PurchaseOrder/{}",
@@ -523,6 +614,34 @@ class FixtureBackend(unittest.TestCase):
             asker.join(60)
         self.assertEqual(events(streamed[0].text)[-1][0], "answer")
 
+    def test_a_briefing_group_page_is_cut_from_the_kept_briefing_never_read_again(self):
+        # Home asked for each group's page beside the briefing and each page read the whole
+        # briefing again, longer than a request may take (live 11-18: 27 of 27 answered 503
+        # after 60 s, holding every read worker, so Records search and Autopilot said busy)
+        ops = self.ops.client.get("/api/briefing").json()
+        groups = [g for g in ops["groups"] if g["count"] > g["in_top"]]
+        self.assertTrue(groups, ops["groups"])
+        real, calls = objects.ObjectWorkspace.briefing, []
+
+        def counted(view, *args, **kw):
+            calls.append(1)
+            return real(view, *args, **kw)
+        with mock.patch.object(objects.ObjectWorkspace, "briefing", counted):
+            for group in groups:
+                page = self.ops.client.get("/api/briefing/items", params={
+                    "event_type": group["event_type"], "offset": 1, "limit": 3})
+                self.assertEqual(page.status_code, 200, page.text)
+                self.assertEqual(page.json()["total"], group["count"] - group["in_top"])
+        self.assertEqual(calls, [])
+        # while the briefing is still being read a page says so at once, never holding a
+        # read worker to wait beside it
+        cache = self.ops.app.state.backend.page_cache
+        with mock.patch.object(cache, "get", return_value=None), \
+                mock.patch.object(cache, "in_flight", return_value=True):
+            got = self.ops.client.get("/api/briefing/items", params={
+                "event_type": groups[0]["event_type"], "offset": 2})
+        self.assertEqual((got.status_code, got.json()["error"]["code"]), (503, "busy"))
+
     def test_briefing_ranks_what_the_reader_sees_counts_the_rest_and_never_sends(self):
         ops = self.ops.client.get("/api/briefing").json()
         m.Briefing.model_validate(ops)
@@ -568,6 +687,12 @@ class FixtureBackend(unittest.TestCase):
             self.assertTrue(all(r["label"] and r["label"] != r["id"] for r in got["records"]))
             other = self.outsider.client.get("/api/briefing/unjudged", params=q).json()
             self.assertEqual((other["total"], other["records"]), (0, []))
+        # a scope note counts nothing and the endpoint lists nothing for it
+        for note in (n for n in ops["data_note_items"] if n["scope"]):
+            self.assertEqual(note["count"], 0)
+            q = {"check": note["check"], "reason": note["reason"]}
+            got = self.ops.client.get("/api/briefing/unjudged", params=q).json()
+            self.assertEqual((got["total"], got["records"]), (0, []))
         self.assertEqual(self.ops.client.get("/api/briefing/unjudged", params={
             "check": "no_such_check"}).status_code, 404)
         # the late count is Home's
@@ -2005,7 +2130,8 @@ class CustomerSummaryTests(unittest.TestCase):
     and says why."""
 
     def view(self, *, total: Optional[int], sums_refused: bool = False,
-             states: Optional[dict] = None):
+             states: Optional[dict] = None, amount: str = "10.00",
+             derived: Optional[dict] = None, contacts: Sequence[dict] = ()):
         orders = [{"object_id": f"SalesOrder:portal.app_sales_order:{{\"id\":\"{i}\"}}",
                    "display": f"OR{i:04d}"} for i in range(50)]
         calls = []
@@ -2024,6 +2150,11 @@ class CustomerSummaryTests(unittest.TestCase):
                 if tool == "plx.around":
                     if "same_record_as" in json.dumps(args):
                         return {"objects": []}
+                    if "Email.sent_by_person" in json.dumps(args):
+                        return {"objects": list(contacts)}
+                    if any(f.get("property") == "subtotal" for f in args.get("filters") or ()):
+                        return {"set": "set:z", "objects": orders[:3] if amount == "0"
+                                else []}
                     # one page of 50 with more behind it (the live customer had 844)
                     first = 50 if args.get("cursor") else 0
                     page = [{**o, "object_id": o["object_id"] + f"#{first}"} for o in orders]
@@ -2043,8 +2174,12 @@ class CustomerSummaryTests(unittest.TestCase):
                     return {"groups": [{"key": {"order_date": "2026-10-0%d" % (i + 1),
                                                 "order_number": f"OR{i:04d}",
                                                 "status": "Open"},
-                                        "value": "10.00", "currency": "CAD",
+                                        "value": amount, "currency": "CAD",
                                         "inputs_citations": []} for i in range(3)]}
+                if tool == "plx.object":
+                    got = (derived or {}).get(json.loads(
+                        args["object_id"].split(":", 2)[2].split("#")[0])["id"])
+                    return {"object": {}, "derived": [got] if got else []}
                 return {}
         return View(), calls
 
@@ -2078,11 +2213,48 @@ class CustomerSummaryTests(unittest.TestCase):
         self.assertTrue(any("2 orders hold a status not read as open or closed" in n
                             for n in out.not_established), out.not_established)
 
+    def test_an_order_header_of_zero_is_never_shown_as_its_value(self):
+        # owner walk 11-17 C3: every Portal order of a big customer read "$0.00 CAD"
+        cite = {"l1_handle": "portal://sales_invoice/9", "field_path": "row.subtotal"}
+        out = self.summary(self.view(total=3, amount="0", derived={"0": {
+            "property": "order_value", "value": "4505.50", "currency": "CAD",
+            "derived_from": "invoices", "inputs": [cite]}})[0])
+        self.assertFalse([r for r in out.revenue if r.label.startswith("Ordered")],
+                         out.revenue)
+        self.assertTrue(any(n.startswith("Ordered (excluding tax)") and "not recorded" in n
+                            for n in out.not_established), out.not_established)
+        rows = {r.label: r for r in out.recent_orders + out.open_list}
+        self.assertEqual(len(rows), 3)
+        priced = [r for r in rows.values() if r.amount is not None]
+        self.assertEqual([(r.amount.amount, r.amount_note) for r in priced],
+                         [("4505.50", "from its invoices, before tax")])
+        self.assertEqual([s.handle for s in priced[0].sources], ["portal://sales_invoice/9"])
+        self.assertTrue(all(r.amount_note == "value not recorded" and not r.sources
+                            for r in rows.values() if r.amount is None), rows)
+
+    def test_contacts_are_the_people_writing_from_the_customers_mail(self):
+        none = self.summary(self.view(total=3)[0])
+        self.assertEqual(none.contacts, [])
+        self.assertTrue(any(n.startswith("Contacts: no mail") for n in none.not_established))
+        view, calls = self.view(total=3, contacts=[
+            {"object_id": "Person:graph_mail.people:{\"k\":\"1\"}", "display": "Kelly Reed"},
+            {"object_id": "Person:graph_mail.people:{\"k\":\"1\"}", "display": "Kelly Reed"},
+            {"object_id": "Person:graph_mail.people:{\"k\":\"2\"}", "display": None}])
+        out = self.summary(view)
+        self.assertEqual([p.name for p in out.contacts], ["Kelly Reed"])
+        self.assertFalse(any(n.startswith("Contacts") for n in out.not_established))
+        asked = [a for t, a in calls if t == "plx.around"
+                 and "Email.sent_by_person" in json.dumps(a)]
+        # only the record's own mail (no confirmed copy here), never below corroborated
+        self.assertEqual([(a["from"], a["tier_floor"]) for a in asked],
+                         [("Customer:portal.app_customer:{\"id\":\"c\"}", "corroborated")])
+
     def test_a_reader_without_the_amounts_keeps_the_orders_unpriced(self):
         out = self.summary(self.view(total=60, sums_refused=True)[0])
         self.assertEqual(out.revenue, [])
         self.assertTrue(out.recent_orders)
-        self.assertTrue(all(r.amount is None for r in out.recent_orders))
+        self.assertTrue(all(r.amount is None and r.amount_note == "not shown to you"
+                            for r in out.recent_orders))
         self.assertTrue(any("not shown to you" in n for n in out.not_established),
                         out.not_established)
         self.assertFalse(any("mixed" in n for n in out.not_established))
@@ -2244,6 +2416,29 @@ class WarmYieldsTests(unittest.TestCase):
     def test_no_revocation_check_wired_means_no_read_ahead(self):
         backend = be.WorkspaceBackend(lambda s: None, data_label="test")
         self.assertTrue(backend.revoked("a" * 64))   # fails closed
+
+
+class SearchScopeTests(unittest.TestCase):
+    def test_the_search_scope_is_read_while_every_read_worker_is_busy(self):
+        # live 11-18: Records search answered "busy" (503) while a record page's section
+        # reads held the read workers: the reader's policy, which every keystroke's search
+        # needs first, was queued behind them for its 10 s and gave up
+        from operator_api.serving import Worker
+        policy = ("actor", "policy")
+        view = SimpleNamespace(_request=contextlib.nullcontext, bind=lambda session: None,
+                               close=lambda: None,
+                               access=SimpleNamespace(reader_policy=lambda: policy))
+        backend = be.WorkspaceBackend(lambda s: view, data_label="test")
+        self.addCleanup(backend.stop)
+        # no read worker runs: every job queued on the read pool waits (all busy)
+        access = backend.access_worker = Worker(lambda s: view)
+        threading.Thread(target=access.loop, name="access-lane", daemon=True).start()
+        self.addCleanup(access.stopped.set)
+        reader = SimpleNamespace(key="r", mode="dev",
+                                 session=SimpleNamespace(principals=frozenset({"staff:x"})))
+        started = time.monotonic()
+        self.assertEqual(backend._reader_policy(reader), policy)
+        self.assertLess(time.monotonic() - started, 5)
 
 
 class SearchDefaultTests(unittest.TestCase):

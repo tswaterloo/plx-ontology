@@ -83,6 +83,50 @@ class Classifiers(unittest.TestCase):
         self.assertTrue(it.bulk("hello@email.synth-shop.example", "New arrivals"))
         self.assertTrue(it.bulk("a@synth.example", "Our sale ͏ ͏ ͏ ͏ ͏ starts"))
         self.assertFalse(it.bulk("buyer@synth-customer.example", "Can you ship Friday?"))
+        # zero-width spaces in a person's signature are not a mailing's padding (a supplier's
+        # reply was once cut for them); the preheader's joiners are
+        self.assertFalse(it.bulk("jane@synth-supplier.example", "Can you confirm the freight? "
+                                 "Jane Roe \u200b \u200b \u200b \u200b \u200b Sales"))
+        self.assertTrue(it.bulk("jane@synth-supplier.example", "Our news \u200c\u200b\u034f"
+                                "\u200b\u200c \u034f\u00ad"))
+        # the shapes that reached "Needs your reply" (2026-11-17, counted on the live list):
+        # a vendor's onboarding and workshop mail, a mailing's preheader, an issue tracker's
+        # notice, a billing notice, a role or news sender, a platform's sending subdomain
+        for sender, text, subject in (
+                ("brand365@communication.synth-vendor.example",
+                 "New to the suite? Chat helps you start strong. Want a tour?", "Welcome to Chat"),
+                ("ops@synth-vendor.example", "View this email as a web page. Can a bot help?",
+                 "Live workshops: what could a bot take off your plate?"),
+                ("ops@synth-vendor.example", "Having trouble reading this e-mail? Ready?", ""),
+                ("support@synth-desk.example", "--REPLY above this line to respond-- Awaiting "
+                 "client response: can you confirm?", "SR#1"),
+                ("site@synth-shop.example", "Hi Admin, there is a new subscription. This is a "
+                 "notification that a form was submitted. Can you check?", "New Message"),
+                ("no.reply@billing.synth-carrier.example", "Can you pay?", "Invoice"),
+                ("wordpress@synth-shop.example", "Can you check?", ""),
+                ("acmecanadaenews@synth-maker.example", "Can a scanner help you?", ""),
+                ("info@campaign.synth-courses.example", "Can you join?", ""),
+                ("a@synth.example", "Some people who received this message don't often get "
+                 "email from a@synth.example. Will you join us?", ""),
+                ("ebill@synth-gas.example", "Hello. Your eBill is ready. Can you pay by Friday?",
+                 ""),
+                ("a@ealerts.synth-bank.example", "Your account notices are now available. "
+                 "Can you review?", "")):
+            with self.subTest(sender=sender, subject=subject):
+                self.assertTrue(it.bulk(sender, text, subject))
+        # people: a customer, a supplier, a colleague's forward, a supplier's own mail host,
+        # a person whose name ends in letters a news sender's would
+        for sender, text, subject in (
+                ("diana.wood@synth-group.example", "Please see the attached NDA, can you sign "
+                 "and share back at your earliest?", "NDA"),
+                ("dispatch@synth-logistics.example", "What is the latest they can come today?",
+                 "Re: PO#5354"),
+                ("andrews@synth-supplier.example", "Can you confirm the invoice?", ""),
+                ("sales8@synth-supplier.example", "Now you change the cap in matte? pls double "
+                 "check it.", "RE: FW: Art"),
+                ("pat@synth-customer.example", "FYI, can you take this one?", "FW: Order")):
+            with self.subTest(sender=sender, subject=subject):
+                self.assertFalse(it.bulk(sender, text, subject))
         for text, want in (("Can you kindly update the case label format below?", True),
                            ("We need to update the case labels to include the origin.", True),
                            ("Is there any update on the proof of payment?", False),
@@ -92,6 +136,115 @@ class Classifiers(unittest.TestCase):
                            ("No need to change the artwork.", False)):
             with self.subTest(text=text):
                 self.assertIs(lc.change_request(text), want)
+
+
+class NotAskedOfReader(unittest.TestCase):
+    """Rows A-D of the needs-reply list (2026-11-17, from a sample of the kept list)."""
+
+    def test_mention_of_a_colleague_is_theirs(self) -> None:
+        mine, staff = ["vince.alton@synth.example"], ["maria.hooper@synth.example"]
+        ask = "@Maria Hooper can you issue a credit for the damaged pail?"
+        self.assertTrue(it.mentions_another(ask, mine, staff))
+        # the owner among the mentioned, a mention of no known person, or no mention: kept
+        self.assertFalse(it.mentions_another("@Maria Hooper @Vince Alton can you both check?",
+                                             mine, staff))
+        self.assertFalse(it.mentions_another("@Synth Soap can you confirm?", mine, staff))
+        self.assertFalse(it.mentions_another("Maria, can you check?", mine, staff))
+        self.assertFalse(it.mentions_another("Mail jane@Maria.example please", mine, staff))
+        # a role mailbox (info@) a colleague is @mentioned in: the colleague's
+        self.assertTrue(it.mentions_another(ask, ["info@synth.example"], staff))
+        # a last name the owner's initial-led address holds
+        self.assertFalse(it.mentions_another("@Vince Alton can you check?",
+                                             ["valton@synth.example"], staff))
+
+    def test_a_note_greeting_another_by_name_is_theirs(self) -> None:
+        mine = ["vince.alton@synth.example"]
+        others = ["sw-tina@synth.example", "maria.hooper@synth.example", "all@synth.example"]
+        for text in ("Tina, can you send the COA?", "Hi Maria, could you check the PO?",
+                     "Good morning Tina: please confirm the pickup.",
+                     "Good morning Maria and Tina, can you advise on the below?",
+                     "Hi Maria You have the rendering, why do it again?",
+                     "Hi Tina\uff0c the second shipment is ready, can you advise?"):
+            self.assertTrue(it.greets_another(text, mine, others), text)
+        # the owner among the greeted, or one greeted name no one holds: his
+        self.assertFalse(it.greets_another("Hi Maria and Vince, can you?", mine, others))
+        self.assertFalse(it.greets_another("Maria, Jane, can you?", mine, others))
+        for text in ("Vince, can you send the COA?", "Vin, can you send the COA?",
+                     "All, can you send the COA?", "Thanks, can you send the COA?",
+                     "Tin, can you send the COA?",       # a bare part of a name: no
+                     "Maria You have the rendering",     # a bare name without its comma
+                     "Can you send the COA, Tina?"):     # not an opening
+            self.assertFalse(it.greets_another(text, mine, others), text)
+
+    def test_a_greeted_name_no_address_holds(self) -> None:
+        # "Hi Jane," in mail To the owner and a supplier's sales8@: Jane's, not his
+        mine, to = ["vince.alton@synth.example"], ["sales8@synth-supplier.example"]
+        ask = "Hi Jane, can you send the COA?"
+        self.assertTrue(it.greets_another(ask, mine, to, [*to, *mine]))
+        # kept: To him alone (his nickname), a bare "Jane," (any opening word), a function
+        # mailbox ("info@", "sales8@"), a shared initial ("Hi Al," to alton), our company
+        for args in ((ask, mine, to, mine), ("Jane, can you send it?", mine, to, [*to, *mine]),
+                     (ask, ["info@synth.example"], to, [*to, "info@synth.example"]),
+                     (ask, ["sales8@synth.example"], to, [*to, "sales8@synth.example"]),
+                     ("Hi Al, can you send it?", mine, to, [*to, *mine]),
+                     ("Hi Synth, can you send it?", mine, to, [*to, *mine])):
+            self.assertFalse(it.greets_another(*args), args[0])
+
+    def test_an_indirect_question_asks(self) -> None:
+        for text in ("I want to understand if the new labels are part of our next PO.",
+                     "We\u2019d like to know whether the order ships Friday.",
+                     "I was wondering if you had the COA for lot 5."):
+            self.assertTrue(it.reply_ask(text), text)
+        self.assertFalse(it.reply_ask("I want to understand the market better."))
+
+    def test_offers_are_pitches_not_inquiries(self) -> None:
+        for text in ("Would you like to receive a sample file of our contact list?",
+                     "Can I stop by to show you our handheld measurement tool?",
+                     "Could we help with your fabrication? Happy to quote.",
+                     "Do you need ultra-high purity ingredients? Send me your price list."):
+            self.assertFalse(it.inquiry(text), text)
+        # a stranger's real inquiry is still one
+        self.assertTrue(it.inquiry("Could you quote 5,000 units of the 300 ml body wash?"))
+        self.assertTrue(it.inquiry("What MOQ do you need for private label hand soap?"))
+
+    def test_closers_ask_nothing(self) -> None:
+        for text in ("Attached are the time sheets. Please let me know if there are any "
+                     "discrepancies or queries.",
+                     "We will ship Friday. If anything changes, let me know.",
+                     "Please kindly note our holiday schedule for the coming months.",
+                     "Noted. Can you leave reps off PO emails in the future?",
+                     "Please send a new PO for any additional ribbon required.",
+                     "Want to pay through online banking with your bank?"):
+            self.assertFalse(it.reply_ask(text), text)
+        for text in ("Please let me know the ship date for PO 1234.",
+                     "Please note the price changed; can you confirm the new PO?",
+                     "Please note the price changed, is that OK?"):
+            self.assertTrue(it.reply_ask(text), text)
+
+    def test_person_chase_and_all_caps_ask_are_kept(self) -> None:
+        # a customer's own chase is a person's, even with the phrase and a number
+        self.assertFalse(it.bulk("buyer@synth-customer.example", "Any news on this?",
+                                 "Re: Quote 4471 - waiting for your response"))
+        self.assertFalse(it.bulk("buyer@synth-customer.example", "Any news?",
+                                 "Quote 4471 - waiting for your response"))
+        self.assertFalse(it.bulk("support@synth-vendor.example", "Hi", "Re: SR123456 | Waiting for your response"))
+        shout = ("WHERE IS MY ORDER 4471 IT WAS PROMISED LAST WEEK AND I STILL HAVE NOTHING "
+                 "PLEASE CALL ME TODAY")
+        self.assertFalse(it.bulk("buyer@synth-customer.example", shout, "ORDER 4471"))
+        self.assertTrue(it.bulk("noreply@synth-agency.example", shout, "ORDER 4471"))
+
+    def test_ticket_reminder_subject_is_machine(self) -> None:
+        self.assertTrue(it.bulk("support@synth-vendor.example", "Hello, any news on this?",
+                                "SR123456 | Waiting for your response"))
+        self.assertFalse(it.bulk("jane@synth-supplier.example", "Any news on PO 12?",
+                                 "RE: PO 12 freight"))
+        self.assertTrue(it.bulk("help@synth-vendor.example", "Your request was updated.",
+                                "SR12345678 for Can you reset my login has been updated"))
+        notice = ("PLEASE BE ADVISED THE COUNCIL PROCESSED A PAYMENT THAT WILL BE DEPOSITED IN "
+                  "YOUR ACCOUNT IN THE NEXT FEW DAYS. PLEASE CONFIRM RECEPTION BY E-MAIL.")
+        self.assertTrue(it.bulk("payments@synth-agency.example", notice, "DEPOSIT NOTICE"))
+        self.assertFalse(it.bulk("jane@synth-supplier.example", "PO 12: PLEASE CONFIRM ASAP.",
+                                 "URGENT"))   # a few capitals in a person's note
 
 
 class Triage(Engine):
@@ -150,6 +303,18 @@ class Triage(Engine):
         self.assertEqual(line["draft"]["to"], [{"address": OUTSIDE}])
         self.assertEqual(line["customer_tier"], "none")
 
+    def test_a_note_opening_on_a_colleagues_name_is_theirs(self):
+        # E2: "Lead, could you ..." (no "Hi") in the owner's mailbox puts the ask to the
+        # colleague whose address is lead@; one opening on the owner's own name stays his
+        w = World()
+        ask(w, 1, body="Lead, could you confirm the pallet height for the next order?")
+        ask(w, 2, body="Hi lead - could you confirm the carton count for the next order?")
+        kept = ask(w, 3, body="Ops, could you confirm the lot number for the next order?")
+        named_no_one = ask(w, 4, body="Thanks, could you confirm the ship window for the "
+                                      "next order?")
+        self.assertEqual(self.run_rules(w)["detectors"][it.RULE], "complete")
+        self.assertEqual({g["object_id"] for g in self.mine(OURS_OID)}, {kept, named_no_one})
+
     def test_the_people_exclusion_unavailable_blocks_both_rules(self):
         w, _ = self.world()
         summary = self.run_rules(w, people=people(unavailable=True))
@@ -176,6 +341,94 @@ class Triage(Engine):
                 self.assertEqual(len(conversations), n)
                 top = it.triage(gaps, AS_OF)["lines"][0]
                 self.assertEqual(top["chases"], 2)   # the repeat chases rank first
+
+class PlatformMail(Engine):
+    """Mail a mailing platform sent (the envelope the capture stored) waits on no one, unless
+    a platform relays one person's message or one of ours wrote in its conversation first;
+    the envelope is read from the capture's own records, read-only (``mail_envelope``)."""
+
+    ESP = ["mx.synth-tenant.example; spf=pass smtp.mailfrom=bounce.s7.exacttarget.com; "
+           "dkim=pass header.d=s7.y.mc.salesforce.com"]
+    OWN = ["mx.synth-tenant.example; spf=pass smtp.mailfrom=synth-shop.example; "
+           "dkim=pass header.d=synth-shop.example"]
+
+    def capture(self, records) -> Path:
+        """A mail capture holding ``records`` ((mailbox, id, auth results, current))."""
+        import sqlite3
+        from operating import declared_schema
+        from operating.declared_schema import capture_mail
+        path = Path(tempfile.mkdtemp()) / "capture.db"
+        conn = sqlite3.connect(path)
+        declared_schema.apply(conn, capture_mail)
+        for n, (box, ident, auth, current) in enumerate(records):
+            record = {"id": ident, "mailbox": box, "from": OUTSIDE}
+            if auth is not None:
+                record["authentication_results"] = auth
+            conn.execute(
+                "INSERT INTO messages (l1_handle, mailbox_id, message_id, change_key, folder_id,"
+                " record, digest, body_status, recorded_at, superseded_at, last_seen_at) "
+                "VALUES (?, ?, ?, 'ck', 'f', ?, 'd', 'complete', 't', ?, 't')",
+                (f"h{n}", box, ident, json.dumps(record), None if current else "t2"))
+        conn.commit()
+        conn.close()
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        return path
+
+    run_rules, mine = Triage.run_rules, Triage.mine
+
+    @staticmethod
+    def oid(box: str, ident: str) -> str:
+        from ontology.project import object_id_of
+        return object_id_of("Email", "graph_mail.messages", {"id": ident, "mailbox": box})
+
+    def test_the_stored_envelope_names_the_platform_read_only_and_n_1_10_60(self):
+        from operating import mail_envelope as me
+        box = "00000000-0000-4000-8000-0000000000aa"
+        path = self.capture([
+            (box, "bulk", self.ESP, True), (box, "own", self.OWN, True),
+            (box, "bare", None, True), (box, "odd", "spf=pass smtp.mailfrom=em1.x.example", True),
+            (box, "moved", self.ESP, False), (box, "moved", self.OWN, True)])
+        read = me.reader(path)
+        got = read([self.oid(box, i) for i in ("bulk", "own", "bare", "odd", "moved", "gone")]
+                   + ["Email:fx:1", "Customer:graph_mail.messages:{}", "Email:graph_mail."
+                      "messages:not-json"])
+        # the platform's envelope, a company's own, the current version only; a record with
+        # no header (or not a list), one not held, an id of any other shape: no answer
+        self.assertEqual(got, {self.oid(box, "bulk"): True, self.oid(box, "own"): False,
+                               self.oid(box, "moved"): False})
+        self.assertEqual(me.reader(path.parent / "absent.db")([self.oid(box, "bulk")]), {})
+        before = path.read_bytes()
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                many = self.capture([(box, f"m{i}", self.ESP if i % 2 else self.OWN, True)
+                                     for i in range(n)])
+                started = time.monotonic()
+                got = me.reader(many)([self.oid(box, f"m{i}") for i in range(n)])
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertEqual(got, {self.oid(box, f"m{i}"): bool(i % 2) for i in range(n)})
+        self.assertEqual(path.read_bytes(), before)   # never written
+
+    def test_platform_mail_is_automated_unless_relayed_or_in_our_thread(self):
+        w = World()
+        bulk = ask(w, 1)
+        relay = ask(w, 2, body="Could you confirm the ship window? For your safety, always "
+                                   "communicate through the site.")
+        mail(w, day(6), sender=OURS, to=(OUTSIDE,), body="Here are the specs.",
+             subject="Order 3", conversation="ask-3", n=20_103)
+        threaded = ask(w, 3)
+        unknown = ask(w, 4)
+        verdict = {bulk: True, relay: True, threaded: True, unknown: False}
+        guard = people()
+        guard.mail_platform = lambda oids: {o: verdict[o] for o in oids if o in verdict}
+        summary = self.run_rules(w, people=guard)
+        self.assertEqual({g["object_id"] for g in self.mine(OURS_OID)},
+                         {relay, threaded, unknown})
+        self.assertEqual(summary["detectors"][it.RULE], "complete")
+        guard.mail_platform = lambda oids: 1 / 0   # an unreadable capture drops nothing
+        self.run_rules(w, people=guard)
+        self.assertEqual({g["object_id"] for g in self.mine(OURS_OID)},
+                         {bulk, relay, threaded, unknown})
+
 
 class Feeds(unittest.TestCase):
     """A system feed is found from the mail itself (templates, no replies, never written to),
@@ -360,6 +613,19 @@ class Prospects(Engine):
              conversation="known-1", n=30_003)
         mail(w, day(9), sender=OURS, to=("cy@synth-known.example",), body="Our catalogue.",
              subject="Catalogue", conversation="known-0", n=30_004)
+        # a stranger's first note that only questions the reader is no inquiry: a pitch
+        # offering its own goods, a newsletter asking in its subject, a seller's "do you need"
+        for i, (subject, body) in enumerate((
+                ("Re: Your website ranking", "Hi, may I send you our packages and price "
+                 "list? Please let me know."),
+                ("Is a first home in your future?", "Why opening an account before year-end "
+                 "could help. Visit my website."),
+                ("Any lab equipment on your list?", "Hi, is there any equipment your lab "
+                 "needs to purchase before December? Can you let me know?"),
+                ("Hair dryer details", "Adding a high-speed option to your range? I can send "
+                 "product photos and samples. Would you like them?"))):
+            mail(w, day(4), sender=f"rep{i}@synth-pitch{i}.example", to=(OURS,), body=body,
+                 subject=subject, conversation=f"pitch-q{i}", n=30_010 + i)
         self.run_rules(w)
         lines = it.triage(self.mine(OURS_OID), AS_OF)["lines"]
         self.assertEqual([(l["object_id"], l["new_inquiry"]) for l in lines][-1],

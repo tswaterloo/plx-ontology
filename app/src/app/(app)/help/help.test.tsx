@@ -31,7 +31,7 @@ describe("the help page", () => {
   it("opens on the role in the link, and ignores a role it has no guide for", () => {
     nav.params = new URLSearchParams("role=rnd");
     const { unmount } = render(<HelpPage />);
-    expect(screen.getByTestId("role-guide")).toHaveTextContent("Lists R&D and sample projects");
+    expect(screen.getByTestId("role-guide")).toHaveTextContent("Finds the mail, specs and test results");
     unmount();
     nav.params = new URLSearchParams("role=owner");
     render(<HelpPage />);

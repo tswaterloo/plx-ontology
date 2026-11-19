@@ -66,8 +66,22 @@ describe("Activity", () => {
     fireEvent.click(screen.getByRole("tab", { name: /^Needs a look\s*1$/ }));
     const shown = screen.getAllByTestId("actions-log-row");
     expect(shown).toHaveLength(1);
-    expect(shown[0]).toHaveTextContent("1 not on record");
+    // what the send was missing is the admin's (settings, app permissions), never a count of "not on record"
+    expect(shown[0]).not.toHaveTextContent("not on record");
     fireEvent.click(screen.getByRole("tab", { name: /^Sent\s*2$/ }));
     expect(screen.getAllByTestId("actions-log-row")).toHaveLength(2);
+  });
+
+  it("a send saved while sending is off reads Not sent, named by its recipient, never \"Draft email\"", async () => {
+    api.rows = [
+      { ...row(1, "send_email", "dry_run", ago(1), ["me@x.example"], "Draft email"), card_id: "ask:a1:0", subject: "Draft email", missing: ["Your mailbox is not configured to send (PLX_ACTIONS_SENDERS)"] },
+    ];
+    render(<ActivityPage />);
+    const [r] = await screen.findAllByTestId("actions-log-row");
+    expect(r).toHaveTextContent("Email to me@x.example");
+    expect(r).toHaveTextContent("From Ask");
+    expect(r).toHaveTextContent("Not sent");
+    expect(r).not.toHaveTextContent(/Draft email|Dry run|PLX_|not on record/);
+    expect(r.innerHTML).not.toMatch(/PLX_|configured to send/);
   });
 });

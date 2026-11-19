@@ -74,10 +74,10 @@ def _late_orders(st: _Store, as_of: date, only: str | None = None
         for order, _m in reached:
             if order in late:
                 lines_of_order[order].append(line_id)
+    # Out of the rule's scope, never "cannot check": a draft has no delivery date to be
+    # late against (one scope note says so, ``unjudged_words.scope_notes``)
     for order in sorted(o for o in late
                         if _unreceived_draft(st, o, lines_of_order[o], lines)):
-        skipped.note("draft_dates_nothing", [order],
-                     [(line["line_id"], m) for line, _e, m in late[order]])
         del late[order]
     if not late:
         return [], skipped
@@ -343,8 +343,8 @@ def _late_order(st: _Store, as_of: date) -> dict[str, Any]:
         # rule does not call late is no claim (one rule, never a second copy of it)
         po = po_status.read(src, facts["order"], as_of)
         if po.verdict is None or po.verdict[0] != po_status.LATE:
-            skipped.note("order_not_late", [facts["order"]],
-                         [(facts["order"], _markings(*po.identity_marks))])
+            # not late by the purchase-order rule: a check that passed, no gap (an order
+            # that rule cannot decide is counted once, by ``late_or_unconfirmed_po``)
             continue
         _vendor_facing(src, po, facts)
         by_lines = all(isinstance(r, Mapping) and r.get("property") == pg.LINE_DATE
@@ -360,9 +360,7 @@ def _late_order(st: _Store, as_of: date) -> dict[str, Any]:
         facts["lines"] = [line for line in facts["lines"] if not by_lines
                           or (line.get("line_id"), line["day"].isoformat()) not in defaulted]
         if not facts["lines"]:
-            skipped.note("order_not_late", [facts["order"]],
-                         [(facts["order"], _markings(*po.identity_marks))])
-            continue
+            continue   # its only late dates are defaults: not late, no gap
         rows = facts["lines"]
         groups = [[c for line in rows for c in line["evidence"][prop]]
                   for prop in (pg.LINE_DATE, pg.LINE_ORDERED, pg.LINE_RECEIVED)]

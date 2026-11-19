@@ -743,7 +743,13 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                 self._kept.pop(next(iter(self._kept)))
         yield "answer", answer
 
-    def suggest(self, reader: Reader, q: str, limit: int) -> m.SuggestResponse:
+    def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = ""
+                 ) -> m.BizPage:
+        raise UserFacing("pages_off", "These record pages aren't switched on on this "
+                                "server yet.", 404)
+
+    def suggest(self, reader: Reader, q: str, limit: int, *, person: bool = False
+                ) -> m.SuggestResponse:
         started = time.perf_counter()
         # as the live lookup does: each trailing phrase of what was typed, longest first
         words = q.strip().lower().split()
@@ -1084,12 +1090,6 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         """The demo world holds no mailbox: nothing waits on a reply."""
         return m.ReplyTriage(as_of="2026-01-05", total=0, sent=0, writes=0)
 
-    def rd_board(self, reader: Reader) -> m.RdBoard:
-        """The demo world holds no R&D or sample threads."""
-        from operating.rd_projects import idle_days
-        return m.RdBoard(as_of="2026-01-05", idle_after_days=idle_days(), total=0, idle=0, sent=0,
-                         writes=0)
-
     def answer_bank(self, reader: Reader, question: Optional[str] = None) -> m.DocList:
         """The mock workspace holds no questionnaires: the list, read and empty."""
         return m.DocList(view="answer_bank", title="Answers any customer may get")
@@ -1145,24 +1145,6 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         from . import mock_meetings
         from .briefs import brief_model
         return brief_model(mock_meetings.weekly(week))
-
-    def qc_pack_dict(self, reader: Reader, kind: str) -> dict[str, Any]:
-        """The real builder over no records and no markings: every section is marked."""
-        from operating import briefs as br
-
-        def call(tool: str, args: dict) -> dict:
-            return {"error": {"code": "not_served", "message": "the demo serves no records"}}
-        if kind == "daily":
-            return br.qc_daily_pack(call, frozenset(), {"status": "not_configured"})
-        return br.qc_audit_pack(call, frozenset())
-
-    def qc_pack(self, reader: Reader, kind: str) -> m.Brief:
-        from .briefs import brief_model
-        return brief_model(self.qc_pack_dict(reader, kind))
-
-    def qc_pack_text(self, reader: Reader, kind: str) -> str:
-        from operating import briefs as br
-        return br.pack_text(self.qc_pack_dict(reader, kind))
 
     def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
         """A demo alert's playbook by the real builder over the demo briefing; no record
@@ -1371,6 +1353,14 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         return m.ImpactPanel(object_id=page.object_id, mode=mode,
                              change=None if mode == "why" else "delayed 7 days",
                              unknown=["the mock workspace records no links to walk"])
+
+    def object_core(self, reader: Reader, object_type: str, object_id: str) -> m.ObjectPage:
+        """The record's card alone: its facts, with everything the walk reads pending."""
+        page = self.object_page(reader, object_type, object_id, quick=True)
+        return page.model_copy(update={
+            "core": True, "complete": False, "status": m.ObjectStatus(state="reading", text=""),
+            "timeline": [], "linked": [], "related": [], "links": [], "not_found": [],
+            "conflicts": [], "customer": None, "hidden": None})
 
     def object_section(self, reader: Reader, object_type: str, object_id: str,
                        section: str) -> m.ObjectSection:

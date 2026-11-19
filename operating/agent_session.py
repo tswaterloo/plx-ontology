@@ -795,9 +795,16 @@ def parse_stream_json(lines: Iterable[str], catalog: Iterable[str],
             usage = {key: raw_usage.get(key) for key in (
                 "input_tokens", "output_tokens", "cache_creation_input_tokens",
                 "cache_read_input_tokens")}
+            details = raw_usage.get("output_tokens_details")
             usage.update({"cost_usd_estimate": message.get("total_cost_usd"),
                           "num_turns": message.get("num_turns"),
                           "duration_ms": message.get("duration_ms"),
+                          # where a turn's time went: the model's own share and its
+                          # first token, and the tokens it spent thinking
+                          "duration_api_ms": message.get("duration_api_ms"),
+                          "ttft_ms": message.get("ttft_ms"),
+                          "thinking_tokens": details.get("thinking_tokens")
+                          if isinstance(details, dict) else None,
                           "is_error": message.get("is_error"),
                           "subtype": message.get("subtype")})
     usage["tool_calls"] = len(events)
@@ -2473,6 +2480,151 @@ def streaming_spawn(on_line: Callable[[str], None]) -> Spawn:
     return spawn
 
 
+WARM_ENDED = "warm_session_ended"
+
+
+class WarmProcess:
+    """One Claude Code process kept for a conversation's turns (``-p --input-format
+    stream-json``), in its own process group: each ``turn`` writes one user message and
+    reads its stream up to that turn's ``result`` line. ``stop(line)`` true, the turn's
+    ``timeout``, or the process ending before its result kill the whole group (``dead``:
+    never used again); a timeout raises ``subprocess.TimeoutExpired`` carrying the turn's
+    stream so far, as ``_stream`` does. The task and each message go masked
+    (``operating.card_text``)."""
+
+    def __init__(self, argv: list[str], cwd: str, env: dict[str, str]) -> None:
+        import threading
+        from operating.card_text import mask_served
+        self._mask = mask_served
+        self.argv = [mask_served(arg) for arg in argv]
+        self.child = subprocess.Popen(self.argv, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      text=True, bufsize=1, start_new_session=True)
+        self.turns = 0
+        self.dead = False
+        self._lock = threading.Lock()
+
+    def turn(self, text: str, timeout: Any, *, on_line: Callable[[str], None] | None = None,
+             stop: Callable[[str], bool] | None = None) -> tuple[int | None, str]:
+        import threading
+        if self.dead:
+            raise ToolsUnattached(WARM_ENDED)
+        self.turns += 1
+        message = json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": self._mask(str(text))}]}}) + "\n"
+        expired = threading.Event()
+
+        def expire() -> None:
+            expired.set()
+            self.close()
+        timer = threading.Timer(float(timeout or 0) or 3600.0, expire)
+        timer.daemon = True
+        timer.start()
+        lines: list[str] = []
+        ended = finished = errored = False
+        try:
+            self.child.stdin.write(message)
+            self.child.stdin.flush()
+            while True:
+                line = self.child.stdout.readline()
+                if not line:
+                    break
+                lines.append(line)
+                if on_line is not None:
+                    try:
+                        on_line(line)
+                    except Exception:  # noqa: BLE001 - progress only; the turn goes on
+                        pass
+                if stop is not None and not expired.is_set() and stop(line):
+                    ended = True
+                    break
+                if line.startswith("{") and '"result"' in line:
+                    try:
+                        got = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(got, dict) and got.get("type") == "result":
+                        finished, errored = True, bool(got.get("is_error"))
+                        break
+        except (OSError, ValueError):
+            pass
+        finally:
+            timer.cancel()
+        if expired.is_set() and not finished and not ended:
+            raise subprocess.TimeoutExpired(self.argv, timeout, output="".join(lines))
+        if not finished:
+            # stopped (an attach failure, the gate's end, a cancel) or the process ended:
+            # the conversation in it is not continued
+            self.close()
+            return (0 if ended else self.child.returncode), "".join(lines)
+        return (1 if errored else 0), "".join(lines)
+
+    def close(self) -> None:
+        with self._lock:
+            self.dead = True
+            if self.child.poll() is None:
+                _kill_group(self.child)
+            try:
+                self.child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            for stream in (self.child.stdin, self.child.stdout):
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+
+
+class AttachedSession:
+    """A session kept for several turns (``ClaudeCodeAgent.open_session``): its host, its
+    gate and one Claude Code process (``WarmProcess``) set up once; each ``turn`` is one
+    user message with the whole budget again. ``alive`` false once a turn failed, timed out
+    or was stopped, or after ``close``: never used again."""
+
+    def __init__(self, agent: "ClaudeCodeAgent", host: Host, prestart: bool = False) -> None:
+        self.agent, self.host = agent, host
+        self.state: dict[str, Any] = {}
+        self.turns = 0
+        self._closed = False
+        self._gen = agent._attached(host, warm=True, state=self.state, prestart=prestart)
+        try:
+            next(self._gen)
+        except BaseException:
+            self._closed = True
+            raise
+
+    @property
+    def alive(self) -> bool:
+        process = self.state.get("process")
+        return not self._closed and not (process is not None and process.dead)
+
+    def turn(self, prompt: str, on_line: Callable[[str], None] | None = None,
+             cancel: Any = None) -> AgentRun:
+        from operating import model_ledger
+        if not self.alive:
+            raise ToolsUnattached(WARM_ENDED)
+        self.turns += 1
+        started = time.monotonic()
+        try:
+            ran = self._gen.send((prompt, on_line, cancel))
+        except BaseException as exc:
+            self._closed = True
+            model_ledger.record("agent_session", prompt=prompt, ok=False,
+                                reason=(f"tools_unattached:{exc.code}"
+                                        if isinstance(exc, ToolsUnattached)
+                                        else type(exc).__name__),
+                                seconds=time.monotonic() - started)
+            raise
+        turns, tokens = model_ledger.usage_of(ran.usage)
+        model_ledger.record("agent_session", prompt=prompt, ok=bool(ran.final_text),
+                            seconds=time.monotonic() - started, tokens=tokens, turns=turns)
+        return ran
+
+    def close(self) -> None:
+        self._closed = True
+        self._gen.close()   # a generator already ended (a failed turn): nothing to do
+
+
 class GateEnd:
     """Watches a session's stream (``stop`` of a spawn): true at the line carrying the
     answer gate's final decision that passed a claim (a ``plx.case_get`` answer-mode
@@ -2797,6 +2949,28 @@ class ClaudeCodeAgent:
         raise ToolsUnattached(HOST_NOT_READY)   # not reached: ATTACH_ATTEMPTS >= 1
 
     def _run_attached(self, prompt: str, host: Host) -> AgentRun:
+        turns = self._attached(host)
+        next(turns)
+        try:
+            return turns.send((prompt, None, getattr(self, "cancel_event", None)))
+        finally:
+            turns.close()
+
+    def open_session(self, host: Host, prestart: bool = False) -> "AttachedSession":
+        """A session kept for several turns (``AttachedSession``): its host, gate and one
+        Claude Code process stay up between them, so a follow-up skips their start-up.
+        ``prestart``: the host is waited for and the process started before this returns
+        (a session made ready before anyone asks), else at the first turn."""
+        return AttachedSession(self, host, prestart=prestart)
+
+    def _attached(self, host: Host, warm: bool = False,
+                  state: dict[str, Any] | None = None, prestart: bool = False) -> Any:
+        """The session's set-up, then one turn per ``(prompt, on_line, cancel)`` sent (each
+        yields its ``AgentRun``), its teardown at ``close``. Not ``warm``: each turn is its
+        own Claude Code process (``spawn``; ``_run_attached`` sends one turn). ``warm``: one
+        process (``WarmProcess``) across the turns, each turn one user message with its
+        own clock and budget; a turn that times out, is stopped or whose process ended
+        leaves the process dead (``state["process"].dead``): the session is not reused."""
         tools = host.tools()
         local = dict(getattr(self, "local_tools", None) or {})
         catalog = [tool["name"] for tool in tools] + [n for n in local
@@ -2805,6 +2979,7 @@ class ClaudeCodeAgent:
                                          proposals=self.proposals)
         allowed = [n for n in allowed if n not in local] + list(local)
         refused = [n for n in refused if n not in local]
+        state = state if state is not None else {}
         with tempfile.TemporaryDirectory(prefix="plx-eval-") as work:
             config = Path(work) / "mcp.json"
             log = Path(work) / "gate-refused.jsonl"
@@ -2813,21 +2988,20 @@ class ClaudeCodeAgent:
             server = host.mcp_server()
             started = time.time()
             phases: dict[str, Any] = {}
-            budgeted = []
+            budgeted = self.budget_seconds is not None or self.max_steps is not None
+            research = calls_end = 0.0
             if self.budget_seconds is not None:
-                ends = started + float(self.budget_seconds)
                 research, calls_end = deep.deadlines(float(self.budget_seconds))
-                budgeted += ["--deadline", f"{started + research:.3f}",
-                             "--ends-at", f"{ends:.3f}"]
-            if self.max_steps is not None:
-                budgeted += ["--max-steps", str(int(self.max_steps))]
-            budget = None
-            if self.budget_seconds is not None or self.max_steps is not None:
-                budget = deep.Budget(started + research if self.budget_seconds is not None
-                                     else None, self.max_steps,
-                                     ends if self.budget_seconds is not None else None,
-                                     records_first=self.records_named,
-                                     question=self.asked, roots=self.known_roots)
+
+            def fresh_budget(now: float) -> "deep.Budget | None":
+                if not budgeted:
+                    return None
+                timed = self.budget_seconds is not None
+                return deep.Budget(now + research if timed else None, self.max_steps,
+                                   now + float(self.budget_seconds) if timed else None,
+                                   records_first=self.records_named,
+                                   question=self.asked, roots=self.known_roots)
+            budget = fresh_budget(started)
             deadline = None if self.budget_seconds is None else started + calls_end
             # Every call's end is read from a file (``call_limits.DEADLINE_FILE_ENV``), so
             # it moves with the session's clock when the task waits for its first reads.
@@ -2874,7 +3048,7 @@ class ClaudeCodeAgent:
             # host can still submit the reply to the session's own answer gate.
             reads = list(self.first_reads) + [
                 read for read in self.quiet_reads if read not in self.first_reads]
-            feeds = bool(reads) and getattr(self.spawn, "feeds", False)
+            feeds = bool(reads) and (warm or getattr(self.spawn, "feeds", False))
             try:
                 gate = HostGate(allowed, {**server, "env": server_env},
                     Path(work), log=log, timing=timing, budget=budget,
@@ -2886,7 +3060,7 @@ class ClaudeCodeAgent:
                     child=None if spare is None else spare.child, pool=pool,
                     question=self.asked, entities=self.question_entities,
                     # a real session waits for its host before Claude Code starts
-                    ready=bool(getattr(self.spawn, "feeds", False)), local=local)
+                    ready=warm or bool(getattr(self.spawn, "feeds", False)), local=local)
             except BaseException:
                 if spare is not None:
                     spare.stop()
@@ -2904,112 +3078,190 @@ class ClaudeCodeAgent:
                               encoding="utf-8")
             session = Path(work) / "session"
             session.mkdir()
-            timed_out, submission, submitted = False, None, None
-            ends = GateEnd() if self.end_at_gate and ANSWER_GATE_TOOL in allowed else None
+            submission, finished, turn, ran = None, False, 0, None
             attach = AttachCheck() if allowed else None
+            env = {**agent_environment(os.environ), "MCP_TIMEOUT": str(MCP_STARTUP_MS)}
+            # ``prestart`` (a warm session opened before its question): its host is waited
+            # for and its Claude Code process started now, so the first turn pays neither;
+            # that turn's clock and budget start when its question comes, as a follow-up's
+            prestarted = False
             try:
-                waited_at = time.time()
-                not_ready = gate.host_ready(HOST_READY_SECONDS)
-                if not_ready is not None:
-                    abandon(not_ready)
-                waited = time.time() - waited_at
-                if waited >= 1:
-                    # the session's clock starts when Claude Code does: the time its
-                    # host took to start is not taken from its research or its calls
-                    # (nor counted again by ``feed``, which measures from ``started``)
-                    _shift_clock(budget, waited, deadline, calls_file, spare)
-                    if deadline is not None:
-                        deadline += waited
-                    started += waited
-                try:
-                    argv = self.argv(prompt, str(config), allowed, refused)
-                    options: dict[str, Any] = {}
-                    if feeds:
-                        # The task goes in on stdin once the host's first reads are in.
-                        argv = [argv[0], "-p", *argv[3:], "--input-format", "stream-json"]
+                if warm and prestart:
+                    not_ready = gate.host_ready(HOST_READY_SECONDS)
+                    if not_ready is not None:
+                        abandon(not_ready)
+                    argv = self.argv("", str(config), allowed, refused)
+                    state["process"] = (getattr(self, "warm_spawn", None) or WarmProcess)(
+                        [argv[0], "-p", *argv[3:], "--input-format", "stream-json"],
+                        str(session), env)
+                    prestarted = True
+                while True:
+                    try:
+                        prompt, on_line, cancel = yield ran
+                    except GeneratorExit:
+                        break
+                    turn += 1
+                    process = state.get("process")
+                    if process is not None and process.dead:
+                        raise ToolsUnattached(WARM_ENDED)
+                    if turn > 1 or prestarted:
+                        # a follow-up (or a pre-started session's first question) has the
+                        # whole budget again, from now
+                        started, phases = time.time(), {}
+                        if budget is not None:
+                            budget.__dict__.update(fresh_budget(started).__dict__)
+                        if self.budget_seconds is not None:
+                            deadline = started + calls_end
+                            if spare is not None:
+                                spare.set_deadline(deadline)
+                            elif calls_file is not None:
+                                calls_file.write_text(f"{deadline:.3f}", encoding="utf-8")
+                            for helper in taken:
+                                helper.set_deadline(deadline)
+                    marks = [len(path.read_text(encoding="utf-8").splitlines())
+                             if path.is_file() else 0 for path in (log, timing, budget_log)]
+                    timed_out, submission = False, None
+                    ends = GateEnd() if self.end_at_gate and ANSWER_GATE_TOOL in allowed \
+                        else None
+                    if turn == 1 and not prestarted:
+                        waited_at = time.time()
+                        not_ready = gate.host_ready(HOST_READY_SECONDS)
+                        if not_ready is not None:
+                            abandon(not_ready)
+                        waited = time.time() - waited_at
+                        if waited >= 1:
+                            # the session's clock starts when Claude Code does: the time
+                            # its host took to start is not taken from its research or
+                            # its calls (nor counted again by ``feed``, which measures
+                            # from ``started``)
+                            _shift_clock(budget, waited, deadline, calls_file, spare)
+                            if deadline is not None:
+                                deadline += waited
+                            started += waited
+                    try:
+                        argv = self.argv(prompt, str(config), allowed, refused)
+                        options: dict[str, Any] = {}
+                        if feeds and turn == 1:
+                            # The task goes in on stdin once the host's first reads are in.
+                            argv = [argv[0], "-p", *argv[3:], "--input-format",
+                                    "stream-json"]
 
-                        def feed() -> str:
-                            task = _fed(prompt, gate)
-                            phases["fed_ms"] = round((time.time() - started) * 1000)
-                            # The session's clock starts when it has its task: the time
-                            # its first reads took (up to PREFETCH_WAIT_SECONDS, longer
-                            # than its research share on a busy host) is not taken from
-                            # its research, its calls or its end.
-                            _shift_clock(budget, self._shift_room(time.time() - started),
-                                         deadline, calls_file, spare)
-                            moved = deadline_now()
-                            for helper in list(taken) if moved is not None else ():
-                                helper.set_deadline(moved)
-                            return task
-                        options["feed"] = feed
-                    cancel = getattr(self, "cancel_event", None)
-                    if getattr(self.spawn, "stops", False) and (
-                            ends is not None or attach is not None or cancel is not None):
-                        # API-011: nobody waits for the answer any more: the session ends
-                        options["stop"] = _either(
-                            attach, ends,
-                            (lambda _line: cancel.is_set()) if cancel is not None else None)
-                    spawned = (argv, str(session), {**agent_environment(os.environ),
-                                                    "MCP_TIMEOUT": str(MCP_STARTUP_MS)},
-                               self.timeout)
-                    if options:
-                        code, stdout = self.spawn(*spawned, **options)
-                    else:
-                        code, stdout = self.spawn(*spawned)
-                        if attach is not None:
-                            attach.scan(stdout)
-                        if ends is not None and not (attach and attach.failed):
-                            stdout = ends.cut(stdout)
-                    if attach is not None and attach.failed:
-                        abandon(CLIENT_UNATTACHED)
-                    if ends is not None and ends.ended:
-                        code = 0
-                except subprocess.TimeoutExpired as expired:
-                    # The stream read before the timeout stays in the transcript (the
-                    # calls made and their results), so a timed-out session says where it
-                    # spent its time. It has no final reply: no answer is taken from it.
-                    partial = expired.stdout or expired.output or ""
-                    code, stdout = None, (partial.decode("utf-8", "replace")
-                                          if isinstance(partial, bytes) else str(partial))
-                    timed_out = True
-                run = _restored(parse_stream_json(stdout.splitlines(), catalog),
-                                gate.aliases)
-                if ends is not None and ends.ended and not timed_out:
-                    # Ended at the gate's final decision: the reply is that decision.
-                    run = AgentRun(run.events, decided_reply(run.events),
-                                   {**run.usage, "is_error": False,
-                                    "subtype": "ended_at_gate"}, run.agent)
-                if not timed_out and ANSWER_GATE_TOOL in allowed:
-                    submission = host_submission(run.events, run.final_text)
-                elif ANSWER_GATE_TOOL in allowed:
-                    # Stopped at its cap: what it last submitted (a submission still
-                    # being decided when it was stopped) is decided by the host, so the
-                    # reader gets the best answer the gate passes, never an empty reply.
-                    submission = cut_submission(run.events)
+                            def feed(prompt: str = prompt) -> str:
+                                task = _fed(prompt, gate)
+                                phases["fed_ms"] = round((time.time() - started) * 1000)
+                                # The session's clock starts when it has its task: the
+                                # time its first reads took (up to PREFETCH_WAIT_SECONDS,
+                                # longer than its research share on a busy host) is not
+                                # taken from its research, its calls or its end.
+                                _shift_clock(budget, self._shift_room(time.time() - started),
+                                             deadline, calls_file, spare)
+                                moved = deadline_now()
+                                for helper in list(taken) if moved is not None else ():
+                                    helper.set_deadline(moved)
+                                return task
+                            options["feed"] = feed
+                        if warm or (getattr(self.spawn, "stops", False) and (
+                                ends is not None or attach is not None
+                                or cancel is not None)):
+                            # API-011: nobody waits for the answer any more: the session
+                            # ends
+                            options["stop"] = _either(
+                                attach, ends,
+                                (lambda _line, cancel=cancel: cancel.is_set())
+                                if cancel is not None else None)
+                        if warm:
+                            if process is None:
+                                process = state["process"] = (
+                                    getattr(self, "warm_spawn", None) or WarmProcess)(
+                                    [argv[0], "-p", *argv[3:], "--input-format",
+                                     "stream-json"], str(session), env)
+                            text = prompt
+                            if "feed" in options:
+                                text = json.loads(options["feed"]())["message"]["content"]
+                            code, stdout = process.turn(text, self.timeout, on_line=on_line,
+                                                        stop=options["stop"])
+                        elif options:
+                            code, stdout = self.spawn(argv, str(session), env, self.timeout,
+                                                      **options)
+                        else:
+                            code, stdout = self.spawn(argv, str(session), env, self.timeout)
+                            if attach is not None:
+                                attach.scan(stdout)
+                            if ends is not None and not (attach and attach.failed):
+                                stdout = ends.cut(stdout)
+                        if attach is not None and attach.failed:
+                            abandon(CLIENT_UNATTACHED)
+                        if ends is not None and ends.ended:
+                            code = 0
+                    except subprocess.TimeoutExpired as expired:
+                        # The stream read before the timeout stays in the transcript (the
+                        # calls made and their results), so a timed-out session says where
+                        # it spent its time. It has no final reply: no answer is taken
+                        # from it.
+                        partial = expired.stdout or expired.output or ""
+                        code, stdout = None, (partial.decode("utf-8", "replace")
+                                              if isinstance(partial, bytes) else str(partial))
+                        timed_out = True
+                    run = _restored(parse_stream_json(stdout.splitlines(), catalog),
+                                    gate.aliases)
+                    if ends is not None and ends.ended and not timed_out:
+                        # Ended at the gate's final decision: the reply is that decision.
+                        run = AgentRun(run.events, decided_reply(run.events),
+                                       {**run.usage, "is_error": False,
+                                        "subtype": "ended_at_gate"}, run.agent)
+                    if not timed_out and ANSWER_GATE_TOOL in allowed:
+                        submission = host_submission(run.events, run.final_text)
+                    elif ANSWER_GATE_TOOL in allowed:
+                        # Stopped at its cap: what it last submitted (a submission still
+                        # being decided when it was stopped) is decided by the host, so
+                        # the reader gets the best answer the gate passes, never an empty
+                        # reply.
+                        submission = cut_submission(run.events)
+                    submitted = None
+                    if not warm:
+                        finished = True
+                        submitted = gate.finish(submission)
+                    run.agent["timing"] = dict(phases)
+                    read = [path.read_text(encoding="utf-8").splitlines()[mark:]
+                            if path.is_file() else []
+                            for path, mark in zip((log, timing, budget_log), marks)]
+                    ran = self._turn_record(run, gate, read, started, code, allowed,
+                                            submission if not warm else None, submitted,
+                                            timed_out, warmed, spare, budgeted,
+                                            first=turn == 1)
             finally:
-                submitted = gate.finish(submission)
-            gate_refused = (len(log.read_text(encoding="utf-8").splitlines())
-                            if log.is_file() else 0)
-            timed = timing.read_text(encoding="utf-8").splitlines() if timing.is_file() \
-                else []
-            spent = deep.budget_summary(budget_log.read_text(encoding="utf-8").splitlines()
-                                        if budget_log.is_file() else [])
-            seconds = round(time.time() - started, 1)
+                process = state.get("process")
+                if process is not None:
+                    process.close()
+                if not finished:
+                    gate.finish(submission)
         if spare is not None:
             spare.release()
         for helper in taken:
             helper.release()
         if key is not None:
             self._start_spare(host)
-        if gate.prefetched:
+
+    def _turn_record(self, run: AgentRun, gate: Any, read: list[list[str]], started: float,
+                     code: Any, allowed: Sequence[str], submission: Any, submitted: Any,
+                     timed_out: bool, warmed: Any, spare: Any, budgeted: bool, *,
+                     first: bool) -> AgentRun:
+        """One turn's ``AgentRun`` with where its time went and what its gate did
+        (``read``: the turn's own lines of the gate's refused, timing and budget logs)."""
+        refused_lines, timed, budget_lines = read
+        spent = deep.budget_summary(budget_lines)
+        seconds = round(time.time() - started, 1)
+        if first and gate.prefetched:
             # The host's first reads happened first, in the same session.
-            run.events[:0] = [_prefetched_event(read) for read in gate.prefetched]
+            run.events[:0] = [_prefetched_event(r) for r in gate.prefetched]
             for seq, event in enumerate(run.events):
                 event["seq"] = seq
         attach_call_timing(run.events, timed, started)
         # Where the session's time went (milliseconds; tool names only): the first reads,
         # when the task reached the session, and each call the session made.
-        run.agent["timing"] = {**phases, "prefetch": [list(r) for r in gate.prefetch_ms],
+        run.agent["timing"] = {**(run.agent.get("timing") or {}),
+                               "prefetch": [list(r) for r in gate.prefetch_ms] if first
+                               else [],
                                # [tool, ms it took, ms after the session's start it
                                # began]: calls that overlap ran at once
                                "calls": [[e.get("name"), e.get("elapsed_ms"),
@@ -3027,9 +3279,9 @@ class ClaudeCodeAgent:
         run.usage["refused_tool_calls"] = sum(1 for event in run.events
                                               if event["name"] not in allowed)
         run.agent["allowed_tools"] = allowed
-        run.agent["gate_refused"] = gate_refused
+        run.agent["gate_refused"] = len(refused_lines)
         run.agent["host_start"] = ("warm" if warmed is not None else "spare"
-                                   if spare is not None else "started")
+                                   if spare is not None else "started") if first else "kept"
         if budgeted:
             # The steps the session used against its budget (counts only).
             run.agent["budget"] = {**(spent or {"steps_used": 0, "refused_after_budget": 0}),
@@ -3517,12 +3769,14 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
     as of), the answer contract, the citation, number, conflict and plan rules, the
     deep-investigation method (``deep_investigation.method_rule``), the answer-gate rule,
     the question with its analysis (``deep_investigation.question_analysis``: ``today``
-    is the day an unpinned question is asked on, default the current UTC day) and the
+    is the day an unpinned question is asked on, default the current day in the company's
+    time zone, America/New_York: "this month" asked at 9 PM ET on the 31st is that month) and the
     answer block. The scoreboard's cards (``evals.runner.build_prompt``) and the app's
     Ask (``ask_prompt``) ask with it."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     if today is None and pinned == UNPINNED:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(ZoneInfo("America/New_York")).date()
     analysis = deep.question_analysis(question, pinned, today if pinned == UNPINNED
                                       else None)
     return "\n".join([
@@ -3694,6 +3948,9 @@ def ask_prompt(question: str, route: str | None = None) -> str:
 # isolate_journal``): passed to the host it starts, whose session environment drops it.
 JOURNAL_DIR_ENV = "PLX_WORKBENCH_JOURNAL_DIR"
 EXCLUSION_ENV = ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE")
+# The configured full readers (``employee_permissions.FULL_READERS_ENV``): the host decides
+# the session's reader as the API does, so it reads them too.
+FULL_READERS_ENV = ("PLX_FULL_READERS",)
 # The Graph directory reader's settings, passed only to a host whose config names an
 # Entra directory.
 GRAPH_ENV = ("MICROSOFT_GRAPH_TENANT_ID", "MICROSOFT_GRAPH_CLIENT_ID",
@@ -3714,9 +3971,10 @@ SEARCH_ENV = ("PLX_SEARCH", "PLX_PG_DSN", "PLX_SEARCH_WEIGHTS", "PLX_SEARCH_OWNE
 # (``postgresql:///plx``), so a host without ``PGUSER`` connected as its OS user
 # (``plx-workbench``), which Postgres refuses, and every Ask's reads failed (ASK-FIX
 # 11-15: tool_execution_failed, freshness_unknown, audience_not_granted). ``PGPASSWORD``
-# and ``PGPASSFILE`` never pass.
+# and ``PGPASSFILE`` never pass. ``PLX_BIZ_SCHEMA``: the schema of the business views
+# plx.business reads (unset = biz; a scratch copy for a benchmark).
 STORE_ENV = ("PLX_ONTOLOGY_PG", "PLX_PG_FACTS_DIR", "PGUSER", "PGHOST", "PGPORT",
-             "PGDATABASE")
+             "PGDATABASE", "PLX_BIZ_SCHEMA")
 LIST_SECONDS = 180.0   # the host's start-up and its tool list
 
 
@@ -3764,7 +4022,7 @@ class ReaderHost:
                 "cwd": str(REPO_ROOT),
                 "env": {"PYTHONPATH": str(REPO_ROOT), self.ticket_env: self.ticket(),
                         si.SESSION_TICKET_SECRET_ENV: self._secret,
-                        **{name: os.environ[name] for name in EXCLUSION_ENV + SEARCH_ENV
+                        **{name: os.environ[name] for name in EXCLUSION_ENV + FULL_READERS_ENV + SEARCH_ENV
                            + STORE_ENV + (JOURNAL_DIR_ENV,) if os.environ.get(name)},
                         **self._extra_env,
                         # The app asked its person before the session

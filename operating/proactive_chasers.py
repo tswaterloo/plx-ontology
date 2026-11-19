@@ -110,8 +110,9 @@ CUSTOMER_MAIL = ("email", "email_2", "email_3", "bc_email")
 PUBLIC_MAIL = frozenset({"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
                          "icloud.com", "aol.com", "msn.com", "yahoo.ca", "hotmail.ca",
                          "me.com", "protonmail.com", "shaw.ca", "rogers.com", "sympatico.ca"})
-AUTOMATED = re.compile(r"(?:^|[._+-])(?:no-?reply|do-?not-?reply|notifications?|mailer-daemon|"
-                       r"postmaster|bounce|alerts?)(?:[._+-]|@)", re.I)
+AUTOMATED = re.compile(r"(?:^|[._+-])(?:no[._-]?reply|do[._-]?not[._-]?reply|notifications?|"
+                       r"notify|mailer-daemon|postmaster|bounces?|alerts?|wordpress)"
+                       r"(?:[._+-]|@)", re.I)
 READY_WORDS = ("ready", "picked", "packed", "staged")
 SETTLED_MENTION = ("verified", "reviewed", "corroborated")
 

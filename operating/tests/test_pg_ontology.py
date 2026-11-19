@@ -24,13 +24,16 @@ CHUNK_WORDS_SQL = ("SELECT f.rowid, t.field_id FROM chunk_text f JOIN text_chunk
                    "ON t.chunk_id = f.rowid WHERE chunk_text MATCH :q AND f.rowid > :after")
 
 
-def _add_document(path, texts, field_path="row.body_text"):
+def _add_document(path, texts, field_path="row.body_text", object_id=None):
     """A made-up document text field (and its chunks, words indexed) on the first object
-    of the store at ``path``; returns its chunk ids."""
+    of the store at ``path`` (or on ``object_id``'s live version); returns its chunk ids."""
     import zlib
     with sqlite3.connect(path) as conn:
-        oid, handle = conn.execute("SELECT object_id, l1_handle FROM object_versions "
-                                   "ORDER BY rowid LIMIT 1").fetchone()
+        oid, handle = conn.execute(
+            "SELECT object_id, l1_handle FROM object_versions ORDER BY rowid LIMIT 1"
+            ).fetchone() if object_id is None else conn.execute(
+            "SELECT object_id, l1_handle FROM object_versions WHERE object_id = ? AND "
+            "superseded_at IS NULL ORDER BY rowid DESC LIMIT 1", (object_id,)).fetchone()
         field = conn.execute(
             "INSERT INTO text_fields (object_id, version_handle, citation, field_path, "
             "document_kind, sender_class, markings, text_digest) VALUES (?, ?, ?, "
@@ -89,9 +92,10 @@ class OntologyLoadTests(unittest.TestCase):
 
     def test_type_audiences_and_family_spans_read_by_index_cover_the_whole_scan(self):
         """Each type's audience keys read one index step per pair equal the scan of every
-        object, on SQLite and on Postgres; a family's value-cell span is the exact one
-        within its time limit, and past it every cell's span (a superset: the search it
-        narrows reads more rows, never fewer), the connection still usable."""
+        object, on SQLite and on Postgres; a family's value-cell runs hold every source of
+        the family within its time limit, and past it every cell's span is the one run (a
+        superset: the search it narrows reads more rows, never fewer), the connection
+        still usable."""
         from unittest import mock
         from operating.ontology_tools import StoreReader
         from operating.pg import ontology_load, ontology_reader
@@ -116,20 +120,45 @@ class OntologyLoadTests(unittest.TestCase):
                         self.assertEqual(len(reader.type_audience_keys()), len(pairs))
             families = sorted({key.split(":", 1)[0] for _, key in pairs})
             with pg.lock:
-                whole = pg.conn.execute(ontology_reader.WHOLE_SPAN_SQL).fetchone()
-                exact = {f: pg.conn.execute(ontology_reader.CELL_SPAN_SQL, {
-                    "family": f, "low": f + ":", "high": f + ";"}).fetchone()
-                    for f in families}
+                whole = tuple(pg.conn._pg.execute(ontology_reader.WHOLE_SPAN_SQL).fetchone())
+                sources = {f: sorted(r[0] for r in pg.conn._pg.execute(
+                    "SELECT DISTINCT s.src FROM objects o JOIN object_versions v ON "
+                    "v.object_id = o.object_id JOIN value_sources s ON s.ver = v.ver "
+                    "WHERE o.audience_key LIKE %s OR o.audience_key = %s",
+                    (f + ":%", f)).fetchall()) for f in families}
+
+            def inside(src, runs):
+                return any(a <= (src << 20) and ((src << 20) | 1048575) <= b for a, b in runs)
+
+            exact = {}
             for family in families:
-                want = exact[family]
-                self.assertEqual(pg.family_cell_span(family),
-                                 None if want[0] is None else tuple(want))
-            slow = ("SELECT MIN(x), MAX(x) FROM (SELECT pg_sleep(2) AS s, :family || :low "
-                    "|| :high AS t, 1 AS x) q")
+                got = exact[family] = pg.family_cell_span(family)
+                if not sources[family]:
+                    self.assertIsNone(got, family)
+                    continue
+                # every source of the family in a run, the runs ascending and apart, the
+                # first and last the family's own first and last source
+                self.assertTrue(all(inside(src, got) for src in sources[family]), family)
+                self.assertEqual(list(got), sorted(got))
+                self.assertTrue(all(x[1] < y[0] for x, y in zip(got, got[1:])), family)
+                self.assertEqual((got[0][0] >> 20, got[-1][1] >> 20),
+                                 (sources[family][0], sources[family][-1]))
+                self.assertLessEqual(len(got), ontology_reader.CELL_RUNS)
+            # cut to fewer runs: still every source of the family in one, and only the
+            # narrowest gaps closed
+            with mock.patch.object(ontology_reader, "CELL_RUNS", 2):
+                for family in families:
+                    got = pg.family_cell_span(family)
+                    if sources[family]:
+                        self.assertLessEqual(len(got), 2)
+                        self.assertTrue(all(inside(src, got) for src in sources[family]))
+            slow = ("SELECT pg_sleep(2), NULL::bigint, %(family)s || %(low)s || %(high)s "
+                    "|| %(runs)s::text")
+            whole_run = ((whole[0], whole[1]),)
             with mock.patch.object(ontology_reader, "CELL_SPAN_SQL", slow), \
                     mock.patch.object(ontology_reader, "CELL_SPAN_EXACT_MS", 200):
                 got = pg.family_cell_span(families[0])
-            self.assertEqual(got, tuple(whole))
+            self.assertEqual(got, whole_run)
             # the same inside an open transaction (the facts read's snapshot): the cancel
             # rolls back to its savepoint, the whole span is read, the snapshot goes on
             with pg.lock:
@@ -137,19 +166,13 @@ class OntologyLoadTests(unittest.TestCase):
             try:
                 with mock.patch.object(ontology_reader, "CELL_SPAN_SQL", slow), \
                         mock.patch.object(ontology_reader, "CELL_SPAN_EXACT_MS", 200):
-                    self.assertEqual(pg.family_cell_span(families[0]), tuple(whole))
-                self.assertEqual(pg.family_cell_span(families[0]),
-                                 None if exact[families[0]][0] is None
-                                 else tuple(exact[families[0]]))
+                    self.assertEqual(pg.family_cell_span(families[0]), whole_run)
+                self.assertEqual(pg.family_cell_span(families[0]), exact[families[0]])
                 with pg.lock:
                     self.assertEqual(pg.conn._pg.execute("SELECT 1").fetchone()[0], 1)
             finally:
                 with pg.lock:
                     pg.conn._pg.execute("ROLLBACK")
-            for family in families:
-                if exact[family][0] is not None:
-                    self.assertTrue(got[0] <= exact[family][0]
-                                    and exact[family][1] <= got[1], family)
             self.assertEqual(pg.conn.execute("SELECT 1").fetchone()[0], 1)
         finally:
             lite.conn.close()
@@ -713,6 +736,99 @@ class OntologyLoadTests(unittest.TestCase):
         CaseHostTools._check_postgres(host)   # whole again: the keys the store holds now
         self.assertEqual(host._reader_keys, reader.audience_keys())
         self.assertEqual(host._store_identity, reader.state_stamp())
+
+    def test_a_familys_chunk_runs_hold_every_chunk_and_narrow_documents_to_the_same_hits(self):
+        """``PgStoreReader.family_chunk_span``: every document chunk of a family (fields of
+        objects of two families written interleaved, so each family's chunks are several
+        blocks) lies in one of its runs, ascending and apart; ``()`` for a family with no
+        chunk; None (not known) past its time limit. ``plx.documents`` narrowed by the runs
+        finds what it finds unnarrowed and never runs the SQLite store-file read
+        (``chunk_families.runs_for``) over Postgres; a document loaded after the runs were
+        read is found too."""
+        from unittest import mock
+        from ontology.types import Actor
+        from operating import ontology_tools as ot
+        from operating import ontology_tools_evidence as ev
+        from operating import ontology_tools_traverse as tt
+        from operating.pg import ontology_load, ontology_reader
+        import shutil
+        store = Path(self.tmp.name) / "chunk-runs.sqlite"
+        shutil.copyfile(self.store, store)
+        with closing(sqlite3.connect(store)) as lite:
+            picks = {fam: [r[0] for r in lite.execute(
+                "SELECT object_id FROM objects WHERE audience_key LIKE ? ORDER BY object_id "
+                "LIMIT 2", (fam + ":%",))] for fam in ("mail", "sharepoint")}
+            handle = {oid: lite.execute(
+                "SELECT l1_handle FROM object_versions WHERE object_id = ? AND superseded_at "
+                "IS NULL ORDER BY rowid DESC LIMIT 1", (oid,)).fetchone()[0]
+                for ids in picks.values() for oid in ids}
+            empty = next(fam for fam in ("teams", "meetings", "mc") if lite.execute(
+                "SELECT 1 FROM objects WHERE audience_key LIKE ?", (fam + ":%",)).fetchone())
+        self.assertTrue(all(len(ids) == 2 for ids in picks.values()), picks)
+        made = {"mail": [], "sharepoint": []}
+        for i, (fam, at) in enumerate([("mail", 0), ("sharepoint", 0), ("mail", 1),
+                                       ("sharepoint", 1), ("mail", 0), ("sharepoint", 0)]):
+            made[fam] += _add_document(
+                store, [f"Made-up {fam} page {i} about zorbite crates", f"page {i} part two"],
+                field_path=f"row.body_text_{i}", object_id=picks[fam][at])
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only"}):
+            reader = ontology_reader.PgStoreReader.open(self.dsn)
+        self.addCleanup(reader.close)
+        self.assertTrue(reader.chunk_words_loaded())
+
+        def chunks_of(fam):
+            with reader.lock:
+                return sorted(r[0] for r in reader.conn._pg.execute(
+                    "SELECT t.chunk_id FROM ontology.text_chunks t JOIN ontology.text_fields f "
+                    "ON f.field_id = t.field_id JOIN ontology.objects o ON o.object_id = "
+                    "f.object_id WHERE o.audience_key LIKE %s", (fam + ":%",)).fetchall())
+
+        for fam in ("mail", "sharepoint"):
+            ids = chunks_of(fam)
+            self.assertGreaterEqual(len(ids), 6, fam)
+            runs = reader.family_chunk_span(fam)
+            self.assertTrue(runs, fam)
+            self.assertTrue(all(any(a <= c <= b for a, b in runs) for c in ids), (fam, runs))
+            self.assertEqual(list(runs), sorted(runs))
+            self.assertTrue(all(x[1] < y[0] for x, y in zip(runs, runs[1:])), fam)
+            self.assertEqual((runs[0][0], runs[-1][1]), (ids[0], ids[-1]))
+            self.assertGreater(len(runs), 1, fam)   # interleaved: more than one block
+        self.assertEqual(reader.family_chunk_span(empty), ())
+        slow = ("SELECT pg_sleep(2)::text::bigint, NULL::bigint, %(family)s || %(low)s "
+                "|| %(high)s || %(runs)s::text")
+        with mock.patch.object(ontology_reader, "CHUNK_SPAN_SQL", slow), \
+                mock.patch.object(ontology_reader, "CHUNK_SPAN_EXACT_MS", 200):
+            self.assertIsNone(reader.family_chunk_span("mail"))
+        self.assertEqual(reader.conn.execute("SELECT 1").fetchone()[0], 1)
+
+        policy = ot.ReadPolicy("plx", {"mail:*": {"r"}, "sharepoint:*": {"r"}})
+        actor = Actor("plx", frozenset({"r"}))
+        tools = ev.EvidenceTools(ot.OntologyTools(
+            reader, policy, grammar=ot.default_grammar(), item_gate=lambda _a, _h: True))
+
+        def found(query):
+            result = tools.call("plx.documents", {"query": query,
+                                                  "sources": ["graph_mail", "sharepoint"]},
+                                actor)
+            self.assertNotIn("error", result, result)
+            return sorted(d["citation"] for d in result["documents"])
+
+        from ontology import chunk_families
+        with mock.patch.object(chunk_families, "runs_for", side_effect=AssertionError):
+            narrowed = found("zorbite crates")
+            self.assertEqual(narrowed, sorted(set(handle.values())))
+            with mock.patch.object(ev.EvidenceTools, "_chunk_runs", return_value=None):
+                self.assertEqual(found("zorbite crates"), narrowed)
+        with reader.lock:
+            self.assertTrue(all(tools.traverse.chunk_span(f) for f in ("mail", "sharepoint")))
+        # a document loaded after the runs were read (new chunk ids past them) is found
+        later = _add_document(store, ["Made-up late mail about quillfeather pallets"],
+                              field_path="row.body_text_late", object_id=picks["mail"][1])
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with mock.patch.object(chunk_families, "runs_for", side_effect=AssertionError):
+            self.assertEqual(found("quillfeather pallets"), [handle[picks["mail"][1]]])
+        self.assertTrue(later)
 
 
 if __name__ == "__main__":

@@ -893,4 +893,6 @@ __all__ = ["FAMILY", "ITEMS_DIR", "PROPOSAL_FAMILIES", "ProposalError", "build_i
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     sys.exit(main())

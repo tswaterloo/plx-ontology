@@ -81,12 +81,25 @@ describe("record page head", () => {
     expect(h.leadStatus).toBe("suspect");
   });
 
+  it("a customer's codes are named by their system; another name is a key fact, not the header (owner walk C4)", () => {
+    const portal = (field: string): Source => ({ system: "Portal", handle: "api://c/7", label: "Portal customer", fields: { [field]: "x" } });
+    const c = {
+      ...base, type: "Customer", label: "Unilever (K18)", summary: "Customer",
+      facts: [{ text: "Code: KH", sources: [portal("code")], check: "read_from_record" }, { text: "Erp code: AQUIS12", sources: [portal("erp_code")], check: "read_from_record" }],
+      conflicts: [{ field: "name", values: [{ value: "AQUIS KHAIRPEP", trusted: true, why: "", source: portal("name") }] }],
+    } as unknown as ObjectPage;
+    const h = recordHead(c);
+    expect(h.title).toBe("Unilever (K18)");
+    expect(h.subline).toBe("Customer Portal code KH · Account no. AQUIS12");
+    expect(h.keyFacts.find((k) => k.label === "Also named")?.value).toBe("AQUIS KHAIRPEP");
+  });
+
   it("a blocked customer says so first and prominently; an empty value is never printed", () => {
     const c = { ...base, type: "Customer", label: "Diversified", summary: "Customer", status: { state: "not_established", text: "Not established: no process", sources: [] }, facts: [fact("Blocked (BC): All", "bc_blocked"), fact("Balance due (BC): 0.00 CAD", "bc_balance_due"), fact("Credit limit (BC): 0", "bc_credit_limit"), fact("Currency: CAD", "currency"), fact("Erp code: C01100", "erp_code")] } as unknown as ObjectPage;
     const h = recordHead(c);
     expect(h.lead).toBe("Blocked in Business Central. No balance owing.");
     expect(h.badges).toEqual([{ status: "late", label: "Blocked" }]);
-    expect(h.subline).toBe("C01100");
+    expect(h.subline).toBe("Business Central no. C01100");
     expect(h.stats.find((s) => s.label === "Credit limit")?.value).toBe("No limit set");
     expect(h.keyFacts.find((k) => k.label === "Blocked")).toMatchObject({ value: "Blocked in Business Central", status: "late" });
     // "not established" says nothing

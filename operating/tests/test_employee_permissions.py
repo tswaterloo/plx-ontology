@@ -25,8 +25,8 @@ from ontology.core import Actor
 from operating import employee_permissions_portal as portal
 from operating.doc_metadata_taxonomy import build_attachment_metadata
 from operating.employee_permissions import (
-    EMPLOYEE_PREFIX, GROUP_MEMBERSHIP_UNAVAILABLE, POLICY_SCHEMA, EmployeeAccessRefused, EmployeeActorGate,
-    EmployeePermissionPolicy, EmployeePermissionResolver, EmployeePrincipal,
+    EMPLOYEE_PREFIX, FULL_READ_SCOPES, GROUP_MEMBERSHIP_UNAVAILABLE, POLICY_SCHEMA, EmployeeAccessRefused, EmployeeActorGate,
+    EmployeePermissionPolicy, FullReadGrant, EmployeePermissionResolver, EmployeePrincipal,
     EmployeeRightsUnresolved, EntraDirectoryRead, EntraGroupRead, PortalAccessRead,
     PortalAccessSnapshot, groups_unavailable, live_source_audience_document)
 
@@ -956,7 +956,9 @@ class FileClearanceTests(unittest.TestCase):
         self.assertNotEqual(self.entitlement("Finance").fingerprint,
                             self.entitlement("Operations").fingerprint)
 
-    def test_a_batch_qc_document_is_read_by_admins_and_quality_staff_only(self):
+    def test_a_batch_qc_document_is_read_by_every_employee(self):
+        # Decision 2026-11-17 (permissions simplified): the Portal's QC-document restriction
+        # is not kept; a Batches COA or waiver is a business document. Its class decides.
         # access.ts@1d3eaf2:88-93 with qc-document-categories.ts@1d3eaf2:8-10,27-32: a
         # BATCH COA or WAIVER (QUALITY library, Batches/{year}/{ref}) is read by an admin
         # or by a QUALITY/QA/QC department member; everyone else is refused. The fixtures
@@ -989,7 +991,8 @@ class FileClearanceTests(unittest.TestCase):
         for (department, role), expected in readers.items():
             with self.subTest(department=department, role=role):
                 ent = self.entitlement(department, role)
-                self.assertEqual([ent.file_class_allows(r) for r in qc], [expected] * len(qc))
+                self.assertEqual([ent.file_class_allows(r) for r in qc], [True] * len(qc))
+                self.assertEqual(ent.qc_document_reader, expected)
                 self.assertTrue(all(ent.file_class_allows(r) for r in plain))
 
         def quality(user=None, codes=None, directory=True):
@@ -1011,7 +1014,8 @@ class FileClearanceTests(unittest.TestCase):
         for name, ent in unknown.items():
             with self.subTest(refused=name):
                 self.assertIsNotNone(ent.actor)
-                self.assertEqual([ent.file_class_allows(r) for r in qc], [False] * len(qc))
+                self.assertEqual([ent.file_class_allows(r) for r in qc], [True] * len(qc))
+                self.assertFalse(ent.qc_document_reader)
                 self.assertTrue(all(ent.file_class_allows(r) for r in plain))
         # A Finance-library file is still refused to an uncleared QC member.
         self.assertFalse(self.entitlement("Quality").file_class_allows(
@@ -1493,3 +1497,53 @@ class EffectiveAccessPortTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FullReadersTests(unittest.TestCase):
+    """The configured full readers (``PLX_FULL_READERS``): a
+    listed employee reads everything but what the people exclusion withholds; no one else
+    becomes one, and a listed reader is never the owner."""
+
+    OTHER = "cccccccc-0000-4000-8000-000000000009"
+
+    def resolve(self, listed, *, exclusion="clear", env=None):
+        from integrations.people_exclusion import PeopleExclusion
+        guard = {"clear": PeopleExclusion([self.OTHER]), "excluded": PeopleExclusion([OID]),
+                 "none": None}[exclusion]
+        policy = EmployeePermissionPolicy.from_json(POLICY)
+        with mock.patch.dict(os.environ, {} if env is None else {"PLX_FULL_READERS": env}):
+            res = EmployeePermissionResolver(policy, Calls(portal_user()), Calls(member(QA_GROUP)),
+                                             people_exclusion=guard, full_readers=listed)
+        return res.resolve(EMPLOYEE)
+
+    def test_a_listed_reader_reads_everything_and_is_not_the_owner(self):
+        from types import SimpleNamespace
+        from operator_api.feedback import owner_open
+        for listed in ([OID], [OID.upper()], ["ricardo@petralabx.com"],
+                       [" Ricardo@PetraLabX.com ", self.OTHER]):
+            with self.subTest(listed=listed):
+                got = self.resolve(listed)
+                self.assertTrue(got.unrestricted())
+                self.assertTrue(got.full_read_covers("mail"))
+                self.assertFalse(owner_open(SimpleNamespace(access=got.full_read_code())))
+        got = self.resolve(None, env=f"x, {OID}")   # read from the environment at start
+        self.assertTrue(got.unrestricted())
+        owner = FullReadGrant(OID, "owner", "2026-11-02T00:00:00Z", "owner",
+                              frozenset(FULL_READ_SCOPES))
+        self.assertTrue(owner_open(SimpleNamespace(access=owner.code())))
+
+    def test_no_one_else_and_no_pattern_becomes_a_full_reader(self):
+        for listed in ([], [self.OTHER], ["*@petralabx.com"], ["petralabx.com"],
+                       ["ricardo"], ["*"], ["group:" + QA_GROUP], ["ricardo@petralabx.co"]):
+            with self.subTest(listed=listed):
+                got = self.resolve(listed)
+                self.assertFalse(got.unrestricted())
+                self.assertIsNone(got.full_read_code())
+        self.assertFalse(self.resolve(None, env="").unrestricted())
+
+    def test_the_people_exclusion_always_wins_and_fails_closed(self):
+        for exclusion in ("excluded", "none"):
+            with self.subTest(exclusion=exclusion):
+                got = self.resolve([OID], exclusion=exclusion)
+                self.assertFalse(got.unrestricted())
+                self.assertIsNone(got.full_read_code())

@@ -15,10 +15,10 @@ const base = {
 const answer = (obj: ObjectPage, q: string) => answersOf(obj).find((a) => a.q === q)!;
 
 describe("on record: who, linked, last change and next step on a record without a page of its own", () => {
-  it("says in words what is not on record for a thin record, and offers Ask as the next step", () => {
+  it("leaves out what is not on record for a thin record, and offers Ask as the next step", () => {
     render(<OnRecord obj={base} />);
     const box = screen.getByTestId("on-record");
-    for (const t of ["No person named on record", "Nothing linked yet", "No change recorded"]) expect(box).toHaveTextContent(t);
+    for (const t of ["Who is on it", "Linked to", "Last change", "No person", "Nothing linked", "No change"]) expect(box).not.toHaveTextContent(t);
     expect(box).not.toHaveTextContent("Item");
     expect(screen.getByRole("link", { name: "Ask about it" }).getAttribute("href")).toContain("/ask?q=What+should+I+know+about+BAR-LAV-100");
   });

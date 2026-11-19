@@ -168,6 +168,16 @@ SOURCE_PREFIXES = (("portal.fm_", "fm"), ("portal.sage_", "sage"), ("fm.", "fm")
                    ("sage.", "sage"))
 
 
+SYSTEM_WORDS = {"bc": "Business Central", "fm": "FileMaker", "sage": "Sage",
+                "portal": "the Customer Portal"}
+
+
+def _system_words(system: str) -> str:
+    """A system as a person names it: ``bc/<company>`` is Business Central (the company id
+    is never shown), anything unknown reads "another system"."""
+    return SYSTEM_WORDS.get(system.split("/", 1)[0], "another system")
+
+
 def _system(record: tuple[str, str] | str | None) -> str:
     """The system a record is kept in: ``bc/<company>`` (BC holds one book per company; the
     company is its audience's first part, ``bc:<company id>/customers``), ``fm``, ``sage``
@@ -359,17 +369,24 @@ def duplicate_parties(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     "domain": "email or web domain", "address": "street address"}
             basis = [f"names {level}" if level in NAME_POINTS else "names differ",
                      *(f"same {said[k]}" for k in shared)]
-            where = ("in " + systems[0]) if systems[0] == systems[1] else \
-                f"in {systems[0]} and {systems[1]}"
-            noun = object_type.lower()
+            noun = "supplier" if object_type == "Vendor" else object_type.lower()
             retired = any(_flag_active(found[x]["props"])[0] == "done" for x in (a, b))
             counts["blocked_copy"] += retired
+            # the person's words: no record keys, company ids or scores (owner walk 11-17);
+            # the score and basis stay on the proposal for whoever confirms the link
+            sys_a, sys_b = _system(binding.get(a)), _system(binding.get(b))
+            what = "company" if object_type in ("Customer", "Vendor", "Supplier") else noun
+            shared_words = [said[k] for k in shared]
             made = gap(DUPLICATE, DUP_RULE, a, object_type, b,
-                       summary=f"Two {noun} records {where} look like one {noun}: "
-                               f"{_text(name_a)} and {_text(name_b)} "
-                               f"(score {score}: {', '.join(basis)})"
-                               + ("; one of them is blocked or deleted, so it is the retired "
-                                  "copy if they match" if retired else ""),
+                       summary=f"Two {noun} records may be the same {what}: "
+                               f"{_text(name_a) or 'one with no name'} in "
+                               f"{_system_words(sys_a)} and "
+                               f"{_text(name_b) or 'one with no name'} in "
+                               f"{_system_words(sys_b)}."
+                               + (f" Both have the same {' and '.join(shared_words)}."
+                                  if shared_words else "")
+                               + (" One of them is blocked or deleted, so it is likely the "
+                                  "old copy." if retired else ""),
                        missing=f"Are these the same {noun}? Confirm or reject the link in "
                                "the record's workspace; nothing is linked until a person "
                                "confirms.",

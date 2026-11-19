@@ -9,7 +9,8 @@ from . import (
     action_tools, answer_gate, injection_guard, kind_confirmation, mcp_portfolio, meeting_agenda,
     ontology_query, ontology_tools, ontology_tools_aggregate, ontology_tools_changes,
     ontology_tools_evidence, ontology_tools_investigate, ontology_tools_process,
-    ontology_tools_traverse, playbook_tools
+    ontology_tools_business, ontology_tools_search, ontology_tools_sql, ontology_tools_table, ontology_tools_traverse,
+    playbook_tools
 )
 from . import ontology_tools_results
 from .claim_checks_grammar import MAX_QUOTE_CHARS
@@ -231,13 +232,19 @@ PLAYBOOK_TOOLS = frozenset(playbook_tools.TOOL_NAMES)
 # case listing stays within the 22-tool budget.
 # plx.changes (operating/ontology_tools_changes.py) is served and listed the same way: only
 # to a session whose agent definition names it.
-# plx.query (operating/ontology_query.py) too: one composable read over the same table.
+# plx.query (operating/ontology_query.py) too: one composable read over the same table, and
+# plx.table (operating/ontology_tools_table.py): one computed read in Postgres.
 AGENDA_TOOL_SPECS: tuple[dict[str, Any], ...] = (meeting_agenda.TOOL, ontology_tools_changes.TOOL,
-                                                 ontology_query.TOOL)
+                                                 ontology_query.TOOL, ontology_tools_table.TOOL,
+                                                 ontology_tools_business.TOOL,
+                                                 ontology_tools_sql.TOOL,
+                                                 ontology_tools_search.TOOL,
+                                                 ontology_tools_search.OPEN_TOOL)
 
 
 AGENDA_TOOLS = frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES) \
-    | frozenset(ontology_query.TOOL_NAMES)
+    | frozenset(ontology_query.TOOL_NAMES) | frozenset(ontology_tools_table.TOOL_NAMES) | frozenset(ontology_tools_business.TOOL_NAMES) \
+    | frozenset(ontology_tools_sql.TOOL_NAMES) | frozenset(ontology_tools_search.TOOL_NAMES)
 
 
 ACTION_TOOLS = frozenset({action_tools.TOOL_NAME})
@@ -262,11 +269,15 @@ GENERIC_TOOLS = frozenset().union(*(module.TOOL_NAMES for module in (
 # object id or gap.subject, and any other bare string is still wrapped.
 # The tools whose results return evidence the answer gate binds claims to: the generic
 # ontology tools and plx.query, which returns plx.aggregate's groups and their citations.
-RETURNING_TOOLS = GENERIC_TOOLS | frozenset(ontology_query.TOOL_NAMES)
+# plx.table returns groups (counts, sums and their cited cells) the same way.
+RETURNING_TOOLS = GENERIC_TOOLS | frozenset(ontology_query.TOOL_NAMES) \
+    | frozenset(ontology_tools_table.TOOL_NAMES) | frozenset(ontology_tools_business.TOOL_NAMES) \
+    | frozenset(ontology_tools_sql.TOOL_NAMES) | frozenset(ontology_tools_search.TOOL_NAMES)
 
 
 SELF_ENVELOPING_TOOLS = GENERIC_TOOLS | PLAYBOOK_TOOLS | frozenset(ontology_tools_changes.TOOL_NAMES) \
-    | frozenset(ontology_query.TOOL_NAMES)
+    | frozenset(ontology_query.TOOL_NAMES) | frozenset(ontology_tools_table.TOOL_NAMES) | frozenset(ontology_tools_business.TOOL_NAMES) \
+    | frozenset(ontology_tools_sql.TOOL_NAMES) | frozenset(ontology_tools_search.TOOL_NAMES)
 
 
 # Every string their contract types, derived from the contract itself: pattern- or

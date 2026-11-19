@@ -33,7 +33,11 @@ User=@PLX_USER@
 Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+# the chat ask reader (operating.chat_ask_model): claude -p on the user's own login
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PLX_CHAT_ASK_MODEL=haiku
+# reply drafts for the people who switched them on (operating/autopilot_drafter.py)
+Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
 # names its Postgres sessions after the unit (ARCH T2: pg_stat_activity, slow-query log)
 Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only

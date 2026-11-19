@@ -44,7 +44,29 @@ async function typeAndEnter(text: string, settled: RegExp) {
 
 afterEach(() => nav.push.mockClear());
 
+async function typeEnterAtOnce(text: string) {
+  render(
+    <CommandPaletteProvider>
+      <Opener />
+    </CommandPaletteProvider>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "open" }));
+  await userEvent.type(await screen.findByTestId("palette-input"), `${text}{Enter}`);
+}
+
 describe("the command bar's Enter", () => {
+  it("opens the record of a number entered before its lookup came back (owner walk S1)", async () => {
+    await typeEnterAtOnce("90412");
+    await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412"));
+    expect(nav.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks a number no record carries exactly", async () => {
+    await typeEnterAtOnce("90499");
+    await waitFor(() => expect(nav.push).toHaveBeenCalledTimes(1));
+    expect(nav.push.mock.calls[0][0]).toMatch(/^\/ask\?q=90499/);
+  });
+
   it("opens the record whose number was typed exactly", async () => {
     await typeAndEnter("90412", /PO 90412/);
     expect(nav.push).toHaveBeenCalledWith("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412");
@@ -52,7 +74,7 @@ describe("the command bar's Enter", () => {
 
   it("goes to the page whose name was typed", async () => {
     await typeAndEnter("late", /Lavender bar/);
-    expect(nav.push).toHaveBeenCalledWith("/late");
+    expect(nav.push).toHaveBeenCalledWith("/?show=late");
   });
 
   it("asks anything else, even with records that only partly match", async () => {

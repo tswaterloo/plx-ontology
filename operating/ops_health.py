@@ -158,11 +158,19 @@ DEFAULT_TARGETS: dict[str, float] = {
     "delta_apply_cost_factor": 2,
     "delta_apply_cost_min_owned": 10_000,
     "delta_apply_cost_window_days": 14,
+    # ... and only while the newer of those two started within this many hours: an old
+    # reading is no longer the apply's cost (11-17: two 11-16 catch-up cycles kept it in
+    # breach a day later, no cycle of 10,000+ records having run since)
+    "delta_apply_cost_fresh_hours": 24,
     # minutes the delta has carried a deferred backlog (records past its cycle cap) without
     # one finished cycle that left none
     "delta_backlog_minutes": 60,
-    "backup_age_hours": 30,         # the newest complete backup set (nightly)
+    # hours a captured record may wait past the delta's cursor before it pages
+    # (``ops_alarms.served_lag_checks``; one delta cycle is ~6 minutes)
+    "served_lag_hours": 1,
+    "backup_age_hours": 26,         # the newest complete backup set (nightly; 26 h: no night missed)
     "restore_test_age_hours": 30,   # the last restore test (nightly)
+    "backup_store_hours": 26,       # every capture piece and the off-box copy (ops_alarms_backup)
     # a credential that expires sooner, and nothing renews itself: warning at 14 days,
     # high at 7, critical at 2 (ops_alarms.EXPIRY_TIERS)
     "credential_expiry_days": 14,
@@ -1027,6 +1035,11 @@ def detectors_check(state: Path, now: datetime, t: Mapping[str, float]) -> Optio
             conn.close()
     except sqlite3.Error:
         return _check("proactive_detectors", None, 0, None, "detectors", "inbox unreadable")
+    # a detector the engine no longer runs (removed from its registry: 11-17,
+    # ``mc_task_overdue`` 84 h "not complete", gone since MC has no due date) keeps its
+    # last row in the inbox: only the registered detectors are judged
+    from operating.proactive_engine_config import DETECTORS
+    latest = {n: st for n, st in latest.items() if n in DETECTORS}
     # a detector whose latest run is ``blocked`` waits on data the ontology does not serve
     # (a schema gap with its own row): named, never paged, so the incident can close
     blocked = sorted(n for n, st in latest.items() if st == "blocked")

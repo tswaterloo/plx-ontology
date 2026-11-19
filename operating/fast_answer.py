@@ -271,6 +271,7 @@ class Ask:
     window: Any = None           # a windowed count or total: its ``time_window.Window``
     asks_next: bool = False      # po_followup: the question asks what to do (a proposal)
     released_only: bool = False  # lots_expiring_count: the question asks for released lots
+    listing: Any = None          # recent_list: what it lists (``fast_listing.Listing``)
 
 
 # Ranking words of a list question: what it is ranked by, and which end first. One grammar
@@ -424,6 +425,10 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
     late_from = _vendor_late(question, folded)
     if late_from is not None:
         return late_from
+    from . import fast_listing
+    listed = fast_listing.understand(question, now)
+    if listed is not None:
+        return listed   # "latest emails from customers": the newest records of a kind
     # A record's name written beside its identifier, in brackets ("R-0162 (Ethyl Alcohol
     # 100% SDAG)"), is a label of that record, not a second one.
     outside = re.sub(r"\([^()]*\)", " ", question)
@@ -4525,6 +4530,19 @@ def serves(question: str) -> bool:
     return ask is not None and ask.intent in _RECIPES and not asks_more(question, ask)
 
 
+def step_label(question: str) -> str:
+    """The progress step the fast path shows while it reads: what it reads, from the
+    question as ``understand`` read it (the record it names, in the question's words),
+    never a fixed line that may not apply (11-17: "Reading the record your question
+    names" on a question naming none)."""
+    ask = understand(question)
+    mention = " ".join(str(ask.mention or "").split())[:60] if ask is not None else ""
+    own = INTENTS_BY_NAME.get(ask.intent) if ask is not None else None
+    if own is not None and own.entity not in ("none",) and mention:
+        return f"Looking up {mention}"
+    return "Reading the records your question asks about"
+
+
 def routed(question: str) -> bool:
     """Whether ``question`` is understood as one whose answer is the agent's
     (``ROUTED_TO_AGENT``): a question of a known shape the fast path no longer answers,
@@ -4653,6 +4671,9 @@ _RECIPES.update(_chain.RECIPES)
 from . import fast_record as _record  # noqa: E402 - it reads this module's helpers
 
 _RECIPES.update(_record.RECIPES)
+from . import fast_listing as _listing  # noqa: E402 - it reads this module's helpers
+
+_RECIPES.update(_listing.RECIPES)
 
 # The intents the fast path no longer answers (CAP-L180 router eval, 2026-11-15, 58
 # held-out cards: with the phrase rules off the agent matched or beat them on these four

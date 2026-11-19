@@ -7,6 +7,7 @@ SYNTHETIC fixtures only; evidence label: isolated-fixture.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import io
 import json
@@ -39,6 +40,29 @@ def at(hour: int, day: int = 0) -> str:
     return ap._iso(DAY + timedelta(days=day, hours=hour))
 
 
+class StubAsks:
+    """The chat ask model's stand-in (``chat_ask_model.Classify``): "yes" for a text in
+    ``yes``, "no" for one in ``no`` or (``no`` empty) any other, each batch kept.
+    ``fail``: "raise" (an error), "none" (nothing parsed), "short" (a verdict missing)."""
+
+    def __init__(self, yes=(), no=None, fail=None):
+        self.yes, self.no, self.fail = set(yes), None if no is None else set(no), fail
+        self.batches: list[list[str]] = []
+        self.sent: list[list[dict]] = []
+
+    def __call__(self, batch):
+        self.sent.append([dict(m) for m in batch])
+        self.batches.append([m["text"] for m in batch])
+        if self.fail == "raise":
+            raise RuntimeError("model down")
+        if self.fail == "none":
+            return [None] * len(batch)
+        out = [(True, "ask") if m["text"] in self.yes else
+               (False, "note") if self.no is None or m["text"] in self.no else None
+               for m in batch]
+        return out[:-1] if self.fail == "short" else out
+
+
 class World(Fixture):
     def setUp(self) -> None:
         super().setUp()
@@ -60,6 +84,7 @@ class World(Fixture):
                                           "expected_date": "2026-10-20",
                                           "order_date": "2026-10-01"})
         self.w.link("PurchaseOrder.ordered_from", po, supplier or self.supplier)
+        self.identified.append(("petra_po", f"P-{900 + i}", po, "po_number"))
         return po
 
     def supplier_mail(self, i: int, body: str, *, po: str | None = None) -> str:
@@ -245,13 +270,14 @@ class Replay(World):
                 self.reply(i)
 
     def replay(self, *, role: str = f"person:{OURS}", end=None, probe=lambda: 64.0,
-            guard=None):
+            guard=None, ask_judge=None):
         st = pe._Store(self.dir / "s.sqlite", threads=1)
         try:
             return rp.replay(st, people() if guard is None else guard, role=role,
                              out=self.dir / "out", since=DAY, until=DAY + timedelta(days=1),
                              roles={}, config=rp.load_config(), environ={},
-                             end=end or DAY + timedelta(days=10), probe=probe, floor_gb=9.0)
+                             end=end or DAY + timedelta(days=10), probe=probe, floor_gb=9.0,
+                             ask_judge=ask_judge)
         finally:
             st.close()
 
@@ -505,14 +531,67 @@ class Gate(unittest.TestCase):
                 with contextlib.redirect_stdout(buf):
                     code = ap.main([command, "--store", str(store), "--queue", str(queue)])
                 self.assertEqual(code, 0)
+                # live (follow): off until a person switched drafts on themselves; a
+                # replay: off until a role's replay passed
                 self.assertEqual(json.loads(buf.getvalue())["reason"],
-                                 "no_workflow_passed_replay")
+                                 "nobody_switched_drafts_on" if command == "follow"
+                                 else "no_workflow_passed_replay")
                 q = ap.Queue(queue)
                 try:
                     self.assertEqual(
                         q.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
                 finally:
                     q.close()
+
+
+class SwitchedOn(unittest.TestCase):
+    """Owner walk 2026-11-17: 509 items prepared by role membership for 16 people, none of
+    whom asked. The live prepare gate is the person's own drafts switch (or the owner's
+    Draft), read from the write path's audit journal at each cycle; a replay pass alone
+    prepares nothing."""
+
+    def test_only_what_the_person_switched_on_themselves_is_prepared(self):
+        import tempfile
+        from datetime import datetime, timezone
+        from operating import autopilot_write as aw
+        from operating.card_actions import Journal
+        now = datetime(2026, 11, 17, 20, tzinfo=timezone.utc)
+        me, you, boss = "aaaaaaaa-0000-4000-8000-000000000001", \
+            "aaaaaaaa-0000-4000-8000-000000000002", "aaaaaaaa-0000-4000-8000-000000000003"
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "audit.jsonl"
+            gate = autopilot_engine.SwitchGate(path, {boss: frozenset({"mc_question"})})
+            # no journal: only the owner's Draft
+            self.assertEqual(gate.passed, {boss: ["mc_question"]})
+            self.assertFalse(gate(me, "teams_chat", ("customer_service",)))
+            journal = Journal(path)
+            aw.set_drafts(journal, me, "teams_chat", True, me, now)
+            self.assertTrue(gate(me, "teams_chat"))                # same object: re-read
+            self.assertFalse(gate(me, "teams_group") or gate(you, "teams_chat"))
+            # nobody switches for anyone else, the owner included; an unknown workflow
+            # is refused; a row written by someone else counts for nothing
+            with self.assertRaises(PermissionError):
+                aw.set_drafts(journal, you, "teams_chat", True, boss, now)
+            with self.assertRaises(ValueError):
+                aw.set_drafts(journal, you, "no_such_flow", True, you, now)
+            with journal.locked() as held:
+                held.append({"event": aw.DRAFTS_EVENT, "person": you, "workflow": "teams_chat",
+                             "on": True, "at": "x", "by": boss})
+            self.assertFalse(gate(you, "teams_chat"))
+            # a pause stops it; off stops it; a person's live opt-in counts as on
+            aw.set_paused(journal, me, True, me, now)
+            self.assertFalse(gate(me, "teams_chat"))
+            aw.set_paused(journal, me, False, me, now)
+            aw.set_drafts(journal, me, "teams_chat", False, me, now)
+            self.assertFalse(gate(me, "teams_chat"))
+            with journal.locked() as held:
+                held.append({"event": "opt_in", "person": you, "workflow": "quote_pricing",
+                             "on": True, "at": "x", "by": you})
+            self.assertTrue(gate(you, "quote_pricing"))
+            # a broken journal: only Draft (fail closed)
+            path.write_text(path.read_text() + "{not json\n")
+            self.assertEqual(gate.passed, {boss: ["mc_question"]})
+            self.assertTrue(gate(boss, "mc_question"))
 
 
 class LiveReplay(Fixture):
@@ -1320,125 +1399,179 @@ class TeamsChats(World):
                 self.assertEqual(out["skipped"].get("teams_not_chat_or_not_cleared", 0), 0)
                 self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
 
-    def test_cardinality_an_index_without_the_messages_text_refuses_the_replay(self):
-        """Reproduced on Postgres before its text chunks were loaded: every Teams message's
-        body field was listed and none held text, so all read as empty and closing notes
-        were prepared as owed. The replay refuses such a window (fail closed); the same
-        window with its text runs."""
-        import sqlite3
+    NOTES = ("Yeah send a note too just so people are aware", "haha", "no worries",
+             "Hi all, the truck is at the dock now", "FYI the dock closes at 3 today",
+             "How are we doing buddy", "Is this you or your bot lol",
+             "Let me know how it goes", "will work on that next week", "\U0001F44D\U0001F44D",
+             "Did it on the weekend", "can call you back after")
+    # Real asks with no "?" a phrase list dropped
+    ASKS = ("need the COA by Friday", "can't find the invoice", "pls send invoice copy",
+            "lemme know the eta", "Update me on the PO", "we are missing 2 drums on the order",
+            "Hi Tanush, the label is incorrect on batch 7", "Is the pallet getting picked up today",
+            "Need you to reassign this one", "You free?", "Call me when you have a sec")
+
+    def asks_world(self, n: int, extra=(), barred=(), more=(), asks=None):
+        """``n`` chats whose last message asks nothing, one chat per ask (and per ``extra``
+        text), each a chat the owner wrote in the day before; a chat per ``barred`` text
+        holding the excluded person; ``more``: chat ids the caller writes in (members: the
+        owner and the approver). The texts by message id and the exclusion."""
+        texts, chats = {}, list(more)
+        members = {}
+        for k, text in enumerate(barred):
+            self.chat(f"x{k}", OURS_OID, 9, "", day=-1)
+            texts[self.chat(f"x{k}", EXCLUDED_OID, 10, "")] = text
+            members[f"x{k}"] = [OURS_OID, EXCLUDED_OID]
+        for i in range(n):
+            chats.append(f"n{i}")
+            self.chat(f"n{i}", OURS_OID, 9, "", day=-1)
+            texts[self.chat(f"n{i}", APPROVER_OID, 10, "")] = self.NOTES[i % len(self.NOTES)]
+        for k, ask in enumerate((*(self.ASKS if asks is None else asks), *extra)):
+            chats.append(f"a{k}")
+            self.chat(f"a{k}", OURS_OID, 9, "", day=-1)
+            texts[self.chat(f"a{k}", APPROVER_OID, 10, "")] = ask
+        self.store()
+        self.texts(texts)
+        from integrations.people_exclusion import PeopleExclusion
+        from operating.chunking.permissions import Exclusion
+        return texts, Exclusion(PeopleExclusion([EXCLUDED_OID]),
+                                directory={OURS: OURS_OID, APPROVER: APPROVER_OID,
+                                           BOSS: EXCLUDED_OID},
+                                internal_domains=["synth-tenant.example"],
+                                chat_members={**{c: [OURS_OID, APPROVER_OID] for c in chats},
+                                              **members})
+
+    def test_cardinality_the_model_reads_which_chat_messages_ask_and_only_asks_are_owed(self):
+        """Owner walk 11-17: items for "send a note too so people are aware", a joke, a
+        pleasantry were never used; the regex filter after it dropped real asks with no "?".
+        The cheap certain rules (no words, a note to all) decide
+        without a call; every other message the small model reads, batched, and only an
+        ask is prepared. Every ask survives at N=1/10/60 notes; calls stay batched."""
+        from operating import chat_ask_model as cam
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 self.setUp()
-                self.chat("c1", OURS_OID, 9, "Morning", day=-1)
-                sent = [self.chat("c1", APPROVER_OID, 10, "") for _ in range(n)]
-                self.chat("c1", OURS_OID, 15, "Done.")
-                self.store()
-                self.texts({o: "Thanks, noted!" for o in sent})
-                conn = sqlite3.connect(self.dir / "s.sqlite")
-                with conn:
-                    saved = conn.execute("SELECT field_id, start, body FROM text_chunks"
-                                         ).fetchall()
-                    conn.execute("DELETE FROM text_chunks")
-                conn.close()
-                out = Replay.replay(self, role=f"person:{OURS}")
-                self.assertEqual((out["status"], out["reason"]),
-                                 ("blocked", "text_index_incomplete"))
-                self.assertEqual((out["body_fields"], out["with_text"]), (n, 0))
-                self.assertNotIn("workflows", out)
-                conn = sqlite3.connect(self.dir / "s.sqlite")
-                with conn:
-                    conn.executemany("INSERT INTO text_chunks (field_id, start, body) "
-                                     "VALUES (?, ?, ?)", saved)
-                conn.close()
-                out = Replay.replay(self, role=f"person:{OURS}")
+                _texts, guard = self.asks_world(n)
+                model = StubAsks(yes=self.ASKS)
+                judge = cam.Judge(model, batch=25)
+                out = Replay.replay(self, role=f"person:{OURS}", guard=guard, ask_judge=judge)
                 self.assertEqual(out["status"], "complete")
-                # each message closes its own loop: nothing is owed
-                self.assertEqual(out["prepared_by_autopilot"], {})
+                self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": len(self.ASKS)})
+                sent = [t for b in model.batches for t in b]
+                # no words and the note to all are decided in code: never sent
+                self.assertNotIn("\U0001F44D\U0001F44D", sent)
+                self.assertNotIn("Hi all, the truck is at the dock now", sent)
+                self.assertEqual(len(sent), len(set(sent)) if n <= len(self.NOTES) else
+                                 len(sent))    # each message read once
+                self.assertTrue(all(len(b) <= 25 for b in model.batches))
+                self.assertLessEqual(len(model.batches), -(-len(sent) // 25) + 1)
+                # the reader is the owner, by first name, never an address
+                self.assertTrue(all(m["reader"] == "Ops" for b in model.sent for m in b))
+                self.assertFalse(any("@" in json.dumps(m) for b in model.sent for m in b))
 
-    def test_the_messages_own_text_decides_and_the_drafted_answer_is_never_posted(self):
-        """Reproduced: a chat message's words live in the text index, not a property, so
-        a closing "Thanks, noted!" read as empty and was prepared as owed. The answer a
-        record states is drafted as a chat reply that no card carries; the item is scored
-        as ``teams_chat``; a manager granted the owner's team who may not read the private
-        chat sees nothing."""
-        self.chat("c1", OURS_OID, 9, "Morning", day=-1)
+    def test_any_model_failure_keeps_every_message_and_nothing_is_cached(self):
+        """A timeout, an error, a reply that does not parse or skips a message: the
+        message is kept (shown), never dropped, and asked again on a later cycle."""
+        from operating import chat_ask_model as cam
+        for fail in ("raise", "none", "short"):
+            with self.subTest(fail=fail):
+                self.setUp()
+                _t, guard = self.asks_world(3)
+                model = StubAsks(yes=(), fail=fail)        # read: no ask anywhere
+                out = Replay.replay(self, role=f"person:{OURS}", guard=guard,
+                                    ask_judge=cam.Judge(model))
+                sent = [t for batch in model.batches for t in batch]
+                self.assertGreater(len(sent), len(self.ASKS))
+                kept = out["prepared_by_autopilot"].get("teams_reply", 0)
+                q, _items = self._items()
+                cached = q.conn.execute("SELECT count(*) FROM chat_asks").fetchone()[0]
+                if fail == "short":         # the one verdict missing: that message kept
+                    self.assertEqual((kept, cached), (len(model.batches), len(sent) - kept))
+                else:
+                    self.assertEqual((kept, cached), (len(sent), 0))
+
+    def test_excluded_freightcom_and_pay_messages_never_reach_the_model(self):
+        """The people exclusion bars a chat, Freightcom content never goes to a model, and
+        pay or HR matter is never read: none of them is in any batch the model is sent."""
+        from operating import chat_ask_model as cam
+        extra = ("can you check the freightcom quote for the drums",
+                 "can you check the gross pay, net pay and YTD on my pay stub")
+        _texts, guard = self.asks_world(2, extra=extra,
+                                        barred=("need the signed form from you today",))
+        model = StubAsks(yes=self.ASKS)
+        Replay.replay(self, role=f"person:{OURS}", guard=guard, ask_judge=cam.Judge(model))
+        sent = [t for b in model.batches for t in b]
+        self.assertTrue(sent)
+        for text in (*extra, "need the signed form from you today"):
+            self.assertNotIn(text, sent)
+        self.assertFalse(any("freight" in t.lower() for t in sent))
+
+    def test_a_cached_verdict_is_read_once_per_message(self):
+        """The model reads a message once: the same message judged again (a later cycle,
+        the text-read pass) gets the queue's cached verdict, no call."""
+        from operating import chat_ask_model as cam
+        _texts, guard = self.asks_world(4)
+        first = StubAsks(yes=self.ASKS)
+        Replay.replay(self, role=f"person:{OURS}", guard=guard, ask_judge=cam.Judge(first))
+        sent = [t for batch in first.batches for t in batch]
+        q, _items = self._items()
+        cached = q.conn.execute("SELECT count(*), sum(asks) FROM chat_asks").fetchone()
+        self.assertEqual(tuple(cached), (len(sent), len(self.ASKS)))
+        events = [json.loads(b) for (b,) in q.conn.execute(
+            "SELECT body FROM events WHERE body LIKE '%\"ask_check\": \"model\"%'")]
+        self.assertEqual(len(events), len(sent))
+        again = StubAsks(yes=())
+        judge = cam.Judge(again)
+        got = judge.ask(q, [(e["event_id"], e, e["mailbox"], "Ops") for e in events],
+                        guard, "2026-10-21T12:00:00Z")
+        self.assertEqual(again.batches, [])
+        self.assertEqual(judge.stats["cached"], len(events))
+        self.assertEqual(sum(got.values()), len(self.ASKS))
+
+    def test_an_item_prepared_before_its_text_was_read_closes_when_it_asks_nothing(self):
+        """A Teams message typed before the store's text index held its body has no text:
+        its ask is unknown, so it is prepared (never lost); the cycle that reads the text
+        closes the item when the model reads that it asks nothing (done, "no_ask") and keeps
+        one that asks; a model failure keeps it. An autopilot whose rule needs no ask is
+        left as it was."""
+        from operating import chat_ask_model as cam
+        self.chat("c1", OURS_OID, 9, "Morning, can you check the run sheet?", day=-1)
+        self.chat("c2", OURS_OID, 9, "Morning, can you check the run sheet?", day=-1)
+        self.chat("c4", OURS_OID, 9, "Morning, can you check the run sheet?", day=-1)
         noted = self.chat("c1", APPROVER_OID, 10, "")
-        asked = self.chat("c1", APPROVER_OID, 11, "")
-        self.w.link("TeamsChatMessage.mentions_sales_order", asked, self.order("PO-77"))
-        self.chat("c1", OURS_OID, 15, "Done.")
-        self.store()
-        self.texts({noted: "Thanks, noted!", asked: "When does SO-7001 ship?"})
-        out = Replay.replay(self, role=f"person:{OURS}")
-        self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
-        flow = out["workflows"]["teams_chat"]
-        self.assertEqual((flow["judged"], flow["matched"], flow["actions"]), (1, 1, 1))
-        q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
-        self.addCleanup(q.close)
-        [item] = q.items(None, ("open", "done"))
-        self.assertEqual(item["body"]["happened"]["sender"], APPROVER_OID)
-        work = item["body"]["prepared"]
-        self.assertEqual(work["records"][0]["object_id"].split(":")[0], "SalesOrder")
-        self.assertIn("teams:chat:c1", item["audiences"])
-        self.assertTrue(item["citations"])
-        self.assertIn("SO-7001", work["teams_draft"]["body"])
-        self.assertFalse(work["teams_draft"]["post"])
-        self.assertNotIn("draft", work)
-        self.assertIsNone(autopilot_reading.card_of(item))           # nothing to send or post from
-        states = ("open", "done")
-        self.assertEqual(len(autopilot_reading.visible(q, reader=READER, may_read=everyone, held=[],
-                                        decide=opens_all, states=states)), 1)
-        grants = {"teams": {OURS_OID: "OPS"}, "managers": {APPROVER_OID: ["OPS"]}}
-        self.assertEqual(len(autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=[],
-                                        decide=opens_all, grants=grants, states=states)), 1)
-        self.assertEqual(autopilot_reading.visible(q, reader=OTHER, may_read=lambda a: a != "teams:chat:c1",
-                                    held=[], decide=opens_all, grants=grants, states=states),
-                         [])
-
-    def test_a_chat_sender_the_owner_never_answers_before_the_window_prepares_nothing(self):
-        """The seed reads the chat history before the window (``teams_received``): a
-        colleague whose last messages the owner left unanswered is not owed a reply."""
-        quiet = f"19:{OURS_OID}_{self.QUIET}@unq.gbl.spaces"
-        self.chat("c1", OURS_OID, 9, "Morning", day=-6)
-        for d in (-5, -4, -3):
-            self.chat(quiet, self.QUIET, 10, "FYI the line is running", day=d)
-            self.chat("c1", APPROVER_OID, 10, "Can you check the sheet?", day=d)
-            self.chat("c1", OURS_OID, 12, "Checked.", day=d)
-        self.chat(quiet, OURS_OID, 9, "Morning", day=-6)
-        self.chat(quiet, self.QUIET, 10, "Can you check line 2?")
-        self.chat("c1", APPROVER_OID, 10, "Can you check line 3?")
-        self.store()
-        guard = people()
-        guard.chat_members[quiet] = [OURS_OID, self.QUIET]
-        guard.chat_members["c1"] = [OURS_OID, APPROVER_OID]
-        out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
-        self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
-        q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
-        self.addCleanup(q.close)
-        [item] = q.items(None, ("open", "done"))
-        self.assertEqual(item["body"]["happened"]["sender"], APPROVER_OID)
-
-    def test_a_channel_mention_in_a_thread_the_owner_wrote_in_is_owed_there(self):
-        aud = "teams:channel:t1/ch1"
-
-        def post(sender, hour, text, *, day=0, reply_to="", mention=None):
-            return self.w.obj("TeamsChannelMessage", {
-                "created_at": at(hour, day), "subject": text, "reply_to_id": reply_to,
-                "from": json.dumps({"display_name": "Synth person", "id": sender}),
-                "mentions": json.dumps([{"id": 0, "target_id": mention}] if mention else [])},
-                audience=aud, binding="graph_teams.channel_messages")
-        root = post(OURS_OID, 9, "Run sheet for this week is up.", day=-1)
-        post(APPROVER_OID, 10, "Can you confirm line 2?", reply_to=root, mention=OURS_OID)
-        post(APPROVER_OID, 10, "Status of line 3?", reply_to=root)       # not mentioned
-        other = post(APPROVER_OID, 9, "New topic", day=-1)
-        post(APPROVER_OID, 11, "Can you look at this?", reply_to=other, mention=OURS_OID)
-        post(OURS_OID, 15, "Confirmed.", reply_to=root)
-        self.store()
-        out = Replay.replay(self, role=f"person:{OURS}")
-        # the thread they wrote in: owed; a thread they never wrote in: not
-        self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
-        flow = out["workflows"]["teams_chat"]
-        self.assertEqual((flow["judged"], flow["matched"], flow["actions"]), (1, 1, 1))
-
+        asked = self.chat("c2", APPROVER_OID, 10, "")
+        unknown = self.chat("c4", APPROVER_OID, 10, "")
+        _texts, guard = self.asks_world(0, more=("c1", "c2", "c4"), asks=())
+        st = pe._Store(self.dir / "s.sqlite", threads=1)
+        self.addCleanup(st.close)
+        Replay.replay(self, role=f"person:{OURS}", guard=guard)
+        q, items = self._items()
+        by_chat = {i["audiences"][0]: i for i in items if i["autopilot"] == "teams_reply"}
+        self.assertEqual(set(by_chat), {"teams:chat:c1", "teams:chat:c2", "teams:chat:c4"})
+        self.texts({noted: "Yeah send a note too just so people are aware",
+                    asked: "need the COA by Friday", unknown: "the label on batch 7"})
+        with q.conn:
+            q.conn.execute("UPDATE items SET state = 'open', done_reason = NULL")
+        stamp = "2026-10-21T12:00:00Z"
+        model = StubAsks(yes=("need the COA by Friday",),
+                         no=("Yeah send a note too just so people are aware",))
+        # a rule that needs no ask: named, never closed, nothing read by the model
+        self.assertEqual(ap.name_teams_items(st, q, {}, ask_rules=(), now=stamp,
+                                             judge=cam.Judge(model), people=guard), 3)
+        self.assertEqual({i["state"] for i in q.items(None, ("open", "done"))}, {"open"})
+        self.assertEqual(model.batches, [])
+        with q.conn:
+            q.conn.execute("UPDATE items SET body = json_remove(body, '$.happened.snippet', "
+                           "'$.happened.snippet_missing')")
+        skipped = Counter()
+        self.assertEqual(ap.name_teams_items(st, q, {}, ask_rules={"teams_reply"}, now=stamp,
+                                             skipped=skipped, judge=cam.Judge(model),
+                                             people=guard), 3)
+        got = {i["audiences"][0]: (i["state"], i["done_reason"])
+               for i in q.items(None, ("open", "done"))}
+        self.assertEqual(got, {"teams:chat:c1": ("done", "no_ask"),
+                               "teams:chat:c2": ("open", None),
+                               "teams:chat:c4": ("open", None)})      # not known: kept
+        self.assertEqual(skipped["teams_item_no_ask"], 1)
 
 class GroupChats(TeamsChats):
     """A group chat's message is addressed only to each member it @mentions; the other

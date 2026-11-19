@@ -80,9 +80,6 @@ sent, written or changed; every row cites the records and sheet cells it comes f
   and carries the prices' own markings. A code naming no item and one naming an item the
   reader may not read are both ``codes_not_found`` (no oracle); a code several items carry
   is ``codes_ambiguous``, never one item's prices.
-* ``uat_feedback``: SharePoint list items of a list whose address names user acceptance
-  testing or feedback (``UAT_WORDS``), each item's status read as ``open``, ``answered`` or
-  ``fixed`` (``STATUS_CLASS``); an unknown status word is ``unknown`` (counted, never guessed).
 
 People first, fail closed: without a people exclusion that is loaded and bound to the
 tenant directory (``unit_clear``) every view is ``withheld: people_exclusion_unavailable``;
@@ -100,6 +97,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import re
 import sqlite3
+import threading
 import time
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
@@ -111,7 +109,7 @@ TOOL_NAME = "plx.aggregate"
 MODE = "business_documents"
 FORMAT = "plx-business-documents/v1"
 VIEWS = ("forecasts", "forecast_accuracy", "priority_fill", "price_sheets",
-         "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback",
+         "compliance_pack", "answer_bank", "supplier_issues",
          "formula_lines", "item_on_hand_sheets", "item_po_prices")
 MAX_ROWS = 200
 FINANCE = "finance"
@@ -122,7 +120,6 @@ PRICE_WORDS = ("price*", "pricing")
 QUESTIONNAIRE_WORDS = ("questionnaire*",)
 ISSUE_WORDS = ("reject*", "deviation*", "complaint*", "ncr", "nonconform*", "quarantine*",
                "oos", "contaminat*", "defect*")
-UAT_WORDS = ("uat", "feedback", "acceptance")
 FORMULA_WORDS = ("formula*", "sample")
 FORMULA_BUDGET_SECONDS = 35.0   # inside plx.aggregate's 45 s: past it, a labelled partial
 FORMULA_NAME_WORDS = 3   # product name words a sheet's name must hold (all, when fewer)
@@ -144,17 +141,6 @@ PACK_KINDS = {
     "allergen": ("allergen", "allergens", "gluten", "nut free"),
     "certificate": ("certificate", "cert", "kosher", "halal", "organic", "vegan", "ifra",
                     "gmp", "iso", "coc", "chain of custody", "statement", "declaration"),
-}
-STATUS_CLASS = {
-    "fixed": ("fixed", "resolved", "done", "closed", "complete", "completed", "deployed",
-              "implemented", "released", "verified", "ready for uat", "ready for retest",
-              "ready for testing"),
-    "answered": ("answered", "responded", "in progress", "in review", "reviewed",
-                 "need more info", "needs info", "waiting", "on hold", "deferred",
-                 "won t fix", "wont fix", "not a bug", "by design", "acknowledged",
-                 "rejected", "duplicate", "approved", "accepted"),
-    "open": ("new", "open", "pending", "not started", "to do", "todo", "reported",
-             "active", "reopened", "submitted", "failed retest", "failed"),
 }
 PRICE_TOLERANCE = Decimal("0.02")
 PRICE_WINDOW_DAYS = 365   # a sheet governs the invoices of the year after it
@@ -320,12 +306,20 @@ class CustomerOf:
         self._all_words: frozenset[str] | None = None
         self._people: frozenset[str] | None = None
         self._product_pairs: frozenset[str] = frozenset()
+        self._roots: dict[str, str] = {}   # customer -> its cluster's root (this read)
+
+    def _root(self, oid: str) -> str:
+        """``dt.root`` over the customer twins, read once per customer per step."""
+        got = self._roots.get(oid)
+        if got is None:
+            got = self._roots[oid] = dt.root(self.conn, oid, CUSTOMER_TWINS)
+        return got
 
     def __call__(self, d: dt.Doc) -> tuple[str | None, str | None, list[str]]:
         conn, parties = self.conn, self.parties
         linked = sorted(set(d.parties.get("customer") or []))
         if linked:
-            roots = {dt.root(conn, c, CUSTOMER_TWINS) for c in linked}
+            roots = {self._root(c) for c in linked}
             return (next(iter(roots)), "sender_link", []) if len(roots) == 1 else \
                 (None, None, [])
         tries: list[tuple[str, str]] = []
@@ -402,11 +396,17 @@ class CustomerOf:
             if len(mails) >= THREAD_MAIL:
                 break
         votes: dict[str, list[str]] = defaultdict(list)
+        links: dict[str, list[str]] = defaultdict(list)   # the mails' links, one read
+        for start in range(0, len(mails), 500):
+            part = mails[start:start + 500]
+            for frm, to in conn.execute(
+                    "SELECT from_object, to_object FROM link_rows WHERE from_object IN (%s) "
+                    "AND superseded_at IS NULL AND tier <> 'contradicted'"
+                    % ",".join("?" * len(part)), tuple(part)):
+                links[frm].append(to)
         for mail in mails:
             whose = set()
-            for lt, to in conn.execute(
-                    "SELECT link_type, to_object FROM link_rows WHERE from_object = ? AND "
-                    "superseded_at IS NULL AND tier <> 'contradicted'", (mail,)):
+            for to in links.get(mail, ()):
                 kind = to.split(":", 1)[0]
                 if kind == "Customer":
                     whose.add(to)
@@ -418,7 +418,7 @@ class CustomerOf:
                     for so in dt.links_to(conn, [to], "SalesOrder.references_customer_po"
                                           ).get(to, []):
                         whose.update(dt.links_from(conn, [so], ORDERED_BY).get(so, []))
-            for c in {dt.root(conn, c, CUSTOMER_TWINS) for c in whose}:
+            for c in {self._root(c) for c in whose}:
                 if c not in self.parties.retired:
                     votes[c].append(mail)
         if not votes:
@@ -439,7 +439,7 @@ class CustomerOf:
             for i in range(len(words) - size + 1):
                 ids = self._names.get(" ".join(words[i:i + size]))
                 if ids:
-                    found.add(min(dt.root(self.conn, x, CUSTOMER_TWINS) for x in ids))
+                    found.add(min(self._root(x) for x in ids))
         return found
 
     def name_words(self, oid: str, every: bool = False) -> set[str]:
@@ -1229,30 +1229,32 @@ def _specific(text: str, customer_of: "CustomerOf", source: str | None = None) -
 def _answer_pairs(conn, gate: dt.Gate, ans: Answer) -> list[tuple]:
     """Every answer we gave a customer in a questionnaire the reader may read: (document,
     question, answer, cell, customer, basis, evidence, specific), whoever the draft is for
-    (``view_answer_bank`` narrows it); a supplier's or an unknown party's counted."""
-    customer_of = CustomerOf(conn, gate, ans)
-    suppliers = dt.Parties(conn, "Supplier", "Supplier.same_record_as",
-                           getattr(gate.guard, "internal", ()))
-    out: list[tuple] = []
-    for d in _docs(conn, gate, QUESTIONNAIRE_WORDS, ans,
-                   require=lambda n: _words_in(n, QUESTIONNAIRE_WORDS)):
-        pairs = qa_pairs(d.text or "")
-        if not pairs:
-            continue
-        customer, basis, evidence = customer_of(d)
-        outside = [d.sender] + d.recipients if d.sender else d.recipients
-        supplier = next((x for x in (suppliers.of(o) for o in outside
-                                     if not suppliers.internal_address(o)) if x), None)
-        if customer is None or supplier is not None:
-            reason = "supplier_questionnaire" if supplier else "party_unknown"
-            ans.counts[reason] += len(pairs)
-            continue
-        for q, a, cell in pairs:
-            # shared only when the question is a declared company fact AND the answer
-            # passes every specific check; everything else stays with its customer
-            specific = fact_category(q) is None or _specific(a, customer_of, customer)
-            out.append((d, q, a, cell, customer, basis, evidence, specific))
-    return out
+    (``view_answer_bank`` narrows it); a supplier's or an unknown party's counted. Read
+    per reader (``answer_bank_store``: its reader-independent part collected through this
+    reader's gate, then decided for them)."""
+    from . import answer_bank_store
+    return answer_bank_store.pairs(answer_bank_store.collect(conn, gate), gate, ans)
+
+
+def _bank_pairs(conn, gate: dt.Gate, ans: Answer) -> list[tuple]:
+    """``_answer_pairs`` from the company's kept bank (``answer_bank_store``) when it may
+    answer for this reader, decided with the reader's own gate; else read per reader and
+    kept in ``MEMO`` as before."""
+    from . import answer_bank_store
+    bank = getattr(ans, "bank", None)
+    if bank is not None:
+        scratch = Answer(gate, ans.view)
+        try:
+            got = answer_bank_store.pairs(bank, gate, scratch)
+        except answer_bank_store.BankMismatch:
+            ans.counts["answer_bank_read_per_reader"] += 1
+        else:
+            ans.counts.update(scratch.counts)
+            ans.withheld.update(scratch.withheld)
+            ans.complete = ans.complete and scratch.complete
+            return got
+    return MEMO.step(ans.reader, "answer_pairs", ans,
+                     lambda scratch: _answer_pairs(conn, gate, scratch), conn)
 
 
 def view_answer_bank(conn, gate, ans, args, as_of) -> None:
@@ -1275,9 +1277,7 @@ def view_answer_bank(conn, gate, ans, args, as_of) -> None:
         return
     want = _tokens(question) if isinstance(question, str) else set()
     entries = []
-    for d, q, a, cell, customer, basis, evidence, specific in MEMO.step(
-            ans.reader, "answer_pairs", ans, lambda scratch: _answer_pairs(conn, gate, scratch),
-            conn):
+    for d, q, a, cell, customer, basis, evidence, specific in _bank_pairs(conn, gate, ans):
         if specific and customer not in target_members:
             ans.counts["specific_to_another_customer" if target_members
                        else "specific_needs_customer"] += 1
@@ -1483,85 +1483,6 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
             m.items())[-12:])} for s, m in sorted(by.items(), key=lambda kv: (
                 -sum(kv[1].values()), kv[0])) if gate.visible(s)][:50]
     ans.extra = {"trend": ranked(trend), "reported_by_trend": ranked(reported)}
-
-
-# --------------------------------------------------------------------------- UAT
-
-def status_class(raw: Any) -> str:
-    s = " ".join(re.findall(r"[a-z]+", str(raw or "").lower()))
-    if not s:
-        return "unknown"
-    for cls, words in STATUS_CLASS.items():
-        if s in words:
-            return cls
-    for cls, words in STATUS_CLASS.items():
-        if any(len(w) > 3 and w in s for w in words):
-            return cls
-    return "unknown"
-
-
-def view_uat_feedback(conn, gate, ans, args, as_of) -> None:
-    # every list item's address read by its property (a few thousand items; 0.9 s on the
-    # served store), never through the value word index: on Postgres the word rows do not
-    # join value_cells by rowid, so that query raised and the view answered nothing there
-    rows = conn.execute(
-        "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
-        "property = 'web_url' AND object_id LIKE 'SharePointListItem:%' AND "
-        "value LIKE '%/Lists/%'").fetchall()
-    # only items on a UAT list get their fields read and their gate decided (SP-01, 11-15:
-    # 311 of the served 10,549 list items; reading all of them took 3.5 s a page); the loop
-    # below still decides each by its own first address, so this only drops work
-    def on_uat_list(url: Any) -> bool:
-        m = re.search(r"/Lists/([^/]+)/", str(url or ""))
-        return bool(m) and _words_in(m.group(1).replace("%20", " "), UAT_WORDS)
-    ids = sorted({r[0] for r in rows if on_uat_list(r[1])})
-    vals = dt.values(conn, ids, ("web_url", "fields", "last_modified_date_time",
-                                 "sharepoint_ids_list_id"))
-    gate.load(ids)
-    totals: Counter = Counter()
-    skip = int(args.get("offset") or 0)
-    for oid in ids:
-        v = vals.get(oid) or {}
-        url = str(dt.first(v, "web_url") or "")
-        m = re.search(r"/Lists/([^/]+)/", url)
-        if not m or not _words_in(m.group(1).replace("%20", " "), UAT_WORDS):
-            continue
-        try:
-            fields = json.loads(dt.first(v, "fields") or "{}")
-        except ValueError:
-            fields = {}
-        if not isinstance(fields, dict):
-            fields = {}
-        status_key = next((k for want in ("status", "state", "progress", "stage")
-                           for k in fields if k.lower() == want), None)
-        prio_key = next((k for k in fields if re.fullmatch(r"(?i)priority|severity|"
-                                                           r"impact|criticality", k)), None)
-        # the resolution says what became of an item (fixed, deferred, failed retest);
-        # without a known one, the triage status (pending: open; approved: answered)
-        res_key = next((k for k in fields if k.lower() == "resolution"), None)
-        cls = status_class(fields.get(res_key)) if res_key else "unknown"
-        if cls == "unknown" and status_key:
-            cls = status_class(fields.get(status_key))
-        if not gate.visible(oid):
-            ans.withheld["withheld_not_readable"] += 1
-            continue
-        totals[cls] += 1
-        ans.counts[cls] += 1
-        if args.get("status") and args["status"] != cls:
-            continue
-        # ``offset``: the rows before it were shown on an earlier page (the rows cap is
-        # 200 a page; the caller follows until ``complete``)
-        if skip:
-            skip -= 1
-            continue
-        ans.add({"record": oid, "list": m.group(1).replace("%20", " ")[:80],
-                 "title": str(fields.get("Title") or "")[:200], "status": cls,
-                 "status_word": str(fields.get(status_key) or "")[:40] if status_key else None,
-                 "resolution_word": str(fields.get(res_key) or "")[:40] if res_key else None,
-                 "priority": str(fields.get(prio_key) or "")[:40] if prio_key else None,
-                 "modified": (dt.day_of(dt.first(v, "last_modified_date_time")) or
-                              date.min).isoformat()}, [oid])
-    ans.extra = {"totals": dict(sorted(totals.items()))}
 
 
 # --------------------------------------------------------------------------- formula lines
@@ -1918,20 +1839,23 @@ VIEW_FUNCS: dict[str, Callable] = {
     "forecasts": view_forecasts, "forecast_accuracy": view_forecast_accuracy,
     "priority_fill": view_priority_fill, "price_sheets": view_price_sheets,
     "compliance_pack": view_compliance_pack, "answer_bank": view_answer_bank,
-    "supplier_issues": view_supplier_issues, "uat_feedback": view_uat_feedback,
+    "supplier_issues": view_supplier_issues,
     "formula_lines": view_formula_lines, "item_on_hand_sheets": view_item_on_hand_sheets,
     "item_po_prices": view_item_po_prices}
 
 
 def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[str],
            guard: Any, as_of: date, args: Mapping[str, Any] | None = None,
-           readings: Any = None, reader: str | None = None) -> dict[str, Any]:
+           readings: Any = None, reader: str | None = None,
+           bank: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One view for one reader (module doc). ``readings``: the sheet readings file;
-    ``reader``: the reader's memo key (``reader_key``; None: nothing kept)."""
+    ``reader``: the reader's memo key (``reader_key``; None: nothing kept); ``bank``: the
+    company's kept answer bank (``answer_bank_store.load``; None: read per reader)."""
     gate = dt.Gate(conn, may_read=may_read, held=held, guard=guard)
     ans = Answer(gate, view)
     ans.reader = reader
     ans.readings = readings
+    ans.bank = bank
     ans.extra = {}
     if view not in VIEW_FUNCS:
         return _error("invalid_input", "view must be one of " + ", ".join(VIEWS))
@@ -1940,21 +1864,28 @@ def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[
         out["complete"] = False
         return out
     started = time.monotonic()
-    if reader and view in KEPT_VIEWS:
+    if reader and view in KEPT_VIEWS and (args or {}).get("subject"):
         # a record page reads these lists one after another: their steps start together
-        steps = [("forecast_lines", lambda scratch: _forecast_lines(conn, gate, scratch)),
-                 ("answer_pairs", lambda scratch: _answer_pairs(conn, gate, scratch))]
+        # (the Templates page's whole answer bank, no subject, reads its own step only)
+        steps = [("forecast_lines", lambda scratch: _forecast_lines(conn, gate, scratch))]
+        if bank is None:
+            steps.append(("answer_pairs", lambda scratch: _answer_pairs(conn, gate, scratch)))
         if FINANCE in gate.held:
             steps.append(("sheet_prices", lambda scratch: _sheet_prices(conn, gate, scratch)))
         MEMO.prefetch(reader, conn, gate, view, steps)
     try:
         VIEW_FUNCS[view](conn, gate, ans, dict(args or {}), as_of)
-    except StillReading:
+    except StillReading as reading:
         # read in the background for the next request; this one says so, never "none"
         ans.rows, ans.complete = [], False
         ans.counts["still_reading"] = 1
         ans.extra["note"] = STILL_READING_NOTE
+        token = reading.token
+    else:
+        token = None
     out = ans.done(**ans.extra)
+    if token:
+        out["still_reading_token"] = token   # the read going on (``MEMO.running``)
     out["draft"] = view == "answer_bank"
     out["seconds"] = round(time.monotonic() - started, 1)
     return out
@@ -2009,11 +1940,6 @@ class BusinessDocumentsTool:
             if not isinstance(currency, str) or not re.fullmatch(r"[A-Za-z]{3}", currency):
                 return _error("invalid_input", "currency must be a 3-letter code")
             args["currency"] = currency.upper()
-        offset = arguments.get("offset")
-        if offset is not None:
-            if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-                return _error("invalid_input", "offset must be a non-negative integer")
-            args["offset"] = offset
         as_of = arguments.get("as_of")
         try:
             day = date.fromisoformat(as_of) if as_of else date.today()
@@ -2026,7 +1952,9 @@ class BusinessDocumentsTool:
                                may_read=lambda key: policy.may_read(actor, key),
                                held=held, guard=guard, as_of=day, args=args,
                                readings=_readings_file(self.base),
-                               reader=reader_key(actor, held, guard)))
+                               reader=reader_key(actor, held, guard),
+                               bank=_kept_bank(self.base, guard)
+                               if view in KEPT_VIEWS else None))
 
 
 def _checked(result: dict[str, Any]) -> dict[str, Any]:
@@ -2051,16 +1979,43 @@ def _readings_file(base: Any) -> Any:
     return proactive_sheets.readings_path(Path(path)) if path else None
 
 
+def _kept_bank(base: Any, guard: Any) -> Mapping[str, Any] | None:
+    """The company's kept answer bank when it may answer under ``guard`` (``answer_bank_store``)."""
+    from . import answer_bank_store
+    from .cash_forecast import store_file
+    try:
+        return answer_bank_store.load(answer_bank_store.bank_path(store_file(base)), guard)
+    except Exception:  # noqa: BLE001 - no kept bank: read per reader
+        return None
+
+
 def _store_guard(base: Any) -> Any:
     """The people exclusion bound to the tenant directory of the store's state (the
-    proactive engine's loader); None (every view withheld) when it cannot be loaded."""
+    proactive engine's loader); None (every view withheld) when it cannot be loaded. One
+    loaded is kept ``GUARD_SECONDS`` per store (loading it read the mail capture's
+    directory again on every call: 1-3 s of each list on the served store); one that could
+    not be loaded is never kept."""
     from pathlib import Path
     from .proactive_engine import _people
     from .cash_forecast import store_file
     path = store_file(base)
     if not path:
         return None
-    return _people(Path(path))
+    now = time.monotonic()
+    with _GUARDS_LOCK:
+        kept = _GUARDS.get(path)
+    if kept is not None and now - kept[0] < GUARD_SECONDS:
+        return kept[1]
+    guard = _people(Path(path))
+    if guard is not None and not getattr(guard, "unavailable", None):
+        with _GUARDS_LOCK:
+            _GUARDS[path] = (now, guard)
+    return guard
+
+
+GUARD_SECONDS = 60.0
+_GUARDS: dict[str, tuple[float, Any]] = {}
+_GUARDS_LOCK = threading.Lock()
 
 
 def register(table: MutableMapping[str, dict[str, Any]], base: Any
@@ -2134,4 +2089,4 @@ def priority_fill_unmet(st: Any, as_of: date, *, gap: Callable, cites: Callable,
 
 
 __all__ = ["FORMAT", "KIND", "MODE", "RULE", "VIEWS", "priority_fill_unmet", "BusinessDocumentsTool", "answer", "forecast_lines",
-           "qa_pairs", "register", "status_class"]
+           "qa_pairs", "register"]

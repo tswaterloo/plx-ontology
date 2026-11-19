@@ -133,7 +133,7 @@ def meeting_brief_of(view: Any, object_id: str, who: Any = None, state_dir: Any 
     alerts = _alerts(view)
     with view._request():
         brief = br.meeting_brief(view._call, held, alerts, object_id, decide=_decide(view),
-                                 people=br.env_people())
+                                 people=_people())
     return with_carried_items(brief, held, who, state_dir)
 
 
@@ -278,7 +278,7 @@ def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
         and start + timedelta(days=7) <= today
     with view._request():
         raw = br.weekly_review(view._call, held, alerts, week=start, today=today,
-                               decide=decide, people=br.env_people(),
+                               decide=decide, people=_people(),
                                budget_seconds=kept_budget if kept
                                else br.BUDGET_SECONDS)
     import logging
@@ -294,20 +294,15 @@ def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
     return raw
 
 
-def qc_pack_of(view: Any, kind: str) -> Optional[dict[str, Any]]:
-    """The daily QC pack or the QC audit pack as this reader reads it (``operating.briefs``):
-    built from the reader's own ``plx.aggregate`` mode ``qc_compliance`` calls, every row
-    decided on its citations; the daily pack's hold rows are the reader's own alerts."""
-    held = _held(view)
-    if held is None:
-        return None
-    decide = _decide(view)
-    if kind == "daily":
-        alerts = _alerts(view, only=br.QC_ALERT_KINDS)
-        with view._request():
-            return br.qc_daily_pack(view._call, held, alerts, decide=decide)
-    with view._request():
-        return br.qc_audit_pack(view._call, held, decide=decide)
+def _people() -> Any:
+    """The people exclusion the calendar and meeting briefs read with: the API's read-path
+    guard (``feedback.address_guard``: the mail capture's directory attached, an outsider's
+    address decided by the tenant's mail domains), as mail and search decide addresses.
+    The passes' bare guard (``br.env_people``) decides no address at all, so every meeting
+    naming anyone was dropped: the owner's Meetings page said "No meetings" over 81 events
+    in the next two weeks (owner walk 11-17)."""
+    from .feedback import address_guard
+    return address_guard()
 
 
 def upcoming_of(view: Any, who: Any = None, state_dir: Any = None
@@ -322,12 +317,17 @@ def upcoming_of(view: Any, who: Any = None, state_dir: Any = None
     from operating.time_window import BUSINESS_TZ
     since = datetime.now(ZoneInfo(BUSINESS_TZ)).replace(hour=0, minute=0, second=0,
                                                         microsecond=0)
+    # the reader's own meetings (their addresses and object ids): one who may read every
+    # calendar is not shown everyone's
+    viewer = _viewer(who, held) if who is not None else None
+    mine = None if viewer is None else (
+        {a for a in viewer.addresses if a} | {o.rpartition(":")[2] for o in viewer.oids if o})
     with view._request():
-        raw = br.upcoming_meetings(view._call, held, people=br.env_people(), since=since)
+        raw = br.upcoming_meetings(view._call, held, people=_people(), since=since,
+                                   reader=mine or None)
     store = _follow_ups(state_dir) if who is not None else None
     if store is not None:
         from operating import meeting_followup as mf
-        viewer = _viewer(who, held)
         for e in raw:
             if e.get("private") or e.get("people_withheld"):
                 continue
@@ -446,50 +446,6 @@ def replies_of(view: Any, today: Optional[date] = None) -> Optional[dict[str, An
     if not isinstance(found, Mapping) or found.get("status") != "read":
         return None
     return it.triage(found.get("gaps") or (), today or date.today())
-
-
-RD_CARD = "rd:"
-
-
-def rd_card(project: Mapping[str, Any], today: date) -> Optional[dict[str, Any]]:
-    """A project's drafted status update as a card ``ActionDesk`` accepts (sent only through
-    its preview and the reader's confirm); addressed to the customer's last address in the
-    project's own threads, cited by their last message."""
-    from operating import rd_projects as rd
-    draft = rd.status_draft(project, today)
-    cites = [c for c in project.get("citations") or () if isinstance(c, str)]
-    to = [t["address"] for t in draft["to"] if t.get("address")]
-    card_id = RD_CARD + str(project["id"])
-    if not to or not cites or len(card_id) > 200:
-        return None
-    return {"id": card_id, "headline": draft["subject"][:300],
-            "subject": {"label": draft["subject"][:200]}, "action": {"text": ""},
-            "draft": {"channel": "email", "to": {"address": to[0], "source": cites[0]},
-                      "subject": draft["subject"], "body": draft["body"], "facts": []},
-            "teams_draft": None, "playbook": True}
-
-
-def rd_board_of(view: Any, me: Iterable[str], today: Optional[date] = None
-                ) -> Optional[dict[str, Any]]:
-    """The reader's R&D board from their own trimmed alert list and, per item, the records
-    each line names, decided as this reader (a workspace without decisions shows nothing)."""
-    from operating import rd_projects as rd
-    found = view.gap_inbox(kinds=list(rd.KINDS), limit=bf_max())
-    if not isinstance(found, Mapping) or found.get("status") != "read":
-        return None
-    board = rd.board(found.get("gaps") or (), today or date.today(), decide=_decide(view),
-                     me=me)
-    # each project's customer by name, read as this reader (``plx.object``'s display): a
-    # record the reader cannot read gets no name (the app shows its handle), never a guess
-    from .backend import cards_words
-    customers = [p["customer"] for p in board.get("projects") or ()
-                 if isinstance(p, Mapping) and isinstance(p.get("customer"), str)]
-    with view._request():
-        names = cards_words(view, customers) if customers else {}
-    for p in board.get("projects") or ():
-        if isinstance(p, dict) and isinstance(p.get("customer"), str):
-            p["customer_name"] = (names.get(p["customer"]) or ("",))[0] or None
-    return board
 
 
 def label_changes_of(view: Any, object_id: str) -> Optional[dict[str, Any]]:
@@ -655,26 +611,6 @@ class BriefsMixin:
         principals = ",".join(sorted(getattr(reader.session, "principals", ()) or ()))
         return frozenset(owner_ids(principals))
 
-    def rd_board(self, reader: Reader) -> m.RdBoard:
-        today = date.today()
-        mine = self._my_oids(reader)
-        raw = self._brief_run(reader, lambda view: rd_board_of(view, mine, today))
-        if raw is None:
-            raise alerts_not_read()
-        projects = []
-        for project in raw["projects"]:
-            card = rd_card(project, today)
-            from operating import rd_projects as rd
-            if card is not None:
-                project["card_id"] = card["id"]
-                project["offers"] = ca.offers(card)
-                project["draft"] = {**rd.status_draft(project, today), "to": [
-                    {"address": card["draft"]["to"]["address"]}]}
-            project.pop("contact", None)   # the address leaves only inside the draft
-            projects.append(project)
-        raw["projects"] = projects
-        return m.RdBoard(**{k: v for k, v in raw.items() if k not in ("schema",)})
-
     def answer_bank(self, reader: Reader, question: Optional[str] = None) -> m.DocList:
         """Past questionnaire answers any customer may get, read as this reader."""
         from .record_documents import answer_bank
@@ -683,17 +619,6 @@ class BriefsMixin:
         return got if isinstance(got, m.DocList) else m.DocList(
             view="answer_bank", title="Answers any customer may get", complete=False,
             error="The list could not be read.")
-
-    def rd_card_of(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
-        """The status-update card ``card_id`` rebuilt from this reader's own board."""
-        today = date.today()
-        mine = self._my_oids(reader)
-        raw = self._brief_run(reader, lambda view: rd_board_of(view, mine, today))
-        for project in (raw or {}).get("projects") or ():
-            card = rd_card(project, today)
-            if card is not None and card["id"] == card_id:
-                return card
-        return None
 
     def _is_owner(self, reader: Reader) -> bool:
         """The owner-open reader: ``feedback.owner_open``, the one owner test (S-16). The
@@ -744,16 +669,11 @@ class BriefsMixin:
         return m.Workload(**{k: v for k, v in raw.items() if k != "schema"})
 
     def _grants_owner(self, reader: Reader) -> Any:
-        """The grants file for the owner-open reader (``ReadPolicy.unrestricted``) only:
-        403 for everyone else, 404 with no data directory."""
-        def owner(view: Any) -> bool:
-            try:
-                with view._request():
-                    _gated, policy = view.access.reader_policy()
-                return bool(getattr(policy, "unrestricted", False))
-            except Exception:  # noqa: BLE001 - an undecidable reader is not the owner
-                return False
-        if not self._brief_run(reader, owner):
+        """The grants file for the owner (``_is_owner``: ``feedback.owner_open``) only: 403
+        for everyone else, a listed full reader too (its read policy is unrestricted, but
+        assigning who sees other people's workload is the owner's), 404 with no data
+        directory."""
+        if not self._is_owner(reader):
             raise UserFacing("forbidden", "Only the owner assigns workload grants.", 403)
         grants = self._workload_grants()
         if grants is None:
@@ -866,26 +786,19 @@ class BriefsMixin:
             raise UserFacing("not_found", "The weekly review needs a signed-in reader.", 404)
         return brief_model(raw)
 
-    def qc_pack_dict(self, reader: Reader, kind: str) -> dict[str, Any]:
-        raw = self._brief_run(reader, lambda view: qc_pack_of(view, kind))
-        if raw is None:
-            raise UserFacing("not_found", "The QC pack needs a signed-in reader.", 404)
-        return raw
-
-    def qc_pack(self, reader: Reader, kind: str) -> m.Brief:
-        return brief_model(self.qc_pack_dict(reader, kind))
-
-    def qc_pack_text(self, reader: Reader, kind: str) -> str:
-        return br.pack_text(self.qc_pack_dict(reader, kind))
-
     def labour(self, reader: Reader) -> m.LabourPage:
         """Department and week labour hours (``operating.labour_hours``): only for a reader
         holding the hr or ops-management grant; read from the aggregates store alone."""
         return m.LabourPage(**labour_page_of(getattr(self, "state_dir", None), reader))
 
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
-        return self._brief_run(reader, lambda view: self._upcoming_cached(view, reader)) \
-            or m.UpcomingMeetings(meetings=[])
+        try:
+            return self._brief_run(reader, lambda view: self._upcoming_cached(view, reader)) \
+                or m.UpcomingMeetings(meetings=[])
+        except br.CalendarNotRead:
+            # a failed search is never an empty calendar: the page offers to try again
+            raise UserFacing("busy", "Your calendar could not be read just now. Try again "
+                                     "in a minute.", 503) from None
 
     def _upcoming_cached(self, view: Any, who: Any = None) -> m.UpcomingMeetings:
         """The reader's upcoming meetings as read last for them this hour (``page_key``:

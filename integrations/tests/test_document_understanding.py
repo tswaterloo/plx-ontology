@@ -648,9 +648,9 @@ class DocumentUnderstandingTest(unittest.TestCase):
         for text in ("Currency" + " " * 40_000 + "\nUnit price: $1\n",
                      "All prices" + "\t" * 40_000 + "x\n",
                      "Currency:" + " " * 40_000 + "CADX\n"):
-            started = time.monotonic()
+            started = time.process_time()
             extract_document(text.encode(), "text/plain", original_url=URL)
-            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertLess(time.process_time() - started, 2.0)
         # The code must end the line: lists, alternatives and asides are not
         # a single declaration.
         for declaration in ("Currency: CAD; USD", "Currency: CAD - USD", "Currency: CAD\tUSD",
@@ -676,16 +676,16 @@ class DocumentUnderstandingTest(unittest.TestCase):
                                ("project", " "), ("customer PO", " "), ("ERP CODE", " ")):
             text = prefix + filler * ((95_000 - len(prefix)) // len(filler))
             with self.subTest(prefix=prefix, filler=filler):
-                started = time.monotonic()
+                started = time.process_time()
                 extract_document(text.encode(), "text/plain", original_url=URL)
-                self.assertLess(time.monotonic() - started, 2.0)
+                self.assertLess(time.process_time() - started, 2.0)
 
     def test_party_values_are_linear_and_never_blank(self):
         for label, filler in (("supplier:", " "), ("Ship to:", "\t")):
             text = label + filler * 90_000 + "a" * 300 + "\n"
-            started = time.monotonic()
+            started = time.process_time()
             extract_document(text.encode(), "text/plain", original_url=URL)
-            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertLess(time.process_time() - started, 2.0)
         # A party value starts at its first non-blank character, so a label
         # with nothing (or one character) after it yields no party claim.
         for text in ("Supplier:   \n", "Supplier: x\n", "Vendor:\t\n"):

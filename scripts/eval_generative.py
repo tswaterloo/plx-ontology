@@ -375,6 +375,36 @@ def own_app_data_dir(api_argv: Sequence[str], chosen: Any) -> None:
         raise Refused("api_args_app_data_dir_is_the_live_servers")
 
 
+LIVE_STATE_DIR = "/data/plx-state"      # the served app's state directory
+API_USER = "plx-workbench"              # the only user whose process may keep its sessions
+
+
+def own_session_store(args: Any, *, live: Any = LIVE_STATE_DIR, api_user: str = API_USER) -> None:
+    """The eval's in-process app must never use the served app's sessions file: one under
+    the live state directory is refused unless this process is the API's own user (the
+    11-17 eval wrote the live ``app-sessions.json`` and signed live users out). Give
+    ``--session-store`` a file of the eval's own (fail closed)."""
+    from operator_api.cli import session_store_path
+    path = session_store_path(args.state_dir, getattr(args, "session_store", None))
+    if path is None:
+        return
+    root = Path(live).resolve()
+    try:
+        under = root in Path(path).expanduser().resolve().parents
+    except OSError:
+        under = True
+    if not under:
+        return
+    import pwd
+    try:
+        is_api = pwd.getpwnam(api_user).pw_uid == os.geteuid()
+    except KeyError:
+        is_api = False
+    if not is_api:
+        raise Refused("api_args_session_store_is_the_live_servers: pass --session-store "
+                      "with a file of the eval's own, outside the live state directory")
+
+
 def in_process(api_argv: Sequence[str], work: Any, *, fixtures: Any = None,
                planner: Any = None) -> Any:
     """``work(backend, auth)``'s result, run against the app's own stack built in this
@@ -390,6 +420,7 @@ def in_process(api_argv: Sequence[str], work: Any, *, fixtures: Any = None,
     if not args.dev:
         raise Refused("api_args_need_dev")   # mock answers nothing real; Entra needs a browser
     own_app_data_dir(api_argv, args.app_data_dir)
+    own_session_store(args)
     out: dict[str, Any] = {}
 
     def start(backend: Any, auth: Any, _config: Mapping[str, Any]) -> int:
@@ -1042,4 +1073,6 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

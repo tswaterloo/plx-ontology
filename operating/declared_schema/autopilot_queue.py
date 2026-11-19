@@ -32,4 +32,8 @@ STEPS = ((1, "initial", """
             CREATE TABLE IF NOT EXISTS routine (owner TEXT NOT NULL, series TEXT NOT NULL,
                 at TEXT NOT NULL, message TEXT NOT NULL, recipients TEXT NOT NULL,
                 greeted INTEGER NOT NULL,
-                PRIMARY KEY (owner, series, at));"""),)
+                PRIMARY KEY (owner, series, at));"""),
+ (4, "chat_asks", """
+            CREATE TABLE IF NOT EXISTS chat_asks (message_id TEXT NOT NULL,
+                reader TEXT NOT NULL, asks INTEGER NOT NULL, reason TEXT, model TEXT,
+                at TEXT NOT NULL, PRIMARY KEY (message_id, reader));"""),)

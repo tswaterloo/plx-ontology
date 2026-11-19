@@ -116,6 +116,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 
@@ -537,10 +538,149 @@ class CaseRuntime:
         if entitlement.full_read_allows(scheme, acl, record):
             # The employee's declared full-read grant (people exclusion re-checked).
             return None
+        if self._staff_item_allows(entitlement, scheme, acl, record):
+            return None
         if (scheme == "graph-mail" and isinstance(acl, Mapping)
                 and acl.get("status") == "derived" and acl.get("kind") == "mailbox_owner"):
             return MAILBOX_ACCESS_UNDETERMINED
         return EMPLOYEE_ACL_DENIED
+
+    def _staff_item_allows(self, entitlement: Any, scheme: str, acl: Any,
+                           record: Any) -> bool:
+        """The staff rule on one item (decision 2026-11-17, ``operating.staff_scope``), for
+        an employee whose own item ACL did not open it: a Planner task whose people the
+        exclusion clears; a message of a shared mailbox open to every employee
+        (``staff_shared_mailboxes``); a file of a business site that is not restricted
+        (``staff_scope.site_restricted``: PLX_RESTRICTED_SITES, unset restricts every
+        site; never a personal OneDrive; ``site_restricted`` also holds back folder entries
+        and pay, HR and confidential paths) whose permission list carries its library's and
+        site's inherited permissions or more (``staff_site_baselines``; a unique, narrower
+        list keeps the per-file check) and whose recorded creator and/or last modifier (at
+        least one) the people exclusion clears. The file class was checked before
+        (Finance, Business Central, Staff Scratch). The exclusion must be usable; anything
+        undecidable stays withheld.
+        ``PLX_STAFF_SCOPE=off``: never."""
+        if os.environ.get("PLX_STAFF_SCOPE", "").strip().lower() == "off" \
+                or entitlement.actor is None or not isinstance(acl, Mapping) \
+                or not isinstance(record, Mapping):
+            return False
+        from .ontology_tools_evidence import people_excluded
+        guard = self.people_exclusion
+        if guard is None or getattr(guard, "unavailable", True):
+            return False
+        if scheme == "graph-mail":
+            identities = acl.get("identities")
+            if acl.get("status") != "derived" or acl.get("kind") != "mailbox_owner" \
+                    or not isinstance(identities, (list, tuple)):
+                return False
+            named = {str(i).strip().lower() for i in identities if isinstance(i, str)}
+            return bool(named & self.staff_shared_mailboxes()) \
+                and not people_excluded(guard, sorted(named))
+        if scheme == "planner-task":
+            # Plans are business records every employee reads (decision 2026-11-17); the
+            # task's people (assignees, creator, completer) must all clear the exclusion.
+            identities = acl.get("identities")
+            if acl.get("status") != "derived" or not isinstance(identities, (list, tuple)) \
+                    or not all(isinstance(i, str) for i in identities):
+                return False
+            named = sorted({i.strip().lower() for i in identities
+                            if i.strip() and not i.strip().lower().startswith("group:")})
+            return not named or not people_excluded(guard, named)
+        if scheme == "sharepoint":
+            from .staff_scope import inherits_site, site_restricted
+            url = record.get("original_url")
+            if not isinstance(url, str) or not url.strip() or "/personal/" in url.lower():
+                return False   # a OneDrive (its owner's only) or a file of no known site
+            if site_restricted(record):
+                # a sensitive site, folder or path (PLX_RESTRICTED_SITES and the path
+                # tripwire; unset list: every site) keeps its per-file permission check
+                return False
+            if not inherits_site(dict(record, source_acl=acl), self.staff_site_baselines()):
+                # unique or narrower permissions than the file's library and site carry
+                # (its own or a folder's), or no known baseline: the per-file check
+                return False
+            # The people the record names (drive items record the last modifier; a creator
+            # where a source records one): at least one, all cleared by the exclusion.
+            named = [v.strip() for v in (record.get("created_by"),
+                                         record.get("last_modified_by"))
+                     if isinstance(v, str) and v.strip()]
+            return bool(named) and not people_excluded(guard, named)
+        return False
+
+    def staff_key_material(self) -> dict[str, Any]:
+        """What the staff item rule decides on beyond the entitlement and the exclusion
+        (``ontology_tools_results.runtime_key_material``): the switch, the restricted
+        sites and the shared mailboxes open to every employee."""
+        from .staff_scope import restricted_folders, restricted_sites
+        sites = restricted_sites()
+        baselines = self.staff_site_baselines()
+        # digested once per baselines read (kept 15 minutes), never per call (~65 ms each
+        # time for every call of a staff reader's session, 2026-11-18)
+        kept = getattr(self, "_staff_baselines_digest", None)
+        if kept is None or kept[0] is not baselines:
+            kept = (baselines, sha256(json.dumps(
+                {d: sorted(b) for d, b in sorted(baselines.items())}).encode()).hexdigest())
+            self._staff_baselines_digest = kept
+        return {"off": os.environ.get("PLX_STAFF_SCOPE", "").strip().lower() == "off",
+                "sites": None if sites is None else sorted(sites),
+                "folders": sorted("/".join((s,) + f) for s, f in restricted_folders()),
+                "baselines": kept[1],
+                "shared": sorted(self.staff_shared_mailboxes())}
+
+    def staff_site_baselines(self) -> Mapping[str, frozenset[str]]:
+        """Per SharePoint drive, the inherited permissions a file must carry to open to
+        staff (``staff_scope.read_site_baselines`` over the host's SharePoint capture),
+        read at most every 15 minutes (a failed read: none, retried after a minute; no
+        capture: none, so no file opens by the staff rule)."""
+        held = getattr(self, "_staff_baselines", None)
+        now = time.monotonic()
+        if held is not None and held[0] > now:
+            return held[1]
+        lock = getattr(self, "_staff_baselines_lock", None)
+        if lock is None:
+            lock = self._staff_baselines_lock = threading.Lock()
+        with lock:
+            held = getattr(self, "_staff_baselines", None)
+            if held is not None and held[0] > time.monotonic():
+                return held[1]
+            from .staff_scope import read_site_baselines
+            baselines: Mapping[str, frozenset[str]] = {}
+            ttl = 900.0
+            try:
+                from integrations import capture_sharepoint as cs
+                directory = getattr(getattr(self, "captures", None), "sharepoint_capture_dir",
+                                    None)
+                if directory is not None and cs.store_exists(directory):
+                    store = cs.SharePointCaptureStore.open_read_only(directory)
+                    try:
+                        baselines = read_site_baselines(store.db)
+                    finally:
+                        store.db.close()
+            except Exception:  # noqa: BLE001 - an unreadable capture opens no file
+                baselines, ttl = {}, 60.0
+            self._staff_baselines = (time.monotonic() + ttl, baselines)
+            return baselines
+
+    def staff_shared_mailboxes(self) -> frozenset[str]:
+        """The shared mailboxes every employee reads (``staff_scope.shared_mailboxes`` over
+        the mail capture), read at most once a minute; none when the capture cannot be
+        read."""
+        held = getattr(self, "_staff_shared", None)
+        now = time.monotonic()
+        if held is not None and held[0] > now:
+            return held[1]
+        from .staff_scope import shared_mailboxes
+        shared: frozenset[str] = frozenset()
+        try:
+            from operating.case_tools_host_rules import _mail_store
+            directory = self.mail_capture_dir
+            if directory is not None and Path(directory).is_dir():
+                with _mail_store(self, Path(directory)) as store:
+                    shared = shared_mailboxes(store.db)
+        except Exception:  # noqa: BLE001 - an unreadable capture opens no shared mailbox
+            shared = frozenset()
+        self._staff_shared = (now + 60.0, shared)
+        return shared
 
     def full_read_stale_allows(self, actor: Any, scheme: str, source_acl: Any,
                                recorded_at: Any, *, modifier: Any = None,
@@ -806,30 +946,125 @@ class CaseRuntime:
         source, kind, path = self._capture_store(handle)
         if self.live is None or not path.is_file():
             raise LiveSourceNotConfigured(source)
-        audience: Any = self.live.audience
-        meetings = source in ("calendar-event", "planner-task", "meeting-transcript")
-        refusal = (self.exclusion_refusal()
-                   if source in ("teams-channel", "teams-chat") or meetings else None)
+        refusal = self._capture_refusal(source)
         if refusal:
             # No usable people guard: no captured Teams message is served, whoever asks,
             # and the refusal names why (decided before the record is looked up).
             raise CitationUnresolvable(refusal)
-        if source in ("teams-channel", "teams-chat", "sharepoint-list") or meetings:
-            entitlement = self.employee_gate.entitlement(actor)
-            if entitlement is not None:
-                audience = _EmployeeItemAcl(audience, entitlement, source,
-                                            stale=self.full_read_stale_allows)
+        audience = self._capture_audience(source, actor)
         with self._capture_lock:
             try:
                 result = self._capture_read(path).read_as(audience).resolve(handle, actor)
             except (CaptureError, sqlite3.Error, OSError):
                 self._drop_capture_read(path)
                 raise CitationUnresolvable("capture_citation_unresolvable") from None
+        state = self._capture_denial(source, kind, result)
+        if state is not None:
+            raise gate_refusal("capture_citation_unresolvable", state)
+        stale_at = getattr(audience, "stale_opened_at", None)
+        if opening and stale_at is not None:
+            # Opened (every check above passed) on a membership past the bound under the
+            # full-read grant: journalled now, never for a refusal or a status check.
+            self.journal_full_read_stale(audience.entitlement, source, stale_at)
+        return result
+
+    def capture_resolve_many(self, handles: Sequence[str], actor: Actor,
+                             until: float | None = None) -> dict[str, dict[str, Any] | None]:
+        """``_capture_resolve`` of many Teams chat or channel handles for ``actor``, read
+        in batches (``CaptureStore.resolve_many``) with the very same audience and checks:
+        handle -> its result when served, None when refused for any reason (as the item
+        gate, ``item_gate_from_case_runtime``, denies). A bulk count (``plx.table``) reads
+        no content: nothing is journalled as opened. ``until`` (``time.monotonic``): the
+        handles not read by then are left out of the answer (the caller withholds them)."""
+        import time
+        from integrations.capture_store import MAX_BATCH_HANDLES
+        out: dict[str, dict[str, Any] | None] = {}
+        by_store: dict[tuple[str, str, Path], list[str]] = {}
+        for handle in handles:
+            if isinstance(handle, str) and handle.startswith(TEAMS_SCHEMES):
+                by_store.setdefault(self._capture_store(handle), []).append(handle)
+            else:
+                out[handle] = None
+        for (source, kind, path), group in by_store.items():
+            if self.live is None or not path.is_file() or self._capture_refusal(source):
+                out.update(dict.fromkeys(group))
+                continue
+            audience = self._capture_audience(source, actor)
+            step = min(MAX_BATCH_HANDLES, 500)
+            for i in range(0, len(group), step):
+                if until is not None and time.monotonic() >= until:
+                    return out
+                chunk = group[i:i + step]
+                with self._capture_lock:
+                    try:
+                        results = self._capture_read(path).read_as(audience).resolve_many(
+                            chunk, actor)["results"]
+                    except (CaptureError, sqlite3.Error, OSError):
+                        self._drop_capture_read(path)
+                        results = [None] * len(chunk)
+                for handle, result in zip(chunk, results):
+                    out[handle] = (result if result is not None and self._capture_denial(
+                        source, kind, result) is None else None)
+        return out
+
+    def teams_chat_units(self, actor: Actor) -> frozenset[str]:
+        """The Teams chat units (``teams:chat:<chat id>``, the projected records' audience
+        keys) whose latest captured membership admits ``actor`` at all, by the audience
+        the capture reads with (``_capture_audience``: the employee's own item ACL check):
+        a superset of the chats any message of which ``capture_resolve_many`` serves (that
+        also needs the member's visible history to cover the message, the message's own
+        membership and the people rule), so a bulk reader never counts, nor withholds, a
+        message of a chat the reader is not in. Empty when the store cannot be read."""
+        from integrations.capture_teams import CHAT_KIND, DB_FILE, STORE_DIR
+        path = self.state_dir / STORE_DIR / DB_FILE
+        if self.live is None or not path.is_file() or self._capture_refusal("teams-chat"):
+            return frozenset()
+        audience = self._capture_audience("teams-chat", actor)
+        with self._capture_lock:
+            try:
+                rows = self._capture_read(path)._db.execute(
+                    "SELECT unit, acl FROM unit_acl WHERE kind = ?", (CHAT_KIND.name,)
+                ).fetchall()
+            except (CaptureError, sqlite3.Error, OSError):
+                self._drop_capture_read(path)
+                return frozenset()
+        out = set()
+        for unit, acl in rows:
+            try:
+                parsed = json.loads(acl)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, Mapping) and isinstance(unit, str) and \
+                    audience.item_visible(actor, unit, parsed):
+                out.add(unit)
+        return frozenset(out)
+
+    def _capture_refusal(self, source: str) -> str | None:
+        meetings = source in ("calendar-event", "planner-task", "meeting-transcript")
+        return (self.exclusion_refusal()
+                if source in ("teams-channel", "teams-chat") or meetings else None)
+
+    def _capture_audience(self, source: str, actor: Actor) -> Any:
+        """The audience a capture store reads ``source``'s records with for ``actor``: the
+        live audience, and for Teams, list and meeting records the employee's own item
+        ACL check (``_EmployeeItemAcl``) when the employee gate resolves an entitlement."""
+        audience: Any = self.live.audience
+        meetings = source in ("calendar-event", "planner-task", "meeting-transcript")
+        if source in ("teams-channel", "teams-chat", "sharepoint-list") or meetings:
+            entitlement = self.employee_gate.entitlement(actor)
+            if entitlement is not None:
+                audience = _EmployeeItemAcl(
+                    audience, entitlement, source, stale=self.full_read_stale_allows,
+                    staff=(lambda acl, entitlement=entitlement, source=source:
+                           self._staff_item_allows(entitlement, source, acl, {})))
+        return audience
+
+    def _capture_denial(self, source: str, kind: str, result: Mapping[str, Any]) -> Any:
+        """None when a capture store's ``result`` is served, else the refusal state
+        (``REFUSED``: the audience, the record's own check or the people rule refused this
+        reader; ``FAILED``: any other error). Both read alike to the caller."""
         if not result.get("ok") or result.get("kind") != kind:
-            # ``not_visible``: the audience or the record's own check refused this reader
-            # (a decided refusal); any other error is a failure. Both read alike.
-            raise gate_refusal("capture_citation_unresolvable",
-                               REFUSED if result.get("error") == "not_visible" else FAILED)
+            return REFUSED if result.get("error") == "not_visible" else FAILED
         if source in ("teams-channel", "teams-chat"):
             from .ontology_tools_evidence import people_excluded
             # A message an excluded person sent, or of a chat they are in, is withheld from
@@ -847,8 +1082,8 @@ class CaseRuntime:
                     named, object_ids_only=True):
                 # The guard was usable (``exclusion_refusal`` above): it decided, and every
                 # identity it names is cleared or the message is withheld.
-                raise gate_refusal("capture_citation_unresolvable", REFUSED)
-        if meetings:
+                return REFUSED
+        if source in ("calendar-event", "planner-task", "meeting-transcript"):
             from .ontology_tools_evidence import people_excluded
             # An event, task or transcript naming a person excluded since it was captured
             # is withheld from every reader (its organizer, attendees, task people and
@@ -860,13 +1095,8 @@ class CaseRuntime:
                          .get("identities"))
             guard = self.address_exclusion() or self.people_exclusion
             if people_excluded(guard, named) or self.participants_withheld(named):
-                raise gate_refusal("capture_citation_unresolvable", REFUSED)
-        stale_at = getattr(audience, "stale_opened_at", None)
-        if opening and stale_at is not None:
-            # Opened (every check above passed) on a membership past the bound under the
-            # full-read grant: journalled now, never for a refusal or a status check.
-            self.journal_full_read_stale(audience.entitlement, source, stale_at)
-        return result
+                return REFUSED
+        return None
 
     def participants_withheld(self, named: Any, *, object_ids_only: bool = False) -> bool:
         """Whether a captured Teams message or conversation, meeting, event or task naming
@@ -2002,10 +2232,14 @@ class _EmployeeItemAcl:
     call's whole duration; a revocation lands on the next call (decided acceptable)."""
 
     def __init__(self, audience: Any, entitlement: Any, scheme: str,
-                 stale: Callable[..., bool] | None = None) -> None:
+                 stale: Callable[..., bool] | None = None,
+                 staff: Callable[[Any], bool] | None = None) -> None:
         self.tenant = audience.tenant
         self._audience, self._entitlement = audience, entitlement
         self._stale = stale
+        # The staff item rule (``CaseRuntime._staff_item_allows``) over an item's ACL: a
+        # Planner task opens to every employee the exclusion clears.
+        self._staff = staff
         self._stale_seen: dict[tuple, bool] = {}
         # When a membership past the bound was opened under the grant in this call (its
         # recorded time): the caller journals it once the item is served.
@@ -2045,7 +2279,8 @@ class _EmployeeItemAcl:
     def item_visible(self, actor: Actor, resource: str, source_acl: Any) -> bool:
         return self._audience.allows(actor, resource) and (
             self._entitlement.item_acl_allows(source_acl, statuses=self._statuses)
-            or self._entitlement.full_read_allows(self._scheme, source_acl))
+            or self._entitlement.full_read_allows(self._scheme, source_acl)
+            or (self._staff is not None and self._staff(source_acl) is True))
 
     def visible_all(self, actor: Actor, resources: Sequence[str], source_acl: Any) -> bool:
         keys = [] if isinstance(resources, (str, bytes)) else list(resources)

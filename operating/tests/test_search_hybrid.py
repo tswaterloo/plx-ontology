@@ -437,6 +437,209 @@ class HybridSearchTests(unittest.TestCase):
             self.assertNotEqual(conn.execute("SHOW statement_timeout").fetchone()[0],
                                 f"{core.DENSE_TIMEOUT_MS}ms")
 
+    def test_kind_walks_and_narrow_exact_scan_return_the_exact_nearest_visible_rows(self):
+        # PLX_SEARCH_KINDS=1: a narrow reader is answered exactly; a broad one by one walk
+        # per kind index (migration 0036) plus an exact scan of the kinds without one. Both
+        # equal the exact nearest visible rows; a row of another unit or a marking the
+        # reader lacks never enters; an odd kind name is bound, never inlined.
+        import psycopg
+        from operating.pg import dense as pgd
+        seen, hidden = "mail:0e0e0e0e-0000-4000-8000-0000000000d1", \
+            "mail:0e0e0e0e-0000-4000-8000-0000000000d2"
+        words = ["soap", "pallet", "invoice", "gasket", "freight", "maple", "dock", "label"]
+        rows = []
+        for n in range(48):
+            kind = ("mail", "attachment", "map_stage", "zz_new")[n % 4]
+            rows.append({"chunk_id": f"kw{n}#0", "source_handle": f"graph-mail://k/{n}@1",
+                         "kind": kind, "header": f"Source: {kind}",
+                         "audience_key": hidden if n % 5 == 0 else seen,
+                         "markings": ["finance"] if n % 7 == 0 else [], "authority": 2,
+                         "body": " ".join(words[(n + i) % 8] for i in range(n % 5 + 2))
+                                 + f" note {n}"})
+        db = FixtureDb().__enter__()
+        self.addCleanup(db.__exit__, None, None, None)
+        db.add(rows)
+        self.addCleanup(pgd.clear_cache)
+        pgd.clear_cache()
+        scope = {"allowed": [seen], "held": [], "kinds": None}
+        vectors = EMB.embed(["soap pallet freight dock"])
+        visible = {r["chunk_id"] for r in rows
+                   if r["audience_key"] == seen and not r["markings"]}
+        with psycopg.connect(db.dsn, autocommit=True) as conn:
+            conn.execute("CREATE INDEX chunks_embedding_k_odd ON search.chunks USING hnsw "
+                         "(embedding halfvec_cosine_ops) WHERE kind = 'mail' AND authority > 1")
+            self.assertEqual(pgd.kind_indexes(conn) & {"mail", "attachment", "map_stage",
+                                                        "zz_new", "odd"},
+                             {"mail", "attachment", "map_stage"})   # 0036's, not the odd one
+            truth = [(c, 1 - d) for c, d in conn.execute(
+                "SELECT chunk_id, (embedding <=> %s::halfvec) + 0 FROM search.chunks "
+                "WHERE audience_key = %s AND markings = '{}' ORDER BY 2, 1 LIMIT 10",
+                (rt._vector(vectors[0]), seen)).fetchall()]
+            with conn.transaction():
+                conn.execute("SET LOCAL enable_seqscan = off")
+                plan = "\n".join(r[0] for r in conn.execute(
+                    "EXPLAIN SELECT chunk_id FROM search.chunks c WHERE c.kind = 'map_stage' "
+                    "ORDER BY c.embedding <=> %s::halfvec LIMIT 10", (rt._vector(vectors[0]),)))
+            self.assertIn("chunks_embedding_k_map_stage", plan)
+            got = {}
+            with mock.patch.dict(os.environ, {"PLX_SEARCH_KINDS": "1"}):
+                got["exact"] = rt.dense(conn, scope, vectors, EMB.model, 10)
+                with mock.patch.object(pgd, "narrow", return_value=False):
+                    self.assertEqual(pgd.kind_plan(conn, None),
+                                     (["attachment", "mail", "map_stage"], ["zz_new"]))
+                    got["kinds"] = rt.dense(conn, scope, vectors, EMB.model, 10)
+                    odd = dict(scope, kinds=["map_stage", "x'); DROP TABLE search.chunks; --"])
+                    got_odd = rt.dense(conn, odd, vectors, EMB.model, 10)
+                    with mock.patch.object(pgd, "NARROW_ROWS", 1):   # the rest is too big
+                        pgd.clear_cache()
+                        self.assertIsNone(pgd.kind_plan(conn, None))
+                        got["fallback"] = rt.dense(conn, scope, vectors, EMB.model, 10)
+            self.assertTrue(conn.execute("SELECT to_regclass('search.chunks')").fetchone()[0])
+        for name, ranked in got.items():
+            with self.subTest(path=name):
+                self.assertEqual([c for c, _ in ranked], [c for c, _ in truth])
+                for (_, a), (_, b) in zip(ranked, truth):
+                    self.assertAlmostEqual(a, b, places=3)
+                self.assertLessEqual({c for c, _ in ranked}, visible)
+        self.assertTrue(got_odd)
+        self.assertEqual({r["kind"] for r in rows if r["chunk_id"] in dict(got_odd)},
+                         {"map_stage"})
+        self.assertLessEqual(set(dict(got_odd)), visible)
+        for value, want in (("1", True), (" On", True), ("true", True), ("", False),
+                            ("0", False), ("yes", False)):
+            self.assertIs(pgd.kinds_enabled({"PLX_SEARCH_KINDS": value}), want, value)
+
+    def _kind_db(self, n_rows: int = 48):
+        """A fixture database with ``n_rows`` chunks over four kinds, a fifth of them in a
+        unit the reader lacks; (dsn, reader scope, query vectors, visible chunk ids)."""
+        from operating.pg import dense as pgd
+        seen, hidden = "mail:0e0e0e0e-0000-4000-8000-0000000000d1", \
+            "mail:0e0e0e0e-0000-4000-8000-0000000000d2"
+        words = ["soap", "pallet", "invoice", "gasket", "freight", "maple", "dock", "label"]
+        rows = [{"chunk_id": f"kw{n}#0", "source_handle": f"graph-mail://k/{n}@1",
+                 "kind": ("mail", "attachment", "map_stage", "zz_new")[n % 4],
+                 "header": "Source: k", "audience_key": hidden if n % 5 == 0 else seen,
+                 "markings": [], "authority": 2,
+                 "body": " ".join(words[(n + i) % 8] for i in range(n % 5 + 2)) + f" note {n}"}
+                for n in range(n_rows)]
+        db = FixtureDb().__enter__()
+        self.addCleanup(db.__exit__, None, None, None)
+        db.add(rows)
+        self.addCleanup(pgd.clear_cache)
+        pgd.clear_cache()
+        visible = {r["chunk_id"] for r in rows if r["audience_key"] == seen}
+        return (db.dsn, {"allowed": [seen], "held": [], "kinds": None},
+                EMB.embed(["soap pallet freight dock"]), visible)
+
+    def test_kind_indexes_are_built_after_a_catch_up_never_by_a_deploy_migration(self):
+        # Migration 0036 creates nothing on a populated search.chunks (a deploy must never
+        # build 14 HNSW graphs inside its migration transaction); the separate build makes
+        # them CONCURRENTLY, one kind at a time, skips valid ones, rebuilds a broken one,
+        # refuses an unknown kind, a plain build on a populated table and a second build;
+        # a bulk rebuild makes them only with PLX_SEARCH_KINDS on.
+        import psycopg
+        from operating.pg import bulk, kind_indexes as ki
+        from operating.pg import dense as pgd
+        from operating.pg.migrate import CHUNKS_KIND_HNSW_KINDS, MIGRATIONS_DIR
+        dsn, _, _, _ = self._kind_db()
+        every = set(CHUNKS_KIND_HNSW_KINDS)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            # the fixture migrated an empty table: 0036 built them there
+            self.assertEqual(set(ki.status(conn)), every)
+            self.assertEqual(set(ki.status(conn).values()), {"valid"})
+            self.assertEqual(sorted(ki.drop(conn)), sorted(every))
+            self.assertEqual(set(ki.status(conn).values()), {"missing"})
+            conn.execute((MIGRATIONS_DIR / "0036_chunks_embedding_kind_hnsw.sql").read_text())
+            self.assertEqual(set(ki.status(conn).values()), {"missing"})   # populated: no-op
+            for bad in (["mail", "nope"], ["x'); DROP TABLE search.chunks; --"], []):
+                with self.subTest(kinds=bad), self.assertRaises(ValueError):
+                    ki.build(conn, bad)
+            with self.assertRaisesRegex(ValueError, "populated_needs_concurrently"):
+                ki.build(conn, ["mail"], concurrently=False)
+            for bad_mem in ("1GB; DROP TABLE x", "lots"):
+                with self.assertRaisesRegex(ValueError, "bad_memory"):
+                    ki.build(conn, ["mail"], maintenance_work_mem=bad_mem)
+            with psycopg.connect(dsn, autocommit=True) as other:
+                other.execute("SELECT pg_advisory_lock(%s)", (ki.BUILD_LOCK_KEY,))
+                with self.assertRaisesRegex(ValueError, "build_running"):
+                    ki.build(conn, ["mail"])
+            # a wrong index under a kind index's name is dropped and built again
+            conn.execute("CREATE INDEX chunks_embedding_k_teams ON search.chunks (kind)")
+            self.assertEqual(ki.status(conn, ["teams"]), {"teams": "other"})
+            log: list[dict] = []
+            first = ki.build(conn, log=log.append)
+            self.assertIsNone(first["failed"])
+            self.assertEqual(set(first["built"]), every)
+            self.assertEqual([r["kind"] for r in log], list(CHUNKS_KIND_HNSW_KINDS))
+            self.assertEqual({r["was"] for r in log if r["kind"] == "teams"}, {"other"})
+            self.assertEqual(set(ki.status(conn).values()), {"valid"})
+            pgd.clear_cache()
+            self.assertLessEqual({"mail", "attachment", "map_stage", "teams"},
+                                 set(pgd.kind_indexes(conn)))
+            again = ki.build(conn)
+            self.assertEqual((again["built"], set(again["skipped"])), ([], every))
+            # the build lock is released after a run
+            self.assertTrue(conn.execute("SELECT pg_try_advisory_lock(%s)",
+                                         (ki.BUILD_LOCK_KEY,)).fetchone()[0])
+            conn.execute("SELECT pg_advisory_unlock(%s)", (ki.BUILD_LOCK_KEY,))
+        with psycopg.connect(dsn) as conn:
+            for flag, want in (("", {"missing"}), ("1", {"valid"})):
+                with self.subTest(flag=flag), \
+                        mock.patch.dict(os.environ, {"PLX_SEARCH_KINDS": flag}):
+                    bulk.drop_vector_index(conn)
+                    bulk.rebuild_vector_index(conn, maintenance_work_mem="64MB",
+                                              parallel_workers=0)
+                    conn.commit()
+                    self.assertEqual(set(ki.status(conn).values()), want)
+                    self.assertTrue(bulk.vector_index_present(conn))
+
+    def test_a_narrow_exact_scan_past_its_timeout_falls_back_to_the_whole_table_index(self):
+        # PLX_SEARCH_KINDS=1, a narrow reader: the exact scan runs under NARROW_TIMEOUT_MS;
+        # a statement past it is cancelled and the search runs on the whole-table index
+        # (the same visible rows); the caller's statement_timeout is unchanged either way.
+        import psycopg
+        from operating.pg import dense as pgd
+        dsn, scope, vectors, visible = self._kind_db()
+        exact_sql = "ORDER BY (c.embedding <=> %(v)s::halfvec) + 0, c.chunk_id"
+
+        class Slow:
+            """The connection, but the narrow exact scan sleeps past the timeout."""
+            def __init__(self, conn):
+                self._conn, self.exact_calls = conn, 0
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            def execute(self, query, params=None):
+                if isinstance(query, str) and exact_sql in query:
+                    self.exact_calls += 1
+                    return self._conn.execute("SELECT pg_sleep(2)")
+                return self._conn.execute(query, params)
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET statement_timeout = '7s'")
+            truth = [c for c, in conn.execute(
+                "SELECT chunk_id FROM search.chunks WHERE audience_key = %s "
+                "ORDER BY (embedding <=> %s::halfvec) + 0, 1 LIMIT 10",
+                (scope["allowed"][0], rt._vector(vectors[0]))).fetchall()]
+            with mock.patch.dict(os.environ, {"PLX_SEARCH_KINDS": "1"}):
+                self.assertTrue(pgd.narrow(conn, scope["allowed"]))
+                with conn.transaction():            # a caller's own transaction
+                    exact = rt.dense(conn, scope, vectors, EMB.model, 10)
+                    self.assertEqual(conn.execute("SHOW statement_timeout").fetchone()[0], "7s")
+                slow = Slow(conn)
+                with mock.patch.object(pgd, "NARROW_TIMEOUT_MS", 100):
+                    started = time.monotonic()
+                    fell_back = rt.dense(slow, scope, vectors, EMB.model, 10)
+                    took = time.monotonic() - started
+            self.assertEqual(conn.execute("SHOW statement_timeout").fetchone()[0], "7s")
+        self.assertEqual(slow.exact_calls, 1)
+        self.assertLess(took, 1.5)                  # cancelled at 100 ms, not the 2 s sleep
+        for name, ranked in (("exact", exact), ("fallback", fell_back)):
+            with self.subTest(path=name):
+                self.assertEqual([c for c, _ in ranked], truth)
+                self.assertLessEqual({c for c, _ in ranked}, visible)
+
     def test_reader_without_a_key_gets_zero_hits_and_hidden_names_no_count(self):
         result = self.run_search("maple suds", reader([]), owners={BC: "Purchasing team"})
         self.assertEqual(result.hits, [])
@@ -927,6 +1130,42 @@ class HybridSearchTests(unittest.TestCase):
         self.assertEqual(set(copy), {"handle", "kind", "location", "occurred_at"})
         self.assertTrue(copy["location"])
 
+    def test_a_one_unit_reader_sees_its_own_copy_when_another_units_copy_ranks_first(self):
+        # One text in two units' mail: unit A's copy ranks first (title match, higher
+        # authority), so a reader of both units is shown A's. The collapse runs only over
+        # the copies the reader can read: a reader of unit B alone is shown B's copy, and
+        # A's is never named. Live R10 probe (11-17): no cross-unit copy ever hid one.
+        body = ("Maple Suds told us the castile soap pallets slipped two weeks because "
+                "the screen print artwork for the bottle labels was not approved.")
+
+        def mail(cid, unit, box, title, authority):
+            return dict(chunk_id=cid, source_handle=f"graph-mail://{box}/{cid}",
+                        object_id=f"EmailMessage:graph:{cid}", kind="mail", title=title,
+                        author_role="buyer", occurred_at=_t(3),
+                        header=f"Email '{title}'.", body=body, audience_key=unit,
+                        authority=authority, dup_group="dup-units")
+        a_copy = mail("unit-a-copy", PURCHASING, "purchasing", "castile soap pallets", 1)
+        b_copy = mail("unit-b-copy", FINANCE, "finance", "Fwd: note", 3)
+        question = "castile soap pallets slipped"
+        with FixtureDb() as db:
+            db.add([a_copy, b_copy])
+
+            def run(keys):
+                return search(question, reader(keys), dsn=db.dsn, now=NOW, embedder=EMB,
+                              reranker=None, owners={}, log=False)
+            both = [h for h in run([PURCHASING, FINANCE]).hits
+                    if h["dup_group"] == "dup-units"]
+            self.assertEqual([h["handle"] for h in both], [a_copy["source_handle"]])
+            self.assertEqual(both[0]["also_in"]["handles"], [b_copy["source_handle"]])
+            for keys, own, other in (([FINANCE], b_copy, a_copy),
+                                     ([PURCHASING], a_copy, b_copy)):
+                result = run(keys)
+                self.assertEqual([h["handle"] for h in result.hits
+                                  if h["dup_group"] == "dup-units"], [own["source_handle"]])
+                self.assertEqual(result.hits[0]["also_in"]["count"], 0)
+                self.assertNotIn(other["source_handle"],
+                                 json.dumps(result.to_dict(), default=str))
+
     # ------------------------------------------------------------- log + inputs
 
     def test_a_system_senders_mail_ranks_below_a_persons_with_the_same_text(self):
@@ -1198,6 +1437,49 @@ class StaleClusterTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.db.__exit__(None, None, None)
         cls.env.stop()
+
+    def test_clusters_are_read_from_their_own_table_and_a_stale_row_counts_for_nothing(self):
+        """Migration 0037: search reads the clusters from search.chunk_groups (the fixture
+        leaves search.chunks.dup_group empty), joined on the chunk's content_sha: a chunk
+        rewritten after the regroup read it has no cluster and is no copy of anything."""
+        import psycopg
+        q = "castile soap pallets slipped weeks"
+        everyone = reader([PURCHASING, BC, QUALITY, TEAMS, FINANCE])
+        with psycopg.connect(self.db.dsn) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM search.chunks "
+                                          "WHERE dup_group IS NOT NULL").fetchone()[0], 0)
+            self.assertGreater(conn.execute("SELECT count(*) FROM search.chunk_groups")
+                               .fetchone()[0], 0)
+        before = search(q, everyone, dsn=self.db.dsn, now=NOW, embedder=EMB, reranker=None,
+                        owners={})
+        grouped = [h for h in before.hits if h["dup_group"] == "dup-a"]
+        self.assertTrue(grouped)
+        with psycopg.connect(self.db.dsn) as conn:   # the delta rewrites m2's text
+            conn.execute("UPDATE search.chunks SET content_sha = repeat('e', 64) "
+                         "WHERE chunk_id = 'm2#0'")
+        try:
+            after = search(q, everyone, dsn=self.db.dsn, now=NOW, embedder=EMB,
+                           reranker=None, owners={})
+            fwd = "graph-mail://finance/msg-1-fwd"
+            for hit in after.hits:
+                if hit["handle"] == fwd:
+                    self.assertIsNone(hit["dup_group"])
+                self.assertNotIn(fwd, hit["also_in"]["handles"])
+            from operating.search import copies
+            with psycopg.connect(self.db.dsn) as conn:
+                scope = {"allowed": [PURCHASING, BC, QUALITY, TEAMS, FINANCE], "held": [],
+                         "kinds": None}
+                found = copies.lookup(conn, scope, ["dup-a"])
+                self.assertTrue(found["dup-a"])
+                self.assertNotIn(fwd, [c["handle"] for c in found["dup-a"]])
+                # a cluster row alone shows nothing: no readable unit, no copy
+                nobody = dict(scope, allowed=[])
+                self.assertEqual(copies.lookup(conn, nobody, ["dup-a"]), {"dup-a": []})
+        finally:
+            with psycopg.connect(self.db.dsn) as conn:
+                conn.execute("UPDATE search.chunks c SET content_sha = g.content_sha FROM "
+                             "search.chunk_groups g WHERE g.chunk_id = c.chunk_id "
+                             "AND c.chunk_id = 'm2#0'")
 
     def test_a_distinct_text_in_a_stored_cluster_is_shown_as_itself(self):
         result = search("castile soap pallets slipped weeks", reader([PURCHASING, BC, QUALITY,

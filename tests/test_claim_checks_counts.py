@@ -1094,6 +1094,80 @@ class AggregateSumBindingTests(unittest.TestCase):
         self.assertFalse(self.check(self.summed(currency="CAD"))["passed"])
         self.assertFalse(self.check(self.summed(), currency="CAD")["passed"])
 
+    def test_a_count_of_records_in_a_named_status_is_no_typed_quantity(self):
+        # "the status Received" names the records' state; "12 received" types the number
+        receipts = [receipt(i) for i in range(12)]
+        rows, handles = dict(receipts), [h for h, _ in receipts]
+
+        def said(text):
+            return gate(text, handles, [count_of(handles)], rows=rows, calculations=(),
+                        returned=counted(handles))
+        for text in ("12 receipts have the status Received.",
+                     "In FileMaker, 12 receipts are in state Received."):
+            with self.subTest(text=text):
+                result = said(text)
+                self.assertTrue(result["passed"], result["failures"])
+        self.assertIn("claim_wording_role_unverified", codes(said("12 received.")))
+
+    def tabled(self, gaps=("citations_capped", "source_partly_read"), negative=0,
+               **result):
+        """What plx.table returned for one sum over the 60 orders (contract shape), the
+        sum's inputs below zero stated (``negative``; None: not stated)."""
+        measure = {"fn": "sum", "field": "total_amount", "value": self.total, "inputs": 60,
+                   "currency": "USD",
+                   "inputs_citations": [{"l1_handle": h, "field_path": "row.total_amount"}
+                                        for h in self.handles[:50]]}
+        if negative is not None:
+            measure["negative_inputs"] = negative
+        answer = {"type": "SalesOrder", "groups": [{"key": {}, "members": 60,
+                                                     "members_cited": self.handles[:50],
+                                                     "measures": [measure]}],
+                  "partial": False, "total_groups": 1,
+                  "gaps": [{"state": "unknown", "reason": r, "subject": "bc"} for r in gaps],
+                  "completeness": {"complete": True, "truncated": False, "returned": 1,
+                                   "total": 1}, **result}
+        return claim_checks_values.returned_evidence(
+            "plx.table", {"from": "SalesOrder",
+                          "measures": [{"fn": "sum", "field": "total_amount"}]}, answer)
+
+    def test_a_sum_over_a_source_read_in_part_is_said_as_at_least(self):
+        # every input the tool holds, none below zero: the part not read can only add
+        cited = self.handles[:8]
+        claim = op(self.total, "sum", [{"citation": h, "field": "row.total_amount"}
+                                       for h in cited], currency="USD")
+
+        def said(text, returned):
+            return gate(text, cited, [claim], rows=self.rows, calculations=(),
+                        returned=returned)
+        floor = self.tabled()
+        result = said(f"They total at least {self.total} USD (the source is partly "
+                      "captured).", floor)
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual(checked(result)[0]["bound"], "at_least")
+        # written as the exact total, it says more than the records hold
+        self.assertEqual(codes(said(f"They total {self.total} USD.", floor)),
+                         ["claim_count_lower_bound"])
+        # the same answer read whole binds exactly
+        exact = said(f"They total {self.total} USD.", self.tabled(gaps=("citations_capped",)))
+        self.assertTrue(exact["passed"], exact["failures"])
+        self.assertEqual(checked(exact)[0]["bound"] if "bound" in checked(exact)[0]
+                         else "exact", "exact")
+        refused = {
+            "an input below zero (a credit)": self.tabled(negative=1),
+            "inputs below zero not stated": self.tabled(negative=None),
+            "a partial answer": self.tabled(partial=True),
+            "a value withheld": self.tabled(withheld={"objects": 1}),
+            "another gap beside it": self.tabled(gaps=("citations_capped",
+                                                       "source_partly_read", "scan_cap")),
+            "groups paged out": self.tabled(completeness={"complete": False,
+                                                          "truncated": True,
+                                                          "reason": "page_cap"}),
+        }
+        for name, returned in refused.items():
+            with self.subTest(case=name):
+                self.assertFalse(said(f"They total at least {self.total} USD.",
+                                      returned)["passed"])
+
     def test_a_sum_entry_is_dropped_when_its_records_permissions_change(self):
         from collections import deque
         from operating import mcp_server

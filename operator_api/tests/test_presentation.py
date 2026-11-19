@@ -211,6 +211,18 @@ class FollowUps(unittest.TestCase):
         self.assertEqual(got[0], "Which system is right about the status of PO 4471?")
         self.assertLessEqual(len(got), p.MAX_FOLLOW_UPS)
 
+    def test_ask_next_is_a_real_question_about_the_answers_records_or_none(self):
+        # owner walk F1: a gap of an answer showing no record, worded as the question
+        got = p.follow_ups("show me the latest emails from customers", self.answer(
+            not_found=[("Email: latest messages from customers", "mail")]))
+        self.assertEqual(got, [])
+        got = p.follow_ups("show me the latest emails from customers", self.answer(
+            subjects=[("Email", "Re: Fwd: PO 4471 ship date and the COA"),
+                      ("Customer", "Acme Foods")],
+            not_found=[("Email: latest messages from customers", "mail")]))
+        self.assertEqual(got, ["What's still open with Acme Foods?",
+                               "Who is our contact at Acme Foods?"])
+
     def test_nothing_unknown_or_unshown_becomes_a_question(self):
         from operator_api import models as m
         hidden = m.Hidden(count=2, by_owner=[m.HiddenOwner(owner_or_team="SECRET-TEAM",

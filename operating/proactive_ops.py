@@ -93,6 +93,7 @@ NOT_JUDGED = "not_judged"
 
 # Mission Control (PLX_MC policy.ts: stages; approvals pending, approved or rejected)
 MC_TASK = "MCTask"
+MC_EVENT = "MCTaskEvent"   # a task's dated history (the latest 25 events each read)
 MC_GATE = "MCApproval"
 MC_TERMINAL = frozenset({"merged", "verified", "cancelled"})
 ACTIVE_STAGES = frozenset({"specced", "approved", "planned", "progress", "qa", "review"})
@@ -307,6 +308,7 @@ def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Ca
     if blocked is not None:
         return {MC_STUCK: blocked}
     found = st.values([MC_TASK], ("task_id", "title", "stage", "updated_at"))
+    last_event = _last_events(st)
     linked = _person_ids(st, [MC_TASK_PEOPLE], settled)
     audience = _audiences(st, found)
     stuck_skips = skips()
@@ -339,6 +341,14 @@ def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Ca
             continue
         moved_row = _one(props.get("updated_at"))
         moved = _instant(moved_row["value"]) if moved_row else None
+        if moved is None and not props.get("updated_at") and ident:
+            # MC's task reads send no updatedAt (schema note, live 11-12): the task's own
+            # history (its newest captured event, mc_get_task's latest 25) dates its last
+            # change; an unreadable updatedAt stays unknown, never replaced
+            event_row = last_event.get(ident)
+            if event_row is not None:
+                moved_row, moved = event_row, _instant(event_row["value"])
+                cause = [*cause, (event_row.get("object_id") or oid, "[]")]
         if moved is None:
             stuck_skips.note("updated_at_unknown", [oid], cause)
             continue
@@ -360,6 +370,26 @@ def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Ca
     stuck_out["checked"] = len(found)   # every task read was judged or left unjudged
     stuck_out["counts"] = {k: counts.get(k, 0) for k in ("open", "closed", "parked", "stuck")}
     return {MC_STUCK: stuck_out}
+
+
+def _last_events(st: Any) -> dict[str, dict[str, Any]]:
+    """task id -> the ``at`` row of its newest captured MC event (``MCTaskEvent``), for a
+    task whose events all state one readable task id; a time that cannot be read is no
+    event (never the newest)."""
+    newest: dict[str, tuple[datetime, dict[str, Any]]] = {}
+    for oid, entry in st.values([MC_EVENT], ("task_id", "at")).items():
+        _tick(st)
+        task_row = _one(entry["props"].get("task_id"))
+        at_row = _one(entry["props"].get("at"))
+        task = str((task_row or {}).get("value") or "").strip()
+        moment = _instant(at_row["value"]) if at_row else None
+        if not task or moment is None:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if task not in newest or moment > newest[task][0]:
+            newest[task] = (moment, {**at_row, "object_id": at_row.get("object_id") or oid})
+    return {task: row for task, (_m, row) in newest.items()}
 
 
 def mc_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
@@ -815,8 +845,12 @@ def production_late(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             due_row = _one(props.get(due_prop))
             due = _day(due_row["value"]) if due_row else None
             if due is None:
-                if props.get(due_prop):
+                if _stated(props.get(due_prop)):
                     skipped.note("due_date_unreadable", [record], cause)
+                elif props.get(due_prop):
+                    # the field is there and empty (FM: 97 assembly orders and 12 batches on
+                    # 2026-11-17): no date set, which a person can enter, never "unreadable"
+                    skipped.note("no_scheduled_date", [record], cause)
                 else:
                     counts["undated"] += 1
                 continue

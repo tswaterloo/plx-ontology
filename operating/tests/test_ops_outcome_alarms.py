@@ -16,7 +16,8 @@ import sqlite3
 import tempfile
 import unittest
 
-from operating import ask_canary, exclusion_leak, ops_alarms, ops_health, truth_check
+from operating import (ask_canary, exclusion_leak, ops_alarms, ops_health, ops_notify,
+                       truth_check)
 from operating.tests.test_ops_alarms import Fake, healthy_units, no_send, unit
 from operating.tests.test_ops_health import NOW, _db, make_state
 
@@ -582,6 +583,141 @@ class MailCoverageAlarmTest(Base):
         c = self.check(status, "capture_mail_coverage")
         self.assertTrue(c["line"].startswith("Mail capture against Graph's counts: 1,400 of "
                                              "1,500 messages held"))
+
+
+
+class ChatListingCapAlarmTest(Base):
+    def cycle(self, cycle_id: int, teams: object) -> None:
+        db = sqlite3.connect(self.root / "host" / "host.sqlite")
+        db.execute("CREATE TABLE IF NOT EXISTS cycle (cycle_id INTEGER PRIMARY KEY, "
+                   "started_at TEXT, finished_at TEXT, state TEXT, report TEXT)")
+        db.execute("INSERT INTO cycle VALUES (?, '2030-01-02T11:00:00Z', "
+                   "'2030-01-02T11:05:00Z', 'complete', ?)",
+                   (cycle_id, json.dumps({"sources": {"teams": teams,
+                                                      "mail": {"state": "captured"}}})))
+        db.commit()
+        db.close()
+
+    def test_a_teams_chat_listing_cut_at_its_cap_opens_a_high_incident_until_read_whole(self):
+        """2026-11-16: one mailbox's chat listing stopped at 50 pages (799 chats) every
+        run and nothing said so. The newest cycle's Teams outcome decides."""
+        self.assertIsNone(self.check(self.run_pass(Fake()), "capture_listing_cap:teams"))
+        self.cycle(1, {"state": "partial", "reasons": ["blocked_parts",
+                                                       "cap:chat_listing_page_cap"]})
+        status = self.run_pass(Fake())
+        opened = {i["key"]: i for i in status["open"]}
+        self.assertIn("capture_listing_cap:teams", opened)
+        self.assertEqual(ops_notify.level_for("capture_listing_cap:teams",
+                                              self.check(status, "capture_listing_cap:teams")),
+                         ops_notify.LEVELS["high"])
+        self.assertIn("cap:chat_listing_page_cap",
+                      self.check(status, "capture_listing_cap:teams")["detail"])
+        self.cycle(2, {"state": "partial", "reasons": "unreadable"})
+        self.assertEqual(self.check(self.run_pass(Fake(), 5), "capture_listing_cap:teams")
+                         ["state"], "unknown")
+        self.cycle(3, {"state": "captured", "reasons": ["blocked_parts"]})
+        self.assertEqual(self.check(self.run_pass(Fake(), 10), "capture_listing_cap:teams")
+                         ["state"], "ok")
+
+
+class ServedLagAlarmTest(Base):
+    """served-freshness 11-17: the capture ran and the delta's cycles finished, yet a host
+    or a skipped source can leave captured records unserved with no alarm. Paged per
+    source when the oldest record past the delta's cursor is over an hour old, or the
+    delta's newest cycle skipped the source (``mail_skipped``)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.delta = self.root / "projection" / "delta"
+        self.meta({"mail_version": 0, "portal_capture": 0})
+
+    def meta(self, cursors) -> None:
+        db = sqlite3.connect(self.delta / "state.sqlite")
+        db.execute("CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT)")
+        db.execute("DELETE FROM meta")
+        db.executemany("INSERT INTO meta VALUES (?, ?)",
+                       [(k, json.dumps(v)) for k, v in cursors.items()])
+        db.commit()
+        db.close()
+
+    def mail(self, stamps) -> None:
+        (self.root / "mail-capture").mkdir(exist_ok=True)
+        db = sqlite3.connect(self.root / "mail-capture" / "capture.db")
+        db.execute("CREATE TABLE IF NOT EXISTS messages (version_id INTEGER PRIMARY KEY, "
+                   "record TEXT, recorded_at TEXT)")
+        db.executemany("INSERT INTO messages (record, recorded_at) VALUES ('{}', ?)",
+                       [(s,) for s in stamps])
+        db.commit()
+        db.close()
+
+    def cycle(self, **report) -> None:
+        with (self.delta / "cycles.jsonl").open("a") as fh:
+            fh.write(json.dumps({"command": "run", "started_at": "2030-01-02T11:50:00Z",
+                                 "mail_skipped": None, **report}) + "\n")
+
+    def lag(self, source="mail"):
+        return {c["name"]: c for c in ops_alarms.served_lag_checks(self.root, NOW, T)}.get(
+            f"served_lag:{source}")
+
+    def test_a_captured_record_the_delta_has_not_reached_for_an_hour_pages(self):
+        self.mail(["2030-01-02T10:40:00Z", "2030-01-02T11:50:00Z"])
+        self.cycle()
+        status = self.run_pass(Fake())
+        found = self.check(status, "served_lag:mail")
+        self.assertEqual((found["state"], found["value"]), ("breach", 1.33))
+        self.assertIn("2 captured records the delta has not reached", found["detail"])
+        self.assertIn("served_lag:mail", {i["key"] for i in status["open"]})
+        self.assertEqual(ops_notify.level_for("served_lag:mail", found),
+                         ops_notify.LEVELS["high"])
+        # the delta reaches the old one: the newer one is within the hour
+        self.meta({"mail_version": 1})
+        self.assertEqual((self.lag()["state"], self.lag()["value"]), ("ok", 0.17))
+        self.meta({"mail_version": 2})
+        self.assertEqual((self.lag()["state"], self.lag()["value"]), ("ok", 0))
+
+    def test_a_cycle_that_skipped_mail_pages_even_with_its_cursor_at_the_head(self):
+        self.mail(["2030-01-02T11:50:00Z"])
+        self.meta({"mail_version": 1})
+        self.cycle()
+        self.assertEqual(self.lag()["state"], "ok")
+        self.cycle(mail_skipped="people_exclusion_unavailable")
+        found = self.lag()
+        self.assertEqual(found["state"], "breach")
+        self.assertIn("skipped it (people_exclusion_unavailable)", found["detail"])
+        self.cycle()   # the next cycle reads mail again
+        self.assertEqual(self.lag()["state"], "ok")
+
+    def test_an_unreadable_cursor_or_store_is_unknown_never_fine(self):
+        self.mail(["2030-01-02T09:00:00Z"])
+        self.meta({})   # no mail cursor
+        self.assertEqual(self.lag()["state"], "unknown")
+        self.meta({"mail_version": "x'; DROP"})
+        self.assertEqual(self.lag()["state"], "unknown")
+        (self.delta / "state.sqlite").write_bytes(b"not a database" * 100)
+        self.assertEqual(self.lag()["state"], "unknown")
+        # a source with no store on this host: no check; a host with no delta: none at all
+        self.assertIsNone(self.lag("teams"))
+        (self.delta / "state.sqlite").unlink()
+        self.assertEqual(ops_alarms.served_lag_checks(self.root, NOW, T), [])
+
+    def test_counts_hold_at_one_ten_and_sixty_records_and_the_portal_reads_its_captures(self):
+        for n in (1, 10, 60):
+            (self.root / "mail-capture" / "capture.db").unlink(missing_ok=True)
+            self.mail(["2030-01-02T10:00:00Z"] * n)
+            self.meta({"mail_version": 0})
+            self.assertIn(f"{n:,} captured records", self.lag()["detail"], n)
+        _db(self.root / "case-runtime" / "source-mirror.sqlite",
+            "CREATE TABLE capture (capture_id INTEGER PRIMARY KEY, started_at TEXT, "
+            "finished_at TEXT, keys_new INTEGER, keys_changed INTEGER)",
+            [(1, "2030-01-02T09:00:00Z", "2030-01-02T09:05:00Z", 3, 0),
+             (2, "2030-01-02T10:00:00Z", "2030-01-02T10:05:00Z", 0, 0),
+             (3, "2030-01-02T11:30:00Z", "2030-01-02T11:35:00Z", 0, 4)],
+            "INSERT INTO capture VALUES (?, ?, ?, ?, ?)")
+        self.meta({"portal_capture": 0})
+        self.assertEqual(self.lag("portal")["state"], "breach")
+        self.meta({"portal_capture": 1})   # capture 2 brought nothing: 3 is the first
+        self.assertEqual((self.lag("portal")["state"], self.lag("portal")["value"]),
+                         ("ok", 0.42))
 
 
 if __name__ == "__main__":

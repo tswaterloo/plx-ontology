@@ -209,6 +209,20 @@ class DraftContext:
                 return int(row["id"]), closing
         return None
 
+    def writing(self, owner: str, event: Mapping[str, Any], work: Mapping[str, Any]
+                ) -> list[str]:
+        """The person's own memory a reply drafted for them should follow (the rows
+        ``_memory`` keeps for this message: how they write, and facts about its records),
+        as one line each, for the model that writes the reply
+        (``operating.autopilot_drafter``). [] when they have no memory key."""
+        key = self._key(owner)
+        if not key:
+            return []
+        text = f"{event.get('subject') or ''} {event.get('text') or ''}"
+        rows = self._memory(mem.KeyReader(key), text, _records(work, event))
+        return [" ".join(f"{r.get('subject') or ''} {r.get('text') or ''}".split())[:400]
+                for r in rows]
+
     def for_draft(self, owner: str, autopilot: str, work: Mapping[str, Any],
                   event: Mapping[str, Any]) -> tuple[dict[str, Any], Optional[dict]]:
         """(the work with the person's memory and template applied, ``used`` or None when

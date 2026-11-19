@@ -25,6 +25,7 @@ import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-chip";
 import { lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { ErrorNotice } from "./ui/notice";
+import { SimpleAnswer } from "./simple-answer";
 
 /** Server prose as a reader reads it: codes and dates in words, amounts with their currency. */
 /** Answer prose as the app writes it: money as money, every PO/SO number spaced one way
@@ -74,6 +75,8 @@ export interface Turn {
   notice?: NoticeKind;
   /** The request this turn was sent with, so Retry resends it whole. */
   request?: TurnRequest;
+  /** The answer streams whole (the simple Ask): shown as the answer and its Sources line alone. */
+  simple?: boolean;
 }
 
 /** What the person picked to disambiguate: an object id plus its label. */
@@ -654,7 +657,27 @@ function whoToAsk(a: Answer): string | null {
 /** Words of a read that failed, as an answer or its not-found list says them. */
 const READ_FAILED = /could(?:n['\u2019]t| not) be read|\b(?:execution|lookup|read|search|query) failed\b|\btimed out\b/i;
 
-export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }: { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void }) {
+type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void };
+
+/** Pure: the turn is the simple Ask's (its answer carries ``cited``, or its words streamed whole). */
+export function isSimple(turn: Turn): boolean {
+  return turn.answer ? turn.answer.cited != null : !!turn.simple;
+}
+
+/** The simple Ask's turn shows the answer and its Sources line alone; every other turn the full card. */
+export function AnswerCard(props: CardProps) {
+  const { turn, onRetry } = props;
+  if (!isSimple(turn)) return <FullAnswerCard {...props} />;
+  const busy = turn.phase === "thinking" || turn.phase === "streaming";
+  return (
+    <>
+      <SimpleAnswer answer={turn.answer} streamed={turn.streamed} busy={busy} status={turn.status} />
+      {turn.phase === "error" && <ErrorNotice message={turn.error ?? "This answer didn't finish. Try again."} tone={turn.notice ? "notice" : "error"} onRetry={turn.notice === "off" ? undefined : onRetry} />}
+    </>
+  );
+}
+
+function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }: CardProps) {
   const a = turn.answer;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   const u = turn.understanding;
@@ -783,7 +806,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify
               <FactList facts={otherFacts} record={record} extra={lines} max={typeof a.list_total === "number" ? undefined : a.profitability ? 4 : composed ? 8 : 5} />
             )}
             {typeof a.list_total === "number" && a.list_total > (a.facts ?? []).length && (
-              <Link href="/late" className="-mt-4 -mx-2 inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg" data-testid="show-all">
+              <Link href="/?show=late" className="-mt-4 -mx-2 inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg" data-testid="show-all">
                 {(a.facts ?? []).length} of {a.list_total} shown. Show all
                 <ArrowRight className="size-3.5" aria-hidden />
               </Link>

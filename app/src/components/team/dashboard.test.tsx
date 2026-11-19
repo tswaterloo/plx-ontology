@@ -34,6 +34,15 @@ describe("Team dashboard", () => {
     const table = screen.getByTestId("team-table");
     expect(within(table).queryByTitle(/Planner tasks/)).toBeNull();              // nobody in 7 days
     expect(within(table).queryByTitle(/Business Central/)).toBeNull();
+    // nobody has an open task or alert: no columns of zeros for them
+    expect(within(table).queryByTitle("Open tasks")).toBeNull();
+    expect(within(table).queryByTitle("Other open alerts")).toBeNull();
+    expect(within(table).getByTitle("Threads awaiting their reply")).toBeTruthy();
+    // every row has as many cells as the header has columns
+    const cols = within(table).getAllByRole("columnheader").filter((th) => th.closest("tr") === table.querySelectorAll("thead tr")[1]).length;
+    for (const r of screen.getAllByTestId("team-row")) expect(r.querySelectorAll("td")).toHaveLength(cols);
+    // one sentence on what the table is for
+    expect(screen.getByTestId("team-intro").textContent).toMatch(/^Who is busy and what is waiting on whom/);
     fireEvent.click(within(table).getByText("Person"));
     expect(names()).toEqual(["Avery Lindqvist", "Bea Okafor", "Cal Mendes"]);
     fireEvent.click(within(table).getByText("Median"));

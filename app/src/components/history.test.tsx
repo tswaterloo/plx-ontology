@@ -19,9 +19,9 @@ describe("history", () => {
     expect(screen.getByTestId("history-none")).toBeTruthy();
   });
 
-  it("empty and partial states are plain words without a count", () => {
-    const { rerender } = render(<History events={[]} linked={[]} />);
-    expect(screen.getByTestId("history-empty").textContent).toBe("Nothing dated on this record.");
+  it("an empty history is left out; a partial one says records are hidden, without a count", () => {
+    const { rerender, container } = render(<History events={[]} linked={[]} />);
+    expect(container).toBeEmptyDOMElement();
     rerender(<History events={[]} linked={[]} partial />);
     expect(screen.getByTestId("history-empty").textContent).toContain("Some linked records are hidden from you");
     rerender(<History events={ev} linked={[]} partial />);

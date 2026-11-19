@@ -15,7 +15,7 @@ import type { AlertKinds, AlertType, Briefing, BriefingItem } from "@/lib/types"
 export function standing(t: Pick<AlertType, "default" | "precision" | "home">): string {
   const p = t.precision;
   const measured = p ? `${Math.round(p.value * 100)}% of ${p.checked} checked` : "not measured";
-  if (t.default === "on") return t.home ? `On, in My work · ${measured}` : `On · ${measured}`;
+  if (t.default === "on") return t.home ? `On, on Home · ${measured}` : `On · ${measured}`;
   return `Off · ${measured}`;
 }
 
@@ -30,7 +30,7 @@ export function surfaceWord(k: { label: string; surface: string; types: Pick<Ale
 
 /** Where a kind with a page of its own is shown (null: an alert, shown here). */
 export function surfaceHref(surface: string): string | null {
-  return surface === "data_health" ? "/watching#data-health" : surface === "weekly" ? "/meetings?view=weekly" : null;
+  return surface === "data_health" ? "/?show=alerts#data-health" : surface === "weekly" ? "/meetings?view=weekly" : null;
 }
 
 /**
@@ -79,7 +79,7 @@ export function DataHealthSection({ reg, briefing, error, retry }: { reg: AlertK
       )}
       {reg && off.length > 0 && (
         <p className="mt-2 text-[12px] text-faint" data-testid="data-health-off">
-          Off until a check of 15 live items finds 90% right: {off.map((t) => t.label.toLowerCase()).join("; ")}.
+          Not shown yet, until we have checked they are right: {off.map((t) => t.label.toLowerCase()).join("; ")}.
         </p>
       )}
     </section>

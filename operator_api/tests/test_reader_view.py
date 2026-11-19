@@ -398,6 +398,32 @@ class OneDayCount(unittest.TestCase):
         self.assertEqual([r.object_id for r in at_risk], ["AssemblyOrder:y"])
 
 
+class HomeLateLine(unittest.TestCase):
+    """Owner walk 11-17: Home said "Rechecking against the latest data (last checked 13
+    Nov)" for days: its late line was held by any rule re-running (a removed one too) and
+    dated by the oldest. It rests on the late-PO rule alone, as of that rule's last run."""
+
+    def home(self, inbox):
+        import threading
+        from operator_api.backend_screens import ScreensMixin
+        fake = SimpleNamespace(
+            reads=SimpleNamespace(run=lambda reader, job, timeout=None: (inbox, {}, {})),
+            _attention_cached=None, test_named=frozenset, today=None,
+            _lock=threading.Lock(), _recent={}, freshness=lambda _inbox: m.Freshness())
+        reader = SimpleNamespace(display_name="Owner Synth", key="k")
+        return ScreensMixin._home(fake, reader).needs_attention
+
+    def test_only_the_late_rule_holds_it_dated_by_its_own_run(self):
+        base = {"status": "read", "gaps": [], "run_at": "2026-11-17T19:13:27Z",
+                "detector_run_at": {"late_or_unconfirmed_po": "2026-11-17T06:01:50Z",
+                                    "stale_quote": "2026-11-13T21:00:00Z"},
+                "checked_on": "2026-11-13T21:00:00Z"}
+        other = self.home({**base, "refreshing": ["stale_quote"]})
+        self.assertEqual((other.refreshing, other.checked_on, other.late_total), (False, None, 0))
+        late = self.home({**base, "refreshing": ["late_or_unconfirmed_po", "stale_quote"]})
+        self.assertEqual((late.refreshing, late.checked_on), (True, "2026-11-17T06:01:50Z"))
+
+
 class DidYouMean(unittest.TestCase):
     def test_a_lone_business_record_beside_a_mapping_is_the_answers_record(self):
         po = {"object_id": "PurchaseOrder:bc.purchase_orders:p1", "object_type":

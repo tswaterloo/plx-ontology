@@ -818,7 +818,7 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
            registry: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None,
            floor_gb: float = 0.0, wait_s: float = 0.0,
            probe: Callable[[], float] = available_gb, end: datetime | None = None,
-           held_out_days: float = 0.0) -> dict[str, Any]:
+           held_out_days: float = 0.0, ask_judge: Any = None) -> dict[str, Any]:
     environ = os.environ if environ is None else environ
     registry = registry or ap.load_registry()
     if people is None or getattr(people, "unavailable", None):
@@ -884,7 +884,8 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                                        environ=env, now=nxt, as_of=day.date(),
                                        settle_items=False, only_owners=who,
                                        rate_by_event_hour=True,
-                                       feed_lag=config.get("feed_lag") or {})
+                                       feed_lag=config.get("feed_lag") or {},
+                                       ask_judge=ask_judge)
                 if summary.get("status") in ("off", "blocked"):
                     status = summary["status"]
                     break

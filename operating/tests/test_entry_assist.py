@@ -350,6 +350,98 @@ class OrderEntry(Fixture):
         for ln, code in ((bodywash, "SYN-30"), (hand, "SYN-40")):
             self.assertEqual((ln["item"]["status"], ln["item"]["value"]), ("cited", code))
 
+    def test_a_po_number_is_cited_only_when_no_other_po_is_named(self):
+        # W1-W3 11-15: both wrong cited PO numbers came from threads naming another PO (two
+        # on one line; "a new P.O. # for another 20 cs... 3858", whose number is not read)
+        self.items_known("SYN-10")
+        unread = self.message(
+            21, "Freight accepted.\n\nOn Jul 9, 2026, at 4:20 PM, Desk wrote:\n\nHere is a "
+                "new P.O. # for an other 20cs...  3858\n\nOn Jul 9, Desk wrote:\n\n"
+                "We have your 20 cs ready for PO3853.", subject="Re: PO3853 custom label")
+        quoted = self.message(22, "Thanks, booked.\n\nOn Mon, Buyer wrote:\n\nPlease ship "
+                                  "PO# 4521\nSYN-10 soap 6 cases", subject="RE: order")
+        moved = self.message(23, "New PO# 4600 for the rest.\n\nOn Mon, Desk wrote:\n\n"
+                                 "Ready for PO 4599.", subject="Re: order")
+        fresh = self.message(24, "See below.", subject="PO 7700 soap")
+        pair = self.message(25, "Please PO# SYNC4799 for one site and SYNC4800 for the "
+                                "other.", subject="order")
+        ctx = self.ctx()
+        got = ea.order_entry(ctx, email=unread)["header"]["po_number"]
+        self.assertEqual((got["status"], got["value"]), ("check", None))
+        self.assertIn("not read", got["reason"])
+        self.assertEqual(got["suggestions"][0]["value"], "PO3853")
+        # a thread about one PO: its quoted number is the PO's
+        for mail, number in ((quoted, "4521"), (fresh, "7700")):
+            got = ea.order_entry(ctx, email=mail)["header"]["po_number"]
+            self.assertEqual((got["status"], got["value"]), ("cited", number))
+        for mail, numbers in ((moved, ["4600", "4599"]), (pair, ["SYNC4799", "SYNC4800"])):
+            got = ea.order_entry(ctx, email=mail)["header"]["po_number"]
+            self.assertEqual((got["status"], got["candidates"]), ("check", numbers))
+
+    def test_a_po_named_anywhere_in_a_thread_or_marked_like_the_po_is_another_po(self):
+        # W4 11-17: 4 of 7 wrong cited PO numbers were long threads whose other POs (the
+        # keyed one among them) came after line 80; 1 was "# A revised ... and ...: # B"
+        ctx = self.ctx()
+        filler = "\n".join(f"note line {n}" for n in range(120))
+        for text, numbers in (
+                (f"PO 8308 rush\n{filler}\nPO 8307 (2 skids) next week\nPO 8308 today", ["8308", "8307"]),
+                ("Revised quantities: # 065656 revised for 200 and 5 for 300: # 065660 for the "
+                 "rest\n\nOn Mon, Desk wrote:\nWe have PO 065656.", ["065656", "065660"]),
+                ("PO# SYNC4799\nAlso see No. SYNC4801 for the other site.", ["SYNC4799", "SYNC4801"])):
+            with self.subTest(numbers=numbers):
+                got = ea.order_entry(ctx, text=text)["header"]["po_number"]
+                self.assertEqual((got["status"], got["value"], got["candidates"]),
+                                 ("check", None, numbers))
+        # a number marked "#" of another shape is no PO: the PO stays cited
+        for text in (f"PO 8308\n{filler}\nSuite #200, dock # 12", "PO SYNC4799\nOrder #123456",
+                     f"PO 065656 rush\n{filler}\nPO 065656 again"):
+            with self.subTest(text=text[:20]):
+                got = ea.order_entry(ctx, text=text)["header"]["po_number"]
+                self.assertEqual(got["status"], "cited")
+
+    def test_a_listed_lines_price_is_cited_only_when_it_is_per_the_lines_unit(self):
+        self.items_known("SYN-10", "SYN-20")
+        ctx = self.ctx()
+        for said, status, value in (("@ $4.50", "cited", "4.50"),
+                                    ("@ $4.50/cs", "cited", "4.50"),
+                                    ("$4.50 per case", "cited", "4.50"),
+                                    ("@ $1,234.50", "cited", "1234.50"),  # a thousands group
+                                    ("@ $4.50 each", "check", None),     # per one, not a case
+                                    ("$4.50/kg", "check", None),
+                                    ("$27.00", "check", None),           # maybe the total
+                                    ("$4.50/cs $27.00", "check", None),
+                                    ("", "check", None)):
+            with self.subTest(said=said):
+                (ln,) = ea.order_entry(ctx, text=f"PO 4512\nSYN-10 soap 6 cases {said}")["lines"]
+                self.assertEqual((ln["item"]["value"], ln["quantity"]["value"]), ("SYN-10", "6"))
+                self.assertEqual((ln["unit_price"]["status"], ln["unit_price"]["value"]),
+                                 (status, value))
+        (ln,) = ea.order_entry(ctx, text="PO 4512\nSYN-10 soap 6 cases @ $4.50 each")["lines"]
+        self.assertEqual(ln["unit_price"]["suggestions"][0]["value"], "4.50")
+        self.assertIn("another unit", ln["unit_price"]["reason"])
+        # review 11-17: an amount followed by anything, with no "$" or currency code, in
+        # another currency or another unit is never cited (base read no "@" line at all)
+        for said in ("@ $45 for 10", "@ $4.50/100", "@ $4.50 per 100", "@ 4.50 EUR",
+                     "@ $4.50 USD", "@ CAD 4.50", "@ US$4.50", "@ 12", "@ 24/cs",
+                     "@ $4.50 less 10%", "@ $4.50 for the first 2", "@ $4.50/lb",
+                     "@ $4.50 per M", "@ $4.50 each", "$27", "@ $4.50 or $4.20",
+                     "@ \u20ac4.50", "4.50 EUR", "@ $4.50 net 30", "@ $4.50 + HST",
+                     # a comma not in a three-digit thousands group may be a decimal comma
+                     # (review 11-17: "@ $4,50" was cited as 450)
+                     "@ $4,50", "@ $4,5", "@ $1,23", "@ $1,2345", "@ $4,50/cs",
+                     "$4,50 per case", "@ CAD 4,50", "@ $12,34.50"):
+            with self.subTest(said=said):
+                (ln,) = ea.order_entry(ctx, text=f"PO 4512\nSYN-10 soap 6 cases {said}")["lines"]
+                self.assertEqual((ln["item"]["value"], ln["quantity"]["value"]), ("SYN-10", "6"))
+                self.assertEqual((ln["unit_price"]["status"], ln["unit_price"]["value"]),
+                                 ("check", None))
+        # one price on a line naming two items: the item is a check, so the price is too
+        (ln,) = ea.order_entry(ctx, text="PO 4512\nSYN-10 and SYN-20 6 cases @ $4.50")["lines"]
+        self.assertEqual((ln["unit_price"]["status"], ln["unit_price"]["value"]), ("check", None))
+        # a mail address on the line is still no line
+        self.assertEqual(ea.order_entry(ctx, text="PO 4512\nSYN-10 6 cases to a@b.example"
+                                        )["lines"], [])
+
     def test_cardinality_every_line_is_kept_once_in_order(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):
@@ -371,9 +463,32 @@ class OrderEntry(Fixture):
                                 "lines": [("SYN-10", "6", "4"), ("SYN-30", "2", "1")]})
         # a line whose item is wrong leaves its quantity unscored, not wrong
         self.assertEqual(got, {"customer_right": 1, "po_number_check": 1, "item_right": 1,
-                               "quantity_right": 1, "unit_price_right": 1, "item_wrong": 1,
+                               "quantity_right": 1, "quantity_strict_right": 1,
+                               "unit_price_right": 1, "item_wrong": 1,
                                "quantity_unscored": 1, "unit_price_check": 1,
                                "lines_keyed": 2, "lines_prefilled": 2})
+        # one ordered item keyed on two lines: the order's quantity is their sum (strict:
+        # wrong); a quantity neither line nor the sum has is wrong under both
+        for said, rule, strict in (("10", "right", "wrong"), ("8", "right", "right"),
+                                   ("9", "wrong", "wrong")):
+            split = {"header": pre["header"], "lines": [
+                {"item": ea.cited("SYN-10", {}), "quantity": ea.cited(said, {}),
+                 "unit_price": ea.check("none")}]}
+            got = ea.accuracy(split, {"lines": [("SYN-10", "2", "4", "CS"),
+                                                ("SYN-10", "8", "4", "cases")]})
+            self.assertEqual((got.get(f"quantity_{rule}"), got.get(f"quantity_strict_{strict}")),
+                             (1, 1), said)
+        # a sum is no quantity across units (2 CS + 8 EA), with a unit not given, or over
+        # one line keyed twice (5 + 5): wrong, and counted apart
+        for keyed in ([("SYN-10", "2", "4", "CS"), ("SYN-10", "8", "4", "EA")],
+                      [("SYN-10", "2", "4"), ("SYN-10", "8", "4")],
+                      [("SYN-10", "5", "4", "CS"), ("SYN-10", "5", "4", "CS")]):
+            split = {"header": pre["header"], "lines": [
+                {"item": ea.cited("SYN-10", {}), "quantity": ea.cited("10", {}),
+                 "unit_price": ea.check("none")}]}
+            got = ea.accuracy(split, {"lines": keyed})
+            self.assertEqual((got.get("quantity_wrong"), got.get("quantity_right"),
+                              got.get("quantity_sum_unverified")), (1, None, 1), keyed)
         keyed_with_words = {"header": {"customer": ea.check("x"),
                                        "po_number": ea.cited("PO-153", {})}, "lines": []}
         self.assertEqual(ea.accuracy(keyed_with_words, {"po_number": "PO-153 Paw lotion"})
@@ -557,11 +672,18 @@ class PurchaseOrderAssist(Fixture):
         got = ea.purchase_order(ctx, supplier=a)
         self.assertEqual(sorted(ln["item"]["value"] for ln in got["lines"]),
                          ["SYN-10", "SYN-20"])
+        # the item's latest POs went to two suppliers: no supplier is suggested
         both = ea.purchase_order(ctx, items=["SYN-10"])
         self.assertEqual(both["header"]["supplier"]["status"], "check")
-        self.assertEqual([s["value"] for s in both["header"]["supplier"]["suggestions"]], [b])
-        self.assertIn("of 2 suppliers", both["header"]["supplier"]["suggestions"][0]["basis"])
+        self.assertNotIn("suggestions", both["header"]["supplier"])
+        self.assertIn("2 different suppliers", both["header"]["supplier"]["reason"])
         self.assertEqual(both["lines"][0]["unit_price"]["status"], "check")
+        # once its latest POs all went to one of them, that one is suggested
+        self.po(b, "2026-10-03", [("SYN-10", "50", "2.50")])
+        self.po(b, "2026-10-04", [("SYN-10", "50", "2.50")])
+        again = ea.purchase_order(self.ctx(), items=["SYN-10"])
+        self.assertEqual([s["value"] for s in again["header"]["supplier"]["suggestions"]], [b])
+        self.assertIn("of 2 suppliers", again["header"]["supplier"]["suggestions"][0]["basis"])
         none = ea.purchase_order(ctx, items=["ZZ-404"])
         self.assertEqual(none["header"]["supplier"]["status"], "check")
         # a named item no record holds stays on the PO as a check, never dropped

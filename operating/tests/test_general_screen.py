@@ -118,7 +118,7 @@ class BesideRecords(unittest.TestCase):
     def test_the_mode_decides_and_conditional_advice_stays(self):
         from operating import general_answer
         q = "Is Northwind profitable?"
-        for mode, absent in (("fallback", True), ("mixed", True), ("general", False)):
+        for mode, absent in (("mixed", True), ("general", False)):
             got = general_answer.answer(q, mode=mode, call=lambda text, images=(): self.SAID)
             self.assertIsNotNone(got, mode)
             for claim in ("No margin figures were available", "wasn't provided",
@@ -126,11 +126,11 @@ class BesideRecords(unittest.TestCase):
                 (self.assertNotIn if absent else self.assertIn)(claim, got.text, mode)
             self.assertIn("If the cost isn't booked, the margin is overstated.", got.text)
             self.assertIn("typical gross margin is 15-25%", got.text)
-        prompt = general_answer.prompt(q, mode="fallback")
-        self.assertIn("never say what they contain or lack", prompt)
+        prompt = general_answer.prompt(q, mode="mixed")
+        self.assertIn("Never say whether any figure, data or record was available", prompt)
 
     def test_a_reply_that_is_only_a_denial_gives_no_general_part(self):
         from operating import general_answer
-        got = general_answer.answer("Is Northwind profitable?", mode="fallback",
+        got = general_answer.answer("Is Northwind profitable?", mode="mixed",
                                     call=lambda text, images=(): "No cost data was found.")
         self.assertIsNone(got)

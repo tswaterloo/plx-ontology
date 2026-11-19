@@ -9,7 +9,10 @@ working, slower. The index definition is the migration's (0001_search,
 
 The binary-quantized index (``chunks_embedding_bq_hnsw``, migration 0034, searched with
 ``PLX_SEARCH_BQ=1``) is dropped and rebuilt with it: left in place, every loaded row would
-be an incremental graph insert.
+be an incremental graph insert. So are the per-kind ones (``chunks_embedding_k_<kind>``,
+migration 0036, searched with ``PLX_SEARCH_KINDS=1``), but they are rebuilt only with that
+flag on (14 more graphs about double the rebuild); off, they stay dropped until
+``python3 -m operating.pg.kind_indexes build``.
 """
 from __future__ import annotations
 
@@ -17,7 +20,9 @@ from typing import Any
 
 # the bit index's DDL lives with the migration runner (its embedding switch rebuilds it), so
 # the runner never imports this module and with it the search read path
-from operating.pg.migrate import CHUNKS_BQ_HNSW, LOCK_KEY, chunks_bq_hnsw_ddl
+from operating.pg.migrate import (CHUNKS_BQ_HNSW, CHUNKS_KIND_HNSW_KINDS, LOCK_KEY,
+                                  chunks_bq_hnsw_ddl, chunks_kind_hnsw_ddl,
+                                  drop_chunks_kind_hnsw, kinds_flag_on)
 
 CHUNKS_HNSW = "chunks_embedding_hnsw"
 CHUNKS_HNSW_DDL = ("CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw ON search.chunks USING "
@@ -38,6 +43,7 @@ def drop_vector_index(conn: Any) -> bool:
         present = vector_index_present(conn)
         conn.execute(f"DROP INDEX IF EXISTS search.{CHUNKS_HNSW}")
         conn.execute(f"DROP INDEX IF EXISTS search.{CHUNKS_BQ_HNSW}")
+        drop_chunks_kind_hnsw(conn)
     return present
 
 
@@ -55,6 +61,9 @@ def rebuild_vector_index(conn: Any, *, maintenance_work_mem: str = "8GB",
         dim = vector_dim(conn, "chunks")
         if dim is not None:
             conn.execute(chunks_bq_hnsw_ddl(dim))
+        if kinds_flag_on():
+            for kind in CHUNKS_KIND_HNSW_KINDS:
+                conn.execute(chunks_kind_hnsw_ddl(kind))
 
 
 def rebuild_on_fresh(dsn: str, **kwargs: Any) -> None:

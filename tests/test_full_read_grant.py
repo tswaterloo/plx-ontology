@@ -74,7 +74,10 @@ class FullReadGrantTest(unittest.TestCase):
                                              people_exclusion=guard)
 
     def denial(self, resolver, oid, scheme, record):
-        runtime = SimpleNamespace(employee_gate=ep.EmployeeActorGate(resolver, "plx"))
+        runtime = SimpleNamespace(employee_gate=ep.EmployeeActorGate(resolver, "plx"),
+                                  people_exclusion=resolver._exclusion)
+        runtime._staff_item_allows = lambda *a: CaseRuntime._staff_item_allows(runtime, *a)
+        runtime.staff_shared_mailboxes = frozenset
         return CaseRuntime._employee_acl_denial(
             runtime, Actor("plx", frozenset({"employee:" + oid}), "restricted"), scheme, record)
 
@@ -188,6 +191,58 @@ class FullReadGrantTest(unittest.TestCase):
             for oid in (VINCE, OTHER):
                 self.assertFalse({k for k in unloaded[oid]
                                   if not k.startswith("meetings:plan:")}, oid)
+
+    def test_a_full_reader_policy_reads_no_audience_and_withholds_only_excluded_people(self):
+        """The full readers' fast path (business rule 2026-11-02, the configured list
+        2026-11-17): the owner and a listed reader get every unit of every family and every
+        marking with no audience read at all, minus an excluded person's mailbox and
+        calendar units (and a mailbox that is no object id); a staff reader is decided
+        through the audiences exactly as before, and an unlisted session never gets it."""
+        from operating import ontology_host
+        from ontology.store_ddl import MARKINGS
+        keys = ["api:public.app_sales_order", "bc:CRONUS/salesOrders", f"mail:{BOX}",
+                f"mail:{EXCLUDED}", "mail:not-an-oid", f"mail-any:{BOX}+{OTHER}",
+                "sharepoint:drive-1", "teams:chat:19:abc", "brain:personal-x",
+                "mc:ops/tasks", f"meetings:calendar:{BOX}", f"meetings:calendar:{EXCLUDED}",
+                "meetings:plan:PlanOne", "meetings:plan:*"]
+        withheld = {f"mail:{EXCLUDED}", "mail:not-an-oid", f"meetings:calendar:{EXCLUDED}",
+                    "meetings:plan:*"}
+        asked = []
+
+        def audience(*args):
+            asked.append(args)
+            return False
+
+        def runtime(resolver):
+            return SimpleNamespace(
+                employee_gate=ep.EmployeeActorGate(resolver, "plx"),
+                people_exclusion=PeopleExclusion([EXCLUDED]),
+                live=SimpleNamespace(audience=SimpleNamespace(allows=audience)),
+                mirror=SimpleNamespace(_audience=lambda: SimpleNamespace(allows=audience)))
+
+        listed = ep.EmployeePermissionResolver(
+            ep.EmployeePermissionPolicy.from_json(
+                {k: v for k, v in self.policy_doc.items() if k != "full_read"}),
+            ep.PortalAccessSnapshot(self.access), people_exclusion=PeopleExclusion([EXCLUDED]),
+            full_readers=["other@example.com"])
+        for oid, resolver in ((VINCE, self.resolver()), (OTHER, listed)):
+            with self.subTest(oid=oid):
+                actor = Actor("plx", frozenset({"employee:" + oid}), "restricted")
+                policy = ontology_host.case_host_policy(runtime(resolver), actor, None,
+                                                        audience_keys=keys)
+                self.assertTrue(policy.unrestricted)
+                self.assertEqual({k for k in keys if policy.may_read(actor, k)},
+                                 set(keys) - withheld)
+                self.assertEqual(policy.held_markings(actor), frozenset(MARKINGS))
+                self.assertEqual(asked, [])   # not one audience read
+        # a staff reader (not listed, no grant): every unit through the audiences
+        actor = Actor("plx", frozenset({"employee:" + OTHER}), "restricted")
+        policy = ontology_host.case_host_policy(runtime(self.resolver()), actor, None,
+                                                audience_keys=keys)
+        self.assertFalse(policy.unrestricted)
+        self.assertTrue(asked)
+        self.assertFalse({k for k in keys if policy.may_read(actor, k)})
+        self.assertFalse(policy.held_markings(actor))
 
     def test_planner_tasks_stay_decided_per_record_inside_a_granted_plan(self):
         """A plan unit granted on the audience opens no task by itself: each task is
@@ -343,7 +398,8 @@ class FullReadGrantTest(unittest.TestCase):
                                ("/api/source", "employee:" + OTHER, None)])
         self.assertEqual(app.me(reader).access_label, "Viewing with full-read access")
 
-    def test_quality_is_not_granted_a_non_qc_grantee_opens_no_batches_qc_document(self):
+    def test_batches_qc_documents_need_no_qc_role(self):
+        # Decision 2026-11-17 (permissions simplified): no QC-document restriction.
         access = json.loads(self.access.read_text("utf-8"))
         access["users"][0].update(role="STAFF", accessLevel="L2")   # Vince, not admin/QC
         # A grant short of a source (no Teams): not the owner's, so quality is not granted.
@@ -357,8 +413,7 @@ class FullReadGrantTest(unittest.TestCase):
         vince = resolver.resolve(ep.EmployeePrincipal(TID, VINCE))
         self.assertIsNotNone(vince.full_read)
         self.assertFalse(vince.qc_document_reader)
-        self.assertEqual(self.denial(resolver, VINCE, "sharepoint", QC_RECORD),
-                         EMPLOYEE_ACL_DENIED)
+        self.assertIsNone(self.denial(resolver, VINCE, "sharepoint", QC_RECORD))
         self.assertIsNone(self.denial(resolver, VINCE, "sharepoint", SP_RECORD))
         # The owner grant (every source: unrestricted) opens it without a QC role.
         owner = self.resolver(access=access)

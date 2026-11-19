@@ -10,6 +10,7 @@ import type { Suggestion } from "@/lib/types";
 import { MissingActions, ObjectView } from "./object-view";
 import { arrange } from "./ask-box";
 import { SystemCode } from "./ui/glyphs";
+import { Pending } from "./ui/skeleton";
 
 /** The record type each friendly path opens: /po/106093, /customer/DIVE11, /supplier/V06110, /ao/AO-26253A. */
 export const FRIENDLY_TYPE = {
@@ -60,12 +61,18 @@ export function startingWith(list: Suggestion[], type: string, ref: string) {
     .filter((s) => ` ${fold(s.label)}`.includes(` ${want}`));
 }
 
-/** Shown when a friendly path finds no one record: the records of that name the reader may see, to pick from. */
+/** How long the "named like it" lookup may take before it stops and offers Retry. */
+export const CHOOSER_LIMIT_MS = 15_000;
+
+/** Shown when a friendly path finds no one record: at once, not found and search; then the
+ * records of that name the reader may see, to pick from (never a page waiting on the lookup). */
 function Chooser({ type, refText }: { type: string; refText: string }) {
   const [found, setFound] = useState<ReturnType<typeof namedBy> | null>(null);
   const [near, setNear] = useState(false); // found by the start of a name, not the name itself
+  const [tries, setTries] = useState(0);
   useEffect(() => {
     const c = new AbortController();
+    setFound(null);
     suggest(refText, c.signal)
       .then((r) => {
         const named = namedBy(r.suggestions ?? [], type, refText);
@@ -76,16 +83,14 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
         if (!c.signal.aborted) setFound([]);
       });
     return () => c.abort();
-  }, [type, refText]);
+  }, [type, refText, tries]);
   const kind = typeLabel(type).toLowerCase();
   // "PO 100040", "Customer Diversified": how the reader names what they opened
   const said = /^(?:PO|SO)\s/.test(recordLabel(type, refText)) ? recordLabel(type, refText) : `${typeLabel(type)} ${refText}`;
   const title = found === null ? said : found.length === 0 ? `No ${kind} “${refText}” that you can open` : near ? `${said}: close matches` : found.length > 1 ? `${said}: ${found.length} records` : said;
   const sub =
     found === null ? (
-      <span role="status" data-pending="">
-        Looking for {kind} “{refText}”…
-      </span>
+      `No single ${kind} opens by “${refText}”. Search for it, or pick one named like it below.`
     ) : found.length === 0 ? (
       "Check the number or name, or search for it."
     ) : near ? (
@@ -96,8 +101,9 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
       <header>
         <h1 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em] break-words">{title}</h1>
         {sub && <p className="mt-1 text-[13px] leading-5 text-muted">{sub}</p>}
-        {found && found.length === 0 && <MissingActions />}
+        {(found === null || found.length === 0 || near) && <MissingActions />}
       </header>
+      {found === null && <Pending key={tries} label={`Looking for records named “${refText}”`} limit={CHOOSER_LIMIT_MS} onRetry={() => setTries((n) => n + 1)} after={400} />}
       {found && found.length > 0 && (
         <ul className="-mx-3">
           {found.map((s) => (

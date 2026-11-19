@@ -49,6 +49,34 @@ describe("a customer order's page", () => {
     // a detail opens the record it is read from
     expect(screen.getByTitle("From BC sales order")).toHaveTextContent("PO-55");
   });
+  it("leads the Linked panel with confirmed links; suggested ones wait behind one toggle (owner walk C6)", async () => {
+    const page = {
+      ...PAGE,
+      links: [
+        ...PAGE.links,
+        { link_type: "Email.mentions_sales_order", direction: "reverse", name: "mentioned_in_email", words: "Mentioned in email", type: "Email", role: "related", count: 1, possible: 158, records: [ref("Email", "e1", "Order confirmed", { tier: "corroborated" }), ref("Email", "e2", "Maybe this order", { tier: "lead", possible: true })] },
+        { link_type: "Product.label_customer", direction: "reverse", name: "labels", words: "Labels", type: "Product", role: "related", count: 0, possible: 49, records: [ref("Product", "p1", "K18 label", { tier: "lead", possible: true })] },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    render(<ObjectView type="SalesOrder" id={SO} />);
+    await screen.findByTestId("object-title");
+    const linked = screen.getByTestId("related");
+    expect(linked).toHaveTextContent("Order confirmed");
+    expect(linked).not.toHaveTextContent("Suggested link"); // a corroborated link is no suggestion
+    expect(linked).not.toHaveTextContent("Maybe this order");
+    expect(linked).not.toHaveTextContent("possibly related");
+    expect(within(linked).queryByTestId("link-group-Product.label_customer")).toBeNull();
+    const toggle = within(linked).getByTestId("suggested-toggle");
+    expect(toggle).toHaveTextContent("Show 207 suggested links");
+    fireEvent.click(toggle);
+    expect(linked).toHaveTextContent("Maybe this order");
+    expect(within(linked).getByTestId("link-group-Product.label_customer")).toHaveTextContent("K18 label");
+    expect(linked).toHaveTextContent("Suggested link");
+    fireEvent.click(within(linked).getByTestId("suggested-toggle"));
+    expect(linked).not.toHaveTextContent("Maybe this order");
+  });
+
   it("opens a long link group in place and says what the page never loaded apart, with no 'and N more' line", async () => {
     for (const loaded of [1, 10, 60]) {
       const ships = Array.from({ length: loaded }, (_, n) => ref("Shipment", `s${n}`, `SH-${n}`, { tier: "verified" }));

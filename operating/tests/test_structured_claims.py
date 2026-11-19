@@ -676,7 +676,8 @@ class OnQuestionTests(unittest.TestCase):
             _visible_versions=lambda scope, ids: {i: {} for i in ids if i not in hidden})
         return types.SimpleNamespace(
             tools=tools, request=contextlib.nullcontext, per_call=contextlib.nullcontext,
-            policy_now=lambda actor: None)
+            # the MCP host's interface (``CaseHostTools``): a call reads under policy_for
+            policy_now=lambda actor: None, policy_for=lambda actor: None)
 
     def test_the_walk_reads_the_store_file_a_generation_swap_put_in_place(self):
         """The relevance walk's own read-only connection follows the file at the store's
@@ -1010,7 +1011,8 @@ class OnQuestionTests(unittest.TestCase):
             _visible_versions=lambda scope, ids: {i: {} for i in ids})
         world = types.SimpleNamespace(
             tools=tools, request=contextlib.nullcontext, per_call=contextlib.nullcontext,
-            policy_now=lambda actor: None)
+            # the MCP host's interface (``CaseHostTools``): a call reads under policy_for
+            policy_now=lambda actor: None, policy_for=lambda actor: None)
         question = "How many messages were posted in Teams chat R&D + Marketing?"
         stray = [{"mention": "R&D", "status": "match",
                   "records": [{"object_id": "Cust:9", "status": "match"}]}]
@@ -1124,11 +1126,11 @@ class TextCheckEnforcedTests(unittest.TestCase):
     CODE = {"id": "c", "value": "R-0162", "citation": A, "field": "row.product_code"}
     COUNT = {"id": "n", "value": "2", "op": "count", "of": [{"citation": A}, {"citation": B}]}
 
-    def decide(self, claims, text):
+    def decide(self, claims, text, names=()):
         from operating import mcp_server
         view = lambda handle: {"handle": handle, "revision": "0-1",   # noqa: E731
                                **self.ROWS[handle]} if handle in self.ROWS else None
-        server = mock.Mock(case_runtime=None, actor=None, returned_names=())
+        server = mock.Mock(case_runtime=None, actor=None, returned_names=set(names))
         with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
                 mock.patch.object(answer_gate, "gate_rows", lambda runtime, actor, **_kw: view):
             result, _gated, _repairing = mcp_server.answer_decision(
@@ -1178,6 +1180,33 @@ class TextCheckEnforcedTests(unittest.TestCase):
         result = self.decide([self.COUNT], "There are at least 2 orders.")
         self.assertIn("at least 2 orders", result["reply"]["text"])
         self.assertTrue(result["text_check"]["passed"])
+
+    def test_a_figure_inside_a_returned_name_is_no_statement(self):
+        """Held ho-G-0462: the customer "TAKE 5 -Waverly" a plx.table key returned had
+        its "5" refused as an unsupported number. Written as returned (whole or up to its
+        figure), the name is no figure; the same figure written apart, or a name nobody
+        returned, still needs a claim."""
+        table = {"type": "tool_call", "name": "plx.table", "is_error": False, "result": {
+            "groups": [{"key": {"billed_to.name": {"untrusted_text": "TAKE 5 -Waverly"}},
+                        "members": 2}]}}
+        names = answer_gate.returned_names([table])
+        for text in ("TAKE 5 -Waverly has at least 2 orders.", "TAKE 5 - Waverly has at least 2 orders.",
+                     "TAKE 5 has at least 2 orders."):
+            with self.subTest(text=text):
+                result = self.decide([self.COUNT], text, names)
+                self.assertTrue(result["text_check"]["passed"], result["text_check"])
+                self.assertIn("TAKE 5", result["reply"]["text"])
+        for text, names_given in (("TAKE 5 -Waverly has at least 5 orders.", names),
+                                  ("TAKE 5 has at least 2 orders.", ()),
+                                  ("Take 5 more: at least 2 orders.", names)):
+            with self.subTest(text=text):
+                result = self.decide([self.COUNT], text, names_given)
+                self.assertFalse(result["text_check"]["passed"])
+                self.assertIn("5", [e["value"] for e in result["text_check"]["uncovered"]])
+        # a phrase that is no name: a figure after a lower-case word or before a unit
+        self.assertEqual(answer_gate.name_phrases("Invoice total 1425"), ())
+        self.assertEqual(answer_gate.name_phrases("Net 30 days"), ())
+        self.assertEqual(answer_gate.name_phrases("USD 140"), ())
 
     def test_removing_evidence_never_raises_the_answer_s_certainty(self):
         """The same text over fewer passed claims is never more

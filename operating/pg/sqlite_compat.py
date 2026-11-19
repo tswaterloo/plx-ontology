@@ -756,6 +756,22 @@ def _value(value: Any) -> Any:
 
 
 def _members(raw: Any, *, numeric: bool) -> list[Any] | None:
+    """``_members_read``; a long list (a reader's audience keys and marks: the same text
+    on every statement of a read, 4,488 keys for the owner) is parsed and checked once
+    per process, each caller given its own copy."""
+    if isinstance(raw, str) and len(raw) >= LONG_LIST_CHARS:
+        got = _long_members(raw, numeric)
+        return None if got is None else list(got)
+    return _members_read(raw, numeric=numeric)
+
+
+@functools.lru_cache(maxsize=32)
+def _long_members(raw: str, numeric: bool) -> tuple[Any, ...] | None:
+    got = _members_read(raw, numeric=numeric)
+    return None if got is None else tuple(got)
+
+
+def _members_read(raw: Any, *, numeric: bool) -> list[Any] | None:
     """The members of a JSON list ``ontology.sq_json_each`` (``_int``) reads, when the
     text is a JSON array of strings or nulls (of integers): exactly that function's
     values; None for anything else (another JSON shape, a number in a text list, a
@@ -770,11 +786,14 @@ def _members(raw: Any, *, numeric: bool) -> list[Any] | None:
         return None
     if numeric:
         return items if all(type(v) is int and -2**63 <= v < 2**63 for v in items) else None
-    for v in items:
-        if v is not None and (not isinstance(v, str) or "\x00" in v
-                              or any("\ud800" <= ch <= "\udfff" for ch in v)):
+    for v in items:   # one C-level scan per member: a member list is read per statement
+        if v is not None and (not isinstance(v, str) or _NOT_PG_TEXT.search(v)):
             return None
     return items
+
+
+# a NUL or a lone surrogate: text Postgres JSON refuses (``_members``)
+_NOT_PG_TEXT = re.compile("[\x00\ud800-\udfff]")
 
 
 class _Refused(Exception):
@@ -1070,23 +1089,28 @@ class PgCompatConnection:
             # JSON lists read as arrays once migration 0011 made their functions
             cur.execute("SELECT to_regproc('ontology.sq_json_array_int') IS NOT NULL")
             self.arrays = bool(cur.fetchone()[0])
-            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_calls (fn text, arg text, "
-                        "result boolean, PRIMARY KEY (fn, arg))")
-            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
-                        "PRIMARY KEY (fn, arg))")
-            # the principal-key sets this session holds (``_bound_lists``): a new session
-            # holds none
-            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_keys (digest text NOT NULL, "
-                        "key text NOT NULL, PRIMARY KEY (digest, key))")
-            cur.execute("TRUNCATE sq_keys")
-            # the recorded item audiences (migration 0027): a gate carrying its reader's keys
-            # (``create_function``) is answered from them where a decision is recorded
-            cur.execute("SELECT to_regproc('ontology.sq_item_gate') IS NOT NULL")
-            self.item_audiences = bool(cur.fetchone()[0])
-            if self.item_audiences:
-                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_gates (fn text PRIMARY KEY, "
-                            "keys text[] NOT NULL, rosters text[] NOT NULL)")
-                cur.execute("TRUNCATE sq_gates")
+            # the session's own temporary tables: made read-write even where the login
+            # starts every transaction read-only (the eval role plx_eval,
+            # deploy/pg/plx_eval_role.sql); its grants still allow no shared write
+            with conn.transaction():
+                cur.execute("SET TRANSACTION READ WRITE")
+                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_calls (fn text, arg text, "
+                            "result boolean, PRIMARY KEY (fn, arg))")
+                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
+                            "PRIMARY KEY (fn, arg))")
+                # the principal-key sets this session holds (``_bound_lists``): a new session
+                # holds none
+                cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_keys (digest text NOT NULL, "
+                            "key text NOT NULL, PRIMARY KEY (digest, key))")
+                cur.execute("TRUNCATE sq_keys")
+                # the recorded item audiences (migration 0027): a gate carrying its reader's keys
+                # (``create_function``) is answered from them where a decision is recorded
+                cur.execute("SELECT to_regproc('ontology.sq_item_gate') IS NOT NULL")
+                self.item_audiences = bool(cur.fetchone()[0])
+                if self.item_audiences:
+                    cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_gates (fn text PRIMARY KEY, "
+                                "keys text[] NOT NULL, rosters text[] NOT NULL)")
+                    cur.execute("TRUNCATE sq_gates")
             recorded = getattr(self, "_recorded", None) or {}
             for name, keys in list(recorded.items()):
                 # a new session holds the gates registered before (their rosters re-read)
@@ -1541,7 +1565,16 @@ class PgCompatConnection:
     def _register_recorded(cur: Any, name: str, keys: tuple[str, ...]) -> bool:
         """Hold gate ``name``'s reader keys and the rosters recorded for them in the
         session's ``sq_gates`` (``ontology.sq_item_gate``); False (and nothing held) when
-        no roster holds them: the gate is then called as ``sq_call``, as before."""
+        no roster holds them: the gate is then called as ``sq_call``, as before. A full
+        reader's key (``full:<exclusion tag>``, ``people_excluded.reader_key``) is held
+        with no roster: ``sq_item_gate`` decides its mail, Teams and meetings handles from
+        the people exclusion's set while that set is of this very list, else as before."""
+        if len(keys) == 1 and keys[0].startswith("full:"):
+            cur.execute("INSERT INTO sq_gates (fn, keys, rosters) VALUES (%s, %s::text[], "
+                        "ARRAY['full']::text[]) ON CONFLICT (fn) DO UPDATE SET "
+                        "keys = excluded.keys, rosters = excluded.rosters",
+                        (name, list(keys)))
+            return True
         cur.execute("SELECT coalesce(array_agg(DISTINCT roster), '{}') FROM "
                     "ontology.item_audience_rosters WHERE audience_key = ANY(%s::text[])",
                     (list(keys),))
@@ -1706,7 +1739,8 @@ class PgCompatConnection:
             # emptied before this statement keeps a set, never between two of its lists:
             # one already bound to its digest would read as empty (``NOT IN`` of nothing
             # excludes nothing)
-            with self._conn.cursor() as cur:
+            with self._conn.transaction(), self._conn.cursor() as cur:
+                cur.execute("SET TRANSACTION READ WRITE")   # a read-only login (_session)
                 cur.execute("TRUNCATE sq_keys")
             self._kept.clear()
             self._kept_keys = 0

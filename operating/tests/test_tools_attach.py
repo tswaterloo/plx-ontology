@@ -249,3 +249,135 @@ class AskRefusalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CLAUDE_STUB = textwrap.dedent("""\
+    #!{python}
+    import json, os, sys, time
+    log = sys.argv[sys.argv.index("--stub-log") + 1]
+    with open(log, "a") as out:
+        out.write(json.dumps({{"start": os.getpid(), "argv": sys.argv[1:]}}) + "\\n")
+    n = 0
+    for line in sys.stdin:
+        message = json.loads(line)
+        n += 1
+        text = message["message"]["content"][0]["text"]
+        with open(log, "a") as out:
+            out.write(json.dumps({{"turn": n, "text": text}}) + "\\n")
+        if n == 1:
+            print(json.dumps({{"type": "system", "subtype": "init", "model": "m",
+                              "mcp_servers": [{{"name": "plx", "status": "connected"}}],
+                              "tools": ["mcp__plx__plx_find"]}}), flush=True)
+        if "SLOW" in text:
+            time.sleep(60)
+        print(json.dumps({{"type": "assistant", "message": {{"content": [
+            {{"type": "text", "text": "answer " + str(n)}}]}}}}), flush=True)
+        print(json.dumps({{"type": "result", "subtype": "success", "result": "answer "
+                          + str(n), "usage": {{"input_tokens": 1, "output_tokens": 1}}}}),
+              flush=True)
+""")
+
+
+class WarmSessionTests(unittest.TestCase):
+    """A follow-up in a conversation is one more user message to the Claude Code process
+    and host that answered the turn before (``ClaudeCodeAgent.open_session``)."""
+
+    setUp_base = ToolsAttachTests.setUp
+    wait_gone = ToolsAttachTests.wait_gone
+
+    def setUp(self):
+        self.setUp_base()
+        self.log = self.work / "claude.log"
+        self.binary = self.work / "claude"
+        self.binary.write_text(CLAUDE_STUB.format(python=sys.executable), encoding="utf-8")
+        self.binary.chmod(0o755)
+
+    def entries(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] \
+            if self.log.is_file() else []
+
+    def agent(self, **kw):
+        return runner.ClaudeCodeAgent(binary=str(self.binary), timeout=kw.pop("timeout", 30),
+                                      budget_seconds=20, max_steps=5,
+                                      extra_args=["--stub-log", str(self.log)], **kw)
+
+    def test_a_second_turn_reuses_the_process_and_has_its_whole_budget_again(self):
+        host = _Host(self.work, "answer")
+        session = self.agent().open_session(host)
+        lines: list[str] = []
+        try:
+            first = session.turn("Late orders?", lines.append)
+            time.sleep(1.1)
+            second = session.turn("And for Unilever?", lines.append)
+        finally:
+            session.close()
+        self.assertEqual((first.final_text, second.final_text), ("answer 1", "answer 2"))
+        starts = [e for e in self.entries() if "start" in e]
+        self.assertEqual(len(starts), 1)                      # one Claude Code process
+        self.assertIn("--input-format", starts[0]["argv"])
+        self.assertNotIn("Late orders?", starts[0]["argv"])   # the task goes in on stdin
+        self.assertEqual([e["text"] for e in self.entries() if "turn" in e],
+                         ["Late orders?", "And for Unilever?"])
+        self.assertEqual(len(host.started()), 1)              # one host for both turns
+        self.assertEqual(second.agent["host_start"], "kept")
+        # the follow-up's clock starts at its own turn, not the session's start
+        self.assertGreaterEqual(second.agent["budget"]["seconds"], 0)
+        self.assertLess(second.agent["budget"]["seconds"], 1.0)
+        self.assertTrue(any('"answer 2"' in line for line in lines))
+        self.assertFalse(session.alive)
+        self.assertTrue(self.wait_gone([starts[0]["start"], *host.started()]))
+
+    def test_a_prestarted_session_is_up_before_its_question_and_its_clock_starts_then(self):
+        host = _Host(self.work, "answer")
+        session = self.agent().open_session(host, prestart=True)
+        try:
+            # its host and Claude Code process are up before any question
+            deadline = time.monotonic() + 10
+            while not any("start" in e for e in self.entries()) \
+                    and time.monotonic() < deadline:
+                time.sleep(0.05)
+            starts = [e for e in self.entries() if "start" in e]
+            self.assertEqual(len(starts), 1)
+            self.assertEqual(len(host.started()), 1)
+            self.assertFalse(any("turn" in e for e in self.entries()))
+            time.sleep(1.1)
+            first = session.turn("Late orders?")
+        finally:
+            session.close()
+        self.assertEqual(first.final_text, "answer 1")
+        self.assertEqual(len([e for e in self.entries() if "start" in e]), 1)
+        self.assertNotIn("Late orders?", starts[0]["argv"])
+        # the wait before the question is not taken from its budget
+        self.assertLess(first.agent["budget"]["seconds"], 1.0)
+        self.assertFalse(session.alive)
+        self.assertTrue(self.wait_gone([starts[0]["start"], *host.started()]))
+
+    def test_a_turn_that_times_out_ends_the_session_and_its_process(self):
+        host = _Host(self.work, "answer")
+        session = self.agent(timeout=2).open_session(host)
+        try:
+            self.assertEqual(session.turn("first").final_text, "answer 1")
+            ran = session.turn("SLOW one")
+            self.assertEqual(ran.usage.get("subtype"), "timeout")
+            self.assertFalse(session.alive)
+            with self.assertRaises(runner.ToolsUnattached):
+                session.turn("third")
+        finally:
+            session.close()
+        starts = [e["start"] for e in self.entries() if "start" in e]
+        self.assertEqual(len(starts), 1)
+        self.assertTrue(self.wait_gone(starts + host.started()))
+
+    def test_a_cancelled_turn_is_stopped_and_never_continued(self):
+        import threading
+        host = _Host(self.work, "answer")
+        session = self.agent().open_session(host)
+        cancel = threading.Event()
+        cancel.set()
+        try:
+            session.turn("first", cancel=cancel)
+            self.assertFalse(session.alive)
+        finally:
+            session.close()
+        starts = [e["start"] for e in self.entries() if "start" in e]
+        self.assertTrue(self.wait_gone(starts + host.started()))

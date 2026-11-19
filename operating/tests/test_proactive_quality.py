@@ -95,6 +95,13 @@ class QualityAlerts(Engine):
         self.assertEqual(both["follow_up"]["proposal"]["link_type"], "Customer.same_record_as")
         self.assertEqual(both["follow_up"]["proposal"]["mode"], "prepare_link")
         self.assertIn("same email or web domain", both["summary"])
+        # in a person's words: the systems by name, never a record key, company id or score
+        self.assertRegex(both["summary"], r"^Two customer records may be the same company: "
+                                          r".+ in (FileMaker|the Customer Portal) and .+ in "
+                                          r"(FileMaker|the Customer Portal)\. ")
+        for g in gaps:
+            self.assertNotRegex(g["summary"], r"score|\bbc[/.]|\bfm\b|portal\.|:\w{6,}")
+        self.assertTrue(any("in Business Central" in g["summary"] for g in gaps))
         self.assertEqual(both["follow_up"]["priority"], "medium")   # name and domain: 0.7
         # proposals per system pair, never a link written
         self.assertFalse(any(l["link_type"] == "Customer.same_record_as"

@@ -189,6 +189,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.types import Actor, ValidationError
 from operating import po_status
+from operating.kept_policy import KeptPolicies
 from operating.explanations import explain
 
 from ..errors import RecordNotFound
@@ -741,6 +742,14 @@ class ObjectWorkspace:
         with self._request():
             return explain(self._workspace(object_id))
 
+    def card(self, object_id: str) -> dict[str, Any]:
+        """The record's card alone, as ``workspace`` reads it first (a page's core read):
+        no walk, timeline, documents or checks, so ``status`` "card"."""
+        with self._request():
+            base, card = self._card(object_id)
+            return explain({**base, "object_id": object_id, "card": card,
+                            "status": "error" if card.get("error") else "card"})
+
     def gap_inbox(self, *, inbox: Any = None, limit: int | None = None,
                   kinds: Sequence[str] | None = None,
                   states: Sequence[str] | None = None,
@@ -849,9 +858,29 @@ class ObjectWorkspace:
             schema = getattr(self.access, "schema", None)
         except Exception:  # noqa: BLE001 - no schema: no paths, named properties only
             schema = None
-        return lambda ids: involvement.derive(
-            lambda name, args, _actor: self._call(name, dict(args)), self.actor, schema,
-            identity, ids)
+        def derive(ids: Any) -> Any:
+            # each record's reasons kept for this reader on this data stamp (``Known``):
+            # the briefing's several consumers check a shared record once
+            # the named check of every record in one batched read as this reader
+            # (``object_words``, visibility and markings as plx.object decides them)
+            batch = getattr(self.access, "object_words", None)
+            return involvement.derive(
+                lambda name, args, _actor: self._call(name, dict(args)), self.actor, schema,
+                identity, ids, known=involvement.KNOWN.of(self._involvement_key(identity)),
+                words=batch if callable(batch) else None,
+                members=getattr(self.access, "members_set", None))
+        return derive
+
+    def _involvement_key(self, identity: Any) -> Any:
+        """``involvement.Known``'s key for this reader now: their page key (principals,
+        policy fingerprint, people exclusion, store generation, delta layers and marks,
+        ``page_key``) with their source identity; None (nothing kept) when undecidable."""
+        from operator_api.backend import page_key
+        key = page_key(self, "involvement")
+        if key is None:
+            return None
+        return key + (getattr(self.actor, "tenant", None), tuple(sorted(identity.addresses)),
+                      tuple(sorted(identity.object_ids)), identity.basis)
 
     def routing(self) -> Any:
         """Where this reader's work is routed (``operating.briefing.Routing``): an
@@ -1496,8 +1525,9 @@ class ObjectWorkspace:
 
     # ---- one object --------------------------------------------------------
 
-    def _workspace(self, object_id: str) -> dict[str, Any]:
-        """Card, relationship map, timeline, process, gaps, conflicts and intents."""
+    def _card(self, object_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The generation's status (``_base``) and the record's own card as this reader
+        reads it; RecordNotFound when it is not visible, ValueError when not an id."""
         if not isinstance(object_id, str) or not object_id or len(object_id) > 700:
             raise ValueError("object_id_required")
         base = self._base()
@@ -1510,6 +1540,12 @@ class ObjectWorkspace:
                 raise RecordNotFound()
             if error.get("code") == "invalid_input":
                 raise ValueError("object_id_invalid")
+        return base, card
+
+    def _workspace(self, object_id: str) -> dict[str, Any]:
+        """Card, relationship map, timeline, process, gaps, conflicts and intents."""
+        base, card = self._card(object_id)
+        if card.get("error"):
             return {**base, "object_id": object_id, "card": card, "status": "error"}
         around = self._around(object_id, card)
         timeline = self._timeline(object_id, around)
@@ -2390,7 +2426,8 @@ class WorkspaceActions:
 
 # ---- host wiring -----------------------------------------------------------
 
-SERVED_TOOLS = TOOLS + (DOCUMENTS_TOOL, INVESTIGATE_TOOL, AGGREGATE_TOOL)
+# plx.page: a page endpoint's named reads through the plx.sql door (``operating.page_reads``)
+SERVED_TOOLS = TOOLS + (DOCUMENTS_TOOL, INVESTIGATE_TOOL, AGGREGATE_TOOL, "plx.page")
 
 
 def _version_holders(host: Any
@@ -2460,16 +2497,8 @@ def audience_unit(handle: str) -> str | None:
 
 # A reader's decided ``ReadPolicy`` is kept per session while its inputs are unchanged
 # (``HostAccess._policy``), at most this long, so an input no stamp names still applies
-# within it; KEPT_POLICIES sessions per workspace.
+# within it; ``kept_policy.KEPT_POLICIES`` sessions per workspace.
 POLICY_KEPT_SECONDS = 120.0
-KEPT_POLICIES = 8
-
-
-def _same_inputs(held: tuple, now: tuple) -> bool:
-    """``held``'s inputs (values, objects, ...) are ``now``'s: equal values, the very same
-    objects."""
-    return held[0] == now[0] and len(held[1]) == len(now[1]) \
-        and all(a is b for a, b in zip(held[1], now[1]))
 
 
 class HostAccess:
@@ -2496,9 +2525,8 @@ class HostAccess:
         self.session: Any = None
         self._local = threading.local()
         host.pinned = self._pinned_policy
-        # session -> (its policy inputs' values, their objects, until, the policy)
-        self._kept_policies: dict[Any, tuple[tuple, tuple, float, Any]] = {}
-        self._kept_lock = threading.Lock()
+        # per session: its policy kept by the one rule the MCP host keeps it by too
+        self._kept_policies = KeptPolicies()
 
     def close(self) -> None:
         self.host.close()
@@ -2566,33 +2594,8 @@ class HostAccess:
         (``host.policy_settled``) and its inputs did not change while it was decided. A
         host that names no inputs decides it every time. Never shared with another
         session: each is its own entry."""
-        inputs = getattr(self.host, "policy_inputs", None)
-        before = inputs(gated) if callable(inputs) else None
-        session = self.session
-        try:
-            hash(session)
-        except TypeError:
-            before = None   # a session that cannot key an entry: decided every time
-        if before is not None:
-            with self._kept_lock:
-                held = self._kept_policies.get(session)
-            if held is not None and _same_inputs(held, before) \
-                    and held[2] > time.monotonic():
-                return held[3]
-        policy = self.host.policy_now(gated)
-        settled = getattr(self.host, "policy_settled", None)
-        if before is None or not callable(settled) or settled(gated) is not True:
-            return policy
-        after = inputs(gated)
-        if after is None or not _same_inputs((*before, 0.0, None), after):
-            return policy
-        with self._kept_lock:
-            self._kept_policies.pop(session, None)
-            while len(self._kept_policies) >= KEPT_POLICIES:
-                self._kept_policies.pop(next(iter(self._kept_policies)))
-            self._kept_policies[session] = (*before, time.monotonic() + POLICY_KEPT_SECONDS,
-                                            policy)
-        return policy
+        return self._kept_policies.policy(self.host, gated, key=self.session,
+                                          seconds=POLICY_KEPT_SECONDS)
 
     def store_meta(self) -> dict[str, str]:
         """``store_meta`` of the projection generation the host answers from."""
@@ -2638,6 +2641,12 @@ class HostAccess:
         gated, _, _ = self._state()
         return self.host.tools.sets.new(gated, [object_id])
 
+    def members_set(self, object_ids: Iterable[str]) -> str:
+        """A set handle of ``object_ids`` for this reader (a walk's root,
+        ``involvement.derive``); every tool re-checks each member's visibility on use."""
+        gated, _, _ = self._state()
+        return self.host.tools.sets.new(gated, list(object_ids))
+
     def decide(self, handles: Iterable[str]) -> dict[str, dict[str, str] | None]:
         gated, policy, memo = self._state()
         handles = list(dict.fromkeys(handles))
@@ -2656,6 +2665,45 @@ class HostAccess:
         gated, policy, _memo = self._state()
         with self.host.per_call():
             return self.host.visible_objects(gated, policy, list(object_ids))
+
+    def identifier_records(self, code: str, object_type: str) -> frozenset[str] | None:
+        """The records of ``object_type`` whose current identifier is exactly ``code``
+        (as written, or upper-cased) that the reader may read now (``visible_objects``),
+        from the identifier table of the served store and of every delta layer (the
+        index, milliseconds, where a whole ``plx.find`` took a minute cold). None when the
+        table cannot decide it (no such identifier, a marked identifier, too many rows,
+        a store of another format or any failure): the caller's full find decides."""
+        wanted = object_type.replace("_", "").lower()
+        codes = sorted({code.strip(), code.strip().upper()} - {""})
+        if not codes or len(code) > 200:
+            return None
+        try:
+            with self.host.per_call():
+                tools = self.host.tools
+                if tools.store.format_problem() is not None:
+                    return None
+                overlay = getattr(self.host, "_overlay", None)
+                stores = [tools.store] + [layer.tools.store
+                                          for layer in getattr(overlay, "layers", None) or ()]
+                ids: set[str] = set()
+                for store in stores:
+                    with store.lock:
+                        rows = list(store.conn.execute(
+                            "SELECT object_id, markings FROM identifiers WHERE normalized IN "
+                            "(SELECT value FROM json_each(?)) AND superseded_at IS NULL "
+                            "LIMIT 51", (json.dumps(codes),)))
+                    if len(rows) > 50:
+                        return None
+                    rows = [row for row in rows
+                            if str(row[0]).split(":", 1)[0].lower() == wanted]
+                    if any(str(row[1] or "[]") != "[]" for row in rows):
+                        return None   # a marked identifier is the full find's to decide
+                    ids.update(str(row[0]) for row in rows)
+            if not ids:
+                return None
+            return self.visible_objects(ids)
+        except Exception:  # noqa: BLE001 - undecided here: the full find decides
+            return None
 
     def object_words(self, object_ids: Iterable[str],
                      properties: Iterable[str] = ()) -> dict[str, dict[str, Any]]:

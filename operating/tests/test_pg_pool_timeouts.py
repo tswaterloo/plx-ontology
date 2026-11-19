@@ -101,6 +101,26 @@ class PoolTimeoutAcrossBorrowsTests(unittest.TestCase):
         self.assertEqual(len(ids), 1)   # one connection, reused
         self.assertEqual(seen, ["300ms"] * 3)
 
+    def test_an_autocommit_pool_reuses_its_connection_with_its_defaults(self):
+        """A pool whose configure turns autocommit on (plx.sql's, the pages') keeps its
+        connection across borrows, each borrow with the limit and the defaults; it was
+        discarded at every hand-back (a new connection per call)."""
+        def configure(conn):
+            conn.autocommit = True
+            conn.read_only = True
+        pool = pg_pool.Pool(self.dsn, max_size=1, configure=configure,
+                            statement_timeout_ms=300)
+        self.addCleanup(pool.close)
+        ids, seen = set(), []
+        for _ in range(5):
+            with pool.connection() as conn:
+                ids.add(conn.info.backend_pid)
+                seen.append((conn.autocommit, conn.read_only,
+                             conn.execute("SHOW statement_timeout").fetchone()[0]))
+                conn.read_only, conn.isolation_level = None, 3   # a borrower's own
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(seen, [(True, True, "300ms")] * 5)
+
     def test_a_session_idle_in_a_transaction_is_ended_and_the_pool_replaces_it(self):
         import psycopg
         import time

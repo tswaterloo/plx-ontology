@@ -1,23 +1,21 @@
 "use client";
 
-import { ArrowUpRight, CornerDownRight, SquarePen } from "lucide-react";
+import { SquarePen } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { AnswerCard } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
-import { loadHome, loadLate } from "@/components/shell";
-import { lateFigure, StatusGlyph, SystemCode } from "@/components/ui/glyphs";
+import { loadHome } from "@/components/shell";
 import { ErrorNotice } from "@/components/ui/notice";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
 import { cn } from "@/lib/cn";
-import { VERIFIED_EXAMPLES } from "@/lib/examples";
-import { ago, formatDate, formatDateTime, formatMoney, recordLabel, SYSTEM_LABEL } from "@/lib/format";
+import { ago, formatDateTime } from "@/lib/format";
 import { takePending } from "@/lib/pending";
-import { useSaved } from "@/lib/saved";
 import { askUrlKey, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
-import type { Answer, Freshness, LatePo, RecentQuestion } from "@/lib/types";
+import type { Answer, RecentQuestion } from "@/lib/types";
 
 /** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
 const FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
@@ -27,195 +25,51 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="mb-2 text-[12px] leading-4 font-medium text-muted">{children}</h2>;
 }
 
-const CAPTURE_WORDS: Record<string, string> = { failed: "last read failed", never_captured: "never read", partial: "partly read" };
-
-/** What Ask reads from, and how current each system is: an answer is only as fresh as these. */
-function Reads({ freshness, failed = false }: { freshness: Freshness | null; failed?: boolean }) {
-  const rows = freshness?.sources ?? [];
-  return (
-    <section aria-label="Sources Ask reads" data-testid="ask-reads">
-      <SectionTitle>Sources, last read</SectionTitle>
-      {failed ? (
-        <p className="text-[13px] text-muted">Couldn&apos;t read how current each system is just now; answers still say when their data is from.</p>
-      ) : freshness === null ? (
-        <div className="skeleton h-3.5 w-40" />
-      ) : rows.length === 0 ? (
-        <p className="text-[13px] text-muted">No source has been read yet.</p>
-      ) : (
-        <ul className="divide-y divide-border border-y border-border">
-          {rows.map((r) => {
-            const off = r.stale || r.capture === "failed" || r.capture === "never_captured";
-            const word = (r.capture && CAPTURE_WORDS[r.capture]) || (r.as_of ? ago(r.as_of) : "time not recorded");
-            return (
-              <li key={r.system} className="flex items-center gap-2.5 py-1.5 text-[13px]" title={r.as_of ? formatDateTime(r.as_of) : undefined}>
-                <SystemCode system={r.system} size={16} bare />
-                <span className="min-w-0 flex-1 truncate">
-                  {SYSTEM_LABEL[r.system as keyof typeof SYSTEM_LABEL] ?? r.system}
-                  {r.searchable_to && <span className="text-[12px] text-faint"> · to {formatDate(r.searchable_to, { short: true })}</span>}
-                </span>
-                {off && <StatusGlyph status="risk" size={12} />}
-                <span className={cn("shrink-0 text-[12px] tabular-nums", off ? "text-[color:var(--late)]" : "text-muted")}>{word}</span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <p className="mt-2 text-[12px] leading-[18px] text-muted">
-        Answers cite the record behind each figure and list what isn&apos;t on record. You see only what you may open.
-      </p>
-    </section>
-  );
-}
-
-/** Where to start: the oldest late orders, the questions the demo verifies, and the reader's saved ones. */
-function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => void }) {
-  const [late, setLate] = useState<LatePo[] | null>(null);
-  const [examples, setExamples] = useState<string[]>(VERIFIED_EXAMPLES);
-  const [freshness, setFreshness] = useState<Freshness | null>(null);
-  // a failed read is said as one, never shown as "no late POs" or "nothing read"
-  const [lateFailed, setLateFailed] = useState(false);
-  const [readsFailed, setReadsFailed] = useState(false);
+/** The start page under the box: the reader's own recent questions, newest first, each once. Nothing while they load or if they can't be read: the box works without them. */
+function RecentQuestions({ onAsk }: { onAsk: (q: string, objectId?: string) => void }) {
   const [recent, setRecent] = useState<RecentQuestion[]>([]);
-  const [lateCount, setLateCount] = useState<number | null>(null);
-  const saved = useSaved().filter((s) => s.kind === "question");
 
   useEffect(() => {
     let live = true;
-    loadLate()
-      .then((all) => {
-        if (!live) return;
-        setLateCount(all.length);
-        setLate([...all].sort((a, b) => (b.days_late ?? 0) - (a.days_late ?? 0)).slice(0, 6));
-      })
-      .catch(() => live && setLateFailed(true));
     loadHome()
       .then((h) => {
         if (!live) return;
-        if (h.examples?.length) setExamples(h.examples.slice(0, 6));
-        // the reader's own last questions, newest first, each once
         setRecent(
           [...(h.recent_questions ?? [])]
             .sort((a, b) => b.asked_at.localeCompare(a.asked_at))
             .filter((r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i)
-            .slice(0, 5),
+            .slice(0, 8),
         );
-        setFreshness(h.freshness ?? { sources: [] });
       })
-      .catch(() => live && setReadsFailed(true));
+      .catch(() => undefined);
     return () => {
       live = false;
     };
   }, []);
 
-  // recent questions are in the sidebar already; saved ones are the reader's own
-  const mine = [...new Set(saved.map((s) => s.label))].slice(0, 5);
+  if (recent.length === 0) return null;
   const row = "group flex min-h-9 w-full items-center gap-3 rounded-lg px-2 py-1 text-left text-[13px] hover:bg-hover cursor-pointer";
-
   return (
-    <div className="grid grid-cols-1 gap-x-10 gap-y-8 md:grid-cols-2 xl:grid-cols-3">
-      <section className="min-w-0" aria-label="Late orders to ask about">
-        <SectionTitle>Late orders</SectionTitle>
-        {lateFailed ? (
-          <p className="px-2 text-[13px] text-muted">The late list didn&apos;t load just now. Ask about any PO by its number.</p>
-        ) : late === null ? (
-          <div className="space-y-2 pt-1">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="flex items-center gap-3 px-2">
-                <div className="skeleton size-7 rounded-[3px]" />
-                <div className="skeleton h-3.5 flex-1" />
-              </div>
-            ))}
-          </div>
-        ) : late.length === 0 ? (
-          <p className="px-2 text-[13px] text-muted">No late POs.</p>
-        ) : (
-          <ul className="-mx-2">
-            {late.map((p) => {
-              const po = recordLabel("PurchaseOrder", p.label);
-              const q = p.supplier ? `Why is ${po} from ${p.supplier} late?` : `Why is ${po} late?`;
-              return (
-                <li key={p.object_id}>
-                  <button type="button" onClick={() => onAsk(q, p.object_id)} className={row} title={q}>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">
-                        <span className="font-medium">{po}</span>
-                        {p.supplier && <span className="text-muted"> {p.supplier}</span>}
-                      </span>
-                      <span className="block truncate text-[12px] leading-4 text-muted tabular-nums" data-testid="ask-late-line">
-                        {[p.due_date ? `needed ${formatDate(p.due_date, { short: true })}` : "no due date", p.amount && !p.amount_suspect ? formatMoney(p.amount.amount, p.amount.currency) : null].filter(Boolean).join(" · ")}
-                      </span>
-                    </span>
-                    {p.days_late != null && (
-                      <span className={cn("flex shrink-0 items-center gap-1.5 text-[12px] font-medium num", lateFigure(p.days_late))}>
-                        {p.days_late}d
-                      </span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        <Link href="/late" className="-mx-2 mt-1 inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg">
-          {lateCount !== null && lateCount > (late?.length ?? 0) ? `All ${lateCount} late orders` : "All late orders"}
-          <ArrowUpRight className="size-3.5" aria-hidden />
-        </Link>
-      </section>
-
-      <div className="min-w-0 space-y-8">
-        {recent.length > 0 && (
-          <section data-testid="ask-recent">
-            <SectionTitle>Asked lately</SectionTitle>
-            <ul className="-mx-2" aria-label="Your recent questions">
-              {recent.map((r) => (
-                <li key={`${r.asked_at}-${r.question}`}>
-                  {r.conversation_id ? (
-                    <Link href={`/ask?c=${encodeURIComponent(r.conversation_id)}`} className={row} title={`Asked ${formatDateTime(r.asked_at)}: open the answer`}>
-                      <span className="min-w-0 flex-1 truncate">{r.question}</span>
-                      <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
-                    </Link>
-                  ) : (
-                    <button type="button" onClick={() => onAsk(r.question)} className={row} title={`Asked ${formatDateTime(r.asked_at)}: ask again`}>
-                      <span className="min-w-0 flex-1 truncate">{r.question}</span>
-                      <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-        <section>
-          <SectionTitle>Try asking</SectionTitle>
-          <ul className="-mx-2" aria-label="Example questions">
-            {examples.map((s) => (
-              <li key={s}>
-                <button type="button" onClick={() => onAsk(s)} className={row}>
-                  <CornerDownRight className="size-3.5 shrink-0 text-faint group-hover:text-fg" strokeWidth={2} aria-hidden />
-                  <span className="min-w-0 flex-1">{s}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-        {mine.length > 0 && (
-          <section>
-            <SectionTitle>Saved</SectionTitle>
-            <ul className="-mx-2" aria-label="Saved questions">
-              {mine.map((s) => (
-                <li key={s}>
-                  <button type="button" onClick={() => onAsk(s)} className={row}>
-                    <CornerDownRight className="size-3.5 shrink-0 text-faint group-hover:text-fg" strokeWidth={2} aria-hidden />
-                    <span className="min-w-0 flex-1 truncate">{s}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-      </div>
-      <Reads freshness={freshness} failed={readsFailed} />
-    </div>
+    <section data-testid="ask-recent" className="max-w-[640px]">
+      <SectionTitle>Asked lately</SectionTitle>
+      <ul className="-mx-2" aria-label="Your recent questions">
+        {recent.map((r) => (
+          <li key={`${r.asked_at}-${r.question}`}>
+            {r.conversation_id ? (
+              <Link href={`/ask?c=${encodeURIComponent(r.conversation_id)}`} className={row} title={`Asked ${formatDateTime(r.asked_at)}: open the answer`}>
+                <span className="min-w-0 flex-1 truncate">{r.question}</span>
+                <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
+              </Link>
+            ) : (
+              <button type="button" onClick={() => onAsk(r.question)} className={row} title={`Asked ${formatDateTime(r.asked_at)}: ask again`}>
+                <span className="min-w-0 flex-1 truncate">{r.question}</span>
+                <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -331,9 +185,10 @@ function Ask() {
             {resumeFailed && resumeId && !q && (
               <ErrorNotice className="mb-6" message="This conversation couldn't be opened just now." onRetry={() => setResumeTry((n) => n + 1)} />
             )}
+            <PageIntro path="/ask" className="mb-3 px-0 pt-0 lg:px-0" />
             {composer}
             <div className="mt-10">
-              <StartingPoints onAsk={(question, objectId) => run(question, objectId)} />
+              <RecentQuestions onAsk={(question, objectId) => run(question, objectId)} />
             </div>
           </div>
         ) : (

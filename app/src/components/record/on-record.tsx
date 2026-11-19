@@ -56,7 +56,8 @@ export function answersOf(obj: ObjectPage): Answer[] {
 
 export function OnRecord({ obj }: { obj: ObjectPage }) {
   if (DESIGNED_TYPES.has(obj.type)) return null;
-  const rows = answersOf(obj);
+  // a row shows only when its fact is on record ("Next step" always has one)
+  const rows = answersOf(obj).filter((r) => !r.empty);
   return (
     <section aria-label="On record" data-testid="on-record">
       <dl className="grid grid-cols-[132px_minmax(0,1fr)] border-t border-border text-[13px] leading-5">

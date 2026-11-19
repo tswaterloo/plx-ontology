@@ -315,9 +315,12 @@ class StoreFailuresAreLoudAndSignOutsHold(unittest.TestCase):
             auth = w.auth()                     # the store is another user's
         self.assertIn("is owned by uid", "\n".join(logs.output))
         self.assertFalse(auth._held(token)[0], "a store it cannot keep holds no session")
-        self.assertIn("is owned by uid", health(w)["error"])
-        self.assertEqual(alarm(w)["state"], "breach")
-        # the alarm pass names the file's owner even when the API wrote no health at all
+        # the other user's process never writes the API's health file (it would take it):
+        # the API's own report stays what it was, and its alarm with it
+        self.assertTrue(health(w)["ok"])
+        self.assertIsNone(health(w).get("error"))
+        self.assertEqual(alarm(w)["state"], "ok")
+        # the alarm pass names the file's owner when it is not the API's user, health or not
         (w.path.parent / a.SESSION_HEALTH_FILE).unlink()
         from operating import ops_alarms
         with self.mock.patch("pwd.getpwnam") as user:
@@ -327,6 +330,71 @@ class StoreFailuresAreLoudAndSignOutsHold(unittest.TestCase):
         self.assertIn(f"app-sessions.json is owned by uid {real}, not plx-workbench",
                       check["detail"])
         self.assertIn("the API has written no health", check["detail"])
+
+    def test_removing_the_store_waits_for_the_lock(self):
+        """The foreign-owner check and the removal happen under the store's lock, so the
+        owner's replace (also under it) cannot interleave."""
+        import fcntl
+        import threading
+        w = self.world
+        w.auth().login(TICKET)
+        store = a.SessionStore(w.path)
+        fd = os.open(store.lock_path, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        done = []
+        thread = threading.Thread(target=lambda: done.append(store.drop()))
+        thread.start()
+        thread.join(0.5)
+        self.assertTrue(thread.is_alive(), "drop waits while the lock is held")
+        self.assertTrue(w.path.exists())
+        os.close(fd)
+        thread.join(5)
+        self.assertEqual(done, [True])
+        self.assertFalse(w.path.exists())
+
+    def test_another_users_process_never_takes_the_apis_files(self):
+        """11-17 alarm (sign-in writes EPERM): the state directory is the jobs' user's and
+        sticky, so a process of that user over the live state (a dev API, a preflight) could
+        replace the API's store or health file, after which the API's own writes fail with
+        EPERM. Such a process starts, signs in, retries, signs out and fails writes: the
+        API's store, lock and health file keep their bytes and inode, and the API keeps
+        its sessions."""
+        w = self.world
+        api = w.auth()
+        kept, _ = api.login(TICKET)
+        names = (w.path, w.path.parent / a.SESSION_HEALTH_FILE,
+                 w.path.parent / ("." + w.path.name + ".lock"))
+
+        def files():
+            return {p.name: (os.lstat(p).st_ino, p.read_bytes()) for p in names}
+
+        before = files()
+        real = os.geteuid()
+        with self.mock.patch.object(a.os, "geteuid", return_value=real + 1), \
+                self.assertLogs("operator_api.auth", "WARNING") as logs:
+            other = w.auth()
+            token, _ = other.login(TICKET)       # held in its memory only
+            for _ in range(3):
+                w.now[0] += a.SESSION_STORE_RETRY_SECONDS
+                self.assertTrue(other._held(token)[0])
+            other.logout(token)                  # a sign-out it cannot write: no drop
+            w.now[0] += a.SESSION_STORE_RETRY_SECONDS
+            other._held(kept)
+            # whatever it does, an unwritable store is never replaced nor removed
+            with self.assertRaises(PermissionError) as refused:
+                a.SessionStore(w.path).update(w.now[0], {}, force=True)
+            self.assertEqual(refused.exception.errno, 1)
+            self.assertFalse(a.SessionStore(w.path).drop())
+        text = "\n".join(logs.output)
+        self.assertIn("app_sessions_health_not_ours", text)
+        self.assertNotIn("app_sessions_store_recovered", text)
+        self.assertEqual(files(), before, "the API's files are untouched")
+        self.assertTrue(health(w)["ok"])
+        self.assertEqual(alarm(w)["state"], "ok")
+        # the API itself still writes them and keeps its sign-in over a restart
+        w.now[0] += a.SESSION_STORE_SLIDE_SECONDS
+        self.assertTrue(api._held(kept)[0])
+        self.assertTrue(w.auth()._held(kept)[0])
 
     def test_a_failed_sign_out_is_retried_and_never_comes_back(self):
         for n in (1, 10, 60):

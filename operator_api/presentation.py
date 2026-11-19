@@ -568,16 +568,36 @@ def _record_questions(family: str, name: str) -> list[tuple[str, str]]:
             ("who", f"Who owns {name}?")]
 
 
+def _free_text(name: str) -> bool:
+    """A label that is a message's free text (an email subject), not a name a question can
+    carry: a reply/forward prefix, a colon or more than five words."""
+    return bool(re.match(r"(?:re|fw|fwd|aw|tr)\s*:", name, re.I)) or ":" in name \
+        or len(name.split()) > 5
+
+
+def _echoes(what: str, asked: str) -> bool:
+    """Whether a gap's words are the question's own (``Email: latest messages from
+    customers``) or a label and its detail: no fact to confirm."""
+    if ":" in what:
+        return True
+    said = set(re.findall(r"[a-z]{3,}", what.lower()))
+    return bool(said) and len(said & set(re.findall(r"[a-z]{3,}", asked))) * 2 >= len(said)
+
+
 def follow_ups(question: str, answer: Any) -> list[str]:
     """Up to ``MAX_FOLLOW_UPS`` questions to ask next, from this answer's own records
     (its subjects) and what it could not confirm (its ``not_found`` and conflicts), never
     from anything the answer does not show its reader: the payload is already trimmed for
     them. A question carries no figure: it names a record or a missing fact in the words
     the answer already shows (a gap's words carrying a number no subject names are
-    skipped). A question asking what the reader just asked is skipped. Deterministic."""
+    skipped). A question asking what the reader just asked is skipped, and so is a gap of
+    an answer that shows no record, or one repeating the question's words (owner walk F1:
+    "Who can confirm the email: latest messages from customers?"); an email's subject
+    line is no name to ask about. No real next question: none. Deterministic."""
     asked = " ".join(str(question or "").lower().split())
     subjects = [(ref.type, name) for ref in getattr(answer, "subjects", None) or ()
-                if (name := subject_name(ref.type, ref.label))]
+                if (name := subject_name(ref.type, ref.label))
+                and not (_family(ref.type) == "record" and _free_text(name))]
     names = [name for _type, name in subjects]
     # what the answer already says: who to ask and whether it is late need no question
     said_text = " ".join([str(getattr(answer, "direct_answer", "") or "")] + [
@@ -601,6 +621,8 @@ def follow_ups(question: str, answer: Any) -> list[str]:
             break
     for item in getattr(answer, "not_found", None) or ():
         what = " ".join(str(item.what or "").split()).rstrip(".")
+        if primary is None or _echoes(what, asked):
+            break   # a gap of no record shown, or the question's own words: no question
         if not what or GENERIC_GAP.match(what) or SOURCE_STATE.search(
                 item.where_it_would_live or "") or len(what) > 80:
             continue

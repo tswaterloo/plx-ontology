@@ -71,7 +71,7 @@ JOB_UNITS: dict[str, tuple[str, ...]] = {
     "pg-follow": ("plx-ontology-pg-follow.service", "plx-pg-follow.service"),
     "proactive": ("plx-proactive.service", "plx-proactive-inc.service",
                   "plx-proactive-nightly.service", "plx-proactive-whole.service"),
-    "search-follow": ("plx-search-follow.service",),
+    "search-follow": ("plx-search-follow.service", "plx-search-dedup.service"),
     "backup": ("plx-backup.service",),
     "capture-backup": ("plx-capture-backup.service",),
     # the hourly exclusion leak scan (operating.exclusion_leak): a read transaction of

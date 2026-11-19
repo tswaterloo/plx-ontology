@@ -2,16 +2,17 @@
 
 // What needs the owner: the decisions, approvals and blocked items waiting on them across
 // the Workbench, read from the reader-scoped endpoints that already hold them (the
-// autopilot review queue, prepared write entries, the approvals queue and the reliability
-// alarms). Shown only when the server says the reader is the owner; a source that can't be
+// autopilot review queue, prepared write entries and the approvals queue). Reliability
+// alarms are not the owner's work: they live on the Admin page. Shown only when the server
+// says the reader is the owner; a source that can't be
 // read is named, never counted as zero.
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getApprovals, getAutopilot, getMe, getOpsAlarms, getWrites, type OpsAlarms } from "@/lib/api";
+import { getApprovals, getAutopilot, getMe, getWrites } from "@/lib/api";
 import { systemLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
-import { ago, formatDateTime, objectHref, opsHeadline, plural } from "@/lib/format";
+import { ago, formatDateTime, objectHref, plural } from "@/lib/format";
 import type { ApprovalsQueue, AutopilotArea, Me, WriteIntentView } from "@/lib/types";
 
 export type NeedKind = "decide" | "approve" | "blocked";
@@ -29,7 +30,6 @@ export interface NeedsSources {
   autopilot: AutopilotArea | null;
   writes: WriteIntentView[] | null;
   approvals: ApprovalsQueue | null;
-  alarms: OpsAlarms | null;
 }
 
 const KIND_WORD: Record<NeedKind, string> = { decide: "Decide", approve: "Approve", blocked: "Blocked" };
@@ -82,10 +82,6 @@ export function needsOf(s: NeedsSources, now = new Date()): { needs: Need[]; unr
       }
     }
   } else unread.push("the approvals queue");
-  // the alarms are the owner's and the Team readers' only; a refusal there is not a gap for anyone else
-  if (s.alarms) {
-    for (const o of s.alarms.open) needs.push({ key: `o:${o.key}`, kind: "blocked", title: opsHeadline(o.line), detail: `Open since ${ago(o.opened_at, now).replace(/ ago$/, "")}`, href: "/ops", rank: stamp(o.opened_at) });
-  }
   const order: NeedKind[] = ["decide", "approve", "blocked"];
   needs.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.rank - b.rank);
   return { needs, unread };
@@ -97,17 +93,18 @@ export function NeedsMeList({ sources }: { sources: NeedsSources }) {
   const [open, setOpen] = useState<NeedKind | null>(null);
   const { needs, unread } = needsOf(sources);
   const kinds = (["decide", "approve", "blocked"] as NeedKind[]).map((k) => [k, needs.filter((n) => n.kind === k)] as const);
+  // every source read and nothing waits: no block at all (Home says it once for the whole page)
+  if (needs.length === 0 && unread.length === 0) return null;
   return (
     <section className="border-b border-border px-5 py-3" aria-label="Needs you" data-testid="needs-me">
       <h2 className="flex items-baseline gap-2 text-[13px] font-semibold">
         Needs you
         {needs.length > 0 && (
           <span className="text-[12px] font-normal text-muted" data-testid="needs-me-counts">
-            {kinds.map(([k, list]) => `${list.length} to ${k === "blocked" ? "unblock" : k}`).join(" · ")}
+            {kinds.filter(([, list]) => list.length > 0).map(([k, list]) => `${list.length} to ${k === "blocked" ? "unblock" : k}`).join(" · ")}
           </span>
         )}
       </h2>
-      {needs.length === 0 && unread.length === 0 && <p className="mt-1 text-[12px] text-muted">No decision, approval or blocked item waits on you.</p>}
       {kinds.map(([k, list]) =>
         list.length === 0 ? null : (
           <div key={k} className="mt-2" data-testid={`needs-me-${k}`}>
@@ -156,9 +153,9 @@ export function NeedsMe() {
   useEffect(() => {
     const ctl = new AbortController();
     const soft = <T,>(p: Promise<T>) => p.then((v) => v, () => null);
-    Promise.all([soft(getMe(ctl.signal)), soft(getAutopilot(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items)), soft(getApprovals(ctl.signal)), soft(getOpsAlarms(ctl.signal))]).then(
-      ([me, autopilot, writes, approvals, alarms]) => {
-        if (!ctl.signal.aborted) setSources({ me, autopilot, writes, approvals, alarms });
+    Promise.all([soft(getMe(ctl.signal)), soft(getAutopilot(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items)), soft(getApprovals(ctl.signal))]).then(
+      ([me, autopilot, writes, approvals]) => {
+        if (!ctl.signal.aborted) setSources({ me, autopilot, writes, approvals });
       },
     );
     return () => ctl.abort();

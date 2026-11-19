@@ -27,7 +27,7 @@ def _answer_kept(answer: Any) -> dict[str, Any]:
                     {"system": s.system, "handle": s.handle, "label": s.label}
                     for s in f.sources[:8]]} for f in answer.facts[:30]],
                 "subjects": [{"type": o.type, "object_id": o.object_id, "label": o.label}
-                             for o in answer.subjects[:10]]}
+                             for o in answer.subjects[:20]]}
     except Exception:  # noqa: BLE001 - the feedback keeps the question alone
         return {}
 
@@ -291,7 +291,8 @@ def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, diges
         data_notes=[str(n.get("words"))[:300] for n in found.get("data_notes") or ()
                     if isinstance(n, Mapping)][:20],
         data_note_items=[m.BriefingDataNote(check=str(n["check"]), reason=str(n["reason"]),
-                                            count=int(n["count"]), words=str(n["words"])[:300])
+                                            count=int(n["count"]), words=str(n["words"])[:300],
+                                            scope=n.get("scope") is True)
                          for n in found.get("data_notes") or ()
                          if isinstance(n, Mapping) and isinstance(n.get("count"), int)][:20],
         digest_preview=digest, test_records_hidden=hidden_words(tests_hidden),

@@ -567,7 +567,7 @@ class PerPerson(StoreCase):
                                                  "Lot K-15 waits at dock four.",
                                                  facts=[("Lot K-15 is at dock four.",
                                                          "api://lot/K-15#row.dock")]))
-        self.assertEqual(len(got), 4)   # question, answer, fact, standing instruction
+        self.assertEqual(len(got), 3)   # question, answer, standing instruction (no answer fact)
         self.assertIn("dock four", self.everything_read(self.store, ana))
         self.db.statements.clear()
         self.assertNotIn("K-15", self.everything_read(self.store, ben))

@@ -135,6 +135,62 @@ class Mentions(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual([m["text"] for m in er.mentions(text)], names)
 
+    def test_a_system_name_qualifying_a_record_noun_is_no_mention(self):
+        # dev 11-17 (aggregation, people, time_comparison): "Mission Control approvals"
+        # resolved "Mission Control" to tasks titled so; it became the question's anchor and
+        # the gate refused every approval count as off the question. A system's name right
+        # before a record noun is the place records are held; before a function word, at the
+        # end, or as part of a longer name it is still a mention.
+        for text, names in (
+                ("How many Mission Control approvals in MC have status pending?", []),
+                ("Who reported Mission Control task Backfill the lot audit?",
+                 ["Backfill"]),
+                ("Which quotes of the Portal account Salt & Stone are open?",
+                 ["Salt & Stone"]),
+                ("What is the last modified date of rel BC locations Customer-owned FG "
+                 "Riverbend in BC?", ["Customer-owned FG Riverbend"]),
+                ("How many Sage sales orders are open for Acme Labs?", ["Acme Labs"]),
+                ("How many invoices from Sage are open?", ["Sage"]),
+                ("What do we owe Sage?", ["Sage"]),
+                ("Did we pay Sage, or BC Hydro?", ["Sage", "BC Hydro"]),
+                ("Is the Portal Group a customer?", ["Portal Group"])):
+            with self.subTest(text=text):
+                self.assertEqual([m["text"] for m in er.mentions(text)], names)
+
+    def test_a_system_name_before_a_verb_or_time_word_is_still_a_mention(self):
+        # review 11-17: only a noun of a kind of record the schema declares makes the name
+        # the place; the supplier SAGE SOFTWARE CANADA, the people named Sage or Portal
+        # are asked about with verbs and time words after the name
+        self.assertTrue({"approval", "order", "invoice", "location"} <= er.record_nouns())
+        self.assertFalse({"last", "right", "send", "reply", "pay"} & er.record_nouns())
+        for text, names in (
+                ("How much did we pay Sage last year?", ["Sage"]),
+                ("What is our balance with Sage right now?", ["Sage"]),
+                ("How many invoices did Sage send us in October?", ["Sage"]),
+                ("Did Sage reply to Ricardo?", ["Sage", "Ricardo"]),
+                ("What did Sage order last month?", ["Sage"]),
+                ("What did Portal email about yesterday?", ["Portal"]),
+                ("Which quotes of the Portal acct Salt & Stone are open?",
+                 ["Portal", "Salt & Stone"])):
+            with self.subTest(text=text):
+                self.assertEqual([m["text"] for m in er.mentions(text)], names)
+
+    def test_an_ampersand_name_is_one_mention_its_stopwords_included(self):
+        # dev 11-17 (single_hop, negation): the customer "For & Against" was looked up as
+        # "Against" ("For" is a stopword) and found nothing; "Bath & Body" split in two
+        for text, names in (
+                ("Which quotes of acct Over & Above have no quote line?", ["Over & Above"]),
+                ("What did Salt & Stone order from Acme Labs?", ["Salt & Stone", "Acme Labs"]),
+                ("List orders for Out & About and Day & Night.",
+                 ["Out & About", "Day & Night"]),
+                ("Is R&D late on PO-1002?", ["PO-1002", "R&D"]),
+                ("Tom & I met Acme Labs.", ["Acme Labs"]),
+                ("Tom & Jerry Co ordered what?", ["Tom & Jerry Co"]),
+                ("Smith & Sons and Jones & Co ship today.", ["Smith & Sons", "Jones & Co"]),
+                ("How many orders did we ship & invoice for Acme Labs?", ["Acme Labs"])):
+            with self.subTest(text=text):
+                self.assertEqual([m["text"] for m in er.mentions(text)], names)
+
     def test_a_system_set_apart_or_named_with_the_is_no_mention(self):
         # novel dev 11-11: "apart from Sage" prefetched the vendor Sage Software, and every
         # "in the Portal" / "outside the Portal" read "Portal" as a record's name (a gate

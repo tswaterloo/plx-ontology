@@ -258,11 +258,15 @@ def run_memo() -> Any:
         _RUN_MEMO.reset(token)
 
 
-@functools.lru_cache(maxsize=4)
 def _visible_object_sql(store: str) -> str:
     # imported here: operating.search reads this module's item schemes
     from operating.search import document_marks
-    return store + "AND " + document_marks.sql("o.object_id") + " "
+    return _visible_object_text(store, document_marks.sql("o.object_id"))
+
+
+@functools.lru_cache(maxsize=8)
+def _visible_object_text(store: str, marks: str) -> str:
+    return store + "AND " + marks + " "
 
 
 def _readable_text(store: Any, scope: Any, rows: Iterable[Any]) -> list[Any]:
@@ -643,11 +647,16 @@ class ReadPolicy:
     # checks of the consumers pass through (the people exclusion still decides). Set only
     # by the host's policy resolution (``ontology_host.case_host_policy``).
     unrestricted: bool = False
+    # Decided by the staff scope (``operating.staff_scope``, ``ontology_host.
+    # _staff_policy``): its ``mail``, ``teams``, ``sharepoint`` and ``meetings`` units are
+    # already decided, so a host never decides them again per unit.
+    staff: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.tenant, str) or not self.tenant.strip():
             raise ValueError("read_policy_tenant_required")
-        if not isinstance(self.unrestricted, bool):
+        if not isinstance(self.unrestricted, bool) or not isinstance(self.staff, bool) \
+                or self.unrestricted and self.staff:
             raise ValueError("read_policy_unrestricted_invalid")
         clean: dict[str, frozenset[str]] = {}
         for pattern, principals in dict(self.audiences).items():
@@ -755,6 +764,8 @@ class _Scope:
     marking_sets: tuple[str, ...]
     sources: tuple[str, ...]
     at: dt.datetime
+    # A full reader's people-exclusion tag (``people_excluded.full_reader``), else "".
+    people: str = ""
 
     @functools.cached_property
     def _encoded(self) -> tuple[str, str, str]:
@@ -774,7 +785,7 @@ class _Scope:
         # once per scope: the documents search marks beyond this reader
         # (``operating.search.document_marks``), withheld as any unreadable object
         from operating.search import document_marks
-        return document_marks.params(self.held)
+        return document_marks.params(self.held, self.people)
 
     def params(self, **extra: Any) -> dict[str, Any]:
         aud, marks, at = self._encoded

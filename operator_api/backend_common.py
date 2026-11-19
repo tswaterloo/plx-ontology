@@ -61,8 +61,8 @@ SCREENS_AHEAD_WORKERS = 1
 SCREENS_AHEAD = ("_home_served", ("briefing", {"since_visit": False}), "suggestions",
                  ("late_list", {"offset": 0, "limit": 100}),
                  "my_work", "autopilot_area", "approvals_queue", "workload", "team_view",
-                 "upcoming_meetings", "reply_triage", "rd_board", ("my_action_items", None),
-                 ("qc_pack", "daily"), ("weekly_review", None),
+                 "upcoming_meetings", "reply_triage", ("my_action_items", None),
+                 ("weekly_review", None),
                  ("answer_bank", None))   # last: a whole-company document read
 
 

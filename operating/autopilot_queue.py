@@ -53,7 +53,7 @@ BUSINESS = ("SalesOrder", "PurchaseOrder", "SalesInvoice", "Shipment", "Receipt"
 SIDE_LINKS = {"Email.sent_by_customer": "customer", "Email.sent_by_supplier": "supplier"}
 SO_LINE_OF, SO_LINE_ITEM = "SalesOrderLine.line_of", "SalesOrderLine.for_item"
 PO_LINE_OF, PO_LINE_ITEM = "PurchaseOrderLine.line_of", "PurchaseOrderLine.for_item"
-CLOSED = re.compile(r"\b(?:closed|complete[d]?|cancel+ed|void|shipped|invoiced|fully|done|"
+CLOSED = re.compile(r"\b(?:closed|complete[d]?|cancel(?:l?ed)?|void|shipped|invoiced|fully|done|"
                     r"merged|archived|posted|received)\b", re.I)
 TASK_DONE = re.compile(r"^(?:done|merged|closed|cancel+ed|complete[d]?|archived|wont_?do)$",
                        re.I)
@@ -173,6 +173,14 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
                 event.get("asks") and event.get("correspondent"))) != bool(want):
             return False
     return True
+
+
+def names_reader(text: Any, names: Iterable[str]) -> bool:
+    """Whether a message names its reader in its words: one of ``names`` (their first
+    names, two letters or more) as a whole word, any case."""
+    own = text if isinstance(text, str) else ""
+    return any(re.search(r"(?<![\w])" + re.escape(str(n)) + r"(?![\w])", own, re.I)
+               for n in names if len(str(n)) >= 2)
 
 
 # ----------------------------------------------------------------------------- queue
@@ -391,6 +399,80 @@ class Queue:
                 return True
         return False
 
+    def answered_in_chat(self, owner: str, event: Mapping[str, Any], now: datetime,
+                         names: Iterable[str] = ()) -> str | None:
+        """Why a Teams message needs no item for ``owner`` by ``now``: "owner_replied" when
+        they already wrote in its chat or thread after it (an item prepared after the answer
+        would only be closed by it: 304 of 388 live items, 2026-11-13..17); in a group,
+        "other_replied" when another person the message @mentions (neither the sender nor
+        the owner) wrote there after it, and the message is not the owner's alone: it
+        @mentions more than the owner and does not name the owner (``names``: their first names) in its text (an ask put to
+        the owner stays theirs whoever else speaks; a group turn stays the owner's). Their
+        own sent messages only, each between the message and ``now`` (a replay's clock:
+        never later evidence). None: no answer known, or unreadable."""
+        conversation = event.get("conversation_id")
+        at = _instant(event.get("at"))
+        if event.get("channel") not in ("teams", "mail") or not conversation or at is None \
+                or now <= at:
+            return None
+        thread = _digest("thread", conversation)
+        window = (_iso(at), _iso(now))
+        if self.conn.execute("SELECT 1 FROM sent WHERE owner = ? AND thread = ? AND at > ? "
+                             "AND at <= ? LIMIT 1", (owner, thread, *window)).fetchone():
+            return "owner_replied"
+        if event.get("channel") != "teams":
+            return None            # a mail thread: only the owner's own later mail answers it
+        sender = str(event.get("sender") or "")
+        mentions = event.get("mentions")
+        others = sorted({str(m) for m in mentions} - {owner, sender}) \
+            if isinstance(mentions, list) else []
+        names = [str(n) for n in names if len(str(n)) >= 2]
+        # names not known: whether the text names the owner is not known either (kept)
+        if not (event.get("group") and event.get("to_me") and sender and others and names) \
+                or names_reader(event.get("text"), names):
+            return None
+        if self.conn.execute(
+                "SELECT 1 FROM sent WHERE owner IN (SELECT value FROM json_each(?)) AND "
+                "thread = ? AND at > ? AND at <= ? LIMIT 1",
+                (json.dumps(others), thread, *window)).fetchone():
+            return "other_replied"
+        return None
+
+    def answered_since(self, item: Mapping[str, Any]) -> bool:
+        """Whether the item's owner already wrote in the item's conversation after its
+        message (their own sent mail or chat messages, ``note_sent``); False when the
+        conversation or time is not known. Read only."""
+        row = self.conn.execute("SELECT body FROM events WHERE event_id = ?",
+                                (item.get("event_id"),)).fetchone()
+        try:
+            body = json.loads(row[0]) if row else {}
+        except ValueError:
+            return False
+        at, conv = _instant(body.get("at")), body.get("conversation_id")
+        if not isinstance(body, dict) or not conv or at is None:
+            return False
+        return self.conn.execute(
+            "SELECT 1 FROM sent WHERE owner = ? AND thread = ? AND at > ? LIMIT 1",
+            (item["owner"], _digest("thread", conv), _iso(at))).fetchone() is not None
+
+    def chat_ask(self, message_id: str, reader: str) -> bool | None:
+        """The model's cached verdict on whether a chat message asks ``reader`` something
+        (``operating.chat_ask_model``); None: not read yet."""
+        row = self.conn.execute("SELECT asks FROM chat_asks WHERE message_id = ? AND "
+                                "reader = ?", (message_id, reader)).fetchone()
+        return None if row is None else bool(row[0])
+
+    def note_chat_asks(self, notes: Iterable[Mapping[str, Any]]) -> int:
+        """Keep model verdicts (``message_id``, ``reader``, ``asks``, ``reason``, ``model``,
+        ``at``): the first one for a message and reader stands."""
+        n = 0
+        for x in notes:
+            n += self.conn.execute(
+                "INSERT OR IGNORE INTO chat_asks VALUES (?, ?, ?, ?, ?, ?)",
+                (str(x["message_id"]), str(x["reader"]), int(bool(x["asks"])),
+                 x.get("reason"), x.get("model"), str(x["at"]))).rowcount
+        return n
+
     def work_log_path(self) -> Path:
         """The Workbench work log beside this queue (``<state>/work-log``; the API's
         ``PLX_WORK_LOG_DIR`` overrides), read only."""
@@ -497,6 +579,51 @@ class Queue:
     def settle_item(self, item_id: str, state: str, reason: str, now: str) -> None:
         self.conn.execute("UPDATE items SET state = ?, done_reason = ?, done_at = ? "
                           "WHERE item_id = ? AND state = 'open'", (state, reason, now, item_id))
+
+    @staticmethod
+    def draftless(item: Mapping[str, Any]) -> bool:
+        """An open item that prepared nothing to act on: no reply text, no "your call" card,
+        no entry, action or card of any kind."""
+        work = (item.get("body") or {}).get("prepared") or {}
+        if not isinstance(work, Mapping):
+            return False
+        for slot in ("draft", "teams_draft"):
+            if isinstance(work.get(slot), Mapping) and (work[slot].get("body") or
+                                                        work[slot].get("choice")):
+                return False
+        return not any(work.get(k) for k in ("your_call", "write", "action", "card",
+                                              "actions", "order"))
+
+    def supersede_draftless(self, now: str, apply: bool = False,
+                            autopilots: Iterable[str] | None = None) -> dict[str, Any]:
+        """Set the open draft-less items aside as state ``superseded`` (a state, never a
+        delete: ``unsupersede`` puts them back open). Counts only, per autopilot; nothing
+        changes unless ``apply``."""
+        only = set(autopilots) if autopilots is not None else None
+        ids, per = [], {}
+        for item in self.items():
+            if self.draftless(item) and (only is None or item["autopilot"] in only):
+                ids.append(item["item_id"])
+                per[item["autopilot"]] = per.get(item["autopilot"], 0) + 1
+        if apply and ids:
+            with self.conn:
+                self.conn.executemany(
+                    "UPDATE items SET state = 'superseded', done_reason = 'superseded', "
+                    "done_at = ? WHERE item_id = ? AND state = 'open'",
+                    [(now, i) for i in ids])
+                self.set_meta("superseded", {"at": now, "n": len(ids), "by_autopilot": per})
+        return {"applied": bool(apply), "items": len(ids), "by_autopilot": dict(sorted(per.items()))}
+
+    def unsupersede(self, apply: bool = False) -> int:
+        """Put every superseded item back open (only the ones this command set aside)."""
+        n = self.conn.execute("SELECT COUNT(*) FROM items WHERE state = 'superseded' AND "
+                              "done_reason = 'superseded'").fetchone()[0]
+        if apply and n:
+            with self.conn:
+                self.conn.execute("UPDATE items SET state = 'open', done_reason = NULL, "
+                                  "done_at = NULL WHERE state = 'superseded' AND "
+                                  "done_reason = 'superseded'")
+        return n
 
     def meta(self, key: str) -> Any:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()

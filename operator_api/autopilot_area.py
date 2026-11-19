@@ -184,6 +184,8 @@ class AutopilotAreaMixin:
     autopilot_guard: Any = None
     autopilot_owner: Any = None
     autopilot_admin: Any = None
+    autopilot_writer: Any = None       # tests: the reply writer (else the environment's model)
+    autopilot_people: Any = None       # tests: the people exclusion the writer's screens read
 
     # ------------------------------------------------------------ plumbing
 
@@ -499,11 +501,11 @@ class AutopilotAreaMixin:
                     countdown=_countdown(published.get(role), flow, rules)))
         if not dev and not fresh:
             notes.append("No replay has scored the workflows yet.")
-        # items are prepared only for a workflow that passed its replay gate
-        # (``autopilot.gate_from``): with none passed, that is why nothing is here
-        if not items and not drafted and \
-                not autopilot_engine.gate_of({"schema": autopilot_engine.GATE_SCHEMA, "roles": dev})[1]:
-            notes.insert(0, NO_GATE_PASSED)
+        # items are prepared only for what a person switched on themselves (or the
+        # owner's own Draft: ``autopilot_engine.SwitchGate``): with nothing on for this
+        # reader, that is why nothing is here
+        if not items and not any(aw.drafts_on(rows).get(o) for o in me):
+            notes.insert(0, NO_DRAFTS_ON)
         mine_opt, paused_me = self._apa_my_opt_ins(gate, chosen, stopped, me)
         switched_on = None
         if sees_all:
@@ -524,9 +526,24 @@ class AutopilotAreaMixin:
         gate_notices = [m.AutopilotGateNotice(role=str(n["role"]), workflow=str(n["workflow"]),
                                               passed_at=str(n["passed_at"]))
                         for n in aw.notices(rows)] if owner else None
+        mine_drafts = aw.drafts_on(rows)
+        my_flows = set().union(*(mine_drafts.get(o, frozenset()) for o in me)) if me else set()
+        my_drafts = [m.AutopilotDraftChoice(choice=cid, label=label,
+                                            on=bool(me) and set(flows) <= my_flows)
+                     for cid, label, flows in aw.DRAFT_CHOICES]
+        drafts_who = None
+        if sees_all:
+            drafts_who = [m.AutopilotDraftsPerson(person=p, choice=cid, label=label)
+                          for p, on in sorted(mine_drafts.items())
+                          for cid, label, flows in aw.DRAFT_CHOICES if set(flows) <= on]
+            for entry in drafts_who:
+                people.setdefault(entry.person, m.AutopilotPerson(
+                    id=entry.person, name="", you=entry.person in me,
+                    roles=sorted(member_of.get(entry.person, ()))))
         return m.AutopilotArea(
-            owner=owner, gate_notices=gate_notices,
+            owner=owner, gate_notices=gate_notices, my_drafts=my_drafts,
             my_opt_ins=mine_opt, paused=paused_me, switched_on=switched_on,
+            drafts_switched_on=drafts_who,
             switches=m.AutopilotSwitches(
                 global_off=glob, master_switch=master,
                 autopilot_off=bool(str(env.get(autopilot_queue.KILL_ENV, "")).lower() in
@@ -573,11 +590,17 @@ class AutopilotAreaMixin:
         if body.decision == "edit" and not text:
             raise UserFacing("bad_request", "An edit needs the draft's new text.", 422)
         draft = ((found["body"].get("prepared") or {}).get("draft") or {})
-        if text and not draft:
+        chat = ((found["body"].get("prepared") or {}).get("teams_draft") or {}) \
+            if not draft else {}
+        if text and not draft and not chat:
             raise UserFacing("bad_request", "This item has no draft to edit.", 422)
         if body.decision == "accept" and not text:
             prior = self._apa_decisions(state).get(item_id) or {}
             text = prior.get("text") if prior.get("decision") == "edit" else None
+        if body.decision == "accept" and not text and \
+                (found["body"].get("prepared") or {}).get("your_call"):
+            # a "your call" card has no reply until the person says what to say
+            raise UserFacing("bad_request", "Say what you want to reply first.", 422)
         if text:
             row["text"] = text
         offer = None
@@ -586,8 +609,10 @@ class AutopilotAreaMixin:
                 raise UserFacing("action_refused", "The autopilot is switched off.", 409)
             item = found
             if text:
-                prepared = {**(found["body"].get("prepared") or {}),
-                            "draft": {**draft, "body": text}}
+                # a Teams reply is posted to the chat it answers, as a chat message
+                sent = {**draft, "body": text} if draft else {
+                    "channel": "teams", "chat_id": chat.get("conversation"), "body": text}
+                prepared = {**(found["body"].get("prepared") or {}), "draft": sent}
                 item = {**found, "body": {**found["body"], "prepared": prepared}}
             executor = self._apa_executor(state)
             if body.bulk and executor.live_kinds(item):
@@ -628,6 +653,140 @@ class AutopilotAreaMixin:
         for it in self._area_read(reader).items:
             if it.item_id == item_id:
                 it.confirm_token = offer
+                return it
+        raise UserFacing("not_found", "That item is not on your list.", 404)
+
+    def autopilot_prepared_list(self, reader: Reader) -> m.AutopilotDrafts:
+        """The reader's own open items that carry a reply or a "your call" card, newest
+        first. One display copy each (``shown_item``: no thread text or kept event); an item
+        the person already answered (their own later mail in the conversation, or a decision
+        taken) is not here."""
+        items = [i for i in self._ap_visible(reader) or () if i["mine"]]  # type: ignore[attr-defined]
+        state = self._apa_state()
+        decisions = self._apa_decisions(state)
+        path = self._ap_queue_path()  # type: ignore[attr-defined]
+        queue = ap.Queue(path) if path is not None and Path(path).exists() else None
+        now = datetime.now(timezone.utc)
+        out: list[m.AutopilotPrepared] = []
+        try:
+            for item in items:
+                dec = decisions.get(item["item_id"])
+                if dec:
+                    until = _instant(dec.get("until"))
+                    if dec["decision"] != "edit" and not (
+                            dec["decision"] == "snooze" and until is not None and until <= now):
+                        continue
+                shown = autopilot_engine.shown_item(item)
+                prepared = shown["body"].get("prepared") or {}
+                card = prepared.get("your_call")
+                envelope = prepared.get("draft") or prepared.get("teams_draft") or {}
+                body = str(envelope.get("body") or "")
+                if dec and dec["decision"] == "edit" and dec.get("text"):
+                    body = str(dec["text"])
+                if not body and not isinstance(card, Mapping):
+                    continue
+                if queue is not None and queue.answered_since(item):
+                    continue
+                happened = shown["body"].get("happened") or {}
+                teams = envelope is prepared.get("teams_draft") or happened.get("channel") == "teams"
+                out.append(m.AutopilotPrepared(
+                    item_id=item["item_id"], sender=str(happened.get("sender") or ""),
+                    channel="teams" if teams else "mail",
+                    subject=str(envelope.get("subject") or happened.get("subject") or ""),
+                    message=str((prepared.get("message") or {}).get("text")
+                                or happened.get("snippet") or ""),
+                    kind="your_call" if isinstance(card, Mapping) and not body else "reply",
+                    to=[str(t.get("address") if isinstance(t, Mapping) else t)
+                        for t in envelope.get("to") or ()],
+                    cc=[str(t.get("address") if isinstance(t, Mapping) else t)
+                        for t in envelope.get("cc") or ()],
+                    body=body, edited=bool(dec and dec["decision"] == "edit"),
+                    ask=str((card or {}).get("ask") or "") if isinstance(card, Mapping) else "",
+                    facts=[str(f) for f in (card or {}).get("facts") or ()]
+                    if isinstance(card, Mapping) else [],
+                    created_at=str(item["created_at"])))
+        finally:
+            if queue is not None:
+                queue.close()
+        out.sort(key=lambda d: d.created_at, reverse=True)
+        return m.AutopilotDrafts(items=out)
+
+    def autopilot_reply_from_line(self, reader: Reader, item_id: str,
+                                  body: m.AutopilotLineRequest) -> m.AutopilotItem:
+        """The full reply to a "your call" card of the reader's own, written by the model from
+        their one line and the card's facts (figures only from the two; the writer's screens
+        read again), kept as their edit of the item's draft. Nothing is sent: the person
+        confirms it on the usual path."""
+        from operating import autopilot_drafter as ad
+        env = self._ap_env()  # type: ignore[attr-defined]
+        state = self._apa_state()
+        found = next((item for item in self._ap_visible(reader) or ()  # type: ignore[attr-defined]
+                      if item["item_id"] == item_id and item["mine"]), None)
+        if found is None:
+            raise UserFacing("not_found", "That item is not on your list.", 404)
+        if state is None:
+            raise UserFacing("action_refused", "The autopilot's state directory is not "
+                             "configured on this server.", 409)
+        prepared = found["body"].get("prepared") or {}
+        card = prepared.get("your_call")
+        if not isinstance(card, Mapping):
+            raise UserFacing("bad_request", "This item already has a draft to edit.", 422)
+        line = (body.line or "").strip()
+        if not line:
+            raise UserFacing("bad_request", "Say what you want to reply first.", 422)
+        envelope = prepared.get("draft") or prepared.get("teams_draft")
+        kept_event = card.get("event")
+        try:
+            if not isinstance(envelope, Mapping) or not isinstance(kept_event, Mapping):
+                raise ValueError("card_before_line_replies")
+            material = ad.Material.of(card.get("material") or {})
+        except ValueError:
+            raise UserFacing("action_refused", "This card was prepared before replies could "
+                             "be written from it; write the reply yourself.", 409) from None
+        by = sorted(self._apa_me(reader))[0]
+        hour_ago = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
+        if sum(1 for r in Journal(state / DECISIONS_FILE).rows()
+               if r.get("from_line") is not None and r.get("by") == by
+               and str(r.get("at") or "") > hour_ago) >= LINE_REPLIES_PER_HOUR:
+            raise UserFacing("rate_limited", LINE_REFUSED["rate_limited"], 429)
+        writer = self.autopilot_writer if self.autopilot_writer is not None \
+            else ad.from_environ(env)
+        if writer is None:
+            raise UserFacing("action_refused", "No model is set up to write replies on this "
+                             "server.", 409)
+        people = self.autopilot_people
+        if people is None:
+            try:
+                from integrations.people_exclusion import environ_with_exclusion
+                from operating.chunking.permissions import load_exclusion
+                base = getattr(self, "state_dir", None)
+                people = load_exclusion(Path(base), environ_with_exclusion(env)) \
+                    if base else None
+            except Exception:  # noqa: BLE001 - no exclusion: nothing goes to the model
+                people = None
+        if people is None:
+            raise UserFacing("action_refused", "The people screen is not available, so no "
+                             "reply is written.", 409)
+        event = {**kept_event, "text": material.text}
+        owner = str(found["owner"])
+        queue_path = self._ap_queue_path()  # type: ignore[attr-defined]
+        if queue_path is not None:
+            mine = sorted(a for a in _identities(reader) if "@" in a)
+            material.style = ap._writing_style(ap._DryQueue(Path(queue_path)), {}, owner,
+                                               mine, event, prepared)
+        text, why = writer.from_line(material, line, event, people, owner)
+        if not text:
+            raise UserFacing("action_refused", LINE_REFUSED.get(why, LINE_REFUSED[""]), 409
+                             if why in ("draft_failed", "draft_model_unsafe") else 422)
+        now = datetime.now(timezone.utc)
+        row = {"event": "item_decision", "item_id": item_id, "decision": "edit",
+               "at": _iso(now), "by": sorted(self._apa_me(reader))[0], "note": None,
+               "text": text, "from_line": line[:ad.LINE_CHARS]}
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with Journal(state / DECISIONS_FILE).locked() as held:
+            held.append(row)
+        for it in self._area_read(reader).items:
+            if it.item_id == item_id:
                 return it
         raise UserFacing("not_found", "That item is not on your list.", 404)
 
@@ -824,6 +983,24 @@ class AutopilotAreaMixin:
                 raise UserFacing("action_refused", NOT_ELIGIBLE, 409) from None
         return self._area_read(reader)
 
+    def autopilot_drafts(self, reader: Reader, body: m.AutopilotDraftsRequest
+                         ) -> m.AutopilotArea:
+        """The reader switches one choice of work prepared for them (``aw.DRAFT_CHOICES``)
+        on or off: only ever their own (the request names no person). On needs no score:
+        nothing is sent or written without their confirm, and performing anything still
+        takes the write gate and their own opt-in. Recorded on the audit log."""
+        ids = self._apa_own_ids(reader)
+        try:
+            flows = aw.draft_choice(body.choice)
+        except ValueError:
+            raise UserFacing("not_found", "No such choice.", 404) from None
+        _state, _gate, journal = self._apa_opt_in_state()
+        now = datetime.now(timezone.utc)
+        for oid in ids:
+            for flow in flows:
+                aw.set_drafts(journal, oid, flow, body.on, oid, now)
+        return self._area_read(reader)
+
     def autopilot_pause(self, reader: Reader, body: m.AutopilotPauseRequest
                         ) -> m.AutopilotArea:
         """The reader pauses (or resumes) everything they switched on, at once."""
@@ -948,8 +1125,28 @@ class AutopilotAreaMixin:
         return self.autopilot_audit(reader)
 
 
-NO_GATE_PASSED = ("No workflow has passed its gate yet. Items appear here once one passes "
-                  "its replay check.")
+NO_DRAFTS_ON = ("Nothing is prepared for you until you switch it on yourself under "
+                "What to prepare for me.")
+
+
+# Why no reply came from the person's line, in their words.
+LINE_REPLIES_PER_HOUR = 20     # replies written from a line, per person
+
+LINE_REFUSED = {
+    "figure_not_in_material": "The reply needed a figure that is neither in your line nor in "
+                              "the message. Put the number in your line.",
+    "nothing_useful": "Nothing usable came back. Say a little more in your line.",
+    "empty_line": "Say what you want to reply first.",
+    "not_cleared": "This message can't go to the model (the people screen).",
+    "pay_or_hr": "This message is about pay or HR, so no reply is written for it.",
+    "freightcom": "Freightcom material never goes to the model, so no reply is written.",
+    "copy_tics": "The reply read like a template, so it is not shown. Write it yourself, "
+                 "or put more of your own words in the line.",
+    "rate_limited": "That is 20 replies written in the last hour. Try again later.",
+    "draft_failed": "The model didn't answer in time. Try again.",
+    "draft_model_unsafe": "The model's setup on this server is not safe to use.",
+    "": "No reply was written. Write it yourself.",
+}
 
 
 def _known_workflows() -> list[str]:

@@ -161,3 +161,31 @@ class GetAttachmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutomationHeaders(unittest.TestCase):
+    """The capture's ``automation`` signals: the standard list, bulk and machine headers by
+    name and value form (synthetic headers), never a sender list; a person's mail none."""
+
+    def test_list_bulk_and_machine_headers_are_named_and_a_persons_mail_is_not(self):
+        h = lambda *pairs: [{"name": n, "value": v} for n, v in pairs]   # noqa: E731
+        cases = (
+            (h(("List-Unsubscribe", "<mailto:u@synth.example>")), ["list"]),
+            (h(("List-Id", "<news.synth.example>")), ["list"]),
+            (h(("Precedence", "bulk")), ["bulk"]),
+            (h(("Precedence", "junk")), ["bulk"]),
+            (h(("Auto-Submitted", "auto-replied")), ["auto_submitted"]),
+            (h(("Auto-Submitted", "auto-generated; owner-email=x@synth.example")),
+             ["auto_submitted"]),
+            (h(("X-Auto-Response-Suppress", "All")), ["auto_suppress"]),
+            (h(("Feedback-ID", "1:camp:synth")), ["feedback_id"]),
+            (h(("Return-Path", "<bounces+123-ab@em.synth.example>")), ["bounce_path"]),
+            (h(("Content-Type", 'multipart/report; report-type=delivery-status')), ["report"]),
+            (h(("Auto-Submitted", "no"), ("Precedence", "first-class"),
+               ("Return-Path", "<jane.roe@synth-customer.example>"),
+               ("Content-Type", "multipart/alternative")), []),
+            ([], []),
+            (None, None))
+        for headers, want in cases:
+            with self.subTest(headers=headers):
+                self.assertEqual(graph_read._automation(headers), want)

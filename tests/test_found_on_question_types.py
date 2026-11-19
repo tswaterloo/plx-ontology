@@ -47,3 +47,25 @@ class FoundOnQuestionTypes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SystemNameIsNoRecordOfTheQuestion(unittest.TestCase):
+    """dev 11-17: an agent's own find of "Mission Control" (tasks titled so) made the system
+    a relevance anchor when the question only writes it as the place records are held, so
+    every approval count was refused as off the question."""
+
+    FOUND = {"status": "found", "candidates": [_cand("mc://t1", "MCTask", "Mission Control")]}
+    ENTITIES = {"entities": [{"mention": "Mission Control", "status": "match", "records": [
+        {"object_id": "mc://t1", "status": "match"}]}]}
+
+    def test_a_system_written_as_the_place_adds_no_anchor(self):
+        asked = "How many Mission Control approvals in MC have status rejected?"
+        for find, result in (({"query": "Mission Control"}, self.FOUND),
+                             ({"mode": "entities", "text": "Mission Control"}, self.ENTITIES)):
+            with self.subTest(find=find):
+                self.assertEqual(_found_on_question(asked, [(find, result)]), ([], set()))
+
+    def test_a_system_name_the_question_names_as_a_record_still_anchors(self):
+        asked = "What tasks mention Mission Control?"
+        mentions, ids = _found_on_question(asked, [({"query": "Mission Control"}, self.FOUND)])
+        self.assertEqual(ids, {"mc://t1"})

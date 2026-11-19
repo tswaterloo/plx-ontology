@@ -45,7 +45,13 @@ class ServingMixin:
         def job(view: Any) -> tuple[Any, Any]:
             with view._request():
                 return view.access.reader_policy()
-        return self.reads.run(reader, job, timeout=10)
+        # a keystroke's search waits on this: on the access worker (the readers' policies
+        # are decided there first), else ahead of the queued page reads, never behind them
+        # (live 11-18: Records search answered "busy" behind a record page's section reads)
+        worker = getattr(self, "access_worker", None)
+        if worker is None or worker.stopped.is_set():
+            worker = self.reads
+        return worker.run(reader, job, timeout=10, priority=-1)
 
     def _scope(self, conn: Any, reader: Reader) -> Any:
         from operating.pg.permissions import reader_scope
@@ -172,8 +178,25 @@ class ServingMixin:
         except FutureTimeout:
             return memo.pairs(reader.key, ids)
 
-    def suggest(self, reader: Reader, q: str, limit: int) -> m.SuggestResponse:
+    def suggest(self, reader: Reader, q: str, limit: int, *, person: bool = False
+                ) -> m.SuggestResponse:
+        """``person``: the person's own search box (``/api/suggest``), whose answer only
+        that person reads. Only then the business-table search (``page_sql.search``, the
+        person-only views: Freightcom rows a person may see). Every other caller (an
+        instruction or a form a model works on) reads the record search below, so nothing
+        a person-only view holds reaches a model through a lookup."""
         started = time.perf_counter()
+        from . import page_sql
+        if person and page_sql.on():
+            # the one search box over the business tables, through the reader's door; an
+            # unreadable door falls back to the record search below (never "no match")
+            try:
+                found = page_sql.search(self, reader, q, limit)
+            except page_sql.PageDoorUnavailable:
+                found = None
+            if found is not None:
+                return m.SuggestResponse(query=q, suggestions=found, source="business",
+                                         took_ms=int((time.perf_counter() - started) * 1000))
         found = self._pg_suggest(reader, q, limit)
         source = "search_entities"
         if found is None:
@@ -182,6 +205,28 @@ class ServingMixin:
                                    timeout=READ_TIMEOUT_SECONDS)
         return m.SuggestResponse(query=q, suggestions=found, source=source,
                                  took_ms=int((time.perf_counter() - started) * 1000))
+
+    def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = ""
+                 ) -> m.BizPage:
+        """An account page (customer, chain, supplier) or an order page (PO, sales order)
+        from the business tables through the reader's door (switch ``PLX_PAGES_DOOR``)."""
+        from . import page_sql
+        if not page_sql.on():
+            raise errors.UserFacing("pages_off", "These record pages aren't switched on on "
+                                    "this server yet.", 404)
+        try:
+            if kind in ("purchase_order", "sales_order"):
+                return page_sql.order(self, reader, kind, handle)
+            return page_sql.account(self, reader, kind, handle=handle, chain=chain)
+        except page_sql.NotFound:
+            raise errors.UserFacing("not_found", "No such record that you can open.",
+                                    404) from None
+        except page_sql.PageDoorUnavailable as exc:
+            why = ("took too long" if exc.code == "timeout" else
+                   "is busy" if exc.code == "busy" else
+                   "isn't built yet" if exc.code == "not_ready" else "couldn't be read")
+            raise errors.UserFacing("page_unavailable", f"The record's figures {why}; "
+                                    "try again in a minute.", 503) from None
 
     def test_named(self) -> frozenset[str]:
         """The deployment's named test records (``operator_api.test_records``)."""

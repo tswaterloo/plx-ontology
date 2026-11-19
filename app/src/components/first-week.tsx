@@ -37,7 +37,7 @@ export function FirstWeek({ me }: { me: Me | null }) {
     <section aria-label="Your first week" className="border-b border-border px-5 py-3" data-testid="first-week">
       <h2 className="text-[13px] font-semibold">Your first week</h2>
       <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[12px] text-muted">
-        <li>My work lists what needs you today from your own mail, chats and records.</li>
+        <li>Home lists what needs you today from your own mail, chats and records.</li>
         <li>Search or Ask finds any order, supplier or customer by its number or name. Every answer links to the mail or document it came from.</li>
         <li>You see what your Portal access allows. Other people&apos;s mailboxes, payroll and HR files stay hidden unless your role covers them.</li>
         <li>Nothing is sent or changed for you. Autopilot stays off until you turn it on yourself, one workflow at a time.</li>

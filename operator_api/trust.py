@@ -2,8 +2,10 @@
 the stores that already hold it, nothing measured here.
 
 * Freshness per source system: the newest capture taken (the host's capture ledger,
-  ``host/host.sqlite`` ``source_state``), the newest capture the served data holds
-  (``Backend.freshness``, the same as Home's line) and the lag between them.
+  ``host/host.sqlite`` ``source_state``), how far the served data reaches into it (what
+  the delta read of each source and Postgres applied, ``served_reads``), the capture's
+  age, and the state in one plain sentence, with a failed read's reason in words
+  (``freshness``).
 * Answer quality: the latest dev and held-out score per question set
   (``operating.eval_results``, written by the eval runner); "not measured yet" when absent.
 * Alert precision per alert type (``operating/alert_kinds.json``): judged, correct, on or
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -32,7 +35,9 @@ from operating import autopilot_write as aw
 
 from . import models as m
 from .autopilot_area import _instant, _iso  # one copy of the time helpers
-from .serving import LEDGER_SYSTEMS
+from .serving import LEDGER_SYSTEMS, STORE_SYSTEMS, eastern_words
+from ontology.delta import READS_KEY
+from ontology.project import STALE_AFTER_SECONDS
 
 # the write-capable systems and the flag each answers to (integrations.live_source_guard)
 ACTION_FLAG = "PLX_ACTIONS_LIVE"           # live_source_guard.ACTION_FLAG
@@ -50,23 +55,56 @@ def _pct(text: Any) -> Optional[float]:
     return float((Decimal(str(text)) * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
-def _captured(state_dir: Optional[Path]) -> dict[str, str]:
-    """System -> the oldest of its sources' newest captures (a system is as fresh as its
-    least fresh source), from the capture ledger."""
+# A ledger source -> the part of its system it reads, named where a system has two
+LEDGER_PARTS = {"sharepoint": "SharePoint files", "sharepoint_lists": "SharePoint lists"}
+# a capture's error code (``operating.ingest_forever``) -> what happened, in plain words;
+# any other code is "stopped with an error" (a code is never shown to a person)
+CAPTURE_ERRORS = {
+    "no_units_reported": "it finished without reporting anything it read",
+    "child_timeout": "it ran out of time",
+    "credentials_absent": "its sign-in details were missing",
+    "capture_gap": "it left a gap that has to be read again",
+}
+# captured records the served data has not taken in after this long are behind: one
+# delta cycle is ~6 minutes (``ops_health`` ``served_lag_hours``, the paged alarm's bound)
+SERVED_BEHIND_SECONDS = 3600
+# a ledger source -> the delta source whose reads say how far the served data holds it
+# (``ontology.delta.SOURCES``: SharePoint files and lists are one scan)
+LEDGER_DELTA = {"portal": "portal_api", "bc": "bc", "mail": "graph_mail",
+                "sharepoint": "sharepoint", "sharepoint_lists": "sharepoint",
+                "teams": "teams", "mc": "mission_control"}
+# the system's own word for a source no ``LEDGER_PARTS`` entry names
+SOURCE_WORDS = {"portal": "the Portal", "bc": "Business Central", "mail": "email",
+                "teams": "Teams", "mc": "Mission Control"}
+# why a source was skipped (``ontology.delta.SKIP_REASONS``), in words; any other reason
+# is "it was left out"
+SKIP_WORDS = {"people_exclusion_unavailable": "the list of people whose mail is kept out "
+              "could not be read, so no mail was read"}
+
+
+def _ledger(state_dir: Optional[Path]) -> list[tuple[Any, ...]]:
     ledger = Path(state_dir) / "host" / "host.sqlite" if state_dir else None
     if ledger is None or not ledger.is_file():
-        return {}
+        return []
     try:
         conn = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True, timeout=1)
         try:
-            rows = conn.execute("SELECT source, captured_at FROM source_state "
+            return conn.execute("SELECT source, captured_at, error, attempted_at FROM "
+                                "source_state WHERE configured = 1").fetchall()
+        except sqlite3.OperationalError:   # a ledger from before attempts were kept
+            return conn.execute("SELECT source, captured_at, NULL, NULL FROM source_state "
                                 "WHERE configured = 1").fetchall()
         finally:
             conn.close()
     except sqlite3.Error:
-        return {}
+        return []
+
+
+def _captured(rows: list[tuple[Any, ...]]) -> dict[str, str]:
+    """System -> the oldest of its sources' newest captures (a system is as fresh as its
+    least fresh source), from the capture ledger."""
     out: dict[str, str] = {}
-    for source, captured in rows:
+    for source, captured, _error, _attempted in rows:
         system = LEDGER_SYSTEMS.get(source)
         at = _instant(captured)
         if system is None or at is None:
@@ -77,27 +115,180 @@ def _captured(state_dir: Optional[Path]) -> dict[str, str]:
     return out
 
 
-def freshness(backend: Any, now: Optional[datetime] = None) -> list[m.TrustFreshness]:
+def _failures(rows: list[tuple[Any, ...]], now: datetime) -> dict[str, str]:
+    """System -> one plain sentence per source whose last capture attempt failed: when,
+    what happened and when the last good read was."""
+    out: dict[str, list[str]] = {}
+    for source, captured, error, attempted in rows:
+        system = LEDGER_SYSTEMS.get(source)
+        if system is None or not error:
+            continue
+        part = LEDGER_PARTS.get(source, system)
+        what = CAPTURE_ERRORS.get(str(error), "it stopped with an error")
+        tried, good = _instant(attempted), _instant(captured)
+        words = (f"The last read of {part}" + (f", at {_clock(tried, now)}," if tried else "")
+                 + f" failed: {what}.")
+        words += (f" The last good read was at {_clock(good, now)}." if good else
+                  " No read of it has worked yet.")
+        out.setdefault(system, []).append(words)
+    return {system: " ".join(words) for system, words in out.items()}
+
+
+def _clock(at: datetime, now: Optional[datetime] = None) -> str:
+    """'10:16 AM ET' today (US Eastern), else '16 Nov 7:05 PM ET'."""
+    words = eastern_words(at)                       # '16 Nov 2026 7:05 PM ET'
+    day, month, _year, clock = words.split(" ", 3)
+    today = eastern_words(now or datetime.now(timezone.utc)).split(" ", 3)[:2]
+    return clock if [day, month] == today else f"{day} {month} {clock}"
+
+
+def served_reads(backend: Any) -> Optional[dict[str, dict[str, Any]]]:
+    """Per delta source, how far the served data reaches into its capture: what the
+    delta's cycles read of it and Postgres applied (``ontology.store_meta``
+    ``delta_reads``, written by ``operating.pg.ontology_delta.note_reads`` from
+    ``ontology.delta.cycle_reads``): ``served_through`` (everything its capture committed
+    before is served), ``state`` of the newest read (complete, capped, skipped, waiting)
+    and ``left`` / ``reason``. None when the data is not Postgres's, the meta is absent
+    or unreadable (never a guess)."""
+    from operating.pg import ontology_reader
+    if not ontology_reader.pg_only():
+        return None
     try:
-        served = backend.freshness().sources
-    except Exception:  # noqa: BLE001 - no served data readable: captured times only
-        served = []
-    captured = _captured(getattr(backend, "state_dir", None))
-    rows: dict[str, m.TrustFreshness] = {}
-    for s in served:
-        rows[s.system] = m.TrustFreshness(system=s.system, served_at=s.as_of,
-                                          stale=s.stale, capture=s.capture)
-    for system, at in captured.items():
-        row = rows.setdefault(system, m.TrustFreshness(system=system, stale=True))
-        row.captured_at = at
-    # the lag is the age of the system's newest capture now, never measured against the
-    # served build's stamp (a generation outlives that by days); no capture time: null
+        meta = ontology_reader.store_meta([READS_KEY]) or {}
+        value = json.loads(meta.get(READS_KEY) or "null")
+    except Exception:  # noqa: BLE001 - unreadable: nothing said
+        return None
+    if not isinstance(value, dict):
+        return None
+    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _source_served(source: str, captured: Optional[datetime],
+                   entry: Optional[Mapping[str, Any]], now: datetime
+                   ) -> tuple[Optional[datetime], Optional[str]]:
+    """(served up to, why it is behind in one sentence or None) for one ledger source
+    from its delta read (``served_reads``)."""
+    part = LEDGER_PARTS.get(source, SOURCE_WORDS.get(source, "this source"))
+    if entry is None:
+        return None, f"Behind: no update of the app's data has read {part} yet."
+    through = _instant(entry.get("served_through"))
+    served = through if captured is None or through is None else min(captured, through)
+    state = entry.get("state")
+    if state == "skipped":
+        why = SKIP_WORDS.get(str(entry.get("reason")), "it was left out")
+        return served, (f"Behind: the last update of the app's data did not read {part}: "
+                        f"{why}.")
+    if state == "capped":
+        left = entry.get("left")
+        many = f"{left:,} changed records" if isinstance(left, int) and left > 0 else \
+            "changed records"
+        return served, (f"Behind: the app's data is catching up on {part}; {many} wait "
+                        "for the next updates.")
+    if state == "waiting":
+        return served, (f"Behind: the newest update that read {part} waits for an earlier "
+                        "one to reach the app's data.")
+    if state != "complete" or through is None:
+        return served, f"Behind: the app's data cannot say how far it holds {part}."
+    if captured is not None and captured > through and \
+            (now - through).total_seconds() > SERVED_BEHIND_SECONDS:
+        return served, (f"Behind: records of {part} read since {_clock(through, now)} are "
+                        "not in the app yet; they normally arrive within a few minutes.")
+    return served, None
+
+
+def freshness(backend: Any, now: Optional[datetime] = None) -> list[m.TrustFreshness]:
+    """Per system: the newest capture (ledger), how far the served data reaches into it,
+    the capture's age, whether the app is behind and, in one sentence, why.
+
+    Served, with a delta over Postgres (``served_reads``): per source, its capture time
+    when the delta read that capture completely and Postgres holds it, else how far it
+    does (the scan start of its newest complete read); a system is as far as its least
+    served source. Behind: a source's newest read was skipped, capped or waits on an
+    earlier layer; a capture waits more than ``SERVED_BEHIND_SECONDS`` past the served
+    position; or the newest capture is older than the system's freshness bound. A failed
+    read with a recent good one is said, not called behind. Without the delta's record,
+    the served projection's own capture times (``Backend.freshness``: a generation's
+    build states them)."""
     now = now or datetime.now(timezone.utc)
-    for row in rows.values():
-        a = _instant(row.captured_at)
-        if a is not None:
-            row.lag_seconds = max(0, int((now - a).total_seconds()))
-    return sorted(rows.values(), key=lambda r: r.system)
+    state_dir = getattr(backend, "state_dir", None)
+    ledger = _ledger(state_dir)
+    captured = _captured(ledger)
+    failed = _failures(ledger, now)
+    reads = served_reads(backend)
+    served: dict[str, Any] = {}
+    if reads is None:
+        try:
+            served = {s.system: s for s in backend.freshness().sources}
+        except Exception:  # noqa: BLE001 - no served data readable: captured times only
+            served = {}
+    bounds = getattr(backend, "freshness_bounds", None) or {}
+    rows: list[m.TrustFreshness] = []
+    for system in sorted(set(captured) | set(served)):
+        at = _instant(captured.get(system))
+        row = m.TrustFreshness(system=system, captured_at=captured.get(system))
+        if at is not None:
+            row.lag_seconds = max(0, int((now - at).total_seconds()))
+        held = served.get(system)
+        if held is not None:
+            row.capture = held.capture
+        behind: list[str] = []
+        if reads is not None:
+            reach: list[Optional[datetime]] = []
+            for source, when in _ledger_times(ledger).items():
+                if LEDGER_SYSTEMS.get(source) != system:
+                    continue
+                got, why = _source_served(source, when, reads.get(LEDGER_DELTA.get(source, "")),
+                                          now)
+                reach.append(got)
+                if why and why not in behind:
+                    behind.append(why)
+            if reach and all(r is not None for r in reach):
+                row.served_at = _iso(min(r for r in reach if r is not None))
+        elif held is not None:
+            row.served_at = held.as_of
+        if failed.get(system):
+            row.capture = "failed"
+        bound = max((float(v) for k, v in bounds.items() if STORE_SYSTEMS.get(k) == system),
+                    default=STALE_AFTER_SECONDS)
+        old = row.lag_seconds is None or row.lag_seconds > bound
+        if reads is None:
+            row.stale = bool(held.stale) if held is not None else True
+        else:
+            row.stale = bool(behind) or old
+        row.state_words = _state_words(row, reads is not None, behind, old, bound,
+                                       failed.get(system))
+        rows.append(row)
+    return rows
+
+
+def _ledger_times(rows: list[tuple[Any, ...]]) -> dict[str, Optional[datetime]]:
+    """Ledger source -> its newest capture (None: never read or an unreadable time)."""
+    return {source: _instant(captured) for source, captured, _e, _a in rows
+            if source in LEDGER_SYSTEMS}
+
+
+def _hours(seconds: float) -> str:
+    h = seconds / 3600
+    return f"{h:g} hours" if h < 48 else f"{h / 24:g} days"
+
+
+def _state_words(row: m.TrustFreshness, delta: bool, behind: list[str], old: bool,
+                 bound: float, failure: Optional[str]) -> str:
+    if row.captured_at is None:
+        words = "Never read yet."
+    elif behind:
+        words = " ".join(behind)
+    elif old:
+        words = f"Behind: not read for over {_hours(bound)}."
+    elif not delta and row.served_at is None:
+        words = "Read, but not in the app's data yet."
+    elif delta and row.served_at != row.captured_at:
+        words = "Up to date: the newest read joins the app's data within a few minutes."
+    elif not delta and row.stale:
+        words = "Behind: the app's data holds an older read."
+    else:
+        words = "Up to date: everything read is in the app."
+    return words + (" " + failure if failure else "")
 
 
 def answers(state_dir: Optional[Path], environ: Mapping[str, str]) -> list[m.TrustAnswerSet]:
@@ -203,10 +394,10 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
     out = []
     systems = ", ".join(r.system for r in fresh if r.served_at)
     if systems:
-        out.append(m.TrustLine(state="live", words=f"Reading {systems}, read only."))
+        out.append(m.TrustLine(state="live", words=f"Reads {systems}; never writes to them."))
     on = [k for k in kinds if k.on]
     if on:
-        out.append(m.TrustLine(state="live", words=f"{len(on)} alert types on My work, "
+        out.append(m.TrustLine(state="live", words=f"{len(on)} alert types on Home, "
                                "each hand-checked at 90% or better on 15 or more items."))
     sending = [s for s in sw if s.state == "on"]
     for s in sending:
@@ -243,7 +434,9 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
                                "measured yet: they show under Watching only."))
     if not sets or not any(s.held_out for s in sets):
         out.append(m.TrustLine(state="pending", words="Held-out answer scores: not measured "
-                               "yet."))
+                               "yet. The measure of answers to questions never used for "
+                               "tuning runs after the served data's rebuild; its score "
+                               "shows here once it has run."))
     if rows and not any(r.countdown for r in rows):
         out.append(m.TrustLine(state="pending", words="Autopilot gate counts: no held-out "
                                "item judged yet; the count starts once a replay scores a "

@@ -17,10 +17,56 @@ const page = (id: string, extra: Record<string, unknown> = {}) => ({
   object_id: `PurchaseOrder:${id}`, type: "PurchaseOrder", label: `PO ${id}`, summary: "", status: { state: "read", text: "Read", sources: [] },
   freshness: {}, complete: true, ...extra,
 });
-const objectReads = (f: { mock: { calls: unknown[][] } }) => f.mock.calls.filter((c) => String(c[0]).startsWith("/api/object/")).length;
+const objectReads = (f: { mock: { calls: unknown[][] } }) => f.mock.calls.filter((c) => String(c[0]).startsWith("/api/object/") && !String(c[0]).includes("core=1")).length;
+const isCore = (url: string) => String(url).includes("core=1");
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("record page reads", () => {
+  it("the record's own details show first; the walk fills in when the quick read lands, sections kept (C1)", async () => {
+    let quick: (r: Response) => void = () => {};
+    const core = { ...page("A", { complete: false, core: true }), object_id: "Customer:c1", type: "Customer", label: "Northwind",
+      status: { state: "reading", text: "", sources: [] }, facts: [{ text: "City: Montreal", sources: [{ system: "BC", label: "row" }] }] };
+    const f = vi.fn((url: string) => {
+      if (isCore(url)) return Promise.resolve(json(core));
+      const m = String(url).match(/object-section\/(\w+)\//);
+      if (m) return Promise.resolve(json(m[1] === "people"
+        ? { object_id: "Customer:c1", section: "people", people: [{ name: "Ana Diaz", role: "buyer", sources: [] }] }
+        : { object_id: "Customer:c1", section: m[1], applies: false }));
+      if (String(url).startsWith("/api/object/")) return new Promise<Response>((resolve) => (quick = resolve));
+      return Promise.resolve(json({ error: { code: "not_found" } }, 404));
+    });
+    vi.stubGlobal("fetch", f);
+    render(<ObjectView type="Customer" id="Customer:c1" />);
+    expect(await screen.findByTestId("object-title")).toHaveTextContent("Northwind");
+    // the walk's parts are read, never said absent; no status badge while it is read
+    expect(screen.getByTestId("walk-loading-timeline")).toBeInTheDocument();
+    expect(screen.getByTestId("walk-loading-links")).toBeInTheDocument();
+    expect(screen.getByTestId("walk-loading-orders")).toBeInTheDocument();
+    expect(screen.queryByTestId("object-status")).toBeNull();
+    expect(screen.getByTestId("checking")).toHaveTextContent("its status, history and links");
+    // the sections started on the core read, before the quick read landed
+    await waitFor(() => expect(f.mock.calls.some((c) => String(c[0]).includes("/object-section/people/"))).toBe(true));
+    await waitFor(() => expect(screen.getByText("Ana Diaz")).toBeInTheDocument());
+    await act(async () => quick(json({ ...core, core: undefined, status: { state: "open", text: "Open", sources: [] }, label: "Northwind Ltd" })));
+    await waitFor(() => expect(screen.getByTestId("object-title")).toHaveTextContent("Northwind Ltd"));
+    expect(screen.queryByTestId("walk-loading-timeline")).toBeNull();
+    expect(screen.getByText("Ana Diaz")).toBeInTheDocument();   // merged again into the quick read
+  });
+
+  it("a core read that lands after the quick read never replaces it", async () => {
+    let late: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (isCore(url)) return new Promise<Response>((resolve) => (late = resolve));
+      return Promise.resolve(json(page("A", { label: "PO A (walked)" })));
+    }));
+    render(<ObjectView type="PurchaseOrder" id="A" />);
+    expect(await screen.findByTestId("object-title")).toHaveTextContent("walked");
+    await act(async () => late(json(page("A", { core: true, complete: false, label: "PO A (core)" }))));
+    expect(screen.getByTestId("object-title")).toHaveTextContent("walked");
+    expect(screen.queryByTestId("checking")).toBeNull();
+  });
+
+
   it("a record still reading after a minute says so instead of promising a minute", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
@@ -36,6 +82,7 @@ describe("record page reads", () => {
     let calls: Record<string, number> = {};
     const late: Record<string, (r: Response) => void> = {};
     vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (isCore(url)) return Promise.resolve(json({ error: { code: "core_unread" } }, 503));
       const id = String(url).match(/PurchaseOrder\/(\w+)/)![1];
       calls[id] = (calls[id] ?? 0) + 1;
       if (id === "A" && calls[id] === 1) return Promise.resolve(json({ error: { code: "internal" } }, 500));
@@ -55,7 +102,7 @@ describe("record page reads", () => {
   it("a page served stale is read again by itself and replaced when the fresh page lands (WEB-032)", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let n = 0;
-    const f = vi.fn(async () => json(++n === 1 ? page("A", { stale_since: "2026-11-12T10:00:00Z", label: "PO A (old)" }) : page("A", { label: "PO A (fresh)" })));
+    const f = vi.fn(async (url: string) => isCore(url) ? json({ error: { code: "core_unread" } }, 503) : json(++n === 1 ? page("A", { stale_since: "2026-11-12T10:00:00Z", label: "PO A (old)" }) : page("A", { label: "PO A (fresh)" })));
     vi.stubGlobal("fetch", f);
     render(<ObjectView type="PurchaseOrder" id="A" />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });

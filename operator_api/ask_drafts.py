@@ -145,10 +145,12 @@ def draft_models(answer_id: str, drafts: Iterable[Any]) -> list[dict[str, Any]]:
             f"{draft.subject}\n{draft.body}")))[:8]
         missing = [f"Fill in: {', '.join(holes)}."] if holes else []
         details = _details(draft.body) if draft.kind != "email" else []
+        to = [a for a in getattr(draft, "to", ()) or () if "@" in a]
         if draft.kind == "email":
             title = draft.subject or "Draft email"
             kinds = ("send_email",)
-            missing.insert(0, "Add the recipient's address before sending.")
+            if not to:
+                missing.insert(0, "Add the recipient's address before sending.")
         else:
             what = next((d["value"] for d in details if d["label"].lower() == "what"), "")
             title = what or f"Draft {ACTION_WORDS.get(draft.kind, 'action')}"
@@ -160,6 +162,10 @@ def draft_models(answer_id: str, drafts: Iterable[Any]) -> list[dict[str, Any]]:
         stored = {"id": card_id, "kind": draft.kind, "title": title[:200],
                   "email_subject": draft.subject or None if draft.kind == "email" else None,
                   "body": draft.body, "details": details, "missing": missing, "sent": False}
+        if draft.kind == "email" and to:
+            # the address the question wrote: the preview's To, checked there like any
+            stored.update(to=to[0], also_to=to[1:],
+                          cc=[a for a in getattr(draft, "cc", ()) or () if "@" in a])
         offered = [o for o in ca.offers(draft_card(card_id, stored)) if o["kind"] in kinds]
         out.append({**stored, "actions": offered})
     return out

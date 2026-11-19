@@ -50,7 +50,7 @@ describe("Today's shared reads", () => {
     render(<LateBySupplier />);
     const note = await screen.findByTestId("late-by-supplier-partial");
     expect(note).toHaveTextContent("first 300 of 501");
-    expect(note).toHaveAttribute("href", "/late");
+    expect(note).toHaveAttribute("href", "/?show=late");
   });
 
   it("a short list is not labelled partial", async () => {

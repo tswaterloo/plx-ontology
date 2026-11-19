@@ -2,7 +2,7 @@
 // Source: the production structure (a structure-only dump restored into a
 // throwaway cluster), which equals operating/pg/migrations plus
 // PRODUCTION_ONLY_INDEXES in tools/gen_prisma.py.
-// Migrations: sha256 00a5497330ee226986e04a01d6b2640ee59d3ac75be80f47e017a7b681d7fa80 (operating/pg/migrations).
+// Migrations: sha256 9a1291ce6e44e440ab0a9063cf12404e31bfcf61e4d166ab4ecba05085093fbf (operating/pg/migrations).
 // The Workbench does not use Prisma Client: this file describes the database for
 // readers who know Prisma. Reads go through operating/ (docs/data-model.md).
 //
@@ -560,6 +560,7 @@ model text_fields {
   @@schema("ontology")
 }
 
+/// index not expressible in Prisma: CREATE INDEX value_cells_dates ON ontology.value_cells USING btree (field, value) WHERE (value ~ '^[12][0-9]{3}-[01][0-9]-[0-3][0-9]'::text)
 /// Relations below are logical (relationMode "prisma"): the database declares no foreign key and does not enforce them.
 model value_cells {
   src               BigInt
@@ -648,6 +649,15 @@ model audience_units {
   @@schema("search")
 }
 
+model chunk_groups {
+  chunk_id    String @id
+  dup_group   String
+  content_sha String
+
+  @@index([dup_group], map: "chunk_groups_dup_group")
+  @@schema("search")
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 /// check chunks_audience_key_check: CHECK (((audience_key ~ '^[a-z][a-z0-9-]*:.+$'::text) AND (POSITION(('*'::text) IN (audience_key)) = 0)))
@@ -661,6 +671,20 @@ model audience_units {
 /// index not expressible in Prisma: CREATE INDEX chunks_dup_group ON search.chunks USING btree (dup_group) WHERE (dup_group IS NOT NULL)
 /// index not expressible in Prisma: CREATE INDEX chunks_embedding_bq_hnsw ON search.chunks USING hnsw (((binary_quantize(embedding))::bit(1024)) bit_hamming_ops) WITH (m='16', ef_construction='64')
 /// index chunks_embedding_hnsw: method hnsw; embedding halfvec_cosine_ops (not expressible in Prisma)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_attachment ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'attachment'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_bc_text ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'bc_text'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_list_item ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'list_item'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_mail ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'mail'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_map_stage ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'map_stage'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_mc_task ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'mc_task'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_meeting ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'meeting'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_original ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'original'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_portal_text ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'portal_text'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_record_text ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'record_text'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_record_words ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'record_words'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_sharepoint ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'sharepoint'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_sheet_row ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'sheet_row'::text)
+/// index not expressible in Prisma: CREATE INDEX chunks_embedding_k_teams ON search.chunks USING hnsw (embedding halfvec_cosine_ops) WITH (m='16', ef_construction='64') WHERE (kind = 'teams'::text)
 /// index not expressible in Prisma: CREATE INDEX chunks_marked ON search.chunks USING btree (object_id) INCLUDE (source_handle, markings, kind) WHERE (markings <> '{}'::text[])
 /// trigger: CREATE TRIGGER chunks_truncate_generation AFTER TRUNCATE ON search.chunks FOR EACH STATEMENT EXECUTE FUNCTION search.bump_write_generation()
 /// trigger: CREATE TRIGGER chunks_write_generation AFTER INSERT OR DELETE OR UPDATE OF audience_key ON search.chunks FOR EACH STATEMENT EXECUTE FUNCTION search.bump_write_generation()

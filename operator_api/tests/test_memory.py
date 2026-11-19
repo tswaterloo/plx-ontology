@@ -140,7 +140,9 @@ class Recall(MemoryCase):
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0]["log_ids"], here["folded"])
 
-    def test_a_newer_fact_supersedes_and_instructions_reach_core(self):
+    def test_answer_values_are_never_kept_and_instructions_reach_core(self):
+        """An answer's fields ("PO 90412 expected receipt is ...") stay in the log only;
+        memory keeps what the person states (owner walk 11-17: "Count: 361" as a fact)."""
         ana = reader("ana")
         handle = "api://po/90412#row.expected_receipt"
         self.at(NOW - timedelta(days=20))
@@ -150,21 +152,28 @@ class Recall(MemoryCase):
         self.at(NOW)
         self.store.from_answer(ana, answer(2, "When does PO 90412 arrive now?", "On Nov 27.",
                                            conversation="c2",
-                                           facts=[("PO 90412 expected receipt is 2026-11-27.",
-                                                   handle)]))
+                                           facts=[("Count: 361", handle)]))
         self.store.from_answer(ana, answer(3, "From now on always give dates as weekday and "
                                               "day, like Thu Nov 27.", "Noted.",
                                            conversation="c3"))
-        facts = [i["text"] for i in self.store.items(ana, kinds=("fact",))]
-        self.assertEqual(facts, ["PO 90412 expected receipt is 2026-11-27."])
-        # the answer that said Nov 20 is never offered as current; the tool marks it
-        said = self.store.context(ana, "When is PO 90412 due in?", conversation="c4",
-                                  budget_ms=2000)
-        self.assertIn("2026-11-27", said)
-        self.assertNotIn("Nov 20", said)
-        old = [i for i in self.store.tool(ana).call({"query": "PO 90412 Nov 20"})["items"]
-               if "Nov 20" in i["text"]]
-        self.assertTrue(old and all(i.get("superseded") for i in old))
+        self.assertEqual(self.store.items(ana, kinds=("fact",)), [])
+        # one kept before the change is read nowhere, and the tidy-up deletes it; the
+        # person's own fact stays
+        old = self.store.remember(ana, kind="fact", source="ask", text="Order status: Open",
+                                  subject="api://so/1#row.status")
+        mine, _ = self.store.write(ana, kind="fact", text="Kestrel ships on Tuesdays.")
+        self.assertEqual([i["id"] for i in self.store.items(ana, kinds=("fact",))], [mine])
+        self.assertNotIn("Order status", self.store.context(ana, "order status open",
+                                                            budget_ms=2000))
+        self.assertNotIn(old, [i["id"] for i in self.store.core(ana)])
+        self.assertEqual(mem.forget_answer_facts(self.store), 1)
+        self.assertEqual(mem.forget_answer_facts(self.store), 0)
+        self.assertEqual([i["id"] for i in self.store.items(ana, kinds=("fact",))], [mine])
+        self.assertTrue(self.store.forget(ana, mine))
+        # the answers themselves stay findable in the log
+        opened = lambda handles: {h: None for h in handles}  # noqa: E731
+        self.assertTrue([f for f in self.store.search(ana, "On Nov 27", decide=opened)
+                         if f["kind"] == "answer" and "Nov 27" in f["text"]])
         core = self.store.core(ana)
         self.assertEqual(core[0]["kind"], "instruction")
         self.assertTrue(core[0]["log_ids"])
@@ -184,7 +193,7 @@ class Recall(MemoryCase):
         self.assertEqual(self.store.forgotten(reader("ben"), source="learn"), set())
         # the cap evicts the least important x oldest from core, never from search
         for n in range(200):
-            self.store.remember(ana, kind="fact", source="ask", text=f"Fact number {n} "
+            self.store.remember(ana, kind="fact", source="learn", text=f"Fact number {n} "
                                 f"about bin B{n}.", subject=f"bin {n}", importance=0.2)
         core = self.store.core(ana)
         self.assertLessEqual(sum(len(mem.say(i)) + 3 for i in core), mem.CORE_CHARS)
@@ -588,8 +597,10 @@ class HeldDecisions(MemoryCase):
         """The read policy takes a second: the turn's read does not wait for it; what it
         has not decided yet is withheld, and the next turn has it."""
         ana = reader("ana")
-        self.store.from_answer(ana, answer(1, "Where is lot K-883?", "On hold.", facts=[
-            ("Lot K-883 is on quality hold.", "api://lot/K-883#row.status")]))
+        # the cited answer in the log is what a decision holds back
+        self.store.from_answer(ana, answer(1, "Where is lot K-883?", "On quality hold.",
+                                           facts=[("Lot K-883 is on quality hold.",
+                                                   "api://lot/K-883#row.status")]))
 
         def slow(_reader, handles):
             time.sleep(1.0)

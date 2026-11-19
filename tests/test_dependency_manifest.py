@@ -18,7 +18,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("requirements.txt", "requirements-ml.txt", "requirements-dev.txt",
-         "requirements-optional.txt")
+         "requirements-optional.txt", "requirements-gpu-ocr.txt")
 # Import name -> distribution name, for every third-party import the code may make.
 IMPORT_TO_DIST = {
     "fastapi": "fastapi", "starlette": "starlette", "pydantic": "pydantic",
@@ -26,6 +26,7 @@ IMPORT_TO_DIST = {
     "onnxruntime": "onnxruntime", "pypdf": "pypdf", "reportlab": "reportlab",
     "PIL": "pillow", "markitdown": "markitdown", "torch": "torch",
     "transformers": "transformers", "sentence_transformers": "sentence-transformers",
+    "vllm": "vllm",  # the GPU OCR worker, on a GPU host only (requirements-gpu-ocr.txt)
     "docx": "python-docx", "pptx": "python-pptx", "mypy": "mypy",
     "azure": "azure-eventhub",  # the only azure.* import: integrations/graph_notifications.py
 }

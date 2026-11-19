@@ -2,7 +2,7 @@
  "format": "plx.layer-contract.v1",
  "about": "Upward imports frozen by tools/layer_contract.py: only removals, never additions without a reviewed reason.",
  "counts": {
-  "integrations -> operating": 40,
+  "integrations -> operating": 42,
   "ontology -> integrations": 65,
   "ontology -> operating": 50,
   "operating -> operator_api": 9,
@@ -104,6 +104,14 @@
   [
    "integrations.graph_read",
    "operating.portal_kind_columns"
+  ],
+  [
+   "integrations.image_ocr_gpu",
+   "operating.declared_schema"
+  ],
+  [
+   "integrations.image_ocr_gpu",
+   "operating.declared_schema.image_ocr_gpu"
   ],
   [
    "integrations.kept_members",

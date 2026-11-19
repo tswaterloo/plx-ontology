@@ -1758,4 +1758,6 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None, planner: Any =
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

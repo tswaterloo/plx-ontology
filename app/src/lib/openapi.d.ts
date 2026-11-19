@@ -339,6 +339,32 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Prepared List
+         * @description Your open prepared replies and "your call" cards, newest first.
+         */
+        get: operations["autopilot_prepared_list_api_autopilot_drafts_get"];
+        put?: never;
+        /**
+         * Autopilot Drafts
+         * @description Switch one choice of prepared work on or off for yourself (``my_drafts``):
+         *     drafts and prepared actions wait in My work for your confirm; nothing is sent or
+         *     written by itself. Always your own; recorded on the audit log.
+         */
+        post: operations["autopilot_drafts_api_autopilot_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/items/{item_id}/decision": {
         parameters: {
             query?: never;
@@ -355,6 +381,27 @@ export type paths = {
          *     workflow passed the fresh gate for you and you switched it on for yourself.
          */
         post: operations["autopilot_decide_api_autopilot_items__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/items/{item_id}/reply-from-line": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Reply From Line
+         * @description Write the reply to a "your call" card of your own from your one line: kept as your
+         *     edit of its draft for you to change and confirm. Nothing is sent.
+         */
+        post: operations["autopilot_reply_from_line_api_autopilot_items__item_id__reply_from_line_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -548,6 +595,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/biz/page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Biz Page
+         * @description A customer's, chain's or supplier's account page, or a PO's or customer order's
+         *     page (header, then lines): every number from the business tables, as you may see
+         *     them, in one read.
+         */
+        get: operations["biz_page_api_biz_page_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/brief/meetings": {
         parameters: {
             query?: never;
@@ -561,73 +630,6 @@ export type paths = {
          *     link to its meeting prep brief.
          */
         get: operations["upcoming_meetings_api_brief_meetings_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/brief/qc-audit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Qc Audit Pack
-         * @description The QC audit pack: on-time share of the calibration, sanitation and other QC
-         *     checks by area and month over the last year, each recurring check with its cycle
-         *     and its missed, late and overdue occurrences cited, the production schedule by
-         *     line and batches on hold. Quality_controlled readers only.
-         */
-        get: operations["qc_audit_pack_api_brief_qc_audit_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/brief/qc-audit.txt": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Qc Audit Text
-         * @description The QC audit pack as one printable plain-text page, each line with its sources.
-         */
-        get: operations["qc_audit_text_api_brief_qc_audit_txt_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/brief/qc-daily": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Qc Daily Pack
-         * @description The daily QC pack: quality checks open now (missed, overdue, due within a week),
-         *     open calibration, production slots past start and not completed, batches on hold
-         *     and the hold-release queue (not available yet, with its reason). Only a reader
-         *     holding quality_controlled sees any line; every line cites its task, slot or
-         *     batch.
-         */
-        get: operations["qc_daily_pack_api_brief_qc_daily_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1438,28 +1440,6 @@ export type paths = {
          *     reference (e.g. a PO number) resolved within ``object_type``.
          */
         get: operations["object_page_api_object__object_type___object_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/rd-projects": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Rd Board
-         * @description R&D and sample projects per customer from the threads and records you may open:
-         *     status, last activity, owner and who each waits on, with a drafted status update.
-         *     Nothing is sent.
-         */
-        get: operations["rd_board_api_rd_projects_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2684,6 +2664,11 @@ export type components = {
              * @description The question's attachments: what was read and what was not, and why.
              */
             attachments?: components["schemas"]["AskAttachmentNote"][];
+            /**
+             * Cited
+             * @description The simple Ask's sources: every result its session read. Present (maybe empty) only on that path, whose answer page is the answer and one collapsed 'Sources (n records)' line opening to these rows.
+             */
+            cited?: components["schemas"]["CitedTable"][] | null;
             /** @description One question asked back because the answer turns on a choice the question leaves open; nothing else is answered until it is picked. */
             clarify?: components["schemas"]["Clarify"] | null;
             /** Conflicts */
@@ -3106,6 +3091,11 @@ export type components = {
          */
         AutopilotArea: {
             /**
+             * Drafts Switched On
+             * @description Owner and admins: who switched which prepared work on for themselves. Absent for everyone else.
+             */
+            drafts_switched_on?: components["schemas"]["AutopilotDraftsPerson"][] | null;
+            /**
              * Gate Notices
              * @description Owner only: each workflow's first pass of its fresh gate the owner has not acknowledged yet, told once. Absent for everyone else.
              */
@@ -3117,6 +3107,11 @@ export type components = {
              * @description every workflow the autopilot knows (``operating.workflows``), scored or not: the workflow filter offers them before any is scored or prepared
              */
             known_workflows?: string[];
+            /**
+             * My Drafts
+             * @description What the autopilot prepares for you: off until you switch it on.
+             */
+            my_drafts?: components["schemas"]["AutopilotDraftChoice"][];
             /**
              * My Opt Ins
              * @description Your workflows you may switch on for yourself.
@@ -3351,6 +3346,23 @@ export type components = {
              */
             until?: string | null;
         };
+        /**
+         * AutopilotDraftChoice
+         * @description Work the autopilot prepares for you only once you switch it on yourself: a draft or
+         *     a prepared action waiting in My work for your confirm. Nothing is sent or written by
+         *     itself.
+         */
+        AutopilotDraftChoice: {
+            /** Choice */
+            choice: string;
+            /** Label */
+            label: string;
+            /**
+             * On
+             * @description You switched it on (and did not pause).
+             */
+            on: boolean;
+        };
         /** AutopilotDraftKept */
         AutopilotDraftKept: {
             /**
@@ -3382,6 +3394,40 @@ export type components = {
              */
             related?: components["schemas"]["AutopilotMemoryUse"][];
             template?: components["schemas"]["AutopilotTemplateUse"] | null;
+        };
+        /**
+         * AutopilotDrafts
+         * @description Your open prepared replies, newest first; mail you already answered is not here.
+         */
+        AutopilotDrafts: {
+            /** Items */
+            items?: components["schemas"]["AutopilotPrepared"][];
+        };
+        /**
+         * AutopilotDraftsPerson
+         * @description Someone who switched one choice of prepared work on for themselves (shown to the
+         *     owner and admins, who can see it but cannot switch it for them).
+         */
+        AutopilotDraftsPerson: {
+            /** Choice */
+            choice: string;
+            /** Label */
+            label: string;
+            /** Person */
+            person: string;
+        };
+        /** AutopilotDraftsRequest */
+        AutopilotDraftsRequest: {
+            /**
+             * Choice
+             * @description One of ``my_drafts``' choices.
+             */
+            choice: string;
+            /**
+             * On
+             * @description true: prepare these for you; false: stop.
+             */
+            on: boolean;
         };
         /**
          * AutopilotGate
@@ -3522,6 +3568,14 @@ export type components = {
             used_for_draft?: components["schemas"]["AutopilotDraftUse"] | null;
             /** Workflow */
             workflow: string;
+        };
+        /** AutopilotLineRequest */
+        AutopilotLineRequest: {
+            /**
+             * Line
+             * @description What you want to say, in a line: the reply to a "your call" card is written from it.
+             */
+            line: string;
         };
         /**
          * AutopilotMemoryUse
@@ -3694,6 +3748,62 @@ export type components = {
              * @default false
              */
             you: boolean;
+        };
+        /**
+         * AutopilotPrepared
+         * @description One thing prepared for you to answer: who wrote, what they wrote, and either the
+         *     reply (to edit, confirm, copy or open in Outlook) or the question only you can answer.
+         */
+        AutopilotPrepared: {
+            /**
+             * Ask
+             * @default
+             */
+            ask: string;
+            /**
+             * Body
+             * @description The reply as it stands now (your edit when you made one); empty on a "your call" card until you say what to reply.
+             * @default
+             */
+            body: string;
+            /** Cc */
+            cc?: string[];
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "mail" | "teams";
+            /** Created At */
+            created_at: string;
+            /**
+             * Edited
+             * @default false
+             */
+            edited: boolean;
+            /** Facts */
+            facts?: string[];
+            /** Item Id */
+            item_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "reply" | "your_call";
+            /**
+             * Message
+             * @description What they wrote, as far as the item keeps it.
+             * @default
+             */
+            message: string;
+            /** Sender */
+            sender: string;
+            /**
+             * Subject
+             * @default
+             */
+            subject: string;
+            /** To */
+            to?: string[];
         };
         /**
          * AutopilotReplay
@@ -4035,8 +4145,80 @@ export type components = {
             workflow: string;
         };
         /**
+         * BizCell
+         * @description One value as a page shows it: text, a day, a quantity or money; ``hidden`` when the
+         *     reader may not read it (never shown as empty or zero).
+         */
+        BizCell: {
+            /** Day */
+            day?: string | null;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /** Href */
+            href?: string | null;
+            money?: components["schemas"]["Money"] | null;
+            /** Number */
+            number?: string | null;
+            /** Text */
+            text?: string | null;
+        };
+        /** BizFact */
+        BizFact: {
+            /** Label */
+            label: string;
+            value: components["schemas"]["BizCell"];
+        };
+        /**
+         * BizPage
+         * @description A customer, chain or supplier account page, or a PO / sales order page: every number
+         *     from the business tables through the reader's door, in one read.
+         */
+        BizPage: {
+            /** As Of */
+            as_of?: string | null;
+            /** Facts */
+            facts: components["schemas"]["BizFact"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order";
+            /** Sections */
+            sections: components["schemas"]["BizTable"][];
+            /** Sources */
+            sources: string;
+            /** Subtitle */
+            subtitle?: string | null;
+            /** Title */
+            title: string;
+            /** Took Ms */
+            took_ms: number;
+        };
+        /**
+         * BizTable
+         * @description A section of a record page: a titled table. ``total``: how many rows the section
+         *     has in all (rows may show fewer); ``note``: one plain sentence under it.
+         */
+        BizTable: {
+            /** Columns */
+            columns: string[];
+            /** Key */
+            key: string;
+            /** Note */
+            note?: string | null;
+            /** Rows */
+            rows: components["schemas"]["BizCell"][][];
+            /** Title */
+            title: string;
+            /** Total */
+            total?: number | null;
+        };
+        /**
          * Brief
-         * @description A meeting prep brief, a weekly review or a QC pack (daily, audit), generated from
+         * @description A meeting prep brief or a weekly review, generated from
          *     the records you may read (no model call). Every row and figure cites its sources;
          *     nothing hidden is counted.
          */
@@ -4051,7 +4233,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "meeting" | "weekly" | "qc_daily" | "qc_audit";
+            kind: "meeting" | "weekly";
             /** Parties */
             parties?: components["schemas"]["ObjectRef"][];
             /**
@@ -4222,7 +4404,7 @@ export type components = {
             data_note_items?: components["schemas"]["BriefingDataNote"][];
             /**
              * Data Notes
-             * @description What the checks could not judge, per check and reason, as counts only: e.g. 'late customer orders: cannot check 12 records that lack order lines'.
+             * @description What the checks could not judge, per check and reason, as counts only: e.g. '64 purchase orders: no due date is recorded on the order or any copy of it'.
              */
             data_notes?: string[];
             /** Departments */
@@ -4371,7 +4553,8 @@ export type components = {
         };
         /**
          * BriefingDataNote
-         * @description One check's records it could not judge for one reason, as a count.
+         * @description One check's records it could not judge for one reason, as a count; or (``scope``)
+         *     the one note on the records a check never applies to, without a count.
          */
         BriefingDataNote: {
             /** Check */
@@ -4380,6 +4563,12 @@ export type components = {
             count: number;
             /** Reason */
             reason: string;
+            /**
+             * Scope
+             * @description True: a note on what the check never applies to (no records to open), not a gap.
+             * @default false
+             */
+            scope: boolean;
             /** Words */
             words: string;
         };
@@ -4434,6 +4623,11 @@ export type components = {
         BriefingGroup: {
             /** Acknowledged */
             acknowledged: number;
+            /**
+             * As Of
+             * @description When this type's check last finished (ISO): its items are as of then.
+             */
+            as_of?: string | null;
             /** Count */
             count: number;
             /**
@@ -4447,6 +4641,16 @@ export type components = {
             label: string;
             /** New Since Visit */
             new_since_visit: number;
+            /**
+             * Unavailable
+             * @description True when this type's check has not finished within two refresh cycles (or is not served on this page): its items are not shown, never as current; count is 0.
+             */
+            unavailable?: boolean;
+            /**
+             * Unavailable Since
+             * @description While unavailable: when its check last finished (ISO); null if never.
+             */
+            unavailable_since?: string | null;
         };
         /**
          * BriefingItem
@@ -4716,6 +4920,32 @@ export type components = {
             /** Outbound */
             outbound: boolean;
         };
+        /**
+         * CitedTable
+         * @description One result the simple Ask read (a query's rows, or the mail, Teams and document hits
+         *     of a search), as the reader's own session got it: what the answer's Sources line opens.
+         */
+        CitedTable: {
+            /**
+             * About
+             * @description What was read, in plain words (the tables or the search).
+             */
+            about: string;
+            /**
+             * As Of
+             * @default null
+             */
+            as_of: string | null;
+            /** Columns */
+            columns: string[];
+            /**
+             * Records
+             * @description The rows or hits the result held (``rows`` may show fewer).
+             */
+            records: number;
+            /** Rows */
+            rows: (string | null)[][];
+        };
         /** CitedText */
         CitedText: {
             source: components["schemas"]["Source"];
@@ -4925,7 +5155,10 @@ export type components = {
              * @description The same customer's record in another system, as the projection links them.
              */
             also_in?: components["schemas"]["ObjectRef"][];
-            /** Contacts */
+            /**
+             * Contacts
+             * @description The people who wrote from this customer's mail, as its own record and its confirmed copies link them; never another record's.
+             */
             contacts?: components["schemas"]["Person"][];
             /** Not Established */
             not_established?: string[];
@@ -7490,6 +7723,11 @@ export type components = {
             complete: boolean;
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
+            /**
+             * Core
+             * @description True on the core first read (?core=1): the record's own details only; its status, timeline, links, documents and checks are still being read (status 'reading'), never absent.
+             */
+            core?: boolean;
             /** @description A customer's revenue, orders and contacts (customers only). */
             customer?: components["schemas"]["CustomerSummary"] | null;
             /** @description A customer's, supplier's or item's document lists (the documents section). */
@@ -7689,6 +7927,11 @@ export type components = {
         /** OrderRow */
         OrderRow: {
             amount?: components["schemas"]["Money"] | null;
+            /**
+             * Amount Note
+             * @description How the amount was read when it is not the order's own total ('from its invoices, before tax', 'from its lines'), or why there is none ('value not recorded', 'not shown to you'). A header total of 0 is never shown as the order's value.
+             */
+            amount_note?: string | null;
             /** Date */
             date?: string | null;
             /** Label */
@@ -8258,129 +8501,6 @@ export type components = {
             /** Why */
             why: string;
         };
-        /**
-         * RdBoard
-         * @description R&D and sample projects per customer (sample requests, formulation changes, stability
-         *     tests, certificates of analysis), built only from the threads and records you may open.
-         *     Each project: status, last activity, owner and who it waits on, with a drafted status
-         *     update (sent only through the card's preview and your confirm).
-         */
-        RdBoard: {
-            /** As Of */
-            as_of: string;
-            /** Idle */
-            idle: number;
-            /** Idle After Days */
-            idle_after_days: number;
-            /** Projects */
-            projects?: components["schemas"]["RdProject"][];
-            /**
-             * Read At
-             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
-             */
-            read_at?: string | null;
-            /**
-             * Reading
-             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
-             */
-            reading?: boolean;
-            /**
-             * Sent
-             * @constant
-             */
-            sent: 0;
-            /**
-             * Stale Since
-             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
-             */
-            stale_since?: string | null;
-            /** Total */
-            total: number;
-            /**
-             * Writes
-             * @constant
-             */
-            writes: 0;
-        };
-        /** RdLine */
-        RdLine: {
-            /** Citations */
-            citations?: string[];
-            /** Id */
-            id: string;
-            /** Last On */
-            last_on?: string | null;
-            /**
-             * Messages N
-             * @default 0
-             */
-            messages_n: number;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "waiting_on_us" | "waiting_on_customer" | "update_received" | "closed";
-            /** Subject */
-            subject?: string | null;
-        };
-        /** RdProject */
-        RdProject: {
-            /**
-             * Card Id
-             * @description The update's card for ``/api/actions/*``.
-             */
-            card_id?: string | null;
-            /** Citations */
-            citations?: string[];
-            /**
-             * Customer
-             * @description The customer's record handle (open it to read the name): the threads' one settled customer link, else the one customer record stating the sender. A thread of a supplier, or of a company no record names, is no project.
-             */
-            customer: string;
-            /**
-             * Customer Name
-             * @description The customer's name as this reader reads its record; none when it is not readable (the app shows the handle).
-             */
-            customer_name?: string | null;
-            /** Days */
-            days: number;
-            /** @description A drafted status update to the customer, worded from kind, state and dates only. */
-            draft?: components["schemas"]["ApprovalNudge"] | null;
-            /** Id */
-            id: string;
-            /** Idle */
-            idle: boolean;
-            /** Items */
-            items?: string[];
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "stability_test" | "formulation_change" | "sample_request" | "coa";
-            /** Last On */
-            last_on?: string | null;
-            /** Lines */
-            lines?: components["schemas"]["RdLine"][];
-            /** Offers */
-            offers?: components["schemas"]["CardActionOffer"][];
-            /**
-             * Owner
-             * @description The person of ours who wrote most (an Entra object id), never a name or an address.
-             */
-            owner?: string | null;
-            /**
-             * Owner Is You
-             * @default false
-             */
-            owner_is_you: boolean;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "waiting_on_us" | "waiting_on_customer" | "update_received" | "closed";
-            /** Waiting On */
-            waiting_on?: ("us" | "customer") | null;
-        };
         /** RecentQuestion */
         RecentQuestion: {
             /** Answer Id */
@@ -8862,7 +8982,7 @@ export type components = {
              * Source
              * @enum {string}
              */
-            source: "search_entities" | "projection" | "fixture";
+            source: "search_entities" | "projection" | "fixture" | "business";
             /** Suggestions */
             suggestions: components["schemas"]["Suggestion"][];
             /** Took Ms */
@@ -9701,6 +9821,11 @@ export type components = {
         TokenEvent: {
             /** Text */
             text: string;
+            /**
+             * Whole
+             * @description True: ``text`` is the answer so far in full (as the answer gate passed it) and replaces what was shown; false: ``text`` is appended.
+             */
+            whole?: boolean;
         };
         /** TrailGap */
         TrailGap: {
@@ -9837,14 +9962,20 @@ export type components = {
             lag_seconds?: number | null;
             /**
              * Served At
-             * @description The newest capture applied to the data the app serves.
+             * @description How far the data the app serves reaches: everything captured up to this time is in it.
              */
             served_at?: string | null;
             /**
              * Stale
+             * @description Behind: a capture waits over an hour to be served, or the newest capture is older than the system's bound.
              * @default false
              */
             stale: boolean;
+            /**
+             * State Words
+             * @description The system's state in one plain sentence, with a failed read's reason in words.
+             */
+            state_words?: string | null;
             /**
              * System
              * @enum {string}
@@ -11673,6 +11804,104 @@ export interface operations {
             };
         };
     };
+    autopilot_prepared_list_api_autopilot_drafts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotDrafts"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_drafts_api_autopilot_drafts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotDraftsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_decide_api_autopilot_items__item_id__decision_post: {
         parameters: {
             query?: never;
@@ -11685,6 +11914,68 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AutopilotDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotItem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_reply_from_line_api_autopilot_items__item_id__reply_from_line_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotLineRequest"];
             };
         };
         responses: {
@@ -12264,6 +12555,66 @@ export interface operations {
             };
         };
     };
+    biz_page_api_biz_page_get: {
+        parameters: {
+            query: {
+                kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order";
+                h?: string;
+                chain?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BizPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     upcoming_meetings_api_brief_meetings_get: {
         parameters: {
             query?: never;
@@ -12280,93 +12631,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpcomingMeetings"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    qc_audit_pack_api_brief_qc_audit_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Brief"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    qc_audit_text_api_brief_qc_audit_txt_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    qc_daily_pack_api_brief_qc_daily_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Brief"];
                 };
             };
             /** @description Unauthorized */
@@ -14258,6 +14522,8 @@ export interface operations {
             query?: {
                 /** @description A first read without the checks (complete=false), shown while the full page is read */
                 quick?: boolean;
+                /** @description The record's own details only (core=true), served before the quick read; status 'reading' until that lands */
+                core?: boolean;
             };
             header?: never;
             path: {
@@ -14302,35 +14568,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    rd_board_api_rd_projects_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RdBoard"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

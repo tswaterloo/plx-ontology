@@ -2,14 +2,16 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 const nav = vi.hoisted(() => ({ replace: vi.fn() }));
+const who = vi.hoisted(() => ({ me: { access_label: null, feedback_admin: false } as Record<string, unknown> }));
 vi.mock("@/components/auth", () => ({
-  useAuth: () => ({ state: { status: "signed-in", me: { access_label: null, feedback_admin: false } } }),
+  useAuth: () => ({ state: { status: "signed-in", me: who.me } }),
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/team", useRouter: () => ({ replace: nav.replace, push: () => undefined }) }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getLabour: () => Promise.resolve({ state: "not_granted" }),
   getWorkload: () => Promise.resolve({ teams: [{ team: "not_assigned", awaiting_reply: 4, tasks: 1, alerts: 0, suppressed: false }], people: [], granted_teams: [] }),
+  getApprovals: () => new Promise(() => {}),
   getWorkloadGrants: () => Promise.reject(new Error("a reader who is not the owner never asks")),
   getTeam: () => Promise.resolve({
     scope: "self", state: "not_ready", as_of: null, window_to: null, note: "", people: [], totals: {}, systems: [],
@@ -41,5 +43,23 @@ describe("Team for a reader with no team or labour grant", () => {
     expect(note).toHaveTextContent("HR or operations-management grant");
     expect(screen.queryByTestId("team-labour")).toBeNull();
     window.location.hash = "";
+  });
+});
+
+describe("Team opened from the pinned Approvals", () => {
+  it("shows the approvals first, above the people table; plain /team keeps them below", async () => {
+    who.me = { access_label: null, feedback_admin: true, owner: true };
+    const order = () => [...document.querySelectorAll("main section, section")].map((s) => s.id).filter((id) => id === "people" || id === "approvals");
+    window.location.hash = "#approvals";
+    const pinned = render(<TeamPage />);
+    expect(await screen.findByTestId("team-approvals")).toBeInTheDocument();
+    expect(order()).toEqual(["approvals", "people"]);
+    expect(screen.getAllByTestId("team-approvals")).toHaveLength(1);
+    pinned.unmount();
+    window.location.hash = "";
+    render(<TeamPage />);
+    expect(await screen.findByTestId("team-approvals")).toBeInTheDocument();
+    expect(order()).toEqual(["people", "approvals"]);
+    who.me = { access_label: null, feedback_admin: false };
   });
 });

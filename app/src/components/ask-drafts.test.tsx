@@ -83,9 +83,17 @@ describe("AskDrafts questions", () => {
     api.previewAction.mockResolvedValue(preview({ to: ["pat@maple.example"], cc: [], subject: "Cabinet", body: "Hi", in_reply_to: null }));
     render(<AskDrafts drafts={[draft({ to: "pat@maple.example", recipient_questions: [], record_questions: [] })]} />);
     expect(screen.queryByTestId("draft-questions")).toBeNull();
-    expect(screen.getByTestId("draft-recipients")).toHaveTextContent("To pat@maple.example");
+    // the fields as a mail app shows them (owner walk 11-17: "Draft email" twice)
+    expect(screen.getByTestId("draft-recipients")).toHaveTextContent("pat@maple.example");
+    expect(screen.getByTestId("ask-draft-fields")).toHaveTextContent(/^Topat@maple\.exampleSubject/);
+    expect(screen.getAllByText("Draft email")).toHaveLength(1);
     fireEvent.click(screen.getByTestId("action-send_email"));
     await waitFor(() => expect(api.previewAction).toHaveBeenCalledTimes(1));
+    // the send sheet's fields have names a screen reader (and a test) finds them by
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "To" })).toHaveValue("pat@maple.example"));
+    expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue("Cabinet");
+    expect(screen.getByRole("textbox", { name: "Cc" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Hi");
     await new Promise((r) => setTimeout(r, 20));
     expect(api.previewAction).toHaveBeenCalledTimes(1);
   });

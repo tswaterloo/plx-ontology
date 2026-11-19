@@ -753,6 +753,18 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
 
     def policy_now(self, actor: Any) -> ReadPolicy:
         policy = super().policy_now(actor)
+        if policy.unrestricted:
+            # A full reader (``ontology_host._full_reader_policy``): no mailbox or drive
+            # audience is read; the people exclusion is in the policy and the item gates.
+            units = dict(policy.units)
+            for family in ("mail", "sharepoint"):
+                held = [k for k in self._reader_keys if str(k).startswith(family + ":")]
+                if held:
+                    units[family] = tuple(held)
+            return ReadPolicy(policy.tenant, policy.audiences, policy.markings, units,
+                              unrestricted=True)
+        if policy.staff:
+            return self._staff_mail_policy(policy, actor)
         grants = dict(policy.audiences)
         principals = frozenset(actor.principals)
         # A family whose every held unit got a grant decision here is listed (``units``):
@@ -794,9 +806,9 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
                 if composites:
                     from ontology import people_directory
                     try:
-                        every = [b.mailbox_id for b in people_directory.mailboxes(store.db)]
+                        every = tuple(b.mailbox_id for b in people_directory.mailboxes(store.db))
                     except Exception:  # noqa: BLE001 - an unreadable list decodes nothing
-                        every = []
+                        every = ()
                     for unit in composites:
                         # a key that no longer decodes (the mailbox list changed) opens
                         # nothing; each mailbox of it is decided as its own unit
@@ -817,6 +829,46 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
             units["sharepoint"] = tuple(sharepoint_units)
         return ReadPolicy(policy.tenant, grants, policy.markings, units,
                           unrestricted=policy.unrestricted)
+
+    def _staff_mail_policy(self, policy: ReadPolicy, actor: Any) -> ReadPolicy:
+        """A staff reader's policy (``ontology_host._staff_policy``) with the mail units
+        the capture decides: the reader's own mailbox and every shared mailbox open to all
+        employees (``staff_scope.shared_mailboxes``: the capture's recorded purpose, minus
+        the restricted list), never one of an excluded person; a ``mail-any:`` key when one
+        of its mailboxes is granted. No mailbox audience or item ACL is read per unit; the
+        item gate still decides each message (participants, the exclusion)."""
+        from .ontology_tools_evidence import people_excluded
+        from .staff_scope import shared_mailboxes
+        grants = dict(policy.audiences)
+        principals = frozenset(actor.principals)
+        mail_units = [k for k in self._reader_keys if str(k).startswith("mail:")]
+        composites = [k for k in self._reader_keys if str(k).startswith("mail-any:")]
+        guard = getattr(self.runtime, "people_exclusion", None)
+        usable = guard is not None and not getattr(guard, "unavailable", True)
+        opened = self._mail() if (mail_units or composites) and usable else None
+        if opened is not None:
+            stores, _audience = opened
+            with stores as store:
+                shared = shared_mailboxes(store.db)
+                every: tuple[str, ...] = ()
+                if composites:
+                    from ontology import people_directory
+                    try:
+                        every = tuple(b.mailbox_id for b in people_directory.mailboxes(store.db))
+                    except Exception:  # noqa: BLE001 - an unreadable list decodes nothing
+                        every = ()
+            for unit in mail_units:
+                mailbox = str(unit).partition(":")[2].strip().lower()
+                if mailbox in shared and not people_excluded(guard, [mailbox]):
+                    grants[unit] = principals
+            from ontology import people_directory
+            for unit in composites:
+                named = people_directory.decode_audience(unit, every) or ()
+                grants[unit] = principals if any(
+                    policy.may_read(actor, "mail:" + m) or (
+                        str(m).lower() in shared and not people_excluded(guard, [m]))
+                    for m in named) else frozenset()
+        return ReadPolicy(policy.tenant, grants, policy.markings, policy.units, staff=True)
 
     @property
     def tools(self) -> ot.OntologyTools:

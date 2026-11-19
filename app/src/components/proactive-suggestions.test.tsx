@@ -76,8 +76,9 @@ describe("proactive suggestions", () => {
     render(<ol><SuggestionRow s={card()} position={1} state={null} onDone={done} /></ol>);
     expect(screen.getByTestId("action-state").textContent).toBe("Drafted");
     fireEvent.click(screen.getByTestId("action-send_email"));
-    const confirm = await screen.findByText("Record dry run");
-    expect(screen.getByTestId("action-missing").textContent).toContain("Mail.Send not granted");
+    const confirm = await screen.findByText("Save without sending");
+    // plain words to the person; the setting or permission that is missing is the admin's
+    expect(screen.getByTestId("action-missing").textContent).toBe("Sending is off for your mailbox. Ask an admin to turn it on.Saving keeps a record of this message; nothing is sent.");
     expect(api.previewAction).toHaveBeenCalledWith({ card_id: "pe-1", kind: "send_email", payload: undefined });
     fireEvent.change(screen.getByTestId("action-body"), { target: { value: "Hello again" } });
     expect((screen.getByTestId("action-confirm") as HTMLButtonElement).disabled).toBe(true);

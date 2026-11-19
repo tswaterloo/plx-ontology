@@ -1602,4 +1602,6 @@ def lot_trace_main(argv: list[str], *, environ: Mapping[str, str] | None = None,
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     sys.exit(main())

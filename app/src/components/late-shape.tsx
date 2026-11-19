@@ -272,7 +272,7 @@ export function LateShape({
                       {head}
                     </button>
                   ) : (
-                    <Link href={`/late?supplier=${encodeURIComponent(name)}`} className="block rounded-lg hover:bg-hover" data-testid="late-multiple">
+                    <Link href={`/?show=late&supplier=${encodeURIComponent(name)}`} className="block rounded-lg hover:bg-hover" data-testid="late-multiple">
                       {head}
                     </Link>
                   )}

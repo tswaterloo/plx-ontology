@@ -40,7 +40,7 @@ const approvals = {
   ],
 } as unknown as ApprovalsQueue;
 const alarms = { configured: true, running: true, open: [{ key: "unit:x", line: "plx-proactive.service: killed: out of memory", opened_at: h(-1) }], recovered: [], checks: [] } as OpsAlarms;
-const all: NeedsSources = { me, autopilot: area, writes, approvals, alarms };
+const all: NeedsSources = { me, autopilot: area, writes, approvals };
 
 describe("Needs you (owner)", () => {
   it("lists decisions, approvals and blocked items in that order, each pointing to where it is done", () => {
@@ -54,7 +54,6 @@ describe("Needs you (owner)", () => {
       "blocked:ag:Sam",
       "blocked:ag:not recorded",
       "blocked:w:w2",
-      "blocked:o:unit:x",
     ]);
     const by = Object.fromEntries(needs.map((n) => [n.key, n]));
     expect(by["ap:soon"].href).toBe("/autopilot?item=soon");
@@ -65,7 +64,6 @@ describe("Needs you (owner)", () => {
     expect(by["ag:Sam"].href).toBe("/team#approvals");
     expect(by["ag:not recorded"].title).toBe("1 approval waiting on an approver not on record");
     expect(by["ag:not recorded"].detail).toBe("oldest 4 days; a nudge is drafted on Team");
-    expect(by["o:unit:x"].href).toBe("/ops");
   });
 
   it("names a source it couldn't read instead of counting it as nothing", () => {
@@ -74,10 +72,9 @@ describe("Needs you (owner)", () => {
     expect(screen.queryByText("No decision, approval or blocked item waits on you.")).toBeNull();
   });
 
-  it("says plainly when nothing waits, without a row of zero counts", () => {
-    render(<NeedsMeList sources={{ me, autopilot: { ...area, items: [] }, writes: [], approvals: { ...approvals, groups: [] }, alarms: null }} />);
-    expect(screen.queryByTestId("needs-me-counts")).toBeNull();
-    expect(screen.getByText("No decision, approval or blocked item waits on you.")).toBeInTheDocument();
+  it("draws nothing when every source was read and nothing waits, no heading and no zero counts", () => {
+    const { container } = render(<NeedsMeList sources={{ me, autopilot: { ...area, items: [] }, writes: [], approvals: { ...approvals, groups: [] } }} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("caps a kind at four rows with the rest one click away", async () => {
@@ -101,5 +98,13 @@ describe("Needs you (owner)", () => {
     api.owner = true;
     render(<NeedsMe />);
     expect(await screen.findByTestId("needs-me")).toHaveTextContent("Release Harbor's credit hold");
+  });
+
+  it("never lists a reliability alarm, even for an owner who can read them", async () => {
+    api.owner = true;
+    render(<NeedsMe />);
+    const needs = await screen.findByTestId("needs-me");
+    expect(needs).not.toHaveTextContent("out of memory");
+    expect(needs.querySelector('a[href="/ops"]')).toBeNull();
   });
 });

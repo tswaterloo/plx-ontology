@@ -63,10 +63,12 @@ MAX_EXCEPTIONS = 3         # missed or late tasks one series row cites
 MAX_OPEN = 40
 MAX_SLOTS = 20
 MIN_CYCLE_TASKS = 3        # as the recurring-task alert
+PLAN_IDLE_DAYS = 60        # a plan none of whose tasks was created or completed in this long
+                           # is no longer kept: its open checks are not live misses (daily)
 BUDGET_BYTES = 44000       # within plx.aggregate's result limit (48,000 less 2,000 margin)
 
 TASK = "PlannerTask"
-TASK_PROPS = ("title", "plan_id", "plan_title", "due_at", "completed_at", "assignees",
+TASK_PROPS = ("title", "plan_id", "plan_title", "due_at", "completed_at", "created_at", "assignees",
               "created_by", "completed_by")
 SLOT = "BatchSchedule"
 SLOT_PROPS = ("status", "line")
@@ -104,6 +106,8 @@ class Task:
     done: dt.date | None
     records: tuple[str, ...]
     handles: tuple[tuple[str, str, str], ...]   # (handle, object, markings json)
+    created: dt.date | None = None
+    plan_title: str = ""
 
 
 @dataclass(frozen=True)
@@ -182,6 +186,8 @@ def _tasks(st: Any, people: Any, counts: Counter) -> list[Task] | None:
             continue
         done_raw, done_row = _value(props, "completed_at")
         done = _instant(done_raw) if done_row and str(done_raw or "").strip() else None
+        made_raw, made_row = _value(props, "created_at")
+        made = _instant(made_raw) if made_row and str(made_raw or "").strip() else None
         title_raw, title_row = _value(props, "title")
         plan = str(_value(props, "plan_id")[0] or _value(props, "plan_title")[0] or "")
         key = " ".join(TITLE_DATE.sub(" ", str(title_raw or "")).split()).lower().strip(" -:|")
@@ -191,7 +197,9 @@ def _tasks(st: Any, people: Any, counts: Counter) -> list[Task] | None:
         out.append(Task(oid, f"{plan}|{key}", plan, shown,
                         title_row.get("l1_handle") if title_row else None,
                         area_of(f"{title_raw or ''}"), due.date(),
-                        done.date() if done else None, (oid,), handles))
+                        done.date() if done else None, (oid,), handles,
+                        made.date() if made else None,
+                        " ".join(str(_value(props, "plan_title")[0] or "").split())[:120]))
     return out
 
 
@@ -442,10 +450,29 @@ def answer(book: Mapping[str, Any], as_of: dt.date, *, may_read: Callable[[str],
     if view == "audit" and not book.get("checks_withheld"):
         result["series"] = _series(in_year, status, cycle)
     if view == "daily" and not book.get("checks_withheld"):
-        result["open_now"] = _open_now(window, status, as_of)
-        result["open_counts"] = {s: sum(1 for t in window if t.done is None
+        # a plan nobody has added to or ticked in PLAN_IDLE_DAYS is no longer where the checks
+        # are kept: its open tasks are old schedule entries, not live misses (owner 11-17).
+        # Judged over the reader's own visible tasks, like the cycles.
+        active: dict[str, dt.date] = {}
+        for t in tasks:
+            for day in (t.created, t.done):
+                if day is not None and day <= as_of and day > active.get(t.plan, dt.date.min):
+                    active[t.plan] = day
+        idle_since = as_of - dt.timedelta(days=PLAN_IDLE_DAYS)
+        idle = {p for p in {t.plan for t in window} if active.get(p, dt.date.min) < idle_since}
+        live = [t for t in window if t.plan not in idle]
+        result["open_now"] = _open_now(live, status, as_of)
+        result["open_counts"] = {s: sum(1 for t in live if t.done is None
                                         and status[t.object_id] == s)
                                  for s in ("missed", "overdue", "upcoming")}
+        left = [t for t in window if t.plan in idle and t.done is None]
+        if left:
+            last = max((active[t.plan] for t in left if t.plan in active), default=None)
+            result["idle_plans"] = {"plans": len({t.plan for t in left}), "open": len(left),
+                                    "titles": sorted({t.plan_title for t in left
+                                                      if t.plan_title})[:5],
+                                    "last_activity": last.isoformat() if last else None,
+                                    "idle_days": PLAN_IDLE_DAYS}
     if view == "daily":
         recent = as_of - dt.timedelta(days=SLOT_RECENT_DAYS)
         late = sorted((s for s in slots if slot_state[s.object_id] == "not_completed"

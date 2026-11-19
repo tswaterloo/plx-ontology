@@ -306,6 +306,12 @@ class _Evidence:
                       frozenset(tuple(cell) for cell in entry.get("cells") or ()))
                      for entry in entries if entry.get("op") == "sum"
                      and entry.get("complete") is True]
+        # plx.table sums whole but for a source read in part, no input below zero
+        # (``floor``): (value, currency, the cells they cite); each a lower bound only
+        self.sum_floors = [(to_decimal(entry.get("value")), entry.get("currency"),
+                            frozenset(tuple(cell) for cell in entry.get("cells") or ()))
+                           for entry in entries if entry.get("op") == "sum"
+                           and entry.get("floor") is True and entry.get("complete") is not True]
         self.currencies: Mapping[tuple[str, str], str | None] = \
             returned.get("currencies") or {}
         # The days a ``days`` claim may count from uncited (``_ISO_DAY`` strings).
@@ -435,10 +441,12 @@ class _Evidence:
             return None, None, typed["form"], typed["problem"]
         return label, typed["type"], typed["form"], None
 
-    def tool_sum(self, claim: Mapping[str, Any]) -> bool:
+    def tool_sum(self, claim: Mapping[str, Any], floors: bool = False) -> bool:
         """Whether a ``sum`` claim binds to a complete ``plx.aggregate`` sum this reader
         was returned: the same value (Decimal) and currency (both none, or the same code),
-        every cell the claim cites one the sum cites (``_aggregate_sums``)."""
+        every cell the claim cites one the sum cites (``_aggregate_sums``). ``floors``:
+        to a sum that is only a lower bound instead (``sum_floors``: a source read in
+        part), which the claim then passes as ``at least``."""
         if claim.get("op") != "sum":
             return False
         value = to_decimal(claim.get("value"))
@@ -446,7 +454,7 @@ class _Evidence:
                  if isinstance(given, Mapping)}
         return value is not None and bool(cells) and any(
             total == value and currency == claim.get("currency") and cells <= listed
-            for total, currency, listed in self.sums)
+            for total, currency, listed in (self.sum_floors if floors else self.sums))
 
     def recomputed(self, calc: Mapping[str, Any]) -> Decimal | None:
         values: dict[str, tuple[Decimal, Any]] = {}

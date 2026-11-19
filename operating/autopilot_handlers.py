@@ -91,6 +91,7 @@ class Ctx:
         self.objects: set[str] = set()
         self.handles: list[str] = []
         self.capture: Any = getattr(st, "autopilot_capture", None)
+        self._carried_pairs: dict[tuple[str, str], bool] = {}   # ``_carried``
 
     def check(self) -> None:
         if time.monotonic() > self.deadline:
@@ -140,18 +141,90 @@ class Ctx:
                 self.handles.append(h)
 
     def find(self, prefix: str, prop: str, value: str) -> list[str]:
-        """The records of ``prefix`` whose ``prop`` is exactly ``value`` (word index)."""
-        from . import proactive_threads as pt
+        """The records of ``prefix`` whose ``prop`` is ``value`` (letters and digits alike,
+        case aside). Read from the identifier table (its index on ``normalized``, the lookup
+        Ask's number resolution reads) when it carries ``prop`` of ``prefix`` records, either
+        on the records themselves or on a record a ``prefix.*`` link ties them to
+        (``IDENTIFIED_VIA``): there "none" is an answer. Otherwise a SQLite store's value
+        word index. A lookup that cannot answer raises ``FindUnavailable``, never ``[]``:
+        "not found" lets a caller act as if the record did not exist (a second order
+        draft for an order already keyed). On Postgres the word index read is not tried:
+        a number there reads for minutes, past the handler's deadline (11-17 live)."""
         self.check()
-        words = [w for w in re.split(r"[^0-9A-Za-z]+", value) if w]
-        if not words:
-            return []
-        hits = pt._word_ids(self.st, " AND ".join('"' + w + '"' for w in words), [prop],
-                            prefix + ":%") or set()
-        rows = _read(self.st, sorted(hits)[:50], [prop])
         norm = re.sub(r"[^0-9a-z]", "", value.lower())
+        if not norm:
+            return []
+        try:
+            hits = self._identified_as(prefix, prop, value)
+        except (FindUnavailable, HandlerTimeout):
+            raise
+        except Exception as exc:  # noqa: BLE001 - no identifier table: cannot say
+            if "interrupt" in str(exc):
+                raise
+            raise FindUnavailable(f"identifiers: {type(exc).__name__}") from exc
+        if hits is None:
+            if getattr(self.st, "pg", False):         # ``proactive_engine._Store.pg``
+                raise FindUnavailable(f"{prefix}.{prop} is not in the identifier table")
+            from . import proactive_threads as pt
+            words = [w for w in re.split(r"[^0-9A-Za-z]+", value) if w]
+            hits = pt._word_ids(self.st, " AND ".join('"' + w + '"' for w in words), [prop],
+                                prefix + ":%")
+            if hits is None:
+                raise FindUnavailable("no value word index")
+        self.check()
+        rows = _read(self.st, sorted(hits), [prop])
         return sorted(o for o, r in rows.items()
                       if re.sub(r"[^0-9a-z]", "", _v(r, prop).lower()) == norm)
+
+    def _identified_as(self, prefix: str, prop: str, value: str) -> set[str] | None:
+        """The records ``find`` reads ``prop`` of from the identifier table; None when the
+        table does not carry ``prop`` of ``prefix`` (``_carried``)."""
+        via = IDENTIFIED_VIA.get((prefix, prop))
+        if not (self._carried(*via[:2]) if via else self._carried(prefix, prop)):
+            return None
+        stripped = value.strip()
+        bare = re.sub(r"[^0-9A-Za-z]", "", stripped)
+        forms = sorted({f for v in (stripped, bare) for f in (v, v.upper(), v.lower()) if f})
+        rows = self.st.conn.execute(
+            "SELECT object_id, property FROM identifiers WHERE normalized IN "
+            "(SELECT value FROM json_each(?)) AND superseded_at IS NULL",
+            (json.dumps(forms),)).fetchall()
+        own = prefix + ":"
+        if via is None:
+            return {oid for oid, p in rows if oid.startswith(own) and p == prop}
+        carrier, _carrier_prop, link = via
+        others = sorted({oid for oid, _p in rows if oid.startswith(carrier + ":")})
+        if len(others) > FIND_FOLLOW:
+            raise FindUnavailable(f"{len(others)} {carrier} records carry the value")
+        self.check()
+        return {o for row in (self.st.touching(others, (link,)) if others else ())
+                for o in (row[3], row[4]) if o.startswith(own)}
+
+    def _carried(self, prefix: str, prop: str) -> bool:
+        """Whether the identifier table holds ``prop`` of any ``prefix`` record (read once
+        per handler run and pair: the object index's range, milliseconds)."""
+        memo = self._carried_pairs
+        if (prefix, prop) not in memo:
+            memo[(prefix, prop)] = self.st.conn.execute(
+                "SELECT 1 FROM identifiers WHERE object_id >= ? AND object_id < ? AND "
+                "property = ? LIMIT 1", (prefix + ":", prefix + ";", prop)).fetchone() is not None
+        return memo[(prefix, prop)]
+
+
+class FindUnavailable(Exception):
+    """``Ctx.find`` could not look the value up (the handler holds, never reads "none")."""
+
+
+# the most carrier records of one value ``Ctx.find`` follows links of (more: it cannot say);
+# a short customer PO many customers use is carried by 678 records (live 11-17: 0.2 s)
+FIND_FOLLOW = 2000
+# a record property the identifier table carries on another record, tied by a link: (type,
+# property) -> (the carrier's type, its property, the link). A sales order's customer PO is
+# identified on its CustomerPurchaseOrder (``identified`` reads it the same way; 200 of 200
+# recent orders' customer POs found so, live 11-17).
+IDENTIFIED_VIA: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("SalesOrder", "customer_po"): ("CustomerPurchaseOrder", "po_number",
+                                    "SalesOrder.references_customer_po")}
 
 
 def _held(st: Any, ids: Iterable[str]) -> set[str]:
@@ -233,6 +306,12 @@ def identified(ctx: "Ctx", *texts: str) -> list[str]:
     identifier table: customer PO, order, PO, invoice, shipment, lot numbers), a customer
     PO resolved to its orders; a token naming more than ``MAX_PER_TOKEN`` records is
     ambiguous and left out (conservative identity)."""
+    return list(dict.fromkeys(o for _t, o in identified_tokens(ctx, *texts)))[:MAX_RECORDS]
+
+
+def identified_tokens(ctx: "Ctx", *texts: str) -> list[tuple[str, str]]:
+    """``identified`` with the token each record was matched by: (token as written, record),
+    in token order."""
     tokens = []
     for t in texts:
         for m in TOKEN.finditer(t or ""):
@@ -252,7 +331,7 @@ def identified(ctx: "Ctx", *texts: str) -> list[str]:
     for norm, kind, oid in rows:
         if kind not in ID_KINDS_SKIPPED and oid.split(":", 1)[0] in ID_TYPES:
             by_token[norm.upper()].add(oid)
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for tok in tokens:
         found = by_token.get(tok.upper(), set())
         orders = set()
@@ -263,8 +342,8 @@ def identified(ctx: "Ctx", *texts: str) -> list[str]:
             else:
                 orders.add(oid)
         if 0 < len(orders) <= MAX_PER_TOKEN:
-            out.extend(sorted(orders))
-    return list(dict.fromkeys(out))[:MAX_RECORDS]
+            out.extend((tok, o) for o in sorted(orders))
+    return out
 
 
 def _numbers(rx: re.Pattern[str], *texts: str) -> list[str]:
@@ -547,6 +626,129 @@ def _records_named(ctx: Ctx, event: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(found))[:MAX_RECORDS]
 
 
+def _record_customers(ctx: Ctx, oid: str) -> set[str]:
+    """The customer records a sales order, invoice or shipment belongs to: an order's
+    ``ordered_by``; an invoice's ``billed_to`` and its orders'; a shipment's orders'."""
+    orders = [oid] if oid.startswith("SalesOrder:") else []
+    custs: set[str] = set()
+    if oid.startswith("SalesInvoice:"):
+        custs.update(ctx.linked(oid, ("SalesInvoice.billed_to",)))
+        orders += ctx.linked(oid, ("SalesInvoice.bills",))
+    elif oid.startswith("Shipment:"):
+        orders += ctx.linked(oid, ("Shipment.ships",))
+    for o in orders:
+        if o.startswith("SalesOrder:"):
+            custs.update(ctx.linked(o, ("SalesOrder.ordered_by",)))
+    return {c for c in custs if c.startswith("Customer:")}
+
+
+def senders_own(ctx: Ctx, event: Mapping[str, Any], records: Sequence[str]
+                ) -> list[str] | None:
+    """The records of ``records`` (sales orders, invoices, shipments) a reply to ``event``
+    may name: every one, when each reader of the reply is internal (a mail whose sender and
+    reply-all are single addresses of our domains; a Teams chat whose every member the
+    directory holds); else only those whose every customer carries the number of the
+    customer the outside reader resolves to (a PO, order or invoice number is no key across
+    customers: another customer's record under the same number is never named to this
+    one). ``None`` (hold: draft nothing) when a record matched and an outside reader's
+    customer cannot be resolved (a Teams channel, whose members are not captured, or a
+    chat member no address of whom is held)."""
+    records = list(dict.fromkeys(records))
+    if not records:
+        return []
+    if event.get("channel") == "teams":
+        return _chat_readers_own(ctx, event, records)
+    others = event.get("reply_all") or {}
+    to = [str(event.get("sender") or "")] + [
+        a for k in ("to", "cc") for a in others.get(k) or () if isinstance(a, str)]
+    if all(_ours(a, ctx.domains) for a in to):
+        return records          # every reader is ours: a mail with no outside recipient
+    from .autopilot_work import resolve_customer
+    text = f"{event.get('subject') or ''}\n{event.get('text') or ''}"
+    customer = resolve_customer(ctx, event, text[:20000])
+    want = str(customer.get("number") or "").strip().upper()
+    if not want:
+        return None
+    return customers_own(ctx, records, want)
+
+
+def _ours(address: str, domains: Sequence[str]) -> bool:
+    """One address, exactly, of our domains (a multi-address string, a display-name form
+    or a guest's ``#EXT#`` UPN is no internal reader)."""
+    a = str(address or "").strip().lower()
+    return bool(a) and "#ext#" not in a and _addresses(a) == [a] and _internal(a, domains)
+
+
+def guest_address(member: str) -> str:
+    """A chat member's address: a guest's UPN ``joe_buyer.example#EXT#@tenant`` is
+    ``joe@buyer.example``; another address as is; an id: "" (no address held)."""
+    m = str(member or "").strip().lower()
+    if "#ext#" in m:
+        local, _, domain = m.split("#ext#", 1)[0].rpartition("_")
+        m = f"{local}@{domain}" if local and "." in domain else ""
+    return m if _addresses(m) == [m] else ""
+
+
+def _chat_readers_own(ctx: Ctx, event: Mapping[str, Any], records: list[str]
+                      ) -> list[str] | None:
+    """``senders_own`` for a Teams message: the chat's members outside the directory
+    (``autopilot_events._teams_events``: ``outside``) are its outside readers. None:
+    unknown membership (a channel, an event typed without it): hold. Each outside address
+    resolves to its customer, every one to the same (two customers: no record is both's);
+    a member id the directory does not hold is a reader only an address of the chat can
+    stand for (a guest is listed by id and address), so more such ids than outside
+    addresses: hold. An address of our domains the directory does not hold is ours."""
+    outside = event.get("outside")
+    if outside is None or not isinstance(outside, (list, tuple)):
+        return None
+    if not outside:
+        return records          # every member is a directory person
+    from .autopilot_work import resolve_customer
+    addresses = [guest_address(m) for m in outside if "@" in str(m)]
+    ids = [m for m in outside if "@" not in str(m)]
+    if "" in addresses or len(ids) > len(addresses):
+        return None
+    wants = set()
+    for a in addresses:
+        if _ours(a, ctx.domains):
+            continue        # an address of our domains the mail directory does not hold
+        got = resolve_customer(ctx, {"sender": a, "object_id": event.get("object_id") or ""}, "")
+        want = str(got.get("number") or "").strip().upper()
+        if not want:
+            return None
+        wants.add(want)
+    if not wants:
+        return records      # outside the directory but of our domains only
+    if len(wants) > 1:
+        return []           # readers of two customers: no record is each one's own
+    return customers_own(ctx, records, wants.pop())
+
+
+def customers_own(ctx: Ctx, records: Sequence[str], want: str) -> list[str]:
+    """The records of ``records`` whose every customer is the customer numbered ``want``:
+    its number is ``want``, or it is a ship-to card whose declared payer link
+    (``Customer.billed_to``, ship-to -> bill-to) ends at a card numbered ``want`` (the
+    bill-to customer asking about its ship-to's order). A ``bill_to_erp_code`` value with
+    no link is no relationship; a ship-to never reads its payer's or a sibling's orders.
+    A record with no customer is never named."""
+    want = want.strip().upper()
+    if not want:
+        return []
+    by_record = {r: _record_customers(ctx, r) for r in records}
+    custs = sorted({c for cs in by_record.values() for c in cs})
+    payer = {c: set() for c in custs}
+    for _t, a, b in (ctx.touching(custs, ("Customer.billed_to",)) if custs else ()):
+        if a in payer and b.startswith("Customer:"):
+            payer[a].add(b)      # forward only: ``a`` (ship-to) is billed to ``b``
+    cards = sorted(set(custs) | {b for bs in payer.values() for b in bs})
+    codes = {c: _v(r, "erp_code").strip().upper()
+             for c, r in (ctx.read(cards, ("erp_code",)) if cards else {}).items()}
+
+    def ours(c: str) -> bool:
+        return codes.get(c) == want or any(codes.get(b) == want for b in payer[c])
+    return [r for r in records if by_record[r] and all(ours(c) for c in by_record[r])]
+
+
 def h_answer_request(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     named = _records_named(ctx, event)
     orders = [o for o in named if o.startswith("SalesOrder:")]
@@ -561,7 +763,14 @@ def h_answer_request(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             continue
         seen.update(ctx.linked(o, ("SalesOrder.same_record_as",)))
         unique.append(o)
-    orders = unique[:5]
+    # only the asking customer's own orders are named back (never another customer's
+    # order found by a shared PO, order or invoice number); unresolved sender: hold
+    own = senders_own(ctx, event, unique)
+    if own is None:
+        return {"skip": "status_customer_ambiguous"}
+    if unique and not own:
+        return {"skip": "no_own_record_named"}
+    orders = own[:5]
     wants_docs = "document_request" in (event.get("intents") or ())
     out: dict[str, Any] = {"orders": [], "links": [], "gaps": []}
     lines = []
@@ -806,9 +1015,17 @@ def h_ledger(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             ctx.find("SalesInvoice", "bc_number", no)
     for order in (o for o in event.get("records") or () if o.startswith("SalesOrder:")):
         invs += ctx.linked(order, ("SalesInvoice.bills",))
-    invs = list(dict.fromkeys(invs))[:5]
+    invs = list(dict.fromkeys(invs))
     if not invs:
         return {"skip": "no_invoice_named"}
+    # only the asking customer's own invoices: another customer's invoice under a shared
+    # number (its balance, due date) is never stated to this one; unresolved sender: hold
+    own = senders_own(ctx, event, invs)
+    if own is None:
+        return {"skip": "invoice_customer_ambiguous"}
+    if not own:
+        return {"skip": "no_own_invoice_named"}
+    invs = own[:5]
     rows = ctx.read(invs, ("invoice_number", "bc_number", "invoice_date", "due_date",
                            "total_amount", "remaining_amount", "currency", "status"))
     ledger, lines = [], []
@@ -874,7 +1091,23 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             "gaps": [] if orders else ["no_order_named"]}
 
 
+def _attendee_customer(ctx: Ctx, event: Mapping[str, Any], address: str) -> str:
+    """The number of the one customer an outside attendee represents (the customer records
+    stating its address, else its domain, ``autopilot_work.resolve_customer``); "" when
+    none, several, or only a supplier states it."""
+    from .autopilot_work import resolve_customer
+    got = resolve_customer(ctx, {"object_id": event.get("object_id") or "",
+                                 "sender": address.strip().lower()}, "")
+    return str(got.get("number") or "").strip().upper()
+
+
 def h_meeting(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+    """A follow-up to a meeting's outside attendees. A draft names only the open orders of
+    the customer its addressees represent: attendees of one customer get one draft with
+    that customer's orders; attendees of several customers (or an attendee no single
+    customer states) get one draft per customer (``customer_notices``, each naming only its
+    own customer's orders; an unresolved attendee's names none) and no single draft to all.
+    With no outside attendee the internal draft lists the parties' open orders."""
     f = event.get("fields") or {}
     parties = event.get("parties") or []
     prow = ctx.read(parties, ("name",))
@@ -887,19 +1120,47 @@ def h_meeting(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
                                     "status": _v(r, "status"),
                                     "required_date": _v(r, "required_date")[:10]})
     open_orders = sorted(open_orders, key=lambda x: x["required_date"] or "9")[:10]
-    external = [a for a in event.get("attendees") or () if not _internal(a, ctx.domains)]
-    lines = ["Thank you for your time today. A short recap and next steps:", ""]
-    lines += [f"- Order {o['order_number']}: {o['status']}"
-              + (f", required by {o['required_date']}" if o["required_date"] else "")
-              for o in open_orders] or ["- (add the agreed next steps)"]
-    return {"summary": f"Meeting ended: {f.get('subject', '')[:120]}",
-            "parties": [_v(r, "name") for r in prow.values()], "open_orders": open_orders,
-            # every outside attendee: ``_recipients`` keeps the first and REPLY_ALL_MAX
-            # more, and asks about the rest
-            "draft": {"channel": "email", "to": [{"address": a} for a in external],
-                      "subject": f"Follow-up: {f.get('subject', '')}"[:200],
-                      "body": "\n".join(["Hello,", "", *lines, "", "Best regards,"])},
-            "gaps": [] if external else ["no_external_attendee"]}
+    external = list(dict.fromkeys(
+        a for a in event.get("attendees") or () if not _internal(a, ctx.domains)))
+    subject = f"Follow-up: {f.get('subject', '')}"[:200]
+
+    def draft(to: Sequence[str], orders: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        lines = ["Thank you for your time today. A short recap and next steps:", ""]
+        lines += [f"- Order {o['order_number']}: {o['status']}"
+                  + (f", required by {o['required_date']}" if o["required_date"] else "")
+                  for o in orders] or ["- (add the agreed next steps)"]
+        # every addressee: ``_recipients`` keeps the first and REPLY_ALL_MAX more, and
+        # asks about the rest
+        return {"channel": "email", "to": [{"address": a} for a in to], "subject": subject,
+                "body": "\n".join(["Hello,", "", *lines, "", "Best regards,"])}
+
+    out: dict[str, Any] = {"summary": f"Meeting ended: {f.get('subject', '')[:120]}",
+                           "parties": [_v(r, "name") for r in prow.values()]}
+    if not external:
+        out.update(open_orders=open_orders, draft=draft([], open_orders),
+                   gaps=["no_external_attendee"])
+        return out
+    # who each outside attendee speaks for: a customer number, or "" (no single customer)
+    groups: dict[str, list[str]] = {}
+    for a in external:
+        groups.setdefault(_attendee_customer(ctx, event, a), []).append(a)
+    ids = [o["object_id"] for o in open_orders]
+    owned = {n: set(customers_own(ctx, ids, n)) if n else set() for n in groups}
+    per = {n: [o for o in open_orders if o["object_id"] in owned[n]] for n in groups}
+    gaps = []
+    if "" in groups:
+        gaps.append("attendee_customer_unknown")
+    if len(groups) == 1:
+        (n, to), = groups.items()
+        out.update(open_orders=per[n], draft=draft(to, per[n]), gaps=gaps)
+        return out
+    # attendees of several customers: one draft each, never one listing all to all
+    out["open_orders"] = [o for o in open_orders
+                          if any(o["object_id"] in owned[n] for n in groups)]
+    out["customer_notices"] = [dict(draft(to, per[n]), customer=n or None)
+                               for n, to in sorted(groups.items(), key=lambda g: g[0] or "~")]
+    out["gaps"] = ["attendees_span_customers", *gaps]
+    return out
 
 
 def _work(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:

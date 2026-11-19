@@ -616,6 +616,27 @@ class CeoSignals(Engine):
         self.assertTrue(reads)
         run(Reader("plx:engine"))
         self.assertTrue(set(reads) <= self._recent(w))
+        # 11-17: cut by a store read interrupted at the window's end (the progress
+        # handler; on Postgres the watchdog's cancel) keeps them too; a store error
+        # before the window's end is a failure, never a cut that keeps a part
+        import sqlite3
+        for spent, status in ((True, "truncated"), (False, "failed")):
+            self.inbox.unlink()
+
+            def interrupted(st, *_a, margins, recent, trailing, **_k):
+                margins(trailing)
+                st.left = (lambda: 0.0) if spent else (lambda: 60.0)
+                raise sqlite3.OperationalError("interrupted")
+            with mock.patch.object(ceo, "margin_erosion", interrupted), \
+                    mock.patch.object(cp, "read_order", read_order):
+                summary = self.run_engine(w, only=[ceo.MARGIN], call=Reader("plx:engine"),
+                                          pool=InProcessPool())
+            self.assertEqual(summary["detectors"][ceo.MARGIN], status)
+            run(Reader("plx:engine"))
+            if spent:
+                self.assertTrue(set(reads) <= self._recent(w))
+            else:
+                self.assertEqual(len(reads), len(figures))
 
     def _recent(self, w: World) -> set[str]:
         from operating import proactive_events as ev

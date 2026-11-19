@@ -108,11 +108,16 @@ def aged(w: World, kind: str, then: tuple, now: tuple, *, currency: str = "CAD",
     return oid
 
 
-def assembly(w: World, item: str, *, status: str = "Allocated", due: int | None = 3,
+def assembly(w: World, item: str, *, status: str = "Allocated", due: int | str | None = 3,
              finished: bool | int = False, created: int = 5, binding: str = "fx") -> str:
-    """``finished``: realized a day ago (True) or that many days ago."""
+    """``finished``: realized a day ago (True) or that many days ago; ``due`` "empty": the
+    field is there with no value, "garbled": a value that is no date."""
     values = {"status": status, "fm_created_at": day(created) + "T08:00:00Z"}
-    if due is not None:
+    if due == "empty":
+        values["scheduled_date"] = None
+    elif due == "garbled":
+        values["scheduled_date"] = "next week-ish"
+    elif due is not None:
         values["scheduled_date"] = day(due)
     if finished is not False:
         values["realized_date"] = day(1 if finished is True else finished)
@@ -176,6 +181,29 @@ class OpsAlerts(Engine):
                          {"not_judged": 1, "stage_unmapped": 1})
         self.assertEqual(self.run_rules(World())["detectors"][po.MC_STUCK], "complete")
         self.assertNotIn("mc_task_overdue", self.run_rules(World())["detectors"])
+
+    def test_a_task_without_updated_at_is_dated_by_its_newest_event_never_guessed(self):
+        """MC sends no updatedAt (schema note): the task's newest captured event dates its
+        last change; no event, or an event with no readable time, stays unknown."""
+        w = World()
+
+        def bare(stage: str, *events: str) -> str:
+            ident = f"TASK-B{w.n + 1}"
+            oid = w.obj("MCTask", {"task_id": ident, "title": "Synthetic", "stage": stage},
+                        audience="mc:ops")
+            for at in events:
+                w.obj("MCTaskEvent", {"task_id": ident, "kind": "progress", "at": at},
+                      audience="mc:ops")
+            return oid
+        idle = bare("review", day(40) + "T09:00:00Z", day(30) + "T09:00:00Z")
+        bare("review", day(30) + "T09:00:00Z", day(2) + "T09:00:00Z")   # moved 2 days ago
+        bare("review")                                                    # no history
+        bare("review", "not a time")                                      # unreadable
+        summary = self.run_rules(w)
+        (stuck,) = self.kinds(po.MC_STUCK)
+        self.assertEqual(stuck["object_id"], idle)
+        self.assertIn("no update for 30 days", stuck["summary"])
+        self.assertEqual(summary["not_evaluated"][po.MC_STUCK], {"updated_at_unknown": 2})
 
     def test_an_approval_waiting_is_raised_and_never_decided(self):
         w = World()
@@ -320,13 +348,19 @@ class OpsAlerts(Engine):
                    keeper)
         # open on paper, neither scheduled nor edited within the active window: stale
         assembly(w, item, due=400)
+        # a scheduled-date field left empty is "no date set" (a person enters it), a value
+        # that is no date is unreadable, no field at all is undated (counted, not noted)
+        assembly(w, item, due="empty")
+        assembly(w, item, due="garbled")
+        assembly(w, item, due=None)
         summary = self.run_rules(w)
         (gap,) = self.kinds(po.PRODUCTION)
         self.assertEqual(gap["object_id"], late)
         self.assertIn("10 days past its due date", gap["summary"])
         self.assertIn("usually realized within 7 days of it", gap["summary"])
         self.assertEqual(summary["not_evaluated"][po.PRODUCTION],
-                         {"status_unmapped": 1, "status_source_absent": 1})
+                         {"status_unmapped": 1, "status_source_absent": 1,
+                          "no_scheduled_date": 1, "due_date_unreadable": 1})
         # the allowed lag is the type's own: 20 records realized 2 days after their
         # scheduled day make the order 4 days past its day late
         for n in range(20):

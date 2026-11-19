@@ -172,34 +172,3 @@ class UpcomingKeptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class QcDailyAlertReadTests(unittest.TestCase):
-    """SP-03 (11-15): the daily QC pack's first visit read every briefing kind of alert
-    (2,000 decided) to show its hold and production-material kinds (34-48 s cold). Its read
-    asks the inbox for those kinds alone, and they all still reach the pack."""
-
-    def test_the_daily_pack_reads_only_the_alert_kinds_it_shows(self):
-        from operating import briefing as bf
-        asked, got = [], []
-
-        class QcView(View):
-            def gap_inbox(self, **kw):
-                asked.append(kw)
-                return {"status": "read", "gaps": [{"kind": k} for k in kw["kinds"]]}
-
-        def daily(call, held, alerts, **kw):
-            got.append(alerts)
-            return {"kind": "qc_daily", "sections": []}
-        with mock.patch.object(br, "qc_daily_pack", daily):
-            briefs.qc_pack_of(QcView(held=frozenset({br.QUALITY})), "daily")
-        self.assertEqual(len(asked), 1)
-        kinds = set(asked[0]["kinds"])
-        self.assertEqual(kinds, br.QC_ALERT_KINDS & set(bf.EVENT_KINDS))
-        self.assertTrue({"lot_on_hold", "quality_hold_aging", "production_late"} <= kinds)
-        self.assertNotIn("receipt_without_qc", kinds)
-        self.assertEqual({g["kind"] for g in got[0]["gaps"]}, kinds)
-        # the briefing's own read is unchanged: every kind
-        asked.clear()
-        briefs._alerts(QcView())
-        self.assertEqual(asked[0]["kinds"], list(bf.EVENT_KINDS))

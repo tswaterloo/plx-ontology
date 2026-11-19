@@ -842,6 +842,9 @@ def item_gate_from_case_runtime(runtime: Any) -> Callable[[Actor, str], bool]:
             return False
         return True
     gate.key_material = lambda actor: runtime_key_material(runtime, actor)
+    # the runtime whose functions decide, so a bulk reader (``plx.table``'s mail and Teams
+    # rules, ``ontology_tools_table_items``) computes each reader's parts with them
+    gate.runtime = runtime
     return gate
 
 
@@ -873,8 +876,19 @@ def runtime_key_material(runtime: Any, actor: Any) -> dict[str, Any] | None:
     fingerprint = None if entitlement is None else getattr(entitlement, "fingerprint", None)
     if entitlement is not None and not fingerprint:
         return None
-    return {"actor": [actor.tenant, sorted(actor.principals), actor.clearance],
-            "entitlement": fingerprint, "exclusion": guard.fingerprint()}
+    material = {"actor": [actor.tenant, sorted(actor.principals), actor.clearance],
+                "entitlement": fingerprint, "exclusion": guard.fingerprint()}
+    if entitlement is not None:
+        # The staff item rule's own inputs (restricted sites, shared mailboxes, the switch):
+        # a change gives every staff reader a new key, so no recorded decision outlives it.
+        try:
+            held = getattr(runtime, "staff_key_material", None)
+            staff = None if held is None or entitlement.unrestricted() else held()
+        except Exception:  # noqa: BLE001 - an undecidable staff scope holds no key
+            return None
+        if staff is not None:
+            material["staff"] = staff
+    return material
 
 
 def _is_object_id(value: str) -> bool:

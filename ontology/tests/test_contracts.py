@@ -38,7 +38,7 @@ TOOL_EXAMPLES = {
 DECIDED_TOOLS = {f"plx.{name}" for name in (
     "schema", "find", "object", "around", "timeline", "aggregate", "process", "compare", "identity",
     "documents", "read", "investigate", "agenda", "changes", "review", "playbook_propose",
-    "playbook_evaluate", "playbook_adopt", "query")}
+    "playbook_evaluate", "playbook_adopt", "query", "table", "business")}
 WORKBENCH_WRITERS = {"plx.review", "plx.playbook_propose", "plx.playbook_evaluate",
                      "plx.playbook_adopt", "plx.investigate"}
 

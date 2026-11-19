@@ -69,12 +69,14 @@ export function History({ events, linked, partial }: { events: TimelineEvent[]; 
   };
   const shown = filterHistory(rows, { systems, kinds });
   const list = all ? shown : shown.slice(0, SHOWN);
+  // nothing dated: the section is left out, unless records hidden from this reader may hold dates
+  if (rows.length === 0 && !partial) return null;
   return (
     <section data-testid="history">
       <SectionTitle>History</SectionTitle>
       {rows.length === 0 ? (
         <p className="text-[13px] text-muted" data-testid="history-empty">
-          {partial ? "Nothing dated on this record. Some linked records are hidden from you." : "Nothing dated on this record."}
+          Nothing dated on this record that you can see. Some linked records are hidden from you.
         </p>
       ) : (
         <>

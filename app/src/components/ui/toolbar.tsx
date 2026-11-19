@@ -27,8 +27,8 @@ export function PinButton({ label }: { label: string }) {
       type="button"
       onClick={() => togglePin({ href, label }, items, me)}
       aria-pressed={pinned}
-      title={pinned ? "Unpin from My work" : "Pin to My work"}
-      aria-label={pinned ? `Unpin ${label} from My work` : `Pin ${label} to My work`}
+      title={pinned ? "Unpin from Home" : "Pin to Home"}
+      aria-label={pinned ? `Unpin ${label} from Home` : `Pin ${label} to Home`}
       className="inline-flex size-8 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer max-lg:hidden"
       data-testid="pin-page"
     >

@@ -29,6 +29,7 @@
         "plx.agenda",
         "plx.changes",
         "plx.query",
+        "plx.table",
         "plx.case_open",
         "plx.case_get",
         "plx.case_add_finding",
@@ -47,6 +48,51 @@
         "test.record.set_field",
         "mc.task.create_follow_up"
       ],
+      "data_scopes": [
+        "api",
+        "original",
+        "graph-mail",
+        "sharepoint",
+        "bc"
+      ],
+      "limits": {
+        "max_tool_calls": 1000,
+        "max_consecutive_errors": 25
+      },
+      "stop": {
+        "when": [
+          "max_tool_calls",
+          "max_consecutive_errors"
+        ],
+        "escalate_to": "human"
+      },
+      "escalation": {
+        "mc_gate": "mc_approval",
+        "per_call_human_approval": "human"
+      },
+      "forbidden": [
+        "approve",
+        "dispatch",
+        "mc_write",
+        "business_write",
+        "plx.act"
+      ]
+    },
+    {
+      "id": "plx.agent.ask",
+      "version": 1,
+      "role": "Answer a business question like an analyst at a SQL prompt: read the permission-scoped business views (plx.sql) and search mail, Teams and documents (plx.search); never acts.",
+      "responsibilities": [
+        "read the business views and the text sources as the session employee, citing every figure from a returned row",
+        "check its own totals with another query before it states them",
+        "say plainly what it could not find"
+      ],
+      "tools": [
+        "plx.sql",
+        "plx.search",
+        "plx.open"
+      ],
+      "action_types": [],
       "data_scopes": [
         "api",
         "original",

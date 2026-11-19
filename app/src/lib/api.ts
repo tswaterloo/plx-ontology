@@ -54,7 +54,6 @@ import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WorkloadGrants,
   WorkloadGrantSheet,
   TeamPersonDetail,
-  RdBoard,
   UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
@@ -79,6 +78,8 @@ import type { DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   SourceView,
   SourceRecords,
   SuggestResponse,
+  BizKind,
+  BizPage,
   Suggestions,
   ImpactPanel,
   Watchlist,
@@ -391,6 +392,9 @@ export interface OpsAlarms {
   every_minutes?: number;
   open: OpsIncident[];
   paused?: OpsIncident[];
+  /** A planned maintenance window (operating/ops_alarms_pauses.py): what it stops is paused until `until`;
+   * `overrun` once that has passed (then it pages), `unreadable` for a marker nobody can read. */
+  maintenance?: { state: "in_window" | "overrun" | "unreadable"; reason?: string; until?: string } | null;
   recovered: OpsIncident[];
   notify?: OpsNotify | null;
   checks: (OpsCheck & { line?: string })[];
@@ -553,23 +557,6 @@ export function getMeetingBrief(type: string, id: string, signal?: AbortSignal):
   return getJson<Brief>(`/api/brief/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, signal);
 }
 
-/** The QC daily pack: open quality checks, calibration, slots past start, batches on hold and
- * the hold-release queue (quality_controlled readers see lines; anyone else the marked sections). */
-export function getQcDaily(signal?: AbortSignal): Promise<Brief> {
-  return getJson<Brief>("/api/brief/qc-daily", signal);
-}
-
-/** The QC audit pack: on-time share of the QC checks by area and month over the last year. */
-export function getQcAudit(signal?: AbortSignal): Promise<Brief> {
-  return getJson<Brief>("/api/brief/qc-audit", signal);
-}
-
-/** The QC audit pack as one printable plain-text page, each line with its sources. */
-export async function getQcAuditText(signal?: AbortSignal): Promise<string> {
-  const res = await call("/api/brief/qc-audit.txt", { signal });
-  return res.text();
-}
-
 /** Department and week labour hours (hr / ops-management readers only). */
 export function getLabour(signal?: AbortSignal): Promise<LabourPage> {
   return getJson<LabourPage>("/api/labour", signal);
@@ -626,6 +613,23 @@ export function getAutopilot(signal?: AbortSignal): Promise<AutopilotArea> {
   return getJson<AutopilotArea>("/api/autopilot", signal);
 }
 
+/** One thing prepared for you: who wrote, what they wrote, and the reply or the question. */
+export type PreparedItem = {
+  item_id: string; sender: string; channel: "mail" | "teams"; subject: string; message: string;
+  kind: "reply" | "your_call"; to: string[]; cc: string[]; body: string; edited: boolean;
+  ask: string; facts: string[]; created_at: string;
+};
+
+/** Your open prepared replies, newest first (the one list Home reads too). */
+export async function getAutopilotDrafts(signal?: AbortSignal): Promise<{ items: PreparedItem[] }> {
+  return getJson<{ items: PreparedItem[] }>("/api/autopilot/drafts", signal);
+}
+
+/** The reply to a "your call" card, written from your one line and kept as your edit. */
+export async function replyFromLine(itemId: string, line: string): Promise<AutopilotItem> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/reply-from-line`, { method: "POST", json: { line } })).json()) as AutopilotItem;
+}
+
 /** Accept, edit, reject or snooze an item of yours (accept: a recorded dry run unless live). */
 export async function decideAutopilotItem(itemId: string, body: AutopilotDecisionRequest): Promise<AutopilotItem> {
   return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/decision`, { method: "POST", json: body })).json()) as AutopilotItem;
@@ -664,6 +668,12 @@ export async function fillForm(body: DocFillRequest): Promise<InstructFill> {
  * passed its check for you). Answers the area as it now reads. */
 export async function setAutopilotOptIn(workflow: string, on: boolean): Promise<AutopilotArea> {
   return (await (await call("/api/autopilot/opt-in", { method: "POST", json: { workflow, on } })).json()) as AutopilotArea;
+}
+
+/** Switch one choice of prepared work (drafts and prepared actions waiting in My work for
+ * your confirm) on or off for yourself. Answers the area as it now reads. */
+export async function setAutopilotDrafts(choice: string, on: boolean): Promise<AutopilotArea> {
+  return (await (await call("/api/autopilot/drafts", { method: "POST", json: { choice, on } })).json()) as AutopilotArea;
 }
 
 /** Owner only: acknowledge that a workflow passed its check for a role (the owner is told
@@ -747,11 +757,6 @@ export function getTeamPerson(key: string, signal?: AbortSignal): Promise<TeamPe
   return getJson<TeamPersonDetail>(`/api/team/${encodeURIComponent(key)}`, signal);
 }
 
-// R&D and sample projects per customer, from the threads and records you may open.
-export function getRdBoard(signal?: AbortSignal): Promise<RdBoard> {
-  return getRead<RdBoard>("/api/rd-projects", signal);
-}
-
 
 // An item's label and artwork changes from your own alert list.
 export function getLabelChanges(objectId: string, signal?: AbortSignal): Promise<LabelChanges> {
@@ -781,6 +786,14 @@ export function suggest(q: string, signal?: AbortSignal, limit = 8): Promise<Sug
   return getJson<SuggestResponse>(`/api/suggest?q=${encodeURIComponent(q.slice(0, 100))}&limit=${n}`, signal);
 }
 
+/** A business record page (customer, chain, supplier account; PO or customer order). */
+export function bizPage(kind: BizKind, key: { h?: string; chain?: string }, signal?: AbortSignal): Promise<BizPage> {
+  const q = new URLSearchParams({ kind });
+  if (key.h) q.set("h", key.h.slice(0, 600));
+  if (key.chain) q.set("chain", key.chain.slice(0, 200));
+  return getJson<BizPage>(`/api/biz/page?${q.toString()}`, signal);
+}
+
 /** Projection type names (PurchaseOrder, SalesOrder, ...). Anything else fails closed. */
 const OBJECT_TYPE = /^[A-Za-z][A-Za-z0-9_]{0,59}$/;
 
@@ -793,6 +806,13 @@ export function isObjectType(t: string): boolean {
 export function getObject(type: string, id: string, signal?: AbortSignal, quick = false): Promise<ObjectPage> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
   return getRead<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
+}
+
+/** A record's core read: its own details only (`core`, status "reading"), served before the
+ * quick read while its status, timeline, links and documents are read. */
+export function getObjectCore(type: string, id: string, signal?: AbortSignal): Promise<ObjectPage> {
+  if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
+  return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}?quick=1&core=1`, signal);
 }
 
 /** A record's neighbours one hop out, by kind of link, as this reader may see them (the

@@ -43,6 +43,46 @@ def chunks_bq_hnsw_ddl(dim: int) -> str:
             f"((binary_quantize(embedding)::bit({dim})) bit_hamming_ops) "
             "WITH (m = 16, ef_construction = 64)")
 
+# One partial halfvec HNSW per chunk kind (migration 0036): a question far from every chunk
+# (a long eval question sits at cosine distance 0.35-0.5 from all of them) makes one walk
+# over the whole graph stop in the big kinds' region; a walk per kind reaches each kind's
+# nearest rows. operating.pg.dense finds the valid ones at run time (PLX_SEARCH_KINDS).
+CHUNKS_KIND_HNSW_PREFIX = "chunks_embedding_k_"
+CHUNKS_KIND_HNSW_KINDS = ("attachment", "bc_text", "list_item", "mail", "map_stage", "mc_task",
+                          "meeting", "original", "portal_text", "record_text", "record_words",
+                          "sharepoint", "sheet_row", "teams")
+_KIND_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+
+
+def chunks_kind_hnsw_ddl(kind: str) -> str:
+    """The partial halfvec HNSW over one kind's rows (migration 0036's definition)."""
+    if not isinstance(kind, str) or not _KIND_NAME.match(kind):
+        raise ValueError(f"kind_invalid:{kind!r}")
+    return (f"CREATE INDEX IF NOT EXISTS {CHUNKS_KIND_HNSW_PREFIX}{kind} ON search.chunks "
+            "USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64) "
+            f"WHERE kind = '{kind}'")
+
+
+KINDS_FLAG = "PLX_SEARCH_KINDS"
+
+
+def kinds_flag_on(env: Any = None) -> bool:
+    """``PLX_SEARCH_KINDS``: on only for ``1``/``on``/``true`` (any case). A bulk rebuild or
+    an embedding switch rebuilds the per-kind indexes only when it is on (they about double
+    a rebuild's time and size); off, they stay dropped and search uses the whole-table one."""
+    import os
+    value = (os.environ if env is None else env).get(KINDS_FLAG, "")
+    return str(value).strip().lower() in ("1", "on", "true")
+
+
+def drop_chunks_kind_hnsw(conn: Any) -> None:
+    """Drop every per-kind chunk HNSW (any kind, listed or not)."""
+    for (name,) in conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'search' "
+            "AND tablename = 'chunks' AND indexname LIKE %s",
+            (CHUNKS_KIND_HNSW_PREFIX.replace("_", r"\_") + "%",)).fetchall():
+        conn.execute(sql.SQL("DROP INDEX IF EXISTS search.{}").format(sql.Identifier(name)))
+
 LEDGER = "plx_meta"
 _META_DDL = """
 CREATE SCHEMA IF NOT EXISTS {schema};
@@ -180,6 +220,7 @@ def set_embedding(conn: psycopg.Connection, model: str, dim: int | None = None) 
             return {"changed": False, "model": model, "dim": dim, "cleared": 0}
         conn.execute("DROP INDEX IF EXISTS search.chunks_embedding_hnsw")
         conn.execute("DROP INDEX IF EXISTS search.chunks_embedding_bq_hnsw")
+        drop_chunks_kind_hnsw(conn)
         conn.execute("DROP INDEX IF EXISTS search.entities_name_embedding_hnsw")
         cleared = conn.execute(
             "UPDATE search.chunks SET embedding = NULL, embed_model = NULL "
@@ -193,6 +234,9 @@ def set_embedding(conn: psycopg.Connection, model: str, dim: int | None = None) 
         conn.execute("CREATE INDEX chunks_embedding_hnsw ON search.chunks USING hnsw "
                      "(embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)")
         conn.execute(chunks_bq_hnsw_ddl(dim))
+        if kinds_flag_on():
+            for kind in CHUNKS_KIND_HNSW_KINDS:
+                conn.execute(chunks_kind_hnsw_ddl(kind))
         conn.execute("CREATE INDEX entities_name_embedding_hnsw ON search.entities USING hnsw "
                      "(name_embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)")
         conn.execute("UPDATE search.embedding_config SET model = %s, dim = %s, changed_at = now()",

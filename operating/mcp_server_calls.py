@@ -9,7 +9,8 @@ from ontology.core import Actor
 
 from . import (
     action_tools, agent_definitions, answer_gate, capability_guards, case_context_tools,
-    host_peers, kind_confirmation, mcp_portfolio, ontology_tools, session_identity
+    host_peers, kind_confirmation, mcp_portfolio, ontology_tools, ontology_tools_search,
+    session_identity
 )
 from .case_tools_host import PagedRead
 from .session_identity import SessionIdentity, SessionIdentityRefused
@@ -316,6 +317,20 @@ class CallsMixin:
                                for tool in self.tools if tool["name"] == name), {}))
 
     def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == ontology_tools_search.TOOL_NAME:
+            # plx.documents itself, as this session's reader, its hits cut short
+            return ontology_tools_search.run(
+                lambda wanted: self._generic_call(ontology_tools_search.DOCUMENTS, wanted),
+                arguments,
+                call_read=lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
+                call_comms=lambda wanted: self._generic_call(ontology_tools_search.COMMS_SEARCH,
+                                                             wanted))
+        if name == ontology_tools_search.OPEN_NAME:
+            # plx.read itself, as this session's reader; Freightcom never shown
+            return ontology_tools_search.open_one(
+                lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
+                arguments,
+                lambda wanted: self._generic_call(ontology_tools_search.COMMS_OPEN, wanted))
         if name in GENERIC_TOOLS or name in AGENDA_TOOLS:
             return self._generic_call(name, arguments)
         known = (_HOST_READ_ARGUMENTS if name in HOST_READS else
@@ -352,7 +367,8 @@ class CallsMixin:
 
     def _generic_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """One generic ontology tool. The employee gate applies before any read, as for
-        every case read; the read policy is decided again for this call; the contracts
+        every case read; the read policy is the session's while what it is decided from is
+        unchanged (``operating.kept_policy``), else decided again; the contracts
         validate the arguments and every output. Every tool but plx.read (paged here) is
         ``CaseHostTools.call``, so plx.investigate's plans run over the same table
         (plx.process included) the host serves."""
@@ -375,7 +391,7 @@ class CallsMixin:
                     self._verdict_text(host, gated, arguments, result)
             else:
                 tools = host.tools
-                tools.policy = host.policy_now(gated)
+                tools.policy = host.policy_for(gated)
                 if self._read is None or self._read[0] is not tools:
                     # Rebuilt if the host rebuilt its tools (a newer generation).
                     self._read = (tools, PagedRead(host.evidence, self.case_runtime))
@@ -387,11 +403,11 @@ class CallsMixin:
 
     def held_markings(self) -> frozenset[str]:
         """The value markings this session's reader holds now: the read policy its tool
-        calls are decided under (``policy_now`` of the gated actor). The answer gate reads
+        calls are decided under (``policy_for`` of the gated actor). The answer gate reads
         cited rows with them (``answer_gate._reader``)."""
         gated = self.case_runtime.employee_gate(self.actor)
         host = self._ontology_host()
-        return frozenset(host.policy_now(gated).held_markings(gated))
+        return frozenset(host.policy_for(gated).held_markings(gated))
 
     def _peer_export(self, name: str, arguments: dict[str, Any], built: Any,
                      shown: Any) -> dict[str, Any] | None:
@@ -440,7 +456,7 @@ class CallsMixin:
             gated = self.case_runtime.employee_gate(self.actor)
             reads = self._item_reads(host)
             with host.request():
-                now = _evidence_scope(host.store_meta(), host.policy_now(gated))
+                now = _evidence_scope(host.store_meta(), host.policy_for(gated))
             if now != scope:
                 return   # read under another generation or grant: not evidence of now
             theirs = {tuple(key): digest for key, digest in (
@@ -466,7 +482,7 @@ class CallsMixin:
         mail; ``None``: readable), each handle decided once per call."""
         from operator_api.workspace.object_workspace import HostAccess
 
-        policy = host.policy_now(gated)
+        policy = host.policy_for(gated)
         decided: dict[str, Any] = {}
 
         def decide(handles: Any) -> dict[str, Any]:

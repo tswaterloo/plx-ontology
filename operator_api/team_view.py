@@ -327,6 +327,7 @@ class TeamViewMixin:
         """One person's drill-down; 404 for a key the reader may not open (never 403, so a
         key tells nothing about who exists)."""
         from operating import inbox_triage as it
+        from operating import proactive_engine as pe
         from operating.proactive_commitments import OWNER_KINDS
         everyone, me, gone, snap, counts, teams, people, shown, known = self._team_parts(reader)
         oid = next((o for o in shown if key_of(o) == key), None)
@@ -353,12 +354,23 @@ class TeamViewMixin:
             except Exception:  # noqa: BLE001 - an undecidable counterpart is never shown
                 return True
 
+        # the list is read from what the count counts: only the kinds this person has open
+        # (the read's limit follows the inbox's order, late orders first, then priority, so
+        # a whole-inbox read never reached a person's low-priority replies), kinds the alert
+        # registry keeps off Home included (counted, so listed), still trimmed to the reader
+        store = getattr(self, "store_path", None)
+        kinds = sorted({r["kind"] for r in (it.open_rows(pe.inbox_path(store)) if store
+                                            else ())
+                        if r.get("owner") == oid and isinstance(r.get("kind"), str)})
+
         def job(view: Any) -> Any:
-            found = view.gap_inbox(limit=br_max(), all_owners=everyone)
+            found = view.gap_inbox(limit=br_max(), all_owners=everyone, kinds=kinds,
+                                   include_off=True)
             if not isinstance(found, Mapping) or found.get("status") != "read":
                 return None
             return found.get("gaps") or ()
-        gaps = self._brief_run(reader, job) if known else None   # type: ignore[attr-defined]
+        gaps = None if not known else () if not kinds else \
+            self._brief_run(reader, job)   # type: ignore[attr-defined]
         items: list[dict[str, Any]] = []
         for bucket in it.BUCKETS:
             for x in it.owner_items(gaps or (), person=oid, bucket=bucket,

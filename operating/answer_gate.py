@@ -1164,6 +1164,9 @@ def check_text(text: Any, claims: list[dict], server: Any,
     asker's, never a statement to cover. Bounded to ``MAX_TEXT_CHARS``; reads only cited
     records."""
     prose = text[:MAX_TEXT_CHARS] if isinstance(text, str) else ""
+    # a figure inside a name the run returned whole ("TAKE 5 - Waverly") is no statement
+    _names = getattr(server, "returned_names", ())
+    prose = _phrases_blanked(prose, _names if isinstance(_names, (set, frozenset, list, tuple)) else ())
     given = asker_given(question)
     if given:
         prose = given_blanked(claim_checks_grammar.HANDLE.sub(
@@ -1278,6 +1281,65 @@ def _name_tokens(text: str) -> Iterator[str]:
                     yield named
 
 
+# A source name that writes a figure as a word of its own ("TAKE 5 - Waverly", "Studio 54"):
+# a whole short string a tool returned, of 2 to 6 words, starting with a letter word, one
+# word all digits (at most 4) right after a capitalised letter word and not before a unit
+# word, no currency code, percent or date ("Invoice total 1425", "Pack of 12": no name).
+# Matched as returned, case kept ("take 5 more" is prose). Returned verbatim, the phrase is a name; its figure is
+# no statement where the reply writes the whole phrase (``_phrases_blanked``), and a
+# figure written apart from it still is.
+_PHRASE_DIGITS = re.compile(r"\d{1,4}")
+_PHRASE_WORD = re.compile(r"[A-Za-z][A-Za-z&'.]*")
+
+
+def name_phrases(text: str) -> tuple[str, ...]:
+    """``text`` (whitespace folded) when it is a returned name phrase (above), and its
+    words up to its last figure word ("TAKE 5" of "TAKE 5 - Waverly"); none else."""
+    whole = name_phrase(text)
+    if whole is None:
+        return ()
+    words = whole.split()
+    last = max(i for i, word in enumerate(words) if _PHRASE_DIGITS.fullmatch(word))
+    head = " ".join(words[:last + 1])
+    return (whole,) if head == whole else (whole, head)
+
+
+def name_phrase(text: str) -> str | None:
+    """``text`` (whitespace folded) when it is a returned name phrase (above), else None."""
+    words = text.split()
+    if not 2 <= len(words) <= 6 or len(" ".join(words)) > MAX_NAME_CHARS \
+            or not _PHRASE_WORD.fullmatch(words[0].strip(_NAME_EDGES)) or "%" in text:
+        return None
+    figures = [i for i, word in enumerate(words) if _PHRASE_DIGITS.fullmatch(word)]
+    if not figures:
+        return None
+    for i in figures:
+        before = words[i - 1].strip(_NAME_EDGES) if i else ""
+        after = words[i + 1].strip(_NAME_EDGES).lower() if i + 1 < len(words) else ""
+        if not _PHRASE_WORD.fullmatch(before) or not before[0].isupper() \
+                or before.upper() in ISO_4217 \
+                or after in _NAME_UNIT_WORDS or after in UOM_ALIASES:
+            return None
+    phrase = " ".join(words)
+    if claim_checks_text.written_dates(phrase):
+        return None
+    return phrase
+
+
+def _phrases_blanked(prose: str, names: Collection[str]) -> str:
+    """``prose`` with each returned name phrase (``name_phrase``, among ``names``) it
+    writes whole (case as returned; space around punctuation as written) blanked to spaces of its length."""
+    for phrase in sorted((n for n in names if " " in n), key=len, reverse=True):
+        parts = re.findall(r"[A-Za-z0-9]+|[^\sA-Za-z0-9]", phrase)
+        pattern = re.escape(parts[0])
+        for prev, part in zip(parts, parts[1:]):
+            pattern += (r"\s+" if prev[-1].isalnum() and part[0].isalnum() else r"\s*") \
+                + re.escape(part)
+        prose = re.sub(r"(?<![A-Za-z0-9_#&+-])" + pattern + r"(?![A-Za-z0-9_#&+-]|[.,]\d)",
+                       lambda m: " " * len(m.group(0)), prose)
+    return prose
+
+
 # Where a tool result states what the run's own words said, never what a source returned:
 # the answer gate's echo of submitted claims, the searches it ran, the gaps it reports.
 _NOT_RETURNED_KEYS = frozenset({"arguments", "unsupported_claims", "claims", "gaps",
@@ -1302,7 +1364,8 @@ def returned_names(events: Sequence[Any], *, skip_tools: Iterable[str] = ()) -> 
         if isinstance(node, str):
             budget -= len(node)
             if budget >= 0:
-                for token in _name_tokens(node):
+                phrases = name_phrases(node) if len(node) <= 2 * MAX_NAME_CHARS else ()
+                for token in (*_name_tokens(node), *phrases):
                     if len(names) < MAX_RETURNED_NAMES:
                         names.add(token)
         elif isinstance(node, Mapping):
@@ -1423,6 +1486,8 @@ def _names_blanked(prose: str, names: Collection[str], refused: Sequence[Any]) -
         return prose
     said = {token for text in refused if isinstance(text, str)
             for token in _name_tokens(text)}
+    prose = _phrases_blanked(prose, [name for name in names if " " in name and not any(
+        name.lower() in text.lower() for text in refused if isinstance(text, str))])
     found = {token for token in _name_tokens(prose) if token in names and token not in said}
     for token in sorted(found, key=len, reverse=True):
         prose = re.sub(r"(?<![A-Za-z0-9_#&+-])" + re.escape(token) + r"(?![A-Za-z0-9_#&+-]|[.,]\d)",

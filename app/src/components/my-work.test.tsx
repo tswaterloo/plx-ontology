@@ -2,11 +2,12 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutopilotArea, MyWork, MyWorkItem } from "@/lib/types";
 
-const api = vi.hoisted(() => ({ area: vi.fn(), decide: vi.fn() }));
+const api = vi.hoisted(() => ({ area: vi.fn(), decide: vi.fn(), replies: vi.fn(() => Promise.reject(new Error("offline"))) }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getAutopilot: api.area,
   decideAutopilotItem: api.decide,
+  getReplies: api.replies,
 }));
 
 import { MyWorkList, groupsOf } from "./my-work";
@@ -67,6 +68,27 @@ describe("my work", () => {
     const now = new Date("2026-11-08T15:00:00Z");
     const g = groupsOf([{ ...base, item_id: "later", due_at: "2026-11-10T15:00:00Z" }, { ...base, item_id: "past", due_at: "2026-11-08T14:00:00Z" }, { ...base, item_id: "today", due_at: "2026-11-08T20:00:00Z" }], now);
     expect(g.map((x) => [x.label, x.items.map((i) => i.item_id)])).toEqual([["Past due", ["past"]], ["Due today", ["today"]], ["Later", ["later"]]]);
+  });
+
+  it("counts the messages waiting on your reply, as Home's Reply tab does", async () => {
+    api.area.mockRejectedValue(new Error("offline"));
+    api.replies.mockResolvedValueOnce({ total: 2, lines: [] } as never);
+    render(<MyWorkList work={work([])} />);
+    const line = await screen.findByTestId("my-work-replies");
+    expect(line).toHaveTextContent("2 messages wait on your reply");
+    expect(line.querySelector("a")).toHaveAttribute("href", "/?view=reply");
+    expect(screen.queryByText(/Nothing is waiting on/)).toBeNull();
+  });
+
+  it("never says nothing is waiting before the replies are read (owner walk 11-17)", async () => {
+    api.area.mockRejectedValue(new Error("offline"));
+    let answer: (v: unknown) => void = () => undefined;
+    api.replies.mockReturnValueOnce(new Promise((r) => (answer = r)) as never);
+    render(<MyWorkList work={work([])} />);
+    expect(screen.queryByText(/Nothing is waiting on/)).toBeNull();
+    expect(screen.getByText(/Reading your inbox/)).toBeTruthy();
+    answer({ total: 0, lines: [] });
+    expect(await screen.findByText(/Nothing is waiting on you/)).toBeTruthy();
   });
 
   it("says when the autopilot is switched off", () => {

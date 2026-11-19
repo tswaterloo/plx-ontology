@@ -89,9 +89,10 @@ class AgentEnforcementTests(ActionToolsTestCase):
         listed = {tool["name"] for tool in investigate.handle(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]}
         self.assertNotIn(ACT, listed)
-        # plx.agenda is listed to the agents that name it, within the 22-tool budget.
+        # plx.agenda is listed to the agents that name it, within the tool budget (22 at
+        # first; 25 with plx.table, the one computed read over records, 11-17).
         self.assertIn("plx.agenda", listed)
-        self.assertLessEqual(len(listed), 24)
+        self.assertLessEqual(len(listed), 25)
         case_id = self.employee_case("Set the PO on SO 3 to PO-7788?")
         pid = self.fixture_proposal(case_id)
         with mock.patch.object(action_tools, "_call",

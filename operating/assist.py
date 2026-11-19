@@ -58,7 +58,11 @@ _VERB = re.compile(
 # where the recipient phrase ends and the topic begins
 _STOP = re.compile(r"\s*(?::|,|;|\s-\s|\b(?:that|about|re|regarding|for|if|whether|when|"
                    r"what|where|why|how|to|the|our|on|know|we|our|i|is|are|has|have|"
-                   r"can|could|should|please)\b)", re.I)
+                   r"can|could|should|please|with|saying|asking|telling|subject)\b)", re.I)
+_MESSAGE_WORDS = re.compile(
+    r"^(?:(?:a|an|the|this|my|one)\s+)?(?:(?:quick|short|new|brief|follow[- ]up)\s+)?"
+    r"(?:e-?mails?|mails?|messages?|notes?|teams\s+messages?|reply|replies)\b\s*(?:to\b\s*)?",
+    re.I)
 _PARTY = re.compile(r"^(?P<side>supplier|vendor|customer|client)\s+", re.I)
 _TEAM = re.compile(r"^(?:the\s+|my\s+|our\s+)?(?:team|everyone|everybody|all|group)\b", re.I)
 _UPDATE_TO = re.compile(r"\b(?:to|for)\s+(?P<who>(?:the\s+|my\s+|our\s+)?(?:team|everyone|"
@@ -116,6 +120,8 @@ def parse(text: Any, limit: int = MAX_RECORDS) -> Intent:
                                                                                     "other")
     rest = line[found.end():] if found else line
     rest = re.sub(r"^(?:on\s+teams|via\s+teams|in\s+teams)\s+", "", rest, flags=re.I)
+    # "send an email to Ana", "write a quick note to Ben": the message's own words name no one
+    rest = _MESSAGE_WORDS.sub("", rest) if found else rest
     mentions: list[str] = []
     whole = ""
     team, side = False, None
@@ -330,6 +336,9 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
         domain = address.rsplit("@", 1)[-1]
         return any(domain == d or domain.endswith("." + d) for d in internal)
 
+    # a mailing's sender (a newsletter, a webinar) is never offered as a recipient
+    from .inbox_triage import bulk_senders
+    mass = bulk_senders(sent)
     mailed: dict[str, int] = {}
     for row in sent:
         if row.get("in"):
@@ -378,7 +387,7 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
     def offer(field_: str, pick: str, mention: Optional[str], candidates: Iterable[str],
               why: str) -> None:
         shown = [a for a in dict.fromkeys(c.lower() for c in candidates)
-                 if a not in never and (a not in mine or field_ == "cc") and a not in out.to and a not in out.cc
+                 if a not in never and a not in mass and (a not in mine or field_ == "cc") and a not in out.to and a not in out.cc
                  and (a in mine or clear(a))]
         if shown:
             out.ask.append({"field": field_, "pick": pick, "mention": mention,
@@ -414,7 +423,7 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
             listed = ([str(row.get("from") or "").lower()] if row.get("in") else []) + \
                 [a.lower() for a in list(row.get("to") or ()) + list(row.get("cc") or ())]
             listed = [a for a in dict.fromkeys(listed) if "@" in a and not inside(a)
-                      and not _AUTOMATED.search(a.split("@")[0])]
+                      and not _AUTOMATED.search(a.split("@")[0]) and a not in mass]
             if not listed:
                 continue
             rows.append((i, row, listed))

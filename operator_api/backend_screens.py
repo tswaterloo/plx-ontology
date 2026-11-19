@@ -22,9 +22,11 @@ from .team_view import TeamViewMixin
 from .auth import Reader
 from .test_records import hidden_words
 from .serving import (
-    _iso_now, access_label, HOST_READ_SCHEMES, object_url, READ_TIMEOUT_SECONDS, SAME_NAME_ROWS
+    _iso_now, access_label, HOST_READ_SCHEMES, LATE_LIST_LIMIT, object_url, READ_TIMEOUT_SECONDS,
+    SAME_NAME_ROWS
 )
-from .answers import aged_to_today, attention_items, normalize, without_tests
+from .answers import (LATE_RULE, aged_to_today, attention_items, late_rule_behind, normalize,
+                      without_tests)
 from .suggest import projection_suggest, sublabel_tell
 from .briefing_view import alert_playbook_of
 from .page_parts import source_payload, source_records, source_view
@@ -72,24 +74,39 @@ class ScreensMixin:
         return self._serving(reader, ("team",), lambda: TeamViewMixin.team_view(
             self, reader), self._screen_inputs(files=(self._team_file,)))
 
-    def rd_board(self, reader: Reader) -> m.RdBoard:
-        return self._serving(reader, ("rd",), lambda: BriefsMixin.rd_board(
-            self, reader), self._screen_inputs(), reading=lambda: m.RdBoard(
-                as_of=_iso_now(), idle_after_days=0, total=0, idle=0, sent=0, writes=0,
-                reading=True))
-
     def answer_bank(self, reader: Reader, question: Optional[str] = None) -> m.DocList:
         """The Templates page's answer bank (``BriefsMixin.answer_bank``: a whole-company
         document read) served as the other screens are: per reader and question, kept and
         re-checked, ``reading`` while a first read goes on. A list that could not be read
         is answered as before and never kept; one whose documents are still being read
-        for the company is answered ``reading`` (the app asks again), never kept."""
+        for the company is answered ``reading`` (the app asks again), never kept.
+
+        While that company read goes on (the read this same reader and question last got
+        "still reading" from, ``Memo.running``) and no page is kept for them, the app's poll
+        is answered ``reading`` from that status alone: no read job, nothing of the
+        reader's data. The first poll after it ends reads (and gates) as before."""
+        from operating.business_documents import MEMO
         from .record_documents import STILL_READING
         asked = (question or "").strip()[:700] or None
+        key = (reader.key, reader.mode, ("answer_bank", asked))
+        polls = self.__dict__.setdefault("_answer_bank_reading", {})
+        with self._lock:
+            token = polls.get(key)
+        if token is not None and self._held_good(key) is None and MEMO.running(token):
+            return m.DocList(view="answer_bank", title="Answers any customer may get",
+                             complete=False, reading=True)
+        if token is not None:
+            with self._lock:
+                polls.pop(key, None)
 
         def read() -> m.DocList:
             got = BriefsMixin.answer_bank(self, reader, asked)
             if got.error == STILL_READING:
+                if got._reading_token:
+                    with self._lock:
+                        while len(polls) >= 256:
+                            polls.pop(next(iter(polls)))
+                        polls[key] = got._reading_token
                 return got.model_copy(update={"reading": True})
             if got.error is not None:
                 raise _Unread(got)
@@ -123,17 +140,61 @@ class ScreensMixin:
                              self._screen_inputs(files=(
                                  self.data_dir / WEEKLY_FILE if self.data_dir else None,)))
 
-    def qc_pack(self, reader: Reader, kind: str) -> m.Brief:
-        if kind != "daily":
-            return BriefsMixin.qc_pack(self, reader, kind)
-        return self._serving(reader, ("qc", kind), lambda: BriefsMixin.qc_pack(
-            self, reader, kind), self._screen_inputs())
-
     def home(self, reader: Reader) -> m.Home:
+        from . import page_sql
+        if page_sql.alerts_on():
+            return self._home_alerts(reader)
+        if page_sql.on():
+            return self._home_door(reader)
         # read ahead for the reader on every Home visit, also when a kept page answers it
         # (a snapshot runs no read, so the call inside ``_home`` is not made then)
         self.warm(reader)
+        from . import simple_ask
+        simple_ask.ready(self, reader)   # the person's next question starts on a ready session
         return self._home_served(reader)
+
+    def _home_door(self, reader: Reader) -> m.Home:
+        """Home's late purchase orders through the read door (``page_sql``, switch
+        ``PLX_PAGES_DOOR``): the count and the longest late of them, read as the reader
+        in one transaction. At-risk items wait for the alerts table (none listed here).
+        A failed read says unavailable, never "no late POs"."""
+        from . import page_sql
+        with self._lock:
+            recent = list(self._recent.get(reader.key, []))
+        try:
+            total, late, as_of = page_sql.late_pos(self, reader, limit=LATE_LIST_LIMIT)
+            attention = m.NeedsAttention(status="read", late_pos=late, late_total=total,
+                                         as_of=as_of)
+        except page_sql.PageDoorUnavailable:
+            attention = m.NeedsAttention(status="unavailable")
+        return m.Home(greeting_name=reader.display_name.split(" ")[0],
+                      examples=list(HOME_EXAMPLES), needs_attention=attention,
+                      recent_questions=recent, freshness=self.freshness())
+
+    def _home_alerts(self, reader: Reader) -> m.Home:
+        """Home from the SQL alerts (``page_sql``, switch ``PLX_ALERTS_SQL``): the po_late
+        alerts as the late POs (count and the longest late), the other on-by-default
+        My work types as at risk, all read as the reader through the door. A failed read
+        says unavailable, never "nothing needs attention"."""
+        from . import page_sql
+        with self._lock:
+            recent = list(self._recent.get(reader.key, []))
+        from .errors import UserFacing
+        try:
+            total, late, as_of = page_sql.alert_late_pos(self, reader, limit=LATE_LIST_LIMIT)
+            risk, stale = page_sql.alert_at_risk(self, reader, limit=LATE_LIST_LIMIT)
+            # a home type whose check is not current: left out, said (refreshing, since)
+            attention = m.NeedsAttention(status="read", late_pos=late, at_risk=risk,
+                                         late_total=total, as_of=as_of,
+                                         refreshing=bool(stale),
+                                         checked_on=page_sql._oldest(stale))
+        except (page_sql.PageDoorUnavailable, UserFacing):
+            # unreadable, or the late POs' check not current (``alerts_stale``): never
+            # "none late" from old or missing numbers
+            attention = m.NeedsAttention(status="unavailable")
+        return m.Home(greeting_name=reader.display_name.split(" ")[0],
+                      examples=list(HOME_EXAMPLES), needs_attention=attention,
+                      recent_questions=recent, freshness=self.freshness())
 
     def _home_served(self, reader: Reader) -> m.Home:
         """Home through ``_serving`` with no read ahead started (the warm-up's own read)."""
@@ -159,6 +220,14 @@ class ScreensMixin:
         status = inbox.get("status")
         with self._lock:
             recent = list(self._recent.get(reader.key, []))
+        # Home's late line rests on the late-PO rule alone: re-running when that rule's
+        # findings are of older data or code, as of that rule's own last run (another
+        # rule re-running, or one no longer run, never holds it: 11-17 Home said
+        # "Rechecking" for days, dated by a removed rule's last run)
+        late_behind, _unknown = late_rule_behind(inbox)
+        ran = (inbox.get("detector_run_at") or {}).get(LATE_RULE) \
+            if isinstance(inbox.get("detector_run_at"), Mapping) else None
+        checked = ran if isinstance(ran, str) else inbox.get("checked_on")
         return m.Home(
             greeting_name=reader.display_name.split(" ")[0],
             examples=list(HOME_EXAMPLES),
@@ -170,12 +239,24 @@ class ScreensMixin:
                 if status == "read" else None,
                 test_records_hidden=hidden_words(int(inbox.get("tests_hidden") or 0)),
                 as_of=inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None,
-                refreshing=bool(inbox.get("refreshing")),
-                checked_on=inbox.get("checked_on") if inbox.get("refreshing")
-                and isinstance(inbox.get("checked_on"), str) else None),
+                refreshing=late_behind,
+                checked_on=checked if late_behind and isinstance(checked, str) else None),
             recent_questions=recent, freshness=self.freshness(inbox))
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
+        from . import page_sql
+        if page_sql.alerts_on() or page_sql.on():
+            # the read door (``page_sql``): count and page in one transaction (the po_late
+            # alerts under PLX_ALERTS_SQL); a failed read is an error, never an empty list
+            pos = page_sql.alert_late_pos if page_sql.alerts_on() else page_sql.late_pos
+            try:
+                total, items, as_of = pos(self, reader, offset=offset, limit=limit)
+            except page_sql.PageDoorUnavailable:
+                from .briefs import alerts_not_read
+                raise alerts_not_read() from None
+            after = offset + len(items)
+            return m.LateList(total=total, offset=offset, items=items, more=after < total,
+                              next_offset=after, as_of=self.freshness().as_of or as_of)
         return self._serving(reader, ("late", offset, limit), lambda: self._late_list(
             reader, offset=offset, limit=limit), reading=lambda: m.LateList(
                 total=0, offset=offset, next_offset=offset, reading=True))
@@ -223,6 +304,11 @@ class ScreensMixin:
         trail) read as the reader, all trails within ``BRIEFING_TRAIL_SECONDS`` (each trail
         gets what is left and stops itself at it); every other item counted in its type's
         group; each check's state; the daily digest text as a preview (never sent)."""
+        from . import page_sql
+        if page_sql.alerts_on():
+            from operating import briefing as bf
+            return page_sql.alert_briefing(self, reader, since_visit=since_visit,
+                                           top=bf.TOP_ITEMS)
         return self._serving(reader, ("briefing", since_visit), lambda: self.reads.run(
             reader, lambda view: self._briefing_cached(
                 view, reader, since_visit=since_visit), timeout=READ_TIMEOUT_SECONDS),
@@ -236,6 +322,10 @@ class ScreensMixin:
         """One event type's items of this reader's briefing, a page at a time (a group's
         "+N more": its items past the top ones), each with its record's label; no trail
         (the item's page has it)."""
+        from . import page_sql
+        if page_sql.alerts_on():
+            return page_sql.alert_briefing_items(self, reader, event_type, offset=offset,
+                                                 limit=limit)
         return self.reads.run(reader, lambda view: self._briefing_items_cached(
             view, event_type, offset=offset, limit=limit, since_visit=since_visit),
             timeout=READ_TIMEOUT_SECONDS)

@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX mail and Teams re-flag of undecided rows, nightly (2:40 AM server time)
+
+[Timer]
+OnCalendar=*-*-* 02:40:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

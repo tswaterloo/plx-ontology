@@ -122,6 +122,8 @@ def measure(items: Iterable[Mapping[str, Any]],
     per: dict[str, Counter] = {}
     reasons: Counter = Counter()
     for item in items:
+        if item.get("state") == "superseded":      # set aside, never judged
+            continue
         cls, why = classify(item, decisions.get(str(item.get("item_id"))), now)
         overall[cls] += 1
         per.setdefault(str(item.get("autopilot") or ""), Counter())[cls] += 1

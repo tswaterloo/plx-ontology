@@ -198,6 +198,51 @@ class Incremental(unittest.TestCase):
         summary = self.compare(w, change, moves=True)
         self.assertLess(summary["scoped"]["read"], len(w.rows["objects"]))
 
+    def test_a_mailbox_owners_new_mail_reads_none_of_their_other_mail(self):
+        """A person linked to many mails by a link type no incremental rule reads (a
+        mailbox owner, ~0.5 M mail links live) gets one more alongside an order's change:
+        the pass equals a full run, the person still counts as changed (the watchlists are
+        told), and neither the neighbours kept nor the scope hold the other mails (11-17:
+        holding them grew the pass past its 12 GB cap)."""
+        w, ids = world()
+        person = w.obj("Person", {"name": "Owner"})
+        mails = [w.obj("Email", {"subject": f"m{n}"}) for n in range(60)]
+        for mail in mails:
+            w.link("Email.addressed_to_person", mail, person)
+        self.assertNotIn("Email.addressed_to_person", pi.read_kinds())
+
+        def change(w):
+            w.link("Email.addressed_to_person", w.obj("Email", {"subject": "new"}), person)
+            line = next(l["from_object"] for l in w.rows["links"]
+                        if l["link_type"] == "PurchaseOrderLine.line_of"
+                        and l["to_object"] == ids["overdue"])
+            set_value(w, line, "received_quantity", ("10", "ea", "received"))
+        summary = self.compare(w, change, moves=True)
+        self.assertIn("scoped", summary)
+        self.assertNotIn("whole", summary)
+        self.assertLess(summary["scoped"]["read"], len(mails))
+        part = self.dir / "part" / "store.sqlite"
+        self.assertIn(person, self.changed(self.dir / "before" / "store.sqlite", part))
+        st = pe._Store(part)
+        try:
+            kept = pi.fingerprints(st, [person, *mails[:1]], pi.read_kinds())
+            every = pi.fingerprints(st, [person], None)
+        finally:
+            st.close()
+        self.assertEqual(kept[person][1], [])
+        self.assertEqual(kept[mails[0]][1], [])
+        self.assertEqual(len(every[person][1]), len(mails) + 1)
+        self.assertEqual(every[person][0], kept[person][0])   # one print, any neighbours
+        # reads bounded to a few rows (halved, the person paged alone): the same prints
+        st = pe._Store(part)
+        try:
+            ids = [r[0] for r in st.conn.execute("SELECT object_id FROM objects")]
+            whole = pi.fingerprints(st, ids)
+            with mock.patch.object(pi, "PRINT_ROWS", 4):
+                self.assertEqual(pi.fingerprints(st, ids), whole)
+        finally:
+            st.close()
+
     def test_a_record_gone_from_its_source_takes_its_gaps_with_it(self):
         w, ids = world()
         self.compare(w, lambda w: drop_object(w, ids["expired"]), moves=True)
@@ -392,8 +437,9 @@ class LayerChanges(unittest.TestCase):
         # Postgres's links: the store's own (it stands for Postgres here; never the
         # production database)
         read_pg = []
-        patch = mock.patch.object(pi, "_pg_neighbors", lambda ids, out: read_pg.append(
-            len(ids)) or pi._file_neighbors(store, ids, out))
+        patch = mock.patch.object(pi, "_pg_neighbors", lambda ids, out, types=None:
+                                  read_pg.append(len(ids))
+                                  or pi._file_neighbors(store, ids, out, types))
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -489,6 +535,47 @@ def _links_in(path: Path) -> dict[str, set[str]]:
             out.setdefault(a, set()).add(b)
             out.setdefault(b, set()).add(a)
     return out
+
+
+class ScopeReach(unittest.TestCase):
+    """plan() walks forward over the LINK types (not the object types of the moved
+    records): a Lot changed three hops from a PO still reads the receipt line's identity
+    twin and the second Lot (the scoped read set is a superset, never less)."""
+
+    def test_far_change_reads_the_twin_and_the_second_lot(self):
+        patch = mock.patch.object(pe, "declared_qc_links", lambda: (QC_LINK,))
+        patch.start()
+        self.addCleanup(patch.stop)
+        pi.INPUTS.clear()
+        self.addCleanup(pi.INPUTS.clear)
+        pi._declared()
+        rules = [r for r in pi.STORE_ONLY if r not in pi.NOT_INCREMENTAL and r in pi.INPUTS]
+        w, _ids = world()
+        po = w.obj("PurchaseOrder", {"status": "Pending", "expected_date": "2026-10-01"})
+        lines = [w.obj("PurchaseOrderLine", {"ordered_quantity": ("10", "ea"),
+                                             "received_quantity": ("0", "ea", "received")})
+                 for _ in range(2)]
+        for line in lines:
+            w.link("PurchaseOrderLine.line_of", line, po)
+        rls = [w.obj("ReceiptLine", {"received_quantity": ("5", "ea", "received")})
+               for _ in range(2)]
+        for rl, line in zip(rls, lines):
+            w.link("ReceiptLine.receives_line", rl, line)
+        lots = [w.obj("Lot", {}) for _ in range(2)]
+        for rl, lot in zip(rls, lots):
+            w.link("ReceiptLine.received_lot", rl, lot)
+        twin = w.obj("ReceiptLine", {"received_quantity": ("5", "ea", "received")})
+        w.link("ReceiptLine.same_record_as", rls[1], twin)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "s.sqlite"
+            w.build(path)
+            st = pe._Store(path)
+            try:
+                _subjects, read = pi.plan(st, {lots[0]}, {}, Path(tmp) / "none", rules)
+            finally:
+                st.close()
+        self.assertIn(twin, read)
+        self.assertIn(lots[1], read)
 
 
 class BaseNeighbours(unittest.TestCase):

@@ -461,7 +461,7 @@ class DetectorTest(Engine):
         gapped = {g["object_id"] for g in self.read()["gaps"] if g["kind"] == "receipt_without_qc"}
         self.assertEqual(gapped, {waiting, tied_open})
         self.assertEqual(summary["not_evaluated"]["receipt_without_qc"],
-                         {"no_qc_source_for_system": 2, "qc_link_unsettled": 1})
+                         {"qc_link_unsettled": 1})   # Sage/BC alone: out of scope
         self.assertNotIn(bc, gapped)
 
     def test_an_incomplete_mirror_scan_is_truncated_and_resolves_nothing(self):
@@ -969,10 +969,13 @@ class InboxTest(Engine):
         self.assertEqual({g["id"] for g in self.read()["gaps"]}, found)
         self.assertEqual(full.most, 1)
         self.assertGreater(full.held, 0)
+        # over the share the run's held reads are let go before each rule (11-17: a group
+        # of 36 rules kept every one's reads past its cap), and the findings stay the same
+        self.assertGreater(full.relieved, 0)
         free = pe._MemoryGate(lambda: 5, lambda: 100, reserve=0, poll=0.01)
         side = self.run_engine(world, ids["coverage"], threads=4, memory=free)
         self.assertEqual(side["detectors"], serial["detectors"])
-        self.assertEqual(free.held, 0)
+        self.assertEqual((free.held, free.relieved), (0, 0))
 
     def test_the_memory_gate_counts_what_the_host_has_left(self):
         """The 11-12/13 kills were the host's OOM killer, no unit at its MemoryMax: a run
@@ -1270,6 +1273,77 @@ class InboxTest(Engine):
         self.assertEqual(pooled["gaps"], [])   # the unread card: no finding (the run's
         # ``Budget.pooled`` marks the rule truncated for it)
 
+    def test_a_guarded_postgres_link_scan_bounds_its_ranges_by_the_base_table(self):
+        """11-17 pg_stat_statements: ``max(rowid)`` over a guarded reader's ``link_rows``
+        (the view less the hidden links) scanned it whole, 75 s a call, up to 155 s, inside
+        300 s detector windows (``aged_balance_worsening`` cut every run). On Postgres the
+        bound is the base table's (its row-number index); the guard still applies to what
+        is read: the translated statement stays guarded."""
+        from operating.pg.person_link_guard import guard
+        from operating.pg.sqlite_compat import translate
+
+        asked: list[str] = []
+
+        class Conn:
+            def execute(self, sql, *_a):
+                asked.append(sql)
+                return type("C", (), {"fetchone": lambda _s: (42,)})()
+        import threading
+        st = pe._Store.__new__(pe._Store)
+        st._local, st.pg = threading.local(), True
+        st._local.conn = type("Held", (), {"conn": Conn()})()
+        self.assertEqual(st._top_row("link_rows"), 42)
+        self.assertEqual(guard(translate(asked[-1])), translate(asked[-1]))
+        self.assertIn("ontology.link_rows", asked[-1])
+        # the plain read guarded scans the whole view: the case this avoids
+        self.assertIn("NOT IN", guard(translate("SELECT max(rowid) FROM link_rows")))
+        st._top_row("objects")
+        self.assertEqual(asked[-1], "SELECT max(rowid) FROM objects")
+        st.pg = False   # a SQLite store: its own table, as before
+        st._top_row("link_rows")
+        self.assertEqual(asked[-1], "SELECT max(rowid) FROM link_rows")
+
+    def test_on_the_pool_every_candidate_card_is_read_and_an_invisible_one_is_no_cut(self):
+        """11-17: ``card_rules`` on the run's pool still asked only the first ``bound``
+        cards and ended ``card_bound`` every run; a card the engine's reader may not see
+        (``object_not_found``) is noted, never a cut; any other unread card still is."""
+        docs = [f"SupplierInvoice:c{i}" for i in range(12)]
+
+        class St:
+            class conn:
+                @staticmethod
+                def execute(_sql, params):
+                    return [(d,) for d in docs[:params[2]]]
+
+            @staticmethod
+            def versions(handles):
+                return []
+        asked: list[str] = []
+
+        def answer(object_id: str, errors: dict) -> dict:
+            if object_id in errors:
+                return {"error": {"code": errors[object_id]}}
+            return {"object": {"object_id": object_id}, "conflicts": []}
+
+        def run(errors: dict) -> dict:
+            asked.clear()
+
+            def many(_tool, arguments):
+                asked.extend(a["object_id"] for a in arguments)
+                return [answer(a["object_id"], errors) for a in arguments]
+            with mock.patch.object(pe.pg, "card_candidates", lambda _c, _a: set(docs)):
+                return pe._card_rules(St, AS_OF, lambda *_a: {}, 5, many)
+        out = run({docs[3]: "object_not_found"})
+        self.assertEqual(sorted(asked), sorted(docs))
+        self.assertEqual((out["status"], out["reasons"]), ("complete", []))
+        self.assertEqual(out["not_evaluated"], {"unread_object_not_found": 1})
+        out = run({docs[3]: "object_not_found", docs[4]: "timeout"})
+        self.assertEqual((out["status"], out["reasons"]), ("truncated", ["unread:timeout"]))
+        # one by one (no pool) the bound still holds and says so
+        with mock.patch.object(pe.pg, "card_candidates", lambda _c, _a: set(docs)):
+            serial = pe._card_rules(St, AS_OF, lambda _t, a: answer(a["object_id"], {}), 5)
+        self.assertEqual((serial["status"], serial["reasons"]), ("truncated", ["card_bound"]))
+
     def test_a_value_many_documents_state_is_one_gap_per_record_and_closed_orders_drop(self):
         """11-13 judging: ``missing_in_record`` raised one order up to 4 times (once per
         assembly packet stating its date) and 13 of 15 on closed orders. One gap per
@@ -1463,6 +1537,34 @@ class ServedGenerationTest(Engine):
 
     def late_ids(self, found: dict) -> set[str]:
         return {g["object_id"] for g in found["gaps"] if g["kind"] == "unconfirmed_po"}
+
+    def test_a_rule_taken_out_of_the_registry_never_holds_the_read_refreshing(self):
+        """Live 11-17: ``mc_task_overdue``, removed from the registry, kept its last row
+        (13 Nov, older code) in the inbox; read as a rule never re-run, every reader's Home
+        said "Rechecking against the latest data (last checked 13 Nov)" for days."""
+        import sqlite3
+        from operating import proactive_engine_inbox as pei
+        world, ids = seeded()
+        at = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        self.run_engine(world, ids["coverage"], at=at)
+        conn = sqlite3.connect(self.inbox)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(detector_runs)")]
+        conn.execute(f"INSERT INTO detector_runs ({', '.join(cols)}) SELECT "
+                     + ", ".join("'synth_retired_rule'" if c == "detector" else
+                                 "'2026-10-12T06:00:00+00:00'" if c == "run_at" else c
+                                 for c in cols)
+                     + " FROM detector_runs WHERE detector = 'late_or_unconfirmed_po'")
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                     (pei._GENERATION_KEY + "synth_retired_rule",
+                      json.dumps({"digest": "sha256:old", "since": "2026-10-12T06:00:00+00:00",
+                                  "code": "older-code"})))
+        conn.commit()
+        conn.close()
+        found = self.read()
+        self.assertEqual((found["refreshing"], found["checked_on"]), ([], None))
+        self.assertNotIn("synth_retired_rule", found["detectors"])
+        self.assertFalse(found["stale"])
+        self.assertIn(ids["unconfirmed"], self.late_ids(found))
 
     def test_a_new_generation_marks_older_findings_until_the_engine_runs_over_it(self):
         from operating import briefing as bf
@@ -1718,14 +1820,41 @@ class PassResumeTest(Engine):
         self.assertTrue(pe.served_behind(self.store))   # no whole run recorded yet
         later = moment + timedelta(minutes=90)
         run_group, calls = self.group_runner(world, ids["coverage"], later)
-        out = pe.refresh_pass(None, None, None, self.store, AS_OF, kind="whole",
-                              seconds=10_000, threads=1, clock=lambda: later,
-                              run_group=run_group)
-        self.assertTrue(out["pass"]["resumed"])
-        self.assertTrue(out["pass"]["complete"])
-        self.assertEqual(calls, plan[2:])   # only the groups not folded before
-        self.assertEqual(self.snapshot(), expected)
-        self.assertFalse(pe.served_behind(self.store))
+        # a release deployed between the two parts (a new engine code version) resumes it
+        # too: 11-18, a restart per landing left no pass finished for 17 h
+        with mock.patch.object(pe, "engine_code", return_value="deployed-since"):
+            out = pe.refresh_pass(None, None, None, self.store, AS_OF, kind="whole",
+                                  seconds=10_000, threads=1, clock=lambda: later,
+                                  run_group=run_group)
+            self.assertTrue(out["pass"]["resumed"])
+            self.assertTrue(out["pass"]["complete"])
+            self.assertEqual(calls, plan[2:])   # only the groups not folded before
+            self.assertEqual(self.snapshot(), expected)   # the whole run is recorded
+        # the rules judged before the deploy are of older code: still told apart (served
+        # behind until the next pass judges them again), never hidden by the resume
+        self.assertTrue(pe.served_behind(self.store))
+
+    def test_the_pool_ends_after_the_last_group_that_calls_tools(self):
+        """The pool's workers (a case session each over the whole store, ~2.2 GB) end
+        once no group left holds a tool-call rule, never before one that does: six idle
+        workers beside the store-only groups pushed the whole pass to 14.5 GB (11-17)."""
+        moment = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        events = []
+
+        class Pool:
+            def close(self):
+                events.append("close")
+
+        def run_group(*_a, only, pool, **_k):
+            events.append(list(only))
+            return {}
+        groups = pe.rule_groups(pe.DETECTORS, threads=1)
+        last = max(n for n, g in enumerate(groups) if set(g) & pe.CALLING)
+        self.assertLess(last, len(groups) - 1)   # store-only groups follow (not vacuous)
+        pe.refresh_pass(None, None, None, self.store, AS_OF, kind="whole", seconds=1e9,
+                        threads=1, clock=lambda: moment, run_group=run_group, pool=Pool())
+        self.assertEqual(events.count("close"), 1)
+        self.assertEqual(events.index("close"), last + 1)   # right after that group
 
     def test_a_pass_stops_at_its_share_and_a_stale_record_starts_over(self):
         moment = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
@@ -1748,7 +1877,7 @@ class PassResumeTest(Engine):
             self.assertEqual(out["pass"]["groups_run"], 1)
             self.assertFalse(out["pass"]["complete"])
             self.assertEqual(pe.pass_record(self.inbox, "calling")["done"], sorted(groups[0]))
-            # past the resume window (or another plan, code or generation): a new pass
+            # past the resume window (or another plan or generation): a new pass
             calls.clear()
             late = moment + timedelta(hours=proactive_engine_inbox.PASS_RESUME_HOURS + 1)
             out = pe.refresh_pass(None, None, None, self.store, AS_OF, kind="calling",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from collections import OrderedDict
 from typing import Any, Iterable
 from urllib.parse import unquote
 
@@ -99,6 +101,9 @@ def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
+MAX_OPENED_FIELDS = 16
+
+
 def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:
     """What one ``plx.read`` result (as it left the output boundary) served of each text:
     ``(handles, field, version, served)``, ``served`` True for the whole text, else
@@ -106,6 +111,8 @@ def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:
     text's envelope names; the version the read's digest (a window's text SHA-256 when
     there is none). A truncated envelope outside a window served its first part only. A
     result that is not resolved serves nothing."""
+    if isinstance(result, dict) and "fields_served" in result and "status" not in result:
+        return _opened_texts(result)
     if not isinstance(result, dict) or result.get("status") not in ("resolved",
                                                                       "changed_since"):
         return []
@@ -150,6 +157,37 @@ def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:
     nested = [entry for item in result.get("attachment_matches") or ()
               if isinstance(item, dict) for entry in _served_texts(item)]
     return out + _served_pages(result, window) + _served_hits(result, version) + nested
+
+
+def _opened_texts(result: dict[str, Any]) -> list[tuple[list[str], str, Any, Any]]:
+    """What one ``plx.open`` of a mail or Teams item (``comms_search.opened``) served,
+    as ``_served_texts`` says it of a ``plx.read``: per field, its span of the field's
+    text (whole when it covers it), hashed from the characters the result holds there.
+    Anything malformed serves nothing (fail closed)."""
+    citation = result.get("citation")
+    text = (result.get("text") or {}).get("untrusted_text") \
+        if isinstance(result.get("text"), dict) else None
+    entries = result.get("fields_served")
+    if not isinstance(citation, str) or not isinstance(text, str) \
+            or not isinstance(entries, list):
+        return []
+    out = []
+    for entry in entries[:MAX_OPENED_FIELDS]:
+        if not isinstance(entry, dict):
+            continue
+        field, version = entry.get("field"), entry.get("version")
+        nums = [entry.get(k) for k in ("offset", "chars", "total_chars", "at")]
+        if not isinstance(field, str) or not all(
+                isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in nums):
+            continue
+        start, chars, total, at = nums
+        part = text[at:at + chars]
+        if not chars or len(part) != chars or start + chars > total:
+            continue
+        served: Any = True if start == 0 and chars == total else (
+            start, start + chars, total, _sha(part))
+        out.append(([citation], field, version or _sha(part), served))
+    return out
 
 
 def _served_hits(result: dict[str, Any], version: Any
@@ -297,20 +335,58 @@ GENERATION_META_KEYS = ("content_digest", "schema_digest", "format", "catalog_ha
 SCOPE_CYCLE_MARK = "~"
 
 
+# A policy's grant as JSON (``_grant_json``), by the policy object (held, so its id is
+# never reused while kept): a session's kept policy is encoded once, not on every call
+# (a staff reader's thousands of audience keys: ~25 ms a call, 2026-11-18).
+_GRANTS_JSON: "OrderedDict[int, tuple[Any, str]]" = OrderedDict()
+_GRANTS_JSON_LOCK = threading.Lock()
+# the last scope per policy object: (policy, the meta it was digested with, the scope); a
+# session's calls hand the same policy and an equal meta (compared, never encoded again)
+_SCOPES: "OrderedDict[int, tuple[Any, dict[str, Any], str]]" = OrderedDict()
+
+
+def _grant_json(policy: Any) -> str:
+    with _GRANTS_JSON_LOCK:
+        hit = _GRANTS_JSON.get(id(policy))
+        if hit is not None and hit[0] is policy:
+            return hit[1]
+    text = json.dumps([policy.tenant, *(sorted((key, sorted(principals))
+                                               for key, principals in mapping.items())
+                                        for mapping in (policy.audiences, policy.markings))])
+    with _GRANTS_JSON_LOCK:
+        _GRANTS_JSON[id(policy)] = (policy, text)
+        while len(_GRANTS_JSON) > 16:
+            _GRANTS_JSON.popitem(last=False)
+    return text
+
+
 def _evidence_scope(meta: dict[str, Any], policy: Any) -> str:
     """The digest of a projection generation and a reader's grant (its ``ReadPolicy``) that
     session evidence is kept under, then the digest of its whole ``store_meta``: two scopes
     of one generation differ by a delta cycle only (``GENERATION_META_KEYS``; a store with
     no ``content_digest`` has only the whole digest). The item permissions it was read
     under are compared item by item (``_permission_reads``, ``MCPServer._bind``)."""
-    grant = [policy.tenant, *(sorted((key, sorted(principals))
-                                     for key, principals in mapping.items())
-                              for mapping in (policy.audiences, policy.markings))]
-    digest = hashlib.sha256(json.dumps([sorted(meta.items()), grant]).encode()).hexdigest()
+    with _GRANTS_JSON_LOCK:
+        kept = _SCOPES.get(id(policy))
+    if kept is not None and kept[0] is policy and kept[1] == meta:
+        return kept[2]
+    digest = _scope_digest(meta, policy)
+    with _GRANTS_JSON_LOCK:
+        _SCOPES[id(policy)] = (policy, dict(meta), digest)
+        while len(_SCOPES) > 16:
+            _SCOPES.popitem(last=False)
+    return digest
+
+
+def _scope_digest(meta: dict[str, Any], policy: Any) -> str:
+    grant = _grant_json(policy)
+    # ``json.dumps([x, grant])``'s very text, the grant's part encoded once per policy
+    digest = hashlib.sha256(("[" + json.dumps(sorted(meta.items())) + ", " + grant
+                             + "]").encode()).hexdigest()
     if meta.get("content_digest"):
         named = sorted((key, meta[key]) for key in GENERATION_META_KEYS if key in meta)
-        digest = hashlib.sha256(json.dumps([named, grant]).encode()).hexdigest() \
-            + SCOPE_CYCLE_MARK + digest
+        digest = hashlib.sha256(("[" + json.dumps(named) + ", " + grant + "]").encode()
+                                ).hexdigest() + SCOPE_CYCLE_MARK + digest
     return UNRESTRICTED_SCOPE + digest if getattr(policy, "unrestricted", False) is True \
         else digest
 

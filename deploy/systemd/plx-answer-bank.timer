@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX questionnaire answer bank, 10 minutes after the last build (skipped while the data served is the same)
+
+[Timer]
+OnBootSec=8min
+OnUnitInactiveSec=10min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

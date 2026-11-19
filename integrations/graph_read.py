@@ -143,6 +143,59 @@ def _authentication_results(headers: Any) -> list[str] | None:
             and isinstance(entry.get("value"), str)]
 
 
+# What a message's own headers say about who sent it (``automation``): the standard marks
+# of list, bulk and machine mail, by header name and value form only (never a sender list).
+_PRECEDENCE_BULK = re.compile(r"^\s*(?:bulk|list|junk)\b", re.I)
+# A bounce (VERP) return path: a bounce/return word or a long token in the local part, as a
+# sending platform writes it for every recipient.
+_BOUNCE_PATH = re.compile(r"^<?(?:[^@>]*(?:bounce|bnc|return|mailer|[._+=-][0-9a-z]{16,}))[^@>]*@",
+                          re.I)
+_REPORT_TYPE = re.compile(r"^\s*multipart/report\b|report-type\s*=\s*\"?(?:delivery-status|"
+                          r"disposition-notification)", re.I)
+AUTOMATION_SIGNALS = ("list", "bulk", "auto_submitted", "auto_suppress", "feedback_id",
+                      "bounce_path", "report")
+
+
+def _automation(headers: Any) -> list[str] | None:
+    """The automation signals of a message's ``internetMessageHeaders`` (sorted enum words of
+    ``AUTOMATION_SIGNALS``, empty when a person's mail shows none), or None when Graph
+    returned no header list (no proof either way):
+
+    * ``list``: List-Unsubscribe or List-Id (a mailing list or a mailing platform);
+    * ``bulk``: Precedence bulk, list or junk;
+    * ``auto_submitted``: Auto-Submitted other than ``no`` (RFC 3834: a machine's or an
+      automatic reply's);
+    * ``auto_suppress``: X-Auto-Response-Suppress (Exchange's own mark on a notice, an
+      automatic reply, a meeting response or a report: no reply wanted);
+    * ``feedback_id``: Feedback-ID (a sending platform's per-campaign complaint loop);
+    * ``bounce_path``: a Return-Path whose local part is a bounce address (a platform's
+      per-recipient VERP);
+    * ``report``: a delivery or read report (multipart/report)."""
+    if not isinstance(headers, list):
+        return None
+    found: set[str] = set()
+    for entry in headers:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str):
+            continue
+        name = entry["name"].strip().lower()
+        value = entry.get("value") if isinstance(entry.get("value"), str) else ""
+        if name in ("list-unsubscribe", "list-id"):
+            found.add("list")
+        elif name == "precedence" and _PRECEDENCE_BULK.match(value):
+            found.add("bulk")
+        elif name == "auto-submitted" and value.strip().lower().split(";")[0].strip() != "no":
+            found.add("auto_submitted")
+        elif name == "x-auto-response-suppress" and value.strip():
+            found.add("auto_suppress")
+        elif name == "feedback-id":
+            found.add("feedback_id")
+        elif name == "return-path" and _BOUNCE_PATH.match(value.strip()):
+            found.add("bounce_path")
+        elif name == "content-type" and _REPORT_TYPE.search(value):
+            found.add("report")
+    return sorted(found)
+
+
 def mail_citation(mailbox: str, message_id: str, change_key: str) -> str:
     return f"{MAIL_SCHEME}://{q(mailbox)}/{q(message_id)}@{q(change_key)}"
 
@@ -674,6 +727,11 @@ class GraphMailReader:
         bcc = _addresses(raw.get("bccRecipients"))
         if bcc:
             record["bcc"] = bcc
+        # the headers' list, bulk and machine marks (``_automation``), when it shows any:
+        # a person's message keeps its content hash
+        automation = _automation(raw.get("internetMessageHeaders"))
+        if automation:
+            record["automation"] = automation
         if body is not None:
             record["body_text"] = body
             record["body_truncated"] = body_truncated

@@ -249,7 +249,7 @@ from .capture_store import (UNIT_ACL_MAX_AGE, CaptureError, CaptureStore, Captur
                             register_source_kind)
 from .live_source_guard import (HOLD_SCOPE, LiveSourceAudience, ReadOnlyGuardError,
                                 RequestBudgetExhausted, SourceUnavailable,
-                                is_transport_failure, unavailable_detail)
+                                is_transport_failure, nextlink_refused, unavailable_detail)
 from .people_exclusion import ExclusionUnavailable, PeopleExcluded
 from .people_exclusion import from_api as people_guard
 
@@ -388,11 +388,29 @@ MAX_RUNS = 12  # one CLI invocation: --runs, then on until a full pass is read
 _ENUM = re.compile(r"[A-Za-z]{1,32}")
 # A chat listing's fields: ids, types and when members or name last changed (no content).
 CHAT_LISTING = "id,chatType,lastUpdatedDateTime"
-# The chat listing of a capture run also expands each chat's last message preview: only
+# The chat listing of a capture run and of the census (the content run of a census-cleared
+# scope lists no member's chats) also expands each chat's last message preview: only
 # its ``createdDateTime`` is kept (``_hint``); the preview's body, sender and ids are
 # dropped on read, never stored or logged. Graph refuses a nested ``$select`` on it (400,
 # live 2026-11-16), and pages it exactly as the plain listing (same ids, same pages).
 CHAT_LISTING_EXPAND = "lastMessagePreview"
+# A chat listing asks Graph for its documented most chats a page (50; Graph's default is
+# smaller, ~16 a page live 2026-11-16, so 50 pages ended at ~800 chats). Live 2026-11-17 one
+# mailbox listed 2,608 chats over 66 pages of 17 to 50 even at $top=50, past the 50 pages
+# one guarded ``get_pages`` read follows (the guard's bound, unchanged; it drops the nextLink
+# at its cap). So a chat listing is read in segments of ``CHAT_LISTING_SEGMENT_PAGES``
+# through the guard's resumable ``get_page``: every page is a guarded GET, every nextLink
+# passes the guard's same-collection check against the listing's first request (as in
+# ``get_pages``), a link seen before is a pagination loop, and a segment that ends with a
+# nextLink left continues from it, up to ``CHAT_LISTING_MAX_PAGES`` pages and
+# ``CHAT_LISTING_MAX_ITEMS`` chats in all. A listing still cut there is never silent: it
+# adds ``cap:chat_listing_<why>`` (not the per-conversation ``cap:page_cap`` of a resumed
+# read) and is counted in ``chat_listings_capped`` of discovery and of the census: the
+# chats past the cut are not discovered.
+CHAT_LISTING_TOP = "50"
+CHAT_LISTING_SEGMENT_PAGES = 50
+CHAT_LISTING_MAX_PAGES, CHAT_LISTING_MAX_ITEMS = 200, 10_000
+CHAT_LISTING_CAPPED = "cap:chat_listing_"
 # A preview is honoured until the chat's last settled read is this much past it: a read
 # that raced Graph's own indexing of the message is repeated, and a preview whose message
 # the capture never keeps (a system event) stops being due after a few runs.
@@ -1271,7 +1289,8 @@ class TeamsCapture:
         reasons: set[str] = set()
         info: dict[str, Any] = {"members": len(scope.members),
                                 "members_outside_allowlist": scope.outside_allowlist,
-                                "people_excluded": 0, "chat_preview_fallbacks": 0}
+                                "people_excluded": 0, "chat_preview_fallbacks": 0,
+                                "chat_listings_capped": 0}
         if not self.audience.may_read_any(self.actor, "teams:"):
             return [], {**info, "status": "not_visible", "reasons": ["not_visible"],
                         "discovered_total": 0, "unvisited": 0}
@@ -1306,8 +1325,13 @@ class TeamsCapture:
                     else:
                         reasons.add("provenance_dropped")
             if with_chats:
-                for item in attempt("teams.chats", "graph.user_chats", lambda: self._chat_listing(
-                        user, reasons, info)) or []:
+                fallbacks: list[str] = []
+                listed, capped = attempt("teams.chats", "graph.user_chats",
+                                         lambda: self._chat_listing(user, reasons, fallbacks)
+                                         ) or ([], False)
+                info["chat_listings_capped"] += capped
+                info["chat_preview_fallbacks"] += len(fallbacks)
+                for item in listed:
                     if _valid("teams_thread", item.get("id")):
                         chats.append(Conversation("chat", item["id"],
                                                   membership=_enum(item.get("chatType"))))
@@ -1336,21 +1360,63 @@ class TeamsCapture:
                        "discovered_total": len(found), "unvisited": 0,
                        "chat_previews": sum(1 for c in found if c.unit in self.previews)}
 
-    def _chat_listing(self, user: str, reasons: set[str], info: dict[str, Any]
-                      ) -> list[Mapping[str, Any]]:
-        """One member's chats, expanded with each chat's last message preview; when
-        Graph refuses or fails the expanded listing, the same listing without the
-        expand (the chats are still found, scheduled without previews; counted in
-        ``chat_preview_fallbacks``). A failure of that plain listing is the member's
-        ``teams.chats`` failure, as before the expand."""
+    def _chats(self, user: str, reasons: set[str], *, expand: bool
+               ) -> tuple[list[Mapping[str, Any]], bool]:
+        """One member's chat listing, 50 a page (``CHAT_LISTING_TOP``), read in guarded
+        segments, and whether the overall cap cut it (``CHAT_LISTING_CAPPED``)."""
+        query = {"$select": CHAT_LISTING, "$top": CHAT_LISTING_TOP}
+        if expand:
+            query["$expand"] = CHAT_LISTING_EXPAND
+        first = grammar.url("graph.user_chats", query, user=user)
+        items: list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        url: str | None = first
+        pages, why = 0, None
+        while url is not None:
+            if pages >= CHAT_LISTING_MAX_PAGES:
+                why = "page_cap"
+                break
+            for _page in range(CHAT_LISTING_SEGMENT_PAGES):   # one guarded segment
+                if url is None or pages >= CHAT_LISTING_MAX_PAGES:
+                    break
+                if len(items) >= CHAT_LISTING_MAX_ITEMS:
+                    why = "item_cap"
+                    break
+                if url in seen:
+                    raise SourceUnavailable("graph chat listing pagination loop")
+                seen.add(url)
+                listed, following = self.api.get_page(url)
+                pages += 1
+                items.extend(listed)
+                if (following is not None
+                        and self.api.continuation_url(first, following) != following):
+                    raise nextlink_refused("graph nextLink left the chat listing")
+                url = following
+            if why is not None:
+                break
+        if len(items) > CHAT_LISTING_MAX_ITEMS:
+            del items[CHAT_LISTING_MAX_ITEMS:]
+            why = "item_cap"
+        if why is not None:
+            reasons.add(CHAT_LISTING_CAPPED + why)
+        return items, why is not None
+
+    def _chat_listing(self, user: str, reasons: set[str], fallbacks: list[str]
+                      ) -> tuple[list[Mapping[str, Any]], bool]:
+        """(one member's chats, the listing was cut short): expanded with
+        each chat's last message preview; when Graph refuses or fails the expanded
+        listing, the same listing without the expand (the chats are still found,
+        scheduled without previews; ``user`` appended to ``fallbacks``, counted in
+        ``chat_preview_fallbacks`` even when the plain listing fails too).
+        A failure of that plain listing is the member's ``teams.chats`` failure, as
+        before the expand. Both discovery and the census list this way: the content run
+        of a census-cleared scope lists no member's chats, so the census's listing is
+        where its previews come from. Census threads call it (a list append)."""
         try:
-            return self._listing("graph.user_chats", {"$select": CHAT_LISTING,
-                                                      "$expand": CHAT_LISTING_EXPAND},
-                                 reasons, user=user)
+            return self._chats(user, reasons, expand=True)
         except SourceUnavailable:
-            info["chat_preview_fallbacks"] += 1
-            return self._listing("graph.user_chats", {"$select": CHAT_LISTING}, reasons,
-                                 user=user)
+            fallbacks.append(user)
+            return self._chats(user, reasons, expand=False)
 
     def _hint(self, conversation: Conversation, item: Mapping[str, Any]) -> None:
         if _instant(item.get("lastUpdatedDateTime")) is not None:
@@ -2380,7 +2446,8 @@ class TeamsCapture:
         reasons: set[str] = set()
         refused = {kind: dict.fromkeys(REFUSALS, 0) for kind in ("teams", "channels", "chats")}
         n = dict.fromkeys(("teams", "teams_unlisted", "channels", "chats", "chats_unlisted",
-                           "chats_carried", "accounts", "accounts_excluded"), 0)
+                           "chats_carried", "accounts", "accounts_excluded",
+                           "chat_listings_capped", "chat_previews", "chat_preview_fallbacks"), 0)
         now = self.store.now()
         carried = {c["chat_id"]: c for c in (previous or {}).get("chats") or []
                    if isinstance(c, Mapping) and isinstance(c.get("chat_id"), str)
@@ -2549,6 +2616,8 @@ class TeamsCapture:
         accounts = [address for address, _joined, with_chats in self._members(scope, reasons)
                     if with_chats]
 
+        fallbacks: list[str] = []   # members whose expanded listing fell back (a count)
+
         def read_account(address: str) -> tuple:
             """One chat account's chats (ids and types; a thread: GETs and the guard)."""
             if out_of_time():
@@ -2558,10 +2627,9 @@ class TeamsCapture:
                                lambda: self._member(address, scope, reasons))
             except PeopleExcluded:
                 return ("excluded",)   # none of their chats is listed
-            listed = (attempt("teams.chats", "graph.user_chats", lambda: self._listing(
-                "graph.user_chats", {"$select": CHAT_LISTING}, reasons, user=user))
-                if user is not None else None) or []
-            return ("ok", listed)
+            listed = (attempt("teams.chats", "graph.user_chats", lambda: self._chat_listing(
+                user, reasons, fallbacks)) if user is not None else None) or ([], False)
+            return ("ok", *listed)
 
         types: dict[str, str] = {}
         for read in self._ordered(read_account, accounts if config["max_chats"] else []):
@@ -2572,6 +2640,7 @@ class TeamsCapture:
             if read[0] == "excluded":
                 n["accounts_excluded"] += 1
                 continue
+            n["chat_listings_capped"] += read[2]
             for item in read[1]:
                 chat = item.get("id") if isinstance(item, Mapping) else None
                 if _valid("teams_thread", chat):
@@ -2580,6 +2649,9 @@ class TeamsCapture:
                 else:
                     reasons.add("provenance_dropped")
         n["chats"] = len(types)
+        n["chat_preview_fallbacks"] = len(fallbacks)
+        # The chats listed with a last message preview (the content run schedules on them).
+        n["chat_previews"] = sum(Conversation("chat", c).unit in self.previews for c in types)
         for kind in types.values():
             chat_types[kind] = chat_types.get(kind, 0) + 1
         if len(types) > config["max_chats"]:
@@ -2825,156 +2897,7 @@ def _propose(config: Mapping[str, Any], *names: str | None) -> list[str]:
             if text and any(p.search(text) for p in config["proposals"][area])]
 
 
-def census_path(state_dir: str | Path) -> Path:
-    return Path(state_dir).expanduser() / STORE_DIR / CENSUS_FILE
 
-
-def confirmation_path(state_dir: str | Path) -> Path:
-    return Path(state_dir).expanduser() / STORE_DIR / CONFIRMATION_FILE
-
-
-def write_census(state_dir: str | Path, private: Mapping[str, Any] | None) -> bool:
-    """Write the census listing to ``census_path`` (0600, atomically, outside every git
-    work tree); with no listing (the census never passed the people guard), remove an
-    earlier one, so a stale listing is never read as this run's. Whether one was written."""
-    root = assert_outside_git(state_dir) / STORE_DIR
-    path = root / CENSUS_FILE
-    if private is None:
-        path.unlink(missing_ok=True)
-        return False
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    staging = root / (CENSUS_FILE + ".tmp")
-    staging.unlink(missing_ok=True)
-    handle = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(handle, "w", encoding="utf-8") as out:
-        json.dump(private, out, indent=1, sort_keys=True)
-    os.replace(staging, path)
-    return True
-
-
-def read_census(state_dir: str | Path) -> dict[str, Any] | None:
-    """The last census's private listing (``census_path``), or None when there is none
-    or it is not a census of this schema (nothing is then carried)."""
-    try:
-        found = json.loads(census_path(state_dir).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return found if isinstance(found, dict) and found.get("schema") == CENSUS_SCHEMA else None
-
-
-def confirmation_block(code: str) -> dict[str, Any]:
-    """The typed block of content waiting on the human confirmation (``code``: why
-    none is usable). A later ask, never cleared by code."""
-    return {"part": CONFIRMATION_PART, "source": "owner-confirmation", "http_status": None,
-            "error_code": code, "cause": "later_ask", "later_ask": CONFIRMATION_LATER_ASK}
-
-
-def read_confirmation(state_dir: str | Path) -> tuple[dict[str, Any] | None, str]:
-    """(the confirmation, ``valid``) or (None, why not): the human
-    ``plx-teams-content-confirmation/v1`` at ``confirmation_path``, in one of two forms.
-
-    The listed form: ``confirmed_by``, ``confirmed_at`` (a date), ``channels``
-    (``{team_id, channel_id}``) and ``chats`` (chat ids), at most 200 each, naming at
-    least one. The all form (2026-10-21): ``scope``
-    ``"all_census_cleared"``, ``confirmed_by`` (the confirming person's full name, never a role,
-    address, principal or the name of code: ``content_confirmation_not_owner``),
-    ``confirmed_at`` (a calendar date) and ``directive`` (the directive id); no
-    ``channels`` or ``chats``. It confirms exactly what the run's census clears.
-
-    Absent, unreadable, inside a git work tree, malformed, of another ``scope`` or naming
-    nothing: no content is read (fails closed). Code never writes or defaults one. The
-    result holds ``form`` (``LISTED`` or ``ALL_CENSUS_CLEARED``), ``channels`` and
-    ``chats`` (empty for the all form)."""
-    path = confirmation_path(state_dir)
-    if not path.exists() and not path.is_symlink():
-        return None, "content_confirmation_absent"
-    try:
-        real = assert_outside_git(path)
-    except ValueError:  # capture_mail's CaptureError: it resolves into a git work tree
-        return None, "content_confirmation_in_git"
-    except (OSError, RuntimeError):  # a symlink loop
-        return None, "content_confirmation_unreadable"
-    try:
-        if not real.is_file() or real.stat().st_size > MAX_CONFIRMATION_BYTES:
-            return None, "content_confirmation_unreadable"
-        document = json.loads(real.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None, "content_confirmation_unreadable"
-    if not isinstance(document, Mapping) or document.get("schema") != CONFIRMATION_SCHEMA:
-        return None, "content_confirmation_invalid"
-    if "scope" in document:
-        return _all_form(document)
-    keys = {"schema", "confirmed_by", "confirmed_at", "note", "channels", "chats"}
-    if set(document) - keys:
-        return None, "content_confirmation_invalid"
-    by, at = document.get("confirmed_by"), document.get("confirmed_at")
-    channels, chats = document.get("channels", []), document.get("chats", [])
-    if not (isinstance(by, str) and 0 < len(by.strip()) <= 200 and isinstance(at, str)
-            and _DATE.match(at) and len(at) <= 40
-            and isinstance(channels, list) and len(channels) <= 200
-            and isinstance(chats, list) and len(chats) <= 200
-            and all(isinstance(c, Mapping) and not set(c) - {"team_id", "channel_id", "note"}
-                    and _valid("guid", c.get("team_id"))
-                    and _valid("teams_thread", c.get("channel_id")) for c in channels)
-            and all(_valid("teams_thread", c) for c in chats)):
-        return None, "content_confirmation_invalid"
-    if not channels and not chats:
-        return None, "content_confirmation_empty"
-    return {"form": LISTED,
-            "channels": {(c["team_id"].lower(), c["channel_id"]) for c in channels},
-            "chats": set(chats)}, "valid"
-
-
-def _all_form(document: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
-    """The all_census_cleared form of :func:`read_confirmation` (``document`` has a
-    ``scope``). Any other scope, an extra key, a bad date or directive id is invalid; a
-    signer that is not a person's full name, or names code, is not the owner."""
-    keys = {"schema", "scope", "confirmed_by", "confirmed_at", "directive", "note"}
-    at, directive = document.get("confirmed_at"), document.get("directive")
-    note = document.get("note", "")
-    if document.get("scope") != ALL_CENSUS_CLEARED or set(document) - keys \
-            or not isinstance(note, str) or len(note) > 2000:
-        return None, "content_confirmation_invalid"
-    try:
-        dated = isinstance(at, str) and len(at) == 10 and bool(date.fromisoformat(at))
-    except ValueError:
-        dated = False
-    if not dated or not isinstance(directive, str) or not _DIRECTIVE.fullmatch(directive):
-        return None, "content_confirmation_invalid"
-    by = document.get("confirmed_by")
-    words = set(re.split(r"[^a-z]+", by.lower())) if isinstance(by, str) else set()
-    if not isinstance(by, str) or len(by) > 120 or not _PERSON.fullmatch(by) \
-            or words & _CODE_SIGNERS:
-        return None, "content_confirmation_not_owner"
-    return {"form": ALL_CENSUS_CLEARED, "channels": set(), "chats": set()}, "valid"
-
-
-def confirmed_scope(scope: TeamsScope, private: Mapping[str, Any] | None,
-                    confirmed: Mapping[str, Any]) -> tuple[TeamsScope | None, int]:
-    """(the content scope, confirmed items this census did not clear): the channels and
-    chats both confirmed by the owner and cleared by this run's census, with ``scope``'s
-    caps and allowlist and nothing discovered from members. A confirmed item the census
-    refused (an excluded member now, a members read failed) or no longer found is not
-    read. The all form confirms exactly the cleared set (none left out). None when
-    nothing is left."""
-    cleared_channels = {(t["team_id"], c["channel_id"]) for t in (private or {}).get(
-        "teams", []) for c in t["channels"]}
-    cleared_chats = {c["chat_id"] for c in (private or {}).get("chats", [])}
-    if confirmed.get("form") == ALL_CENSUS_CLEARED:
-        confirmed = {"channels": cleared_channels, "chats": cleared_chats}
-    channels = sorted(confirmed["channels"] & cleared_channels)
-    chats = sorted(confirmed["chats"] & cleared_chats)
-    left_out = (len(confirmed["channels"]) - len(channels)
-                + len(confirmed["chats"]) - len(chats))
-    if not channels and not chats:
-        return None, left_out
-    by_team: dict[str, list[str]] = {}
-    for team, channel in channels:
-        by_team.setdefault(team, []).append(channel)
-    return TeamsScope({"schema": SCOPE_SCHEMA, **scope.limits(),
-                       "teams": [{"team_id": t, "channels": c} for t, c in by_team.items()],
-                       "chats": chats}, allowlist=scope.allowlist), left_out
 
 
 # ------------------------------------------------------------------ CLI (counts only)
@@ -3023,119 +2946,7 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
 _COUNT_KEYS = tuple(_new_counts())
 
 
-RECONCILE_STATES = ("captured", "other_tenant", "not_readable", "people_excluded",
-                    "pending", "never_read")
 
-
-def chats_reconcile(store: CaptureStore, chat_ids: Sequence[Any]) -> dict[str, Any]:
-    """Every chat the census lists, by what the store holds of it (operator counts, no
-    id): ``captured`` (current messages held), ``other_tenant`` (hosted in another
-    tenant: Graph refuses its messages to this tenant's app, settled and never claimed),
-    ``not_readable`` (another settled refusal), ``people_excluded``, ``pending`` (read
-    begun, not settled yet: throttled, cut by the budget; ``pending_reasons`` by code)
-    and ``never_read``. A census count above the captured one is explained here, never a
-    silent gap."""
-    out: dict[str, Any] = {state: 0 for state in RECONCILE_STATES}
-    pending: Counter = Counter()
-    ids = [c for c in dict.fromkeys(chat_ids) if isinstance(c, str) and c]
-    holdings = store.unit_holdings(CHAT_KIND.name)
-    for chat in ids:
-        run = holdings.get(Conversation("chat", chat).unit)
-        if run is not None and run["held"]:
-            out["captured"] += 1
-            continue
-        if run is not None and run["state"] is None:
-            run = None
-        reason = str((run or {}).get("reason") or "")
-        if run is None:
-            out["never_read"] += 1
-        elif reason == OTHER_TENANT:
-            out["other_tenant"] += 1
-        elif reason.startswith(NOT_READABLE):
-            out["not_readable"] += 1
-        elif reason == PEOPLE_EXCLUDED:
-            out["people_excluded"] += 1
-        else:
-            out["pending"] += 1
-            pending[reason.split(":", 1)[0] or str((run or {}).get("state") or "open")] += 1
-    out["listed"] = len(ids)
-    out["pending_reasons"] = dict(sorted(pending.items()))
-    return out
-
-
-def _read_back(store: CaptureStore, units: Sequence[tuple[str, str]], actor: Actor
-               ) -> tuple[list[str], int]:
-    """(citations ``actor`` may see, items withheld from it) over ``units``."""
-    seen, withheld = [], 0
-    for kind_name, unit in units:
-        after = None
-        while True:
-            try:
-                page = store.records(actor, kind_name, unit, after_path=after, limit=1000)
-            except CaptureError:
-                break  # the unit is not visible to this actor at all
-            seen += [item["citation"] for item in page["items"]]
-            withheld += page["withheld_count"]
-            after = page["next_after_path"]
-            if after is None:
-                break
-    return seen, withheld
-
-
-def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
-    discovery = run["discovery"]
-    return {"run": number, "complete": run["complete"],
-            "discovery": {**{k: discovery[k] for k in (
-                "status", "reasons", "conversations", "discovered_total", "unvisited",
-                "members_outside_allowlist")},
-                **{k: discovery.get(k, 0) for k in ("due", "deferred", "chat_previews",
-                                                    "chat_preview_fallbacks")},
-                # Due now and not read this run (none: the rest is fresh or waiting).
-                "due_left": max(0, discovery.get("due", 0) - len(run["conversations"]))},
-            "next_due_seconds": run.get("next_due_seconds"),
-            "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
-            "throttled": bool(run.get("throttled")),
-            "tenant_holds": run.get("tenant_holds", 0),
-            "retry_after_seconds": round(float(run.get("retry_after_seconds") or 0.0), 1),
-            # Counts only: who was excluded is never reported.
-            "people_excluded": run["people_excluded"], "people_dropped": run["people_dropped"],
-            # Conversations saved as read because the steadiness state failed (logged).
-            "state_fallbacks": run.get("state_fallbacks", 0),
-            "reply_sweep": run.get("reply_sweep"),
-            "conversations": [{"index": i, "kind": c["kind"], "membership": c["membership"],
-                               "status": c["status"], "reasons": c["reasons"],
-                               "round": c["round"], "resumed_from": c["resumed_from"],
-                               "acl_source": c["acl_source"],
-                               "counts": {k: c["counts"][k] for k in _COUNT_KEYS}}
-                              for i, c in enumerate(run["conversations"])]}
-
-
-def _member_groups(api: Any, identities: Iterable[str], allowlist: MailScope) -> set[str]:
-    """``group:<id>`` of the groups of a reader's allowlisted addresses, read the way the
-    employee permissions read them (``integrations.graph_directory``: the transitive
-    membership, or derived from the joined Teams when that read is refused): what a
-    real member of a ``group_fallback`` channel holds. An unread user adds none."""
-    from .graph_directory import GraphDirectoryReader
-
-    reader, groups = GraphDirectoryReader(api), set()
-    for identity in sorted(identities):
-        if "@" in identity and allowlist.allows([identity]):
-            read = reader.read(identity)
-            if read.status == "read":
-                groups |= {f"group:{g}" for g in read.group_ids}
-    return groups
-
-
-def _sweep_report(sweep: Mapping[str, Any] | None, runs: Sequence[Mapping[str, Any]],
-                  seconds: float) -> dict[str, Any] | None:
-    if sweep is None:
-        return None
-    settled = sum(r["complete_bound"] for r in runs)
-    rate = settled / (seconds / 3600) if seconds > 0 and settled else None
-    left = runs[-1]["discovery"]["unvisited"] if runs else 0
-    return {**sweep, "unvisited": left, "settled_reads": settled,
-            "settled_per_hour": round(rate, 1) if rate else None,
-            "eta_hours": 0.0 if not left else round(left / rate, 2) if rate else None}
 
 
 class RequestLog:
@@ -3439,6 +3250,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         return report
     finally:
         store.close()
+
+
+from .capture_teams_census import (  # noqa: E402  (split out; re-exported)
+    RECONCILE_STATES, _all_form, _member_groups, _read_back, _report_run, _sweep_report,
+    census_path, chats_reconcile, confirmation_block, confirmation_path, confirmed_scope,
+    read_census, read_confirmation, write_census)
 
 
 __all__ = ["ALL_CENSUS_CLEARED", "CAPTURE_PRINCIPAL", "CENSUS_OPERATIONS", "CENSUS_SCHEMA", "CHANNEL_KIND",

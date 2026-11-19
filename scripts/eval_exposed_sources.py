@@ -316,4 +316,6 @@ __all__ = ["MAILBOX_ENV", "SOURCES_PATH", "documents", "load_sources", "mail", "
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

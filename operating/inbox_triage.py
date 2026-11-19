@@ -22,12 +22,15 @@
   needed", ``NO_REPLY``), not a pleasantry or an offer ("let me know if you have any
   questions", "how are you?", ``NOT_ASK``), not a question about something said already
   ("did you know?"); automated mail (an automated sender, a notice's footer, an automatic
-  reply, a machine's report, a system feed: ``automated_mail``) and forwards are skipped
+  reply, a machine's report, a system feed: ``automated_mail``; mail a mailing platform
+  sent, by the envelope the capture stored, unless it relays one person's message or its
+  conversation holds an earlier message of ours: ``by_platform``) and forwards are skipped
   and counted.
 
   A first note (or its own follow-ups) from no known customer or supplier about no record is
-  outreach, owed no reply (``unsolicited``), unless it puts a direct question to the reader
-  (``direct_question``: not a pitch, a pleasantry or an offer) and comes from a domain none
+  outreach, owed no reply (``unsolicited``), unless it is a customer's inquiry (``inquiry``:
+  it asks the reader about their own goods or work, a quote, prices, samples, and pitches
+  nothing of the writer's; a question alone is not one) and comes from a domain none
   of our people mailed in the window: a prospect's ``new_inquiry``, low priority, listed
   after every other line.
 
@@ -107,7 +110,13 @@ ASK = re.compile(
     r"sign|look|forward|let\s+(?:me|us)\s+know)\b|\blet\s+(?:me|us)\s+know\b|\bkindly\b|"
     r"\b(?:i|we)\s+(?:need|require)\s+(?:you|your|the|a|an|to\s+know)\b|\b(?:waiting|wait)\s+"
     r"(?:for|on)\s+your\b|\bawait(?:ing)?\s+your\b|\bany\s+update\b|\b(?:need|want)\s+your\s+"
-    r"(?:input|approval|answer|feedback|confirmation|help)\b", re.I)
+    r"(?:input|approval|answer|feedback|confirmation|help)\b|"
+    # an indirect question: "I want to understand if ...", "we'd like to know whether ...",
+    # "I was wondering if ..."
+    r"\b(?:i|we)(?:\s+(?:just|really|also))?\s*(?:['\u2019]d|\s+would|\s+want|\s+wanted|\s+need|"
+    r"\s+needed)\s+(?:like\s+)?to\s+(?:understand|know|confirm|check|clarify|find\s+out|"
+    r"verify|ask)\s+(?:if|whether|what|when|where|which|who|why|how)\b|\b(?:i|we)(?:\s+(?:am|"
+    r"are|was|were)|['\u2019](?:m|re))\s+wondering\s+(?:if|whether|what|when|how|why)\b", re.I)
 # The message says no reply is wanted.
 NO_REPLY = re.compile(
     r"\bno\s+(?:need|action|reply|response)\s+(?:to\s+(?:reply|respond)|is\s+)?(?:needed|"
@@ -129,7 +138,22 @@ NOT_ASK = re.compile(
     r"\bif\s+(?:you|there)\b[^.?!\n]{0,80}?\b(?:let\s+"
     r"(?:me|us)\s+know|contact|reach)\b|^\s*(?:oh\b[^?]*|i\s+(?:don'?t|do\s+not)\s+know\b[^?]*)\?|"
     r"\bwhy\s+(?:do|did|does|am|would|should)\s+i\b|\bwhat\s+is\s+wrong\s+with\b|\bwhat\s+the\s+"
-    r"(?:hell|heck)\b|\bseriously\s*\?", re.I)
+    r"(?:hell|heck)\b|\bseriously\s*\?|"
+    # a closer offering a later word: "if anything changes, let me know", "please let me
+    # know if there are any discrepancies"
+    r"\bif\s+(?:anything|something|that|this|it|plans?|things?)\s+(?:\w+\s+){0,2}?changes?\b|"
+    r"\blet\s+(?:me|us)\s+know\b[^.?!\n]{0,20}\bif\s+(?:you|there)\b[^.?!\n]{0,40}\b(?:"
+    r"discrepanc(?:y|ies)|quer(?:y|ies)|issues?|problems?|errors?|changes?)\b|"
+    # a notice ("Please kindly note our holiday schedule", "Please be advised ..."), a
+    # standing instruction at the end ("... regarding POs in the future?"), one for a later
+    # need ("Please send a new PO for any additional ribbon required") and a mailing's
+    # subjectless question ("Want to pay online?")
+    r"^\W*(?:please\s+)?(?:kindly\s+)?(?:note|be\s+(?:advised|informed|aware))\b"
+    r"(?![^?\n]*\b(?:can|could|would|will)\s+you\b)[^?]*$|"
+    r"\b(?:in\s+(?:the\s+)?future|going\s+forward|from\s+now\s+on|moving\s+forward)\W*$|"
+    r"\bfor\s+any\s+(?:additional|further|other|more|new)\b[^.?!\n]{0,40}\b(?:required|"
+    r"needed)\b|^\W*(?:want|need|looking|interested|ready|wish)\s+(?:to|help|for|in)\b[^?]*\?",
+    re.I)
 # A pointer to an attachment ("please see / check the attached"), no ask by itself.
 POINTER = re.compile(r"\bplease\s+(?:also\s+)?(?:see|check|find|note)\s+(?:the\s+|our\s+)?"
                      r"(?:attached|enclosed|below|above|attachment)\b(?:\s+(?:\w+\s+){0,4}?"
@@ -148,14 +172,17 @@ NEGATED_ASK = re.compile(r"\b(?:no\s+longer|never\s+mind|nevermind|disregard|ign
 
 
 # Bulk mail by its form: preheader padding (invisible characters a mailing pads its preview
-# with), a mailing platform's sender (a role address or a sending subdomain), a platform's
+# with; zero-width spaces alone are not: a person's signature carries a few, and a real
+# supplier's reply was once cut for them), a mailing platform's sender (a role address or a sending subdomain), a platform's
 # notification footer.
-PADDING = re.compile(r"(?:[\u034f\u200b\u200c\u200d\u2800\u00ad\ufeff]\s*){4,}")
+PADDING = re.compile(r"(?:[\u034f\u200c\u200d\u2800\u00ad\ufeff]\s*(?:\u200b\s*)*){4,}")
 BULK_LOCAL = re.compile(r"^(?:marketing|newsletters?|news|promos?|promotions?|offers?|deals|"
-                        r"hello|sale|events?|updates?|digest|community|team|rewards|shop|store)"
-                        r"(?:[._+-]|@)", re.I)
+                        r"hello|sale|events?|updates?|digest|community|team|rewards|shop|store|"
+                        r"announcements?|greetings|webinars?|courses|campaigns?|"
+                        r"[a-z]{4,}(?:e?news|newsletters?))(?:[._+-]|@)", re.I)
 BULK_DOMAIN = re.compile(r"@(?:(?:[\w-]+\.)*(?:e|em|email|emails|mail|mailer|mailing|news|"
-                         r"[\w-]*-news|newsletter|comms|marketing|mkt|ml|send|engage|info|learn)\."
+                         r"[\w-]*-news|newsletter|comms|marketing|mkt|ml|send|engage|info|learn|campaigns?|"
+                         r"e?alerts|members|edm|promo|enews|mailings?|communications?)\."
                          r"(?:[\w-]+\.)+[a-z]{2,}$|(?:[\w-]+\.)*[\w-]*(?:-mailing|-marketing|"
                          r"-newsletter|-news|mailer)\.[a-z]{2,}$)", re.I)
 NOTICE = re.compile(r"\bsystem\s+generated\b|\b(?:is|was)\s+generated\s+(?:through|by)\b|"
@@ -164,7 +191,21 @@ NOTICE = re.compile(r"\bsystem\s+generated\b|\b(?:is|was)\s+generated\s+(?:throu
                     r"\bview\s+(?:this\s+)?(?:e-?mail\s+)?(?:online|in\s+(?:a|your)\s+browser)\b|"
                     r"\b\d{1,2}\s*%\s+off\b|\bshop\s+now\b|\bprivacy\s+policy\b|\btype\s+your\s+"
                     r"reply\s+above\s+this\s+line\b|\byour\s+request\s+\(?\d+\)?\s+has\s+been\b|"
-                    r"\bwebinar\b|\bwebcast\b|\bregister\s+(?:now|today|here)\b|\bbook\s+a\s+demo\b",
+                    r"\bwebinar\b|\bwebcast\b|\bregister\s+(?:now|today|here)\b|\bbook\s+a\s+demo\b|"
+                    # a mailing's own preheader and footer lines, an issue tracker's reply
+                    # marker, a form's or a system's notice, and Outlook's banner on mail
+                    # sent to many (some of whom it is new to)
+                    r"\bview\s+(?:this|it)\s+(?:e-?mail\s+|message\s+|newsletter\s+)?as\s+a\s+web"
+                    r"\s*page\b|\b(?:having\s+trouble|problems?|unable|can'?t|cannot)\s+"
+                    r"(?:reading|viewing|read|view|to\s+view|see(?:ing)?)\s+this\s+(?:e-?mail|"
+                    r"message|newsletter)\b|\bweb\s+(?:copy|version)\s+of\s+this\s+e-?mail\b|"
+                    r"\breply\s+above\s+this\s+line\b|\bthis\s+is\s+an?\s+(?:automated\s+|"
+                    r"automatic\s+)?notification\b|\bsome\s+people\s+who\s+received\s+this\s+"
+                    r"message\s+don'?t\s+often\s+get\s+e-?mail\b|\bto\s+stop\s+receiving\b|"
+                    r"\bstop\s+receiving\s+(?:these|this|our|\w+\s+monthly)\b|"
+                    r"\b(?:your\s+)?(?:e-?bill|statement|invoice)\s+(?:is\s+(?:now\s+)?ready|is\s+now\s+"
+                    r"available|are\s+now\s+available)\b|\bnotices?\b[^.]{0,20}\bare\s+now\s+"
+                    r"available\b",
                     re.I)
 # A sign-off ("Regards, Jane"): what follows is a signature (its slogans ask nothing).
 SIGNOFF = re.compile(r"(?:^|[.!?]\s+|\n)\s*(?i:(?:(?:best|kind|warm|many)\s+)?(?:regards|thanks|"
@@ -175,11 +216,96 @@ FIRST_CONTACT = re.compile(r"you\s+don'?t\s+often\s+get\s+e-?mail\s+from\s+\S+\s
                            r"(?:learn\s+why\s+this\s+is\s+important)?\.?", re.I)
 
 
+# A ticket system's reminder subject ("SR1234 | Waiting for your response"): the system
+# chases its own form; the person behind the ticket wrote nothing new.
+TICKET_SUBJECT = re.compile(r"^\W*(?:SR|INC|REQ|RITM|CS|CASE|TICKET)"
+                            r"\s*#?\s*\d{4,}\b.*\bhas\s+been\s+(?:updated|created|resolved|"
+                            r"closed|received|assigned)\b", re.I)
+# The reminder phrase counts only in a ticket's own shape: a ticket/case/request number in
+# the subject, no reply prefix, and a system or role sender. A customer's own chase ("Re:
+# Quote 4471 - waiting for your response") is a person's.
+TICKET_CHASE = re.compile(r"\b(?:waiting|awaiting)\s+(?:for\s+|on\s+)?your\s+(?:response|"
+                          r"reply|feedback|input)\b", re.I)
+TICKET_NUMBER = re.compile(r"(?<![\w])(?:SR|INC|REQ|RITM|CS|CASE|TICKET|REQUEST)\s*[#-]?\s*\d{4,}\b", re.I)
+_REPLY_PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)+", re.I)
+SYSTEM_WORDS = frozenset(("noreply", "no-reply", "donotreply", "notifications", "notification",
+                          "notice", "notices", "alerts", "alert", "payments", "system",
+                          "automated", "mailer", "bot", "tickets", "ticket", "helpdesk"))
+SHOUTED = 0.9   # a body this share upper case, 15 words or more: a system notice
+_ASK = re.compile(r"\?|\b(?:can|could|would|will)\s+you\b|\b(?:call|phone|reply|respond|email|"
+                  r"ship|send|tell|update)\s+me\b|\blet\s+me\s+know\b|\bwhere\s+is\b|"
+                  r"\bi\s+need\b|\bwhen\s+(?:will|can|is)\b", re.I)
+
+
+def system_sender(sender: str) -> bool:
+    """A non-person address: a no-reply, notification or role mailbox, or a bulk form."""
+    local = str(sender or "").split("@", 1)[0].lower()
+    words = {w for w in re.split(r"[^a-z]+", local) if w} | {re.sub(r"[^a-z]", "", local)}
+    return bool(words & (SYSTEM_WORDS | ROLE_WORDS)) or bool(pt.automated(sender, "", ""))
+
+
+def ticket_chase(sender: str, subject: str) -> bool:
+    """A ticket system's reminder: the phrase, a ticket number, not a reply, a system sender."""
+    return bool(TICKET_CHASE.search(subject or "")) and bool(TICKET_NUMBER.search(subject or "")) \
+        and not _REPLY_PREFIX.match(subject or "") and system_sender(sender)
+
+
+def shouted(text: str, sender: str = "") -> bool:
+    """A notice set entirely in capitals ("PLEASE BE ADVISED THE ... PROCESSED A PAYMENT"):
+    a system's, not a person's note. A person's all-capitals mail with an ask ("WHERE IS MY
+    ORDER ... CALL ME") is kept: only a system sender, or no ask at all, makes it a notice."""
+    letters = re.findall(r"[A-Za-z]", text or "")
+    words = re.findall(r"[A-Za-z]{2,}", text or "")
+    loud = len(words) >= 15 and sum(c.isupper() for c in letters) >= SHOUTED * len(letters)
+    return loud and (system_sender(sender) or not _ASK.search(text or ""))
+
+
 def bulk(sender: str, text: str, subject: str = "") -> bool:
     """Automated or bulk mail (``proactive_threads.automated``, a mailing's form)."""
     return pt.automated(sender, text, subject) or bool(PADDING.search(text or "")) \
         or bool(BULK_LOCAL.match(sender or "")) or bool(BULK_DOMAIN.search(sender or "")) \
-        or bool(NOTICE.search(text or ""))
+        or bool(NOTICE.search(text or "")) or bool(TICKET_SUBJECT.search(subject or "")) \
+        or ticket_chase(sender, subject) or shouted(pt._own(text or ""), sender)
+
+
+def by_platform(people: Any, candidates: Iterable[tuple[str, str]],
+                earlier_ours: Callable[[str], bool]) -> set[str]:
+    """The Email oids among ``candidates`` (``(oid, own text)``) a mailing platform sent
+    (``mail_envelope``: the envelope the capture stored, read through the reader the
+    engine attaches as ``people.mail_platform``; none attached: nothing), except a
+    platform's relay of one person's message (``mail_envelope.RELAY``) and a message in a
+    conversation one of ours wrote in before it (``earlier_ours(oid)``: a real contact who
+    sends through a platform)."""
+    from .mail_envelope import RELAY
+    read = getattr(people, "mail_platform", None)
+    if not callable(read):
+        return set()
+    wanted = [oid for oid, text in candidates if not RELAY.search(text or "")]
+    try:
+        sent = read(wanted)
+    except Exception:  # noqa: BLE001 - an unreadable capture is no signal: nothing dropped
+        return set()
+    return {oid for oid in wanted if sent.get(oid) is True and not earlier_ours(oid)}
+
+
+def bulk_senders(rows: Iterable[Mapping[str, Any]]) -> set[str]:
+    """The addresses of a person's own mail rows (``assist.sent_rows`` shape: received ones
+    marked ``in`` with their ``from``) that are a mailing, never a correspondent: they
+    wrote to this person in a bulk form (``bulk`` on the sender and the subject; the rows
+    carry no body) and the person never wrote to them. Someone they wrote to is never
+    one, whatever the address looks like."""
+    wrote: set[str] = set()
+    seen: dict[str, bool] = {}
+    for row in rows:
+        if row.get("in"):
+            sender = str(row.get("from") or "").lower()
+            subject = str(row.get("subject") or "")
+            if sender:
+                seen[sender] = seen.get(sender, False) or bulk(sender, subject, subject)
+        else:
+            wrote.update(str(a).lower() for a in list(row.get("to") or ())
+                         + list(row.get("cc") or ()))
+    return {a for a, mass in seen.items() if mass and a not in wrote}
 
 
 def feed_senders(messages: Iterable[Any], own: Iterable[str], *, least: int = FEED_MIN,
@@ -365,6 +491,8 @@ class _Msg:
     ident: str
     cleared: bool = True
     groups: list = field(default_factory=list)
+    cc: list = field(default_factory=list)
+    body: str = ""   # the note's own text without its subject (``text`` leads with it)
 
 
 def population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
@@ -429,7 +557,8 @@ def _messages(pop: Mapping[str, Any], people: Any, domains: Sequence[str],
         out.append(_Msg(oid, "mail", owner, aud, sender, to or [], at, subject,
                         (head + ".\n" + own) if head else own,
                         _value(row, "conversation_id"),
-                        _value(row, "internet_message_id") or oid, cleared))
+                        _value(row, "internet_message_id") or oid, cleared,
+                        cc=cc or [], body=own))
     members = getattr(people, "chat_members", None) or {}
     for oid, row in pop["teams"].items():
         aud = pop["teams_audience"][oid]
@@ -449,21 +578,109 @@ def _messages(pop: Mapping[str, Any], people: Any, domains: Sequence[str],
     return out
 
 
-GREETING = re.compile(r"^\W*(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|day|evening))\s+"
-                      r"([A-Za-z][a-z]+)\s*[,:!-]", re.I)
+GREETING = re.compile(r"^\W*(?:(hi|hello|hey|dear|good\s+(?:morning|afternoon|day|evening))\s+)?"
+                      r"([A-Za-z][a-z]+(?:\s*(?:,|\band\b|&)\s*[A-Za-z][a-z]+){0,3})"
+                      r"(?:\s*([,:!\uff0c\uff1a-])|\s+(?=(?-i:[A-Z])))", re.I)
+# A bare opening word that addresses a group or is no name at all ("All, ...", "Thanks, ...").
+NOT_A_NAME = frozenset((
+    "all", "team", "everyone", "everybody", "guys", "folks", "hi", "hello", "hey", "dear",
+    "thanks", "thank", "yes", "no", "ok", "okay", "sorry", "please", "sure", "great", "perfect",
+    "noted", "morning", "afternoon", "evening", "sir", "madam", "gentlemen", "colleagues",
+    "friends", "update", "note", "reminder", "fyi", "re", "fw", "fwd", "attention", "attn",
+    "importance", "subject", "regards", "cheers", "well", "so", "also", "and", "but", "the",
+    "there", "again", "both", "you", "friend", "partner", "partners", "customer", "customers",
+    "client", "clients", "valued", "supplier", "vendor", "user", "member", "members",
+    "recipient", "colleague", "ladies", "people", "accounts", "payable", "receivable"))
+# A mailbox whose address names a function, not a person ("info@", "ap@", "sales8@"): whom
+# a greeting names in it is not known from its address.
+ROLE_WORDS = frozenset((
+    "info", "ap", "ar", "accounts", "accounting", "admin", "sales", "support", "dispatch",
+    "shipping", "receiving", "orders", "order", "office", "hr", "billing", "purchasing",
+    "label", "labels", "service", "customerservice", "help", "helpdesk", "team", "ops",
+    "operations", "reception", "warehouse", "logistics", "finance", "payables", "invoices",
+    "quality", "qa", "qc", "it", "marketing", "contact", "hello", "mail", "noreply", "tracking"))
 
 
-def _greets_another(text: str, mine: Iterable[str], to: Sequence[str]) -> bool:
-    """The note opens by naming one person, who is another of its To recipients, not this
-    mailbox's owner (an address's local part starts with the name): it asks them."""
-    found = GREETING.match(text or "")
+def _local_tokens(address: str) -> tuple[str, list[str]]:
+    """An address's local part and its words (``sw-tina`` -> ``sw``, ``tina``)."""
+    local = str(address).split("@", 1)[0].lower()
+    return local, [t for t in re.split(r"[^a-z]+", local) if t]
+
+
+def greets_another(text: str, mine: Iterable[str], others: Sequence[str],
+                   to: Sequence[str] = ()) -> bool:
+    """The note opens by naming people ("Hi Tina,", "Paul and Jeremy,", or a bare "Tina, can
+    you ..."), each another of its recipients or a colleague (``others``), none this
+    mailbox's owner: it asks them. A greeted name names an address when the address's local
+    part starts with it or one of the local part's words (split on ``.``, ``_``, ``-``) is
+    it; a bare opening word only when a word is it exactly and it is no group or common
+    word. A name that may be
+    the owner's (one of his words starts with it, or it starts with one, three letters or
+    more) is his. A greeted name no address holds: see below."""
+    found = GREETING.match(pt._own(text) if isinstance(text, str) else "")
     if not found:
         return False
-    name = found.group(1).lower()
-    local = lambda a: a.split("@", 1)[0].lower()   # noqa: E731
-    if any(local(a).startswith(name) for a in mine):
+    greeted = bool(found.group(1))
+    if not greeted and not found.group(3):
+        return False   # a bare name needs its comma ("Tina, ..."); "Hi Tina Please ..." not
+    names = [n for n in re.split(r"\s*(?:,|\band\b|&)\s*", found.group(2).lower()) if n]
+    if any(n in NOT_A_NAME or len(n) < 2 for n in names):
         return False
-    return any(local(a).startswith(name) for a in to if a not in set(mine))
+    mine = {str(a).lower() for a in mine}
+    for local, words in map(_local_tokens, mine):
+        if any(local.startswith(n) or any(w.startswith(n) or (len(w) >= 3 and n.startswith(w))
+                                          for w in words) for n in names):
+            return False
+    pool = [_local_tokens(a) for a in others if str(a).lower() not in mine]
+    if all(any(n in words or (greeted and local.startswith(n)) for local, words in pool)
+           for n in names):
+        return True
+    # "Hi Tina," naming no address at all: another person's, when the greeting is a
+    # greeting ("Tina," alone may be any opening word), the note is To someone besides the
+    # owner (sent to him alone, the name is his nickname), the mailbox is one person's (no
+    # function address, whose reader the name says nothing of), no greeted name shares an
+    # initial with the owner's address (a nickname: "Bob" for robert@ is not caught) and none
+    # is a word of our own or a recipient's domain ("Hi Petra," greets the company)
+    owner = [_local_tokens(a) for a in mine]
+    if not greeted or not owner or not any(str(a).lower() not in mine for a in to) or any(
+            not words or len(local) < 3 or re.search(r"\d", local) or ROLE_WORDS & set(words)
+            for local, words in owner):
+        return False
+    initials = {w[0] for _, words in owner for w in words}
+    domains = " ".join(str(a).rsplit("@", 1)[-1].lower() for a in [*mine, *others])
+    return all(n[0] not in initials and n not in domains for n in names)
+
+
+# An @mention in a note's own text ("@Maria Hooper can you issue a credit"): the person it
+# puts the ask to. Capitalised words only (an address or a social handle is not one).
+MENTION = re.compile(r"(?<![\w.@])@([A-Z][\w'\u2019-]+)(?:\s+([A-Z][\w'\u2019-]+))?")
+
+
+def mentions_another(text: Any, mine: Iterable[str], others: Iterable[str]) -> bool:
+    """The note's own text @mentions a person among ``others`` (a colleague's or another
+    recipient's addresses) and none of its mentions names this mailbox's owner: the ask is
+    the mentioned person's. A mention names an address when one of its words (first or last
+    name) starts the address's local part or, three letters or more, is held in it. No
+    mention, a mention of no known person ("@Petra Soap", a team), or a mention of the owner
+    among others: no. A role mailbox (``info@``) names no one, so a colleague @mentioned in
+    mail to it is that colleague's to answer."""
+    found = [[re.sub(r"[^a-z]", "", w.lower()) for w in m.groups() if w] for m in
+             MENTION.finditer(pt._own(text) if isinstance(text, str) else "")]
+    if not found:
+        return False
+
+    def local(addresses: Iterable[str]) -> list[str]:
+        return [x for x in (re.sub(r"[^a-z]", "", str(a).split("@", 1)[0].lower())
+                            for a in addresses) if x]
+
+    def names(words: list[str], pool: list[str]) -> bool:
+        return any(w and (loc.startswith(w) or (len(w) >= 3 and w in loc))
+                   for w in words for loc in pool)
+    own = local(mine)
+    rest = local(a for a in others if str(a).lower() not in {str(x).lower() for x in mine})
+    if not own or any(names(words, own) for words in found):
+        return False
+    return any(names(words, rest) for words in found)
 
 
 def _domain(address: str) -> str:
@@ -485,6 +702,48 @@ def direct_question(text: Any) -> bool:
                                   r"quick\s+call|still\s+(?:looking|open))\b", sentence, re.I):
             return True
     return False
+
+
+# What a stranger's first note asks of the reader when it is an inquiry about the reader's
+# own goods or work (a quote, a price list, samples, a minimum order, lead time, a product
+# made or sold): the business a new customer writes about.
+INQUIRY = re.compile(
+    r"\b(?:quot(?:e|es|ation|ations|ing)|pric(?:ing|e\s+list)|price\s+(?:for|of|per)|"
+    r"samples?\b|moq|minimum\s+order|lead\s*times?|catalog(?:ue)?|private\s+label|"
+    r"white\s+label|wholesale|co-?pack\w*|stockists?)\b|"
+    r"\b(?:do|does|can|could|would|will)\s+(?:you|your\s+(?:company|team|plant|facility))\s+"
+    r"(?:\w+\s+){0,2}?(?:make|manufacture|produce|formulate|fill|bottle|supply|sell|carry|"
+    r"stock|ship|offer|provide|quote|private\s+label)\b|\b(?:looking|searching)\s+for\s+an?\s+"
+    r"(?:\w+\s+){0,2}?(?:manufacturer|supplier|co-?packer|filler|vendor)\b", re.I)
+# A note offering the writer's own goods or work (a pitch): "may I send you our price list",
+# "I can share photos", "we specialise in ...".
+PITCH = re.compile(
+    r"\b(?:may|can|could|shall)\s+(?:i|we)\s+(?:\w+\s+)?(?:send|share|show|offer|introduce|"
+    r"present|schedule|set\s+up|walk)\b|\b(?:i|we)(?:\s+(?:can|could|would\s+(?:like|love)\s+to)|"
+    r"['\u2019]d\s+(?:like|love)\s+to)\s+(?:\w+\s+)?(?:send|share|show|offer|introduce|present|help)\b|"
+    r"\bwe\s+(?:offer|provide|specialize|specialise|help\s+(?:brands|companies|businesses|"
+    r"manufacturers))\b|\b(?:i|we)\s+(?:am|are)\s+(?:a|an)\s+(?:\w+\s+){0,3}?(?:manufacturer|"
+    r"supplier|agency|company|firm|factory|provider|consultant)\b|"
+    # an offer of help or of the writer's own goods ("could we help", "happy to quote",
+    # "would you like to receive a sample file", "can I stop by to show you")
+    r"\b(?:can|could|may)\s+(?:i|we)\s+help\b|\bhappy\s+to\s+(?:help|quote|send|share|provide)\b|"
+    r"\bwould\s+you\s+(?:like|want)\s+(?:to\s+(?:receive|see|get|try)|(?:me|us)\s+to\s+send|"
+    r"an?\s+(?:sample|demo|quote|free))\b|\b(?:can|could|may)\s+(?:i|we)\s+(?:\w+\s+){1,3}?to\s+"
+    r"(?:show|demo|present|introduce)\b|(?:^|[.!?\n]\s*|,\s*)(?:do|does)\s+(?:you|your\s+team)\s+need\s+(?!(?:to|us|me)\b)(?:an?\s+|"
+    r"any\s+|more\s+)?(?:\w+[\s-]+){0,3}?(?:supplier|partner|help|support|solution|service|"
+    r"ingredients?|packaging|software|leads?|contacts?|financing|capital|staff)\b", re.I)
+
+
+def inquiry(text: Any) -> bool:
+    """A stranger's first note that is a customer's inquiry: it asks the reader something
+    (``reply_ask`` or ``direct_question``) about the reader's own goods or work
+    (``INQUIRY``: a quote, prices, samples, a product they make or sell) and is not a pitch of
+    the writer's own (``PITCH``, ``proactive_threads.OUTREACH``). A question alone is not one:
+    a newsletter's or a cold pitch's subject and opening ask "you" too."""
+    own = URL.sub(" ", FIRST_CONTACT.sub(" ", text if isinstance(text, str) else ""))
+    if not INQUIRY.search(own) or PITCH.search(own) or pt.OUTREACH.search(own):
+        return False
+    return direct_question(own) or reply_ask(own)
 
 
 def _tier(count: int) -> str:
@@ -541,12 +800,24 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
     for address, oid in directory.items():
         addresses_of[str(oid).lower()].add(str(address).lower())
     messages = _messages(pop, people, domains, skipped)
-    machine = automated_mail(messages, {a for found in addresses_of.values() for a in found})
+    staff = sorted({a for found in addresses_of.values() for a in found})
+    machine = automated_mail(messages, set(staff))
     by_thread: dict[tuple[str, str], list[_Msg]] = defaultdict(list)
     for m in messages:
         if m.conversation:
             by_thread[(m.channel, m.conversation)].append(m)
     since = as_of - timedelta(days=WINDOW_DAYS)
+    # mail a mailing platform sent (its stored envelope), not a relay, in no conversation
+    # one of ours wrote in before it
+    by_oid = {m.oid: m for m in messages if m.channel == "mail"}
+
+    def earlier_ours(oid: str) -> bool:
+        m = by_oid[oid]
+        return any(x.at < m.at and _internal(x.sender, domains)
+                   for x in by_thread.get(("mail", m.conversation), ()))
+    platform_sent = by_platform(people, [
+        (m.oid, m.text) for m in by_oid.values()
+        if m.at.date() >= since and not _internal(m.sender, domains)], earlier_ours)
     # a signature's sentences: in most of a sender's messages, across several conversations
     seen_in: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     sent_by: Counter = Counter()
@@ -572,13 +843,14 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
             if len(m.to) > MAX_TO:
                 counts["mailing"] += 1
                 continue
-            if machine(m.sender, m.text, m.subject):
-                counts["automated"] += 1
+            if machine(m.sender, m.text, m.subject) or m.oid in platform_sent:
+                counts["automated"] += 1   # a notice, a feed, a mailing platform's mail
                 continue
             if _FORWARD.match(m.subject):
                 counts["forward"] += 1
                 continue
-        if m.channel == "mail" and _greets_another(m.text, mine, m.to):
+        if m.channel == "mail" and (greets_another(m.body, mine, [*m.to, *m.cc, *staff], m.to)
+                                    or mentions_another(m.text, mine, [*m.to, *staff])):
             counts["addressed_to_another"] += 1
             continue
         boiler = {k for k, where in seen_in[m.sender].items()
@@ -633,14 +905,14 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
                     for x in by_thread.get((m.channel, m.conversation), ())):
             # a first note, or its own follow-ups (a "Re:" subject too: cold mail wears one),
             # from no known customer or supplier about no record: outreach, owed no reply;
-            # unless it puts a direct question and comes from a domain we never mailed in
+            # unless it is an inquiry (``inquiry``) and comes from a domain we never mailed in
             # the window (a prospect): a new inquiry, low priority, listed last
-            if not direct_question(m.text) or _domain(m.sender) in mailed:
+            if not inquiry(m.text) or _domain(m.sender) in mailed:
                 counts["unsolicited"] += 1
                 continue
-            inquiry = True
+            prospect = True
         else:
-            inquiry = False
+            prospect = False
         waited = pt._business_days(m.at.date(), as_of)
         named = sum(w["records"].values())
         rank = [min(named, 9), TIER_RANK[w["customer"]], min(chases[(owner, ident)], 9),
@@ -665,13 +937,13 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
             why=("Addressed to you, its own text asks a question or a request, and no later "
                  "message of yours (nor a colleague's to the asker) is in its conversation; "
                  "the message cited."),
-            priority="low" if inquiry else "high" if named or rank[1] >= 2 or rank[2]
+            priority="low" if prospect else "high" if named or rank[1] >= 2 or rank[2]
             else "medium" if waited >= 3 else "low",
             about=(EMAIL if m.channel == "mail" else TEAMS, "reply"), groups=groups,
             event={"days": waited, "channel": m.channel, "asked_by": m.sender
                    if m.channel == "mail" else None, "records_named": dict(w["records"]),
                    "customer_tier": w["customer"], "chases": chases[(owner, ident)],
-                   "rank": rank, "new_inquiry": inquiry, "messages": [{"id": m.oid, "channel": m.channel,
+                   "rank": rank, "new_inquiry": prospect, "messages": [{"id": m.oid, "channel": m.channel,
                                                "sent": m.at.date().isoformat(),
                                                "subject": pt._clip(m.subject,
                                                                    SUBJECT_CHARS)}]})

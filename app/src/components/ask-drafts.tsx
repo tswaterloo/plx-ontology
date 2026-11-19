@@ -106,7 +106,31 @@ function Draft({ d, record }: { d: AskDraft; record?: string | null }) {
   return (
     <li className="space-y-2.5 rounded-xl bg-bg px-4 py-3.5 shadow-lift" data-testid="ask-draft">
       <p className="text-[12px] leading-4 font-medium text-muted">{KIND[d.kind]}</p>
-      <p className="text-[13px] leading-5 font-medium">{d.email_subject ?? d.title}</p>
+      {d.kind === "email" ? (
+        // an email's fields as a mail app shows them; the subject only when there is one
+        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[13px] leading-5" data-testid="ask-draft-fields">
+          {[d.to, ...(d.also_to ?? [])].filter(Boolean).length > 0 && (
+            <div className="contents">
+              <dt className="text-muted">To</dt>
+              <dd className="break-words" data-testid="draft-recipients">{[d.to, ...(d.also_to ?? [])].filter(Boolean).join(", ")}</dd>
+            </div>
+          )}
+          {(d.cc ?? []).length > 0 && (
+            <div className="contents">
+              <dt className="text-muted">Cc</dt>
+              <dd className="break-words">{(d.cc ?? []).join(", ")}</dd>
+            </div>
+          )}
+          {d.email_subject && (
+            <div className="contents">
+              <dt className="text-muted">Subject</dt>
+              <dd className="font-medium break-words">{d.email_subject}</dd>
+            </div>
+          )}
+        </dl>
+      ) : (
+        <p className="text-[13px] leading-5 font-medium">{d.title}</p>
+      )}
       {(d.details ?? []).length > 0 ? (
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px] leading-5" data-testid="ask-draft-details">
           {(d.details ?? []).map((x, i) => (
@@ -124,12 +148,6 @@ function Draft({ d, record }: { d: AskDraft; record?: string | null }) {
           {m}
         </p>
       ))}
-      {(d.to || (d.also_to ?? []).length > 0 || (d.cc ?? []).length > 0) && (
-        <p className="text-[12px] leading-4 text-muted" data-testid="draft-recipients">
-          To {[d.to, ...(d.also_to ?? [])].filter(Boolean).join(", ")}
-          {(d.cc ?? []).length > 0 && `; Cc ${(d.cc ?? []).join(", ")}`}
-        </p>
-      )}
       <Questions d={d} picks={picks} setPicks={setPicks} />
       {d.kind === "email" && (
         <div className="space-y-1.5" data-testid="draft-templates">

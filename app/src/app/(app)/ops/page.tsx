@@ -1,8 +1,9 @@
 "use client";
 
-import { eastern, opsLabel } from "@/components/shell";
+import { eastern, opsLabel, SectionTabs } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
 import { LoadProblem } from "@/components/ui/notice";
 import { getOpsAlarms, type OpsAlarms, type OpsCheck, type OpsIncident, type OpsQueue } from "@/lib/api";
 import { useRead } from "@/lib/use-read";
@@ -132,6 +133,8 @@ export default function OpsPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Reliability" />
+      <SectionTabs section="admin" />
+      <PageIntro path="/ops" />
       <div className="mx-auto w-full max-w-5xl space-y-5 overflow-y-auto px-4 py-4 sm:px-6" data-testid="ops-page">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
@@ -141,6 +144,12 @@ export default function OpsPage() {
           <p className="text-[13px] text-muted">This server has no live state to check.</p>
         ) : (
           <>
+            {alarms.maintenance?.state === "in_window" && (
+              <p className="text-[13px]" data-testid="ops-maintenance">
+                Paused for maintenance until {eastern(alarms.maintenance.until)}: {alarms.maintenance.reason}.
+                <span className="ml-1 text-muted">What it stops is listed under Paused on purpose; past that time it opens again and pages.</span>
+              </p>
+            )}
             <div className="border-b border-border pb-3">
               <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px] sm:grid-cols-4" data-testid="ops-summary">
                 <div>

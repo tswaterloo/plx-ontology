@@ -150,7 +150,11 @@ def judge_posting(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
 
 def _receipt(ctx: Any, invoice: str, day: date) -> list[tuple[str, Decimal | None]] | None:
     """The application lines (invoice, amount) of the receipt that pays ``invoice``."""
-    hits = ctx.find("RelSageArTcp", "idinvc", invoice)
+    from .autopilot_handlers import FindUnavailable
+    try:
+        hits = ctx.find("RelSageArTcp", "idinvc", invoice)
+    except FindUnavailable:
+        return None             # the truth not read: the item is not counted as found
     rows = autopilot_records._read(ctx.st, hits, ("idinvc", "amtpaym", "cntbtch", "cntitem", "audtdate"))
     lo, hi = day, day + timedelta(days=AFTER_DAYS["cash_application"])
     keys = sorted({(autopilot_records._v(r, "cntbtch"), autopilot_records._v(r, "cntitem")) for r in rows.values()
@@ -158,7 +162,10 @@ def _receipt(ctx: Any, invoice: str, day: date) -> list[tuple[str, Decimal | Non
     if not keys:
         return None
     batch, item = keys[0]
-    same = ctx.find("RelSageArTcp", "cntbtch", batch)
+    try:
+        same = ctx.find("RelSageArTcp", "cntbtch", batch)
+    except FindUnavailable:
+        return None
     got = autopilot_records._read(ctx.st, same, ("idinvc", "amtpaym", "cntbtch", "cntitem"))
     # an application amount unreadable stays None: the receipt is not read in full
     return [(autopilot_records._v(r, "idinvc").strip().upper(), autopilot_records._decimal(autopilot_records._v(r, "amtpaym")))

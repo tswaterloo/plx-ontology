@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -238,6 +239,21 @@ def open_ticket(token: str, sealed: str) -> Optional[str]:
         return None
 
 
+def _foreign(path: Path) -> bool:
+    """True when ``path`` exists and another user owns it. The state directory is the jobs'
+    user's and sticky: that user may replace or remove any file in it, so a process of that
+    user (a dev API, a preflight or a test run over the live state) could take the API's
+    store, lock or health file from it, after which the API can never write them again
+    (EPERM: the 11-17 app_sessions_store alarm). No process ever replaces or removes a
+    sessions file another user owns; it fails (or skips the health) instead."""
+    try:
+        return os.lstat(path).st_uid != os.geteuid()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
 class SessionStore:
     """Dev sessions on disk, so an API restart or deploy does not sign everyone out.
 
@@ -328,16 +344,35 @@ class SessionStore:
             return "the state directory is not writable by this API's user"
         return None
 
+    def _refuse_foreign(self) -> None:
+        """EPERM, before anything is written, when the store is another user's
+        (``_foreign``): it is never replaced, whoever may."""
+        if _foreign(self.path):
+            raise PermissionError(errno.EPERM, "the sessions store is another user's",
+                                  str(self.path))
+
     def drop(self) -> bool:
         """Remove the whole file (a sign-out that could not be written must never come back
-        from it: everyone signs in again instead). True when it is gone."""
+        from it: everyone signs in again instead). True when it is gone. Another user's
+        file is never removed (``_foreign``): False."""
+        import fcntl
         try:
-            os.unlink(self.path)
-        except FileNotFoundError:
-            return True
+            lock = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         except OSError:
-            return False
-        return True
+            return False                    # no lock, no removal
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if _foreign(self.path):         # checked under the lock: made since
+                return False
+            try:
+                os.unlink(self.path)
+            except FileNotFoundError:
+                return True
+            except OSError:
+                return False
+            return True
+        finally:
+            os.close(lock)
 
     def update(self, now: float, changes: Mapping[str, Optional[tuple[float, str, float]]],
                *, keep_only: Optional[set[str]] = None, force: bool = False) -> None:
@@ -347,6 +382,7 @@ class SessionStore:
         import fcntl
         from operating.file_modes import keep_shared
         lock_path = self.lock_path
+        self._refuse_foreign()
         lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             keep_shared(lock_path, 0o600)
@@ -368,6 +404,7 @@ class SessionStore:
                     dirty = True
             if not dirty:
                 return
+            self._refuse_foreign()          # again under the lock: made since
             temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}."
                                             f"{threading.get_ident()}")
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
@@ -499,6 +536,13 @@ class DevAuth:
                     "error": None if failing is None else failing["error"],
                     "failures": 0 if failing is None else failing["count"]}
         path = self._health_path()
+        self._health_at = now
+        if _foreign(path):
+            # the API's own (or another process's): never taken from its owner; the alarm
+            # pass reports a file of another user than the API's by itself
+            _log.warning(json.dumps({"event": "app_sessions_health_not_ours",
+                                     "path": str(path)}))
+            return
         temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}")
         try:
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
@@ -515,7 +559,6 @@ class DevAuth:
         except OSError as exc:
             _log.warning(json.dumps({"event": "app_sessions_health_unwritable",
                                      "path": str(path), "error": type(exc).__name__}))
-        self._health_at = now
 
     def _fail(self, now: float, error: str, *, force: bool = False) -> None:
         """A store write failed or the store cannot be kept: logged and in the health file

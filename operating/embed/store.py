@@ -453,6 +453,11 @@ def bodies(conn: Any, kinds: Sequence[str] | None = None) -> Iterator[tuple[str,
             yield row[0], row[1]
 
 
+def groups_table(conn: Any) -> bool:
+    """Whether the clusters live in ``search.chunk_groups`` (migration 0037)."""
+    return conn.execute("SELECT to_regclass('search.chunk_groups')").fetchone()[0] is not None
+
+
 def bodies_by_id(conn: Any, chunk_ids: Sequence[str], batch: int = 5000) -> dict[str, str]:
     """chunk_id -> body for ``chunk_ids`` (the near-duplicate candidates' check)."""
     out: dict[str, str] = {}
@@ -486,6 +491,7 @@ def write_groups(conn: Any, groups: dict[str, str], kinds: Sequence[str] | None 
 
 
 __all__ = ["ChunkWriter", "SchemaMissing", "bodies", "bodies_by_id", "column_dim", "connect",
+           "groups_table",
            "pending",
            "purge_excluded", "purge_objects",
            "require_schema", "reuse_embeddings", "store_embeddings", "texts_for",

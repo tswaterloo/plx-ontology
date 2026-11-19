@@ -183,28 +183,39 @@ class SearchLagAndDetectorsTest(unittest.TestCase):
         self.assertEqual(check["state"], "unknown")
 
     def test_detectors_without_a_complete_run_in_24_h_are_named(self) -> None:
+        """Registered detectors only: one the engine no longer runs keeps its last inbox
+        row (11-17: ``mc_task_overdue``, removed from the registry, was named "84 h" for
+        days and the incident could never close)."""
+        from operating.proactive_engine_config import DETECTORS
+        fresh, old, never, gap = DETECTORS[:4]
+        retired = "mc_task_overdue"
+        self.assertNotIn(retired, DETECTORS)
         inbox = self.root / "projection" / "ontology.sqlite.gap-inbox.sqlite"
         conn = sqlite3.connect(inbox)
         conn.execute("CREATE TABLE detector_runs (detector TEXT, status TEXT, run_at TEXT)")
         conn.execute("CREATE TABLE detector_history (detector TEXT, status TEXT, run_at TEXT)")
         conn.executemany("INSERT INTO detector_runs VALUES (?, ?, ?)", [
-            ("fresh", "complete", "2030-01-02T11:00:00+00:00"),
-            ("old", "truncated", "2030-01-02T11:00:00+00:00"),
-            ("never", "truncated", "2030-01-02T11:00:00+00:00"),
-            ("gap", "blocked", "2030-01-02T11:00:00+00:00")])
+            (fresh, "complete", "2030-01-02T11:00:00+00:00"),
+            (old, "truncated", "2030-01-02T11:00:00+00:00"),
+            (never, "truncated", "2030-01-02T11:00:00+00:00"),
+            (gap, "blocked", "2030-01-02T11:00:00+00:00"),
+            (retired, "complete", "2029-12-28T11:00:00+00:00")])
         conn.executemany("INSERT INTO detector_history VALUES (?, ?, ?)", [
-            ("fresh", "complete", "2030-01-02T11:00:00+00:00"),
-            ("old", "complete", "2030-01-01T06:00:00+00:00"),
-            ("old", "truncated", "2030-01-02T11:00:00+00:00"),
-            ("never", "truncated", "2030-01-02T11:00:00+00:00")])
+            (fresh, "complete", "2030-01-02T11:00:00+00:00"),
+            (old, "complete", "2030-01-01T06:00:00+00:00"),
+            (old, "truncated", "2030-01-02T11:00:00+00:00"),
+            (never, "truncated", "2030-01-02T11:00:00+00:00"),
+            (retired, "complete", "2029-12-28T11:00:00+00:00")])
         conn.commit()
         conn.close()
         check = ops_health.detectors_check(self.root, NOW, self.t)
         self.assertEqual((check["state"], check["value"]), ("breach", 2))
-        self.assertIn("never never completed", check["detail"])
-        self.assertIn("old 30 h", check["detail"])
-        self.assertNotIn("fresh", check["detail"])
-        self.assertIn("blocked on unserved data (not paged): gap", check["detail"])
+        self.assertIn("2 of 3 not complete", check["detail"])
+        self.assertIn(f"{never} never completed", check["detail"])
+        self.assertIn(f"{old} 30 h", check["detail"])
+        self.assertNotIn(fresh, check["detail"])
+        self.assertNotIn(retired, check["detail"])
+        self.assertIn(f"blocked on unserved data (not paged): {gap}", check["detail"])
         from operating import ops_alarms
         self.assertTrue("proactive_detectors".startswith(ops_alarms.PAGED_HEALTH))
 

@@ -129,7 +129,10 @@ describe("BriefingCard", () => {
   it("lists a data note's records on opening it, only those the API gives, a page at a time", async () => {
     const noted: Briefing = {
       ...briefing,
-      data_note_items: [{ check: "late_customer_order", reason: "no_order_lines", count: 52, words: "late customer orders: cannot check 52 records that lack order lines" }],
+      data_note_items: [
+        { check: "late_customer_order", reason: "no_order_lines", count: 52, scope: false, words: "52 records for late customer orders: the order has no lines" },
+        { check: "receipt_without_qc", reason: "out_of_scope", count: 0, scope: true, words: "Receipts kept only in Sage aren't checked: Sage keeps no quality checks." },
+      ],
     };
     const rec = (n: number) => ({ id: `SalesOrder:x:${n}`, type: "SalesOrder", label: `Sales order ${n}` });
     const spy = vi.spyOn(api, "getBriefingUnjudged").mockImplementation(async (check, reason, offset = 0) => ({
@@ -144,7 +147,12 @@ describe("BriefingCard", () => {
     }));
     render(<BriefingCard briefing={noted} />);
     const note = screen.getByTestId("briefing-data-notes");
-    expect(within(note).getByText("Late customer orders: cannot check 52 records that lack order lines.")).toBeTruthy();
+    expect(within(note).getByText("52 records for late customer orders: the order has no lines.")).toBeTruthy();
+    // a scope note is said as is: no records to open, never a count to chase
+    const scope = within(note).getByTestId("data-note-scope");
+    expect(scope.textContent).toBe("Receipts kept only in Sage aren't checked: Sage keeps no quality checks.");
+    expect(scope.querySelector("details")).toBeNull();
+    expect(note.querySelectorAll("details")).toHaveLength(1);
     expect(spy).not.toHaveBeenCalled();
     const details = note.querySelector("details")!;
     details.open = true;

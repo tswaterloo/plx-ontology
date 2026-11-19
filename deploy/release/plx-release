@@ -441,6 +441,13 @@ json.dump({"id": rid, "sha": sha, "ref": ref, "overlays": overlays, "schema_dige
            "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
           open(path, "w"), indent=1)
 PY
+  # the derived-code versions are part of the release too (operating/derived_status.py,
+  # DERIVED-CODE.json): an API started on it reads them in milliseconds instead of parsing
+  # its code (24-58 s) before its first page; a failure leaves them to the API, as before
+  if [ -x "$PLX_VENV/bin/python3" ]; then
+    (cd "$tmp" && "$PLX_VENV/bin/python3" -m operating.derived_status versions --release \
+      >/dev/null) || echo "plx-release: derived-code versions not precomputed (the API computes them)" >&2
+  fi
   # the bytecode is part of the release: a sealed tree is read-only to every unit, so a
   # process could not write its __pycache__ and would recompile on every start
   [ -x "$PLX_VENV/bin/python3" ] && "$PLX_VENV/bin/python3" -m compileall -q -j 0 -x '/node_modules/' \

@@ -149,6 +149,17 @@ class WorkLogThread(AppRow):
     at: str
 
 @dataclass(frozen=True)
+class AutopilotQueueChatAsks(AppRow):
+    TABLE: ClassVar[str] = "chat_asks"
+    STORE: ClassVar[str] = "autopilot_queue"
+    message_id: str
+    reader: str
+    asks: int
+    reason: Optional[str]
+    model: Optional[str]
+    at: str
+
+@dataclass(frozen=True)
 class AutopilotQueueEvents(AppRow):
     TABLE: ClassVar[str] = "events"
     STORE: ClassVar[str] = "autopilot_queue"
@@ -248,6 +259,7 @@ SESSION_REPLAY_TICKET_JTI: Table[SessionReplayTicketJti] = Table(SessionReplayTi
 WORK_LOG_EVENT: Table[WorkLogEvent] = Table(WorkLogEvent)
 WORK_LOG_EVENT_RECORD: Table[WorkLogEventRecord] = Table(WorkLogEventRecord)
 WORK_LOG_THREAD: Table[WorkLogThread] = Table(WorkLogThread)
+AUTOPILOT_QUEUE_CHAT_ASKS: Table[AutopilotQueueChatAsks] = Table(AutopilotQueueChatAsks)
 AUTOPILOT_QUEUE_EVENTS: Table[AutopilotQueueEvents] = Table(AutopilotQueueEvents)
 AUTOPILOT_QUEUE_INBOUND: Table[AutopilotQueueInbound] = Table(AutopilotQueueInbound)
 AUTOPILOT_QUEUE_ITEMS: Table[AutopilotQueueItems] = Table(AutopilotQueueItems)

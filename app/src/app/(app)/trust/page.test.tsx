@@ -1,11 +1,11 @@
 import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/errors";
-import type { TrustPage } from "@/lib/types";
+import type { TrustFreshness, TrustPage } from "@/lib/types";
 
 const api = vi.hoisted(() => ({ trust: vi.fn() }));
 vi.mock("@/components/command-palette", () => ({ useCommandPalette: () => ({ open: () => undefined }) }));
-vi.mock("next/navigation", () => ({ usePathname: () => "/trust", useRouter: () => ({ replace: () => undefined, push: () => undefined }) }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/trust", useRouter: () => ({ replace: () => undefined, push: () => undefined }), useSearchParams: () => new URLSearchParams() }));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), getTrust: api.trust }));
 
 import TrustRoute from "./page";
@@ -77,6 +77,31 @@ describe("Trust page", () => {
     expect(within(sw).getByText("Business Central").closest("tr")).toHaveTextContent("Off");
     expect(within(sw).getByText("Mission Control").closest("tr")).toHaveTextContent("None");
     expect(screen.getByTestId("trust-lines")).toHaveTextContent("Gated");
+  });
+
+  it("says each summary figure as a sentence, never a bare count, and a failed read's reason", async () => {
+    const fresh: TrustFreshness[] = [
+      { system: "BC", captured_at: "2026-11-11T18:00:00Z", served_at: "2026-11-11T18:00:00Z", lag_seconds: 7200, stale: false, capture: null, state_words: "Up to date: everything read is in the app." },
+      { system: "Email", captured_at: "2026-11-11T18:30:00Z", served_at: "2026-11-11T18:26:00Z", lag_seconds: 600, stale: false, capture: null, state_words: "Up to date: the newest read joins the app's data within a few minutes." },
+      { system: "File", captured_at: "2026-11-11T17:00:00Z", served_at: "2026-11-11T17:00:00Z", lag_seconds: 900, stale: false, capture: "failed", state_words: "Up to date: everything read is in the app. The last read of SharePoint files, at 1:16 PM ET, failed: it finished without reporting anything it read. The last good read was at 1:13 PM ET." },
+      { system: "Teams", captured_at: "2026-11-11T18:30:00Z", served_at: "2026-11-11T16:00:00Z", lag_seconds: 300, stale: true, capture: null, state_words: "Behind: records read since 11:00 AM ET are not in the app yet; they normally arrive within a few minutes." },
+    ];
+    api.trust.mockResolvedValue(page({ freshness: fresh }));
+    render(<TrustRoute />);
+    const summary = await screen.findByTestId("trust-summary");
+    const lines = within(summary).getAllByRole("listitem").map((li) => li.textContent);
+    expect(lines).toEqual([
+      "The app is behind on Teams; the other 3 systems are up to date, though the last read of File failed (see below).",
+      "Answer accuracy on questions never used for tuning has not been measured yet; the measure runs after the served data's rebuild.",
+      "1 of the 3 alert types is switched on; the rest stay off (1 was checked by hand but has not passed yet, 1 has not been checked yet).",
+      "The autopilot prepares drafts for a person to approve in 2 of its 2 workflows.",
+    ]);
+    // no "6" beside "3 behind" that reads as "63 behind", no "0 of 0"
+    expect(summary).not.toHaveTextContent(/\b0 of 0\b|\d+ behind/);
+    const table = screen.getByTestId("trust-freshness");
+    expect(within(table).getByText("File").closest("tr")).toHaveTextContent("failed: it finished without reporting anything it read");
+    expect(within(table).getByText("Teams").closest("tr")).toHaveTextContent("Behind: records read since 11:00 AM ET");
+    expect(within(table).queryByText(/last capture failed/)).toBeNull();
   });
 
   it("says when the newest scorer run was not counted, beside the older counts", async () => {

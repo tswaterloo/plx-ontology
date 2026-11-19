@@ -236,6 +236,46 @@ class HostCase(unittest.TestCase):
             "_": json.loads(out)}
 
 
+class MailboxKindTests(HostCase):
+    def test_production_mail_capture_records_mailbox_kinds_for_the_staff_scope(self):
+        """The host's own mail capture (``Host._mail``, plx-ingest) lists the directory with
+        the kind fields and records each listed mailbox's kind, so the staff scope opens
+        the shared one and no person's (review 2026-11-17: it never did)."""
+        from integrations.capture_mail import MailCaptureStore
+        from operating.staff_scope import shared_mailboxes
+        self.write("mail-scope.json", {
+            "schema": "plx-mail-capture-scope/v1", "window_days": 90,
+            "internal_domains": ["example-plx.com"],
+            "all_mailboxes": {"enabled": True, "folders": ["inbox"]}})
+        # The capture principal reads both listed mailboxes (the base config grants only
+        # UPN_A, so B would stay ``not_visible`` and the run ``partial``).
+        self.write("capture-audience.json", {
+            "schema": "plx-live-source-audience/v1", "tenant": "plx",
+            "default_classification": "restricted",
+            "audiences": {f"mail:{mail_t.UPN_A}": [SVC, "staff:operations"],
+                          f"mail:{mail_t.UPN_B}": [SVC],
+                          "sharepoint:*": [SVC], "bc:production:*": [SVC],
+                          "teams:*": [SVC]},
+            "classifications": {"mail:*": "restricted"}})
+        self.router.mail.users[mail_t.BOX_A].update(
+            accountEnabled=False, assignedLicenses=[], givenName=None, surname=None,
+            jobTitle=None, employeeId=None, employeeHireDate=None, department=None)
+        self.router.mail.users[mail_t.BOX_B].update(
+            accountEnabled=False, assignedLicenses=[], givenName="Sam", surname="Doe",
+            jobTitle=None, employeeId=None, employeeHireDate=None, department=None)
+        report = self.run_cycle()
+        self.assertEqual(report["sources"]["mail"]["state"], "captured", report)
+        store = MailCaptureStore(self.state)
+        try:
+            kinds = dict(store.db.execute(
+                "SELECT mailbox_id, purpose FROM mailbox_purpose").fetchall())
+            self.assertEqual(kinds, {mail_t.BOX_A: "shared", mail_t.BOX_B: "personal"})
+            self.assertEqual(shared_mailboxes(store.db, allowed=()),
+                             frozenset({mail_t.BOX_A}))
+        finally:
+            store.close()
+
+
 class CycleTests(HostCase):
     def test_second_cycle_reads_only_deltas_and_every_request_is_a_get(self):
         first = self.run_cycle()

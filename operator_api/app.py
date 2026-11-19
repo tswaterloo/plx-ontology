@@ -817,7 +817,19 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 limit: int = Query(8, ge=1, le=20),
                 who: Reader = Depends(reader)) -> m.SuggestResponse:
         """Typo-tolerant autocomplete over the records this reader may see."""
-        return backend.suggest(who, q, limit)
+        return backend.suggest(who, q, limit, person=True)
+
+    @app.get("/api/biz/page", response_model=m.BizPage, tags=["search"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                        503: {"model": m.ErrorResponse}})
+    def biz_page(kind: Literal["customer", "chain", "supplier", "purchase_order",
+                               "sales_order"],
+                 h: str = Query("", max_length=600), chain: str = Query("", max_length=200),
+                 who: Reader = Depends(reader)) -> m.BizPage:
+        """A customer's, chain's or supplier's account page, or a PO's or customer order's
+        page (header, then lines): every number from the business tables, as you may see
+        them, in one read."""
+        return backend.biz_page(who, kind, handle=h, chain=chain)
 
     @app.get("/api/home", response_model=m.Home, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -947,6 +959,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             notes.autopilot_prepared(who, area)
         return area
 
+    @app.get("/api/autopilot/drafts", response_model=m.AutopilotDrafts, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def autopilot_prepared_list(who: Reader = Depends(reader)) -> m.AutopilotDrafts:
+        """Your open prepared replies and "your call" cards, newest first."""
+        return backend.autopilot_prepared_list(who)
+
     @app.post("/api/autopilot/items/{item_id}/decision", response_model=m.AutopilotItem,
               tags=["actions"], responses={401: {"model": m.ErrorResponse},
                                            404: {"model": m.ErrorResponse},
@@ -960,6 +978,17 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         item = backend.autopilot_decide(who, item_id, body)
         notes.autopilot_decided(who, item)
         return item
+
+    @app.post("/api/autopilot/items/{item_id}/reply-from-line", response_model=m.AutopilotItem,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def autopilot_reply_from_line(item_id: str, body: m.AutopilotLineRequest,
+                                  who: Reader = Depends(reader)) -> m.AutopilotItem:
+        """Write the reply to a "your call" card of your own from your one line: kept as your
+        edit of its draft for you to change and confirm. Nothing is sent."""
+        return backend.autopilot_reply_from_line(who, item_id, body)
 
     @app.get("/api/instruct/uploads/{upload_id}", response_model=m.UploadPreview,
              tags=["actions"], responses={401: {"model": m.ErrorResponse},
@@ -1100,6 +1129,17 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         the host's master switch is on, and only on routine items."""
         return backend.autopilot_opt_in(who, body)
 
+    @app.post("/api/autopilot/drafts", response_model=m.AutopilotArea, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def autopilot_drafts(body: m.AutopilotDraftsRequest,
+                         who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Switch one choice of prepared work on or off for yourself (``my_drafts``):
+        drafts and prepared actions wait in My work for your confirm; nothing is sent or
+        written by itself. Always your own; recorded on the audit log."""
+        return backend.autopilot_drafts(who, body)
+
     @app.post("/api/autopilot/pause", response_model=m.AutopilotArea, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
                          409: {"model": m.ErrorResponse}})
@@ -1219,15 +1259,6 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         team_saved([found.person], who, everyone=True)
         return found
 
-    @app.get("/api/rd-projects", response_model=m.RdBoard, tags=["actions"],
-             responses={401: {"model": m.ErrorResponse}})
-    def rd_board(who: Reader = Depends(reader)) -> m.RdBoard:
-        """R&D and sample projects per customer from the threads and records you may open:
-        status, last activity, owner and who each waits on, with a drafted status update.
-        Nothing is sent."""
-        with first_partial():
-            return backend.rd_board(who)
-
     @app.get("/api/templates/answer-bank", response_model=m.DocList, tags=["templates"],
              responses={401: {"model": m.ErrorResponse}})
     def templates_answer_bank(question: Optional[str] = Query(None, max_length=700),
@@ -1323,31 +1354,6 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         weekly figure against the week before. Generated from the records you may read, no
         model call; every figure cites its sources and nothing hidden is counted."""
         return backend.weekly_review(who, week)
-
-    @app.get("/api/brief/qc-daily", response_model=m.Brief, tags=["briefs"],
-             responses={401: {"model": m.ErrorResponse}})
-    def qc_daily_pack(who: Reader = Depends(reader)) -> m.Brief:
-        """The daily QC pack: quality checks open now (missed, overdue, due within a week),
-        open calibration, production slots past start and not completed, batches on hold
-        and the hold-release queue (not available yet, with its reason). Only a reader
-        holding quality_controlled sees any line; every line cites its task, slot or
-        batch."""
-        return backend.qc_pack(who, "daily")
-
-    @app.get("/api/brief/qc-audit", response_model=m.Brief, tags=["briefs"],
-             responses={401: {"model": m.ErrorResponse}})
-    def qc_audit_pack(who: Reader = Depends(reader)) -> m.Brief:
-        """The QC audit pack: on-time share of the calibration, sanitation and other QC
-        checks by area and month over the last year, each recurring check with its cycle
-        and its missed, late and overdue occurrences cited, the production schedule by
-        line and batches on hold. Quality_controlled readers only."""
-        return backend.qc_pack(who, "audit")
-
-    @app.get("/api/brief/qc-audit.txt", response_class=PlainTextResponse, tags=["briefs"],
-             responses={401: {"model": m.ErrorResponse}})
-    def qc_audit_text(who: Reader = Depends(reader)) -> PlainTextResponse:
-        """The QC audit pack as one printable plain-text page, each line with its sources."""
-        return PlainTextResponse(mask_served(backend.qc_pack_text(who, "audit")))
 
     @app.get("/api/meetings/follow-up/{meeting_id}", response_model=m.MeetingFollowUp,
              tags=["briefs"], responses={401: {"model": m.ErrorResponse},
@@ -1589,6 +1595,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                     quick: bool = Query(False, description="A first read without the "
                                         "checks (complete=false), shown while the full "
                                         "page is read"),
+                    core: bool = Query(False, description="The record's own details "
+                                       "only (core=true), served before the quick read; "
+                                       "status 'reading' until that lands"),
                     who: Reader = Depends(reader)) -> Response:
         """One record's page. ``object_id``: the URL-encoded object id, or a business
         reference (e.g. a PO number) resolved within ``object_type``."""
@@ -1596,7 +1605,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("invalid_request", 422)
         try:
             with first_partial():
-                page = (backend.object_page(who, object_type, object_id, quick=True)
+                page = (backend.object_core(who, object_type, object_id) if core
+                        else backend.object_page(who, object_type, object_id, quick=True)
                         if quick else backend.object_page(who, object_type, object_id))
         except RecordNotFound:   # only that: any other error is a logged 500
             return problem("not_found", 404)

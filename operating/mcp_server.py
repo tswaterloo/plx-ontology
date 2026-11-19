@@ -47,12 +47,12 @@ from . import meeting_agenda, ontology_query, ontology_tools_changes, ontology_t
 from . import ontology_tools_investigate_follow_ups
 from . import ontology_tools_traverse
 from . import action_tools, agent_definitions, answer_gate, call_limits
-from . import tool_results
+from . import ontology_tools_search, tool_results
 from .agent_definitions import AgentDefinition, AgentRun
 from . import case_tools_host
 from .case_tools_host import PagedRead
 from .case_tools_host_rules import PageNotRead
-from .ontology_host import CaseHostTools, check_marking_grants
+from .ontology_host import CaseHostTools, NoProjectionStore, check_marking_grants
 from . import capability_guards, source_reads
 from .claim_checks_grammar import MAX_QUOTE_CHARS, PAGE_TEXT
 from .claim_checks_values import returned_evidence
@@ -112,6 +112,116 @@ def _session_evidence() -> dict[str, Any]:
             "currency_citations": {}, "handles": {}, "texts": {}}
 
 
+class _TeamsAcl:
+    """One Teams capture's ``unit_acl`` digests (``_permission_reads``), read again only
+    when the store changed: a read-only connection kept open asks SQLite's
+    ``data_version`` (it moves with every commit of another connection, the capture
+    included) and the file's identity (a store replaced: opened again); or when a
+    membership crosses the serving bound (``until``: the earliest instant any row's
+    freshness turns). Re-reading and digesting every conversation's membership on each
+    call cost ~28 ms per call (4,932 conversations, 2026-11-18)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.conn: sqlite3.Connection | None = None
+        self.file: tuple[int, int] | None = None
+        self.version: Any = None
+        self.until: datetime | None = None
+        self.units: dict[tuple[str, ...], str] = {}
+        self.rows: dict[tuple[str, ...], tuple[Any, Any, Any, str, str]] = {}
+
+    def read(self, database: Path, timeout: float) -> dict[tuple[str, ...], str]:
+        with self.lock:
+            stat = database.stat()
+            file = (stat.st_dev, stat.st_ino)
+            if self.conn is None or self.file != file:
+                self.close()
+                self.conn = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True,
+                                            timeout=timeout, check_same_thread=False,
+                                            isolation_level=None)
+                self.file = file
+            self.conn.execute(f"PRAGMA busy_timeout = {max(1, int(timeout * 1000))}")
+            # one read transaction: the table read first (a writer holding the store past
+            # the timeout fails it, as any read), then the version of that very snapshot
+            self.conn.execute("BEGIN")
+            try:
+                return self._read()
+            finally:
+                if self.conn is not None and self.conn.in_transaction:
+                    self.conn.execute("ROLLBACK")
+
+    def _read(self) -> dict[tuple[str, ...], str]:
+        from integrations import capture_store
+        from . import capture_age
+        conn = self.conn
+        assert conn is not None
+        conn.execute("SELECT 1 FROM unit_acl LIMIT 1").fetchall()
+        version = conn.execute("PRAGMA data_version").fetchone()[0]
+        now = datetime.now(timezone.utc)
+        if version == self.version and self.until is not None and now < self.until \
+                and capture_age.DECISIONS.get() is None:
+            return dict(self.units)
+        units: dict[tuple[str, ...], str] = {}
+        rows: dict[tuple[str, ...], tuple[Any, Any, Any, str, str]] = {}
+        until = now + capture_store.UNIT_ACL_MAX_AGE
+        watched = capture_age.DECISIONS.get() is not None
+        for kind, unit, acl, recorded in conn.execute(
+                "SELECT kind, unit, acl, recorded_at FROM unit_acl"):
+            key = ("unit", kind, unit)
+            # a row read before as it is: its digests and stamp (a capture run commits
+            # every few seconds, mostly other tables: a changed store re-reads the
+            # rows, never re-digests an unchanged one)
+            row = self.rows.get(key)
+            if row is None or row[0] != acl or row[1] != recorded:
+                moment = capture_age._moment(recorded)
+                row = (acl, recorded, moment, hashlib.sha256(acl.encode()).hexdigest(),
+                       hashlib.sha256(("stale:" + acl).encode()).hexdigest())
+            rows[key] = row
+            moment = row[2]
+            # A membership past the store's serving bound decides nothing: its
+            # digest moves when it crosses it (what was served under it is dropped).
+            if watched:
+                fresh = capture_store.capture_decides(recorded, now,
+                                                      capture_store.UNIT_ACL_MAX_AGE)
+            else:   # ``capture_decides``, its stamp parsed once
+                fresh = moment is not None and moment <= now <= \
+                    moment + capture_store.UNIT_ACL_MAX_AGE
+            units[key] = row[3] if fresh else row[4]
+            if moment is not None:
+                turns = moment if moment > now else \
+                    moment + capture_store.UNIT_ACL_MAX_AGE if fresh else None
+                if turns is not None and turns < until:
+                    until = turns
+        self.version, self.until, self.units, self.rows = version, until, units, rows
+        return dict(units)
+
+    def close(self) -> None:
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except sqlite3.Error:
+                pass
+        self.conn, self.file, self.version, self.until = None, None, None, None
+        self.units, self.rows = {}, {}
+
+
+_TEAMS_ACLS: dict[str, _TeamsAcl] = {}
+_TEAMS_ACLS_LOCK = threading.Lock()
+
+
+def _teams_units(database: Path, timeout: float) -> dict[tuple[str, ...], str]:
+    """``_TeamsAcl.read`` of the store at ``database`` (one per store per process); a
+    failed read forgets the kept state (the next call opens and reads again) and raises."""
+    with _TEAMS_ACLS_LOCK:
+        acl = _TEAMS_ACLS.setdefault(str(database), _TeamsAcl())
+    try:
+        return acl.read(database, timeout)
+    except BaseException:
+        with acl.lock:
+            acl.close()
+        raise
+
+
 def _permission_reads(runtime: Any, host: Any) -> _ItemPermissions:
     """The item permissions whose recorded state decides what a reader is served and
     cited, per item a digest (``_ItemPermissions.digests``): each drive item of the
@@ -154,20 +264,7 @@ def _permission_reads(runtime: Any, host: Any) -> _ItemPermissions:
             reads.sharepoint.append(store)
         database = Path(runtime.state_dir) / capture_teams.STORE_DIR / capture_teams.DB_FILE
         if database.is_file():
-            conn = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True,
-                                   timeout=remaining())
-            try:
-                now = datetime.now(timezone.utc)
-                for kind, unit, acl, recorded in conn.execute(
-                        "SELECT kind, unit, acl, recorded_at FROM unit_acl"):
-                    # A membership past the store's serving bound decides nothing: its
-                    # digest moves when it crosses it (what was served under it is dropped).
-                    fresh = capture_store.capture_decides(recorded, now,
-                                                          capture_store.UNIT_ACL_MAX_AGE)
-                    reads.units[("unit", kind, unit)] = hashlib.sha256(
-                        (acl if fresh else "stale:" + acl).encode()).hexdigest()
-            finally:
-                conn.close()
+            reads.units.update(_teams_units(database, remaining()))
     except BaseException:
         reads.close()
         raise
@@ -1138,6 +1235,10 @@ class MCPServer(CallsMixin, CaseMixin):
                 run.record(name, error=True, host_code=host_code)
                 return _result(request_id, _tool_error(call_limits.timed_out_text(
                     name, limit)))
+            except NoProjectionStore:
+                # no store to serve: refused by its code, never read from an empty one
+                run.record(name, error=True, host_code=host_code)
+                return _result(request_id, _tool_error(NoProjectionStore.code))
             except Exception:
                 run.record(name, error=True, host_code=host_code)
                 return _result(request_id, _tool_error(self._cleared_note(name, arguments)
@@ -1169,9 +1270,15 @@ class MCPServer(CallsMixin, CaseMixin):
                                                               arguments=arguments)):
                 handles.pop(handle, None)
                 handles[handle] = None
+            if name == ontology_tools_search.OPEN_NAME and isinstance(shown, dict) \
+                    and shown.get("fields_served") and isinstance(shown.get("citation"), str):
+                # a mail or Teams item the guarded views served this reader: evidence as
+                # a plx.read's resolved record is (its text is noted below)
+                handles.pop(shown["citation"], None)
+                handles[shown["citation"]] = None
             while len(handles) > MAX_RETURNED_HANDLES:
                 del handles[next(iter(handles))]
-            if name == "plx.read":
+            if name in ("plx.read", ontology_tools_search.OPEN_NAME):
                 self._note_texts(shown)
         if not self._owner_open(*self._read_scope) and (
                 self._read_scope[1] is None or not self._keep_items(self._read_scope[1])):
@@ -1348,7 +1455,7 @@ class MCPServer(CallsMixin, CaseMixin):
             try:
                 gated = self.case_runtime.employee_gate(self.actor)
                 with host.request():
-                    scope = _evidence_scope(host.store_meta(), host.policy_now(gated))
+                    scope = _evidence_scope(host.store_meta(), host.policy_for(gated))
             except Exception:  # noqa: BLE001 - an undecided scope binds nothing (fail closed)
                 scope = None
             if scope is not None:
@@ -1410,6 +1517,9 @@ class MCPServer(CallsMixin, CaseMixin):
                                                              self.actor)
             self.ontology = CaseHostTools(self.case_runtime, self.actor,
                                           reserve_bytes=META_RESERVE_BYTES, follow_ups=recorder)
+        # a session: every call reads the policy kept while what it is decided from is
+        # unchanged (``operating.kept_policy``), never one decided before a change
+        self.ontology.keep_policy = True
         return self.ontology
 
     def _scan(self, host: Any, gated: Any, plan: dict[str, Any],

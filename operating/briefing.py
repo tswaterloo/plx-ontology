@@ -549,41 +549,14 @@ REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most rec
                 "card_bound": "only the first ones were read",
                 "read_apart": "the rest wait for the supplier-mail pass"}
 
-# Why a rule could not judge some records, in plain words ("cannot check: 12 records lack
-# order lines"); a reason not listed is said by its own name, never dropped.
-UNJUDGED_WORDS = {"no_order_lines": "lack order lines",
-                  "status_missing": "hold no status",
-                  "status_unmapped": "hold a status no rule reads",
-                  "no_required_date": "hold no required date",
-                  "required_date_default": "hold only an import or default required date",
-                  "required_date_disputed": "hold two different required dates",
-                  "no_need_date": "hold no due date",
-                  "need_date_disputed": "hold two different due dates",
-                  "fulfilment_unsettled": "have a shipment or invoice not yet confirmed as theirs",
-                  "partly_fulfilled": "are partly shipped or invoiced with the balance not "
-                                      "reconciled",
-                  "closed_in_unsettled_twin": "closed only in an unconfirmed copy",
-                  "date_unparseable": "hold a date that cannot be read",
-                  "not_projected": "are not in the records yet"}
-
-
 def data_notes(inbox: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """What the checks could not judge, as data-quality notes per check and reason: only
-    the counts this reader's own trimmed read gives (``read_inbox``'s ``rules``), never
-    a record named."""
-    out = []
-    for rule in inbox.get("rules") or ():
-        if not isinstance(rule, Mapping):
-            continue
-        name = str(rule.get("rule"))
-        for reason, n in sorted((rule.get("not_evaluated_by_reason") or {}).items()):
-            if not isinstance(n, int) or n <= 0:
-                continue
-            words = UNJUDGED_WORDS.get(reason, str(reason).replace("_", " "))
-            out.append({"check": name, "reason": reason, "count": n,
-                        "words": f"{CHECK_WORDS.get(name, name)}: cannot check {n} "
-                                 f"record{'' if n == 1 else 's'} that {words}"})
-    return out
+    """What the checks could not judge, as data-quality notes per check and reason, each a
+    plain sentence (``unjudged_words``), ordered by who can fix it: only the counts this
+    reader's own trimmed read gives (``read_inbox``'s ``rules``), never a record named;
+    then each check's scope note (records it never applies to), said once without a count."""
+    from . import unjudged_words
+
+    return unjudged_words.notes(inbox.get("rules"), CHECK_WORDS)
 
 
 RANK_BASIS = ("Your own items first (records you are named on, that your mail mentions, or "

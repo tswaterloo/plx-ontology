@@ -81,5 +81,27 @@ describe("Reliability: pauses and mail", () => {
     expect(paused).toHaveTextContent("migration window");
     expect(screen.getByTestId("ops-open")).not.toHaveTextContent("plx-delta.timer");
     expect(screen.getByTestId("ops-mail")).toHaveTextContent("Problems are not mailed (no sender set): they show only here.");
+    expect(screen.queryByTestId("ops-maintenance")).toBeNull();
+  });
+
+  it("says a planned maintenance window is on and until when, and not once it has overrun", async () => {
+    const until = new Date(Date.now() + 3600e3).toISOString();
+    api.body = {
+      ...base,
+      paused: [{ key: "unit:plx-proactive.timer", line: "plx-proactive.timer (system): stopped: no next run", opened_at: new Date().toISOString(),
+                 paused: { until, why: "maintenance: live data rebuild" } }],
+      maintenance: { state: "in_window", reason: "live data rebuild", until },
+    };
+    const { unmount } = render(<OpsPage />);
+    const note = await screen.findByTestId("ops-maintenance");
+    expect(note).toHaveTextContent("Paused for maintenance until");
+    expect(note).toHaveTextContent("live data rebuild");
+    expect(screen.getByTestId("ops-paused")).toHaveTextContent("plx-proactive.timer");
+    unmount();
+    api.body = { ...base, open: [{ key: "maintenance_window", line: "Planned maintenance: live data rebuild: past its planned end", opened_at: new Date().toISOString(), level: "high" }],
+                 maintenance: { state: "overrun", reason: "live data rebuild", until } };
+    render(<OpsPage />);
+    expect(await screen.findByTestId("ops-open")).toHaveTextContent("past its planned end");
+    expect(screen.queryByTestId("ops-maintenance")).toBeNull();
   });
 });

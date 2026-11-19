@@ -1181,6 +1181,21 @@
             "title": "Attachments",
             "type": "array"
           },
+          "cited": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CitedTable"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The simple Ask's sources: every result its session read. Present (maybe empty) only on that path, whose answer page is the answer and one collapsed 'Sources (n records)' line opening to these rows.",
+            "title": "Cited"
+          },
           "clarify": {
             "anyOf": [
               {
@@ -2185,6 +2200,21 @@
         "additionalProperties": false,
         "description": "The autopilot area: today's prepared items you may see, per workflow its scores and\nstate, the switches (``owner``: you may change them), and your own opt-ins.",
         "properties": {
+          "drafts_switched_on": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AutopilotDraftsPerson"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Owner and admins: who switched which prepared work on for themselves. Absent for everyone else.",
+            "title": "Drafts Switched On"
+          },
           "gate_notices": {
             "anyOf": [
               {
@@ -2213,6 +2243,14 @@
               "type": "string"
             },
             "title": "Known Workflows",
+            "type": "array"
+          },
+          "my_drafts": {
+            "description": "What the autopilot prepares for you: off until you switch it on.",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotDraftChoice"
+            },
+            "title": "My Drafts",
             "type": "array"
           },
           "my_opt_ins": {
@@ -2873,6 +2911,32 @@
         "title": "AutopilotDecisionRequest",
         "type": "object"
       },
+      "AutopilotDraftChoice": {
+        "additionalProperties": false,
+        "description": "Work the autopilot prepares for you only once you switch it on yourself: a draft or\na prepared action waiting in My work for your confirm. Nothing is sent or written by\nitself.",
+        "properties": {
+          "choice": {
+            "title": "Choice",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "on": {
+            "description": "You switched it on (and did not pause).",
+            "title": "On",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "choice",
+          "label",
+          "on"
+        ],
+        "title": "AutopilotDraftChoice",
+        "type": "object"
+      },
       "AutopilotDraftKept": {
         "additionalProperties": false,
         "properties": {
@@ -2938,6 +3002,68 @@
           }
         },
         "title": "AutopilotDraftUse",
+        "type": "object"
+      },
+      "AutopilotDrafts": {
+        "additionalProperties": false,
+        "description": "Your open prepared replies, newest first; mail you already answered is not here.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotPrepared"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "AutopilotDrafts",
+        "type": "object"
+      },
+      "AutopilotDraftsPerson": {
+        "additionalProperties": false,
+        "description": "Someone who switched one choice of prepared work on for themselves (shown to the\nowner and admins, who can see it but cannot switch it for them).",
+        "properties": {
+          "choice": {
+            "title": "Choice",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "person": {
+            "title": "Person",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "choice",
+          "label"
+        ],
+        "title": "AutopilotDraftsPerson",
+        "type": "object"
+      },
+      "AutopilotDraftsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "choice": {
+            "description": "One of ``my_drafts``' choices.",
+            "maxLength": 60,
+            "title": "Choice",
+            "type": "string"
+          },
+          "on": {
+            "description": "true: prepare these for you; false: stop.",
+            "title": "On",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "choice",
+          "on"
+        ],
+        "title": "AutopilotDraftsRequest",
         "type": "object"
       },
       "AutopilotGate": {
@@ -3204,6 +3330,22 @@
           "state"
         ],
         "title": "AutopilotItem",
+        "type": "object"
+      },
+      "AutopilotLineRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "line": {
+            "description": "What you want to say, in a line: the reply to a \"your call\" card is written from it.",
+            "maxLength": 1000,
+            "title": "Line",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "title": "AutopilotLineRequest",
         "type": "object"
       },
       "AutopilotMemoryUse": {
@@ -3594,6 +3736,97 @@
           "name"
         ],
         "title": "AutopilotPerson",
+        "type": "object"
+      },
+      "AutopilotPrepared": {
+        "additionalProperties": false,
+        "description": "One thing prepared for you to answer: who wrote, what they wrote, and either the\nreply (to edit, confirm, copy or open in Outlook) or the question only you can answer.",
+        "properties": {
+          "ask": {
+            "default": "",
+            "title": "Ask",
+            "type": "string"
+          },
+          "body": {
+            "default": "",
+            "description": "The reply as it stands now (your edit when you made one); empty on a \"your call\" card until you say what to reply.",
+            "title": "Body",
+            "type": "string"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc",
+            "type": "array"
+          },
+          "channel": {
+            "enum": [
+              "mail",
+              "teams"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "edited": {
+            "default": false,
+            "title": "Edited",
+            "type": "boolean"
+          },
+          "facts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "reply",
+              "your_call"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "description": "What they wrote, as far as the item keeps it.",
+            "title": "Message",
+            "type": "string"
+          },
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "to": {
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_id",
+          "sender",
+          "channel",
+          "kind",
+          "created_at"
+        ],
+        "title": "AutopilotPrepared",
         "type": "object"
       },
       "AutopilotReplay": {
@@ -4436,9 +4669,230 @@
         "title": "AutopilotWorkflowRow",
         "type": "object"
       },
+      "BizCell": {
+        "additionalProperties": false,
+        "description": "One value as a page shows it: text, a day, a quantity or money; ``hidden`` when the\nreader may not read it (never shown as empty or zero).",
+        "properties": {
+          "day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Href"
+          },
+          "money": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "BizCell",
+        "type": "object"
+      },
+      "BizFact": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/BizCell"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "BizFact",
+        "type": "object"
+      },
+      "BizPage": {
+        "additionalProperties": false,
+        "description": "A customer, chain or supplier account page, or a PO / sales order page: every number\nfrom the business tables through the reader's door, in one read.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/BizFact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "customer",
+              "chain",
+              "supplier",
+              "purchase_order",
+              "sales_order"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/BizTable"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "sources": {
+            "title": "Sources",
+            "type": "string"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "took_ms": {
+            "title": "Took Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "facts",
+          "sections",
+          "sources",
+          "took_ms"
+        ],
+        "title": "BizPage",
+        "type": "object"
+      },
+      "BizTable": {
+        "additionalProperties": false,
+        "description": "A section of a record page: a titled table. ``total``: how many rows the section\nhas in all (rows may show fewer); ``note``: one plain sentence under it.",
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/BizCell"
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "columns",
+          "rows"
+        ],
+        "title": "BizTable",
+        "type": "object"
+      },
       "Brief": {
         "additionalProperties": false,
-        "description": "A meeting prep brief, a weekly review or a QC pack (daily, audit), generated from\nthe records you may read (no model call). Every row and figure cites its sources;\nnothing hidden is counted.",
+        "description": "A meeting prep brief or a weekly review, generated from\nthe records you may read (no model call). Every row and figure cites its sources;\nnothing hidden is counted.",
         "properties": {
           "as_of": {
             "title": "As Of",
@@ -4458,9 +4912,7 @@
           "kind": {
             "enum": [
               "meeting",
-              "weekly",
-              "qc_daily",
-              "qc_audit"
+              "weekly"
             ],
             "title": "Kind",
             "type": "string"
@@ -4910,7 +5362,7 @@
             "type": "array"
           },
           "data_notes": {
-            "description": "What the checks could not judge, per check and reason, as counts only: e.g. 'late customer orders: cannot check 12 records that lack order lines'.",
+            "description": "What the checks could not judge, per check and reason, as counts only: e.g. '64 purchase orders: no due date is recorded on the order or any copy of it'.",
             "items": {
               "type": "string"
             },
@@ -5177,7 +5629,7 @@
       },
       "BriefingDataNote": {
         "additionalProperties": false,
-        "description": "One check's records it could not judge for one reason, as a count.",
+        "description": "One check's records it could not judge for one reason, as a count; or (``scope``)\nthe one note on the records a check never applies to, without a count.",
         "properties": {
           "check": {
             "title": "Check",
@@ -5191,6 +5643,12 @@
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "scope": {
+            "default": false,
+            "description": "True: a note on what the check never applies to (no records to open), not a gap.",
+            "title": "Scope",
+            "type": "boolean"
           },
           "words": {
             "title": "Words",
@@ -5396,6 +5854,18 @@
             "title": "Acknowledged",
             "type": "integer"
           },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When this type's check last finished (ISO): its items are as of then.",
+            "title": "As Of"
+          },
           "count": {
             "minimum": 0.0,
             "title": "Count",
@@ -5500,6 +5970,23 @@
             "minimum": 0.0,
             "title": "New Since Visit",
             "type": "integer"
+          },
+          "unavailable": {
+            "description": "True when this type's check has not finished within two refresh cycles (or is not served on this page): its items are not shown, never as current; count is 0.",
+            "title": "Unavailable",
+            "type": "boolean"
+          },
+          "unavailable_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While unavailable: when its check last finished (ISO); null if never.",
+            "title": "Unavailable Since"
           }
         },
         "required": [
@@ -6236,6 +6723,67 @@
         "title": "CardActionOffer",
         "type": "object"
       },
+      "CitedTable": {
+        "additionalProperties": false,
+        "description": "One result the simple Ask read (a query's rows, or the mail, Teams and document hits\nof a search), as the reader's own session got it: what the answer's Sources line opens.",
+        "properties": {
+          "about": {
+            "description": "What was read, in plain words (the tables or the search).",
+            "title": "About",
+            "type": "string"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "As Of"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "records": {
+            "description": "The rows or hits the result held (``rows`` may show fewer).",
+            "minimum": 0,
+            "title": "Records",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "about",
+          "columns",
+          "rows",
+          "records"
+        ],
+        "title": "CitedTable",
+        "type": "object"
+      },
       "CitedText": {
         "additionalProperties": false,
         "properties": {
@@ -6833,6 +7381,7 @@
             "type": "array"
           },
           "contacts": {
+            "description": "The people who wrote from this customer's mail, as its own record and its confirmed copies link them; never another record's.",
             "items": {
               "$ref": "#/components/schemas/Person"
             },
@@ -13221,6 +13770,11 @@
             "title": "Conflicts",
             "type": "array"
           },
+          "core": {
+            "description": "True on the core first read (?core=1): the record's own details only; its status, timeline, links, documents and checks are still being read (status 'reading'), never absent.",
+            "title": "Core",
+            "type": "boolean"
+          },
           "customer": {
             "anyOf": [
               {
@@ -13820,6 +14374,18 @@
                 "type": "null"
               }
             ]
+          },
+          "amount_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the amount was read when it is not the order's own total ('from its invoices, before tax', 'from its lines'), or why there is none ('value not recorded', 'not shown to you'). A header total of 0 is never shown as the order's value.",
+            "title": "Amount Note"
           },
           "date": {
             "anyOf": [
@@ -15182,301 +15748,6 @@
         "title": "ProposedChange",
         "type": "object"
       },
-      "RdBoard": {
-        "additionalProperties": false,
-        "description": "R&D and sample projects per customer (sample requests, formulation changes, stability\ntests, certificates of analysis), built only from the threads and records you may open.\nEach project: status, last activity, owner and who it waits on, with a drafted status\nupdate (sent only through the card's preview and your confirm).",
-        "properties": {
-          "as_of": {
-            "title": "As Of",
-            "type": "string"
-          },
-          "idle": {
-            "title": "Idle",
-            "type": "integer"
-          },
-          "idle_after_days": {
-            "title": "Idle After Days",
-            "type": "integer"
-          },
-          "projects": {
-            "items": {
-              "$ref": "#/components/schemas/RdProject"
-            },
-            "title": "Projects",
-            "type": "array"
-          },
-          "read_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
-            "title": "Read At"
-          },
-          "reading": {
-            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
-            "title": "Reading",
-            "type": "boolean"
-          },
-          "sent": {
-            "const": 0,
-            "title": "Sent",
-            "type": "integer"
-          },
-          "stale_since": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
-            "title": "Stale Since"
-          },
-          "total": {
-            "title": "Total",
-            "type": "integer"
-          },
-          "writes": {
-            "const": 0,
-            "title": "Writes",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "as_of",
-          "idle_after_days",
-          "total",
-          "idle",
-          "sent",
-          "writes"
-        ],
-        "title": "RdBoard",
-        "type": "object"
-      },
-      "RdLine": {
-        "additionalProperties": false,
-        "properties": {
-          "citations": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "last_on": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last On"
-          },
-          "messages_n": {
-            "default": 0,
-            "title": "Messages N",
-            "type": "integer"
-          },
-          "state": {
-            "enum": [
-              "waiting_on_us",
-              "waiting_on_customer",
-              "update_received",
-              "closed"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "subject": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subject"
-          }
-        },
-        "required": [
-          "id",
-          "state"
-        ],
-        "title": "RdLine",
-        "type": "object"
-      },
-      "RdProject": {
-        "additionalProperties": false,
-        "properties": {
-          "card_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The update's card for ``/api/actions/*``.",
-            "title": "Card Id"
-          },
-          "citations": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "customer": {
-            "description": "The customer's record handle (open it to read the name): the threads' one settled customer link, else the one customer record stating the sender. A thread of a supplier, or of a company no record names, is no project.",
-            "title": "Customer",
-            "type": "string"
-          },
-          "customer_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The customer's name as this reader reads its record; none when it is not readable (the app shows the handle).",
-            "title": "Customer Name"
-          },
-          "days": {
-            "title": "Days",
-            "type": "integer"
-          },
-          "draft": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ApprovalNudge"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "A drafted status update to the customer, worded from kind, state and dates only."
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "idle": {
-            "title": "Idle",
-            "type": "boolean"
-          },
-          "items": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "kind": {
-            "enum": [
-              "stability_test",
-              "formulation_change",
-              "sample_request",
-              "coa"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "last_on": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last On"
-          },
-          "lines": {
-            "items": {
-              "$ref": "#/components/schemas/RdLine"
-            },
-            "title": "Lines",
-            "type": "array"
-          },
-          "offers": {
-            "items": {
-              "$ref": "#/components/schemas/CardActionOffer"
-            },
-            "title": "Offers",
-            "type": "array"
-          },
-          "owner": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The person of ours who wrote most (an Entra object id), never a name or an address.",
-            "title": "Owner"
-          },
-          "owner_is_you": {
-            "default": false,
-            "title": "Owner Is You",
-            "type": "boolean"
-          },
-          "status": {
-            "enum": [
-              "waiting_on_us",
-              "waiting_on_customer",
-              "update_received",
-              "closed"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "waiting_on": {
-            "anyOf": [
-              {
-                "enum": [
-                  "us",
-                  "customer"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Waiting On"
-          }
-        },
-        "required": [
-          "id",
-          "customer",
-          "kind",
-          "status",
-          "days",
-          "idle"
-        ],
-        "title": "RdProject",
-        "type": "object"
-      },
       "RecentQuestion": {
         "additionalProperties": false,
         "properties": {
@@ -16571,7 +16842,8 @@
             "enum": [
               "search_entities",
               "projection",
-              "fixture"
+              "fixture",
+              "business"
             ],
             "title": "Source",
             "type": "string"
@@ -18427,6 +18699,11 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "whole": {
+            "description": "True: ``text`` is the answer so far in full (as the answer gate passed it) and replaces what was shown; false: ``text`` is appended.",
+            "title": "Whole",
+            "type": "boolean"
           }
         },
         "required": [
@@ -18793,13 +19070,26 @@
                 "type": "null"
               }
             ],
-            "description": "The newest capture applied to the data the app serves.",
+            "description": "How far the data the app serves reaches: everything captured up to this time is in it.",
             "title": "Served At"
           },
           "stale": {
             "default": false,
+            "description": "Behind: a capture waits over an hour to be served, or the newest capture is older than the system's bound.",
             "title": "Stale",
             "type": "boolean"
+          },
+          "state_words": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The system's state in one plain sentence, with a failed read's reason in words.",
+            "title": "State Words"
           },
           "system": {
             "enum": [
@@ -22416,6 +22706,118 @@
         ]
       }
     },
+    "/api/autopilot/drafts": {
+      "get": {
+        "description": "Your open prepared replies and \"your call\" cards, newest first.",
+        "operationId": "autopilot_prepared_list_api_autopilot_drafts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotDrafts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Autopilot Prepared List",
+        "tags": [
+          "actions"
+        ]
+      },
+      "post": {
+        "description": "Switch one choice of prepared work on or off for yourself (``my_drafts``):\ndrafts and prepared actions wait in My work for your confirm; nothing is sent or\nwritten by itself. Always your own; recorded on the audit log.",
+        "operationId": "autopilot_drafts_api_autopilot_drafts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotDraftsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotArea"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Drafts",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/items/{item_id}/decision": {
       "post": {
         "description": "Accept, edit, reject or snooze an item of your own. Accept runs it through the\ngated write path: a dry run (the decision recorded, nothing written) unless its\nworkflow passed the fresh gate for you and you switched it on for yourself.",
@@ -22494,6 +22896,89 @@
           }
         },
         "summary": "Autopilot Decide",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/items/{item_id}/reply-from-line": {
+      "post": {
+        "description": "Write the reply to a \"your call\" card of your own from your one line: kept as your\nedit of its draft for you to change and confirm. Nothing is sent.",
+        "operationId": "autopilot_reply_from_line_api_autopilot_items__item_id__reply_from_line_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotLineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Reply From Line",
         "tags": [
           "actions"
         ]
@@ -23150,6 +23635,108 @@
         ]
       }
     },
+    "/api/biz/page": {
+      "get": {
+        "description": "A customer's, chain's or supplier's account page, or a PO's or customer order's\npage (header, then lines): every number from the business tables, as you may see\nthem, in one read.",
+        "operationId": "biz_page_api_biz_page_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "customer",
+                "chain",
+                "supplier",
+                "purchase_order",
+                "sales_order"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "h",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 600,
+              "title": "H",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "chain",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Chain",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BizPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Biz Page",
+        "tags": [
+          "search"
+        ]
+      }
+    },
     "/api/brief/meetings": {
       "get": {
         "description": "Calendar events in the next 14 days you may read, soonest first, each with the\nlink to its meeting prep brief.",
@@ -23177,102 +23764,6 @@
           }
         },
         "summary": "Upcoming Meetings",
-        "tags": [
-          "briefs"
-        ]
-      }
-    },
-    "/api/brief/qc-audit": {
-      "get": {
-        "description": "The QC audit pack: on-time share of the calibration, sanitation and other QC\nchecks by area and month over the last year, each recurring check with its cycle\nand its missed, late and overdue occurrences cited, the production schedule by\nline and batches on hold. Quality_controlled readers only.",
-        "operationId": "qc_audit_pack_api_brief_qc_audit_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Brief"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          }
-        },
-        "summary": "Qc Audit Pack",
-        "tags": [
-          "briefs"
-        ]
-      }
-    },
-    "/api/brief/qc-audit.txt": {
-      "get": {
-        "description": "The QC audit pack as one printable plain-text page, each line with its sources.",
-        "operationId": "qc_audit_text_api_brief_qc_audit_txt_get",
-        "responses": {
-          "200": {
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          }
-        },
-        "summary": "Qc Audit Text",
-        "tags": [
-          "briefs"
-        ]
-      }
-    },
-    "/api/brief/qc-daily": {
-      "get": {
-        "description": "The daily QC pack: quality checks open now (missed, overdue, due within a week),\nopen calibration, production slots past start and not completed, batches on hold\nand the hold-release queue (not available yet, with its reason). Only a reader\nholding quality_controlled sees any line; every line cites its task, slot or\nbatch.",
-        "operationId": "qc_daily_pack_api_brief_qc_daily_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Brief"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          }
-        },
-        "summary": "Qc Daily Pack",
         "tags": [
           "briefs"
         ]
@@ -26087,6 +26578,18 @@
               "title": "Quick",
               "type": "boolean"
             }
+          },
+          {
+            "description": "The record's own details only (core=true), served before the quick read; status 'reading' until that lands",
+            "in": "query",
+            "name": "core",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "The record's own details only (core=true), served before the quick read; status 'reading' until that lands",
+              "title": "Core",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -26134,38 +26637,6 @@
         "summary": "Object Page",
         "tags": [
           "object"
-        ]
-      }
-    },
-    "/api/rd-projects": {
-      "get": {
-        "description": "R&D and sample projects per customer from the threads and records you may open:\nstatus, last activity, owner and who each waits on, with a drafted status update.\nNothing is sent.",
-        "operationId": "rd_board_api_rd_projects_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RdBoard"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          }
-        },
-        "summary": "Rd Board",
-        "tags": [
-          "actions"
         ]
       }
     },

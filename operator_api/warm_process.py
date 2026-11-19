@@ -275,6 +275,12 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
     from .auth import Reader
 
     def serve(ctx: Mapping[str, Any]) -> int:
+        if fixtures is None:
+            # people decided as the API's own requests decide them (its mail capture's
+            # directory): without it every colleague's address was withheld here, so the
+            # owner's Meetings page kept from here said "No meetings" (live 11-18)
+            from . import feedback
+            feedback.attach_capture_directory(ctx.get("mail_capture_dir"))
         backend = be.WorkspaceBackend(ctx["objects_for"], **settings)
         backend.page_cache.fresh_for = FRESH_SECONDS
         backend.warm_enabled = True

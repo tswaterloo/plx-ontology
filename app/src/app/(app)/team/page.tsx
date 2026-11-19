@@ -8,6 +8,7 @@ import { TeamApprovals } from "@/components/team/approvals";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
 import { TeamDashboard } from "@/components/team/dashboard";
 import { WorkloadSection } from "@/components/team/workload";
 import { getLabour, getTeam } from "@/lib/api";
@@ -54,11 +55,22 @@ export default function TeamPage() {
   const labourRefused =
     (labour.data?.state === "not_granted" || (labour.error instanceof ApiError && (labour.error.status === 403 || labour.error.status === 404))) && hash === "#labour";
   const heading = people.data?.scope === "self" ? "Your activity" : "People";
+  // the pinned "Approvals" (/team#approvals) opens on the approvals: the section comes first,
+  // above the people table (the browser's own jump to #approvals fires before it is drawn)
+  const approvalsFirst = team && hash === "#approvals";
+  const approvals = (
+    <section id="approvals" aria-labelledby="approvals-title" className="max-w-6xl scroll-mt-16 space-y-3" data-testid="team-approvals">
+      <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
+      <TeamApprovals />
+    </section>
+  );
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Team" />
+      <PageIntro path="/team" />
       <div className="w-full space-y-10 px-4 py-5 lg:px-6">
         {!me ? <Pending page label="Checking your access" /> : null}
+        {approvalsFirst && approvals}
         {me && (
           <section id="people" aria-labelledby="people-title" className="scroll-mt-16 space-y-3">
             <h2 id="people-title" className="text-[15px] font-semibold">{heading}</h2>
@@ -77,12 +89,7 @@ export default function TeamPage() {
             <WorkloadSection owner={!!me.owner} />
           </section>
         )}
-        {team && (
-          <section id="approvals" aria-labelledby="approvals-title" className="max-w-6xl scroll-mt-16 space-y-3">
-            <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
-            <TeamApprovals />
-          </section>
-        )}
+        {team && !approvalsFirst && approvals}
         {labourOn && labour.data && (
           <section id="labour" aria-labelledby="labour-title" className="max-w-3xl scroll-mt-16 space-y-3" data-testid="team-labour">
             <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>

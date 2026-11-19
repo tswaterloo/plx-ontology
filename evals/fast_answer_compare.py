@@ -269,4 +269,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     sys.exit(main())

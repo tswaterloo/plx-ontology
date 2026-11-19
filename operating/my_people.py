@@ -6,7 +6,8 @@ Memory page: what the Workbench knows of who they deal with, beside what it reme
   ``DAYS`` days, ranked by how much they wrote to it (a message they sent counts
   ``SENT_WEIGHT``, one received counts one), newest contact breaking ties; with the
   counts, the last contact's day and subject, and whether the address is inside the
-  company. Automated senders (no-reply, notifications, mailer daemons) are no one.
+  company. Automated senders (no-reply, notifications, mailer daemons) and mailings
+  (``inbox_triage.bulk_senders``: bulk mail from an address they never wrote to) are no one.
 * **Ongoing threads** (``threads_of``): a subject (``Re:``/``Fwd:`` taken off) with mail
   both ways in the last ``THREAD_DAYS`` days, newest first, saying whose turn it is: the
   last message came to them (``yours``: they owe the reply) or went from them
@@ -105,11 +106,14 @@ def people_and_threads(people: Any, me: str, rows: Sequence[Mapping[str, Any]], 
     who: dict[str, dict[str, Any]] = {}
     talks: dict[str, dict[str, Any]] = {}
     barred: set[str] = set()
+    # mailings (a newsletter, a webinar invite) are nobody the person works with
+    from .inbox_triage import bulk_senders
+    mass = bulk_senders(rows)
     for row in rows:
         at = _when(row.get("at"))
         if at is None or at < since or at > now + timedelta(minutes=5):
             continue
-        others = [a for a in _others(row, own) if not automated(a)]
+        others = [a for a in _others(row, own) if not automated(a) and a not in mass]
         if not others:
             continue
         # everyone on the mail is checked, the To and Cc of one received too

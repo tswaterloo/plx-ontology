@@ -40,7 +40,7 @@ describe("card actions", () => {
 
   it("says Send only when the message really goes, and holds the button until every check passes", () => {
     expect(confirmLabel(preview())).toBe("Send");
-    expect(confirmLabel(preview({ missing: ["Mail.Send not granted"] }))).toBe("Record dry run");
+    expect(confirmLabel(preview({ missing: ["Mail.Send not granted"] }))).toBe("Save without sending");
     expect(confirmLabel(preview({ outbound: false, kind: "snooze" }))).toBe("Snooze");
     const ok = { edited: false, unknownConfirmed: false, busy: false };
     expect(confirmBlocked(preview(), ok)).toBeNull();
@@ -58,7 +58,9 @@ describe("card actions", () => {
     expect(actionChip(null, true)).toEqual({ status: "neutral", label: "Drafted" });
     expect(actionChip(state("sent"), true)?.label).toBe("Sent");
     expect(actionChip(state("failed"), true)?.status).toBe("late");
-    expect(actionChip(state("dry_run", ["Mail.Send not granted"]), true)).toMatchObject({ label: "Dry run: permission missing", title: "Mail.Send not granted" });
+    expect(actionChip(state("dry_run", ["Mail.Send not granted"]), true)).toMatchObject({ label: "Not sent" });
+    // no permission or setting names reach the person, not even in the tooltip
+    expect(actionChip(state("dry_run", ["Your mailbox is not configured to send (PLX_ACTIONS_SENDERS)"]), true)?.title).not.toMatch(/PLX_|Mail\.Send|configured/);
     expect(actionChip(state("something_new" as ActionResult["status"]), true)).toEqual({ status: "neutral", label: "Unknown state" });
     expect(actionChip(state("unknown"), true)?.label).toBe("Outcome unknown");
     expect(outcomeUnknown(state("unknown"))).toBe(true);

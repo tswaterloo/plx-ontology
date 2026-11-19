@@ -375,6 +375,13 @@ def _card_documents(st: _Store, as_of: date, limit: int) -> list[str]:
         (json.dumps(documents), json.dumps(wanted), limit))]
 
 
+# A card ``plx.object`` answers is not visible to the engine's reader (outside its
+# audiences or marked beyond it): no read the rule may retry, so not a cut. Counted in
+# ``not_evaluated`` (``unread_object_not_found``) and never "complete within 24 h"'s
+# breach: before, 453 such documents kept the rule ``truncated`` every run (11-17).
+NOT_VISIBLE = frozenset({"object_not_found"})
+
+
 def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
                 many: Callable[[str, Sequence[Any]], list[Any]] | None = None
                 ) -> dict[str, Any]:
@@ -385,7 +392,10 @@ def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
         return _result([], status="not_configured", reasons=["tool_caller_not_given"])
     # on the run's pool every candidate is read (the window decides, as orders_at_risk
     # asks every PO); one by one, at most ``bound``
-    ids = _card_documents(st, as_of, (bound if many is None else CARD_ALL) + 1)
+    # (11-17: the pool's read still stopped at ``bound``, so every run ended ``card_bound``
+    # and the rule never completed)
+    bound = bound if many is None else CARD_ALL
+    ids = _card_documents(st, as_of, bound + 1)
     unread: Counter[str] = Counter()
     skipped = _Skips()
     found: list[tuple[dict[str, Any], list[list[str]]]] = []
@@ -402,8 +412,10 @@ def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
         error = answer.get("error") if isinstance(answer, Mapping) else {"code": "error"}
         if error:
             code = error.get("code") if isinstance(error, Mapping) else None
-            unread[code if isinstance(code, str) else "error"] += 1
-            skipped.note(f"unread_{code if isinstance(code, str) else 'error'}", [object_id])
+            code = code if isinstance(code, str) else "error"
+            skipped.note(f"unread_{code}", [object_id])
+            if code not in NOT_VISIBLE:
+                unread[code] += 1
             continue
         conflicts = answer.get("conflicts") if isinstance(answer.get("conflicts"), list) else []
         card = {"object": answer.get("object"), "leads": answer.get("leads"), "values": [],

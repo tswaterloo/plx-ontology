@@ -7,7 +7,9 @@ counts per kind, chunk size distribution, unknown-key and withheld counts, dupli
 and a cost/time estimate; nothing is written. Prints one JSON report (counts and timings
 only: never text, never an id of an excluded person, never a key).
 
-Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster),
+Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster, in
+memory, before migration 0037), ``regroup`` (the streaming re-cluster into
+``search.chunk_groups``: ``operating.embed.regroup``),
 ``follow`` (follow the served generation and its row deltas: ``operating.embed.follow``),
 ``backfill`` (embed the whole pending backlog beside it: ``operating.embed.backfill``),
 ``remote`` (the same backlog embedded on remote GPU hosts: ``operating.embed.remote``),
@@ -201,7 +203,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             report["entities"]["stale"] = writer.delete_stale_entities(
                 ENTITY_TYPES_ALL, allow_shrink=args.allow_shrink)
     if not args.skip_dedup:
-        report["dedup"] = dedup(writer.conn, None if full else kinds)
+        # with migration 0037 the clusters are the streaming regroup's (search.chunk_groups)
+        report["dedup"] = ({"skipped": "regroup_owns_clusters"}
+                           if st.groups_table(writer.conn)
+                           else dedup(writer.conn, None if full else kinds))
     if not args.no_embed:
         report["embed"] = embed(writer.conn, values, kinds=None if full else kinds,
                                 limit=args.limit, order=args.order, workers=args.workers,
@@ -371,6 +376,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv[:1] == ["remote"]:
         from .remote import main as remote_main
         return remote_main(argv[1:])
+    if argv[:1] == ["regroup"]:
+        from .regroup import main as regroup_main
+        return regroup_main(argv[1:])
     if argv[:1] == ["backfill"]:
         from .backfill import main as backfill_main
         return backfill_main(argv[1:])
@@ -423,7 +431,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             st.require_schema(conn)
             report = (embed(conn, values, kinds=args.kind, limit=args.limit, order=args.order,
                             workers=args.workers, bulk=False if args.keep_index else None)
-                      if args.command == "embed" else dedup(conn, args.kind))
+                      if args.command == "embed"
+                      # the in-memory re-cluster does not scale and its column is no longer
+                      # read once search.chunk_groups exists: the regroup owns the clusters
+                      else {"refused": "use `python3 -m operating.embed regroup`"}
+                      if st.groups_table(conn) else dedup(conn, args.kind))
     except st.SchemaMissing as missing:
         print(json.dumps({"refused": str(missing)}))
         return 2

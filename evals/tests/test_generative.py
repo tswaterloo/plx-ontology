@@ -9,6 +9,7 @@ from collections import Counter
 from datetime import date
 from decimal import Decimal
 import json
+import random
 import re
 import unittest
 
@@ -221,6 +222,121 @@ class ChangedSource(FakeSource):
         got = super().versions(ids)
         return {i: (h.replace("@v1", "@v2"), m) if i in self.changed else (h, m)
                 for i, (h, m) in got.items()}
+
+
+SO = [f'SalesOrder:portal.sage_oe_order_header:{{"orduniq":"{n}"}}' for n in range(1, 5)]
+INV = [f'SalesInvoice:portal.sage_oe_invoice_header:{{"invuniq":"{n}"}}' for n in range(1, 5)]
+
+
+class SageOrders(FakeSource):
+    """Sage order headers zeroed once invoiced (audit C-01), each billed by its own invoice;
+    ``unbilled``: how many of the orders closed without any invoice."""
+
+    def __init__(self, unbilled: int = 0) -> None:
+        super().__init__()
+        billed = SO[:len(SO) - unbilled]
+        self.links = {"SalesInvoice.bills": [(INV[SO.index(o)], o) for o in billed]}
+        self.everything = [*SO, *(INV[SO.index(o)] for o in billed)]
+
+    def rows(self, ids):
+        out = {}
+        for i in ids:
+            if i in SO:
+                out[i] = [{"property": "order_date", "value_type": "date",
+                           "value": "2025-03-0%d" % (SO.index(i) + 1)},
+                          {"property": "sage_complete", "value_type": "text", "value": "5"},
+                          {"property": "total_amount", "value_type": "money", "value": "0.000",
+                           "currency": "USD", "markings": '["finance"]'}]
+            elif i in INV:
+                out[i] = [{"property": "subtotal", "value_type": "money", "currency": "USD",
+                           "value": str(1000 * (INV.index(i) + 1)) + ".25",
+                           "markings": '["finance"]'}]
+        return out
+
+
+class OrderValueTruthTest(unittest.TestCase):
+    """dev 11-17: a money sum over Sage order headers summed cells Sage zeroes once an order
+    is invoiced (73,472 of 75,189), so its truth was the few open orders' total (one scope:
+    354,888.94 USD of headers against 12.4M USD of invoiced order value). The truth is what
+    the orders are worth (``operating.order_value``), or no question when an order has none."""
+
+    TYPES = {"SalesOrder": {"portal.sage_oe_order_header": 4}}
+
+    def sums(self, source):
+        generator = gen.Generator([], source, AS_OF, self.TYPES)
+        got = []
+        for turn in range(60):
+            try:
+                q = generator.c_money(random.Random(turn), turn)
+            except gen.Dropped as why:
+                got.append(str(why))
+                continue
+            if "sum" in q.tags:
+                got.append(q)
+        return got
+
+    def test_a_sum_of_zeroed_headers_is_the_orders_invoiced_value(self):
+        sums = [q for q in self.sums(SageOrders()) if isinstance(q, gen.Question)]
+        self.assertTrue(sums)
+        for q in sums:
+            fact = q.facts[0]
+            self.assertEqual((fact["value"], fact["unit"]), ("10001.00", "USD"), q.text)
+            self.assertIn("order_value", q.rule)
+            self.assertEqual(fact["markings"], ["finance"])
+
+    def test_an_order_with_no_value_drops_the_sum_never_states_a_part(self):
+        got = self.sums(SageOrders(unbilled=1))
+        self.assertFalse([q for q in got if isinstance(q, gen.Question)])
+        self.assertIn("order_value_closed_not_invoiced", got)
+
+
+AO = 'AssemblyOrder:portal.fm_assembly_order:{"id":1}'
+AOS = [f'AssemblyOrderStatusEntry:portal.fm_ao_status:{{"id":{n}}}' for n in (1, 2)]
+
+
+class AssemblyOrders(FakeSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links = {"AssemblyOrderStatusEntry.entry_of": [(e, AO) for e in AOS]}
+        self.everything = [AO, *AOS]
+
+    def lookup(self, object_type, label):
+        return [AO] if (object_type, label) == ("AssemblyOrder", "AO-16302F") else []
+
+    def rows(self, ids):
+        return {i: ([{"property": "name", "value_type": "text", "value": "AO-16302F"},
+                     {"property": "status", "value_type": "text", "value": "Realized"}]
+                    if i == AO else [{"property": "status", "value_type": "text",
+                                      "value": "Released"}]) for i in ids}
+
+
+class WhyLinkedCountTest(unittest.TestCase):
+    """dev 11-17: "the assembly order records, their two status entries" stated the count of
+    the order's status entries and was graded as missing it (the label wanted "assembly
+    order status entries" whole)."""
+
+    def test_the_linked_records_count_is_read_by_their_own_noun_too(self):
+        link = gw.Link("AssemblyOrderStatusEntry.entry_of", "entry_of", "status_entries",
+                       "AssemblyOrderStatusEntry", "AssemblyOrder", 2)
+        generator = gen.Generator([link], AssemblyOrders(), AS_OF,
+                                  {"AssemblyOrder": {"portal.fm_assembly_order": 1},
+                                   "AssemblyOrderStatusEntry": {"portal.fm_ao_status": 2}})
+        qs = []
+        for turn in range(40):
+            try:
+                qs.append(generator.c_why(random.Random(turn), turn))
+            except gen.Dropped:
+                continue
+        self.assertTrue(qs)
+        linked = [f for f in qs[0].facts if f["id"] == "linked"][0]
+        self.assertIn("status entries", linked["label"])
+        said = ("AO-16302F shows Realized. Checked: the FileMaker and Portal assembly order "
+                "records, their two status entries, and the copy MO-FM-507.")
+        status = [f for f in qs[0].facts if f["id"] == "status"][0]
+        self.assertEqual(gen.grade(item([status, linked]), ans(said), OWNER)["outcome"],
+                         "correct")
+        self.assertNotEqual(gen.grade(item([status, linked]), ans(said.replace(
+            "two status", "three status")), OWNER)["outcome"], "correct")
 
 
 class TruthAgainTest(unittest.TestCase):
@@ -453,6 +569,40 @@ class InProcessRunTest(unittest.TestCase):
                 self.run_eval(self.args("r4", api=api))
             self.assertEqual(str(refused.exception), code)
         self.assertFalse(list((self.root / "runs" / "r4" / "answers").glob("*")))
+
+    def test_the_eval_app_never_uses_the_live_servers_sessions_file(self):
+        """11-17: the eval over the live state wrote the live app-sessions.json and signed
+        live users out. The default (state dir) store under the live state directory is
+        refused for a process that is not the API's user, and so is an explicit one there;
+        the eval's own --session-store file is fine."""
+        from scripts import eval_generative as eg
+        import os
+        import shlex
+        from operator_api.server import build_parser
+        parser = build_parser()
+        live = self.tmp / "livestate"
+        live.mkdir(exist_ok=True)
+        base = shlex.split(self.api)
+        i = base.index("--state-dir")
+        argv = base[:i] + ["--state-dir", str(live)] + base[i + 2:]
+
+        def check(*extra, api_user="plx-no-such-user"):
+            eg.own_session_store(parser.parse_args(argv + list(extra)), live=live,
+                                 api_user=api_user)
+        for extra in ((), ("--session-store", str(live / "x" / "s.json"))):
+            with self.assertRaises(eg.Refused) as refused:
+                check(*extra)
+            self.assertIn("api_args_session_store_is_the_live_servers", str(refused.exception))
+        check("--session-store", str(self.tmp / "app" / "app-sessions.json"))   # its own
+        import pwd
+        check(api_user=pwd.getpwuid(os.geteuid()).pw_name)    # the API's own user may
+
+    def test_the_session_store_option_places_the_sessions_file(self):
+        from pathlib import Path
+        from operator_api.cli import session_store_path
+        self.assertEqual(session_store_path("/s", None), Path("/s/app-sessions.json"))
+        self.assertEqual(session_store_path("/s", "/o/x.json"), Path("/o/x.json"))
+        self.assertIsNone(session_store_path(None, None))
 
 
 class GraderTest(unittest.TestCase):

@@ -1,0 +1,329 @@
+{
+  "tool": "plx.business",
+  "examples": [
+    {
+      "name": "invoiced_total_per_currency_by_month",
+      "input": {
+        "view": "sales_invoices",
+        "where": [
+          {
+            "field": "invoice_date",
+            "op": "between",
+            "value": [
+              "2025-11-01",
+              "2025-11-30"
+            ]
+          }
+        ],
+        "group_by": [
+          {
+            "field": "invoice_date",
+            "bucket": "month"
+          }
+        ],
+        "measures": [
+          {
+            "fn": "sum",
+            "field": "total"
+          },
+          {
+            "fn": "count"
+          }
+        ]
+      },
+      "output": {
+        "view": "sales_invoices",
+        "groups": [
+          {
+            "key": {
+              "invoice_date@month": "2025-11-01",
+              "total_currency": "CAD"
+            },
+            "members": 3,
+            "members_cited": [
+              "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s1%22%7D@0000000000000001-1",
+              "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s4%22%7D@0000000000000001-1",
+              "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22t5old%22%7D@0000000000000001-1"
+            ],
+            "key_citations": {
+              "total_currency": {
+                "l1_handle": "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s1%22%7D@0000000000000001-1",
+                "field_path": "row.total_amount"
+              }
+            },
+            "measures": [
+              {
+                "fn": "sum",
+                "field": "total",
+                "value": "4657.44",
+                "inputs": 3,
+                "inputs_citations": [
+                  {
+                    "l1_handle": "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s1%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  },
+                  {
+                    "l1_handle": "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s4%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  },
+                  {
+                    "l1_handle": "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22t5old%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  }
+                ],
+                "negative_inputs": 0,
+                "currency": "CAD"
+              },
+              {
+                "fn": "count",
+                "field": null,
+                "value": "3"
+              }
+            ]
+          },
+          {
+            "key": {
+              "invoice_date@month": "2025-11-01",
+              "total_currency": "USD"
+            },
+            "members": 1,
+            "members_cited": [
+              "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s2%22%7D@0000000000000001-1"
+            ],
+            "key_citations": {
+              "total_currency": {
+                "l1_handle": "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s2%22%7D@0000000000000001-1",
+                "field_path": "row.total_amount"
+              }
+            },
+            "measures": [
+              {
+                "fn": "sum",
+                "field": "total",
+                "value": "250",
+                "inputs": 1,
+                "inputs_citations": [
+                  {
+                    "l1_handle": "api://portal.sage_oe_invoice_header/%7B%22id%22%3A%22s2%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  }
+                ],
+                "negative_inputs": 0,
+                "currency": "USD"
+              },
+              {
+                "fn": "count",
+                "field": null,
+                "value": "1"
+              }
+            ]
+          }
+        ],
+        "total_groups": 2,
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 2,
+          "total": 2
+        },
+        "partial": false,
+        "gaps": [
+          {
+            "state": "excluded",
+            "reason": "pilot_rows_left_out",
+            "subject": "sales_invoices",
+            "detail": "BC pilot rows (pilot = true) are left out: Sage is the system of record; filter or group on pilot to read them"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invoice_lines_margin",
+      "input": {
+        "view": "sales_invoice_lines",
+        "where": [
+          {
+            "field": "invoice_number",
+            "op": "=",
+            "value": "IN-1"
+          }
+        ],
+        "select": [
+          "item_name",
+          "quantity",
+          "quantity_unit",
+          "revenue",
+          "cost",
+          "margin"
+        ],
+        "order_by": [
+          {
+            "by": "revenue",
+            "dir": "desc"
+          }
+        ],
+        "limit": 2
+      },
+      "output": {
+        "view": "sales_invoice_lines",
+        "rows": [
+          {
+            "handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-a%22%7D@0000000000000001-1",
+            "object_ids": [
+              "SalesInvoiceLine:portal.sage_oe_invoice_detail:s1-a"
+            ],
+            "systems": [
+              "sage"
+            ],
+            "copies": 1,
+            "values": {
+              "item_name": {
+                "value": {
+                  "untrusted_text": "Shampoo Base",
+                  "origin": {
+                    "citation": "api://portal.app_product/%7B%22id%22%3A%22sb%22%7D@0000000000000001-1",
+                    "field_path": "row.name"
+                  }
+                },
+                "value_type": "text",
+                "citation": {
+                  "l1_handle": "api://portal.app_product/%7B%22id%22%3A%22sb%22%7D@0000000000000001-1",
+                  "field_path": "row.name"
+                }
+              },
+              "quantity": {
+                "value": "7",
+                "value_type": "numeric",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-a%22%7D@0000000000000001-1",
+                  "field_path": "row.invoiced_quantity"
+                }
+              },
+              "quantity_unit": {
+                "value": "CSE",
+                "value_type": "text",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-a%22%7D@0000000000000001-1",
+                  "field_path": "row.invoiced_quantity"
+                }
+              },
+              "revenue": {
+                "value": "361.9",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-a%22%7D@0000000000000001-1",
+                  "field_path": "row.extended_amount"
+                },
+                "currency": "CAD"
+              },
+              "cost": {
+                "value": "154",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-a%22%7D@0000000000000001-1",
+                  "field_path": "row.unit_cost"
+                },
+                "currency": "CAD"
+              },
+              "margin": {
+                "value": "207.9",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-a%22%7D@0000000000000001-1",
+                  "field_path": "row.extended_amount"
+                },
+                "currency": "CAD"
+              }
+            }
+          },
+          {
+            "handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-b%22%7D@0000000000000001-1",
+            "object_ids": [
+              "SalesInvoiceLine:portal.sage_oe_invoice_detail:s1-b"
+            ],
+            "systems": [
+              "sage"
+            ],
+            "copies": 1,
+            "values": {
+              "item_name": {
+                "value": {
+                  "untrusted_text": "Label",
+                  "origin": {
+                    "citation": "api://portal.app_product/%7B%22id%22%3A%22lb%22%7D@0000000000000001-1",
+                    "field_path": "row.name"
+                  }
+                },
+                "value_type": "text",
+                "citation": {
+                  "l1_handle": "api://portal.app_product/%7B%22id%22%3A%22lb%22%7D@0000000000000001-1",
+                  "field_path": "row.name"
+                }
+              },
+              "quantity": {
+                "value": "2",
+                "value_type": "numeric",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-b%22%7D@0000000000000001-1",
+                  "field_path": "row.invoiced_quantity"
+                }
+              },
+              "quantity_unit": {
+                "value": "CSE",
+                "value_type": "text",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-b%22%7D@0000000000000001-1",
+                  "field_path": "row.invoiced_quantity"
+                }
+              },
+              "revenue": {
+                "value": "228",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-b%22%7D@0000000000000001-1",
+                  "field_path": "row.extended_amount"
+                },
+                "currency": "CAD"
+              },
+              "cost": {
+                "value": "108",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-b%22%7D@0000000000000001-1",
+                  "field_path": "row.unit_cost"
+                },
+                "currency": "CAD"
+              },
+              "margin": {
+                "value": "120",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://portal.sage_oe_invoice_detail/%7B%22id%22%3A%22s1-b%22%7D@0000000000000001-1",
+                  "field_path": "row.extended_amount"
+                },
+                "currency": "CAD"
+              }
+            }
+          }
+        ],
+        "total_rows": 3,
+        "completeness": {
+          "complete": false,
+          "truncated": true,
+          "reason": "page_cap",
+          "returned": 2,
+          "total": 3
+        },
+        "partial": false,
+        "gaps": [
+          {
+            "state": "excluded",
+            "reason": "pilot_rows_left_out",
+            "subject": "sales_invoice_lines",
+            "detail": "BC pilot rows (pilot = true) are left out: Sage is the system of record; filter or group on pilot to read them"
+          }
+        ]
+      }
+    }
+  ]
+}

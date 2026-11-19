@@ -10,13 +10,19 @@ import { useShortcut } from "@/lib/platform";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { currentPageQuery, scopedToPage } from "@/lib/page-context";
-import { listShownTo } from "@/lib/lists";
 import { stashPending } from "@/lib/pending";
 import { useAuth } from "./auth";
 import { arrange, type Arranged } from "./ask-box";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
 
 /** The command bar's dialog, loaded on first use so it stays out of every page's first load. */
+
+/** Typed like a record's number (PO, SO, invoice, item or lot: "106093", "PO 106093",
+ * "LOT-23A112"): Enter waits for the lookup and opens the one record it names, asking only
+ * when nothing matches. */
+export function numberShaped(text: string): boolean {
+  return text.length <= 30 && /\d/.test(text) && /^(?:[a-z]{1,4}[\s#]+)?[\w./-]+$/i.test(text);
+}
 
 type Item =
   | { kind: "ask"; id: string; q: string }
@@ -25,16 +31,14 @@ type Item =
   | { kind: "example"; id: string; q: string };
 
 const PLACES: { label: string; href: string; hint: string; words: string }[] = [
-  { label: "My work", href: "/", hint: "Late POs and what to chase", words: "my work today home front page briefing" },
+  { label: "Home", href: "/", hint: "What needs you today", words: "my work today home front page briefing" },
   { label: "Prepared for you", href: "/my-work", hint: "Replies and entries the autopilots prepared", words: "prepared autopilot drafts entries my work" },
-  { label: "Late POs", href: "/late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
-  { label: "Watching", href: "/watching", hint: "Every alert, rules and data health", words: "watching briefing alerts rules attention" },
+  { label: "Late POs", href: "/?show=late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
+  { label: "Alerts", href: "/?show=alerts", hint: "Every alert, rules and data health", words: "alerts watching briefing rules attention" },
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
-  { label: "R&D and sample projects", href: "/rd-projects", hint: "Sample and R&D projects, idle first", words: "rd r&d samples projects lab" },
-  { label: "Activity", href: "/activity", hint: "What was sent, approved and logged", words: "activity actions log journal" },
-  { label: "Quality", href: "/qc", hint: "QC daily pack, hold-release queue and the audit pack", words: "qc quality daily pack hold release batches calibration sanitation audit" },
-  { label: "Data health", href: "/watching#data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
+  { label: "Messages and tasks", href: "/activity", hint: "Work log: each message and task you started, and whether it went out", words: "activity actions messages tasks sent log journal" },
+  { label: "Data health", href: "/?show=alerts#data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
   { label: "Records", href: "/records", hint: "Find a customer, order, supplier or product", words: "records customers orders suppliers products items find" },
   { label: "Autopilot", href: "/autopilot", hint: "Workflows, what they prepared and their run log", words: "autopilot approvals workflows runs audit" },
   { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
@@ -47,13 +51,13 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   const { shortcut } = useShortcut();
   const router = useRouter();
   const { state } = useAuth();
-  // each list's entry only for its readers (lib/lists); the page itself stays reachable by URL
-  const reader = state.status === "signed-in" ? state.me : null;
   const [q, setQ] = useState("");
   const [records, setRecords] = useState<Arranged[]>([]);
   const [searching, setSearching] = useState(false);
   const [active, setActive] = useState(0);
   const list = useRef<HTMLUListElement>(null);
+  // the text the records shown were looked up for
+  const settledFor = useRef("");
 
   // reset on open; records as you type (debounced, the stale request cancelled)
   useEffect(() => {
@@ -74,7 +78,10 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     setSearching(true);
     const t = setTimeout(() => {
       suggest(text, c.signal)
-        .then((r) => setRecords(Array.isArray(r.suggestions) ? arrange(r.suggestions, text).slice(0, 7) : []))
+        .then((r) => {
+          setRecords(Array.isArray(r.suggestions) ? arrange(r.suggestions, text).slice(0, 7) : []);
+          settledFor.current = text;
+        })
         .catch(() => undefined)
         .finally(() => !c.signal.aborted && setSearching(false));
     }, 120);
@@ -87,7 +94,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   const items: { group: string; items: Item[] }[] = useMemo(() => {
     const text = q.trim();
     const low = text.toLowerCase();
-    const places = PLACES.filter((p) => listShownTo(p.href, reader)).filter((p) => !low || p.words.includes(low) || p.label.toLowerCase().includes(low)).map(
+    const places = PLACES.filter((p) => !low || p.words.includes(low) || p.label.toLowerCase().includes(low)).map(
       (p): Item => ({ kind: "go", id: `go-${p.href}`, label: p.label, href: p.href, hint: p.hint }),
     );
     if (!text)
@@ -101,7 +108,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     // Enter opens what was typed for: a record's exact number or name, a page's name ("late"), else the question
     const order = records[0]?.match === "exact" ? [recs, ask, go] : low.length >= 3 && places.some((p) => p.kind === "go" && p.label.toLowerCase().startsWith(low)) ? [go, ask, recs] : [ask, recs, go];
     return order.filter((g) => g.items.length > 0);
-  }, [q, records, reader]);
+  }, [q, records]);
   const flat = useMemo(() => items.flatMap((g) => g.items), [items]);
   useEffect(() => setActive((a) => Math.min(a, Math.max(0, flat.length - 1))), [flat.length]);
   useEffect(() => {
@@ -124,6 +131,30 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     [onOpenChange, router],
   );
 
+  // Enter on a number typed before its lookup came back: the lookup decides
+  const enterNumber = useCallback(
+    async (text: string) => {
+      setSearching(true);
+      let found: Arranged[] = [];
+      try {
+        const r = await suggest(text);
+        found = Array.isArray(r.suggestions) ? arrange(r.suggestions, text) : [];
+      } catch {
+        found = [];
+      }
+      const exact = found.filter((s) => s.match === "exact");
+      if (exact.length === 1) choose({ kind: "record", id: `rec-${exact[0].object_id}`, s: exact[0] });
+      else if (exact.length > 1) {
+        // several records carry that number: shown to pick from, none opened
+        setRecords(found.slice(0, 7));
+        settledFor.current = text;
+        setActive(0);
+        setSearching(false);
+      } else choose({ kind: "ask", id: "ask", q: text });
+    },
+    [choose],
+  );
+
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
       e.preventDefault();
@@ -133,7 +164,9 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
       setActive((a) => (flat.length ? (a - 1 + flat.length) % flat.length : 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      choose(flat[active]);
+      const text = q.trim();
+      if (numberShaped(text) && settledFor.current !== text) void enterNumber(text);
+      else choose(flat[active]);
     }
   }
 

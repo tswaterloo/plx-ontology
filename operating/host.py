@@ -1201,8 +1201,11 @@ class Host:
                 store, GraphMailReader(api, self._capture_audience()), self._actor(),
                 sleep=self.sleep, budget_seconds=entry.get("budget_seconds"),
                 **capture_mail.PRODUCTION)
+            # kinds: each listed mailbox's shared/personal kind, recorded for the staff
+            # scope (a listing refused the extra fields is read without them, none decided)
             run = capture.run(scope, directory=lambda: capture_mail.directory_mailboxes(
-                api, scope.directory_allows, disabled=capture.disabled_mailboxes))
+                api, scope.directory_allows, disabled=capture.disabled_mailboxes,
+                kinds=capture.mailbox_kinds))
         finally:
             store.close()
         folders = [f for m in run["mailboxes"] for f in m["folders"]]
@@ -3210,7 +3213,8 @@ def mcp_arguments(host: Host, *, session_ticket_env: str | None,
         argv += [arg for principal in sorted(principals)
                  for arg in ("--marking-grant", f"{marking}={principal}")]
     # the MCP host refuses a store path with no file (mcp_server: "--ontology-store is not
-    # a file"); without one it reads Postgres through the GET-only readers
+    # a file"); without one it reads Postgres (PLX_ONTOLOGY_PG=only), else a host whose
+    # retired generation is gone refuses every read (ontology_host.NoProjectionStore)
     if projection_path(host.state_dir).is_file():
         argv += ["--ontology-store", str(projection_path(host.state_dir))]
     return argv + _live_arguments(host)

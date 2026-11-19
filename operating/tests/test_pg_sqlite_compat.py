@@ -891,3 +891,28 @@ class JsonListTests(unittest.TestCase):
         self.assertIn("IN (SELECT value FROM ontology.sq_json_each(%(a)s), y)", out)
         self.assertNotIn("sq_json_array", translate(sql))
 
+
+
+class MemberListTests(unittest.TestCase):
+    """The members a JSON list parameter binds as (``_members``): a long list (a reader's
+    audience keys, read on every statement) is parsed once per process; every caller
+    still gets its own list, and text Postgres JSON refuses binds as nothing, long or
+    short."""
+
+    def test_long_and_short_lists_read_the_same_and_refuse_the_same(self) -> None:
+        from operating.pg.sqlite_compat import LONG_LIST_CHARS, _members
+        long = json.dumps([f"key-{i:06d}" for i in range(LONG_LIST_CHARS)])
+        first = _members(long, numeric=False)
+        first.append("changed by one caller")
+        again = _members(long, numeric=False)
+        self.assertEqual(again, [f"key-{i:06d}" for i in range(LONG_LIST_CHARS)])
+        self.assertIsNot(first, again)
+        for bad in ("a\x00b", "lone \ud800", "\udfff"):
+            for size in (1, LONG_LIST_CHARS):
+                self.assertIsNone(_members(json.dumps(["ok", bad] * size), numeric=False))
+        self.assertEqual(_members(json.dumps(["\U0001F600", None]), numeric=False),
+                         ["\U0001F600", None])
+        numbers = json.dumps(list(range(LONG_LIST_CHARS)))
+        self.assertEqual(_members(numbers, numeric=True), list(range(LONG_LIST_CHARS)))
+        self.assertIsNone(_members(numbers, numeric=False))
+        self.assertIsNone(_members(json.dumps(["1"] * LONG_LIST_CHARS), numeric=True))

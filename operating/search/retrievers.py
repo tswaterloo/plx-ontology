@@ -172,6 +172,17 @@ def column_dim(conn: Any) -> int | None:
 MAX_SCAN_TUPLES = 20000
 
 
+def _kinds_shape(conn: Any, scope: dict[str, Any]) -> Any:
+    """``PLX_SEARCH_KINDS``: "exact" for a reader whose units hold at most
+    ``NARROW_ROWS`` chunks; else (kinds walked, kinds scanned exactly) when at least one
+    kind has a valid index and the rest are small; else None (the whole-table index, as
+    without the flag)."""
+    from operating.pg import dense as pgd
+    if pgd.narrow(conn, scope["allowed"]):
+        return "exact"
+    return pgd.kind_plan(conn, scope["kinds"])
+
+
 def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], model: str,
           limit: int, *, ef_search: int = 100, timeout_ms: int | None = None
           ) -> list[tuple[str, float]]:
@@ -180,11 +191,66 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
     ``timeout_ms``: this list's own statement timeout (the connection's otherwise)."""
     if not vectors:
         return []
-    from operating.pg.dense import BQ_EF_CAP, bq_candidates, bq_enabled, bq_order
+    from operating.pg import dense as pgd
     dim = column_dim(conn)
     deep = limit * DEEP
-    bq = dim is not None and bq_enabled()
-    if bq:
+    bq = dim is not None and pgd.bq_enabled()
+    shape = _kinds_shape(conn, scope) if pgd.kinds_enabled() else None
+    if shape == "exact":
+        # The narrow exact scan is bounded per statement (NARROW_TIMEOUT_MS); past it the
+        # search runs again on the whole-table index, as without the flag.
+        try:
+            return _dense_run(conn, scope, vectors, model, limit, dim, deep, bq, shape,
+                              ef_search, timeout_ms=pgd.NARROW_TIMEOUT_MS)
+        except _query_canceled():
+            shape = None
+    return _dense_run(conn, scope, vectors, model, limit, dim, deep, bq, shape, ef_search,
+                      timeout_ms=timeout_ms)
+
+
+def _query_canceled() -> type[BaseException]:
+    import psycopg
+    return psycopg.errors.QueryCanceled
+
+
+def _dense_run(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]],
+               model: str, limit: int, dim: int | None, deep: int, bq: bool, shape: Any,
+               ef_search: int, *, timeout_ms: int | None = None) -> list[tuple[str, float]]:
+    """One shape of ``dense``'s query, run per vector in one transaction (a cancelled
+    statement rolls it back, settings included)."""
+    from operating.pg import dense as pgd
+    from operating.pg.dense import BQ_EF_CAP, bq_candidates, bq_order
+    rest: list[str] = []
+    if shape == "exact":
+        # PLX_SEARCH_KINDS, a narrow reader: the exact nearest of the visible rows ("+ 0"
+        # keeps the planner off the HNSW indexes; the audience btree finds the rows).
+        cand = 0
+        inner = f"""SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
+                    FROM search.chunks c
+                    WHERE c.embed_model = %(model)s AND {PERM} {KINDS}
+                    ORDER BY (c.embedding <=> %(v)s::halfvec) + 0, c.chunk_id
+                    LIMIT %(deep)s"""
+        ef = min(max(int(ef_search), deep), 1000)
+    elif shape is not None:
+        # PLX_SEARCH_KINDS: one walk per kind index (the literal predicate picks the
+        # partial index), an exact scan of the kinds without one, the best of the union.
+        walk, rest = shape
+        parts = [f"""(SELECT c.chunk_id, c.embedding <=> %(v)s::halfvec AS d
+                     FROM search.chunks c
+                     WHERE c.kind = '{kind}' AND c.embed_model = %(model)s AND {PERM} {KINDS}
+                     ORDER BY c.embedding <=> %(v)s::halfvec LIMIT %(deep)s)"""
+                 for kind in walk]
+        if rest:
+            parts.append(f"""(SELECT c.chunk_id, (c.embedding <=> %(v)s::halfvec) + 0 AS d
+                     FROM search.chunks c
+                     WHERE c.kind = ANY(%(rest)s::text[]) AND c.embed_model = %(model)s
+                       AND {PERM} {KINDS}
+                     ORDER BY 2, c.chunk_id LIMIT %(deep)s)""")
+        cand = 0
+        inner = f"""SELECT u.chunk_id, 1 - u.d AS s FROM ({" UNION ALL ".join(parts)}) u
+                    ORDER BY u.d, u.chunk_id LIMIT %(deep)s"""
+        ef = min(max(int(ef_search), deep, pgd.KIND_EF_SEARCH), 1000)
+    elif bq:
         # PLX_SEARCH_BQ: the bit index's Hamming order yields the candidates (permission
         # filter in the scan), the exact halfvec cosine re-ranks them.
         cand = bq_candidates(deep)
@@ -207,6 +273,9 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
     best: dict[str, float] = {}
     with conn.transaction():
         if timeout_ms is not None:
+            # SET LOCAL inside a caller's transaction: this block is a savepoint whose
+            # release would keep it, so the old value is put back after the list.
+            before = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
             conn.execute(f"SET LOCAL statement_timeout = {max(int(timeout_ms), 1)}")
         conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         conn.execute(f"SET LOCAL hnsw.ef_search = {ef}")
@@ -215,10 +284,12 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
             rows = conn.execute(
                 _per_item(inner),
                 _params(scope, v=_vector(vector, dim), model=model, limit=limit,
-                        deep=deep, cand=cand)).fetchall()
+                        deep=deep, cand=cand, rest=rest)).fetchall()
             for chunk_id, sim in rows:
                 if sim is not None and float(sim) > best.get(chunk_id, -2.0):
                     best[chunk_id] = float(sim)
+        if timeout_ms is not None:
+            conn.execute("SELECT set_config('statement_timeout', %s, true)", (before,))
     return sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
 
 
@@ -487,14 +558,33 @@ DETAIL_COLUMNS = ("chunk_id", "source_handle", "object_id", "kind", "title", "au
                   "occurred_at", "header", "body", "dup_group", "authority", "audience_key")
 
 
+def groups_table(conn: Any) -> bool:
+    """Whether the duplicate clusters live in ``search.chunk_groups`` (migration 0037,
+    written by the streaming regroup); before it, ``search.chunks.dup_group``. Asked per
+    call (one catalog lookup): a process may read databases on both sides of it."""
+    return bool(conn.execute(
+        "SELECT to_regclass('search.chunk_groups') IS NOT NULL").fetchone()[0])
+
+
+# A cluster row counts only for the text it was computed from: a chunk rewritten (or
+# deleted and re-added) since the regroup read it has no cluster until the next regroup,
+# so a stale cluster never stands a document in for another text.
+GROUP_JOIN = ("LEFT JOIN search.chunk_groups g ON g.chunk_id = c.chunk_id "
+              "AND g.content_sha = c.content_sha")
+
+
 def details(conn: Any, scope: dict[str, Any], chunk_ids: Sequence[str]) -> dict[str, dict]:
     """The shown fields of readable chunks (the permission predicate again: a row a
-    retriever did not filter is never read here either)."""
+    retriever did not filter is never read here either). ``dup_group`` comes from
+    ``search.chunk_groups`` when that table exists (never the chunk's stale column)."""
     if not chunk_ids:
         return {}
+    grouped = groups_table(conn)
+    cols = ", ".join("g.dup_group" if col == "dup_group" and grouped else "c." + col
+                     for col in DETAIL_COLUMNS)
     rows = conn.execute(
-        f"""SELECT {', '.join('c.' + col for col in DETAIL_COLUMNS)}
-            FROM search.chunks c
+        f"""SELECT {cols}
+            FROM search.chunks c {GROUP_JOIN if grouped else ""}
             WHERE c.chunk_id = ANY(%(ids)s::text[]) AND {PERM}""",
         _params(scope, ids=list(chunk_ids))).fetchall()
     return {r[0]: dict(zip(DETAIL_COLUMNS, r)) for r in rows}

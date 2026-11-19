@@ -16,7 +16,7 @@ export default function RouteError({ reset }: { error: Error; reset: () => void 
             href="/"
             className="inline-flex h-8 items-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]"
           >
-            Open My work
+            Open Home
           </a>
           <button
             type="button"

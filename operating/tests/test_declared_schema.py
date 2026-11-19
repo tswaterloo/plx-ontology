@@ -49,6 +49,10 @@ NOT_DECLARED = {
     # dropped by it; its one-row build record (failed_at, kept_at) is Postgres migration
     # 0032's, made here only on a database without it, and dropped by ``undo``
     "operating/pg/link_marks.py",
+    # the business views (schema biz, migration 0041): each view's table is computed in
+    # Python and built as biz.<view>_next, then swapped in whole; its columns are the
+    # view's own declaration (business_views.VIEWS), never a store table
+    "operating/pg/business_views.py",
     # the identifier re-parse's stage (a scratch SQLite file the stage writes and the apply
     # reads, one per run); its served rows go through migrate_chunks' row log
     "operating/pg/identifier_reparse.py",

@@ -3,30 +3,33 @@
 import { useReaderWords } from "@/components/view-as";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import Link from "next/link";
+import { PageIntro } from "@/components/ui/page-intro";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HiddenNotice } from "@/components/answer-parts";
-import { loadHome, loadLateRead, MobileAccount, MobileSearch } from "@/components/shell";
-import { ReplyList } from "@/components/reply-list";
+import { ALERTS_HREF, LATE_HREF, loadHome, loadLateRead, MobileAccount, MobileSearch, publishNeedsCount, SectionTabs } from "@/components/shell";
+import { AlertsView } from "@/components/home/alerts-view";
+import { LateView } from "@/components/home/late-view";
+import { ReplyCard, ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
-import { Pending, SlowNote } from "@/components/ui/skeleton";
+import { LIMIT_MS, Pending, SlowNote, TimedOut, useSlow } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
-import { Glance } from "@/components/home-glance";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
-import { HomeStart } from "@/components/home-start";
+import { HomeAsk } from "@/components/home-start";
+import { PreparedList } from "@/components/my-work";
 import { YourCommitments } from "@/components/your-commitments";
 import { YourTurn } from "@/components/memory-people";
-import { DataNotes } from "@/components/data-notes";
 import { SignedInFirstWeek } from "@/components/first-week";
 import { isPutAway } from "@/lib/actions";
 import { useStaleRefresh } from "@/lib/stale-refresh";
-import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
+import { getActionStates, getReplies, getBriefing, getBriefingItems, getMyWork, getSuggestions, markBriefingSeen } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
+import { replyLine, withoutCarried } from "@/components/briefing";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
-import { headline, keyOwner, refreshingLine, yourMorning } from "@/lib/home";
-import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
+import { headline, keyOwner, refreshingLine } from "@/lib/home";
+import type { MyWork, ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const TZ = "America/Toronto";
 
@@ -69,25 +72,6 @@ function verbOf(g: { type: string; rows: QueueRow[] }): string {
  * autopilot engine fills it; with nothing prepared it shows nothing, so My work stays one
  * list.
  */
-function PreparedWork({ items }: { items: { id: string; title: string; href: string }[] }) {
-  const w = useReaderWords();
-  if (items.length === 0) return null;
-  return (
-    <section aria-label={`Prepared for ${w.you}`} className="px-5 pt-3" data-testid="prepared-work">
-      <h2 className="text-[12px] font-medium text-muted">Prepared for {w.you}</h2>
-      <ul className="mt-1 space-y-1">
-        {items.map((i) => (
-          <li key={i.id}>
-            <Link href={i.href} className="text-[13px] hover:underline">
-              {i.title}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 const rankOf = (t: string) => (t === "po_undated" ? 999 : ORDER.indexOf(t) === -1 ? 500 : ORDER.indexOf(t));
 
 /** A late PO's supplier date, in the row's few words. */
@@ -118,7 +102,8 @@ function lateRow(p: LatePo, suggestion?: ProactiveSuggestion, item?: BriefingIte
 function itemRow(i: BriefingItem, suggestion?: ProactiveSuggestion): QueueRow {
   const type = i.object_type ?? "PurchaseOrder";
   const amount = i.amount && !i.amount_suspect ? formatMoney(i.amount.amount, i.amount.currency) : null;
-  const summary = readable(i.summary).replace(/^An open purchase order has no due date recorded$/i, "Open, no due date");
+  const plain = withoutCarried(readable(i.summary));
+  const summary = replyLine(plain) ?? plain.replace(/^An open purchase order has no due date recorded$/i, "Open, no due date");
   return {
     key: i.object_id,
     group: i.event_type,
@@ -196,7 +181,9 @@ function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: bool
   );
 }
 
-function ListSkeleton() {
+function ListSkeleton({ onRetry }: { onRetry: () => void }) {
+  const over = useSlow(LIMIT_MS);
+  if (over) return <TimedOut label="Reading your work" onRetry={onRetry} className="px-5 pt-3" />;
   return (
     <>
     <SlowNote className="px-5 pt-3" />
@@ -242,7 +229,16 @@ function Today() {
     getReplies(c.signal).then(setReplies, (e) => !c.signal.aborted && setRepliesError(e));
     return () => c.abort();
   }, []);
+  // what the autopilots prepared for you (was its own page, /my-work): one list with the rest (ARCH 16)
+  const [work, setWork] = useState<MyWork | null>(null);
+  const [workFailed, setWorkFailed] = useState(false);
+  useEffect(() => {
+    const c = new AbortController();
+    getMyWork(c.signal).then(setWork, () => !c.signal.aborted && setWorkFailed(true));
+    return () => c.abort();
+  }, []);
   const [picked, setPicked] = useState<string | null>(params.get("sel"));
+  const [replyPick, setReplyPick] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback((fresh = false) => {
@@ -268,13 +264,23 @@ function Today() {
     getBriefing(c.signal)
       .then((b) => {
         setBriefing(b);
-        if (b.status === "read") markBriefingSeen().catch(() => undefined);
-        // each group's next page: the briefing carries only its top items
-        for (const g of b.groups ?? [])
-          if (g.event_type !== "po_late" && g.count > (g.in_top ?? 0))
-            getBriefingItems(g.event_type, 0, "all", c.signal)
-              .then((p) => setPages((cur) => ({ ...cur, [g.event_type]: { items: p.items ?? [], more: !!p.more, total: p.total ?? 0 } })))
-              .catch(() => undefined);
+        // each group's next page (the briefing carries only its top items), read only when
+        // Home can show some of it: Home lists only the kinds sent home, so with every
+        // home item already among the top ones no page is read (each page is cut from the
+        // briefing the server kept, so the visit is marked seen only after them)
+        const top = b.items ?? [];
+        const homeOnly = typeof b.home_count === "number";
+        const needed = b.status === "read" && (!homeOnly || (b.home_count ?? 0) > top.filter((i) => i.home).length);
+        const reads = needed
+          ? (b.groups ?? [])
+              .filter((g) => g.event_type !== "po_late" && g.count > (g.in_top ?? 0))
+              .map((g) =>
+                getBriefingItems(g.event_type, 0, "all", c.signal)
+                  .then((p) => setPages((cur) => ({ ...cur, [g.event_type]: { items: p.items ?? [], more: !!p.more, total: p.total ?? 0 } })))
+                  .catch(() => undefined),
+              )
+          : [];
+        if (b.status === "read") void Promise.all(reads).then(() => markBriefingSeen().catch(() => undefined));
       })
       .catch((e) => !c.signal.aborted && setBriefingError(didntLoad("the briefing", e)));
     return () => c.abort();
@@ -337,8 +343,15 @@ function Today() {
   const selectedKey = picked ?? (desktop ? flat[0]?.key ?? null : null);
   const selected = flat.find((r) => r.key === selectedKey) ?? groups.flatMap((g) => g.rows).find((r) => r.key === selectedKey) ?? null;
 
+  // a desktop's detail pane shows the chosen message when replies are listed; with no row
+  // chosen and nothing else to open, the first message opens by itself
+  const replyLines = desktop && !supplier && (filter === "all" || filter === "reply") ? (replies?.lines ?? []) : [];
+  const replyShown = replyLines.find((l) => l.id === replyPick) ?? (replyLines.length && (filter === "reply" || !selected) ? replyLines[0] : null);
+  const shownRow = replyShown ? null : selected;
+
   const pick = useCallback(
     (key: string) => {
+      setReplyPick(null);
       setPicked(key);
       const q = new URLSearchParams();
       if (supplier) q.set("supplier", supplier);
@@ -392,18 +405,32 @@ function Today() {
   }, [selectedKey]);
 
   const head = headline(home, briefing);
-  const morning = yourMorning(briefing);
   const na = home?.needs_attention;
   const lateTotal = na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
-  const loading = !error && groups.length === 0 && (!home || !briefing || late === null);
+  // the late orders, replies and prepared work show as soon as they are read; the alerts
+  // (a slower first read) say they are still being read, never a page of skeleton rows
+  const loading = !error && groups.length === 0 && (!home || late === null);
+  const alertsReading = !briefing && !briefingError && !error;
   const refreshing = briefing?.refreshing || na?.refreshing;
+  const prepared = work?.items?.length ?? 0;
+  // replies or prepared items listed below: no "nothing needs action" line above them
+  const othersListed = filter === "all" && !supplier && ((replies?.total ?? 0) > 0 || prepared > 0);
+  // the one count, shared with the sidebar: late, alerts, replies you owe and prepared items;
+  // unknown (null) until every part is read, and while any part failed (never a partial number)
+  const everyRead = !loading && !error && !!briefing && briefing.status === "read" && late !== null && replies !== null && !repliesError && work !== null && !workFailed;
+  const total = everyRead ? groups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared : null;
+  useEffect(() => {
+    if (!supplier) publishNeedsCount(total);
+  }, [total, supplier]);
   const done = (r: ActionResult) => setStates((prev) => ({ ...prev, [r.card_id]: r }));
   const showDetail = !desktop && !!picked && !!selected;
+  // nothing to open beside the list: it takes the whole width
+  const wide = desktop && !loading && !shownRow && !replyShown;
 
   const tabs =
-    bySupplier.length > 1 || (replies?.total ?? 0) > 0 ? (
+    bySupplier.length > 1 || (replies?.total ?? 0) > 0 || prepared > 0 ? (
       <div className="flex h-full min-w-0 gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
-        {[{ type: "all", label: "All", count: bySupplier.reduce((n, g) => n + g.count, 0) }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) })).filter((v) => v.count > 0)].map((g) => (
+        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) })).filter((v) => v.count > 0)].map((g) => (
           <button
             key={g.type}
             type="button"
@@ -416,7 +443,8 @@ function Today() {
             )}
           >
             {g.label}
-            <span className="text-[12px] font-normal num text-faint">{g.count}</span>
+            {/* no count before the list is read: never "All 0" then the items (owner walk 11-17) */}
+            {g.count !== null && <span className="text-[12px] font-normal num text-faint">{g.count}</span>}
           </button>
         ))}
       </div>
@@ -424,13 +452,13 @@ function Today() {
 
   const list = (
     <section
-      className={cn("flex min-h-0 min-w-0 flex-1 flex-col border-border bg-list lg:w-[368px] lg:flex-none lg:shrink-0 lg:border-r xl:w-[384px]", showDetail && "hidden")}
+      className={cn("flex min-h-0 min-w-0 flex-1 flex-col border-border bg-list", wide ? "lg:max-w-none" : "lg:w-[368px] lg:flex-none lg:shrink-0 lg:border-r xl:w-[384px]", showDetail && "hidden")}
       aria-label="Needs action"
       data-testid="briefing"
     >
       {/* desktop toolbar: the title and the tabs on the line every pane's toolbar shares */}
       <header className="hidden h-[52px] shrink-0 items-stretch gap-5 border-b border-border px-5 lg:flex" data-testid="home-header">
-        <h1 className="self-center text-[15px] font-semibold tracking-[-0.015em]">My work</h1>
+        <h1 className="self-center text-[15px] font-semibold tracking-[-0.015em]">Home</h1>
         {tabs}
       </header>
       {/* phone: large title, as an iPhone app opens */}
@@ -439,13 +467,15 @@ function Today() {
           <MobileSearch />
           <MobileAccount />
         </div>
-        <h1 className="px-5 text-[30px] leading-9 font-bold tracking-[-0.025em]">My work</h1>
+        <h1 className="px-5 text-[30px] leading-9 font-bold tracking-[-0.025em]">Home</h1>
       </header>
+      <SectionTabs section="home" />
       {/* the day and what is late: the phone's line under its title; said to screen readers on a desktop */}
       <p className="px-5 text-[13px] text-muted lg:sr-only" data-testid="headline">
         {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: TZ })}
         {lateTotal ? ` · ${lateTotal} late` : head && lateTotal === 0 ? ` · ${head.text}` : ""}
       </p>
+      <PageIntro path="/" className="px-5 pt-1 lg:px-5 lg:pt-3" />
       {tabs ? <div className="mt-3 flex h-10 shrink-0 border-b border-border px-5 lg:hidden">{tabs}</div> : <div className="h-3 lg:hidden" aria-hidden />}
 
       {supplier && (
@@ -459,57 +489,34 @@ function Today() {
         </div>
       )}
 
-      {!loading && !error && !supplier && (
-        <Glance
-          late={late?.length ? late : na?.status === "read" ? (na.late_pos ?? []) : []}
-          lateTotal={lateAll ?? lateTotal}
-          groups={groups}
-          replies={replies?.total ?? null}
-        />
-      )}
-      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
+      {!supplier && <HomeAsk className="px-5 pt-3" />}      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...((!briefing && !briefingError && !error) || !suggestionsRead ? { "data-pending": "" } : {})}>
         <SignedInFirstWeek />
-        {morning && (
-          <div className="border-b border-border px-5 py-3" data-testid="your-morning">
-            <h2 className="text-[13px] font-semibold">{w.Your} morning</h2>
-            <p className="mt-0.5 text-[12px] text-muted">{morning.line}</p>
-            {morning.items.map((i) => (
-              <Link key={i.id} href={i.open_url} className="mt-2 block text-[13px] hover:underline" data-testid="your-morning-item">
-                <span className="font-medium">{i.subject_label}</span>
-                <span className="text-muted"> · {i.label}</span>
-                {(i.why_yours ?? [])[0] && <span className="block text-[12px] text-faint">{(i.why_yours ?? [])[0]}</span>}
-              </Link>
-            ))}
-          </div>
-        )}
         <NeedsMe />
         <YourCommitments />
         <YourTurn />
-        <PreparedWork items={[]} />
         {error ? (
           <div className="p-4">
             <LoadProblem message={error} busy={busy} onRetry={() => load(true)} />
           </div>
         ) : loading ? (
-          <ListSkeleton />
+          <ListSkeleton onRetry={() => window.location.reload()} />
         ) : filter === "reply" ? (
           <div className="px-5 pt-3" data-testid="my-replies">
-            {repliesError ? <LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /> : replies ? <ReplyList triage={replies} /> : <Pending label="Reading your inbox" />}
+            {repliesError ? <LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /> : replies ? <ReplyList triage={replies} selectedId={replyShown?.id} onSelect={desktop ? setReplyPick : undefined} states={states} onDone={done} /> : <Pending label="Reading your inbox" />}
           </div>
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && !(othersListed && !briefingError && briefing?.status === "read") ? (
           <div className="px-5 py-10 text-[13px] text-muted">
             {briefingError ? (
               <LoadProblem message={briefingError} onRetry={loadBriefing} />
+            ) : alertsReading ? (
+              <Pending label="Reading your alerts" testId="alerts-reading" />
             ) : refreshing ? (
               <p data-testid="briefing-refreshing">{refreshingLine(briefing?.checked_on ?? na?.checked_on)}</p>
             ) : briefing && briefing.status !== "read" ? (
               <p data-testid="briefing-unavailable">{briefing.status === "not_configured" ? "The briefing hasn't run on this server." : "Couldn't load the briefing. Try again in a few minutes."}</p>
             ) : (
-              <>
-                <p className="text-fg">Nothing needs action.</p>
-                <p className="mt-0.5">Late POs, alerts and prepared replies show here as they come in.</p>
-              </>
+              total === 0 ? <p className="text-fg" data-testid="home-empty">Nothing needs you right now.</p> : null
             )}
           </div>
         ) : (
@@ -518,7 +525,7 @@ function Today() {
               <div className="sticky top-0 z-10 flex h-9 items-end bg-list px-5 pb-1.5">
                 <h2 className="text-[12px] font-medium text-muted">
                   {g.type === "po_late" && !supplier ? (
-                    <Link href="/late" className="group inline-flex items-center gap-1 hover:text-fg" data-testid="stat-late" title="Every late PO">
+                    <Link href={LATE_HREF} className="group inline-flex items-center gap-1 hover:text-fg" data-testid="stat-late" title="Every late PO">
                       {g.label} <span className="font-normal text-faint num">{g.count}</span>
                       <ChevronRight className="size-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
                     </Link>
@@ -531,11 +538,11 @@ function Today() {
               </div>
               <ul className="px-2">
                 {g.rows.map((r, n) => (
-                  <Row key={r.key} row={r} on={r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} testId={g.type === "po_late" && n === 0 && !supplier ? "stat-oldest" : undefined} />
+                  <Row key={r.key} row={r} on={!replyShown && r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} testId={g.type === "po_late" && n === 0 && !supplier ? "stat-oldest" : undefined} />
                 ))}
               </ul>
               {g.type === "po_late" && late && lateAll !== null && lateAll > late.length && (
-                <Link href="/late" className="mx-5 mt-1 mb-2 block text-[12px] font-medium text-muted hover:text-fg" data-testid="late-partial">
+                <Link href={LATE_HREF} className="mx-5 mt-1 mb-2 block text-[12px] font-medium text-muted hover:text-fg" data-testid="late-partial">
                   Showing the first {late.length} of {lateAll} late orders; all of them are on Late orders
                 </Link>
               )}
@@ -547,21 +554,34 @@ function Today() {
             </div>
           ))
         )}
+        {alertsReading && groups.length > 0 && <Pending label="Reading your alerts" className="px-5 pt-2" testId="alerts-reading" />}
         {briefing?.status === "read" && briefing.count > 0 && briefing.watching_count !== 0 && groups.length > 0 && (
-          <Link href="/watching#alerts" className="mx-5 mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg" data-testid="see-all">
-            {typeof briefing.watching_count === "number" ? `${briefing.watching_count} more in Watching` : `All ${briefing.count} in Watching`}
+          <Link href={`${ALERTS_HREF}#alerts`} className="mx-5 mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg" data-testid="see-all">
+            {typeof briefing.watching_count === "number" ? `${briefing.watching_count} more in Alerts` : `All ${briefing.count} in Alerts`}
             <ChevronRight className="size-3.5" aria-hidden />
           </Link>
         )}
-        {refreshing && groups.length > 0 && <p className="px-4 pt-3 text-[12px] text-muted" data-testid="briefing-refreshing">{refreshingLine(briefing?.checked_on ?? na?.checked_on)}</p>}
         {(briefing?.test_records_hidden || na?.test_records_hidden) && groups.length > 0 && (
           <p className="px-4 pt-3 text-[12px] text-faint" data-testid="briefing-tests-hidden">
             {briefing?.test_records_hidden ?? na?.test_records_hidden}
           </p>
         )}
         {na?.status === "read" && <div className="px-4 pt-2"><HiddenNotice hidden={na?.hidden} /></div>}
-        {briefing?.status === "read" && <DataNotes notes={briefing.data_note_items} className="px-4 pt-3" />}
-        {!supplier && <HomeStart className="border-t border-border px-5 pt-5 pb-6 mt-5 lg:hidden" />}
+        {filter === "all" && !supplier && !error && !loading && (
+          <>
+            {replies && replies.total > 0 && (
+              <div className="px-5 pt-3" data-testid="home-replies">
+                <h2 className="pb-1 text-[12px] font-medium text-muted">
+                  Reply <span className="font-normal text-faint num">{replies.total}</span>
+                </h2>
+                <ReplyList triage={replies} selectedId={replyShown?.id} onSelect={desktop ? setReplyPick : undefined} states={states} onDone={done} />
+              </div>
+            )}
+            {repliesError && <div className="px-5 pt-3"><LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /></div>}
+            {work && <PreparedList work={work} />}
+            {workFailed && <div className="px-5 pt-3"><LoadProblem message="The prepared items didn't load." onRetry={() => window.location.reload()} /></div>}
+          </>
+        )}
       </div>
     </section>
   );
@@ -575,22 +595,28 @@ function Today() {
             {/* back to the list; a link opened straight to an item has no list behind it, so go to it */}
             <button type="button" onClick={() => (window.history.length > 1 ? router.back() : router.replace("/"))} className="flex h-9 items-center gap-0.5 pr-2 text-[15px] text-accent cursor-pointer">
               <ChevronLeft className="size-6" strokeWidth={2} aria-hidden />
-              My work
+              Home
             </button>
             <span className="ml-auto pr-3 text-[13px] text-muted">{selected.title}</span>
           </div>
           <TodayDetail row={selected} state={selected.suggestion ? states[selected.suggestion.id] : null} onDone={done} />
         </div>
       )}
-      {desktop && (
+      {desktop && !wide && (
         <div className="hidden min-w-0 flex-1 lg:flex">
-          {selected ? (
+          {replyShown ? (
+            <div className="flex min-w-0 flex-1 flex-col" data-testid="reply-detail">
+              <div className="h-[52px] shrink-0 border-b border-border" />
+              <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+                <ReplyCard key={replyShown.id} className="max-w-xl" line={replyShown} state={replyShown.card_id ? (states[replyShown.card_id] ?? null) : null} onDone={done} />
+              </div>
+            </div>
+          ) : selected ? (
             <TodayDetail key={selected.key} row={selected} state={selected.suggestion ? states[selected.suggestion.id] : null} onDone={done} />
           ) : (
             <div className="flex flex-1 flex-col">
               <div className="h-[52px] shrink-0 border-b border-border" />
               <div className="flex-1 overflow-y-auto px-8 py-8">
-                <HomeStart />
                 {!loading && !error && visible.length > 0 && <p className="mt-8 text-[12px] text-faint">Choose an item on the left to open it here.</p>}
               </div>
             </div>
@@ -601,10 +627,19 @@ function Today() {
   );
 }
 
+/** Home is one page with three tabs (the owner, 11-18: simpler tabs): what needs you, the
+ * alerts (?show=alerts, was /watching) and the late POs (?show=late, was /late). */
+function HomeTab() {
+  const show = useSearchParams()?.get("show");
+  if (show === "alerts") return <AlertsView />;
+  if (show === "late") return <LateView />;
+  return <Today />;
+}
+
 export default function HomePage() {
   return (
     <Suspense>
-      <Today />
+      <HomeTab />
     </Suspense>
   );
 }

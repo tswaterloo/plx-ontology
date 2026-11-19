@@ -252,6 +252,9 @@ _SHARED_SLICE_GATE_LOCK = threading.Lock()
 # (``_from_t``). Above every fixed-width store time.
 _OPEN = "~"
 # Per type of a kind (``_slices``): name, markings, handles (JSON list), superseded_at.
+# The per-family run facts (``TraverseTools.cell_span``, ``TraverseTools.chunk_span``),
+# read for each family ``prime`` is given and folded per delta layer (``_layer_spans``).
+SPAN_FACTS = ("cell_span", "chunk_span")
 _SLICE_ROWS = {
     "object": "SELECT o.object_type AS name, ov.markings, json_array(ov.l1_handle) AS handles, "
               "ov.superseded_at FROM object_versions ov JOIN objects o "
@@ -429,6 +432,8 @@ class _Scope:
     # may read every record its corroborating features cite; L1 handle -> object id.
     corroboration: dict[str, Any] = field(default_factory=dict, compare=False)
     handles: dict[str, str | None] = field(default_factory=dict, compare=False)
+    # A full reader's people-exclusion tag (``people_excluded.full_reader``), else "".
+    people: str = ""
 
     @cached_property
     def _encoded(self) -> tuple[str, str]:
@@ -439,7 +444,7 @@ class _Scope:
     def _documents(self) -> dict[str, str]:
         # once per scope: the documents search marks beyond this reader
         # (``operating.search.document_marks``), withheld as any unreadable object
-        return document_marks.params(self.held)
+        return document_marks.params(self.held, self.people)
 
     def params(self, **extra: Any) -> dict[str, Any]:
         aud, marks = self._encoded
@@ -713,7 +718,9 @@ class TraverseTools:
             at, explicit = self.base.clock().astimezone(dt.timezone.utc), False
         keys, held, sets, granted = reader_grants(self, self.policy, actor,
                                                   self._audience_keys())
-        return _Scope(actor, at, _fixed(at), explicit, keys, held, sets, granted, gate)
+        from operating.pg.people_excluded import full_reader
+        return _Scope(actor, at, _fixed(at), explicit, keys, held, sets, granted, gate,
+                      people=full_reader(self.base, actor))
 
     def prime(self, cell_families: Sequence[str] = ()) -> None:
         """Read every reader-independent store fact now (``_store_cached``'s keys), so no
@@ -742,6 +749,7 @@ class TraverseTools:
                     self._slices(kind)
                 for family in cell_families:
                     self.cell_span(family)
+                    self.chunk_span(family)
                 # only facts read whole over one store state: a store that moved part
                 # way (a Postgres layer applied meanwhile) restarted them, and keeping
                 # what was left kept a file no reader could use
@@ -770,6 +778,11 @@ class TraverseTools:
                     return False   # a store that keeps no facts: each read as before
                 if self._kept_facts(*kept, cell_families):
                     return True
+                if getattr(self.store.conn, "_pg", None) is not None \
+                        and not facts_keeper_on():
+                    # the keeper off for this host's sessions: each call reads what it
+                    # needs itself (a slice per type), nothing read whole in the background
+                    return False
                 if getattr(self.store.conn, "_pg", None) is not None:
                     # Postgres: no file for worker processes to read; the facts are read
                     # by a thread on a reader of its own and kept (a whole-store scan
@@ -826,7 +839,7 @@ class TraverseTools:
         facts = _load_facts(store, identity)
         wanted = {"audience_keys", "audiences", "event_types",
                   *(("slices", kind) for kind in _SLICE_ROWS),
-                  *(("cell_span", family) for family in cell_families)}
+                  *((kind, family) for kind in SPAN_FACTS for family in cell_families)}
         if facts is None or not wanted <= set(facts):
             return False
         self.store.facts = (stamp, facts)
@@ -2125,12 +2138,14 @@ class TraverseTools:
 
         return self._store_cached(("slices", kind), read)
 
-    def cell_span(self, family: str) -> tuple[int, int] | None:
-        """(lowest, highest) value-cell rowid of the objects whose audience family is
-        ``family`` (the part of the audience key before its first colon), every version;
-        None when they hold no cell. A word-index search narrowed to these spans reads
-        the same rows of that family: no cell of it lies outside its span. One read per
-        store state, for every reader."""
+    def cell_span(self, family: str) -> tuple[tuple[int, int], ...] | None:
+        """The value-cell rowid runs ((lowest, highest), ascending) of the objects whose
+        audience family is ``family`` (the part of the audience key before its first
+        colon), every version: on SQLite one run, the family's lowest to highest cell; on
+        Postgres the family's sources split at their widest gaps (``family_cell_span``).
+        None when they hold no cell. A word-index search narrowed to these runs reads the
+        same rows of that family: no cell of it lies outside them. One read per store
+        state, for every reader."""
         def read() -> tuple[int, int] | None:
             # the word index's own rowids (Postgres: its word rows', ``PgStoreReader``,
             # bounded there: ``family_cell_span``)
@@ -2141,9 +2156,26 @@ class TraverseTools:
             row = self.store.word_conn.execute(
                 sql, {"family": family, "low": family + ":",
                       "high": family + chr(ord(":") + 1)}).fetchone()
-            return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
+            return None if row is None or row[0] is None else ((int(row[0]), int(row[1])),)
 
         return self._store_cached(("cell_span", family), read)
+
+    def chunk_span(self, family: str) -> tuple[tuple[int, int], ...] | None:
+        """The document-text chunk id runs ((lowest, highest), ascending) of the objects
+        whose audience family is ``family``, every version, when the document word index
+        is read on Postgres (``PgStoreReader.family_chunk_span``): ``()`` when they hold
+        no chunk; None when not known (a SQLite store, whose chunk runs
+        ``ontology.chunk_families`` keeps beside the file; the index not read on
+        Postgres; the bulk family past its time limit): the search reads every match. No
+        chunk of the family lies outside its runs, so narrowing to them reads the same
+        rows of it; a run may hold another family's chunks (the audience term drops them).
+        One read per store state, for every reader; kept and folded per delta layer with
+        the other facts (``_merged_facts``)."""
+        def read() -> tuple[tuple[int, int], ...] | None:
+            bounded = getattr(self.store, "family_chunk_span", None)
+            return None if bounded is None else bounded(family)
+
+        return self._store_cached(("chunk_span", family), read)
 
     def _no_link_gap(self, scope: _Scope, link_type: str, direction: str, target: str,
                      floor: str, frontier: Sequence[str],
@@ -3037,6 +3069,7 @@ def _facts_code_digest() -> str | None:
     try:
         from operating.pg import ontology_reader as pg_reader
         parts += [pg_reader.LINK_SLICE_SQL, pg_reader.LINK_ODD_SQL, pg_reader.LINK_ODD_ROWS_SQL,
+                  pg_reader.CELL_SPAN_SQL, str(pg_reader.CELL_RUNS), pg_reader.CHUNK_SPAN_SQL,
                   inspect.getsource(pg_reader.PgStoreReader.slice_rows)]
     except ImportError:   # no psycopg: no Postgres reader to read the link slice
         pass
@@ -3045,7 +3078,7 @@ def _facts_code_digest() -> str | None:
             _store_time, _parse_time, _gated, _gated_text, _json_list, _grouped,
             TraverseTools._audience_keys, TraverseTools._audiences,
             TraverseTools._event_type_maps, TraverseTools._slices, TraverseTools.cell_span,
-            _encode_facts, _decode_facts, StoreReader.audience_keys)]
+            TraverseTools.chunk_span, _encode_facts, _decode_facts, StoreReader.audience_keys)]
     except (OSError, TypeError):
         return None
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
@@ -3054,7 +3087,7 @@ def _facts_code_digest() -> str | None:
 def _fact_name(key: Any) -> str | None:
     if key in ("audience_keys", "audiences", "event_types"):
         return key
-    if isinstance(key, tuple) and len(key) == 2 and key[0] in ("slices", "cell_span"):
+    if isinstance(key, tuple) and len(key) == 2 and key[0] in ("slices", *SPAN_FACTS):
         return f"{key[0]}.{key[1]}"
     return None
 
@@ -3074,7 +3107,7 @@ def _encode_facts(facts: Mapping[Any, Any]) -> dict[str, Any]:
         elif name.startswith("slices."):
             out[name] = {k: [marks, handles] for k, (marks, handles) in value.items()}
         else:
-            out[name] = None if value is None else list(value)
+            out[name] = None if value is None else [list(run) for run in value]
     return out
 
 
@@ -3108,9 +3141,20 @@ def _decode_facts(encoded: Any) -> dict[Any, Any] | None:
                     and (v[1] is None or _ends(v[1])) for v in value.values()):
             out[("slices", name[len("slices."):])] = {k: (v[0], v[1]) for k, v in value.items()}
         elif name.startswith("cell_span.") and (value is None or (
-                isinstance(value, list) and len(value) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool) for v in value))):
-            out[("cell_span", name[len("cell_span."):])] = None if value is None else tuple(value)
+                isinstance(value, list) and value and all(
+                    isinstance(run, list) and len(run) == 2 and all(
+                        isinstance(v, int) and not isinstance(v, bool) for v in run)
+                    for run in value))):
+            out[("cell_span", name[len("cell_span."):])] = None if value is None \
+                else tuple((int(a), int(b)) for a, b in value)
+        elif name.startswith("chunk_span.") and (value is None or (
+                isinstance(value, list) and all(
+                    isinstance(run, list) and len(run) == 2 and all(
+                        isinstance(v, int) and not isinstance(v, bool) for v in run)
+                    for run in value))):
+            # ``chunk_span``: an empty list is a family holding no chunk, None not known
+            out[("chunk_span", name[len("chunk_span."):])] = None if value is None \
+                else tuple((int(a), int(b)) for a, b in value)
         else:
             return None
     return out
@@ -3215,7 +3259,7 @@ def _fact_keys(cell_families: Sequence[str]) -> list[Any]:
     """The keys of every fact ``TraverseTools.prime`` reads, in its order."""
     return ["audience_keys", "audiences", "event_types",
             *(("slices", kind) for kind in _SLICE_ROWS),
-            *(("cell_span", family) for family in cell_families)]
+            *((kind, family) for family in cell_families for kind in SPAN_FACTS)]
 
 
 def _read_fact(store: str, key: Any) -> Any:
@@ -3237,6 +3281,8 @@ def _read_fact(store: str, key: Any) -> Any:
             return traverse._event_type_maps()
         if key[0] == "slices":
             return traverse._slices(key[1])
+        if key[0] == "chunk_span":
+            return traverse.chunk_span(key[1])
         return traverse.cell_span(key[1])
     finally:
         conn.close()
@@ -3797,16 +3843,24 @@ def _merged_facts(old: Mapping[Any, Any], new: Mapping[Any, Any]) -> dict[Any, A
                 merged[name] = (marks, handles)
             out[key] = merged
         elif isinstance(key, tuple) and key[0] == "cell_span":
-            spans = [span for span in (value, more) if span is not None]
-            out[key] = None if not spans else (min(int(a) for a, _ in spans),
-                                               max(int(b) for _, b in spans))
+            # every run of either, joined: a cell in a run of the version before or of
+            # the layer stays in one (``merge_runs`` only widens past its cap)
+            from operating.pg.ontology_reader import merge_runs
+            runs = [run for part in (value, more) if part is not None for run in part]
+            out[key] = merge_runs(runs) if runs else None
+        elif isinstance(key, tuple) and key[0] == "chunk_span":
+            # not known on either side stays not known (every match read); else every
+            # run of either joined, as the cells'
+            from operating.pg.ontology_reader import merge_runs
+            out[key] = None if value is None or more is None \
+                else merge_runs([*value, *more])
         else:
             return None
     return out
 
 
 def _layer_facts(layer: str | Path, families: Sequence[str],
-                 spans: Mapping[str, tuple[int, int] | None]) -> dict[Any, Any]:
+                 spans: Mapping[Any, tuple[tuple[int, int], ...] | None]) -> dict[Any, Any]:
     """The facts ``prime`` reads, over the rows of the delta layer store ``layer`` (its
     owned objects, their versions, links and events); an event's object a layer does not
     own is typed by its id's type part. ``spans``: each family's value-cell span over the
@@ -3832,8 +3886,7 @@ def _layer_facts(layer: str | Path, families: Sequence[str],
             facts = dict(store.facts[1])
     finally:
         store.conn.close()
-    for family in families:
-        facts[("cell_span", family)] = spans.get(family)
+    facts.update(_span_facts(families, spans))
     return facts
 
 
@@ -3878,27 +3931,40 @@ def _span_families(facts: Mapping[Any, Any]) -> list[str]:
     return [key[1] for key in facts if isinstance(key, tuple) and key[0] == "cell_span"]
 
 
-def _layer_spans(cur: Any, families: Sequence[str],
-                 owned: Sequence[str]) -> dict[str, tuple[int, int] | None]:
-    """Each family's value-cell span over the ``owned`` objects as Postgres numbered
-    them; none read without a word index in Postgres (a host's spans are then of its
-    SQLite generation's word index, which no layer changes: they are kept as they are)."""
-    spans: dict[str, tuple[int, int] | None] = {}
-    from operating.pg.ontology_reader import _WORDS_SQL
+def _span_facts(families: Sequence[str], spans: Mapping[Any, Any]) -> dict[Any, Any]:
+    """The span facts of a layer's or the owned objects' rows (``_layer_spans``): each
+    family's value-cell runs (None: no cell) and its chunk runs (absent: not read, so not
+    known; ``chunk_span``)."""
+    out: dict[Any, Any] = {}
+    for family in families:
+        out[("cell_span", family)] = spans.get(family)
+        out[("chunk_span", family)] = spans.get(("chunk_span", family))
+    return out
+
+
+def _layer_spans(cur: Any, families: Sequence[str], owned: Sequence[str]
+                 ) -> dict[Any, tuple[tuple[int, int], ...] | None]:
+    """Each family's value-cell runs over the ``owned`` objects as Postgres numbered them
+    (``cell_runs_sql`` over them alone; key: the family) and their chunk runs
+    (``chunk_runs_sql``; key: ("chunk_span", family)); neither read without its word index
+    in Postgres (a host's runs are then of its SQLite generation's word index, which no
+    layer changes: cell runs are kept as they are, chunk runs stay not known)."""
+    spans: dict[Any, tuple[tuple[int, int], ...] | None] = {}
+    from operating.pg.ontology_reader import (
+        _WORDS_SQL, CELL_RUNS, cell_runs, cell_runs_sql, chunk_runs_sql)
     cur.execute(_WORDS_SQL)
-    for family in families if cur.fetchone()[0] else ():
-        from operating.pg.ontology_reader import CELL_SPAN_SQL
-        sql = CELL_SPAN_SQL.replace("objects o", "ontology.objects o", 1) \
-            .replace("object_versions v", "ontology.object_versions v", 1) \
-            .replace("value_sources s", "ontology.value_sources s", 1).replace("v.rowid", "v.ver") \
-            .replace(":low", "%(low)s").replace(":high", "%(high)s") \
-            .replace(":family", "%(family)s").replace(
-                "WHERE (", "WHERE o.object_id = ANY(%(owned)s) AND ((", 1) + ")"
-        cur.execute(sql, {"family": family, "low": family + ":",
-                          "high": family + chr(ord(":") + 1), "owned": list(owned)})
-        row = cur.fetchone()
-        spans[family] = None if row is None or row[0] is None \
-            else (int(row[0]), int(row[1]))
+    values, chunks = cur.fetchone()
+    for family in families:
+        params = {"family": family, "low": family + ":", "high": family + chr(ord(":") + 1),
+                  "owned": list(owned), "runs": CELL_RUNS}
+        if values:
+            cur.execute(cell_runs_sql("ontology.", owned=True), params)
+            spans[family] = cell_runs(cur.fetchall())
+        if chunks:
+            # the owned objects' chunk runs (every version: a layer's new ones and any
+            # moved into the family), joined to the version before's by the fold
+            cur.execute(chunk_runs_sql("ontology.", owned=True), params)
+            spans[("chunk_span", family)] = cell_runs(cur.fetchall(), 0) or ()
     return spans
 
 
@@ -4049,7 +4115,7 @@ def _file_owned(path: Path) -> set[str] | None:
 
 
 def _owned_facts(tools: "TraverseTools", owned: Sequence[str], families: Sequence[str],
-                 spans: Mapping[str, tuple[int, int] | None]) -> dict[Any, Any]:
+                 spans: Mapping[Any, tuple[tuple[int, int], ...] | None]) -> dict[Any, Any]:
     """Every fact ``prime`` reads, over the rows of the objects ``owned`` alone as the
     store holds them now: their audience keys and types, the event types of every event
     relating one of them (with every object type of that event), and their slices
@@ -4077,8 +4143,7 @@ def _owned_facts(tools: "TraverseTools", owned: Sequence[str], families: Sequenc
         facts["event_types"] = (by_object, by_event)
         for kind in _SLICE_ROWS:
             facts[("slices", kind)] = tools._read_slice_rows(kind, owned) if owned else {}
-    for family in families:
-        facts[("cell_span", family)] = spans.get(family)
+    facts.update(_span_facts(families, spans))
     return facts
 
 
@@ -4154,6 +4219,8 @@ def _fact_value(tools: "TraverseTools", key: Any) -> Any:
         return tools._event_type_maps()
     if key[0] == "slices":
         return tools._slices(key[1])
+    if key[0] == "chunk_span":
+        return tools.chunk_span(key[1])
     return tools.cell_span(key[1])
 
 
@@ -4250,6 +4317,29 @@ def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
         return True
 
 
+# The host's background facts keeper (``prime_lazily`` on Postgres, a whole read in a
+# process of its own): PLX_PG_FACTS_KEEPER=0 turns it off for a host's sessions (the
+# simple Ask's hosts start with it off, ``simple_ask.host_for``: 11-18 every bench host
+# started one and ~139 connections ran whole reads during a live rebuild); its calls then
+# read what each needs itself, as while a read is pending. On, the keeper reads on at most
+# ``KEEPER_CONNECTIONS`` Postgres connections (the leader and one worker), whatever any
+# setting asks: no environment raises it.
+FACTS_KEEPER_ENV = "PLX_PG_FACTS_KEEPER"
+KEEPER_CONNECTIONS = 2
+
+
+def facts_keeper_on(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this host keeps the facts in the background (anything but "0": on)."""
+    return (os.environ if environ is None else environ).get(FACTS_KEEPER_ENV,
+                                                            "1").strip() != "0"
+
+
+def keeper_workers(environ: Mapping[str, str] | None = None) -> int:
+    """The keeper's worker connections beside its leader: ``KEEPER_CONNECTIONS`` - 1,
+    always (``environ`` is not read: a setting never widens it)."""
+    return KEEPER_CONNECTIONS - 1
+
+
 # How long a whole facts read in its own process may take before it is stopped (its
 # statements' own limit, and room to keep them).
 FACTS_APART_SECONDS = FACTS_STATEMENT_TIMEOUT_MS / 1000 + 600
@@ -4283,6 +4373,9 @@ def _keep_pg_facts_apart(dsn: str, cell_families: Sequence[str] | None = None, *
     env = {k: v for k, v in os.environ.items() if k.startswith("PG") or not KEYLESS.match(k)}
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (root, env.get("PYTHONPATH")) if p)
+    # the keeper's connections: its leader and ``keeper_workers()`` (never the CPUs / 2
+    # a deploy's own facts read takes)
+    env["PLX_FACTS_WORKERS"] = str(keeper_workers())
     job = json.dumps({"dsn": dsn, "families": None if cell_families is None
                       else list(cell_families),
                       "text_store": None if text_store is None else str(text_store),

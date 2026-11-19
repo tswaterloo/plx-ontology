@@ -202,6 +202,57 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     return out
 
 
+TWIN_LINK = "Customer.same_record_as"
+TWIN_TIERS = ("verified", "reviewed", "corroborated", "lead")
+
+
+def _twin_cluster(st: Any, handle: str, cap: int = 50) -> set[str]:
+    seen, todo = {handle}, [handle]
+    while todo and len(seen) < cap:
+        cur = todo.pop()
+        for a, b in st.conn.execute(
+                "SELECT from_object, to_object FROM link_rows WHERE (from_object = ? OR "
+                "to_object = ?) AND link_type = ? AND superseded_at IS NULL AND tier IN "
+                "(" + ",".join("?" * len(TWIN_TIERS)) + ")", (cur, cur, TWIN_LINK, *TWIN_TIERS)):
+            for other in (a, b):
+                if other not in seen:
+                    seen.add(other)
+                    todo.append(other)
+    return seen
+
+
+def one_customer(st: Any, handles: Iterable[str]) -> list[str]:
+    """The distinct customers among these customer records. One customer can be in the
+    books twice (a record per business-central company, each linked to the mail): two
+    records are one customer only when they share a ``Customer.same_record_as`` chain AND
+    state the same name (two signals; a name alone or a lead alone never merges). Each
+    group is represented by its least record id."""
+    found = sorted({h for h in handles if isinstance(h, str)})
+    if len(found) < 2:
+        return found
+    try:
+        rows = st.values(("Customer",), ("name",), objects=found)
+        names = {}
+        for oid in found:
+            entry = rows.get(oid) or {}
+            row = next((r for r in (entry.get("props") or {}).get("name", ())
+                        if str(r.get("value") or "").strip()), None)
+            names[oid] = " ".join(str(row["value"]).lower().split()) if row else None
+        clusters = {h: _twin_cluster(st, h) for h in found}
+    except Exception:  # noqa: BLE001 - an unreadable record keeps its customers apart
+        return found
+    groups: list[list[str]] = []
+    for h in found:
+        for g in groups:
+            if names[h] and all(names[o] == names[h] and clusters[o] & clusters[h]
+                                for o in g):
+                g.append(h)
+                break
+        else:
+            groups.append([h])
+    return sorted(g[0] for g in groups)
+
+
 def parties(st: Any, address: str) -> set[tuple[str, str]]:
     """(side, record) of the customer and supplier records stating ``address``, else its
     business domain (``autopilot._parties``: a public mail domain counts by its address)."""
@@ -271,7 +322,7 @@ def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, cou
     lines: list[dict[str, Any]] = []
     for x in threads:
         t: pt._Thread = x["t"]
-        customers = sorted({c for o in x["humans"] for c in links[o]["customers"]})
+        customers = one_customer(st, {c for o in x["humans"] for c in links[o]["customers"]})
         items = sorted({i for o in x["humans"] for i in links[o]["items"]})
         party = None
         if len(customers) > 1:   # two customers in one thread: not guessed
@@ -292,7 +343,7 @@ def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, cou
             outside = sorted({t.sender(o) for o in x["humans"]
                               if "@" in t.sender(o) and not pt._internal(t.sender(o), domains)})
             stated = set().union(*(parties(st, a) for a in outside)) if outside else set()
-            named = sorted({o for side, o in stated if side == "customer"})
+            named = one_customer(st, {o for side, o in stated if side == "customer"})
             if any(side == "supplier" for side, _o in stated):
                 counts["supplier_thread" if not named else "no_single_customer"] += 1
                 continue

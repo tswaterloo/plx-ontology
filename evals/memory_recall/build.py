@@ -184,4 +184,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     sys.exit(main())

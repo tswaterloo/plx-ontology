@@ -86,7 +86,7 @@ describe("friendly URLs", () => {
     // one page heading, and a way on from it
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Search for it" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open My work" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Open Home" })).toHaveAttribute("href", "/");
   });
 });
 
@@ -97,7 +97,7 @@ describe("a record that is not there", () => {
     const missing = await screen.findByTestId("record-missing");
     expect(missing).toHaveTextContent("This purchase order isn't here, or you don't have access to it.");
     expect(screen.getByRole("button", { name: "Search for it" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open My work" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Open Home" })).toHaveAttribute("href", "/");
     expect(screen.queryByText("Try again")).toBeNull();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Purchase order");
   });
@@ -136,7 +136,33 @@ describe("customers who share a name", () => {
     );
     render(<ObjectView type="Customer" id="DIVE11" />);
     const line = await screen.findByTestId("same-name");
-    expect(line).toHaveTextContent("2 customers share this name. Showing the Customer Portal record.");
+    // owner walk 11-17 C2: said plainly, never merged without a confirmed link
+    expect(line).toHaveTextContent(
+      "1 other record in Business Central looks like the same customer. Nothing in the records confirms they are one, so their figures are not combined; this page shows the Customer Portal record.",
+    );
     expect(line.querySelector("a")?.getAttribute("href")).toBe(other.open_url);
+  });
+
+  it("a customer's orders never read $0.00: the derived value, or 'value not recorded'; its mail's people are its contacts (owner walk C3, C5)", async () => {
+    const so = (n: string, extra = {}) => ({ object_id: `SalesOrder:portal.app_sales_order:{"id":"${n}"}`, label: n, open_url: `/object/SalesOrder/${n}`, date: "2026-05-07", status: "Open", ...extra });
+    serve(() =>
+      new Response(
+        JSON.stringify({
+          ...PAGE,
+          customer: {
+            recent_orders: [so("K180000767", { amount: { amount: "4505.50", currency: "CAD" }, amount_note: "from its invoices, before tax" }), so("POK180000093", { amount: null, amount_note: "value not recorded" })],
+            contacts: [{ name: "Kelly Reed", role: "wrote from the customer's mail" }],
+            not_established: ["Ordered (excluding tax), last 12 months (since 2025-11-17): not recorded (the orders' own totals read 0; each order below shows its value where its invoices or lines price it)"],
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    render(<ObjectView type="Customer" id="DIVE11" />);
+    const orders = await screen.findByTestId("recent-orders");
+    expect(orders).toHaveTextContent("$4,505.50");
+    expect(orders).toHaveTextContent("value not recorded");
+    expect(orders).not.toHaveTextContent("$0.00");
+    expect(screen.getByTestId("customer-contacts")).toHaveTextContent("Contacts Kelly Reed (wrote from this customer's mail)");
   });
 });

@@ -1444,6 +1444,29 @@ class LiveCycleRepairTest(unittest.TestCase):
         judged = forever._judge(forever._base(forever.SOURCES["teams"]), teams)
         self.assertEqual((judged["status"], judged["reasons"]), ("complete", []))
 
+    def test_a_teams_chat_listing_cut_at_its_cap_makes_the_source_partial_and_named(
+            self) -> None:
+        """Every conversation read whole, but a member's chat listing (discovery's or the
+        census's) stopped at the page cap: chats went undiscovered, so Teams is partial
+        with ``cap:chat_listing_page_cap`` in the host's reasons, never complete."""
+        whole = {"status": "complete", "reasons": [], "resumed_from": None}
+        for discovery, census in (({"reasons": ["cap:chat_listing_page_cap"],
+                                    "chat_listings_capped": 2}, None),
+                                   ({"reasons": [], "chat_listings_capped": 0},
+                                    {"reasons": ["cap:chat_listing_page_cap"],
+                                     "chat_listings_capped": 1})):
+            with self.subTest(census=census is not None):
+                report = {"runs": [{"conversations": [whole], "discovery": discovery}],
+                          **({"census": census} if census else {})}
+                judged = forever._judge(forever._base(forever.SOURCES["teams"]),
+                                        forever.summarize_teams(report))
+                self.assertEqual((judged["status"], judged["reasons"]),
+                                 ("partial", ["cap:chat_listing_page_cap"]))
+        judged = forever._judge(forever._base(forever.SOURCES["teams"]), forever.summarize_teams(
+            {"runs": [{"conversations": [whole], "discovery": {"chat_listings_capped": 0}}],
+             "census": {"chat_listings_capped": 0}}))
+        self.assertEqual((judged["status"], judged["units"]), ("complete", 1))
+
     def test_meetings_reads_with_the_admin_application_and_counts_withheld_as_excluded(
             self) -> None:
         spec = forever.SOURCES["meetings"]

@@ -59,7 +59,7 @@ OVER_LIMIT = {
     "operating/ontology_tools_aggregate.py": 2750,
     "operating/ontology_tools_evidence.py": 4000,
     "operating/ontology_tools_traverse.py": 5250,
-    "operating/ops_alarms.py": 2250,
+    "operating/ops_alarms.py": 2100,
     "operating/playbook_eval.py": 2500,
     "operating/po_status.py": 3250,
     "operating/proactive_engine.py": 2750,

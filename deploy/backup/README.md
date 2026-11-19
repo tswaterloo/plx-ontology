@@ -40,7 +40,7 @@ providers), nightly Postgres dumps and state backups, and a restore test.
 
 ## Layout, rotation, disk budget
 
-`/data/backups/daily/` holds the 7 newest sets, `/data/backups/weekly/` the 4 newest weekly
+`/data/backups/daily/` holds the 4 newest sets, `/data/backups/weekly/` the 4 newest weekly
 sets (hard links). A set is `plx-<stamp>.dump`, `state-<stamp>.tar.gz`,
 `config-<stamp>.tar.gz`, optionally `secrets-<stamp>.tar.gpg`, and `manifest-<stamp>.json`
 (written last; a set without it is incomplete). Then the oldest sets are removed while all
@@ -178,18 +178,49 @@ restores above (Postgres first). The secrets archive opens with the escrowed pas
 daily/secrets-<stamp>.tar.gpg | tar -x -C <restore dir>`. Without this box's ssh_config, reach sb4ec through s7d3d
 (`ssh -J <user>@<s7d3d> <user>@192.168.100.11`; the tailnet refuses ssh straight to sb4ec).
 
-## Root-only /etc/plx files (live-session.env, mint-readers.env, api-model.env, backup-root.conf)
+## Root-only /etc/plx files (all of /etc/plx, by rule)
 
-These stay 0600 root (plx-mint-link refuses a looser mode). `plx-backup.service` runs
-`root_secrets.sh` as `ExecStartPre=+` (root). Its settings (archive directory, backup user,
-passphrase file) come only from the root-owned `/etc/plx/backup-root.conf` (0600 root, keys
-`ROOT_SECRETS_DIR`, `ROOT_SECRETS_OWNER`, `ROOT_SECRETS_PASSPHRASE_FILE`), never from the
-backup user's environment. The script pipes a tar of exactly those four files (the conf itself too, since the backup scans /etc/plx and would otherwise list it as missing) into gpg
+Some stay 0600 root (plx-mint-link refuses a looser mode), and /etc/plx/bak is 0700 root.
+`plx-backup.service` runs `root_secrets.sh` as `ExecStartPre=+` (root). Its settings (archive
+directory, backup user, passphrase file) come only from the root-owned
+`/etc/plx/backup-root.conf` (0600 root, keys `ROOT_SECRETS_DIR`, `ROOT_SECRETS_OWNER`,
+`ROOT_SECRETS_PASSPHRASE_FILE`), never from the backup user's environment. Since 11-18 it
+carries EVERY regular file under /etc/plx (sub-directories included, symlinks never followed),
+not a named list: a new root-only file (11-18: ai-account-old.env, exit 7) is carried the
+night it appears. The script pipes a tar of them into gpg
 (AES256, the secrets passphrase), writes it in a fresh root-made directory under /run, chowns
-it and renames it to `/run/plx-backup/root-secrets.tar.gpg` (+ `.list`); the backup user
+it and renames it to `/run/plx-backup/root-secrets.tar.gpg` (+ `.list`: each file, then each
+sub-directory with a trailing slash); the backup user
 carries it. It is encrypted at rest in the set, but the backup user also holds the passphrase, so this is no secrecy boundary against that user, only against reading the files in /etc/plx. `plx_backup.py` nests that archive inside
 `secrets-<stamp>.tar.gpg` and records the staged paths as `config.root_staged` in the
-manifest. A restore-needed file the run cannot read and the root step did not stage (no
-conf, no passphrase, stale or foreign-owned archive, a hand run outside systemd) is always
-`restore_files_missing` and the run exits 7. The restore test decrypts the nested archive and
+manifest. A file the run cannot read (or a directory it cannot list, `<dir>/`) and the root
+step did not stage (no conf, no passphrase, stale or foreign-owned archive, a hand run outside
+systemd) is always `restore_files_missing`, named on stderr, and the run exits 7; the alarm
+`backup_set_partial` names it within 5 minutes even after a `reset-failed`. The restore test decrypts the nested archive and
 fails unless every staged file is present and non-empty. No file mode changes.
+
+## Alarms: no night missed silently (11-18)
+
+`operating.ops_alarms` (every 5 minutes) pages, critical and never paused (a rebuild window
+that stops the timers still pages), with the reason:
+
+- `backup` / `restore_test`: the nightly set or its restore test is older than 26 h / 30 h or
+  failed;
+- `backup_set_partial`: the newest set left restore-needed files out (named), or a dump or
+  state problem;
+- `backup_capture`: the capture backup's last run did not exit 0 (`last-run.json`: refused,
+  skipped pieces, an error), its manifest lists skipped pieces, or any piece was not confirmed
+  current within 26 h (every store backed up in the last 26 h);
+- `backup_offbox`: the off-box copy is not green or older than 26 h.
+
+## Capture backup disk (11-18)
+
+The capture backup streams each SQLite store's snapshot through zstd straight into the copy
+on the root disk; nothing is staged on /data but the store's committed WAL pages (MBs) and
+the mail blob pack's row keys (~0.3 GB). It
+needs, per store, the compressed size free on the root disk above its 10 GB floor (the mail
+store: ~2.9 GB), while the held copy stays until the new one is renamed over it; a store
+whose snapshot is byte-identical to the held copy (the 6.5 GB blob pack, unchanged for days)
+is confirmed current without a new copy when the root disk has no room for one. The restore
+test unpacks a store into /data only when /data keeps 20 GB free beside it; otherwise it
+checks the unpacked bytes against the digest of the snapshot that passed integrity_check.

@@ -565,4 +565,6 @@ __all__ = ["MemoryCaptures", "Product", "eval_block", "figures", "main", "run_it
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

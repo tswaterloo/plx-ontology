@@ -48,7 +48,7 @@ export function RoleGuide({ guide }: { guide: Guide }) {
         </ul>
         <p className="text-[12px] text-muted">
           It only reads. It never sends a message, changes an order or approves anything for you. Pages to try this week:{" "}
-          {[{ href: "/", label: "My work" }, { href: "/ask", label: "Ask" }, ...guide.pages].map((p, i, all) => (
+          {[{ href: "/", label: "Home" }, { href: "/ask", label: "Ask" }, ...guide.pages].map((p, i, all) => (
             <span key={p.href}>
               <Link href={p.href} className="underline">
                 {p.label}

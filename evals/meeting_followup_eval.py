@@ -171,5 +171,7 @@ def _line(citation: str) -> int:
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     print(json.dumps({"tuned_set": measure(), "held_out_set": measure(HERE / "heldout")},
                      indent=1))

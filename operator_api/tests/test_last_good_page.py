@@ -946,8 +946,7 @@ class FirstReadAnswersReading(LastGoodPage.__base__):
         who = reader("grp-a")
         pages = [backend.home(who), backend.late_list(who, offset=25, limit=25),
                  backend.briefing(who), backend.suggestions(who), backend.reply_triage(who)]
-        others = [backend.approvals_queue(who), backend.upcoming_meetings(who),
-                  backend.rd_board(who)]
+        others = [backend.approvals_queue(who), backend.upcoming_meetings(who)]
         for got in others:   # the slower other screens: empty, zero, marked reading
             dumped = got.model_dump(mode="json")
             self.assertIs(dumped["reading"], True, type(got).__name__)
@@ -1510,20 +1509,20 @@ class OtherScreens(LastGoodPage.__base__):
         self.backend.yield_to_live, self.backend.warm_enabled = False, True
         self.backend.warm_process = self.backend.warmer = None
         self.backend._warmed, self.backend._pages_seen = {}, {}
-        qc = m.Brief(kind="qc_daily", title="QC today", as_of="2026-11-11", sections=[],
-                     basis="the reader's QC calls")
+        qc = m.Brief(kind="weekly", title="Weekly review", as_of="2026-11-11", sections=[],
+                     basis="the reader's calls")
         packs = []
-        with mock.patch.object(be, "SCREENS_AHEAD", ("my_work", ("qc_pack", "daily"))), \
-                mock.patch.object(be.BriefsMixin, "qc_pack",
-                                  lambda backend, w, kind: packs.append(kind) or qc):
+        with mock.patch.object(be, "SCREENS_AHEAD", ("my_work", ("weekly_review", None))), \
+                mock.patch.object(be.BriefsMixin, "weekly_review",
+                                  lambda backend, w, week: packs.append(week) or qc):
             self.assertTrue(self.backend.warm(who, force=True))
             for _ in range(200):
-                if (who.key, who.mode, ("qc", "daily")) in self.backend._good:
+                if (who.key, who.mode, ("weekly", None)) in self.backend._good:
                     break
                 time.sleep(0.05)
         self.assertIn((who.key, who.mode, ("my_work",)), self.backend._good)
-        self.assertIn((who.key, who.mode, ("qc", "daily")), self.backend._good)   # the QC pack
-        self.assertEqual(packs, ["daily"])
+        self.assertIn((who.key, who.mode, ("weekly", None)), self.backend._good)   # the weekly review
+        self.assertEqual(packs, [None])
         self.backend._snap_inputs().clear()      # the live process: found as kept, not current
         self.titles = ["fresh"]
         got, _ = self.visit(who)

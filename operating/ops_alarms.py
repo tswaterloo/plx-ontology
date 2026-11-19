@@ -32,7 +32,8 @@ until ``/etc/plx/ops-notify.json`` names a sender, 11-14: nobody may have to wat
   ``plx-ops-memory.timer``, every minute) runs these two checks alone between full passes;
 * backups: the newest complete backup set's age and the last restore test's
   (``<PLX_BACKUP_DIR>/restore-test.json``), read from the backups themselves so they fire
-  while the timers are stopped or after a reboot, and a failed last run;
+  while the timers are stopped or after a reboot, and a failed last run; a partial set, the
+  capture backup and the off-box copy (``operating.ops_alarms_backup``);
 * credentials: one incident per credential expiring within 14 days (warning, high at 7,
   critical at 2), from the host's expiry list;
 * slow checks (``main`` only): days to full of /data, / and the Postgres database at the
@@ -51,17 +52,28 @@ until ``/etc/plx/ops-notify.json`` names a sender, 11-14: nobody may have to wat
 * the delta (``projection/delta/cycles.jsonl``): ``delta_apply_cost``, the apply's
   Postgres seconds (with the cycle's bare mentions refresh) per owned record over ``delta_apply_cost_factor`` times its best of
   ``delta_apply_cost_window_days`` on the last two cycles of at least
-  ``delta_apply_cost_min_owned`` records; ``delta_backlog``, a deferred backlog carried
-  through every finished cycle for over ``delta_backlog_minutes``.
+  ``delta_apply_cost_min_owned`` records (unknown once the newer of them is older than
+  ``delta_apply_cost_fresh_hours``); ``delta_backlog``, a deferred backlog carried
+  through every finished cycle for over ``delta_backlog_minutes``; ``delta_step_failed:<step>``
+  (high), a whole-store step run after the layers failed (``operating.ops_alarms_delta``).
+* ``served_lag:<source>`` (high): a record captured over ``served_lag_hours`` ago that the
+  delta has not reached, or the delta's newest cycle skipped the source (``mail_skipped``)
+  (``served_lag_checks``): the capture and the delta both run, yet nothing new is served.
 * ``app_sessions_store`` (high): the app's sign-in sessions store the API failed to write,
   or one owned by another user than the API's (``app_sessions_checks``).
+* ``capture_listing_cap:teams`` (high): the newest host-ledger cycle that recorded Teams
+  says a member's chat listing was cut at the Graph client's cap (``cap:chat_listing_*``):
+  the chats past the cut are not discovered (``listing_cap_checks``).
 * ``entry_holds_unreadable``: the held-entry store skipped an unreadable line in the last
   day (``entry_holds_checks``).
 
 Pauses (``ops_alarms pause --key K --hours H --why W``; ``paused.json``): a check stopped
 on purpose (a migration window) is listed as paused, not open, and not mailed, until the
 pause ends (at most 72 h). Backups, credentials, disk, memory and the exclusion are never
-paused.
+paused. A planned maintenance window (``ops_alarms maintenance --why W --hours H``,
+``maintenance.json``, written by a quiesce) pauses what it stops the same way, shown as
+"paused for maintenance until <end>", and pages ``maintenance_window`` once its end has
+passed (``operating.ops_alarms_pauses``).
 
 Bounds are ``ops_health.DEFAULT_TARGETS`` (``PLX_OPS_TARGETS`` overrides). A breach opens
 an incident keyed by its check; an incident recovers after two passing runs in a row and
@@ -91,8 +103,9 @@ import sys
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from . import ops_health, ops_notify
+from . import ops_alarms_backup as _backup_stores
+from . import ops_alarms_delta as _delta_steps
 from .ops_health import Check, _check, _minutes, targets
-from operating.prose_style import some_of
 
 ALARM_DIR, STATE_FILE, STATUS_FILE, LOCK_FILE = ("ops-alarms", "state.json", "status.json",
                                                  "run.lock")
@@ -101,7 +114,7 @@ EVERY_MINUTES = 5
 STALE_MINUTES = 15      # a status older than this: the checks are not running
 RECOVER_AFTER_RUNS = 2  # passing runs in a row before an incident is closed
 KEEP_RECOVERED = 20
-IGNORE_ENV, DISK_ENV = "PLX_OPS_IGNORE_UNITS", "PLX_OPS_DISK_PATH"
+IGNORE_ENV = "PLX_OPS_IGNORE_UNITS"   # DISK_ENV: ``ops_alarms_slow``
 # ops_health checks that open incidents; the rest (truth share, AI watcher, page time) stay
 # on the sidebar line only.
 MEMORY_CHECKS = ("memory_pressure", "memory_available")
@@ -138,6 +151,7 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "autopilot_fast_waiting": "Autopilot fast feed",
           "autopilot_fast_restarts": "Autopilot fast feed restart loop",
           "autopilot_fast_failing": "Autopilot fast feed failing",
+          "autopilot_settle_errors": "Autopilot items not checked for done",
           "load_high": "Host overload", "delta_apply_cost": "Data refresh apply cost",
           "app_sessions_store": "App sign-in sessions store",
           "capture_mail_coverage": "Mail capture against Graph's counts",
@@ -145,12 +159,15 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "search_dense_failing": "Search without meaning match",
           "truth_checked_share": "Truth check coverage",
           "ask_canary": "Live Ask canary",
-          "exclusion_leak": "People exclusion leak scan"}
+          "exclusion_leak": "People exclusion leak scan",
+          "maintenance_window": "Planned maintenance", **_backup_stores.LABELS}
 PREFIX_LABELS = (("credential_expiry:", "Credential expiry"),
                  ("disk_forecast:", "Disk forecast"),
                  ("exclusion_unavailable:", "People exclusion"),
                  ("capture_newest:", "Newest record"),
-                 ("alarm_check_error:", "Alarm check failed"))
+                 ("served_lag:", "Captured but not served"),
+                 ("alarm_check_error:", "Alarm check failed"),
+                 (_delta_steps.PREFIX, _delta_steps.LABEL))
 
 
 # ---- probes (injected in tests) ----------------------------------------------------------
@@ -1111,6 +1128,37 @@ def _timer_enabled(units: Optional[Sequence[Mapping[str, str]]], name: str) -> b
                for u in units or ())
 
 
+LISTING_CAP = "cap:chat_listing_"
+LISTING_CAP_SQL = ("SELECT json_extract(report, '$.sources.teams.reasons') FROM cycle "
+                   "WHERE finished_at IS NOT NULL "
+                   "AND json_extract(report, '$.sources.teams.state') IS NOT NULL "
+                   "ORDER BY cycle_id DESC LIMIT 1")
+
+
+def listing_cap_checks(state: Path) -> list[Check]:
+    """``capture_listing_cap:teams``: a breach while the newest cycle's Teams outcome
+    carries ``cap:chat_listing_*`` (``integrations.capture_teams.CHAT_LISTING_CAPPED``);
+    unknown when that outcome's reasons are unreadable; nothing without a Teams outcome."""
+    raw = _ro_scalar(state / "host" / "host.sqlite", LISTING_CAP_SQL)
+    if raw is None:
+        return []
+    try:
+        reasons = json.loads(raw)
+    except (TypeError, ValueError):
+        reasons = None
+    if not isinstance(reasons, list):
+        found = _check("capture_listing_cap:teams", None, 0, None, "listings",
+                       "the newest Teams outcome's reasons are unreadable")
+    else:
+        capped = sorted({r for r in reasons if isinstance(r, str) and r.startswith(LISTING_CAP)})
+        found = _check("capture_listing_cap:teams", len(capped), 0, bool(capped), "listings",
+                       "a member's chat listing stopped at the page cap: chats past it are "
+                       "not discovered (" + ", ".join(capped) + ")" if capped
+                       else "every chat listing read to its end")
+    found["level"] = "high"
+    return [found]
+
+
 def outcome_checks(state: Path, now: datetime, t: Mapping[str, float], probes: "Probes",
                    dsn: Optional[str], held: Optional[dict[str, Any]],
                    units: Optional[Sequence[Mapping[str, str]]]) -> list[Check]:
@@ -1121,10 +1169,126 @@ def outcome_checks(state: Path, now: datetime, t: Mapping[str, float], probes: "
         out.append(completeness_check(state, sources))
     out += dense_check(dsn, t, probes)
     out.append(truth_checked_check(state, now, t, held))
+    out += listing_cap_checks(state)
+    out += served_lag_checks(state, now, t)
     for found in (canary_check(state, now, t, _timer_enabled(units, CANARY_TIMER)),
                   leak_check(state, now, t, _timer_enabled(units, LEAK_TIMER))):
         if found is not None:
             out.append(found)
+    return out
+
+
+# ``served_lag:<source>``: each source's capture store, the delta's cursor into it
+# (``projection/delta/state.sqlite`` meta, ``ontology.delta.discover``) and the first
+# record past that cursor (ids grow as records are stored: the first one is the oldest
+# the delta has not reached). Source -> (store under the state dir, cursor, SQL).
+_FIRST_PAST = ("SELECT recorded_at, (SELECT count(*) FROM (SELECT 1 FROM {t} WHERE {i} > :c "
+               "LIMIT 100000)) FROM {t} WHERE {i} > :c ORDER BY {i} LIMIT 1")
+SERVED_LAG_SOURCES: dict[str, tuple[str, str, str]] = {
+    "mail": ("mail-capture/capture.db", "mail_version",
+             _FIRST_PAST.format(t="messages", i="version_id")),
+    "sharepoint": ("sharepoint-capture/capture.db", "sharepoint_item",
+                   _FIRST_PAST.format(t="items", i="version_id")),
+    "sharepoint_lists": ("sharepoint-list-capture/capture.db", "sharepoint_list",
+                         _FIRST_PAST.format(t="versions", i="capture_id")),
+    "bc": ("bc-capture/capture.sqlite", "bc_capture",
+           _FIRST_PAST.format(t="versions", i="capture_id")),
+    "teams": ("teams-capture/capture.db", "teams_capture",
+              _FIRST_PAST.format(t="versions", i="capture_id")),
+    "mc": ("mc-capture/capture.sqlite", "mission_control_capture",
+           _FIRST_PAST.format(t="versions", i="capture_id")),
+    "meetings": ("meetings-capture/capture.db", "meetings_capture",
+                 _FIRST_PAST.format(t="versions", i="capture_id")),
+    # the Portal mirror: a capture that brought a new or changed row past the cursor
+    "portal": (str(ops_health.MIRROR_PATH), "portal_capture",
+               "SELECT coalesce(finished_at, started_at), (SELECT count(*) FROM capture "
+               "WHERE capture_id > :c AND keys_new + keys_changed > 0) FROM capture "
+               "WHERE capture_id > :c AND keys_new + keys_changed > 0 "
+               "ORDER BY capture_id LIMIT 1"),
+}
+# a delta cycle report key naming a source it did not read this cycle -> that source
+SKIPPED_KEYS = {"mail_skipped": "mail"}
+
+
+def _first_past(path: Path, sql: str, cursor: Any) -> Optional[tuple[Any, int]]:
+    """(stored time of the first record past ``cursor``, records past it, counted to
+    100,000) or (None, 0) when none is; None when the store cannot be read."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(sql, {"c": cursor}).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return (None, 0) if row is None else (row[0], int(row[1] or 0))
+
+
+def served_lag_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[Check]:
+    """``served_lag:<source>`` (high, paged): a record captured over ``served_lag_hours``
+    ago that the delta has not reached (past its cursor into the source's store), or the
+    delta's newest cycle skipped the source (``mail_skipped``: no people-exclusion guard,
+    so mail is never read). The capture runs and the delta's cycles finish, yet nothing
+    new of that source is served: neither ``capture_newest`` nor ``delta_last_cycle``
+    sees it. Unknown when the store, the cursor or the cycle record cannot be read;
+    nothing on a host with no delta, or for a source it holds no store of."""
+    delta_state = state / "projection" / "delta" / "state.sqlite"
+    if not delta_state.is_file():
+        return []
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{delta_state}?mode=ro", uri=True, timeout=5)
+        try:
+            cursors = {name: value for name, value in conn.execute("SELECT name, value FROM meta")}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        cursors = None
+    cycles = _delta_cycles(state)
+    newest = cycles[-1] if cycles else None
+    skipped = {source: newest.get(key) for key, source in SKIPPED_KEYS.items()
+               if newest is not None and newest.get(key)}
+    bound = t["served_lag_hours"]
+    out = []
+    for source, (relative, cursor_key, sql) in SERVED_LAG_SOURCES.items():
+        store = state / relative
+        if not store.is_file():
+            continue
+        name = f"served_lag:{source}"
+        if source in skipped:
+            started = ops_health._et(ops_health._parse(newest.get("started_at")), now)
+            found = _check(name, None, bound, True, "h", (
+                f"{source}: the delta's newest cycle ({started}) skipped it "
+                f"({str(skipped[source])[:120]}): nothing new of it is served"))
+        else:
+            try:
+                cursor = None if cursors is None else json.loads(cursors[cursor_key])
+            except (KeyError, TypeError, ValueError):
+                cursor = None
+            # every cursor is a store id (an integer): anything else is unreadable
+            first = None if not isinstance(cursor, int) or isinstance(cursor, bool) \
+                else _first_past(store, sql, cursor)
+            if first is None:
+                found = _check(name, None, bound, None, "h", f"{source}: the delta's cursor or "
+                               "the capture store is unreadable")
+            elif first[1] == 0:
+                found = _check(name, 0, bound, False, "h", f"{source}: the delta has reached "
+                               "every captured record")
+            else:
+                when = ops_health._parse(first[0])
+                if when is None:
+                    found = _check(name, None, bound, None, "h", f"{source}: {first[1]:,} "
+                                   "records past the delta's cursor, their time unreadable")
+                else:
+                    age = max(0.0, (now - when).total_seconds() / 3600)
+                    more = "+" if first[1] >= 100000 else ""
+                    found = _check(name, round(age, 2), bound, age > bound, "h", (
+                        f"{source}: {first[1]:,}{more} captured records the delta has not "
+                        f"reached, the oldest stored {ops_health._et(when, now)} "
+                        f"({_span(age * 60)} ago; target {bound:g} h)"))
+        found["level"] = "high"
+        out.append(found)
     return out
 
 
@@ -1296,6 +1460,13 @@ def delta_cycle_checks(state: Path, now: datetime, t: Mapping[str, float]) -> li
         cost = _check("delta_apply_cost", costs[-1][1] if costs else None, factor, None,
                       "ms", f"{len(costs)} applied cycles of "
                       f"{int(t['delta_apply_cost_min_owned']):,}+ records in the window")
+    elif costs[-1][0] < now - timedelta(hours=t["delta_apply_cost_fresh_hours"]):
+        last = [ms for _, ms in costs[-2:]]
+        cost = _check("delta_apply_cost", round(last[-1], 2),
+                      round(factor * min(ms for _, ms in costs), 2), None, "ms",
+                      f"no applied cycle of {int(t['delta_apply_cost_min_owned']):,}+ records "
+                      f"since {ops_health._et(costs[-1][0], now)} (then {last[0]:.1f} and "
+                      f"{last[1]:.1f} ms per record); a smaller cycle's cost is its fixed costs")
     else:
         best = min(ms for _, ms in costs)
         last = [ms for _, ms in costs[-2:]]
@@ -1531,12 +1702,17 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
             checks += guarded("backups", lambda: backup_checks(units, now, t, backup_root))
             if held is not None:
                 checks += guarded("fast_feed", lambda: fast_feed_checks(held, units, now))
+    if backup_root is not None:   # capture and off-box copies, partial sets (main only)
+        checks += guarded("backup_stores", lambda: _backup_stores.backup_store_checks(
+            now, t, backup_root, environ))
     checks += guarded("postgres", lambda: pg_checks(dsn, t, probes))
     checks += guarded("jobq", lambda: jobq_checks(state, now))
     checks += guarded("autopilot", lambda: autopilot_checks(state, now))
     checks += guarded("entry_holds", lambda: entry_holds_checks(state, now))
     checks += guarded("credential_expiry", lambda: expiry_checks(state, now, t))
     checks += guarded("delta_cycle", lambda: delta_cycle_checks(state, now, t))
+    checks += guarded("delta_steps", lambda: _delta_steps.delta_step_checks(
+        _delta_cycles(state)))
     checks += guarded("app_sessions", lambda: app_sessions_checks(state, environ))
     checks += guarded("graph_subscriptions", lambda: graph_subscription_checks(state, now))
     checks += guarded("outcomes", lambda: outcome_checks(state, now, t, probes, dsn, held,
@@ -1557,339 +1733,16 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
         samples
 
 
-# ---- slow checks: growth forecast, Postgres health, dependency drift ---------------------
-# Sampled at most every ``*_EVERY_MINUTES`` (their result is kept in the alarm state and
-# re-reported each pass in between), small reads only.
-
-GROWTH_EVERY_MINUTES, GROWTH_KEEP_DAYS, GROWTH_WINDOW_DAYS = 55, 14, 7
-GROWTH_MIN_SAMPLES, GROWTH_MIN_SPAN_HOURS = 6, 12
-PG_HEALTH_EVERY_MINUTES = 60
-DRIFT_EVERY_DAYS = 7
-PG_DATA_ENV = "PLX_OPS_PG_DATA_DIR"
-FORECAST_TIERS = ((3, "critical"), (7, "high"))   # days to full -> level; else warning
-
-
-def disk_usage(path: str) -> tuple[int, int]:
-    """(used, free) bytes of the filesystem holding ``path``."""
-    found = shutil.disk_usage(path)
-    return found.used, found.free
-
-
-PG_SIZE_SQL = "SELECT pg_database_size(current_database())"
-
-
-def pg_size(dsn: str) -> int:
-    import psycopg  # optional
-    with psycopg.connect(dsn, connect_timeout=5) as conn:
-        return int(conn.execute(PG_SIZE_SQL).fetchone()[0])
-
-
-PG_HEALTH_SQL = {
-    "xid_age": "SELECT max(age(datfrozenxid))::bigint FROM pg_database",
-    "dead": """SELECT schemaname || '.' || relname, n_dead_tup, n_live_tup,
-                      extract(epoch FROM now() - greatest(last_autovacuum, last_vacuum))
-               FROM pg_stat_user_tables WHERE n_dead_tup > 1000000
-               ORDER BY n_dead_tup DESC LIMIT 5""",
-    "long_vacuum": """SELECT count(*) FROM pg_stat_activity
-                      WHERE backend_type = 'autovacuum worker'
-                        AND now() - xact_start > interval '6 hours'""",
-}
-
-
-def pg_health_probe(dsn: str) -> dict[str, Any]:
-    """Wraparound age, the tables with the most dead rows (names and counts), autovacuum
-    workers running over 6 h: three small reads of the statistics views."""
-    import psycopg  # optional
-    with psycopg.connect(dsn, connect_timeout=5) as conn:
-        conn.execute("SET statement_timeout = '10s'")
-        xid = conn.execute(PG_HEALTH_SQL["xid_age"]).fetchone()[0]
-        dead = conn.execute(PG_HEALTH_SQL["dead"]).fetchall()
-        long_vacuum = conn.execute(PG_HEALTH_SQL["long_vacuum"]).fetchone()[0]
-    return {"xid_age": int(xid or 0), "long_vacuum": int(long_vacuum or 0),
-            "dead": [{"table": r[0], "dead": int(r[1]), "live": int(r[2]),
-                      "vacuum_age_hours": None if r[3] is None else round(float(r[3]) / 3600,
-                                                                          1)}
-                     for r in dead]}
-
-
-def _slope_per_day(points: Sequence[tuple[float, float]]) -> float:
-    n = len(points)
-    mx = sum(p[0] for p in points) / n
-    my = sum(p[1] for p in points) / n
-    var = sum((p[0] - mx) ** 2 for p in points)
-    return 0.0 if var == 0 else sum((p[0] - mx) * (p[1] - my) for p in points) / var * 86400
-
-
-def growth_sample(held: dict[str, Any], now: datetime, probes: "Probes",
-                  environ: Mapping[str, str], dsn: Optional[str]) -> dict[str, Any]:
-    """Adds one sample per target (``/data``, ``/``, the Postgres database) when the last
-    is ``GROWTH_EVERY_MINUTES`` old; keeps ``GROWTH_KEEP_DAYS``. A sample is
-    ``[epoch, used, free]``; for Postgres ``used`` is the database's size and ``free`` its
-    data directory's filesystem's free space. An unreadable target adds nothing."""
-    growth: dict[str, list[list[float]]] = {k: list(v) for k, v in
-                                            (held.get("growth") or {}).items()}
-    stamp = now.timestamp()
-    data = environ.get(DISK_ENV) or "/data"
-    targets_ = {"/data": lambda: probes.disk_usage(data), "/": lambda: probes.disk_usage("/")}
-    if dsn:
-        pg_dir = environ.get(PG_DATA_ENV) or "/data/pg"
-        targets_["postgres"] = lambda: (probes.pg_size(dsn), probes.disk_usage(pg_dir)[1])
-    for name, read in targets_.items():
-        series = growth.setdefault(name, [])
-        if series and stamp - series[-1][0] < GROWTH_EVERY_MINUTES * 60:
-            continue
-        try:
-            used, free = read()
-        except Exception:  # noqa: BLE001 - a probe that cannot answer adds no sample
-            continue
-        series.append([stamp, float(used), float(free)])
-    keep = stamp - GROWTH_KEEP_DAYS * 86400
-    return {k: [p for p in v if p[0] >= keep] for k, v in growth.items()}
-
-
-def _gb(value: float) -> str:
-    return f"{value / 1024 ** 3:,.0f} GB"
-
-
-def forecast_checks(growth: Mapping[str, Sequence[Sequence[float]]], now: datetime,
-                    t: Mapping[str, float]) -> list[Check]:
-    """``disk_forecast:<target>``: days until it is full at the last
-    ``GROWTH_WINDOW_DAYS``' rate (least squares over the samples); a breach under
-    ``disk_forecast_days`` (high under 7, critical under 3). Unknown while there are
-    fewer than ``GROWTH_MIN_SAMPLES`` samples over ``GROWTH_MIN_SPAN_HOURS``."""
-    bound = t["disk_forecast_days"]
-    out = []
-    since = now.timestamp() - GROWTH_WINDOW_DAYS * 86400
-    for name in ("/data", "/", "postgres"):
-        points = [p for p in growth.get(name) or () if p[0] >= since]
-        key = f"disk_forecast:{name}"
-        if len(points) < GROWTH_MIN_SAMPLES or \
-                points[-1][0] - points[0][0] < GROWTH_MIN_SPAN_HOURS * 3600:
-            if name != "postgres" or points:
-                out.append(_check(key, None, bound, None, "days", "collecting samples"))
-            continue
-        rate = _slope_per_day([(p[0], p[1]) for p in points])
-        free = points[-1][2]
-        what = "the Postgres database's disk" if name == "postgres" else name
-        if rate <= 0:
-            out.append(_check(key, None, bound, False, "days",
-                              f"{what}: not growing ({_gb(free)} free)"))
-            continue
-        days = round(free / rate, 1)
-        detail = (f"{what} fills in about {days:g} days at {_gb(rate)}/day "
-                  f"({_gb(free)} free)")
-        check = _check(key, days, bound, days < bound, "days", detail)
-        if days < bound:
-            check["level"] = next((lv for limit, lv in FORECAST_TIERS if days < limit),
-                                  "warning")
-        out.append(check)
-    return out
-
-
-def pg_health_checks(found: Optional[Mapping[str, Any]], t: Mapping[str, float]
-                     ) -> list[Check]:
-    """``pg_wraparound``: the oldest unfrozen transaction age over ``pg_xid_age``
-    (autovacuum is not keeping up; critical at 1.5x). ``pg_vacuum``: tables whose dead rows
-    are over ``pg_dead_share`` of their live ones and not vacuumed in 24 h, or an
-    autovacuum worker running over 6 h. Unknown when not read."""
-    xid_bound, share = t["pg_xid_age"], t["pg_dead_share"]
-    if not isinstance(found, Mapping) or "xid_age" not in found:
-        why = (found or {}).get("error") if isinstance(found, Mapping) else None
-        return [_check("pg_wraparound", None, xid_bound, None, "xids", why or "not read"),
-                _check("pg_vacuum", None, share, None, "tables", why or "not read")]
-    xid = found["xid_age"]
-    wrap = _check("pg_wraparound", xid, xid_bound, xid > xid_bound, "xids",
-                  f"oldest unfrozen transaction is {xid:,} old (vacuum is not freezing)"
-                  if xid > xid_bound else "")
-    if xid > 1.5 * xid_bound:
-        wrap["level"] = "critical"
-    behind = [d for d in found.get("dead") or ()
-              if d["dead"] > share * max(d["live"], 1)
-              and (d["vacuum_age_hours"] is None or d["vacuum_age_hours"] > 24)]
-    words = [f"{d['table']} {d['dead']:,} dead rows ("
-             + ("never vacuumed" if d["vacuum_age_hours"] is None
-                else f"vacuumed {d['vacuum_age_hours']:g} h ago") + ")" for d in behind[:3]]
-    if found.get("long_vacuum"):
-        words.append(f"{found['long_vacuum']} autovacuum worker(s) running over 6 h")
-    vac = _check("pg_vacuum", len(behind), share, bool(words), "tables", "; ".join(words))
-    return [wrap, vac]
-
-
-_PIN = re.compile(r"^\s*([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*==\s*([^\s;#]+)")
-
-
-def _norm(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def drift_findings(repo: Path, *, installed: Optional[Mapping[str, str]] = None,
-                   run: Optional[Callable[[Sequence[str]], str]] = None,
-                   venv_base: Optional[str] = None) -> list[str]:
-    """What the host runs that the release does not pin: each ``requirements.txt`` pin
-    not installed at that version in this interpreter; each ``app/package.json``
-    dependency whose installed version is not the lockfile's; the system python3's
-    major.minor not the one the venv was built on, or the venv's base interpreter gone."""
-    if installed is None:
-        from importlib import metadata
-        installed = {}
-        for dist in metadata.distributions():
-            name = dist.metadata.get("Name")
-            if name:
-                installed[_norm(name)] = dist.version
-    out = []
-    try:
-        pins = (repo / "requirements.txt").read_text().splitlines()
-    except OSError:
-        pins = []
-        out.append("requirements.txt unreadable")
-    for row in pins:
-        m = _PIN.match(row)
-        if not m:
-            continue
-        have = installed.get(_norm(m.group(1)))
-        if have is None:
-            out.append(f"{m.group(1)} not installed (pinned {m.group(2)})")
-        elif have != m.group(2):
-            out.append(f"{m.group(1)} {have} installed, pinned {m.group(2)}")
-    app = repo / "app"
-    try:
-        package = json.loads((app / "package.json").read_text())
-        lock = json.loads((app / "package-lock.json").read_text()).get("packages") or {}
-    except (OSError, ValueError):
-        package, lock = None, {}
-    if package is not None:
-        names = sorted({*(package.get("dependencies") or {}),
-                        *(package.get("devDependencies") or {})})
-        if not (app / "node_modules").is_dir():
-            out.append("app/node_modules missing")
-            names = []
-        for name in names:
-            want = (lock.get(f"node_modules/{name}") or {}).get("version")
-            try:
-                have = json.loads((app / "node_modules" / name / "package.json")
-                                  .read_text()).get("version")
-            except (OSError, ValueError):
-                have = None
-            if want and have != want:
-                out.append(f"node {name} {have or 'missing'} installed, lockfile {want}")
-    base = venv_base if venv_base is not None else getattr(sys, "_base_executable", "")
-    if base and not Path(base).exists():
-        out.append(f"the venv's interpreter {base} is gone")
-    run = run or (lambda argv: subprocess.run(list(argv), capture_output=True, text=True,
-                                              timeout=20).stdout)
-    try:
-        system = run(["/usr/bin/python3", "-c",
-                      "import sys; print('%d.%d' % sys.version_info[:2])"]).strip()
-    except (OSError, subprocess.SubprocessError):
-        system = ""
-    mine = "%d.%d" % sys.version_info[:2]
-    if system and system != mine:
-        out.append(f"system python3 is {system}, the venv runs {mine}")
-    return out
-
-
-def drift_check(found: Optional[Mapping[str, Any]], t: Mapping[str, float]) -> Check:
-    if not isinstance(found, Mapping) or not isinstance(found.get("findings"), list):
-        return _check("dependency_drift", None, 0, None, "items", "not checked yet")
-    items = found["findings"]
-    return _check("dependency_drift", len(items), 0, bool(items), "items",
-                  some_of(items, 3, sep="; "))
-
-
-def slow_checks(held: dict[str, Any], now: datetime, t: Mapping[str, float],
-                probes: "Probes", environ: Mapping[str, str], dsn: Optional[str]
-                ) -> list[Check]:
-    """The forecast, Postgres health and drift checks; refreshes their kept readings in
-    ``held`` when due."""
-    held["growth"] = growth_sample(held, now, probes, environ, dsn)
-    stamp = now.isoformat().replace("+00:00", "Z")
-    pg = held.get("pg_health")
-    age = _minutes(now, ops_health._parse((pg or {}).get("checked_at")))
-    if dsn and (age is None or age >= PG_HEALTH_EVERY_MINUTES):
-        try:
-            pg = dict(probes.pg_health(dsn), checked_at=stamp)
-        except Exception as exc:  # noqa: BLE001 - ImportError, psycopg errors
-            pg = {"checked_at": stamp, "error": f"unreadable ({type(exc).__name__})"}
-        held["pg_health"] = pg
-    drift = held.get("drift")
-    age = _minutes(now, ops_health._parse((drift or {}).get("checked_at")))
-    if age is None or age >= DRIFT_EVERY_DAYS * 1440:
-        try:
-            drift = {"checked_at": stamp, "findings": probes.drift()}
-        except Exception as exc:  # noqa: BLE001 - never stops the pass
-            drift = {"checked_at": stamp, "error": type(exc).__name__}
-        held["drift"] = drift
-    return (forecast_checks(held["growth"], now, t)
-            + (pg_health_checks(pg, t) if dsn else []) + [drift_check(drift, t)])
-
-
-# ---- pauses -------------------------------------------------------------------------------
-# A pause says "this is stopped on purpose until then" (a migration window stops timers).
-# The incident stays recorded (its age stays honest) but is not open, not mailed, and is
-# listed as paused; at ``until`` it is open again. Never longer than MAX_PAUSE_HOURS, and
-# never for the checks that must fire whatever is stopped.
-
-PAUSE_FILE = "paused.json"
-MAX_PAUSE_HOURS = 72
-UNPAUSABLE = ("backup", "restore_test", "credential_expiry", "disk_", "memory_",
-              "exclusion_unavailable", "host:", "pg_wraparound")
-
-
-def read_pauses(state: Path, now: datetime) -> list[dict[str, Any]]:
-    """The pauses in force (``key`` exact, or a prefix ending in ``*``)."""
-    try:
-        held = json.loads((state / ALARM_DIR / PAUSE_FILE).read_text())
-        entries = held.get("entries") if isinstance(held, dict) else None
-    except (OSError, ValueError):
-        entries = None
-    out = []
-    for e in entries or ():
-        if not isinstance(e, dict) or not isinstance(e.get("key"), str):
-            continue
-        until = ops_health._parse(e.get("until"))
-        set_at = ops_health._parse(e.get("set_at"))   # none: not a pause set_pause wrote
-        if until is None or set_at is None or until <= now \
-                or e["key"].startswith(UNPAUSABLE):
-            continue
-        until = min(until, set_at + timedelta(hours=MAX_PAUSE_HOURS))
-        if until > now:
-            out.append(dict(e, until=until.isoformat().replace("+00:00", "Z")))
-    return out
-
-
-def pause_for(key: str, pauses: Sequence[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
-    if key.startswith(UNPAUSABLE):
-        return None
-    for p in pauses:
-        k = p["key"]
-        if key == k or (k.endswith("*") and key.startswith(k[:-1])):
-            return p
-    return None
-
-
-def set_pause(state: Path, keys: Sequence[str], hours: float, why: str,
-              now: Optional[datetime] = None) -> list[dict[str, Any]]:
-    """Adds (or replaces) pauses of ``keys`` for ``hours`` (at most MAX_PAUSE_HOURS);
-    ``hours`` 0 removes them. Refuses an unpausable key."""
-    now = now or datetime.now(timezone.utc)
-    bad = [k for k in keys if k.startswith(UNPAUSABLE)]
-    if bad:
-        raise ValueError(f"never paused: {', '.join(bad)}")
-    path = state / ALARM_DIR / PAUSE_FILE
-    try:
-        held = json.loads(path.read_text())
-        entries = [e for e in held.get("entries") or () if isinstance(e, dict)]
-    except (OSError, ValueError, AttributeError):
-        entries = []
-    entries = [e for e in entries if e.get("key") not in keys]
-    if hours > 0:
-        until = now + timedelta(hours=min(hours, MAX_PAUSE_HOURS))
-        stamp = now.isoformat().replace("+00:00", "Z")
-        entries += [{"key": k, "why": why, "set_at": stamp,
-                     "until": until.isoformat().replace("+00:00", "Z")} for k in keys]
-    (state / ALARM_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
-    _write(path, {"entries": entries})
-    return read_pauses(state, now)
+# ---- slow checks and pauses: sibling modules (size), re-exported -----------------------
+from .ops_alarms_slow import (  # noqa: E402,F401
+    DISK_ENV, DRIFT_EVERY_DAYS, FORECAST_TIERS, GROWTH_EVERY_MINUTES, GROWTH_KEEP_DAYS,
+    GROWTH_MIN_SAMPLES, GROWTH_MIN_SPAN_HOURS, GROWTH_WINDOW_DAYS, PG_DATA_ENV,
+    PG_HEALTH_EVERY_MINUTES, PG_HEALTH_SQL, PG_SIZE_SQL, _gb, _norm, _PIN, _slope_per_day,
+    disk_usage, drift_check, drift_findings, forecast_checks, growth_sample,
+    pg_health_checks, pg_health_probe, pg_size, slow_checks)
+from .ops_alarms_pauses import (  # noqa: E402,F401
+    MAINTENANCE_FILE, MAINTENANCE_KEYS, MAX_PAUSE_HOURS, PAUSE_FILE, UNPAUSABLE, _et,
+    pause_for, read_maintenance, read_pauses, set_maintenance, set_pause)
 
 
 # ---- incidents --------------------------------------------------------------------------
@@ -1984,7 +1837,8 @@ def advance(held: dict[str, Any], checks: Sequence[Check], now: datetime,
         if p is None:
             incident.pop("paused", None)
         else:
-            incident["paused"] = {"until": p["until"], "why": p.get("why") or ""}
+            incident["paused"] = {"until": p["until"], "why": p.get("why") or "",
+                                  **({"maintenance": True} if p.get("maintenance") else {})}
     closing = []
     for key, incident in list(incidents.items()):
         if only is not None and key not in only:
@@ -2084,7 +1938,10 @@ def run_pass(state_dir: Any, *, now: Optional[datetime] = None,
                 checks, samples = collect(state, now, environ, probes, dsn, samples, slow)
         except Exception as exc:  # noqa: BLE001 - the status still says the checks broke
             checks = [check_error("memory" if memory_only else "collect", _crash_detail(exc))]
-        pauses = read_pauses(state, now)
+        window_pauses, window_check, window = read_maintenance(state, now)
+        if not memory_only and window_check is not None:
+            checks = [*checks, window_check]
+        pauses = read_pauses(state, now) + window_pauses
         # A group that failed this pass did not read what its incidents watch: while any
         # did, only the incidents of checks that reported may close (no false recovery).
         failed = any(c["name"].startswith(CHECK_ERROR_PREFIX) for c in checks)
@@ -2124,6 +1981,7 @@ def run_pass(state_dir: Any, *, now: Optional[datetime] = None,
                   "every_minutes": EVERY_MINUTES,
                   "open": [_public(i) for i in ordered if not i.get("paused")],
                   "paused": [_public(i) for i in ordered if i.get("paused")],
+                  "maintenance": window,
                   "notify": mailed,
                   "recovered": [_public(i) for i in held["recovered"]],
                   "checks": [dict(c, line=line(c)) for c in checks]}
@@ -2170,10 +2028,31 @@ def main(argv: Optional[list[str]] = None) -> int:
     pause.add_argument("--hours", type=float, required=True,
                        help=f"how long (at most {MAX_PAUSE_HOURS}); 0 removes the pause")
     pause.add_argument("--why", default="")
+    window = sub.add_parser("maintenance", help="a planned window: what it stops shows as "
+                            "paused for maintenance until its end, then pages")
+    window.add_argument("--state-dir", required=True, type=Path)
+    window.add_argument("--why", default="", help="the reason shown (required to start)")
+    window.add_argument("--hours", type=float, required=True,
+                        help=f"expected length (at most {MAX_PAUSE_HOURS}); 0 ends it")
+    window.add_argument("--key", action="append", default=[],
+                        help="incident key or prefix* it covers (repeatable)")
+    window.add_argument("--unit", action="append", default=[],
+                        help="a unit it stops (repeatable)")
     args = parser.parse_args(argv)
     if not args.state_dir.is_dir():
         print(f"state dir unreadable: {args.state_dir}", file=sys.stderr)
         return 2
+    if args.cmd == "maintenance":
+        try:
+            shown = set_maintenance(args.state_dir, args.why, args.hours, keys=args.key,
+                                    units=args.unit)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print("maintenance window ended" if shown is None else
+              f"paused for maintenance until {shown['until']}: {shown['reason']} "
+              f"({len(shown.get('keys') or ())} keys)")
+        return 0
     if args.cmd == "pause":
         try:
             held = set_pause(args.state_dir, args.key, args.hours, args.why)

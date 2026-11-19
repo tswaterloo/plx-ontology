@@ -428,9 +428,17 @@ class DeltaToPostgresTests(unittest.TestCase):
                     for handle, until in handles.items():
                         self.assertGreaterEqual(held_handles[handle], until)
         for family in families:
-            span, held = read[("cell_span", family)], kept[("cell_span", family)]
-            if span is not None:
-                self.assertTrue(held[0] <= span[0] and span[1] <= held[1], family)
+            runs, held = read[("cell_span", family)], kept[("cell_span", family)]
+            for low, high in runs or ():   # every run read lies in the kept runs' union
+                self.assertTrue(any(a <= low and high <= b for a, b in held), family)
+            # the chunk runs, known on both sides (the fixture's words are in Postgres):
+            # every run a full read finds lies in a kept run (no chunk of the family
+            # outside the runs the folded facts narrow a search to)
+            runs, held = read[("chunk_span", family)], kept[("chunk_span", family)]
+            self.assertIsNotNone(runs, family)
+            self.assertIsNotNone(held, family)
+            for low, high in runs:
+                self.assertTrue(any(a <= low and high <= b for a, b in held), family)
 
     def test_an_applied_layer_keeps_the_traverse_facts_of_the_version_it_made(self):
         """The follower keeps the facts of every data version (``prime_pg_facts`` after a
@@ -483,6 +491,7 @@ class DeltaToPostgresTests(unittest.TestCase):
                 full._slices(kind)
             for family in families:
                 full.cell_span(family)
+                full.chunk_span(family)
         read = full.store.facts[1]
         self.assert_cover(kept, read, families)
         # something else changed after the version a fold reads from: nothing is folded
@@ -730,6 +739,7 @@ class DeltaToPostgresTests(unittest.TestCase):
                 full._slices(kind)
             for family in families:
                 full.cell_span(family)
+                full.chunk_span(family)
         self.assert_cover(dict(later.store.facts[1]), full.store.facts[1], families)
         # a change that is no layer's since the kept version: nothing folded
         marker, now = tt._store_identity(later.store.conn)
@@ -1238,10 +1248,28 @@ class DeltaToPostgresTests(unittest.TestCase):
                                            fixture.root / "delta", base_path=base,
                                            schema=fixture.schema, normalizer=normalizer,
                                            environ=environ)
+                with psycopg.connect(dsn) as pg:
+                    row = pg.execute("SELECT value FROM ontology.store_meta WHERE key = %s",
+                                     (delta.READS_KEY,)).fetchone()
+                said = json.loads(row[0])
+                # mail is never read here (no people exclusion): skipped, never served
+                self.assertEqual((said["graph_mail"]["state"],
+                                  said["graph_mail"]["served_through"]), ("skipped", None))
+                portal = said["portal_api"]
                 if report["layer"] == "none: nothing new":
+                    # every record the scans found is applied: served up to this scan
+                    self.assertEqual(report["reads"], {"noted": 2, "settled": True})
+                    self.assertEqual((portal["state"], portal["served_through"]),
+                                     ("complete", portal["read_from"]))
                     break
                 self.assertEqual((report["layer"], report["postgres"]["applied_now"]),
                                  ("added", 1), report)
+                if report.get("deferred"):   # a capped catch-up: never served past it
+                    self.assertEqual((portal["state"], portal["left"],
+                                      portal["served_through"]),
+                                     ("capped", report["deferred"]["portal_api"], None))
+                else:
+                    self.assertEqual(portal["state"], "complete")
                 reports.append(report)
             else:
                 self.fail("the backlog never drained")
@@ -1844,6 +1872,64 @@ class BoundedSignatureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServedReadsTests(unittest.TestCase):
+    """How far the served data reaches into each capture (``delta_reads``): only a
+    complete read whose earlier layers Postgres holds moves it (review 2dedd09881)."""
+
+    def test_only_a_complete_settled_read_moves_the_served_position(self):
+        from operating.pg.ontology_delta import merge_reads
+        read = lambda at, state="complete", **extra: {"read_from": at, "state": state,
+                                                      "left": 0, **extra}
+        held = merge_reads(None, {"portal_api": read("t1"), "graph_mail": read("t1")},
+                           settled=True)
+        self.assertEqual(held["portal_api"]["served_through"], "t1")
+        nxt = {"portal_api": read("t2", "capped", left=5),
+               "graph_mail": read("t2", "skipped", reason="people_exclusion_unavailable"),
+               "bc": read("t2", "exploded"), "teams": read("t2")}
+        got = merge_reads(json.dumps(held), nxt, settled=False)
+        self.assertEqual({s: (e["state"], e["served_through"]) for s, e in got.items()},
+                         {"portal_api": ("capped", "t1"), "graph_mail": ("skipped", "t1"),
+                          "bc": ("unknown", None), "teams": ("waiting", None)})
+        self.assertEqual(got["portal_api"]["left"], 5)
+        # an older cycle's read (a layer applied late) never moves a newer one back
+        again = merge_reads(json.dumps(got), {"portal_api": read("t0")}, settled=True)
+        self.assertEqual(again["portal_api"], got["portal_api"])
+        # unreadable held or read: nothing held, nothing read
+        for bad in ("not json", "[1]", json.dumps({"portal_api": "x"})):
+            self.assertEqual(merge_reads(bad, {"teams": read("t3")}, settled=True),
+                             {"teams": {**read("t3"), "reason": None,
+                                        "served_through": "t3"}})
+        self.assertEqual(merge_reads(None, {"teams": {"state": "complete"}, "x": 3},
+                                     settled=True), {})
+
+    def test_a_layer_over_one_postgres_refused_does_not_settle(self):
+        from operating.pg import ontology_delta
+        calls = []
+        results = {"a": {"applied": False, "reason": "other_schema"},
+                   "b": {"applied": True}, "c": {"applied": False,
+                                                 "reason": "already_applied"}}
+
+        def apply(layer, dsn, *, newer=(), settled=True):
+            calls.append((layer, settled))
+            return {"layer": layer, **results[layer]}
+
+        quiet = {"_feed_mark": None, "recompute_whole_steps": {"pending": False},
+                 "recompute_person_links": {"pending": False}, "refresh_repeats": {}}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(ontology_delta, "apply_layer",
+                                                  side_effect=apply))
+            for name, value in quiet.items():
+                stack.enter_context(mock.patch.object(ontology_delta, name,
+                                                      return_value=value))
+            ontology_delta.apply_listed(["b", "a"], "dsn")   # newest first
+            # a layer below refused (other schema): the newer one applies unsettled
+            self.assertEqual(calls, [("a", True), ("b", False)])
+            calls.clear()
+            ontology_delta.apply_listed(["b", "c"], "dsn")
+            # one below already applied: settled
+            self.assertEqual(calls, [("c", True), ("b", True)])
 
 
 class LayerFreshnessTests(unittest.TestCase):

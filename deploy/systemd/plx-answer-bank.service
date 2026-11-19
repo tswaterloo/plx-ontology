@@ -1,0 +1,37 @@
+# PLX Workbench questionnaire answer bank, built for the company at low priority: one run of
+# `python3 -m operating.answer_bank_store build --if-stale`. Reads the served store (every
+# questionnaire document, its text and how its customer is decided) through the people
+# exclusion only (an excluded person's records are kept as ids, their text never read) and
+# writes /data/plx-state/answer-bank/bank.json (0640, the API's group reads it). Each request
+# decides it with the reader's own gate (operating/answer_bank_store.py); the API uses it
+# only when built by its code, under the same exclusion and within 4 h, else reads per
+# reader as before. Does nothing when the data served has not moved since the last build;
+# without the exclusion nothing is written. Reads no business system. Started by
+# plx-answer-bank.timer.
+[Unit]
+Description=PLX questionnaire answer bank build (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment="PGOPTIONS=-c default_transaction_read_only=on -c max_parallel_workers_per_gather=0"
+ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
+ExecStart=/data/venv/bin/python3 -m operating.answer_bank_store build --state-dir /data/plx-state --if-stale
+Nice=19
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=idle
+MemoryHigh=1G
+MemoryMax=2G
+TimeoutStartSec=30min
+UMask=0027

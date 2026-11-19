@@ -193,7 +193,7 @@ class ViewAs:
         if not is_owner(owner):
             raise refuse("Only the owner can view as someone else.")
         if route not in ROUTES:
-            raise refuse("Viewing as someone covers My work, alerts and drafts only.")
+            raise refuse("Viewing as someone covers Home, alerts and drafts only.")
         found = self._table().get(key)
         owner_ids = {str(i).lower() for i in getattr(owner.session, "identities", ()) or ()}
         if found is None or found[0] in owner_ids or found[1] in owner_ids:

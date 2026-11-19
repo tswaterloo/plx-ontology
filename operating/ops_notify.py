@@ -88,7 +88,7 @@ KEY_LEVELS: tuple[tuple[str, str], ...] = (
     ("disk_free", "critical"), ("memory_available", "critical"),
     ("backup", "critical"), ("restore_test", "critical"), ("pg_connections", "critical"),
     ("capture:", "high"), ("capture_failing:", "high"), ("ingest_start", "high"),
-    ("delta_", "high"), ("pg_follow", "high"), ("proactive_last_pass", "high"),
+    ("maintenance_window", "high"), ("delta_", "high"), ("pg_follow", "high"), ("proactive_last_pass", "high"),
     ("search_follow_last_pass", "high"), ("credential_expiry", "high"),
     ("disk_forecast:", "high"), ("pg_wraparound", "high"), ("load_high", "high"),
 )

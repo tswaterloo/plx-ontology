@@ -120,6 +120,16 @@ STEPS = ((1, "initial", (_DDL,)),)
 
 # Applied when a mailbox's folder listing and priority aggregates are first kept (not at
 # open), so a fresh store holds them only then, as before.
+# A mailbox's kind as the directory listing decided it (``capture_mail.mailbox_kind``):
+# ``shared`` or ``personal``, recorded for every mailbox a listing named. No row: unknown,
+# read as personal (``operating.staff_scope.shared_mailboxes``). personal_at: when a
+# listing first recorded it personal (never cleared; such a mailbox reads as personal
+# unless allowed by id, ``staff_scope.SHARED_ALLOW_ENV``).
+_MAILBOX_PURPOSE_DDL = """CREATE TABLE IF NOT EXISTS mailbox_purpose (
+    mailbox_id TEXT PRIMARY KEY,
+    purpose TEXT NOT NULL CHECK (purpose IN ('shared', 'personal')),
+    decided_at TEXT NOT NULL,
+    personal_at TEXT)"""
 _FOLDER_LISTING_DDL = """CREATE TABLE IF NOT EXISTS mailbox_folders (
     mailbox_id TEXT NOT NULL,
     folder_id TEXT NOT NULL,

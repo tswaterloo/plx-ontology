@@ -151,6 +151,58 @@ class PassTest(unittest.TestCase):
             {"key": "unit:plx-z.timer", "until": "2031-01-01T00:00:00Z"}]}))
         self.assertEqual(ops_alarms.read_pauses(self.root, NOW), [])
 
+    def test_a_maintenance_window_pauses_what_it_stops_then_pages_when_overrun(self):
+        """11-17: the live rebuild's quiesce (8 timers stopped, the search follower and the
+        proactive pass idle) showed as 10 red problems. Its marker shows them as paused for
+        maintenance until its end, mails none of them, and once the end has passed they
+        open again and the overrun window itself pages (high)."""
+        ops_alarms.set_maintenance(self.root, "live data rebuild", 2, now=NOW)
+        status = self.run_at(Fake(system=self.stopped()))
+        self.assertEqual([i["key"] for i in status["open"]], [])
+        paused = {i["key"]: i["paused"] for i in status["paused"]}
+        self.assertEqual(paused["unit:plx-suite.timer"]["why"], "maintenance: live data rebuild")
+        self.assertTrue(paused["unit:plx-suite.timer"]["maintenance"])
+        self.assertEqual(status["maintenance"]["state"], "in_window")
+        self.assertEqual(status["maintenance"]["until"],
+                         (NOW + timedelta(hours=2)).isoformat().replace("+00:00", "Z"))
+        window = next(c for c in status["checks"] if c["name"] == "maintenance_window")
+        self.assertIn("paused for maintenance until", window["line"])
+        self.assertIn(" ET: live data rebuild", window["line"])
+        self.assertEqual([m for m in self.box if "plx-suite" in m["subject"] + m["body"]], [])
+        # overrun: the window's checks open again and the window pages until removed
+        status = self.run_at(Fake(system=self.stopped()), 130)
+        keys = [i["key"] for i in status["open"]]
+        self.assertIn("unit:plx-suite.timer", keys)
+        self.assertIn("maintenance_window", keys)
+        self.assertEqual(status["paused"], [])
+        self.assertEqual(status["maintenance"]["state"], "overrun")
+        over = next(i for i in status["open"] if i["key"] == "maintenance_window")
+        self.assertEqual(over["level"], "high")
+        self.assertIn("past its planned end", over["line"])
+        # ended by hand: the window's incident recovers like any other
+        ops_alarms.set_maintenance(self.root, "", 0)
+        self.run_at(Fake(system=self.stopped()), 135)
+        status = self.run_at(Fake(system=self.stopped()), 140)
+        self.assertNotIn("maintenance_window", [i["key"] for i in status["open"]])
+        self.assertIsNone(status["maintenance"])
+        # named units only: an unrelated failure still opens; unpausable keys never pause
+        ops_alarms.set_maintenance(self.root, "rebuild", 2, units=["plx-other.timer"],
+                                   now=NOW + timedelta(minutes=140))
+        status = self.run_at(Fake(system=self.stopped()), 145)
+        self.assertIn("unit:plx-suite.timer", [i["key"] for i in status["open"]])
+        with self.assertRaisesRegex(ValueError, "never paused: backup"):
+            ops_alarms.set_maintenance(self.root, "x", 1, keys=["backup"])
+        with self.assertRaisesRegex(ValueError, "reason"):
+            ops_alarms.set_maintenance(self.root, " ", 1)
+        # an unreadable or uncapped marker pauses nothing and pages (fail closed)
+        for bad in ("{not json", json.dumps({"reason": "x", "set_at": "2030-01-02T12:00:00Z",
+                                             "until": "2031-01-01T00:00:00Z"}),
+                    json.dumps({"reason": "x", "until": "2030-01-02T14:00:00Z"})):
+            (self.root / "ops-alarms" / "maintenance.json").write_text(bad)
+            pauses, check, shown = ops_alarms.read_maintenance(self.root, NOW)
+            self.assertEqual((pauses, check["state"], shown), ([], "breach",
+                                                               {"state": "unreadable"}))
+
     def test_a_finished_chain_is_not_a_stop_but_its_failure_is(self):
         chain = unit("plx-overnight-chain.service", UnitFileState="enabled", Type="exec")
         status = self.run_at(Fake(user=[chain]))

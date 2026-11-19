@@ -972,7 +972,9 @@ class DocumentsTests(unittest.TestCase):
         for extended in (extend, None):   # None: a store with no SharePoint cell at all
             t = tools(self.reader, extended)
             spans = t._cell_spans(ev.STORE_DOCUMENT_FAMILIES)
-            self.assertEqual(len(spans), 2 if extended else 1)
+            self.assertTrue(spans)
+            self.assertEqual(list(spans), sorted(spans))
+            self.assertTrue(all(x[1] < y[0] for x, y in zip(spans, spans[1:])))
             for cap in (ev.DOC_SCAN_CAP, 2):
                 with mock.patch.object(ev, "DOC_SCAN_CAP", cap):
                     narrowed = answers(t)

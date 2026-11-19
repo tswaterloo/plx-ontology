@@ -196,6 +196,9 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
             threading.Thread(target=ready, args=(server,), daemon=True).start()
             owner_loop()
             return 0
+        if owner_loop is not None:   # a real backend: the code fingerprint before a first read
+            from . import preload
+            preload.start()
         if held(hold_name(args.port, args.unix_socket)):
             hold_until_ready(backend)
         served = (f"unix:{args.unix_socket}" if args.unix_socket

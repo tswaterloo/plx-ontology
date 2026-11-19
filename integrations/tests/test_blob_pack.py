@@ -374,7 +374,7 @@ class BackupTests(unittest.TestCase):
             names = [f"{d[:2]}/{d}.z" for d in digests]
             run.old_names = lambda key: set(names)
             run.held_back = lambda store: False
-            run.pack_copies = {}
+            run.pack_conns = {}
             # a blob gone from its shard and from the pack is lost
             self.assertEqual(run.lost("blobs/mail-xx.tar.zst", [], "mail"), 3)
             blob_pack.pack(blobs, write=True, limit=2)
@@ -383,17 +383,17 @@ class BackupTests(unittest.TestCase):
             # moved into the pack but no copy of the pack this run: still lost (the
             # shard's old copy stays)
             self.assertEqual(run.lost("blobs/mail-xx.tar.zst", loose, "mail"), 2)
-            snapshot = Path(tmp) / "snap.sqlite"
-            src = sqlite3.connect(blob_pack.pack_path(blobs))
-            dst = sqlite3.connect(snapshot)
-            src.backup(dst)
-            src.close()
-            dst.close()
-            run.pack_copies = {"mail": snapshot}
+            # this run's pack copy: the keys of the snapshot it was streamed from, taken
+            # while that snapshot was held; the pack's lock is let go before the shards
+            with cb.snapshot(blob_pack.pack_path(blobs), Path(tmp)) as (conn, _reader, _raw):
+                keys = cb.pack_keys(conn, Path(tmp) / "keys.sqlite")
+            run.pack_conns = {"mail": keys}
             self.assertEqual(run.lost("blobs/mail-xx.tar.zst", loose, "mail"), 0)
-            # packed after this run's pack copy: in neither copy, so lost
+            # packed after this run's pack copy (its writer is not held off): in neither
+            # copy, so lost
             blob_pack.pack(blobs, write=True)
             self.assertEqual(run.lost("blobs/mail-xx.tar.zst", [], "mail"), 1)
+            keys.close()
             self.assertEqual(cb.BLOB_PACKS["mail"][1], "mail-capture/blobs/pack.sqlite")
 
 

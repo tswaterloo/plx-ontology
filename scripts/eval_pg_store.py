@@ -107,15 +107,19 @@ class PgGenStore(eg.GenStore):
     def rows(self, ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {}
         for chunk in self._chunks(ids, 400):
-            for oid, prop, vtype, value, unit, currency, marks in self._q(
+            for oid, prop, vtype, value, unit, currency, marks, basis in self._q(
                     "SELECT o.object_id, f.property, k.value_type, c.value, k.unit, c.currency, "
-                    "k.markings FROM object_versions o JOIN value_sources s ON s.ver = o.ver "
-                    "JOIN value_cells c ON c.src = s.src JOIN value_fields f ON f.field = "
-                    "c.field JOIN value_kinds k ON k.kind = c.kind WHERE o.object_id = "
-                    "ANY(%(ids)s) AND " + current("s", self.as_of), ids=list(chunk)):
+                    "k.markings, k.tax_basis FROM object_versions o JOIN value_sources s "
+                    "ON s.ver = o.ver JOIN value_cells c ON c.src = s.src JOIN value_fields f "
+                    "ON f.field = c.field JOIN value_kinds k ON k.kind = c.kind "
+                    "WHERE o.object_id = ANY(%(ids)s) AND " + current("s", self.as_of),
+                    ids=list(chunk)):
                 out.setdefault(oid, []).append(
                     {"property": prop, "value_type": vtype, "value": value, "unit": unit,
-                     "currency": currency, "markings": marks})
+                     "currency": currency, "markings": marks,
+                     # a money cell's tax basis: an order total stated before tax is
+                     # checked against its lines (``generative.order_values``)
+                     **({"tax_basis": basis} if basis else {})})
         return out
 
     def versions(self, ids: Sequence[str]) -> dict[str, tuple[str, str]]:

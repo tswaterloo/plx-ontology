@@ -93,6 +93,39 @@ class AnswerBankServed(unittest.TestCase):
         self.assertEqual(self.ask(who, "Halal?").rows[0].title, "ranked for Halal?")
         self.assertEqual([q for k, q in self.calls if k == who.key], [None, "GMP?", "Halal?"])
 
+    def test_polls_while_the_company_read_goes_on_read_nothing_per_reader(self):
+        """While the company read a reader last got "still reading" from goes on
+        (``MEMO.running`` on its token), that reader's polls answer ``reading`` with no read
+        job; another reader (or question) is never answered from it; once the read ends
+        the next poll reads and serves the page."""
+        from operating.business_documents import MEMO
+        who, other = reader("grp-a"), reader("grp-b")
+        still = bank(error=STILL_READING)
+        still._reading_token = "tok-a"
+        self.answers[who.key] = still
+        self.answers[other.key] = bank("other's")
+        going = {"tok-a"}
+        with mock.patch.object(MEMO, "running", lambda token: token in going):
+            self.assertTrue(self.ask(who).reading)
+            self.wait_over()
+            reads = len(self.calls)
+            for _ in range(5):   # the app's polls: status only
+                got = self.ask(who)
+                self.assertEqual((got.reading, got.rows), (True, []))
+            self.assertEqual(len(self.calls), reads)
+            self.assertEqual([r.title for r in self.ask(other).rows], ["other's"])
+            self.ask(who, "GMP?")   # another question is its own read
+            self.assertIn((who.key, "GMP?"), self.calls)
+            going.clear()   # the company read ended
+            self.answers[who.key] = bank("read now")
+            got = self.ask(who)
+            for _ in range(3):
+                if not got.reading:
+                    break
+                self.wait_over()
+                got = self.ask(who)
+            self.assertEqual([r.title for r in got.rows], ["read now"])
+
     def test_a_list_that_could_not_be_read_is_answered_and_never_kept(self):
         who = reader("grp-a")
         self.answers[who.key] = bank(error="The list could not be read.")

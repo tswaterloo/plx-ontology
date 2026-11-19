@@ -19,7 +19,7 @@ export class ApiError extends Error {
 const BY_CODE: Record<string, string> = {
   // operator_api codes (operator_api/app.py MESSAGES)
   sign_in_required: "Your session has ended. Sign in again to continue.",
-  view_as_refused: "You are viewing as someone else, which is read only and covers My work, alerts and drafts. Stop viewing to do this.",
+  view_as_refused: "You are viewing as someone else, which is read only and covers Home, alerts and drafts. Stop viewing to do this.",
   unauthenticated: "Your session has ended. Sign in again to continue.",
   no_workbench_access: "You're signed in, but your account doesn't have Workbench access yet. Ask your manager or IT to grant it.",
   insufficient_scope: "Your sign-in doesn't include Workbench access. Sign out and sign in again.",
@@ -88,6 +88,8 @@ export function noticeKind(err: unknown): NoticeKind | undefined {
 /** One plain sentence for any thrown value or stream error body. */
 export function plainError(err: unknown): string {
   if (err instanceof ApiError) {
+    // a check not current says itself when it last ran ("... unavailable since Nov 18, 3:07 PM ET")
+    if (err.code === "alerts_stale" && err.detail) return err.detail;
     return BY_CODE[err.code] ?? (err.code === "internal" ? generic(err.incident) : BY_STATUS[err.status]) ?? generic(err.incident);
   }
   if (err instanceof TypeError) return BY_CODE.network; // fetch network failure

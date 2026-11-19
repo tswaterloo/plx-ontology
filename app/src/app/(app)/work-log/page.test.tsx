@@ -7,6 +7,7 @@ vi.mock("@/components/auth", () => ({ useAuth: () => ({ state: auth.state }) }))
 const view = vi.hoisted(() => ({ as: null as { key: string; name: string } | null }));
 vi.mock("@/components/view-as", () => ({ useViewingAs: () => view.as }));
 vi.mock("next/navigation", () => ({
+  usePathname: () => "/work-log",
   useSearchParams: () => new URLSearchParams(),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
@@ -36,6 +37,13 @@ describe("Work log closed", () => {
     render(<WorkLogPage />);
     expect(await screen.findByRole("search")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Show" })).toBeInTheDocument();
+  });
+
+  it("the heading reads as its words and its count, with no stray comma", async () => {
+    api.total = 33;
+    render(<WorkLogPage />);
+    const h1 = await screen.findByRole("heading", { level: 1, name: /33/ });
+    expect(h1.textContent).toBe("Work log 33");
   });
 });
 

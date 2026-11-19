@@ -49,7 +49,7 @@ export function ViewAsBar() {
       <Eye className="size-3.5 shrink-0 text-accent" strokeWidth={2} aria-hidden />
       <span className="min-w-0 flex-1 truncate">
         <span className="font-semibold">Viewing as {v.name}</span>
-        <span className="text-muted"> · My work, alerts and drafts as {v.name} sees them. Read only: nothing is sent, approved or logged as {v.name}, and each view is audited.</span>
+        <span className="text-muted"> · Home, alerts and drafts as {v.name} sees them. Read only: nothing is sent, approved or logged as {v.name}, and each view is audited.</span>
       </span>
       <button type="button" onClick={() => switchTo(null)} className="shrink-0 font-medium text-accent hover:underline cursor-pointer" data-testid="view-as-stop">
         Stop viewing

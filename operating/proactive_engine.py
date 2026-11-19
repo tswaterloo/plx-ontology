@@ -197,8 +197,8 @@ from operating.declared_schema.proactive_inbox import _VISITS_DDL
 from . import time_window
 
 from .proactive_engine_config import (
-    AMOUNTS_RESERVE_SECONDS, _CADENCE_KEY, CARD_BOUND, Cite, CONFIRMATION_LINK, CONFIRMING,
-    DETECTOR_CADENCE_HOURS, DETECTOR_SECONDS, DETECTOR_SECONDS_DEFAULT, DETECTORS,
+    AMOUNTS_RESERVE_SECONDS, _CADENCE_KEY, CALLING, CARD_BOUND, Cite, CONFIRMATION_LINK,
+    CONFIRMING, DETECTOR_CADENCE_HOURS, DETECTOR_SECONDS, DETECTOR_SECONDS_DEFAULT, DETECTORS,
     HARD_GRACE_SECONDS, INBOX_SCHEMA, LATE_RULE, LINK_CACHE_ROWS, LINK_COLUMNS,
     LINK_PARTS_PER_THREAD, MAX_SHOWN, ON_RUN_THREAD, PARALLEL_LINK_ROWS, PG_TYPE_READ_MAX,
     PG_VALUES_CHUNK, RECEIPT_LINKS, REFRESH_BUDGET_SECONDS, RUN_THREAD_GRACE_SECONDS, SCHEMA,
@@ -388,7 +388,7 @@ class _Store:
             with self._conns_lock:
                 self._conns.append(conn)
                 self._conn_thread[id(conn)] = threading.current_thread()
-            self._local.conn = holder = _ThreadConn(conn, self._release)
+            self._local.conn = holder = _ThreadConn(conn, owner=self)
             return holder.conn
         return conn.conn
 
@@ -459,6 +459,15 @@ class _Store:
             with self.link_rows.lock:
                 return self._memo.setdefault(key, made)
 
+    def let_go(self) -> None:
+        """The run's memoized reads (``memo``) let go: a later ask reads again. What a
+        running rule holds stays with it; the link rows stay (bounded, ``LINK_CACHE_ROWS``)."""
+        with self.link_rows.lock:
+            self._memo = {}
+            self._making = {}
+        import gc
+        gc.collect()
+
     def interrupt_all(self) -> None:
         """Abort whatever statement each of this store's connections is running."""
         with self._conns_lock:
@@ -514,6 +523,15 @@ class _Store:
                 # its thread ends (``_ThreadConn``'s release)
                 continue
             conn.close()
+        # what the run read lets go with it, whoever still holds the store (a detector
+        # thread given up on, a reader built over it): a read after this reads again
+        with self.link_rows.lock:
+            self._memo = {}
+            self._making = {}
+        self.whole_rows = _LinkRows()
+        if self._pass is None:
+            self.link_rows = _LinkRows()
+            self._removed, self._removed_of = None, {}
 
     def data_stamp(self) -> str | None:
         """The data this store reads now, as one text that moves with every change (a
@@ -834,13 +852,25 @@ class _Store:
                  for r in self.conn.execute(sql, (link_type,))]), key=lambda r: r[0])
         return self.memo("of_type:" + link_type, read)
 
+    def _top_row(self, table: str) -> int:
+        """The highest row number of ``table``, the bound its ranges split. On Postgres a
+        guarded reader's ``link_rows`` is a view less the hidden links (a union with
+        per-row tests: ``max`` over it scanned the whole table, 75 s a call and up to 155 s,
+        a third to half of a 300 s detector's window, 11-17 pg_stat_statements): there the
+        base table's own maximum is read by its row-number index (ms). A higher bound only
+        adds empty ranges; the ranges' reads stay guarded."""
+        if self.pg and table in ("link_rows",):
+            return self.conn.execute(
+                "SELECT max(row_no) FROM ontology.link_rows").fetchone()[0] or 0
+        return self.conn.execute(f"SELECT max(rowid) FROM {table}").fetchone()[0] or 0
+
     def _ranged(self, table: str, alias: str, sql: str, tail: str,
                 params: Mapping[str, Any], shape: Callable[[Any], Any]) -> list[list[Any]]:
         """``sql`` (over ``table`` as ``alias``, then ``tail``) read by rowid ranges of the
         table side by side, one connection per thread (each checked to read this
         generation), the ranges' rows in rowid order of the ranges; a small table, one
         thread or a generation replaced meanwhile: one read on this connection."""
-        top = self.conn.execute(f"SELECT max(rowid) FROM {table}").fetchone()[0] or 0
+        top = self._top_row(table)
         if self.threads > 1 and top >= PARALLEL_LINK_ROWS:
             from concurrent.futures import ThreadPoolExecutor
 
@@ -1351,8 +1381,14 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
                 st, as_of, call, recent=recent, trailing=trailing,
                 margins=margins_of, not_read=NOT_READ, settled=SETTLED, skips=_Skips,
                 **common)
-        except TimeBudgetSpent:
-            if not kept:
+        except (TimeBudgetSpent, sqlite3.OperationalError) as error:
+            # a store read interrupted at the window's end (the store's progress handler,
+            # or on Postgres the watchdog cancelling it) is the same cut: before, it fell
+            # to the runner, which kept nothing, so the readings never carried to the next
+            # run and the rule never completed (11-17: event_cache held no margin reading
+            # after 3 days truncated)
+            if not kept or (isinstance(error, sqlite3.OperationalError)
+                            and (st.left is None or st.left() > 0)):
                 raise
             # cut at its window's end after reading: the readings stay for the next run
             # (a pass spans runs until every order is held), nothing judged on a part
@@ -1433,7 +1469,7 @@ class _MemoryGate:
             raise ValueError("memory_gate_invalid")
         self.used, self.limit, self.share, self.reserve = used, limit, share, reserve
         self.poll = poll
-        self.running = self.most = self.held = self.orphans = 0
+        self.running = self.most = self.held = self.orphans = self.relieved = 0
         self._cond = threading.Condition()
 
     @classmethod
@@ -1461,9 +1497,17 @@ class _MemoryGate:
             return True   # a limit whose use cannot be read: over (one at a time)
         return used + (self.running + self.orphans) * self.reserve >= self.share * limit
 
-    def enter(self, stop: Callable[[], bool] = lambda: False) -> None:
+    def enter(self, stop: Callable[[], bool] = lambda: False,
+              relieve: Callable[[], None] | None = None) -> None:
+        """``relieve``: called once when the memory is over (the run's held reads let
+        go: ``_Store.let_go``) before waiting on it, so what earlier rules read and no
+        running one holds is reused, not added to (11-17: a group of 36 rules held each
+        one's populations and orders to its end, past the incremental pass's cap)."""
         with self._cond:
             waited = False
+            if relieve is not None and self.over():
+                relieve()
+                self.relieved += 1
             while self.running > 0 and not stop() and self.over():
                 waited = True
                 self._cond.wait(self.poll)
@@ -1703,7 +1747,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             # beside the running detectors only while the memory allows (``_MemoryGate``):
             # the wait is the run's time, not this detector's window
             gate.enter(lambda: (budget is not None and budget.spent())
-                       or window.deadline - window.monotonic() <= 0)
+                       or window.deadline - window.monotonic() <= 0, relieve=st.let_go)
             try:
                 judged(name, runner, rest)
             finally:
@@ -1782,10 +1826,11 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             if abandoned:
                 # a cut-off detector's statement still running stops now, never reads on
                 st.interrupt_all()
-        if gate.held:
+        if gate.held or gate.relieved:
             # counts only: the journal says when memory, not the store, set the pace
             print(f"proactive_engine: {gate.held} detector(s) waited for memory "
-                  f"(at most {gate.most} side by side)", file=sys.stderr, flush=True)
+                  f"(at most {gate.most} side by side; held reads let go "
+                  f"{gate.relieved} time(s))", file=sys.stderr, flush=True)
         if budget is not None:
             budget.release()   # the amounts run in the reserve, still inside the bound
         if scope is not None:
@@ -2174,8 +2219,13 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "SELECT COALESCE(SUM(objects), 0) FROM scope WHERE audience_key IN (SELECT value "
             "FROM json_each(:aud)) AND markings IN (SELECT value FROM json_each(:marks))",
             params).fetchone()[0]
-        runs = conn.execute("SELECT detector, status, reasons, not_evaluated, run_at FROM "
-                            "detector_runs ORDER BY detector").fetchall()
+        # only the rules the engine runs: a rule taken out of the registry keeps its last
+        # row in the inbox (``mc_task_overdue``, 11-17), and read as one never re-run it
+        # held every reader's Home "Rechecking against the latest data" for good, dated
+        # by its last run (13 Nov); its findings are no longer shown either
+        runs = [row for row in conn.execute(
+            "SELECT detector, status, reasons, not_evaluated, run_at FROM detector_runs "
+            "ORDER BY detector").fetchall() if row["detector"] in DETECTORS]
         detectors = {row["detector"]: row["status"] for row in runs}
         failed_at = {row["detector"]: row["run_at"] for row in runs
                      if row["status"] == "failed"}
@@ -2410,6 +2460,11 @@ def unjudged_records(inbox: Any, store: Any, *, rule: str, reason: str | None = 
     limit = max(0, min(int(limit), UNJUDGED_SHOWN))
     out: dict[str, Any] = {"rule": rule, "reason": reason, "total": 0, "records": [],
                            "complete": False}
+    from .unjudged_words import SCOPE_REASONS
+    if reason == "out_of_scope" or reason in SCOPE_REASONS or (rule, reason) in SCOPE_REASONS:
+        # a scope note (what the check never applies to) is said without a count and has
+        # no records to open: the list stays empty, as the note says (count 0)
+        return out
     path = Path(inbox)
     if not path.is_file():
         return out
@@ -2542,7 +2597,7 @@ def refresh_pass(runtime: Any, investigator: Any, audience: Any, projection: Pat
     code = engine_code()
     key = PASS_KEY + ("all" if only is None else kind)   # every rule: one pass, any mode
     held = pass_record(inbox, key[len(PASS_KEY):])
-    resumed = _resumable(held, plan, generation, code, moment)
+    resumed = _resumable(held, plan, generation, moment)
     record = dict(held) if resumed and held else {
         "plan": plan, "generation": generation, "code": code, "done": [],
         "started": moment.isoformat()}
@@ -2569,6 +2624,15 @@ def refresh_pass(runtime: Any, investigator: Any, audience: Any, projection: Pat
                             checkpoint=(key, record), pass_cache=shared, **options)
             ran += 1
             record = {**record, "done": sorted(set(record["done"]) | set(group))}
+            pool = options.get("pool")
+            if pool is not None and set(group) & CALLING \
+                    and not any(r in CALLING for g in groups[n + 1:] for r in g):
+                # no rule left makes tool calls: the workers (a case session each over
+                # the whole store, ~2.2 GB) end now, never idle beside the store-only
+                # groups (11-17: six of them beside the engine pushed the whole pass to
+                # 14.5 GB); a later map (the vendor stage) starts them again
+                with contextlib.suppress(Exception):
+                    pool.close()
             if record["generation"] is None:   # the first pass of a new inbox: made just now
                 record["generation"] = served_generation(projection, inbox)
             for field in ("detectors", "detector_reasons", "seconds"):

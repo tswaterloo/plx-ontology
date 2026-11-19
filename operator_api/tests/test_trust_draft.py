@@ -105,8 +105,9 @@ def ledger(path: Path, rows) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE source_state (source TEXT, captured_at TEXT, configured INT, "
-                 "stale_since TEXT)")
-    conn.executemany("INSERT INTO source_state VALUES (?, ?, 1, NULL)", rows)
+                 "stale_since TEXT, error TEXT, attempted_at TEXT)")
+    conn.executemany("INSERT INTO source_state VALUES (?, ?, 1, NULL, ?, ?)",
+                     [(*r, None, r[1]) if len(r) == 2 else r for r in rows])
     conn.commit()
     conn.close()
 
@@ -243,8 +244,10 @@ class TrustAndDraft(unittest.TestCase):
         self.assertLessEqual(fresh["File"]["lag_seconds"], after + 6 * 3600)
         # no results file: no set, the page says held-out is not measured
         self.assertEqual(page["answers"], [])
-        self.assertIn("Held-out answer scores: not measured yet.",
-                      [line["words"] for line in page["lines"]])
+        held = [x["words"] for x in page["lines"] if x["words"].startswith("Held-out")]
+        self.assertEqual(len(held), 1)
+        self.assertIn("not measured yet. The measure of answers to questions never used for "
+                      "tuning runs after the served data's rebuild", held[0])
         # alert precision: correct never above judged; an unmeasured type has no numbers
         for a in page["alerts"]:
             if a["judged"] is None:
@@ -274,6 +277,105 @@ class TrustAndDraft(unittest.TestCase):
                   self.client(OWNER).get("/api/trust").json()["switches"]}
         self.assertEqual((states["Email and Teams messages"], states["Business Central"],
                           states["Planner"]), ("on", "on", "off"))
+
+    def test_served_time_is_what_the_delta_read_and_applied_per_source(self):
+        """11-17: "In the served data" showed each source's stalest relation stamp while
+        every capture was served within one delta cycle; review 2dedd09881: a cycle-wide
+        stamp still called a skipped source (mail without the people-exclusion guard)
+        served and up to date, called a capture taken during discovery served, and never
+        showed a capped catch-up. Served is now, per source, the scan start of the newest
+        complete read Postgres applied (``ontology.store_meta`` ``delta_reads``); a skipped,
+        capped or unsettled read is behind, with its reason in one sentence."""
+        from ontology.delta import READS_KEY
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        at = lambda minutes: (now - timedelta(minutes=minutes)).isoformat().replace(
+            "+00:00", "Z")
+        path = self.backend.state_dir / "host" / "host.sqlite"
+        path.unlink()
+        ledger(path, [("bc", at(30)), ("mail", at(2)), ("teams", at(5)),
+                      ("mc", at(3 * 24 * 60)),
+                      ("sharepoint", at(20), "no_units_reported", at(15)),
+                      ("sharepoint_lists", at(25)),
+                      ("portal", at(40), "a_code_nobody_mapped", at(5))])
+        done = lambda read, through=None: {"read_from": at(read), "state": "complete",
+                                           "left": 0, "served_through": at(through or read)}
+        base = {"bc": done(10), "teams": done(8), "sharepoint": done(10),
+                "mission_control": done(10),
+                # mail skipped this cycle: the last complete read is 9 hours old
+                "graph_mail": {"read_from": at(8), "state": "skipped", "left": 0,
+                               "reason": "people_exclusion_unavailable",
+                               "served_through": at(9 * 60)},
+                # a capped catch-up: 1,234 records left open for the next cycles
+                "portal_api": {"read_from": at(8), "state": "capped", "left": 1234,
+                               "served_through": at(50)}}
+        pg = mock.patch("operating.pg.ontology_reader.pg_only", return_value=True)
+        pg.start()
+        self.addCleanup(pg.stop)
+
+        def fresh(meta):
+            with mock.patch("operating.pg.ontology_reader.store_meta",
+                            side_effect=meta if callable(meta) else lambda keys: meta):
+                page = self.client(OWNER).get("/api/trust").json()
+            return {r["system"]: r for r in page["freshness"]}
+
+        got = fresh({READS_KEY: json.dumps(base)})
+        # captured before the scan began: all of it served, the ledger's own time
+        self.assertEqual((got["BC"]["served_at"], got["BC"]["stale"]), (at(30), False))
+        self.assertEqual(got["BC"]["state_words"], "Up to date: everything read is in the app.")
+        # captured at 5 min, after Teams' scan began at 8 min (the discovery window: the
+        # layer is named and applied later): served only up to the scan start, not behind
+        self.assertEqual((got["Teams"]["served_at"], got["Teams"]["stale"]), (at(8), False))
+        self.assertIn("within a few minutes", got["Teams"]["state_words"])
+        # skipped: never "up to date", served up to its last complete read, why in words
+        self.assertEqual((got["Email"]["served_at"], got["Email"]["stale"]), (at(540), True))
+        self.assertEqual(got["Email"]["state_words"],
+                         "Behind: the last update of the app's data did not read email: the "
+                         "list of people whose mail is kept out could not be read, so no "
+                         "mail was read.")
+        # capped: behind, how many wait, served up to the last complete read
+        self.assertEqual((got["Portal"]["served_at"], got["Portal"]["stale"]), (at(50), True))
+        self.assertTrue(got["Portal"]["state_words"].startswith(
+            "Behind: the app's data is catching up on the Portal; 1,234 changed records "
+            "wait for the next updates."), got["Portal"]["state_words"])
+        self.assertIn("failed: it stopped with an error.", got["Portal"]["state_words"])
+        # a read past the system's bound is behind, and says so in words
+        self.assertTrue(got["MC"]["stale"])
+        self.assertTrue(got["MC"]["state_words"].startswith("Behind: not read for over"))
+        # a failed read: the reason in plain words with both times, never the code;
+        # the last good read is served, so not behind
+        file = got["File"]
+        self.assertEqual((file["capture"], file["stale"], file["captured_at"],
+                          file["served_at"]), ("failed", False, at(25), at(25)))
+        self.assertIn("The last read of SharePoint files, at ", file["state_words"])
+        self.assertIn("failed: it finished without reporting anything it read. The last good "
+                      "read was at ", file["state_words"])
+        for row in got.values():
+            self.assertNotIn("_", row["state_words"])
+        # the newest complete read two hours old with newer captures: behind from it; a
+        # read waiting on an earlier layer, one in a state not known here, and a source
+        # no cycle read: behind, never up to date (fail closed)
+        later = {**base, "teams": done(120),
+                 "bc": {**done(10, 60), "state": "waiting"},
+                 "sharepoint": {**done(10), "state": "exploded"}}
+        later.pop("mission_control")
+        got = fresh({READS_KEY: json.dumps(later)})
+        self.assertEqual((got["Teams"]["served_at"], got["Teams"]["stale"]), (at(120), True))
+        self.assertIn("Behind: records of Teams read since ", got["Teams"]["state_words"])
+        self.assertEqual((got["BC"]["served_at"], got["BC"]["stale"]), (at(60), True))
+        self.assertIn("waits for an earlier one", got["BC"]["state_words"])
+        self.assertTrue(got["File"]["stale"])
+        self.assertIn("cannot say how far it holds SharePoint files",
+                      got["File"]["state_words"])
+        self.assertEqual((got["MC"]["served_at"], got["MC"]["stale"]), (None, True))
+        self.assertIn("no update of the app's data has read Mission Control yet",
+                      got["MC"]["state_words"])
+        # no record, an unreadable one, or Postgres down: never a guessed time; the
+        # served projection's own stamps (the fixture's) as before
+        for meta in ({}, None, {READS_KEY: "not json"}, {READS_KEY: "[1]"},
+                     mock.Mock(side_effect=RuntimeError("pg down"))):
+            got = fresh(meta)
+            self.assertEqual(got["BC"]["served_at"], "2026-11-11T16:00:00Z", meta)
+            self.assertTrue(got["Email"]["stale"])
 
     def test_answer_scores_come_from_the_results_file_and_a_tampered_entry_is_dropped(self):
         path = self.backend.state_dir / results_file.RELATIVE

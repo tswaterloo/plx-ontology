@@ -189,6 +189,42 @@ def _one_address_excluded(guard: Any, address: str) -> bool:
         return True
 
 
+class AddressGuard:
+    """The read paths' people exclusion (``exclusion``) in the shape the briefs read
+    (``operating.briefs``: ``unavailable`` and ``is_excluded``), deciding an address as
+    every other read path does (``_excluded_address``: decided by the guard, else outside
+    the tenant's known mail domains no tenant person's, else withheld). An object id is
+    the guard's to decide; anything it cannot decide raises (the brief drops the row)."""
+
+    def __init__(self, guard: Any) -> None:
+        self._guard = guard
+
+    @property
+    def unavailable(self) -> Any:
+        guard = self._guard
+        return "exclusion_not_loaded" if guard is None else guard.unavailable
+
+    def known_domains(self) -> frozenset[str]:
+        guard = self._guard
+        return frozenset() if guard is None else frozenset(guard.known_domains())
+
+    def is_excluded(self, value: Any) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        if "@" in value:
+            return _excluded_address(self._guard, value)
+        if self._guard is None:
+            raise RuntimeError("people exclusion not loaded")
+        return bool(self._guard.is_excluded(value))
+
+
+def address_guard() -> Optional[AddressGuard]:
+    """``AddressGuard`` over the read paths' exclusion; None when there is none (the briefs
+    then show no person: ``people_unavailable``)."""
+    guard = exclusion()
+    return None if guard is None else AddressGuard(guard)
+
+
 def person_excluded(guard: Any, values: Any) -> bool:
     """Whether the signed-in person these identities name (their object id, addresses,
     principal keys) is excluded, or cannot be told apart from one (fail closed). An

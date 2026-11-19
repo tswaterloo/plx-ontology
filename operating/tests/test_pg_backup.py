@@ -1,7 +1,7 @@
 """Backups on a tiny throwaway database: backup.sh writes a complete set (dump, state
 archive, manifest with exact row counts), restore_test.sh restores it into another
 throwaway database and finds every count; a tampered dump, a missing or oversized state
-store and a failing off-site hook are reported, never passed; rotation keeps 7 daily and
+store and a failing off-site hook are reported, never passed; rotation keeps 4 daily and
 4 weekly sets. The default set dumps the big schemas' DDL only, keeps config modes and never
 holds a secret in plain text; the disk guard refuses a run before writing anything."""
 from __future__ import annotations
@@ -244,7 +244,7 @@ class BackupRestoreTest(unittest.TestCase):
         self.assertEqual(code, 7, out)
         self.assertEqual([Path(p).name for p in out["restore_files_missing"]], ["zz-pg.conf"])
 
-    def test_rotation_keeps_seven_daily_and_four_weekly(self) -> None:
+    def test_rotation_keeps_four_daily_and_four_weekly(self) -> None:
         root = self.tmp / "rot"
         daily = root / "daily"
         daily.mkdir(parents=True)
@@ -257,13 +257,13 @@ class BackupRestoreTest(unittest.TestCase):
             if plx_backup.rotate(root, stamp)["weekly_promoted"]:
                 promoted.append(day)
         self.assertEqual(promoted, [0, 7, 14, 21, 28, 35])
-        self.assertEqual(len(plx_backup._sets(daily)), 7)
-        self.assertEqual(plx_backup._sets(daily)[0], "20261004T023000Z")
+        self.assertEqual(len(plx_backup._sets(daily)), 4)
+        self.assertEqual(plx_backup._sets(daily)[0], "20261007T023000Z")
         weekly = plx_backup._sets(root / "weekly")
         self.assertEqual(weekly, ["20260915T023000Z", "20260922T023000Z",
                                   "20260929T023000Z", "20261006T023000Z"])
         per_set = len(plx_backup._set_files(daily, "x"))
-        self.assertEqual(len(os.listdir(daily)), 7 * per_set)
+        self.assertEqual(len(os.listdir(daily)), 4 * per_set)
         self.assertEqual(len(os.listdir(root / "weekly")), 4 * per_set)
         # An interrupted older set (no manifest) is cleared on the next run.
         (daily / "plx-20261001T000000Z.dump").write_text("partial")

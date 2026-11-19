@@ -1011,23 +1011,24 @@ class Notes:
 # What one event of the log saved its person, in the minutes the same work takes by hand
 # (``operating.autopilot_replay.MINUTES``, the weights the day-coverage measure uses): the
 # basis it counts under and that basis's words. Everything else (reading, dismissing,
-# snoozing, watching, notes, a dry-run send) saves nothing and is not counted.
+# snoozing, watching, notes, a dry-run send, a question asked: an answer is not work done,
+# and a timed-out or test question would count as much as a useful one) saves nothing.
 SAVED_BASIS: dict[tuple[str, str], str] = {
     ("autopilot", "sent"): "mail_sent", ("action", "sent"): "mail_sent",
     ("action", "replied"): "mail_sent", ("action", "forwarded"): "mail_sent",
     ("action", "messaged"): "teams_sent", ("autopilot", "accepted"): "record",
-    ("write", "executed"): "record", ("ask", "asked"): "record"}
+    ("write", "executed"): "record"}
 SAVED_WORDS = {"mail_sent": "messages sent from a prepared draft",
                "teams_sent": "Teams messages sent from a prepared draft",
-               "record": "lookups and entries done for you (an accepted autopilot item "
-                         "without a message, a write made live, an answered Ask)"}
+               "record": "entries done for you (an accepted autopilot item without a "
+                         "message, a write made live)"}
 SAVED_METHOD = ("An estimate, not a measurement: each thing the Workbench did for a person "
                 "counts the minutes the same work takes by hand in the autopilot replay's "
                 "weights ({weights}). Only work that was used counts: a message actually "
                 "sent (a dry run counts nothing), an autopilot item accepted, a write "
-                "made live in the business system (a would-write counts nothing), an Ask "
-                "answered. Reading, dismissing and watching count "
-                "nothing. Weeks start Monday, US Eastern.")
+                "made live in the business system (a would-write counts nothing). Questions "
+                "asked, reading, dismissing and watching count nothing. Weeks start "
+                "Monday, US Eastern.")
 SAVED_TZ = "America/New_York"
 
 

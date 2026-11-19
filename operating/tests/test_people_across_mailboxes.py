@@ -421,9 +421,11 @@ class SenderLookupAtScaleTests(unittest.TestCase):
 
     def decide(self, actor, address):
         self.store._person_cache = None   # a fresh decision, never a kept one
-        started = time.perf_counter()
+        # CPU time of this process: a loaded box (suite workers, other modules)
+        # stretches wall time without making the lookup do more work.
+        started = time.process_time()
         found = self.store.resolve(self.handle(address), actor, self.audience)
-        return found, time.perf_counter() - started
+        return found, time.process_time() - started
 
     def answers(self):
         return {(name, address): self.decide(actor, address)[0] is not None

@@ -296,7 +296,21 @@ ANSWER_DUTIES = (
 # How any question becomes a query (both methods): one walk, its filters and its measure
 # in one plx.query call, counted by the tool, checked part by part before the gate.
 DECOMPOSE = (
-    "Turn the question into one query before you call: (i) the start: the record or "
+    "A count, total, average, ranking (top, most, least, largest), list or trend over "
+    "records of one type, filtered or grouped by their properties or a linked record's "
+    "(a customer's name through billed_to.name), is ONE plx.table call, sent first: "
+    "from, where, group_by (dates by month or year), measures, order_by, limit "
+    "(plx.schema names the properties and links). It computes over every record in "
+    "about a second, money split by currency; state its values and cite its groups' "
+    "records. Several sides or periods (this month and last year's, each customer "
+    "asked about) are several plx.table calls sent together in one turn, with the "
+    "plx.schema call in that same turn when you need it; never plx.query for a figure "
+    "plx.table can compute. Claim its count as {\"op\": \"count\", \"of\": its "
+    "group's members_cited} and its sum as {\"op\": \"sum\", \"of\": the measure's "
+    "inputs_citations}; when the gate calls one a lower bound (a source captured in part), "
+    "write it \"at least N\" and say which system is partly captured, and submit: no "
+    "other tool counts what was never captured. Otherwise, "
+    "turn the question into one query before you call: (i) the start: the record or "
     "records it names, in the system it names (a question naming a system's record "
     "starts from that record's object_id alone, not from every copy of it; its "
     "\"matching\" records in another system are its own copies there, along its "

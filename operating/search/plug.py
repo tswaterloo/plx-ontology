@@ -125,7 +125,8 @@ def _rank(policy: Any, actor: Any, query: str, *,
         key: tuple | None = (id(policy), actor, query, tuple(kinds or ()), k,
                              os.environ.get("PLX_PG_DSN"), os.environ.get("PLX_SEARCH_WEIGHTS"),
                              os.environ.get("PLX_RERANK"),
-                             os.environ.get("PLX_SEARCH_BQ"))
+                             os.environ.get("PLX_SEARCH_BQ"),
+                             os.environ.get("PLX_SEARCH_KINDS"))
         hash(key)
     except TypeError:
         key = None   # an unhashable reader is never reused

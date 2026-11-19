@@ -303,113 +303,12 @@ class BusinessDocuments(unittest.TestCase):
         self.assertEqual(out["rows"][0]["cell"], "B2")
         self.assertNotIn("FALSE", [r["question"] for r in out["rows"]])
 
-    def test_uat_feedback_reads_the_list_on_postgres_and_sqlite(self) -> None:
-        """CAP-L154: the view answered nothing on the served (Postgres-only) store: its
-        word-index join raised there. Every statement it runs now translates for Postgres
-        (all word tables loaded or none), and it lists the UAT list's items only, each
-        status classed, a restricted reader's unreadable item withheld; N=1/10/60."""
-        from operating.pg.sqlite_compat import translate
-
-        class Recording:
-            def __init__(self, conn):
-                self.conn, self.sql = conn, []
-
-            def execute(self, sql, *params):
-                self.sql.append(sql)
-                return self.conn.execute(sql, *params)
-
-        for n in (1, 10, 60):
-            f = Fixture()
-            base = "https://synth.sharepoint.example/sites/ops/Lists"
-            items = []
-            for i in range(n):
-                status = ("Failed Retest", "Ready for UAT", "Deferred")[i % 3]
-                items.append(f.w.obj("SharePointListItem", {
-                    "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID={i}",
-                    "fields": json.dumps({"Title": f"Item {i}", "Status": status,
-                                          "Priority": "High"}),
-                    "last_modified_date_time": "2026-11-01T10:00:00Z"}))
-            hidden = f.w.obj("SharePointListItem", {
-                "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID=hidden",
-                "fields": json.dumps({"Title": "Restricted", "Status": "Failed Retest"})},
-                audience="api:hidden")
-            other = f.w.obj("SharePointListItem", {
-                "web_url": f"{base}/SOP%20Index/DispForm.aspx?ID=1",
-                "fields": json.dumps({"Title": "Not feedback", "Status": "Failed Retest"})})
-            rec = Recording(self.conn(f))
-            out = self.ask(rec, "uat_feedback", may_read=lambda k: k != "api:hidden")
-            self.assertNotIn("error", out)
-            self.assertEqual(out["withheld_counts"].get("withheld_not_readable"), 1)
-            got = sorted(r["record"] for r in out["rows"])
-            self.assertEqual(got, sorted(items), n)
-            self.assertNotIn(other, got)
-            self.assertEqual(sum(out["totals"].values()), n)
-            self.assertEqual(out["totals"].get("open"), len(range(0, n, 3)))
-            for sql in rec.sql:
-                for words in (True, ()):
-                    translate(sql, words=words)   # raises Untranslatable when it cannot
-            self.assertNotIn(hidden, got)
-            whole = self.ask(self.conn(f), "uat_feedback")
-            self.assertIn(hidden, [r["record"] for r in whole["rows"]])
-
-    def test_uat_feedback_reads_only_the_uat_lists_items(self) -> None:
-        """SP-01 (11-15): 311 of the served 10,549 list items are UAT feedback, and every
-        item's fields were read and its gate decided on each page (3.5 s a page). Items on
-        other lists are never read past their address, whatever their number; the UAT
-        items are all listed, N=1/10/60 beside 60 others."""
-        class Recording:
-            def __init__(self, conn):
-                self.conn, self.params = conn, []
-
-            def execute(self, sql, *params):
-                self.params.append(json.dumps(params, default=str))
-                return self.conn.execute(sql, *params)
-
-        base = "https://synth.sharepoint.example/sites/ops/Lists"
-        for n in (1, 10, 60):
-            f = Fixture()
-            items = [f.w.obj("SharePointListItem", {
-                "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID={i}",
-                "fields": json.dumps({"Title": f"Item {i}", "Status": "Failed Retest"})})
-                for i in range(n)]
-            others = [f.w.obj("SharePointListItem", {
-                "web_url": f"{base}/SOP%20Index/DispForm.aspx?ID={i}",
-                "fields": json.dumps({"Title": f"Other {i}", "Status": "Failed Retest"})})
-                for i in range(60)]
-            rec = Recording(self.conn(f))
-            out = self.ask(rec, "uat_feedback")
-            self.assertEqual(sorted(r["record"] for r in out["rows"]), sorted(items), n)
-            self.assertEqual(sum(out["totals"].values()), n)
-            asked = "".join(rec.params)
-            named = lambda oid: re.search(re.escape(oid) + r"(?!\d)", asked) is not None
-            self.assertTrue(all(named(oid) for oid in items), n)   # the reads name ids
-            self.assertEqual([oid for oid in others if named(oid)], [], n)
-
-    def test_uat_feedback_pages_past_the_rows_cap_by_offset(self) -> None:
-        f = Fixture()
-        base = "https://synth.sharepoint.example/sites/ops/Lists"
-        made = [f.w.obj("SharePointListItem", {
-            "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID={i}",
-            "fields": json.dumps({"Title": f"Item {i}", "Status": "Approved",
-                                  "Resolution": "Fixed"})}) for i in range(bd.MAX_ROWS + 55)]
-        conn = self.conn(f)
-        first = self.ask(conn, "uat_feedback")
-        self.assertEqual((len(first["rows"]), first["complete"]), (bd.MAX_ROWS, False))
-        second = self.ask(conn, "uat_feedback", offset=bd.MAX_ROWS)
-        self.assertEqual((len(second["rows"]), second["complete"]), (55, True))
-        seen = [r["record"] for r in first["rows"] + second["rows"]]
-        self.assertEqual(sorted(seen), sorted(made))
-        self.assertEqual(sum(second["totals"].values()), len(made))
-        bad = bd.BusinessDocumentsTool(None, guard=lambda: None).call(
-            {"mode": "business_documents", "view": "uat_feedback", "offset": -1}, None)
-        self.assertEqual(bad["error"]["code"], "invalid_input")
-
-    def test_uat_status_classes_and_unknown_words(self) -> None:
-        self.assertEqual(bd.status_class("Failed Retest"), "open")
-        self.assertEqual(bd.status_class("Ready for UAT"), "fixed")
-        self.assertEqual(bd.status_class("Deferred"), "answered")
-        self.assertEqual(bd.status_class("Banana"), "unknown")
-        self.assertEqual(bd.status_class(None), "unknown")
+    def test_the_mrp_testing_list_view_is_gone(self) -> None:
+        # owner 11-17: the UAT/MRP testing feedback list is not ours; asking for it fails closed
+        out = bd.BusinessDocumentsTool(None, guard=lambda: None).call(
+            {"mode": "business_documents", "view": "uat_feedback"}, None)
+        self.assertEqual(out["error"]["code"], "invalid_input")
+        self.assertNotIn("uat_feedback", bd.VIEWS)
 
 
 if __name__ == "__main__":

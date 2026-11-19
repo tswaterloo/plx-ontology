@@ -41,7 +41,7 @@ import re
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Collection, Iterator, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 
 from ontology.store_ddl import VALUE_COLUMNS
 from operating.ontology_tools import StoreReader
@@ -212,18 +212,104 @@ _WORD_INDEX_SQL = (
 _WORDS_SQL = ("SELECT " + _WORD_INDEX_SQL.format(index="value_cells_words", step="value_words")
               + ", " + _WORD_INDEX_SQL.format(index="chunk_words_words", step="chunk_words"))
 # ``TraverseTools.cell_span`` on Postgres: the word rows' numbers ((src << 20) | field,
-# migration 0010) of the family's value sources, every version: the span of every cell
-# of theirs (SQLite's spans the family's cells' rowids).
-# ``PgStoreReader.family_cell_span``: the exact span's time limit, and the span of every
+# migration 0010) of the family's value sources, every version, as at most ``CELL_RUNS``
+# runs. A family's sources are not one block: each delta layer appends its sources after
+# every other family's, so after a day of layers the span from the family's first source
+# to its last held most of the store (SharePoint, 11-18: 2% of the sources in a span over
+# 56% of them, every word search of it reading mostly mail cells and dropping them one
+# item gate at a time: plx.search past its 40 s limit). The runs split that span at its
+# ``CELL_RUNS - 1`` widest gaps (the gaps between the family's own consecutive sources):
+# every source of the family lies in a run; a run may hold another family's sources too
+# (the search's audience term drops those, as before).
+# ``PgStoreReader.family_cell_span``: the exact runs' time limit, and the span of every
 # value cell (a superset of any family's) read by the key index past it
 CELL_SPAN_EXACT_MS = 8000
+CELL_RUNS = 32
 WHOLE_SPAN_SQL = ("SELECT (SELECT MIN(src) FROM ontology.value_sources) << 20, "
                   "((SELECT MAX(src) FROM ontology.value_sources) << 20) | 1048575")
-CELL_SPAN_SQL = (
-    "SELECT MIN(s.src) << 20, (MAX(s.src) << 20) | 1048575 FROM objects o "
-    "JOIN object_versions v ON v.object_id = o.object_id "
-    "JOIN value_sources s ON s.ver = v.rowid "
-    "WHERE (o.audience_key >= :low AND o.audience_key < :high) OR o.audience_key = :family")
+
+
+def cell_runs_sql(schema: str = "", *, owned: bool = False) -> str:
+    """The family's sources split at their widest gaps (``CELL_RUNS``): each row a run's
+    first source, the gap before it (NULL: the family's first source) and the family's last
+    source (``cell_runs``). Named parameters family, low, high, runs (and owned: only these
+    objects' sources); ``schema``: the tables' schema prefix (``ontology.``) or none."""
+    mine = f"o.object_id = ANY(%(owned)s) AND " if owned else ""
+    return (
+        f"WITH fam AS (SELECT DISTINCT s.src FROM {schema}objects o "
+        f"JOIN {schema}object_versions v ON v.object_id = o.object_id "
+        f"JOIN {schema}value_sources s ON s.ver = v.ver WHERE {mine}"
+        "((o.audience_key >= %(low)s AND o.audience_key < %(high)s) "
+        "OR o.audience_key = %(family)s)), "
+        "g AS (SELECT src, src - lag(src) OVER (ORDER BY src) AS gap FROM fam) "
+        "SELECT src, gap, (SELECT MAX(src) FROM fam) FROM g WHERE gap IS NULL OR gap > 1 "
+        "ORDER BY gap DESC NULLS FIRST, src LIMIT %(runs)s")
+
+
+CELL_SPAN_SQL = cell_runs_sql()
+
+
+def chunk_runs_sql(schema: str = "", *, owned: bool = False) -> str:
+    """``cell_runs_sql`` over the document-text index: the family's chunk ids (every
+    version's fields) split at their ``runs - 1`` widest gaps, rows as ``cell_runs`` reads
+    them (``shift`` 0). The same named parameters. Each delta layer's chunks are numbered
+    after every other family's, so a family's chunks are many blocks (SharePoint, 11-18:
+    868,728 chunks from id 16.3M to 33.4M of 33.4M); its runs, not its span, narrow a
+    word search of it."""
+    mine = f"o.object_id = ANY(%(owned)s) AND " if owned else ""
+    return (
+        f"WITH fam AS (SELECT t.chunk_id FROM {schema}objects o "
+        f"JOIN {schema}text_fields f ON f.object_id = o.object_id "
+        f"JOIN {schema}text_chunks t ON t.field_id = f.field_id WHERE {mine}"
+        "((o.audience_key >= %(low)s AND o.audience_key < %(high)s) "
+        "OR o.audience_key = %(family)s)), "
+        "g AS (SELECT chunk_id, chunk_id - lag(chunk_id) OVER (ORDER BY chunk_id) AS gap "
+        "FROM fam) "
+        "SELECT chunk_id, gap, (SELECT MAX(chunk_id) FROM fam) FROM g "
+        "WHERE gap IS NULL OR gap > 1 ORDER BY gap DESC NULLS FIRST, chunk_id LIMIT %(runs)s")
+
+
+CHUNK_SPAN_SQL = chunk_runs_sql()
+# ``PgStoreReader.family_chunk_span``: the exact chunk runs' time limit (11-18 live, read
+# only: SharePoint 3.9 s, Teams 2.2 s; mail past 40 s, read as not known)
+CHUNK_SPAN_EXACT_MS = 8000
+_NOT_KNOWN = object()
+
+
+def cell_runs(rows: Sequence[Sequence[Any]], shift: int = 20
+              ) -> tuple[tuple[int, int], ...] | None:
+    """``cell_runs_sql``'s rows as row-number runs ((first source << 20, (last source << 20)
+    | 1048575), ascending; ``shift`` 0: ``chunk_runs_sql``'s, first to last chunk id);
+    None when the family holds no source."""
+    if not rows:
+        return None
+    last = int(rows[0][2])
+    starts = sorted((int(src), None if gap is None else int(gap)) for src, gap, _ in rows)
+    out = []
+    for i, (src, _gap) in enumerate(starts):
+        end = last if i + 1 == len(starts) else starts[i + 1][0] - starts[i + 1][1]
+        out.append((src << shift, (end << shift) | ((1 << shift) - 1)))
+    return tuple(out)
+
+
+def merge_runs(runs: Iterable[Sequence[int]], most: int | None = CELL_RUNS
+               ) -> tuple[tuple[int, int], ...]:
+    """Inclusive runs as their union, ascending, overlapping or touching ones joined; past
+    ``most`` runs, the runs either side of the narrowest gaps joined (so a run only ever
+    widens: every number in a given run stays in one)."""
+    out: list[list[int]] = []
+    for low, high in sorted((int(a), int(b)) for a, b in runs):
+        if out and low <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], high)
+        else:
+            out.append([low, high])
+    while most is not None and len(out) > max(most, 1):
+        at = min(range(len(out) - 1), key=lambda i: (out[i + 1][0] - out[i][1], i))
+        out[at][1] = out[at + 1][1]
+        del out[at + 1]
+    return tuple((a, b) for a, b in out)
+
+
 # ``TraverseTools._slices("link")`` on Postgres without composing every link's evidence
 # text: the generic read formats 25M packed texts (``ontology.link_text``: a skeleton and
 # its slot texts) to find the few gated handles in them, minutes of a fact read. A packed
@@ -892,17 +978,43 @@ class PgStoreReader(StoreReader):
         """``TraverseTools.cell_span``'s query when the word index is read here."""
         return CELL_SPAN_SQL if self.words_loaded() else None
 
-    def family_cell_span(self, family: str) -> tuple[int, int] | None:
-        """``TraverseTools.cell_span`` of ``family`` on Postgres: ``CELL_SPAN_SQL`` within
-        ``CELL_SPAN_EXACT_MS`` (or the thread's SQL deadline, when sooner); past it, every
-        value cell's span (``WHOLE_SPAN_SQL``, two key index probes). A span only narrows
-        a word search that applies the reader's audiences itself, so a wider one reads
-        more rows and never fewer: the bulk family (mail: every version of millions of
-        objects joined) ran past 5 minutes under load on 2026-11-13, 110 s of one Ask.
-        None when the family holds no cell."""
+    def family_cell_span(self, family: str) -> tuple[tuple[int, int], ...] | None:
+        """``TraverseTools.cell_span`` of ``family`` on Postgres: its runs
+        (``CELL_SPAN_SQL``, ``cell_runs``) within ``CELL_SPAN_EXACT_MS`` (or the thread's
+        SQL deadline, when sooner); past it, every value cell's span (``WHOLE_SPAN_SQL``,
+        two key index probes) as one run. Runs only narrow a word search that applies the
+        reader's audiences itself, so a wider one reads more rows and never fewer: the
+        bulk family (mail: every version of millions of objects joined) ran past 5 minutes
+        under load on 2026-11-13, 110 s of one Ask. None when the family holds no cell."""
+        params = {"family": family, "low": family + ":", "high": family + chr(ord(":") + 1),
+                  "runs": CELL_RUNS}
+
+        def whole(pg: Any) -> tuple[tuple[int, int], ...] | None:
+            row = pg.execute(WHOLE_SPAN_SQL).fetchone()
+            return None if row is None or row[0] is None else ((int(row[0]), int(row[1])),)
+        return self._bounded_runs(CELL_SPAN_SQL, params, CELL_SPAN_EXACT_MS, 20, whole)
+
+    def family_chunk_span(self, family: str) -> tuple[tuple[int, int], ...] | None:
+        """``TraverseTools.chunk_span`` of ``family`` on Postgres: its chunk id runs
+        (``CHUNK_SPAN_SQL``, ``cell_runs`` with shift 0), ``()`` when it holds no chunk;
+        None (not known: a search of it reads every match) past ``CHUNK_SPAN_EXACT_MS``
+        or the thread's SQL deadline (the bulk family, mail: past 40 s live), or while
+        the document word index is not read here (the SQLite generation's chunk ids are
+        not these: ``ontology.chunk_families`` narrows those)."""
+        if not self.chunk_words_loaded():
+            return None
+        params = {"family": family, "low": family + ":", "high": family + chr(ord(":") + 1),
+                  "runs": CELL_RUNS}
+        runs = self._bounded_runs(CHUNK_SPAN_SQL, params, CHUNK_SPAN_EXACT_MS, 0,
+                                  lambda pg: _NOT_KNOWN)
+        return None if runs is _NOT_KNOWN else (runs or ())
+
+    def _bounded_runs(self, sql: str, params: Mapping[str, Any], limit_ms: int, shift: int,
+                      past: Callable[[Any], Any]) -> Any:
+        """``cell_runs`` of ``sql`` (``shift``) read within ``limit_ms`` (or the thread's SQL
+        deadline, when sooner); past it, ``past(pg)`` read in the same snapshot."""
         from operating import call_limits
-        params = {"family": family, "low": family + ":", "high": family + chr(ord(":") + 1)}
-        limit = CELL_SPAN_EXACT_MS / 1000
+        limit = limit_ms / 1000
         left = call_limits.seconds_left()
         if left is not None:
             limit = min(limit, left)
@@ -919,14 +1031,14 @@ class PgStoreReader(StoreReader):
             if guarded:
                 pg.execute("SAVEPOINT plx_cell_span")
             try:
-                row = self.conn.execute(CELL_SPAN_SQL, params).fetchone()
-            except sqlite3.OperationalError as error:
-                if "interrupted" not in str(error):
-                    raise
+                runs = cell_runs(pg.execute(sql, params).fetchall(), shift)
+            except psycopg.errors.QueryCanceled:
                 if guarded:
                     pg.execute("ROLLBACK TO SAVEPOINT plx_cell_span")
+                elif pg.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
+                    pg.execute("ROLLBACK")
                 pg.execute("SET statement_timeout = 0")
-                row = self.conn.execute(WHOLE_SPAN_SQL).fetchone()
+                runs = past(pg)
             else:
                 if guarded:
                     pg.execute("RELEASE SAVEPOINT plx_cell_span")
@@ -935,7 +1047,7 @@ class PgStoreReader(StoreReader):
                     pg.execute(f"SET statement_timeout = '{before}'")
                 except Exception:  # noqa: BLE001 - a lost session is opened anew with its own
                     pass
-        return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
+        return runs
 
     def link_odd(self) -> list[str] | None:
         """The links one of whose evidence slots is an odd text (``LINK_ODD_SQL``), read

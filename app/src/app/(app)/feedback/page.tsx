@@ -7,6 +7,8 @@ import { useFeedbackDialog } from "@/components/feedback-dialog";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
+import { SectionTabs } from "@/components/shell";
 import { useAuth } from "@/components/auth";
 import { getFeedback, setFeedbackStatus } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -233,7 +235,7 @@ export default function FeedbackPage() {
         title={
           <>
             {admin ? "Feedback" : "Your feedback"}
-            {list && <span className="ml-2 text-[13px] font-normal tracking-normal num text-faint"><span className="sr-only">, </span>{list.total}</span>}
+            {list && <>{" "}<span className="ml-1 text-[13px] font-normal tracking-normal num text-faint">{list.total}</span></>}
           </>
         }
         className="bg-list"
@@ -243,6 +245,8 @@ export default function FeedbackPage() {
           </button>
         }
       />
+      <SectionTabs section="admin" />
+      <PageIntro path="/feedback" />
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2 lg:px-5" data-testid="feedback-filters">
         <div className="mr-2 flex gap-0.5 max-sm:-mx-1 max-sm:mr-0 max-sm:w-[calc(100%+8px)] max-sm:overflow-x-auto max-sm:px-1" role="tablist" aria-label="Status">
           {[["", "All", allCount] as const, ...STATUSES.map((s) => [s, STATUS_WORDS[s], list?.counts[s] ?? 0] as const)].map(([value, label, n]) => (

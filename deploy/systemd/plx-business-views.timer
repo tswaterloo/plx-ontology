@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX business views refresh, every 30 minutes (rebuilds only when the deltas moved the store or the day changed)
+
+[Timer]
+OnBootSec=15min
+OnCalendar=*:7/30
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

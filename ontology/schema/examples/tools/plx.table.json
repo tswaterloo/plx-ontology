@@ -1,0 +1,263 @@
+{
+  "tool": "plx.table",
+  "examples": [
+    {
+      "name": "top_customers_by_invoiced_total_per_currency",
+      "input": {
+        "from": "SalesInvoice",
+        "where": [
+          {
+            "field": "invoice_date",
+            "op": ">=",
+            "value": "2026-01-01"
+          }
+        ],
+        "group_by": [
+          "billed_to.name"
+        ],
+        "measures": [
+          {
+            "fn": "sum",
+            "field": "total_amount"
+          },
+          {
+            "fn": "count"
+          }
+        ],
+        "limit": 2
+      },
+      "output": {
+        "type": "SalesInvoice",
+        "groups": [
+          {
+            "key": {
+              "billed_to.name": {
+                "untrusted_text": "Acme Ltd",
+                "origin": {
+                  "citation": "api://public.cust/%7B%22id%22%3A%22acme%22%7D@0000000000000001-1",
+                  "field_path": "row.name"
+                }
+              }
+            },
+            "members": 2,
+            "key_citations": {
+              "billed_to.name": {
+                "l1_handle": "api://public.cust/%7B%22id%22%3A%22acme%22%7D@0000000000000001-1",
+                "field_path": "row.name"
+              }
+            },
+            "members_cited": [
+              "api://public.inv/%7B%22id%22%3A%22i1%22%7D@0000000000000001-1",
+              "api://public.inv/%7B%22id%22%3A%22i2%22%7D@0000000000000001-1"
+            ],
+            "measures": [
+              {
+                "fn": "sum",
+                "field": "total_amount",
+                "value": "300.3",
+                "inputs": 2,
+                "inputs_citations": [
+                  {
+                    "l1_handle": "api://public.inv/%7B%22id%22%3A%22i1%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  },
+                  {
+                    "l1_handle": "api://public.inv/%7B%22id%22%3A%22i2%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  }
+                ],
+                "currency": "CAD"
+              },
+              {
+                "fn": "count",
+                "field": null,
+                "value": "2"
+              }
+            ]
+          },
+          {
+            "key": {
+              "billed_to.name": {
+                "untrusted_text": "Acme Ltd",
+                "origin": {
+                  "citation": "api://public.cust/%7B%22id%22%3A%22acme%22%7D@0000000000000001-1",
+                  "field_path": "row.name"
+                }
+              }
+            },
+            "members": 1,
+            "key_citations": {
+              "billed_to.name": {
+                "l1_handle": "api://public.cust/%7B%22id%22%3A%22acme%22%7D@0000000000000001-1",
+                "field_path": "row.name"
+              }
+            },
+            "members_cited": [
+              "api://public.inv/%7B%22id%22%3A%22i3%22%7D@0000000000000001-1"
+            ],
+            "measures": [
+              {
+                "fn": "sum",
+                "field": "total_amount",
+                "value": "300",
+                "inputs": 1,
+                "inputs_citations": [
+                  {
+                    "l1_handle": "api://public.inv/%7B%22id%22%3A%22i3%22%7D@0000000000000001-1",
+                    "field_path": "row.total_amount"
+                  }
+                ],
+                "currency": "USD"
+              },
+              {
+                "fn": "count",
+                "field": null,
+                "value": "1"
+              }
+            ]
+          }
+        ],
+        "total_groups": 3,
+        "completeness": {
+          "complete": false,
+          "truncated": true,
+          "reason": "group_page",
+          "returned": 2,
+          "total": 3
+        },
+        "withheld": {
+          "properties": null,
+          "objects": 2,
+          "reason": "marking_and_audience"
+        },
+        "partial": true,
+        "gaps": [
+          {
+            "state": "unknown",
+            "reason": "ambiguous_link",
+            "subject": "SalesInvoice",
+            "detail": "1 records link to more than one record through a field read: they are in the group with no key there"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invoices_of_a_customer_largest_first",
+      "input": {
+        "from": "SalesInvoice",
+        "where": [
+          {
+            "field": "billed_to.name",
+            "op": "contains",
+            "value": "Acme"
+          }
+        ],
+        "select": [
+          "invoice_number",
+          "total_amount"
+        ],
+        "order_by": [
+          {
+            "by": "total_amount",
+            "dir": "desc"
+          }
+        ],
+        "limit": 2
+      },
+      "output": {
+        "type": "SalesInvoice",
+        "rows": [
+          {
+            "handle": "api://public.inv/%7B%22id%22%3A%22i3%22%7D@0000000000000001-1",
+            "object_id": "SalesInvoice:portal.inv:i3",
+            "values": {
+              "invoice_number": {
+                "value": {
+                  "untrusted_text": "INV-3",
+                  "origin": {
+                    "citation": "api://public.inv/%7B%22id%22%3A%22i3%22%7D@0000000000000001-1",
+                    "field_path": "row.invoice_number"
+                  }
+                },
+                "value_type": "text",
+                "citation": {
+                  "l1_handle": "api://public.inv/%7B%22id%22%3A%22i3%22%7D@0000000000000001-1",
+                  "field_path": "row.invoice_number"
+                }
+              },
+              "total_amount": {
+                "value": "300",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://public.inv/%7B%22id%22%3A%22i3%22%7D@0000000000000001-1",
+                  "field_path": "row.total_amount"
+                },
+                "currency": "USD"
+              }
+            }
+          },
+          {
+            "handle": "api://public.inv/%7B%22id%22%3A%22i2%22%7D@0000000000000001-1",
+            "object_id": "SalesInvoice:portal.inv:i2",
+            "values": {
+              "invoice_number": {
+                "value": {
+                  "untrusted_text": "INV-2",
+                  "origin": {
+                    "citation": "api://public.inv/%7B%22id%22%3A%22i2%22%7D@0000000000000001-1",
+                    "field_path": "row.invoice_number"
+                  }
+                },
+                "value_type": "text",
+                "citation": {
+                  "l1_handle": "api://public.inv/%7B%22id%22%3A%22i2%22%7D@0000000000000001-1",
+                  "field_path": "row.invoice_number"
+                }
+              },
+              "total_amount": {
+                "value": "200.2",
+                "value_type": "money",
+                "citation": {
+                  "l1_handle": "api://public.inv/%7B%22id%22%3A%22i2%22%7D@0000000000000001-1",
+                  "field_path": "row.total_amount"
+                },
+                "currency": "CAD"
+              }
+            }
+          }
+        ],
+        "total_rows": 3,
+        "completeness": {
+          "complete": false,
+          "truncated": true,
+          "reason": "page_cap",
+          "returned": 2,
+          "total": 3
+        },
+        "withheld": {
+          "properties": null,
+          "objects": 1,
+          "reason": "marking_and_audience"
+        },
+        "partial": true,
+        "gaps": []
+      }
+    },
+    {
+      "name": "unknown_property_refused",
+      "input": {
+        "from": "SalesInvoice",
+        "group_by": [
+          "nope"
+        ]
+      },
+      "output": {
+        "error": {
+          "code": "unknown_property",
+          "message": "SalesInvoice declares no property 'nope'",
+          "hint": "call plx.schema with object_type SalesInvoice"
+        }
+      }
+    }
+  ]
+}

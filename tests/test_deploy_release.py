@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -20,6 +21,7 @@ PG_ONLY_UNITS = (
     "plx-autopilot-follow", "plx-proactive", "plx-proactive-inc", "plx-proactive-nightly",
     "plx-proactive-whole", "plx-delta", "plx-delta-compact", "plx-ontology-pg-follow",
     "plx-search-follow", "plx-search-generation", "plx-rag-backfill", "plx-truth-check",
+    "plx-alerts",
 )
 PERSONAL = re.compile(r"/home/[a-z_][a-z0-9_-]*|/Users/\w+|\btanush\b", re.IGNORECASE)
 
@@ -216,6 +218,18 @@ class DeployFilesTest(unittest.TestCase):
             self.assertNotIn("USER_UNITS=", install.replace("MOVED_USER_UNITS=", ""))
             activity = Path(tmp, "s", "plx-system-activity.service").read_text()
             self.assertIn("--weeks 13", activity)
+            # the alert rules run once after every successful business views refresh (no
+            # timer of their own), bounded, and the installer installs the unit
+            views = Path(tmp, "s", "plx-business-views.service").read_text()
+            self.assertRegex(views, r"(?m)^OnSuccess=plx-alerts\.service$")
+            alerts = Path(tmp, "s", "plx-alerts.service").read_text()
+            self.assertIn("-m operating.pg.alerts run", alerts)
+            self.assertRegex(alerts, r"(?m)^Type=oneshot$")
+            self.assertRegex(alerts, r"(?m)^MemoryMax=")
+            self.assertRegex(alerts, r"(?m)^TimeoutStartSec=")
+            self.assertFalse(Path(tmp, "s", "plx-alerts.timer").exists())
+            self.assertIn("plx-alerts", install.split('\nSYS_AFTER="', 1)[1].split('"', 1)[0]
+                          .split())
 
     def test_only_units_that_read_a_business_system_keep_its_credentials(self) -> None:
         """SEC-S-05: the shared env file holds the send-capable Graph app, the BC app and the
@@ -588,6 +602,39 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(os.readlink(current), first)
             refused = subprocess.run([tool, "switch", "nope"], env=env, capture_output=True)
             self.assertNotEqual(refused.returncode, 0)
+
+    def test_a_build_carries_the_trees_derived_code_versions(self) -> None:
+        """An API started on a release reads its derived-code versions from the release
+        (DERIVED-CODE.json, written in the tree before it is sealed) instead of parsing its
+        code before the first page; a tree whose computation fails still builds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "repo")
+            Path(repo, "operating").mkdir(parents=True)
+            Path(repo, "operating", "__init__.py").write_text("")
+            Path(repo, "operating", "derived_status.py").write_text(
+                "import json, os, sys\n"
+                "assert sys.argv[1:] == ['versions', '--release'], sys.argv\n"
+                "json.dump({'cwd': os.getcwd()}, open('DERIVED-CODE.json', 'w'))\n")
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-qm", "one"], check=True)
+            Path(tmp, "state").mkdir()
+            env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
+                   "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": f"{tmp}/state",
+                   "PLX_RELEASE_OWNER": "", "PLX_VENV": str(Path(sys.executable).parents[1])}
+            tool = str(DEPLOY / "release" / "plx-release")
+            built = subprocess.run([tool, "build", "HEAD", "--no-app"], env=env, text=True,
+                                   capture_output=True, check=True).stdout.strip().splitlines()[-1]
+            doc = json.loads(Path(tmp, "rel", built, "DERIVED-CODE.json").read_text())
+            self.assertNotEqual(Path(doc["cwd"]).name, built)   # computed before the rename
+            Path(repo, "operating", "derived_status.py").write_text("raise SystemExit(3)\n")
+            subprocess.run([*git, "commit", "-qam", "two"], check=True)
+            failed = subprocess.run([tool, "build", "HEAD", "--no-app"], env=env, text=True,
+                                    capture_output=True, check=True)
+            self.assertIn("not precomputed", failed.stderr)
+            self.assertFalse(Path(tmp, "rel", failed.stdout.strip().splitlines()[-1],
+                                  "DERIVED-CODE.json").exists())
 
     def test_an_unchanged_app_tree_reuses_the_current_build(self) -> None:
         """Process sweep 11-07: a release whose app/ tree equals the current release's copies

@@ -27,7 +27,7 @@ describe("time saved", () => {
     expect(panel).toHaveTextContent("Time saved this week (estimate)");
     expect(panel).toHaveTextContent("2.4 h");
     expect(panel).toHaveTextContent("last week 1.5 h · 4 weeks 4.4 h");
-    expect(panel).toHaveTextContent("16 lookups and entries done for you · 11 messages sent from a draft · 1 Teams message");
+    expect(panel).toHaveTextContent("16 entries done for you · 11 messages sent from a draft · 1 Teams message");
     expect(screen.getByTestId("time-saved-method")).toHaveTextContent("An estimate, not a measurement");
   });
 

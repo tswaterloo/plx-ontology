@@ -9,13 +9,14 @@ const empty = { items: [], digest: { open: 0, due_today: 0, past_due: 0 } } as u
 describe("screens read as the person viewed", () => {
   afterEach(() => act(() => setViewingAs(null)));
 
-  it("says 'you' in the owner's own view and the name while viewing as someone", () => {
+  it("says 'you' in the owner's own view and the name while viewing as someone", async () => {
+    // the verdict follows the replies read (never before it: owner walk 11-17)
     const { unmount } = render(<MyWorkList work={empty} />);
-    expect(screen.getByText("Nothing is waiting on you.")).toBeTruthy();
+    expect(await screen.findByText("Nothing is waiting on you.")).toBeTruthy();
     unmount();
     act(() => setViewingAs({ key: "0123456789abcdef0123", name: "Vince" }));
     render(<MyWorkList work={empty} />);
-    expect(screen.getByText("Nothing is waiting on Vince.")).toBeTruthy();
+    expect(await screen.findByText("Nothing is waiting on Vince.")).toBeTruthy();
     expect(screen.queryByText(/waiting on you/)).toBeNull();
   });
 });

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 API_VERSION = "1.0.0"
 
@@ -631,6 +631,17 @@ class ClarifyReply(_Model):
         return self
 
 
+class CitedTable(_Model):
+    """One result the simple Ask read (a query's rows, or the mail, Teams and document hits
+    of a search), as the reader's own session got it: what the answer's Sources line opens."""
+    about: str = Field(description="What was read, in plain words (the tables or the search).")
+    columns: list[str]
+    rows: list[list[Optional[str]]]
+    records: int = Field(ge=0, description="The rows or hits the result held (``rows`` may "
+                                           "show fewer).")
+    as_of: Optional[str] = None
+
+
 class AnswerPayload(_Model):
     answer_id: str
     question: str
@@ -696,6 +707,11 @@ class AnswerPayload(_Model):
         None, json_schema_extra=_optional,
         description="What the answer took an open question to mean, with the other "
                     "readings to change it.")
+    cited: Optional[list[CitedTable]] = Field(
+        None, json_schema_extra=_optional,
+        description="The simple Ask's sources: every result its session read. Present "
+                    "(maybe empty) only on that path, whose answer page is the answer and "
+                    "one collapsed 'Sources (n records)' line opening to these rows.")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -804,6 +820,10 @@ class SourcesEvent(_Model):
 
 class TokenEvent(_Model):
     text: str
+    whole: bool = Field(False, json_schema_extra=_optional,
+                        description="True: ``text`` is the answer so far in full (as the "
+                                    "answer gate passed it) and replaces what was shown; "
+                                    "false: ``text`` is appended.")
 
 
 class VerdictEvent(_Model):
@@ -838,7 +858,7 @@ class SuggestResponse(_Model):
     query: str
     suggestions: list[Suggestion]
     took_ms: int
-    source: Literal["search_entities", "projection", "fixture"]
+    source: Literal["search_entities", "projection", "fixture", "business"]
 
 
 # ---- home ------------------------------------------------------------------------------
@@ -944,6 +964,48 @@ class Home(_Model):
 class Money(_Model):
     amount: str = Field(pattern=r"^-?\d+(\.\d+)?$", description="Decimal string.")
     currency: str
+
+
+# ---- business record pages (the account page, the order pages) -------------------------
+
+class BizCell(_Model):
+    """One value as a page shows it: text, a day, a quantity or money; ``hidden`` when the
+    reader may not read it (never shown as empty or zero)."""
+    text: Optional[str] = None
+    day: Optional[str] = None
+    number: Optional[str] = None
+    money: Optional[Money] = None
+    href: Optional[str] = None
+    hidden: bool = False
+
+
+class BizFact(_Model):
+    label: str
+    value: BizCell
+
+
+class BizTable(_Model):
+    """A section of a record page: a titled table. ``total``: how many rows the section
+    has in all (rows may show fewer); ``note``: one plain sentence under it."""
+    key: str
+    title: str
+    columns: list[str]
+    rows: list[list[BizCell]]
+    total: Optional[int] = None
+    note: Optional[str] = None
+
+
+class BizPage(_Model):
+    """A customer, chain or supplier account page, or a PO / sales order page: every number
+    from the business tables through the reader's door, in one read."""
+    kind: Literal["customer", "chain", "supplier", "purchase_order", "sales_order"]
+    title: str
+    subtitle: Optional[str] = None
+    facts: list[BizFact]
+    sections: list[BizTable]
+    sources: str
+    as_of: Optional[str] = None
+    took_ms: int
 
 
 class CostLine(_Model):
@@ -1189,6 +1251,11 @@ class OrderRow(_Model):
     date: Optional[str] = None
     status: Optional[str] = None
     amount: Optional[Money] = None
+    amount_note: Optional[str] = Field(
+        None, description="How the amount was read when it is not the order's own total "
+                          "('from its invoices, before tax', 'from its lines'), or why there "
+                          "is none ('value not recorded', 'not shown to you'). A header "
+                          "total of 0 is never shown as the order's value.")
     sources: list[Source] = Field(default_factory=list)
 
 
@@ -1205,7 +1272,9 @@ class CustomerSummary(_Model):
     open_orders: Optional[int] = None
     open_list: list[OrderRow] = Field(default_factory=list)
     recent_orders: list[OrderRow] = Field(default_factory=list)
-    contacts: list[Person] = Field(default_factory=list)
+    contacts: list[Person] = Field(default_factory=list, description="The people who "
+                                   "wrote from this customer's mail, as its own record and "
+                                   "its confirmed copies link them; never another record's.")
     also_in: list[ObjectRef] = Field(default_factory=list,
                                      description="The same customer's record in another "
                                                  "system, as the projection links them.")
@@ -1341,6 +1410,8 @@ class DocList(_Model):
                                  description="Why the list could not be read at all.")
     stale_since: Optional[str] = _stale_since()
     reading: bool = _reading()
+    # the server's own: the read still going on (``document_memo.Memo.running``), never sent
+    _reading_token: Optional[str] = PrivateAttr(default=None)
 
 
 class RecordDocuments(_Model):
@@ -1491,6 +1562,11 @@ class ObjectPage(_Model):
         True, description="False on a quick first read (?quick=1): the record, its "
                           "timeline and links without the checks (lateness, landed cost, "
                           "people, how we know), which the full read adds.")
+    core: bool = Field(
+        False, json_schema_extra=_optional,
+        description="True on the core first read (?core=1): the record's own details "
+                    "only; its status, timeline, links, documents and checks are still "
+                    "being read (status 'reading'), never absent.")
     freshness: Freshness
     access_label: Optional[str] = Field(
         None, description="'Viewing with full-read access' when served under the reader's "
@@ -2022,6 +2098,17 @@ class BriefingGroup(_Model):
     in_top: int = Field(ge=0)
     new_since_visit: int = Field(ge=0)
     acknowledged: int = Field(ge=0)
+    as_of: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="When this type's check last finished (ISO): its items are as of then.")
+    unavailable: bool = Field(
+        False, json_schema_extra=_optional,
+        description="True when this type's check has not finished within two refresh cycles "
+                    "(or is not served on this page): its items are not shown, never as "
+                    "current; count is 0.")
+    unavailable_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="While unavailable: when its check last finished (ISO); null if never.")
 
 
 class BriefingCheck(_Model):
@@ -2035,11 +2122,14 @@ class BriefingCheck(_Model):
 
 
 class BriefingDataNote(_Model):
-    """One check's records it could not judge for one reason, as a count."""
+    """One check's records it could not judge for one reason, as a count; or (``scope``)
+    the one note on the records a check never applies to, without a count."""
     check: str
     reason: str
     count: int = Field(ge=0)
     words: str
+    scope: bool = Field(False, description="True: a note on what the check never applies "
+                                           "to (no records to open), not a gap.")
 
 
 class Briefing(_Model):
@@ -2082,7 +2172,7 @@ class Briefing(_Model):
                                             "check (each marked by its carried words).")
     data_notes: list[str] = Field(default_factory=list, description=(
         "What the checks could not judge, per check and reason, as counts only: e.g. "
-        "'late customer orders: cannot check 12 records that lack order lines'."))
+        "'64 purchase orders: no due date is recorded on the order or any copy of it'."))
     data_note_items: list[BriefingDataNote] = Field(default_factory=list, description=(
         "The same notes with their check and reason, so a reader can list the records "
         "(GET /api/briefing/unjudged)."))
@@ -2768,59 +2858,6 @@ class WorkloadGrantSheet(_Model):
     held_back: int = 0
 
 
-class RdLine(_Model):
-    id: str
-    state: Literal["waiting_on_us", "waiting_on_customer", "update_received", "closed"]
-    last_on: Optional[str] = None
-    messages_n: int = 0
-    subject: Optional[str] = None
-    citations: list[str] = Field(default_factory=list)
-
-
-class RdProject(_Model):
-    id: str
-    customer: str = Field(description="The customer's record handle (open it to read the "
-                          "name): the threads' one settled customer link, else the one customer "
-                          "record stating the sender. A thread of a supplier, or of a company "
-                          "no record names, is no project.")
-    customer_name: Optional[str] = Field(None, description="The customer's name as this "
-                                         "reader reads its record; none when it is not "
-                                         "readable (the app shows the handle).")
-    kind: Literal["stability_test", "formulation_change", "sample_request", "coa"]
-    status: Literal["waiting_on_us", "waiting_on_customer", "update_received", "closed"]
-    last_on: Optional[str] = None
-    days: int
-    idle: bool
-    owner: Optional[str] = Field(None, description="The person of ours who wrote most (an "
-                                 "Entra object id), never a name or an address.")
-    owner_is_you: bool = False
-    waiting_on: Optional[Literal["us", "customer"]] = None
-    items: list[str] = Field(default_factory=list)
-    lines: list[RdLine] = Field(default_factory=list)
-    citations: list[str] = Field(default_factory=list)
-    draft: Optional[ApprovalNudge] = Field(None, description="A drafted status update to the "
-                                           "customer, worded from kind, state and dates only.")
-    card_id: Optional[str] = Field(None, description="The update's card for ``/api/actions/*``.")
-    offers: list[CardActionOffer] = Field(default_factory=list)
-
-
-class RdBoard(_Model):
-    """R&D and sample projects per customer (sample requests, formulation changes, stability
-    tests, certificates of analysis), built only from the threads and records you may open.
-    Each project: status, last activity, owner and who it waits on, with a drafted status
-    update (sent only through the card's preview and your confirm)."""
-    as_of: str
-    idle_after_days: int
-    total: int
-    idle: int
-    projects: list[RdProject] = Field(default_factory=list)
-    sent: Literal[0]
-    writes: Literal[0]
-    stale_since: Optional[str] = _stale_since()
-    read_at: Optional[str] = _read_at()
-    reading: bool = _reading()
-
-
 class TeamPerson(_Model):
     """One person's row of the Team view. ``key`` is an opaque handle for the drill-down
     (never an object id, a name or an address)."""
@@ -3119,10 +3156,10 @@ class BriefGap(_Model):
 
 
 class Brief(_Model):
-    """A meeting prep brief, a weekly review or a QC pack (daily, audit), generated from
+    """A meeting prep brief or a weekly review, generated from
     the records you may read (no model call). Every row and figure cites its sources;
     nothing hidden is counted."""
-    kind: Literal["meeting", "weekly", "qc_daily", "qc_audit"]
+    kind: Literal["meeting", "weekly"]
     title: str
     subject: Optional[ObjectRef] = None
     subject_sources: list[Source] = Field(default_factory=list)
@@ -3499,6 +3536,15 @@ class AutopilotSuspension(_Model):
     score: Optional[AutopilotScoreBar] = None
 
 
+class AutopilotDraftChoice(_Model):
+    """Work the autopilot prepares for you only once you switch it on yourself: a draft or
+    a prepared action waiting in My work for your confirm. Nothing is sent or written by
+    itself."""
+    choice: str
+    label: str
+    on: bool = Field(description="You switched it on (and did not pause).")
+
+
 class AutopilotOptIn(_Model):
     """One of your workflows you may switch on for yourself: it passed its gate for you,
     or you switched it on before and it was suspended. Off until you switch it on."""
@@ -3517,6 +3563,14 @@ class AutopilotOptInPerson(_Model):
     workflow: str
     since: Optional[str] = None
     paused: bool = False
+
+
+class AutopilotDraftsPerson(_Model):
+    """Someone who switched one choice of prepared work on for themselves (shown to the
+    owner and admins, who can see it but cannot switch it for them)."""
+    person: str
+    choice: str
+    label: str
 
 
 class AutopilotGateNotice(_Model):
@@ -3562,6 +3616,12 @@ class AutopilotArea(_Model):
         "pass of its fresh gate the owner has not acknowledged yet, told once. Absent for "
         "everyone else.")
     switches: AutopilotSwitches
+    my_drafts: list[AutopilotDraftChoice] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="What the autopilot prepares for you: off until you switch it on.")
+    drafts_switched_on: Optional[list[AutopilotDraftsPerson]] = Field(
+        None, json_schema_extra=_optional, description="Owner and admins: who switched "
+        "which prepared work on for themselves. Absent for everyone else.")
     my_opt_ins: list[AutopilotOptIn] = Field(default_factory=list, description="Your "
                                               "workflows you may switch on for yourself.")
     paused: bool = Field(False, json_schema_extra=_optional,
@@ -3599,6 +3659,35 @@ class AutopilotDecisionRequest(_Model):
                        "refused (409), never performed or offered a confirm.")
 
 
+class AutopilotLineRequest(_Model):
+    line: str = Field(max_length=1000, description="What you want to say, in a line: the "
+                      "reply to a \"your call\" card is written from it.")
+
+
+class AutopilotPrepared(_Model):
+    """One thing prepared for you to answer: who wrote, what they wrote, and either the
+    reply (to edit, confirm, copy or open in Outlook) or the question only you can answer."""
+    item_id: str
+    sender: str
+    channel: Literal["mail", "teams"]
+    subject: str = ""
+    message: str = Field("", description="What they wrote, as far as the item keeps it.")
+    kind: Literal["reply", "your_call"]
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    body: str = Field("", description="The reply as it stands now (your edit when you made "
+                      "one); empty on a \"your call\" card until you say what to reply.")
+    edited: bool = False
+    ask: str = ""
+    facts: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class AutopilotDrafts(_Model):
+    """Your open prepared replies, newest first; mail you already answered is not here."""
+    items: list[AutopilotPrepared] = Field(default_factory=list)
+
+
 class AutopilotSwitchRequest(_Model):
     global_off: bool
 
@@ -3612,6 +3701,11 @@ class AutopilotWorkflowSwitch(_Model):
 class AutopilotOptInRequest(_Model):
     workflow: str = Field(max_length=120)
     on: bool = Field(strict=True, description="true: on for you; false: off.")
+
+
+class AutopilotDraftsRequest(_Model):
+    choice: str = Field(max_length=60, description="One of ``my_drafts``' choices.")
+    on: bool = Field(strict=True, description="true: prepare these for you; false: stop.")
 
 
 class AutopilotPauseRequest(_Model):
@@ -4173,12 +4267,15 @@ class TrustFreshness(_Model):
     system: System
     captured_at: Optional[str] = Field(None, description="The newest capture taken (the "
                                        "capture ledger).")
-    served_at: Optional[str] = Field(None, description="The newest capture applied to the "
-                                     "data the app serves.")
+    served_at: Optional[str] = Field(None, description="How far the data the app serves "
+                                     "reaches: everything captured up to this time is in it.")
     lag_seconds: Optional[int] = Field(None, description="The age of captured_at now; "
                                        "absent when no capture time is known.")
-    stale: bool = False
+    stale: bool = Field(False, description="Behind: a capture waits over an hour to be "
+                        "served, or the newest capture is older than the system's bound.")
     capture: Optional[str] = None
+    state_words: Optional[str] = Field(None, description="The system's state in one plain "
+                                       "sentence, with a failed read's reason in words.")
 
 
 class TrustAnswerScore(_Model):

@@ -6,7 +6,7 @@ import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, Message
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { BRIEF_TYPES, DOCUMENT_LIST_TYPES, PACK_TYPES, getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
+import { BRIEF_TYPES, DOCUMENT_LIST_TYPES, PACK_TYPES, getActionStates, getObject, getObjectCore, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useStaleRefresh } from "@/lib/stale-refresh";
 import { custodyOf } from "@/lib/custody";
@@ -14,11 +14,9 @@ import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { activityTitle, factMap, groupLinked, groupRelated, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
-import { Related } from "@/components/related";
-import type { TemplateDocType } from "@/lib/types";
 import { lateness, recordState, type Shown } from "@/lib/status";
-import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
-import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, missingText, SourceLine } from "./answer-parts";
+import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectSection, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
+import { conflictSentence, ConflictCard, HiddenNotice, missingText, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
 import { CustodyRail } from "./custody-rail";
 import { EtaCard } from "./eta-confirmed";
@@ -28,7 +26,6 @@ import { LabelRevisionsSection } from "./label-revisions";
 import { LinkExplorer } from "./link-explorer";
 import { RecordHistory } from "./record-history";
 import { EvidenceTrailCard, trailNextAction } from "./evidence-trail";
-import { ImpactCard } from "./impact-panel";
 import { FollowButton } from "./follow-button";
 import { ProposalCards } from "./proposal-cards";
 import { WritePanel } from "./write-panel";
@@ -46,6 +43,7 @@ import { OnRecord } from "./record/on-record";
 import { KindSections } from "./record/kind-sections";
 import { DocumentLists } from "./record/document-lists";
 import { ShowMore } from "./ui/show-more";
+import { RECORD_LIMIT_MS, TimedOut } from "./ui/skeleton";
 import { STATUS_INK, StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** Status words the API uses, mapped to a tone (kept for callers outside the record page). */
@@ -54,22 +52,11 @@ export function toneOf(state: string): Tone {
   return s === "late" ? "bad" : s === "risk" ? "warn" : s === "ok" ? "good" : "neutral";
 }
 
-/** The template types a record of this kind is written up with (the Related panel's fill). */
-function relatedDocTypes(type: string): TemplateDocType[] {
-  if (type === "SalesOrder") return ["order_confirmation", "customer_email"];
-  if (type === "PurchaseOrder") return ["po_note", "supplier_email"];
-  if (type === "Customer") return ["customer_email", "quote", "price_list"];
-  if (type === "Supplier" || type === "Vendor") return ["supplier_email"];
-  if (type === "Lot") return ["coa", "spec_sheet"];
-  if (type === "Item") return ["spec_sheet", "price_list"];
-  return [];
-}
-
 function refHref(r: ObjectRef): string {
   return safeHref(r.open_url) ?? objectHref(r.type, r.object_id);
 }
 
-function useElapsed(on: boolean): number {
+function useElapsed(on: boolean, restart: unknown = 0): number {
   const [s, setS] = useState(0);
   useEffect(() => {
     if (!on) return;
@@ -77,7 +64,7 @@ function useElapsed(on: boolean): number {
     const t0 = Date.now();
     const id = setInterval(() => setS(Math.round((Date.now() - t0) / 1000)), 1000);
     return () => clearInterval(id);
-  }, [on]);
+  }, [on, restart]);
   return s;
 }
 
@@ -121,8 +108,16 @@ function Crumb({ type, title, typeName }: { type: string; title?: string | null;
 }
 
 /** The page's shape while it gathers: the header from the link's label at once, then a step line. */
-function ObjectSkeleton({ type, label }: { type: string; label?: string | null }) {
-  const t = useElapsed(true);
+function ObjectSkeleton({ type, label, onRetry }: { type: string; label?: string | null; onRetry?: () => void }) {
+  const [tries, setTries] = useState(0);
+  const t = useElapsed(true, tries);
+  if (t * 1000 >= RECORD_LIMIT_MS)
+    return (
+      <Frame
+        crumb={<Crumb type={type} title={label} />}
+        main={<TimedOut label={`Reading ${label ?? `this ${typeLabel(type).toLowerCase()}`}`} ms={RECORD_LIMIT_MS} onRetry={onRetry && (() => (setTries((n) => n + 1), onRetry()))} />}
+      />
+    );
   const step = t < 8 ? "Reading its systems" : t < 20 ? "Searching mail and files" : "Linking receipts and emails";
   return (
     <Frame
@@ -275,7 +270,11 @@ function OrderTable({ title, rows, testId }: { title: string | null; rows: Order
                   </span>
                 )}
               </span>
-              <span className="text-right num">{r.amount ? money(r.amount) : ""}</span>
+              {r.amount ? (
+                <span className="text-right num" title={r.amount_note ? `Value ${r.amount_note}` : undefined}>{money(r.amount)}</span>
+              ) : (
+                <span className="text-right text-[12px] text-muted">{r.amount_note ?? ""}</span>
+              )}
             </Link>
           </li>
         ))}
@@ -287,7 +286,7 @@ function OrderTable({ title, rows, testId }: { title: string | null; rows: Order
 /** A customer's open and recent orders, and what is not on record about them. */
 function CustomerOrders({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrders: ObjectRef[] }) {
   const orders = (c.open_list ?? []).length + (c.recent_orders ?? []).length;
-  if (orders === 0 && fallbackOrders.length === 0 && (c.not_established ?? []).length === 0) return null;
+  if (orders === 0 && fallbackOrders.length === 0 && (c.not_established ?? []).length === 0 && (c.contacts ?? []).length === 0) return null;
   return (
     <section className="space-y-3" data-testid="customer">
       <SectionTitle
@@ -312,6 +311,13 @@ function CustomerOrders({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrd
             </li>
           ))}
         </ul>
+      )}
+      {(c.contacts ?? []).length > 0 && (
+        <p className="text-[13px] leading-5" data-testid="customer-contacts">
+          <span className="text-muted">Contacts </span>
+          {c.contacts!.map((p) => p.name).join(" · ")}
+          <span className="text-muted"> (wrote from this customer's mail)</span>
+        </p>
       )}
       {(c.not_established ?? []).length > 0 && <Missing items={c.not_established!.map((n) => readable(n))} />}
     </section>
@@ -666,13 +672,17 @@ type LinkSection = { group: LinkGroup; heading: string; records: (LinkRef & { ti
 /** "Suggested" beside a link read from a reference (a mail naming the order), not a key. */
 function TierNote({ tier, possible }: { tier?: string | null; possible?: boolean }) {
   if (tier === "contradicted") return <span className="text-[12px] text-muted">Disputed link</span>;
-  if (!possible && (!tier || tier === "verified")) return null;
+  // a suggested link is one only a lead or disputed link reaches (``possible``); a corroborated
+  // one is counted with the confirmed ones and says nothing (owner walk 11-17 C6)
+  if (!possible) return null;
   return <span className="text-[12px] text-muted">Suggested link</span>;
 }
 
 /** One link group's records, each opening its page, with the mail, documents and rows its link was read from. */
-function LinkGroupRows({ s, max, evidence }: { s: LinkSection; max: number; evidence: boolean }) {
+function LinkGroupRows({ s: section, max, evidence, suggested = true }: { s: LinkSection; max: number; evidence: boolean; suggested?: boolean }) {
   const [open, setOpen] = useState(false);
+  // suggested links folded away: only the confirmed records, and no count of the others
+  const s = suggested ? section : { ...section, records: section.records.filter((r) => !r.possible), group: { ...section.group, possible: 0 } };
   // solid records are counted; possibly related ones (lead links) are said apart, never counted;
   // what is loaded opens in place, what the page never loaded is said as a count of its own
   const shown = open ? s.records : s.records.slice(0, max);
@@ -731,16 +741,32 @@ function FulfilmentCard({ sections }: { sections: LinkSection[] }) {
   );
 }
 
-/** Everything else one hop away, grouped by link kind. */
+/** How many records only a suggested (lead or disputed) link reaches in a group. */
+const suggestedIn = (s: LinkSection) => Math.max(s.group.possible ?? 0, s.records.filter((r) => r.possible).reduce((n, r) => n + (r.times ?? 1), 0));
+/** How many records a confirmed link reaches in a group. */
+const confirmedIn = (s: LinkSection) => Math.max(s.group.count ?? 0, s.records.filter((r) => !r.possible).length);
+
+/** Everything else one hop away, grouped by link kind: the confirmed links first; the
+ * suggested ones (a lead or disputed link only) behind one toggle, never mixed in. */
 function LinkGroupsCard({ sections }: { sections: LinkSection[] }) {
+  const [suggested, setSuggested] = useState(false);
   if (sections.length === 0) return null;
+  const hidden = sections.reduce((n, s) => n + suggestedIn(s), 0);
+  const shown = suggested ? sections : sections.filter((s) => confirmedIn(s) > 0);
+  // nothing confirmed and nothing suggested: no heading over an empty box
+  if (shown.length === 0 && hidden === 0) return null;
   return (
     <section data-testid="related">
       <SectionTitle>Linked</SectionTitle>
       <div className="space-y-3">
-        {sections.map((s) => (
-          <LinkGroupRows key={`${s.group.link_type}-${s.group.direction}`} s={s} max={6} evidence={false} />
+        {shown.map((s) => (
+          <LinkGroupRows key={`${s.group.link_type}-${s.group.direction}`} s={s} max={6} evidence={false} suggested={suggested} />
         ))}
+        {hidden > 0 && (
+          <button type="button" onClick={() => setSuggested((v) => !v)} className="cursor-pointer text-[12px] text-muted underline decoration-border-strong underline-offset-2 hover:text-fg" data-testid="suggested-toggle" aria-expanded={suggested}>
+            {suggested ? "Hide suggested links" : `Show ${plural(hidden, "suggested link")}`}
+          </button>
+        )}
       </div>
     </section>
   );
@@ -1007,6 +1033,20 @@ function SectionSkeleton({ name, title, lines = 0 }: { name: SectionName; title:
   );
 }
 
+/**
+ * A part of the page the record's walk reads (its status, timeline, links, orders and
+ * documents) while only the core read is in: quiet bars in its place, never "none".
+ */
+function WalkSkeleton({ part, title, lines }: { part: string; title: string; lines: number }) {
+  return (
+    <div data-testid={`walk-loading-${part}`}>
+      <p className="sr-only">Reading {title.toLowerCase()}</p>
+      <SectionTitle>{title}</SectionTitle>
+      <Bars n={lines} className="max-w-lg" />
+    </div>
+  );
+}
+
 /** Every source the record's facts cite, once each. */
 function factSources(obj: ObjectPage): Source[] {
   const seen = new Set<string>();
@@ -1020,16 +1060,23 @@ function factSources(obj: ObjectPage): Source[] {
   return out;
 }
 
-/** "2 customers share this name. Showing the Portal record." with a link to each other one. */
+/** The system a record's id names ("Customer:portal.app_customer:…" -> Portal). */
+function systemOfId(id: string): string | null {
+  const binding = id.split(":")[1] ?? "";
+  return binding.startsWith("bc.") ? SYSTEM_LABEL.BC : binding.startsWith("portal.") ? SYSTEM_LABEL.Portal : null;
+}
+
+/** "3 other records in Business Central and Portal look like the same customer. Nothing in the records confirms they are one, so their figures are not combined; this page shows the Portal record." with a link to each one. Never merged here: only a confirmed link combines records. */
 function SameName({ obj }: { obj: ObjectPage }) {
   const others = obj.customer?.same_name ?? [];
   if (others.length === 0) return null;
-  // the system the record's own id names ("Customer:portal.app_customer:…")
-  const binding = obj.object_id.split(":")[1] ?? "";
-  const system = binding.startsWith("bc.") ? SYSTEM_LABEL.BC : binding.startsWith("portal.") ? SYSTEM_LABEL.Portal : null;
+  const systems = [...new Set(others.map((r) => systemOfId(r.object_id)).filter(Boolean))];
+  const own = systemOfId(obj.object_id);
   return (
-    <p className="mt-1.5 text-[12px] leading-4 text-muted" data-testid="same-name">
-      {others.length + 1} customers share this name.{system ? ` Showing the ${system} record.` : ""}{" "}
+    <p className="mt-1.5 max-w-[72ch] text-[12px] leading-4 text-muted" data-testid="same-name">
+      {plural(others.length, "other record")}
+      {systems.length ? ` in ${systems.join(" and ")}` : ""} look{others.length === 1 ? "s" : ""} like the same customer. Nothing in the records confirms they are one, so their figures are not combined
+      {own ? `; this page shows the ${own} record` : ""}.{" "}
       {others.map((r, i) => (
         <span key={r.object_id}>
           {i > 0 ? " · " : ""}
@@ -1077,7 +1124,7 @@ export function MissingActions({ className }: { className?: string }) {
         Search for it
       </button>
       <Link href="/" className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]">
-        Open My work
+        Open Home
       </Link>
     </div>
   );
@@ -1122,9 +1169,10 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
    * screen and is replaced when the fresh read lands, and a failed quiet read leaves it be.
    */
   const load = useCallback((quiet = false) => {
-    // The quick first read (the record, its timeline and links) shows at once; each slow
-    // section (lateness, people, landed cost, how we know, margin) is its own call after it, a
-    // skeleton in its place until it lands.
+    // The core read (the record's own details) shows first; the quick read (its status,
+    // timeline, links and documents) replaces it when it lands, and each slow section
+    // (lateness, people, landed cost, how we know, margin) is its own call, started as soon
+    // as either read names the record, a skeleton in its place until it lands.
     const c = new AbortController();
     if (!quiet) {
       setError(null);
@@ -1134,54 +1182,87 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       setFailed(new Set());
       setSectionStale(null);
     }
+    // the sections landed so far, merged again into the quick read when it replaces the core
+    const landed: ObjectSection[] = [];
+    let quickIn = false;
+    let started = false;
+    const sections = (first: ObjectPage) => {
+      if (started) return;
+      started = true;
+      // the margin is a customer's or a sales order's only
+      // what a person corresponds about is a person's only; the sheets-and-mail lists a customer's, supplier's or item's; a formula is a product's
+      const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person") && (n !== "documents" || DOCUMENT_LIST_TYPES.includes(first.type)) && (n !== "formula" || FORMULA_TYPES.includes(first.type)));
+      if (!quiet) setPending(new Set(names));
+      else setFailed(new Set());
+      // a quiet read states the sections' age once they have all landed, so the "refreshing"
+      // note does not blink off between reads (that would restart the retry budget)
+      let waiting = names.length;
+      let oldest: string | null = null;
+      for (const name of names) {
+        getObjectSection(name, first.type, first.object_id, c.signal)
+          .then((sec) => {
+            if (c.signal.aborted) return;
+            if (sec.stale_since) {
+              oldest = !oldest || sec.stale_since < oldest ? sec.stale_since : oldest;
+              if (!quiet) setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
+            }
+            landed.push(sec);
+            setObj((o) => (o ? mergeSection(o, sec) : o));
+          })
+          .catch(() => {
+            if (!c.signal.aborted) setFailed((f) => new Set(f).add(name));
+          })
+          .finally(() => {
+            if (c.signal.aborted) return;
+            if (!quiet)
+              setPending((p) => {
+                const n = new Set(p);
+                n.delete(name);
+                return n;
+              });
+            else if (--waiting === 0) setSectionStale(oldest);
+          });
+      }
+    };
+    if (!quiet)
+      // a core read that fails says nothing: the quick read answers (or reports the problem)
+      getObjectCore(type, id, c.signal)
+        .then((core) => {
+          if (c.signal.aborted || quickIn) return;
+          // the reader's whole page already kept: it is the answer, no section is asked for
+          if (!core.core && core.complete !== false) {
+            setObj(core);
+            return;
+          }
+          setObj(landed.reduce(mergeSection, core));
+          sections(core);
+        })
+        .catch(() => undefined);
     getObject(type, id, c.signal, true)
       .then((first) => {
         if (c.signal.aborted) return;
-        setObj(first);
+        quickIn = true;
         if (quiet) {
           setError(null);
           setNotFound(false);
         }
         // a page read whole (kept with every section) asks for nothing more; else each
-        // section is asked for once the quick read names the record (the server started
-        // them beside the quick read)
+        // section is asked for once a read names the record (the server started them beside
+        // the quick read)
         if (first.complete !== false) {
+          setObj(first);
           if (quiet) setSectionStale(null);
+          else if (started) {
+            // started on the core read: the whole page holds every section already
+            c.abort();
+            setPending(new Set());
+            setFailed(new Set());
+            setSectionStale(null);
+          }
           return;
         }
-        // the margin is a customer's or a sales order's only
-        // what a person corresponds about is a person's only; the sheets-and-mail lists a customer's, supplier's or item's; a formula is a product's
-        const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person") && (n !== "documents" || DOCUMENT_LIST_TYPES.includes(first.type)) && (n !== "formula" || FORMULA_TYPES.includes(first.type)));
-        if (!quiet) setPending(new Set(names));
-        else setFailed(new Set());
-        // a quiet read states the sections' age once they have all landed, so the "refreshing"
-        // note does not blink off between reads (that would restart the retry budget)
-        let waiting = names.length;
-        let oldest: string | null = null;
-        for (const name of names) {
-          getObjectSection(name, first.type, first.object_id, c.signal)
-            .then((sec) => {
-              if (c.signal.aborted) return;
-              if (sec.stale_since) {
-                oldest = !oldest || sec.stale_since < oldest ? sec.stale_since : oldest;
-                if (!quiet) setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
-              }
-              setObj((o) => (o ? mergeSection(o, sec) : o));
-            })
-            .catch(() => {
-              if (!c.signal.aborted) setFailed((f) => new Set(f).add(name));
-            })
-            .finally(() => {
-              if (c.signal.aborted) return;
-              if (!quiet)
-                setPending((p) => {
-                  const n = new Set(p);
-                  n.delete(name);
-                  return n;
-                });
-              else if (--waiting === 0) setSectionStale(oldest);
-            });
-        }
+        setObj(landed.reduce(mergeSection, first));
+        sections(first);
       })
       .catch((e) => {
         if (c.signal.aborted || quiet) return;
@@ -1262,7 +1343,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     );
   if (!obj)
     // a friendly path's reference ("106001", "DIVE11") names the record while it loads
-    return <ObjectSkeleton type={type} label={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />;
+    return <ObjectSkeleton type={type} label={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} onRetry={retry} />;
 
   const head = recordHead(obj);
   // an order's life drawn as one line (PO, sales order, assembly); none for a customer or supplier
@@ -1273,6 +1354,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const isSupplier = obj.type === "Supplier" || obj.type === "Vendor";
   const isAo = obj.type === "AssemblyOrder" || obj.type === "ManufacturingOrder";
   const isParty = isCustomer || isSupplier;
+  // only the core read is in: the record's own details; its walk is still read
+  const walking = obj.core === true;
   const conflicts = obj.conflicts ?? [];
   const salesOrders = (obj.related ?? []).filter((r) => r.type === "SalesOrder");
   // an order's customer is its customer link's (wherever the hop came), else the related list's
@@ -1380,18 +1463,22 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
           )}
         </h1>
         <span aria-hidden className="mt-1.5 mb-1 block h-[2px] w-10 bg-accent" data-testid="title-rule" />
-        {(subline || (isCustomer && (obj.customer?.also_in ?? []).length > 0)) && (
-          <p className="mt-0.5 text-[13px] leading-5 text-muted">
+        {subline && (
+          <p className={cn("mt-0.5 leading-5 text-muted", isCustomer ? "text-[12px]" : "text-[13px]")} data-testid="object-subline">
             {subline}
-            {isCustomer &&
-              (obj.customer?.also_in ?? []).map((r) => (
-                <span key={r.object_id}>
-                  {subline ? " · " : ""}also recorded as{" "}
-                  <Link href={refHref(r)} className="text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg">
-                    {r.label}
-                  </Link>
-                </span>
-              ))}
+          </p>
+        )}
+        {isCustomer && (obj.customer?.also_in ?? []).length > 0 && (
+          <p className="mt-0.5 text-[12px] leading-5 text-muted" data-testid="also-in">
+            The same customer is also recorded as{" "}
+            {(obj.customer?.also_in ?? []).map((r, i) => (
+              <span key={r.object_id}>
+                {i > 0 ? " · " : ""}
+                <Link href={refHref(r)} className="text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg">
+                  {r.label}
+                </Link>
+              </span>
+            ))}
           </p>
         )}
         {merged ? (
@@ -1414,10 +1501,10 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
           </p>
         )}
         {isCustomer && <SameName obj={obj} />}
-        {pending.size > 0 && (
+        {(pending.size > 0 || walking) && (
           <p className="mt-2 inline-flex items-center gap-1.5 text-[12px] leading-4 text-muted" role="status" data-testid="checking" data-pending="">
             <span className="size-1.5 rounded-full bg-[var(--dot-neutral)]" aria-hidden />
-            Loading {sectionWords(pending)}…
+            Loading {walking ? `its status, history and links${pending.size > 0 ? `; ${sectionWords(pending)}` : ""}` : sectionWords(pending)}…
           </p>
         )}
         {pending.size === 0 && failed.size > 0 && (
@@ -1480,6 +1567,11 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
   });
 
+  // an order's missing steps are said only once it is issued or released: a draft has none yet
+  const orderState = f.get("status")?.value ?? "";
+  const showNotOnRecord = !(isPo || isSalesOrder || isAo) || /^(issued|released)\b/i.test(orderState.trim());
+  const orderLines = isPo || isSalesOrder;
+
   const tabs = (
     <div role="tablist" aria-label="Record views" className="-mt-3 flex gap-1 border-b border-border text-[13px]" data-testid="record-tabs">
       {(["overview", "history"] as const).map((t) => (
@@ -1518,8 +1610,10 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       {header}
       {tabs}
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
-      <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} />
+      <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} named={counterpart?.label ?? null} />
       {figures}
+      {/* an order's lines are its main content: right under the total, before everything else */}
+      {orderLines && (pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={3} /> : <LinesTable lines={lines} />)}
       <OnRecord obj={obj} />
       {isParty && <PartyPulse obj={obj} />}
       <KindSections obj={obj} />
@@ -1535,11 +1629,17 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       )}
       {isPo && (trailPending ? <SectionSkeleton name="trail" title="Supplier confirmation" lines={0} /> : <EtaCard eta={trail?.eta} />)}
       {isAo && <AoSteps obj={obj} />}
-      {isSupplier && <SupplierOrders obj={obj} />}
-      {obj.customer && <CustomerOrders c={obj.customer} fallbackOrders={salesOrders} />}
+      {walking && isParty ? (
+        <WalkSkeleton part="orders" title="Orders" lines={3} />
+      ) : (
+        <>
+          {isSupplier && <SupplierOrders obj={obj} />}
+          {obj.customer && <CustomerOrders c={obj.customer} fallbackOrders={salesOrders} />}
+        </>
+      )}
       {(isCustomer || isSalesOrder) &&
         (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} choices={obj.profitability_choices ?? []} />)}
-      {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />}
+      {!orderLines && (isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />)}
       {(isPo || isSalesOrder || isCustomer) && trailPending ? (
         <SectionSkeleton name="trail" title={isPo ? "Evidence" : "Materials"} lines={3} />
       ) : (
@@ -1558,22 +1658,24 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />
       )}
       {FORMULA_TYPES.includes(obj.type) && (pending.has("formula") ? <SectionSkeleton name="formula" title="Formula" lines={3} /> : <FormulaCard f={obj.formula ?? null} />)}
-      <FulfilmentCard sections={links.fulfilment} />
-      {(isCustomer || isSalesOrder) && <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />}
-      <ImpactCard type={obj.type} id={obj.object_id} />
+      {!walking && <FulfilmentCard sections={links.fulfilment} />}
+      {(isCustomer || isSalesOrder) && (walking ? <WalkSkeleton part="timeline" title="History" lines={4} /> : <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />)}
       {DOCUMENT_LIST_TYPES.includes(obj.type) && (pending.has("documents") ? <SectionSkeleton name="documents" title="Sheets and mail" lines={3} /> : <DocumentLists docs={obj.documents} />)}
       {PACK_TYPES.includes(obj.type) && <DocumentsSection type={obj.type} id={obj.object_id} />}
-      <Linked items={obj.linked ?? []} withheld={obj.linked_withheld ?? 0} unavailable={obj.linked_unavailable ?? 0} countedAll={obj.linked_counted_all ?? true} />
+      {walking ? <WalkSkeleton part="linked" title="Messages and documents" lines={3} /> : <Linked items={obj.linked ?? []} withheld={obj.linked_withheld ?? 0} unavailable={obj.linked_unavailable ?? 0} countedAll={obj.linked_counted_all ?? true} />}
       {obj.type === "Product" && <LabelChangesSection objectId={obj.object_id} />}
       {["Product", "Customer", "SalesOrder", "AssemblyOrder"].includes(obj.type) && (
         <LabelRevisionsSection objectId={obj.object_id} />
       )}
-      <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
-      {notOnRecord.length > 0 && (
-        <section data-testid="not-found">
-          <SectionTitle>Not on record</SectionTitle>
-          <Missing items={notOnRecord} />
-        </section>
+      {showNotOnRecord && notOnRecord.length > 0 && (
+        <details className="group" data-testid="not-found">
+          <summary className="cursor-pointer list-none text-[13px] text-muted hover:text-fg" data-testid="not-found-summary">
+            {notOnRecord.length === 1 ? "1 thing" : `${notOnRecord.length} things`} not on record yet
+          </summary>
+          <div className="mt-2">
+            <Missing items={notOnRecord} />
+          </div>
+        </details>
       )}
       <HiddenNotice hidden={obj.hidden} />
     </>
@@ -1606,7 +1708,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       )}
       {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={2} /> : <People people={obj.people ?? []} />}
       {obj.type === "Person" && (pending.has("knows") ? <SectionSkeleton name="knows" title="Works on" lines={3} /> : <KnowsCard k={obj.knows ?? null} />)}
-      {byLink ? <LinkGroupsCard sections={links.linked} /> : <RelatedCard refs={otherRelated} />}
+      {walking ? <WalkSkeleton part="links" title="Linked records" lines={3} /> : byLink ? <LinkGroupsCard sections={links.linked} /> : <RelatedCard refs={otherRelated} />}
+      <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
       {sources.length > 0 && (
         <section>
           <SectionTitle>Sources</SectionTitle>
@@ -1622,15 +1725,11 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
           </ul>
         </section>
       )}
-      {!(isCustomer || isSalesOrder) && <Activity events={obj.timeline ?? []} />}
+      {!(isCustomer || isSalesOrder) && (walking ? <WalkSkeleton part="timeline" title="Activity" lines={3} /> : <Activity events={obj.timeline ?? []} />)}
       {/* a record whose header holds every fact: the questions asked next about its kind, not the header again */}
-      {facts.length === 0 && sources.length === 0 && (obj.people ?? []).length === 0 && !byLink && otherRelated.length === 0 && (
+      {!walking && facts.length === 0 && sources.length === 0 && (obj.people ?? []).length === 0 && !byLink && otherRelated.length === 0 && (
         <AskNext type={obj.type} objectId={obj.object_id} label={head.title || recordLabel(obj.type, obj.label)} party={counterpart?.label ?? null} />
       )}
-      <Related records={[obj.object_id]} label={head.title || recordLabel(obj.type, obj.label)} docTypes={relatedDocTypes(obj.type)} className="mt-6" />
-      <div className="text-[12px]">
-        <FreshnessLabel freshness={obj.freshness} />
-      </div>
     </>
   );
 

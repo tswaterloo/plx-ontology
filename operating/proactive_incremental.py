@@ -67,7 +67,7 @@ import resource
 import sqlite3
 import sys
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import store as ostore
 
@@ -85,6 +85,9 @@ CHUNK = 500
 # changed meanwhile. Waiting for a full pass held the unit for up to 15 minutes a tick
 # (20 wall-hours of waiting in two days, CC-P-03); ``--wait-seconds`` still asks for it.
 LOCK_WAIT_SECONDS = 0.0
+# the fingerprint's form (``fingerprints``): kept prints of another form are dropped
+PRINT_FORMAT = 2
+PRINT_ROWS = 100_000   # link rows a fingerprint read takes at once (``_link_reads``)
 
 
 @dataclass(frozen=True)
@@ -170,42 +173,105 @@ def _chunks(items: Sequence[Any], size: int = CHUNK) -> Iterable[Sequence[Any]]:
         yield items[start:start + size]
 
 
-def fingerprints(st: pe._Store, ids: Iterable[str]) -> dict[str, tuple[str, list[str]]]:
+def read_kinds() -> frozenset[str]:
+    """Every link type an incremental rule's walk follows (``INPUTS``: links, identity
+    clusters, hubs). A link of another type moves no subject any rule judges here, so the
+    neighbours kept, the earlier links and the walks read only these: a mailbox owner's
+    person record holds ~0.5 M mail links of no rule's type (11-17: fingerprinting and
+    walking them grew the pass past its 12 GB cap)."""
+    _declared()
+    return frozenset(t for spec in INPUTS.values()
+                     for t in (*spec.links, *spec.identity, *spec.hubs))
+
+
+def fingerprints(st: pe._Store, ids: Iterable[str], kinds: Iterable[str] | None = None
+                 ) -> dict[str, tuple[str, list[str]]]:
     """object id -> (fingerprint, the records it is linked to) as the store reads now: its
     type and audience, its current versions (handle, digest, markings), whether it is
     removed, and every current link at it (type, ends, tier, markings). A record the store
-    does not hold has the fingerprint ``absent``."""
+    does not hold has the fingerprint ``absent``.
+
+    The links are folded into the digest as a set (each row's own hash summed), in reads
+    of at most ``PRINT_ROWS`` rows (``_link_reads``), never holding a record's links: a
+    person with half a million mail links costs a bounded read at a time. ``kinds``: the
+    link types its neighbours are listed over (None: every type); the fingerprint still
+    covers every link (the watchlists are told of any change)."""
     ids = sorted(set(ids))
+    keep = None if kinds is None else frozenset(kinds)
     out: dict[str, tuple[str, list[str]]] = {}
     for part in _chunks(ids):
         held = json.dumps(list(part))
-        rows: dict[str, list[Any]] = {oid: [] for oid in part}
-        found = set()
+        head: dict[str, list[Any]] = {}
         for r in st.conn.execute(
                 "SELECT o.object_id, o.object_type, o.audience_key, "
                 + ostore.removed_at_sql("o.object_id") + " AS gone FROM objects o "
                 "WHERE o.object_id IN (SELECT value FROM json_each(?))", (held,)):
-            found.add(r[0])
-            rows[r[0]].append(("o", r[1], r[2], bool(r[3])))
+            head[r[0]] = [("o", r[1], r[2], bool(r[3]))]
         for r in st.conn.execute(
                 "SELECT object_id, l1_handle, digest, markings FROM object_versions "
                 "WHERE superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?))",
                 (held,)):
-            rows[r[0]].append(("v", r[1], r[2], r[3]))
+            if r[0] in head:
+                head[r[0]].append(("v", r[1], r[2], r[3]))
+        sums = dict.fromkeys(head, 0)
         neighbors: dict[str, set[str]] = {oid: set() for oid in part}
-        for row in st.touching(part, every=True):
-            _rowid, link_id, link_type, a, b, tier, marks, _gone = row
-            for end, other in ((a, b), (b, a)):
-                if end in rows:
-                    rows[end].append(("l", link_id, link_type, a, b, tier, marks))
-                    neighbors[end].add(other)
+        for end, rows in _link_reads(st, list(part)):
+            mark = end[0].encode()
+            for r in rows:
+                if r[0] in sums:
+                    row = mark + json.dumps(list(r[2:])).encode()
+                    sums[r[0]] = (sums[r[0]] + int.from_bytes(
+                        hashlib.sha256(row).digest()[:16], "big")) % (1 << 128)
+                if keep is None or r[3] in keep:
+                    neighbors[r[0]].add(r[1])
         for oid in part:
-            if oid not in found:
+            if oid not in head:
                 out[oid] = ("absent", sorted(neighbors[oid]))
                 continue
-            text = json.dumps(sorted(rows[oid], key=repr), sort_keys=True)
-            out[oid] = (hashlib.sha256(text.encode()).hexdigest()[:32], sorted(neighbors[oid]))
+            h = hashlib.sha256(b"print2")
+            for row in sorted(head[oid], key=repr):
+                h.update(json.dumps(row).encode() + b"\n")
+            h.update(b"links:%032x" % sums[oid])
+            out[oid] = (h.hexdigest()[:32], sorted(neighbors[oid]))
     return out
+
+
+_LINKS_AT = ("SELECT l.{end}, l.{other}, l.link_id, l.link_type, l.from_object, l.to_object, "
+             "l.tier, l.markings FROM link_rows l WHERE l.superseded_at IS NULL AND ")
+
+
+def _link_reads(st: pe._Store, ids: list[str]) -> Iterator[tuple[str, list[Any]]]:
+    """(the end read, rows (that end, the other, link id, type, from, to, tier, markings))
+    of every current link at ``ids``, each read at most ``PRINT_ROWS`` rows: a read over
+    more is split in halves, and one record over it alone (a mailbox owner's person) is
+    read a page at a time in its key order. A read returns all its rows at once
+    (Postgres), and the ids of a chunk sort side by side, so a few mailbox owners shared
+    one read of millions of rows (11-17)."""
+    for end, other in (("from_object", "to_object"), ("to_object", "from_object")):
+        stack = [ids]
+        while stack:
+            part = stack.pop()
+            rows = st.conn.execute(
+                _LINKS_AT.format(end=end, other=other)
+                + f"l.{end} IN (SELECT value FROM json_each(?)) LIMIT ?",
+                (json.dumps(part), PRINT_ROWS + 1)).fetchall()
+            if len(rows) <= PRINT_ROWS:
+                yield end, rows
+            elif len(part) > 1:
+                half = len(part) // 2
+                stack.extend((part[half:], part[:half]))
+            else:
+                del rows
+                offset = 0
+                while True:
+                    page = st.conn.execute(
+                        _LINKS_AT.format(end=end, other=other) + f"l.{end} = ? "
+                        "ORDER BY l.link_id, l.link_type LIMIT ? OFFSET ?",
+                        (part[0], PRINT_ROWS, offset)).fetchall()
+                    yield end, page
+                    if len(page) < PRINT_ROWS:
+                        break
+                    offset += len(page)
 
 
 def _pointer(store: Path) -> tuple[str | None, list[str]]:
@@ -317,25 +383,33 @@ class BaseUnreadable(RuntimeError):
     an error (judging with no earlier neighbours would silently judge less)."""
 
 
-def _neighbors_sql(conn: Any, ids: Sequence[str], sql: str, param: Callable[[list], Any],
-                   out: dict[str, set[str]]) -> None:
+def _neighbors_sql(conn: Any, ids: Sequence[str], sql: str, typed: str,
+                   param: Callable[[list], Any], out: dict[str, set[str]],
+                   types: Iterable[str] | None = None) -> None:
+    """``sql`` per end, ``typed`` appended (the link types bound after the ids) when only
+    ``types`` are read: filtered in the read, so a mailbox owner's mail links never
+    come back."""
+    kinds = None if types is None else param(sorted(types))
     for part in _chunks(sorted(ids)):
         held = param(list(part))
         for end, other in (("from_object", "to_object"), ("to_object", "from_object")):
-            for a, b in conn.execute(sql.format(end=end, other=other), (held,)):
+            text = sql.format(end=end, other=other) + ("" if kinds is None else typed)
+            for a, b in conn.execute(text, (held,) if kinds is None else (held, kinds)):
                 out.setdefault(a, set()).add(b)
 
 
-def _file_neighbors(base: Path, ids: Sequence[str], out: dict[str, set[str]]) -> None:
+def _file_neighbors(base: Path, ids: Sequence[str], out: dict[str, set[str]],
+                    types: Iterable[str] | None = None) -> None:
     """The links of ``ids`` in the generation file ``base``; sqlite3.Error when unreadable."""
     with closing(sqlite3.connect(f"file:{base}?mode=ro", uri=True)) as conn:
         _neighbors_sql(conn, ids, "SELECT {end}, {other} FROM link_rows WHERE superseded_at "
-                       "IS NULL AND {end} IN (SELECT value FROM json_each(?))", json.dumps,
-                       out)
+                       "IS NULL AND {end} IN (SELECT value FROM json_each(?))",
+                       " AND link_type IN (SELECT value FROM json_each(?))", json.dumps,
+                       out, types)
 
 
 def _pg_neighbors(ids: Sequence[str], out: dict[str, set[str]],
-                  target: str | None = None) -> None:
+                  target: str | None = None, types: Iterable[str] | None = None) -> None:
     """The links of ``ids`` in the Postgres ontology (``PLX_PG_DSN``), read by the link end
     indexes. Raises when it cannot be read or holds no loaded links (a load in progress)."""
     import psycopg
@@ -346,11 +420,13 @@ def _pg_neighbors(ids: Sequence[str], out: dict[str, set[str]],
                         ).fetchone() is None:
             raise BaseUnreadable("postgres_links_not_loaded")
         _neighbors_sql(conn, ids, "SELECT {end}, {other} FROM ontology.link_rows WHERE "
-                       "superseded_at IS NULL AND {end} = ANY(%s)", list, out)
+                       "superseded_at IS NULL AND {end} = ANY(%s)",
+                       " AND link_type = ANY(%s)", list, out, types)
 
 
 def _base_neighbors(base: Path | None, ids: Sequence[str], *,
-                    postgres: bool = False) -> dict[str, set[str]]:
+                    postgres: bool = False,
+                    types: Iterable[str] | None = None) -> dict[str, set[str]]:
     """The records each of ``ids`` was linked to before the changes being taken in.
 
     The engine reading the SQLite generation (``postgres`` False): the links in the
@@ -360,6 +436,7 @@ def _base_neighbors(base: Path | None, ids: Sequence[str], *,
     file's when one is still there (``PLX_ONTOLOGY_PG=1``: the links before any layer, a
     superset judged, never less). With Postgres the only store the file is gone and
     Postgres alone is read.
+    ``types``: only links of these types (``read_kinds``; None: every type).
     Raises :class:`BaseUnreadable` when no store can be read (Postgres down or not loaded,
     or the SQLite generation file missing or unreadable): never an empty answer that
     would judge fewer subjects."""
@@ -369,21 +446,21 @@ def _base_neighbors(base: Path | None, ids: Sequence[str], *,
     path = Path(base) if base is not None else None
     if postgres:
         try:
-            _pg_neighbors(ids, out)
+            _pg_neighbors(ids, out, types=types)
         except BaseUnreadable:
             raise
         except Exception as error:  # noqa: BLE001 - unreadable: the pass stops, loudly
             raise BaseUnreadable(f"postgres_unreadable:{type(error).__name__}") from error
         if path is not None and path.is_file():
             try:
-                _file_neighbors(path, ids, out)
+                _file_neighbors(path, ids, out, types)
             except sqlite3.Error:
                 pass   # Postgres was read; the file is the optional earlier half
         return out
     if path is None or not path.is_file():
         raise BaseUnreadable(f"generation_file_missing:{path}")
     try:
-        _file_neighbors(path, ids, out)
+        _file_neighbors(path, ids, out, types)
     except sqlite3.Error as error:
         raise BaseUnreadable(f"generation_file_unreadable:{type(error).__name__}") from error
     return out
@@ -392,7 +469,7 @@ def _base_neighbors(base: Path | None, ids: Sequence[str], *,
 # --------------------------------------------------------------------------- the scope
 
 def _walk(st: pe._Store, start: Iterable[str], spec: Inputs, *, back: bool,
-          links: dict[str, list[tuple]]) -> set[str]:
+          links: dict[str, list[tuple]], types: Iterable[str] | None = None) -> set[str]:
     """Every record within ``spec.hops`` link hops of ``start`` over the rule's links,
     identity clusters taken whole at each step. Forward (``back`` False: what a subject
     reads), a shared record reached by a hub link is read, never walked through; back
@@ -405,7 +482,7 @@ def _walk(st: pe._Store, start: Iterable[str], spec: Inputs, *, back: bool,
         if need:
             for oid in need:
                 links[oid] = []
-            for row in st.touching(need):
+            for row in st.touching(need, None if types is None else sorted(types)):
                 links.setdefault(row[3], []).append(row) if row[3] in links else None
                 if row[4] != row[3]:
                     links.setdefault(row[4], []).append(row) if row[4] in links else None
@@ -458,10 +535,13 @@ def _types(st: pe._Store, ids: Iterable[str]) -> dict[str, str]:
 
 
 def plan(st: pe._Store, changed: set[str], before: Mapping[str, set[str]],
-         inbox: Path, rules: Sequence[str]) -> tuple[dict[str, frozenset[str]], set[str]]:
+         inbox: Path, rules: Sequence[str], kinds: Iterable[str] | None = None
+         ) -> tuple[dict[str, frozenset[str]], set[str]]:
     """({rule: the subjects it judges again}, the records they read) for the records that
-    changed (``changed``) and the records each was linked to before (``before``)."""
+    changed (``changed``) and the records each was linked to before (``before``).
+    ``kinds``: the link types the walks read (default ``read_kinds``)."""
     _declared()
+    kinds = read_kinds() if kinds is None else frozenset(kinds)
     seeds = set(changed)
     for oid in changed:
         seeds |= before.get(oid, set())
@@ -477,19 +557,19 @@ def plan(st: pe._Store, changed: set[str], before: Mapping[str, set[str]],
     links: dict[str, list[tuple]] = {}
     moved: dict[str, set[str]] = {}
     for rule in rules:
-        moved[rule] = _walk(st, seeds, INPUTS[rule], back=True, links=links) \
+        moved[rule] = _walk(st, seeds, INPUTS[rule], back=True, links=links, types=kinds) \
             | cited.get(rule, set())
-    kinds = _types(st, set().union(*moved.values()) if moved else ())
+    otypes = _types(st, set().union(*moved.values()) if moved else ())
     subjects: dict[str, frozenset[str]] = {}
     read: set[str] = set()
     for rule in rules:
         spec = INPUTS[rule]
         mine = frozenset(oid for oid in moved[rule]
-                         if kinds.get(oid) in spec.subjects or "*" in spec.subjects
+                         if otypes.get(oid) in spec.subjects or "*" in spec.subjects
                          or oid in cited.get(rule, ()))
         subjects[rule] = mine
         if mine:
-            read |= _walk(st, mine, spec, back=False, links=links)
+            read |= _walk(st, mine, spec, back=False, links=links, types=kinds)
     return subjects, read
 
 
@@ -566,6 +646,11 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                 applied = _applied(store) if holds_layers is None else None
                 reader = "postgres" if applied is not None else (
                     "store_with_layers" if holds_layers else "generation_only")
+                if _meta(ch, "print_format") != PRINT_FORMAT:
+                    # prints of another form (before 11-17 every link's neighbour was kept,
+                    # 87 MB for one mailbox owner): none compares, none is read as before
+                    ch.execute("DELETE FROM prints")
+                    _set_meta(ch, "print_format", PRINT_FORMAT)
                 if _meta(ch, "reader") != reader:
                     # another store read: nothing kept was fingerprinted in it
                     ch.execute("DELETE FROM prints")
@@ -573,6 +658,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     _set_meta(ch, "reader", reader)
                 out["reader"] = reader
                 flood: set[str] | None = None
+                kinds = read_kinds()
                 if changed is None and reader == "generation_only":
                     # the layers' changes are not in what the engine reads: none is taken
                     # in (time and rules behind still are judged, below)
@@ -603,7 +689,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     out["flooded"] = len(owned)
                 elif changed is None and reader != "generation_only":
                     flood = None
-                    prints = fingerprints(st, owned)
+                    prints = fingerprints(st, owned, kinds)
                     kept = {}
                     for part in _chunks(sorted(prints)):
                         kept.update({r[0]: r[1] for r in ch.execute(
@@ -612,12 +698,12 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     moved = {oid for oid, (fp, _n) in prints.items() if kept.get(oid) != fp}
                 elif changed is not None:
                     moved = set(changed)
-                    prints = fingerprints(st, moved)
+                    prints = fingerprints(st, moved, kinds)
                 out["candidates"] = len(prints)
                 out["changed"] = len(moved)
                 before: dict[str, set[str]] = _base_neighbors(
                     Path(base) if base is not None else store, sorted(moved),
-                    postgres=reader == "postgres")
+                    postgres=reader == "postgres", types=kinds)
                 for part in _chunks(sorted(moved)):
                     for r in ch.execute("SELECT object_id, neighbors FROM prints WHERE "
                                         "object_id IN (SELECT value FROM json_each(?))",
@@ -628,7 +714,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                 whole = sorted(set(WHOLE) | (set(DATED) if new_day else set()) | behind)
                 rules = [r for r in STORE_ONLY if r not in whole and r in INPUTS
                          and r not in NOT_INCREMENTAL]
-                subjects, read = (plan(st, moved, before, inbox, rules) if moved
+                subjects, read = (plan(st, moved, before, inbox, rules, kinds) if moved
                                   else ({}, set()))
                 if len(read) > read_cap or flood is not None:
                     whole = sorted(set(whole) | set(rules))
@@ -657,10 +743,8 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     ran["populations_moved"] = found["populations_moved"]
             whole = [r for r in STORE_ONLY if r in whole]
             if whole:
-                found = pe.run(store, inbox, day, clock=clock, only=whole, people=people,
-                               threads=None, locked=True)
-                ran["whole"] = {"rules": whole, "gaps_found": found.get("gaps_found"),
-                                "detectors": found.get("detectors")}
+                ran["whole"] = _judge_whole(store, inbox, day, whole, clock=clock,
+                                            people=people)
             # what was judged is what is kept: the next pass compares with it
             ch.execute("BEGIN IMMEDIATE")
             ch.executemany("INSERT OR REPLACE INTO prints VALUES (?, ?, ?)",
@@ -682,6 +766,28 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                 from operating.pg import change_feed, ontology_reader
                 out["feed"] = {**feed.summary(),
                                "committed": change_feed.commit_to(ontology_reader.dsn(), feed)}
+    return out
+
+
+def _judge_whole(store: Path, inbox: Path, day: date, whole: Sequence[str], *,
+                 clock: Callable[[], datetime], people: Any) -> dict[str, Any]:
+    """The rules judged whole, under the pass's lock, in the full pass's rule groups
+    (``proactive_engine.rule_groups``): each group on a store of its own, so what one
+    group's rules read (populations, mail, documents) is let go before the next starts;
+    the link rows are read once and shared (``PassCache``). One run of every rule held
+    all their reads at once (11-17: 11.7 GB for the rules a code change put behind)."""
+    shared = pe.PassCache()
+    out: dict[str, Any] = {"rules": list(whole), "gaps_found": 0, "detectors": {},
+                           "groups": 0}
+    try:
+        for group in pe.rule_groups(whole, threads=pe.detector_threads()):
+            found = pe.run(store, inbox, day, clock=clock, only=group, people=people,
+                           threads=None, locked=True, pass_cache=shared)
+            out["groups"] += 1
+            out["gaps_found"] += int(found.get("gaps_found") or 0)
+            out["detectors"].update(found.get("detectors") or {})
+    finally:
+        shared.clear()
     return out
 
 

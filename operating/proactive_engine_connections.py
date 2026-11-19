@@ -65,12 +65,34 @@ def _link_row(row: Sequence[Any]) -> tuple:
 
 class _ThreadConn:
     """A thread's store connection, closed when the thread's locals are freed (the thread
-    ended). The finalizer holds the connection and the release callback, never this object."""
+    ended). The finalizer holds the connection and the release callback, never this object.
 
-    def __init__(self, conn: Any, release: Callable[[Any], None]) -> None:
-        self.conn = conn
+    ``owner``: the store whose ``_release`` the finalizer calls, held weakly: a strong
+    reference (a bound method) from the finalizer registry kept every store whose run
+    thread lives on (the main thread's locals) alive with all it read, so each rule group
+    of a whole pass kept its populations and links to the end of the process (11-17: the
+    whole pass grew to 14.5 GB and was OOM-killed). A store already freed has its
+    connection closed here."""
+
+    def __init__(self, conn: Any, release: Callable[[Any], None] | None = None, *,
+                 owner: Any = None) -> None:
         import weakref
-        weakref.finalize(self, release, conn)
+        self.conn = conn
+        if owner is not None:
+            weakref.finalize(self, _release_weakly, weakref.ref(owner), conn)
+        else:
+            weakref.finalize(self, release, conn)
+
+
+def _release_weakly(owner: Any, conn: Any) -> None:
+    store = owner()
+    if store is not None:
+        store._release(conn)
+        return
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 - a connection already closed or lost
+        pass
 
 
 class _LinkRows:

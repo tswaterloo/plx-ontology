@@ -132,7 +132,7 @@ _PREFIXES = ("/api/case-citation", "/api/case-original-pdf", "/api/case-document
              "/api/case/")
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_ACCESS = re.compile(r"^full_read:[a-z]+(\+[a-z]+)*(:mail_[a-z_]+)?$")
+_ACCESS = re.compile(r"^full_read:[a-z]+(\+[a-z]+)*(:mail_[a-z_]+)?(:listed)?$")
 _PRINCIPAL = re.compile(r"^employee:[0-9a-f-]{36}$")
 # Rows kept: each write prunes everything but the newest ones (a session is a few
 # hundred requests; the journal never grows without bound on the host's volume).

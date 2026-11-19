@@ -8,14 +8,21 @@ import { cn } from "@/lib/cn";
 import { objectHref } from "@/lib/format";
 import type { BriefingDataNote, BriefingUnjudged } from "@/lib/types";
 
-/** What the checks could not judge, one line per check and reason; each opens its records. */
+/** What the checks could not judge, one line per check and reason; each opens its records.
+ * A scope note (what a check never applies to) is said as is: it has no records to open. */
 export function DataNotes({ notes, className }: { notes: BriefingDataNote[] | undefined; className?: string }) {
   if (!notes?.length) return null;
   return (
     <ul className={cn("space-y-1.5 text-[12px] leading-[18px] text-muted", className)} data-testid="briefing-data-notes">
-      {notes.map((n) => (
-        <DataNote key={`${n.check}:${n.reason}`} note={n} />
-      ))}
+      {notes.map((n) =>
+        n.scope ? (
+          <li key={`${n.check}:${n.reason}`} className="pl-[18px]" data-testid="data-note-scope">
+            {n.words}
+          </li>
+        ) : (
+          <DataNote key={`${n.check}:${n.reason}`} note={n} />
+        ),
+      )}
     </ul>
   );
 }
@@ -47,7 +54,7 @@ function DataNote({ note }: { note: BriefingDataNote }) {
       >
         <summary className="flex cursor-pointer list-none items-start gap-1 hover:text-fg [&::-webkit-details-marker]:hidden">
           <ChevronRight className="mt-[3px] size-3.5 shrink-0 transition-transform group-open/note:rotate-90" aria-hidden />
-          <span>{note.words.charAt(0).toUpperCase() + note.words.slice(1)}.</span>
+          <span>{note.words.charAt(0).toUpperCase() + note.words.slice(1)}{note.words.endsWith(".") ? "" : "."}</span>
         </summary>
         <div className="mt-1 pl-[18px]">
           {failed && <p>Couldn&apos;t load the records. Close and open this again to retry.</p>}

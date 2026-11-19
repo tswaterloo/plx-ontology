@@ -7,7 +7,9 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { StatusWord } from "@/components/ui/status-badge";
 import { Toolbar } from "@/components/ui/toolbar";
-import { actionChip } from "@/lib/actions";
+import { PageIntro } from "@/components/ui/page-intro";
+import { SectionTabs } from "@/components/shell";
+import { actionChip, realName } from "@/lib/actions";
 import { cn } from "@/lib/cn";
 import { getActionsLog } from "@/lib/api";
 import { plainError } from "@/lib/errors";
@@ -58,10 +60,12 @@ const timeOf = (iso: string) => clockET(new Date(iso));
 function Row({ r }: { r: ActionLogRow }) {
   const chip = actionChip(r, false);
   const mail = !!(r.to?.length || r.subject);
-  const title = r.subject || (
+  const subject = realName(r.subject);
+  const label = realName(r.card_label) ?? (r.card_id.startsWith("ask:") ? "From Ask" : null);
+  const title = subject || (mail ? (r.to?.length ? `Email to ${r.to[0]}` : "Email with no subject") : null) || (
     <>
       {KIND[r.kind] ?? r.kind}
-      {r.card_label && <span className="lg:hidden">: {r.card_label}</span>}
+      {label && <span className="lg:hidden">: {label}</span>}
     </>
   );
   const to = (r.to ?? []).join(", ");
@@ -79,15 +83,14 @@ function Row({ r }: { r: ActionLogRow }) {
         <div className="truncate text-[13px] leading-[18px] font-semibold">{title}</div>
         <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">
           {line}
-          {r.card_label && mail && <span className="lg:hidden"> · {r.card_label}</span>}
+          {label && mail && <span className="lg:hidden"> · {label}</span>}
         </div>
       </div>
       <div className="hidden min-w-0 lg:block">
-        <div className="truncate text-[13px] leading-[18px]">{r.card_label || "Follow-up"}</div>
+        <div className="truncate text-[13px] leading-[18px]">{label || "Follow-up"}</div>
         <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">
           {r.actor}
           {cites > 0 && <span className="text-faint"> · {plural(cites, "cited fact")}</span>}
-          {(r.missing ?? []).length > 0 && <span className="text-[color:var(--risk)]" title={(r.missing ?? []).join(", ")}> · {(r.missing ?? []).length} not on record</span>}
           {r.replayed && <span className="text-faint"> · repeat of an earlier confirm</span>}
         </div>
       </div>
@@ -107,10 +110,10 @@ function Empty() {
     <div className="max-w-xl px-6 py-8" data-testid="activity-empty">
       <p className="text-[13px] font-medium">Nothing sent, approved or logged yet.</p>
       <p className="mt-1 text-[13px] leading-5 text-muted">
-        Each message you send, task you set and item you put away from My work, a record page or Ask shows here, with whom it went to, the record it was about and whether it went out.
+        Each message you send, task you set and item you put away from Home, a record page or Ask shows here, with whom it went to, the record it was about and whether it went out.
       </p>
       <Link href="/" className="mt-3 inline-block text-[13px] font-medium text-accent hover:underline">
-        Open My work
+        Open Home
       </Link>
     </div>
   );
@@ -229,16 +232,18 @@ export default function ActivityPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
-        pin="Your actions"
+        pin="Messages and tasks"
         heading
         title={
           <>
-            Activity
-            {rows && rows.length > 0 && <span className="ml-2 text-[13px] font-normal tracking-normal num text-faint"><span className="sr-only">, </span>{rows.length}</span>}
+            Messages and tasks
+            {rows && rows.length > 0 && <>{" "}<span className="ml-1 text-[13px] font-normal tracking-normal num text-faint">{rows.length}</span></>}
           </>
         }
         className="bg-list"
       />
+      <SectionTabs section="work-log" />
+      <PageIntro path="/activity" />
       {error ? (
         <div className="p-5">
           <LoadProblem message={error} onRetry={load} />

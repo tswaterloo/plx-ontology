@@ -16,6 +16,15 @@ from .serving import (ASK_WORKERS, ASK_WORKERS_MOST, DEFAULT_DATA_DIR, READ_WORK
     SECTION_WORKERS, WARM_HOSTS)
 
 
+def session_store_path(state_dir: Any, chosen: Any = None) -> Optional[Path]:
+    """The sessions file: ``--session-store`` when given, else the state directory's own
+    (none: held in memory only)."""
+    from .auth import SESSION_STORE_FILE
+    if chosen is not None:
+        return Path(chosen)
+    return None if state_dir is None else Path(state_dir) / SESSION_STORE_FILE
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("real backend (--dev / --entra-resource)")
     group.add_argument("--state-dir", type=Path, help="the host's state directory")
@@ -65,6 +74,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--dev-employee-oid", help="--dev over a dev state: this employee")
     group.add_argument("--dev-fixture-principal", action="append", default=[],
                        help="--dev over a fixture state: a fixture principal")
+    group.add_argument("--session-store", type=Path, default=None,
+                       help="the dev sign-in sessions file (default: app-sessions.json in "
+                            "the state directory); an eval or dev run over the live state "
+                            "gives its own so it never touches the live sessions")
     group.add_argument("--app-data-dir", type=Path, default=DEFAULT_DATA_DIR,
                        help="the app's own files (feedback log); never the state directory")
     group.add_argument("--pg-dsn", default=os.environ.get("PLX_PG_DSN", "postgresql:///plx"),
@@ -142,7 +155,7 @@ def make_auth(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: s
                    sign_in_identity=ticket_identity(resolver, secret, ctx["replay_guard"],
                                                     single_use=True),
                    mode="dev",
-                   store_path=None if state_dir is None else Path(state_dir) / SESSION_STORE_FILE)
+                   store_path=session_store_path(state_dir, getattr(args, "session_store", None)))
     auth.resolver = resolver              # /api/health: the employee policy in force
     return auth, {"sign_in_available": True,
                   "message": "Paste the access link you were given."}

@@ -30,13 +30,15 @@ def day(offset: int) -> str:
 
 
 def task(w: RecentWorld, title: str, due: int, done: int | None, *, plan: str = "QA checks",
-         assignee: str = OURS_OID, audience: str = PLAN) -> str:
+         assignee: str = OURS_OID, audience: str = PLAN, created: int | None = None) -> str:
     """A Planner task due ``due`` days before AS_OF (negative: after), done ``done`` days
     before it (None: open)."""
     values = {"title": title, "plan_id": f"P-{plan}", "plan_title": plan, "due_at": day(due),
               "assignees": json.dumps([assignee])}
     if done is not None:
         values["completed_at"] = day(done)
+    if created is not None:
+        values["created_at"] = day(created)
     return w.obj("PlannerTask", values, audience=audience)
 
 
@@ -250,6 +252,37 @@ class QcCompliance(engine_tests.Engine):
         self.assertEqual((got.get("mode"), got.get("view")), ("qc_compliance", "audit"), got)
 
 
+
+    def test_daily_pack_leaves_out_the_open_checks_of_a_plan_no_longer_kept(self):
+        # owner 11-17: 173 "missed" checks a year past due, from a Planner schedule the team
+        # stopped adding to and ticking months ago, are not live misses
+        w, ids = world()
+        for n, due in enumerate((300, 293, 286, 279)):   # weekly, ticked twice, then dropped
+            task(w, "Synthetic scale monitoring", due, due if n < 2 else None,
+                 plan="Old QC schedule", created=due + 7)
+        book = self.book(w)
+        got = qc.answer(book, AS_OF, may_read=lambda _k: True, held=QC, view="daily")
+        listed = [r["object_id"] for r in got["open_now"]]
+        self.assertEqual(listed, [ids["missed_open"], ids["overdue"], ids["upcoming"]])
+        self.assertEqual(got["open_counts"], {"missed": 1, "overdue": 1, "upcoming": 1})
+        self.assertEqual(got["idle_plans"]["open"], 2)
+        self.assertEqual(got["idle_plans"]["plans"], 1)
+        self.assertEqual(got["idle_plans"]["titles"], ["Old QC schedule"])
+        self.assertEqual(got["idle_plans"]["last_activity"], (AS_OF - timedelta(days=286)).isoformat())   # the newest task added
+        daily = br.qc_daily_pack(mode_call(book, QC), QC, {"status": "read", "gaps": []}, today=AS_OF)
+        open_checks = next(s for s in daily["sections"] if s["key"] == "open_checks")
+        self.assertEqual({f["label"]: f["value"] for f in open_checks["figures"]}["Missed, still open"], "1")
+        # flagged once, plainly, as a compliance question; never hidden
+        since = AS_OF - timedelta(days=286)
+        when = f"{since.day} {since:%b}" + (f" {since:%Y}" if since.year != AS_OF.year else "")
+        self.assertTrue(open_checks["note"].startswith(
+            f"The Old QC schedule in Planner hasn't been ticked or added to since {when}: "
+            "2 open checks, not counted as missed. Confirm whether these checks still run "
+            "or the plan moved. "), open_checks["note"])
+        self.assertEqual(sum((s.get("note") or "").count("Confirm whether")
+                             for s in daily["sections"]), 1)
+        # the yearly figures still judge every check (the audit pack is history)
+        self.assertGreater(got["checks"]["totals"]["missed"], 1)
 
     def test_daily_and_audit_packs_cite_every_record_line_and_keep_to_quality_readers(self):
         w, ids = world()

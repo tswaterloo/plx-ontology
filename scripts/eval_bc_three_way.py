@@ -1247,4 +1247,6 @@ __all__ = ["EvidenceCaptures", "main", "oracle_reading", "root_lookup", "run", "
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

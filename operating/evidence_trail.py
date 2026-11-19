@@ -450,7 +450,7 @@ def _verdict_words(entry: Mapping[str, Any], state: Any, gd: Any, on: Any, days:
         return ("Not judged: a historical Sage purchase order that Sage records as "
                 "complete.", rule)
     if state == "not_applicable":
-        return ("Not late: the purchase order is not issued, cancelled or closed, so "
+        return ("Not late: the purchase order is a draft, cancelled or closed, so "
                 "nothing is due.", rule)
     gap = entry.get("gap") or {}
     return ("Lateness is not stated: " + str(gap.get("detail") or gap.get("reason")

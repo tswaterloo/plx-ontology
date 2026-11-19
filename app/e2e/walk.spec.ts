@@ -43,18 +43,18 @@ const ROLES: Record<Role, Record<string, unknown>> = {
 const WALK_ROLES = (process.env.WALK_ROLES?.split(",") as Role[] | undefined) ?? (Object.keys(ROLES) as Role[]);
 
 /** The owner's nav decision (11-14): six sections plus Records; Admin for the owner and admins. */
-const SECTIONS_ALL = ["Home", "Ask", "Watching", "Autopilot", "Work", "Records", "Admin"];
-const SECTIONS: Record<Role, string[]> = { owner: SECTIONS_ALL, admin: SECTIONS_ALL, member: SECTIONS_ALL.slice(0, 6), reader: SECTIONS_ALL.slice(0, 6) };
+const SECTIONS_ALL = ["My work", "Ask", "Watching", "Autopilot", "Meetings", "Team", "Records", "Admin"];
+const SECTIONS: Record<Role, string[]> = { owner: SECTIONS_ALL, admin: SECTIONS_ALL, member: SECTIONS_ALL.slice(0, 7), reader: SECTIONS_ALL.slice(0, 7) };
 /** Places only some readers have, and who has them. */
-const GATED: Record<string, Role[]> = { "/ops": ["owner", "admin"], "/trust": ["owner", "admin"], "/feedback": ["owner", "admin"], "/qc": ["owner", "admin"] };
+const GATED: Record<string, Role[]> = { "/ops": ["owner", "admin"], "/trust": ["owner", "admin"], "/feedback": ["owner", "admin"] };
 /** Each section's own page: memory, templates and logs must be a click away from every one. */
 const SECTION_PAGES = ["/", "/ask", "/watching", "/autopilot", "/meetings", "/records", "/ops"];
 const EVERYWHERE = [/^\/memory\b/, /^\/templates\b/, /^\/work-log\b/];
 
 /** Every page route, and record pages the fixture holds, so nothing waits on a link to it. */
 const SEEDS = [
-  "/", "/my-work", "/activity", "/ask", "/memory", "/templates", "/help", "/watching", "/late", "/qc",
-  "/watching#data-health", "/autopilot", "/autopilot?tab=audit", "/meetings", "/meetings?view=weekly", "/meetings?view=follow-ups", "/work-log", "/team", "/rd-projects", "/records",
+  "/", "/my-work", "/activity", "/ask", "/memory", "/templates", "/help", "/watching", "/late",
+  "/watching#data-health", "/autopilot", "/autopilot?tab=audit", "/meetings", "/meetings?view=weekly", "/meetings?view=follow-ups", "/work-log", "/team", "/records",
   "/ops", "/trust", "/feedback",
   "/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412", "/object/SalesOrder/SalesOrder%3Ademo%3A77120",
   "/po/90412", "/customer/glow", "/meetings/brief/Customer/Customer%3Ademo%3Aglow", "/source?handle=bc%3A%2F%2Fdemo%2FpurchaseOrders%2F90412",
@@ -211,7 +211,7 @@ function save(name: string, data: unknown) {
 /** The nav as this reader sees it: sidebar section names on a desk, the tab bar and More on a phone. */
 async function navPlaces(page: Page, phone: boolean): Promise<{ sections: string[]; hrefs: string[] }> {
   if (!phone) {
-    const sections = await page.locator("[data-testid=nav-sections] > div > a").evaluateAll((as) => as.map((a) => (a.textContent ?? "").replace(/\d+$/, "").trim()));
+    const sections = await page.locator("[data-testid=nav-sections] > a").evaluateAll((as) => as.map((a) => (a.textContent ?? "").replace(/\d+$/, "").trim()));
     const hrefs = await page.locator("aside a[href^='/']").evaluateAll((as) => as.map((a) => a.getAttribute("href") ?? ""));
     return { sections, hrefs };
   }

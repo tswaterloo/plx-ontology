@@ -47,6 +47,45 @@ def _query_counts(arguments: Any, result: Mapping[str, Any], into: dict[str, Any
         _aggregate_counts("plx.aggregate", call, {**got, "gaps": gaps}, into)
 
 
+def _table_counts(arguments: Any, result: Mapping[str, Any], into: dict[str, Any]) -> None:
+    """The counts and sums a ``plx.table`` computed (``operating.ontology_tools_table``),
+    each measure as the ``plx.aggregate`` call it equals: its groups (key, value,
+    currency/unit, inputs and cited cells; a count of members cites each member's record),
+    with the answer's completeness, partial flag, withheld report and every gap, so the
+    one count/sum rule (``_aggregate_counts``) decides what binds. Only count,
+    count_distinct and sum: an average, minimum or maximum binds no count."""
+    if not isinstance(arguments, Mapping) or not isinstance(result.get("groups"), list):
+        return
+    group_by = [g if isinstance(g, str) else g.get("field") for g in
+                arguments.get("group_by") or () if isinstance(g, (str, Mapping))]
+    measures = [m for m in result["groups"][0].get("measures") or ()] \
+        if result["groups"] and isinstance(result["groups"][0], Mapping) else []
+    common = {key: result[key] for key in ("completeness", "partial", "withheld", "meta")
+              if key in result}
+    for i, measure in enumerate(measures):
+        if not isinstance(measure, Mapping) or measure.get("fn") not in (*COUNT_OPS, "sum"):
+            continue
+        groups = []
+        for group in result["groups"]:
+            got = (group.get("measures") or [None] * (i + 1))[i] \
+                if isinstance(group, Mapping) else None
+            if not isinstance(got, Mapping) or got.get("fn") != measure.get("fn") \
+                    or got.get("field") != measure.get("field"):
+                return   # groups that disagree on their measures: nothing binds
+            entry = {"key": group.get("key"), "value": got.get("value")}
+            for key in ("currency", "unit", "inputs", "inputs_citations", "negative_inputs"):
+                if key in got:
+                    entry[key] = got[key]
+            if got.get("field") is None and isinstance(group.get("members_cited"), list):
+                entry["members_cited"] = group["members_cited"]
+            groups.append(entry)
+        call = {"measure": {"op": measure["fn"], "property": measure.get("field")},
+                **({"group_by": group_by} if group_by else {})}
+        _aggregate_counts("plx.aggregate", call, {**common, "groups": groups,
+                                                  "gaps": list(result.get("gaps") or ())},
+                          into)
+
+
 # Gaps that state only the age of what was read, never a member left out of a count.
 AGE_ONLY_GAPS = frozenset({("stale", "stale_source"), ("stale", "schema_drift"),
                            # records set apart because only lead links reach them
@@ -75,7 +114,7 @@ def _lead_records(tool: str, result: Mapping[str, Any], into: dict[str, Any]) ->
     apart as ``possibly_related``: records only lead links reach), False once a result
     that did not names it. A count claim citing a record still True rests partly on lead
     links (``answer_gate._on_a_lead``)."""
-    if tool not in ("plx.around", "plx.query", "plx.aggregate"):
+    if tool not in ("plx.around", "plx.query", "plx.aggregate", "plx.table", "plx.business"):
         return
     lead = any(isinstance(g, Mapping) and g.get("reason") == LEAD_BASIS_GAP
                for g in result.get("gaps") or ())
@@ -238,6 +277,20 @@ def _aggregate_sums(arguments: Mapping[str, Any], result: Mapping[str, Any],
              and known_now(arguments, result))
     capped = any(isinstance(gap, Mapping) and gap.get("reason") == CITATIONS_CAPPED
                  for gap in gaps)
+    # The same answer whole but for a source captured in part (``PARTLY_READ``): its sum
+    # is every input the tool holds, a lower bound of the source's total when no input is
+    # below zero (a credit among them, and the part not read may hold more: no floor).
+    # Only a tool that states how many inputs are below zero (``negative_inputs``,
+    # plx.table) gives one; any other sum stays refused (fail closed).
+    floor = (result.get("partial") is False
+             and any(gap.get("reason") == PARTLY_READ for gap in gaps)
+             and all(isinstance(gap, Mapping) and (
+                 gap.get("reason") in SUM_WHOLE_GAPS
+                 or gap.get("reason") == PARTLY_READ and gap.get("state") == "unknown")
+                 for gap in gaps)
+             and not {"refused", "withheld"} & set(result)
+             and (done.get("complete") is True or done.get("reason") in GROUP_PAGE_REASONS)
+             and known_now(arguments, result))
     for group in result.get("groups") or ():
         if not isinstance(group, Mapping) or not isinstance(group.get("value"), str):
             continue
@@ -248,12 +301,17 @@ def _aggregate_sums(arguments: Mapping[str, Any], result: Mapping[str, Any],
             isinstance(h, str) and isinstance(f, str) for h, f in cells) and \
             type(inputs) is int and (inputs == len(cells) or (
                 capped and len(cells) == MAX_COUNT_CITATIONS and inputs > len(cells)))
-        into["counts"].append({
+        entry = {
             "op": "sum", "value": group["value"], "currency": group.get("currency"),
             "unit": group.get("unit"), "cells": cells if listed else [],
             # its records, so a session drops it when an item's permissions change
             "records": sorted({h for h, _ in cells if isinstance(h, str)}),
-            "complete": whole and listed})
+            "complete": whole and listed}
+        if floor and listed and not whole and type(group.get("negative_inputs")) is int \
+                and group["negative_inputs"] == 0:
+            # whole but for a source read in part, every input zero or more: at least this
+            entry["floor"] = True
+        into["counts"].append(entry)
 
 
 def _contradict_listing(handle: Any, into: dict[str, Any]) -> None:

@@ -22,16 +22,21 @@ const config: NextConfig = {
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${apiOrigin}/api/:path*` }];
   },
-  // the old pages, folded into the seven (My work, Late POs, Meetings, Team, Ask, Watching,
-  // Activity) and the record page; temporary so the routes stay free to change
+  // the old pages, folded into Home (its Alerts and Late POs tabs), Meetings, Team, Work log
+  // and the record page; temporary so the routes stay free to change. The ?query is carried
+  // over (/late?supplier=X opens Home's Late POs tab on that supplier) and the browser keeps
+  // a #fragment (/watching#data-health).
   async redirects() {
     return [
-      { source: "/briefing", destination: "/watching#alerts", permanent: false },
+      { source: "/watching", destination: "/?show=alerts", permanent: false },
+      { source: "/late", destination: "/?show=late", permanent: false },
+      { source: "/my-work", destination: "/", permanent: false },
+      { source: "/briefing", destination: "/?show=alerts#alerts", permanent: false },
       { source: "/prepare", destination: "/meetings", permanent: false },
       { source: "/weekly", destination: "/meetings?view=weekly", permanent: false },
       { source: "/brief/:type/:id*", destination: "/meetings/brief/:type/:id*", permanent: false },
       { source: "/approvals", destination: "/team#approvals", permanent: false },
-      { source: "/rules", destination: "/watching", permanent: false },
+      { source: "/rules", destination: "/?show=alerts", permanent: false },
       { source: "/actions", destination: "/activity", permanent: false },
       { source: "/replies", destination: "/?view=reply", permanent: false },
       { source: "/workload", destination: "/team#workload", permanent: false },

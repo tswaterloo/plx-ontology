@@ -215,18 +215,23 @@ def withheld_set(held: Iterable[str]) -> tuple[frozenset[str], frozenset[str]] |
     return _MARKED.withheld(got, held)
 
 
-def params(held: Iterable[str]) -> dict[str, str]:
+def params(held: Iterable[str], people: str = "") -> dict[str, str]:
     """The SQL parameters ``sql`` reads for a reader holding ``held``: the withheld
     document ids (``:dm_ids``), the object types withheld whole (``:dm_types``, every
-    file type when the search store cannot be read) and, for every reader alike, the
+    file type when the search store cannot be read), for every reader alike, the
     PLX-issued sales documents the served store holds as supplier documents
     (``:dm_own``, ``operating.pg.own_issued``: one list shared by every reader, so a
-    Postgres session compiles it once per refresh, never once per marking set)."""
+    Postgres session compiles it once per refresh, never once per marking set), and
+    ``:dm_people``: a full reader's exclusion tag (``people_excluded.full_reader``), ""
+    for anyone else (no people filter: staff keep their gates)."""
     own = _own_json(_own_issued())
+    people = people if isinstance(people, str) else ""
     got = withheld_set(held)
     if got is None:
-        return {"dm_ids": "[]", "dm_types": json.dumps(sorted(FILE_TYPES)), "dm_own": own}
-    return {"dm_ids": json.dumps(sorted(got[0])), "dm_types": "[]", "dm_own": own}
+        return {"dm_ids": "[]", "dm_types": json.dumps(sorted(FILE_TYPES)), "dm_own": own,
+                "dm_people": people}
+    return {"dm_ids": json.dumps(sorted(got[0])), "dm_types": "[]", "dm_own": own,
+            "dm_people": people}
 
 
 def _own_issued() -> frozenset[str]:
@@ -259,11 +264,35 @@ def _own_json(own: frozenset[str]) -> str:
 
 def sql(column: str) -> str:
     """SQL: the object id ``column`` is not a document marked beyond the reader nor a
-    PLX-issued one held as a supplier's (with ``params``)."""
-    return (f"({column} NOT IN (SELECT value FROM json_each(:dm_ids)) AND "
+    PLX-issued one held as a supplier's and, for a full reader (``:dm_people`` its
+    exclusion tag), not one of the people exclusion's set (with ``params``).
+
+    The set is read inside the statement:
+    an index probe of ``people_excluded_objects`` by object id, only while the state
+    row is of that very list (an undo or another list's set: no filter, the gates decide).
+    ``:dm_people`` is bound as a constant, so for anyone else (``''``) the probe is a
+    one-time false filter when the statement is planned. Written as a plain ``NOT
+    EXISTS`` (an anti-join the planner sizes; under an ``OR`` it hashed the whole set
+    per statement, measured 2026-11-17) over the set's hash index on ``object_id``
+    (migration 0040: 40 MB at 1.37M ids against 472 MB as a btree). Named only when
+    Postgres serves and holds the tables (``people_excluded.filter_ready``)."""
+    base = (f"{column} NOT IN (SELECT value FROM json_each(:dm_ids)) AND "
             f"{column} NOT IN (SELECT value FROM json_each(:dm_own)) AND "
             f"substr({column}, 1, instr({column}, ':') - 1) NOT IN "
-            "(SELECT value FROM json_each(:dm_types)))")
+            "(SELECT value FROM json_each(:dm_types))")
+    if _people_ready():
+        base += (" AND NOT EXISTS (SELECT 1 FROM people_excluded_objects peo WHERE "
+                 f"peo.object_id = {column} AND :dm_people <> '' AND EXISTS (SELECT 1 FROM "
+                 "people_excluded_state pes WHERE pes.exclusion = :dm_people))")
+    return f"({base})"
+
+
+def _people_ready() -> bool:
+    try:
+        from operating.pg import people_excluded
+        return people_excluded.filter_ready()
+    except Exception:  # noqa: BLE001 - no set: the gates decide, as before
+        return False
 
 
 def handle_withheld(handle: str, held: Iterable[str], object_ids: Iterable[str] = ()

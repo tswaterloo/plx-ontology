@@ -1,0 +1,38 @@
+# PLX Workbench people-exclusion set update at low priority: one run of
+# `python3 -m operating.pg.people_excluded update --workers 2`. Decides only the mail, Teams
+# and meetings versions the delta recorded after the set's covered_ver (the index range on
+# object_versions.ver up to a watermark read under the delta's lock), replaces those
+# handles' rows in ontology.people_excluded_objects and moves covered_ver up, in one
+# transaction; a set of another exclusion list is rebuilt whole. Until it runs, a full
+# reader's gate decides the newer versions one by one (fail closed); a failed run changes
+# nothing. Does nothing before migration 0040 or the first build; one run at a time
+# (advisory lock); skipped in a migration window (window_lock). Started by
+# plx-people-excluded.timer.
+[Unit]
+Description=PLX people-exclusion set update (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# Reads no business system: the credentials that can send, write or reach one are dropped
+# (SEC-S-05; tests/test_deploy_release.py names the units that may keep them).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment="PGOPTIONS=-c max_parallel_workers_per_gather=2"
+ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
+ExecStart=/data/venv/bin/python3 -m operating.pg.people_excluded update --state-dir /data/plx-state --workers 2
+Nice=19
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=idle
+MemoryHigh=6G
+MemoryMax=8G
+TimeoutStartSec=2h
+UMask=0077

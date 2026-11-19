@@ -983,6 +983,75 @@ def set_paused(journal: Journal, person: str, pause: bool, by: str, now: datetim
                             "at": _iso(now), "by": person})
 
 
+DRAFTS_EVENT = "drafts"
+# What a person can switch drafts on for: a few plain choices, each a set of workflows
+# (``workflows.json``), instead of every role x workflow row. ``other_external`` is never
+# in one (no rule decides what it is about).
+DRAFT_CHOICES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("customer_replies", "Replies to customers",
+     ("customer_status_inquiry", "customer_order_intake", "quote_pricing",
+      "coa_cert_doc_request", "mail_thread")),
+    ("teams_replies", "Replies in Teams", ("teams_chat", "teams_group")),
+    ("supplier_followups", "Supplier follow-ups",
+     ("supplier_eta_receiving", "purchase_order_to_supplier", "shipping_freight")),
+    ("collections", "Collections and invoices",
+     ("ar_collections", "ar_invoice_send", "cash_remittance")),
+    ("approvals", "Approvals and questions waiting on you",
+     ("internal_approval", "external_approval", "mc_question")),
+)
+
+
+def draft_choice(choice: str) -> tuple[str, ...]:
+    """The workflows of one ``DRAFT_CHOICES`` id (``ValueError`` for anything else)."""
+    for cid, _label, flows in DRAFT_CHOICES:
+        if cid == choice:
+            return flows
+    raise ValueError("unknown choice")
+
+
+def set_drafts(journal: Journal, person: str, workflow: str, on: bool, by: str,
+               now: datetime) -> dict[str, Any]:
+    """``person`` switches drafts for their own ``workflow`` on or off: the autopilot
+    prepares that workflow's work for them (a draft or a prepared action waiting in My work
+    for their confirm). Only the person (``PermissionError`` otherwise, the owner included).
+    No score is needed: a draft is never sent or written by itself; performing anything
+    still takes ``write_state`` (the write gate, the person's own ``opt_in``, the master
+    switch) and the person's confirm. An unknown workflow is refused (``ValueError``)."""
+    from . import workflows as wf
+    person, workflow = _person(person), _workflow(workflow)
+    if str(by or "").strip().lower() != person:
+        raise PermissionError("only the person themselves switches their drafts")
+    if workflow not in wf.names():
+        raise ValueError("unknown workflow")
+    with journal.locked() as held:
+        return held.append({"event": DRAFTS_EVENT, "person": person, "workflow": workflow,
+                            "on": bool(on), "at": _iso(now), "by": person})
+
+
+def drafts_on(rows: Sequence[Mapping[str, Any]]) -> dict[str, frozenset[str]]:
+    """person -> the workflows they switched drafts on for themselves (their last
+    ``drafts`` row per workflow; only a row whose ``by`` is its ``person`` counts), minus
+    everything while they paused (``paused``). A live ``opt_in`` they made counts as drafts
+    on too (a person who switched a workflow on to be performed wants it prepared)."""
+    last: dict[tuple[str, str], bool] = {}
+    for row in rows:
+        if row.get("event") != DRAFTS_EVENT:
+            continue
+        who = str(row.get("person") or "").lower()
+        if not who or str(row.get("by") or "").lower() != who:
+            continue
+        last[(who, str(row.get("workflow") or ""))] = row.get("on") is True
+    for (who, flow), found in opt_ins(rows).items():
+        if found["on"]:
+            last.setdefault((who, flow), True)
+    stopped = paused(rows)
+    out: dict[str, set[str]] = {}
+    for (who, flow), on in last.items():
+        if on and flow and who not in stopped:
+            out.setdefault(who, set()).add(flow)
+    return {who: frozenset(flows) for who, flows in out.items()}
+
+
 def control_dir(state: Path, environ: Mapping[str, str]) -> Path:
     """Where the owner's switch files live: ``CONTROL_ENV``, else the autopilot queue's
     directory beside the write state (``/data/plx-state/autopilot`` on the host)."""

@@ -318,6 +318,65 @@ class DeltaEquivalenceTests(DeltaCase):
 
 
 
+class CycleReadsTests(DeltaCase):
+    """What a cycle read of each source rides in its layer (``delta.READS_KEY``), so the
+    served data's reach per source is what was read and applied, never a cycle stamp
+    (review 2dedd09881)."""
+
+    def test_a_layer_says_when_each_scan_began_and_that_mail_was_skipped(self):
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        self.capture(T2)
+        began: list[str] = []
+        scan = delta.portal_changes
+
+        def portal(*args, **kwargs):
+            began.append(delta._now())
+            return scan(*args, **kwargs)
+
+        with mock.patch.object(delta, "portal_changes", side_effect=portal):
+            before = delta._now()
+            report = self.cycle(base)
+        self.assertIn(report["layer"], ("added", "compacted"))   # the first is cumulative
+        with sqlite3.connect(report["store"]) as layer:
+            reads = json.loads(layer.execute("SELECT value FROM store_meta WHERE key = ?",
+                                             (delta.READS_KEY,)).fetchone()[0])
+        # the Portal scan's start is taken before its capture is opened (a capture
+        # committed after it is not claimed), not when the layer is named after discovery
+        # and the closure read
+        self.assertEqual(reads["portal_api"]["state"], "complete")
+        self.assertTrue(before <= reads["portal_api"]["read_from"] <= began[0], reads)
+        stamp = Path(report["store"]).name[len("delta-"):-len(".sqlite")]
+        self.assertLess(reads["portal_api"]["read_from"].replace("-", "").replace(":", "")
+                        .replace(".", "")[:21], stamp)
+        # no people exclusion here: mail never read, said so, never complete
+        self.assertTrue(report["mail_skipped"])
+        self.assertEqual({k: v for k, v in reads["graph_mail"].items() if k != "read_from"},
+                         {"state": "skipped", "left": 0,
+                          "reason": "people_exclusion_unavailable"})
+        # no capture store here: nothing said of a source no scan read
+        self.assertEqual(set(reads), {"portal_api", "graph_mail"})
+
+    def test_a_capped_or_undecided_source_is_capped_and_an_unknown_one_dropped(self):
+        report = {"read_from": {"portal_api": "2026-11-17T10:00:00.000000Z",
+                                "graph_mail": "2026-11-17T10:00:01.000000Z",
+                                "bc": "2026-11-17T10:00:02.000000Z",
+                                "nonsense": "2026-11-17T10:00:03.000000Z",
+                                "teams": None},
+                  "deferred": {"portal_api": 12}}
+        fresh = {"graph_mail": [("undecided-box", "m1"), ("undecided-box", "m2"),
+                                ("decided-box", "m3")]}
+        left = delta._left_open(report, fresh, {"undecided-box"})
+        self.assertEqual(left, {"portal_api": 12, "graph_mail": 2})
+        reads = delta.cycle_reads(report, left)
+        self.assertEqual({s: (r["state"], r["left"]) for s, r in reads.items()},
+                         {"portal_api": ("capped", 12), "graph_mail": ("capped", 2),
+                          "bc": ("complete", 0)})
+        self.assertEqual(delta.cycle_reads({**report, "mail_skipped": "x"}, left)
+                         ["graph_mail"]["state"], "skipped")
+
+
 class DeltaDocumentTests(DeltaCase):
     """A cycle reads files under a budget: a file it has no time for is pending, never
     unreadable; the rows of its record publish, the record stays open, and the next

@@ -164,7 +164,10 @@ def _one(ctx: Any, oid: str, link: str, prefix: str,
 
 
 def _open_doc(ctx: Any, number: str) -> dict[str, Any] | None:
-    found = ctx.find("RelSageArOpenDocument", "idinvc", number) if number else []
+    try:
+        found = ctx.find("RelSageArOpenDocument", "idinvc", number) if number else []
+    except autopilot_handlers.FindUnavailable:
+        return None             # not looked up: read as no single open document
     if len(found) != 1:
         return None
     return ctx.read(found, OPEN_DOC).get(found[0])
@@ -194,7 +197,10 @@ def keyer(ctx: Any, customer: str | None, before: date, people: Any) -> str | No
     dated = sorted((d, autopilot_records._v(r, "invoice_number").strip()) for r in rows.values()
                    if (d := _day(autopilot_records._v(r, "invoice_date"))) and d < before)
     for _d, number in reversed(dated[-KEYER_LOOKBACK:]):
-        found = ctx.find("RelSageArIbh", "idinvc", number) if number else []
+        try:
+            found = ctx.find("RelSageArIbh", "idinvc", number) if number else []
+        except autopilot_handlers.FindUnavailable:
+            return None         # the keyer not looked up: no owner, never a guessed one
         if len(found) != 1:
             continue
         code = autopilot_records._v(ctx.read(found, ("enteredby",)).get(found[0]) or {}, "enteredby")

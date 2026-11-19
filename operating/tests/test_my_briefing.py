@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from operating import briefing as bf
 from operating import involvement as inv
@@ -45,6 +46,8 @@ class Host:
         self.objects: dict[str, tuple[dict, frozenset | None]] = {}
         self.links: list[tuple[str, str, str]] = []
         self.asked: list[tuple[str, str, str]] = []
+        self.sets: dict[str, tuple[str, list[str]]] = {}
+        self.paged = 0
 
     def add(self, oid: str, props: dict | None = None, visible: set | None = None) -> None:
         self.objects[oid] = (props or {}, None if visible is None else frozenset(visible))
@@ -56,9 +59,46 @@ class Host:
         held = self.objects.get(oid)
         return held is not None and (held[1] is None or actor in held[1])
 
+    def members_for(self, actor: str):
+        """``HostAccess.members_set`` for ``actor``: a set handle of the ids."""
+        def members(ids):
+            handle = f"set:{len(self.sets)}"
+            self.sets[handle] = (actor, list(ids))
+            return handle
+        return members
+
+    def _walk_set(self, args: dict, actor: str) -> dict:
+        """``plx.around`` from a set: members re-checked, objects paged by ``limit`` with
+        a cursor, every edge reaching a listed object shown."""
+        owner, roots = self.sets[args["from"]]
+        if owner != actor:
+            return {"error": {"code": "set_not_found"}}
+        hop = args["path"][0]
+        forward = hop["direction"] == "forward"
+        pairs = []
+        for link, frm, to in self.links:
+            root, other = (frm, to) if forward else (to, frm)
+            if link != hop["link_type"] or root not in roots or not self.sees(actor, root) \
+                    or not self.sees(actor, other):
+                continue
+            props = self.objects[other][0]
+            if all(props.get(f["property"]) == f["value"] for f in args.get("filters", ())):
+                pairs.append((other, {"link_type": link, "from": frm, "to": to}))
+        others = sorted({o for o, _ in pairs})
+        start = int(args.get("cursor") or 0)
+        self.paged += bool(start)
+        page = others[start:start + args.get("limit", 50)]
+        more = start + len(page) < len(others)
+        return {"objects": [{"object_id": o} for o in page],
+                "edges": [e for o, e in pairs if o in page],
+                "completeness": {"complete": not more,
+                                 "next_cursor": str(start + len(page)) if more else None}}
+
     def __call__(self, name: str, args: dict, actor: str) -> dict:
         root = args.get("object_id") or args.get("from")
         self.asked.append((name, root, actor))
+        if str(root).startswith("set:"):
+            return self._walk_set(args, actor)
         if not self.sees(actor, root):
             return {"error": {"code": "object_not_found"}}
         if name == "plx.object":
@@ -78,6 +118,36 @@ class Host:
             if all(props.get(f["property"]) == f["value"] for f in args.get("filters", ())):
                 out.append({"object_id": other})
         return {"objects": out[:args.get("limit", 50)]}
+
+
+# SCHEMA with the record types declared: their naming properties are read in one batch
+DECLARED = SimpleNamespace(object_types={
+    **SCHEMA.object_types,
+    "PurchaseOrder": {"properties": [
+        {"name": "buyer", "value_type": "text"}, {"name": "vendor_name", "value_type": "text"},
+        {"name": "watchers", "value_type": "json"}, {"name": "amount", "value_type": "money"},
+        {"name": "code", "value_type": "text", "identifier_kind": "bc_document_no"}]},
+    "SalesOrder": {"properties": [{"name": "salesperson", "value_type": "text"}]},
+    "Supplier": {"properties": []}, "Customer": {"properties": []}},
+    link_types=SCHEMA.link_types)
+
+
+def words_of(h: "Host", actor: str, withheld: dict | None = None, log: list | None = None):
+    """``ObjectWorkspace.object_words`` over ``h`` for ``actor``: visible records only,
+    each one's values of the properties asked; ``withheld``: per record, properties the
+    reader holds a value of it may not read."""
+    def words(ids, props):
+        if log is not None:
+            log.append((list(ids), list(props)))
+        out = {}
+        for oid in ids:
+            if not h.sees(actor, oid):
+                continue
+            hidden = set((withheld or {}).get(oid, ()))
+            out[oid] = {"display": oid, "withheld": hidden & set(props), "values": {
+                p: [v] for p, v in h.objects[oid][0].items() if p in props and p not in hidden}}
+        return out
+    return words
 
 
 def identity(oid: str) -> inv.Identity:
@@ -279,6 +349,156 @@ class MyBriefingTest(unittest.TestCase):
         self.assertTrue(cut and all(c and left <= inv.BUDGET_SECONDS for c, left in cut))
         self.assertFalse(call_limits.facts_cut_now())      # only inside the checks
 
+
+    def test_the_named_check_is_one_batched_read_deciding_as_plx_object(self):
+        """With the reader's batched value read (``words``) the named check of every
+        record is one read of the properties that can name a person (text and JSON, no
+        typed identifier), never a ``plx.object`` per record, with the same reasons and
+        counts as the whole reads at N=1/10/60: a record the reader may not open or a
+        property it may not read names no one; an undeclared type and a failed batch
+        are read whole."""
+        for n in (1, 10, 60):
+            h = Host()
+            ids = []
+            for k in range(n):
+                oid = f"PurchaseOrder:{k}"
+                props = {"buyer": ADDRESS[ANN]} if k % 3 == 0 else \
+                    {"watchers": f'["{ADDRESS[BOB]}", "{ADDRESS[ANN].upper()}"]'} \
+                    if k % 3 == 1 else {"vendor_name": "Ann Example", "amount": "12.50"}
+                h.add(oid, props, visible={ANN} if k % 5 else {OWNER})
+                ids.append(oid)
+            ids.append("Lot:1")
+            h.add("Lot:1", {"buyer": ADDRESS[ANN]})
+            whole = inv.derive(h, ANN, DECLARED, identity(ANN), ids, max_objects=200)
+            h.asked.clear()
+            log: list = []
+            batched = inv.derive(h, ANN, DECLARED, identity(ANN), ids, max_objects=200,
+                                 words=words_of(h, ANN, log=log))
+            self.assertEqual(batched.by_object, whole.by_object)
+            self.assertEqual((batched.checked, batched.not_checked),
+                             (whole.checked, whole.not_checked))
+            self.assertEqual(batched.checked, n + 1)
+            # one read; money and a typed identifier never asked; the Lot read whole
+            self.assertEqual(len(log), 1)
+            self.assertEqual(log[0][1], ["buyer", "vendor_name", "watchers"])
+            self.assertNotIn("Lot:1", log[0][0])
+            self.assertEqual({c[1] for c in h.asked if c[0] == "plx.object"}, {"Lot:1"})
+            mine = {o for o in batched.by_object if o.startswith("PurchaseOrder")}
+            self.assertEqual(mine, {f"PurchaseOrder:{k}" for k in range(n)
+                                    if k % 3 != 2 and k % 5})
+        # a property the reader holds a value of it may not read names no one
+        h = Host()
+        h.add("PurchaseOrder:1", {"buyer": ADDRESS[ANN]})
+        found = inv.derive(h, ANN, DECLARED, identity(ANN), ["PurchaseOrder:1"],
+                           words=words_of(h, ANN, withheld={"PurchaseOrder:1": {"buyer"}}))
+        self.assertEqual((found.by_object, found.checked), ({}, 1))
+
+        # a failed batch: every record read whole, same answer
+        def broken(ids, props):
+            raise RuntimeError("store gone")
+        h.asked.clear()
+        found = inv.derive(h, ANN, DECLARED, identity(ANN), ["PurchaseOrder:1"],
+                           words=broken)
+        self.assertEqual(found.by_object, {"PurchaseOrder:1": [
+            {"reason": "named", "via": "buyer"}]})
+        self.assertIn(("plx.object", "PurchaseOrder:1", ANN), h.asked)
+
+    def test_each_mail_path_is_walked_once_from_the_set_of_records(self):
+        """With ``members`` each mail path is walked once from the set of every record
+        (paged), never once per record, with the same reasons per reader as the
+        per-record walks at N=1/10/60; a message the reader may not open never makes a
+        record theirs; a walk that failed is walked per record."""
+        for n in (1, 10, 60):
+            h, _ = world()
+            ids = []
+            for k in range(n):
+                po, so = f"PurchaseOrder:p{k}", f"SalesOrder:s{k}"
+                h.add(po), h.add(so)
+                h.link("PurchaseOrder.ordered_from", po, f"Supplier:{1 + k % 2}")
+                h.link("SalesOrder.ordered_by", so, "Customer:1")
+                for who in (ANN, BOB, CARL):
+                    if k % 3 == (ANN, BOB, CARL).index(who):
+                        h.add(f"Email:{who}{k}", {"mailbox": who}, visible={who, OWNER})
+                        h.link("Email.mentions_purchase_order", f"Email:{who}{k}", po)
+                ids += [po, so]
+            ids += ["PurchaseOrder:1", "PurchaseOrder:2", "PurchaseOrder:3", "SalesOrder:1"]
+            h.paged = 0
+            for reader in (ANN, BOB, CARL, OWNER):
+                h.asked.clear()
+                whole = inv.derive(h, reader, SCHEMA, identity(reader), ids, max_objects=500)
+                singles = len(h.asked)
+                h.asked.clear()
+                with mock.patch.object(inv, "WALK_PAGE", 3), \
+                        mock.patch.object(inv, "WALK_ROOTS", 25):   # paged; N=60 split
+                    walked = inv.derive(h, reader, SCHEMA, identity(reader), ids,
+                                        max_objects=500, members=h.members_for(reader))
+                self.assertEqual(walked.by_object, whole.by_object, (n, reader))
+                self.assertEqual((walked.checked, walked.not_checked),
+                                 (whole.checked, whole.not_checked))
+                arounds = [a for a in h.asked if a[0] == "plx.around"]
+                self.assertTrue(all(a[1].startswith("set:") for a in arounds), arounds[:3])
+                self.assertLess(len(h.asked), singles)
+            self.assertEqual(h.paged > 0, n >= 10)   # later pages were read
+            # Carl's supplier-2 message is withheld from him: no PO of supplier 2 is his
+            self.assertFalse(any(r["reason"] == "you_correspond" for rs in inv.derive(
+                h, CARL, SCHEMA, identity(CARL), ids, members=h.members_for(CARL)
+            ).by_object.values() for r in rs))
+
+        # a walk that fails is walked per record, with the same answer
+        h, _ = world()
+        ids = ["PurchaseOrder:1", "PurchaseOrder:2", "SalesOrder:1"]
+        whole = inv.derive(h, OWNER, SCHEMA, identity(OWNER), ids)
+
+        def flaky(name, args, actor):
+            if str(args.get("from")).startswith("set:"):
+                return {"error": {"code": "store_unavailable"}}
+            return h(name, args, actor)
+        found = inv.derive(flaky, OWNER, SCHEMA, identity(OWNER), ids,
+                           members=h.members_for(OWNER))
+        self.assertEqual(found.by_object, whole.by_object)
+        self.assertEqual((found.checked, found.not_checked), (3, 0))
+
+    def test_records_read_whole_are_checked_once_per_reader_and_stamp(self):
+        """``known`` (``Known.of`` under the reader's key): a second consumer of the
+        same reader's briefing reads no record again and gets the same reasons; a record
+        whose check could not be read is checked again; another key (another reader, a
+        new data stamp) starts empty; a kept entry ends after ``seconds``."""
+        h, g = world()
+        now = [0.0]
+        known = inv.Known(seconds=60, clock=lambda: now[0])
+        mine = known.of(("ann", "stamp-1"))
+        first = brief(h, ANN, list(g.values()), PROC, known=mine)
+        asked = len(h.asked)
+        self.assertGreater(asked, 0)
+        again = brief(h, ANN, list(g.values()), PROC, known=known.of(("ann", "stamp-1")))
+        self.assertEqual(len(h.asked), asked)   # nothing read again
+        self.assertEqual(again["items"], first["items"])
+        self.assertEqual(again["involvement"], first["involvement"])
+        self.assertEqual(known.of(("carl", "stamp-1")), {})
+        self.assertEqual(known.of(("ann", "stamp-2")), {})
+        carl = brief(h, CARL, list(g.values()), PROC, known=known.of(("carl", "stamp-1")))
+        self.assertEqual(carl["yours"], 0)   # never Ann's reasons
+        now[0] = 61
+        self.assertEqual(known.of(("ann", "stamp-1")), {})
+        # an unread check is never kept: asked again on the next read
+        failing = {"on": True}
+
+        def flaky(name: str, args: dict, actor: str) -> dict:
+            if failing["on"] and (args.get("object_id") or args.get("from")) == \
+                    "PurchaseOrder:2":
+                raise RuntimeError("store gone")
+            return h(name, args, actor)
+        held = known.of(("ann", "stamp-3"))
+        inv.derive(flaky, ANN, SCHEMA, identity(ANN), ["PurchaseOrder:2", "PurchaseOrder:1"],
+                   known=held)
+        self.assertNotIn("PurchaseOrder:2", held)
+        self.assertIn("PurchaseOrder:1", held)
+        failing["on"] = False
+        out = inv.derive(flaky, ANN, SCHEMA, identity(ANN), ["PurchaseOrder:2"], known=held)
+        self.assertEqual(out.not_checked, 0)
+        self.assertIn("PurchaseOrder:2", held)
+        self.assertIsNone(known.of(None))
+        self.assertIsNone(known.of(("ann", ["unhashable"])))   # nothing kept, no raise
 
 if __name__ == "__main__":
     unittest.main()

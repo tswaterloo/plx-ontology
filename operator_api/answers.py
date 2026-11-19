@@ -1170,9 +1170,10 @@ def cost_breakdown(backend: "WorkspaceBackend", view: Any, breakdown: Mapping[st
               for g in breakdown["gaps"]][:12])
 
 
-STILL_WORKING = ("I'm still working on this: the time limit ({seconds} s) was reached "
-                 "before an answer passed its checks. Ask again, or narrow the question "
-                 "(name the record or the field you need).")
+# One line: that it can't answer, why, and how to ask again (owner walk 11-17).
+RETRY = "Ask again in a few minutes, or name the record or the field you need."
+STILL_WORKING = ("I can't answer this yet: the {seconds} s time limit was reached before an "
+                 "answer passed its checks. " + RETRY)
 PARTIAL_AT_LIMIT = ("Partial answer (the time limit was reached while it was being "
                     "finished; only what passed the checks is shown): ")
 
@@ -1256,8 +1257,9 @@ def unavailable_answer(reason: str, trail: Optional[m.EvidenceTrail], facts: Seq
     """(direct answer, outcome) when the assistant was unavailable: said first, then what
     the records read without it show (each PO trail's verdict, the late list's facts),
     never a statement that nothing was found."""
-    said = [f"The assistant is unavailable right now ({reason})."]
     shown = trail_shows(trail) or bool(facts) or bool(late)
+    said = [f"I can't {'give a full answer' if shown else 'answer this'} right now: the "
+            f"assistant is unavailable ({reason})."]
     if shown:
         said.append("Here is what the records show.")
         for po in (trail.trails if trail is not None else [])[:3]:
@@ -1266,11 +1268,9 @@ def unavailable_answer(reason: str, trail: Optional[m.EvidenceTrail], facts: Seq
         if not (trail and trail.trails) and facts:
             said.append(facts[0].text)
     elif subjects:
-        said.append("The records your question names are linked below; ask again later "
-                    "for a full answer.")
+        said.append("The records your question names are linked below. " + RETRY)
     else:
-        said.append("Ask again later, or narrow the question (name the record or the field "
-                    "you need).")
+        said.append(RETRY)
     return " ".join(said), ("partial" if shown or subjects else "abstained")
 
 

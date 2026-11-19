@@ -169,16 +169,7 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _ro(path: Path | str) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60,
-                           isolation_level=None, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _chunks(items: Sequence[Any], size: int = 500) -> Iterator[Sequence[Any]]:
-    for start in range(0, len(items), size):
-        yield items[start:start + size]
+from ontology.delta_io import _chunks, _ro  # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------- records
@@ -1038,19 +1029,58 @@ def mail_changes(mail_db: Path, base: Base, state: State, exclusion: Any) -> int
 def discover(mirror: Path, state_dir: Path, base: Base, state: State, plan: "Plan",
              stores: Mapping[str, Path], exclusion: Any, unavailable: str | None,
              report: dict[str, Any]) -> dict[str, int]:
-    """Every source's changes since the served generation, kept in ``state``."""
+    """Every source's changes since the served generation, kept in ``state``.
+    ``report["read_from"]``: per source, when its scan began (taken before its capture is
+    opened: everything its capture committed by then is found), or, for mail skipped,
+    when it would have (:func:`cycle_reads`)."""
+    read_from = report.setdefault("read_from", {})
+    read_from["portal_api"] = _now()
     added = {"portal_api": portal_changes(mirror, base, state, plan)}
+    read_from["graph_mail"] = _now()
     if unavailable is None:
         added["graph_mail"] = mail_changes(state_dir / "mail-capture" / "capture.db",
                                            base, state, exclusion)
     else:   # no people-exclusion guard: mail is never read (fail closed)
         report["mail_skipped"] = unavailable
     for family, path in stores.items():
+        read_from[family] = _now()
         added[family] = store_changes(family, path, base, state)
     drive, lists = sharepoint_paths(state_dir)
     if drive.is_file() or lists.is_file():
+        read_from["sharepoint"] = _now()
         added["sharepoint"] = sharepoint_changes(drive, lists, base, state)
     return added
+
+
+# What a cycle read of each source, kept in its layer's ``store_meta`` (``READS_KEY``)
+# and, once Postgres applied it, in ``ontology.store_meta`` (``operating.pg.ontology_delta
+# .note_reads``): how far the served data reaches into each capture (the Trust page).
+READS_KEY = "delta_reads"
+# the one reason a source is skipped today: mail without the people-exclusion guard (the
+# guard's own code is never kept: a reader is told the reason in words)
+SKIP_REASONS = {"graph_mail": "people_exclusion_unavailable"}
+
+
+def cycle_reads(report: Mapping[str, Any], left_open: Mapping[str, int]
+                ) -> dict[str, dict[str, Any]]:
+    """Per source this cycle scanned: ``read_from`` (when its scan began, ``discover``)
+    and ``state``: ``complete`` (every record found by then is followed into this cycle's
+    layer or an earlier one), ``capped`` (``left`` records stay open for later cycles: the
+    cycle cap, a mailbox the guard could not decide) or ``skipped`` (not read at all,
+    ``reason``). A source not scanned (no capture store, a fold, a re-derivation check) is
+    not named: nothing is said of it."""
+    out: dict[str, dict[str, Any]] = {}
+    for source, at in (report.get("read_from") or {}).items():
+        if source not in SOURCES or not isinstance(at, str):
+            continue
+        if source == "graph_mail" and report.get("mail_skipped"):
+            out[source] = {"read_from": at, "state": "skipped", "left": 0,
+                           "reason": SKIP_REASONS[source]}
+            continue
+        left = max(int(left_open.get(source) or 0), 0)
+        out[source] = {"read_from": at, "state": "capped" if left else "complete",
+                       "left": left}
+    return out
 
 
 def _drive_digests(state: Path) -> list[str]:
@@ -1683,152 +1713,8 @@ def store_mention_targets(family: str, live: Path, keys: Sequence[tuple[str, str
 
 # --------------------------------------------------------------------------- subsets
 
-def _copy_schema(src: sqlite3.Connection, dst: sqlite3.Connection, schema: str = "main") -> None:
-    for row in src.execute(f"SELECT type, name, sql FROM {schema}.sqlite_master WHERE sql IS NOT "
-                           "NULL AND type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' "
-                           "ORDER BY type DESC"):
-        dst.execute(row["sql"])
-
-
-def _attach_copy(dst: sqlite3.Connection, live: Path) -> None:
-    dst.execute("ATTACH DATABASE ? AS live", (f"file:{live}?mode=ro",))
-
-
-def mirror_subset(live: Path, out: Path, keys: Iterable[tuple[str, str]]) -> None:
-    """A mirror file holding only these records (every retained version and removal) and
-    every capture, relation and label row: ``MirrorCaptures`` reads it as the mirror."""
-    out.unlink(missing_ok=True)
-    src = _ro(live)
-    dst = sqlite3.connect(out, isolation_level=None)
-    dst.row_factory = sqlite3.Row
-    try:
-        _copy_schema(src, dst)
-        src.close()
-        _attach_copy(dst, live)
-        dst.execute("BEGIN")
-        keyed = ("row_current", "row_version", "row_removal")
-        tables = [r[0] for r in dst.execute("SELECT name FROM live.sqlite_master WHERE "
-                                            "type = 'table' AND name NOT LIKE 'sqlite_%'")]
-        for table in tables:
-            if table in keyed or table in ("identifier_index", "stage_row", "stage_seen",
-                                           "absence_seen", "change_capture",
-                                           "relation_change", "sync_progress"):
-                continue
-            dst.execute(f"INSERT INTO main.{table} SELECT * FROM live.{table}")
-        dst.execute("CREATE TEMP TABLE want (relation TEXT, key_json TEXT)")
-        dst.executemany("INSERT INTO want VALUES (?, ?)", list(keys))
-        for table in keyed:
-            dst.execute(f"INSERT INTO main.{table} SELECT t.* FROM want w JOIN live.{table} t "
-                        "ON t.relation = w.relation AND t.key_json = w.key_json")
-        dst.execute("COMMIT")
-    finally:
-        dst.close()
-
-
-def mail_subset(live_state: Path, out_state: Path, keys: Iterable[tuple[str, str]]) -> None:
-    """A mail capture directory holding only these messages (every version, their
-    attachments and attachment texts); the blobs are the live capture's (read-only)."""
-    live = live_state / "mail-capture" / "capture.db"
-    root = out_state / "mail-capture"
-    root.mkdir(parents=True, exist_ok=True)
-    blobs = root / "blobs"
-    if not blobs.exists():
-        blobs.symlink_to((live_state / "mail-capture" / "blobs").resolve())
-    db = root / "capture.db"
-    db.unlink(missing_ok=True)
-    src = _ro(live)
-    dst = sqlite3.connect(db, isolation_level=None)
-    try:
-        _copy_schema(src, dst)
-        src.close()
-        _attach_copy(dst, live)
-        dst.execute("BEGIN")
-        for table in ("meta", "folders", "mailboxes", "mailbox_folders"):
-            dst.execute(f"INSERT INTO main.{table} SELECT * FROM live.{table}")
-        dst.execute("CREATE TEMP TABLE want (mailbox_id TEXT, message_id TEXT)")
-        dst.executemany("INSERT INTO want VALUES (?, ?)", list(keys))
-        dst.execute("INSERT INTO main.messages SELECT m.* FROM want w JOIN live.messages m "
-                    "ON m.mailbox_id = w.mailbox_id AND m.message_id = w.message_id")
-        dst.execute("INSERT INTO main.attachments SELECT a.* FROM live.attachments a WHERE "
-                    "a.message_handle IN (SELECT l1_handle FROM main.messages)")
-        dst.execute("INSERT INTO main.attachment_text_versions SELECT t.* FROM "
-                    "live.attachment_text_versions t WHERE t.l1_handle IN "
-                    "(SELECT l1_handle FROM main.attachments)")
-        dst.execute("INSERT OR IGNORE INTO main.blobs SELECT b.* FROM live.blobs b WHERE "
-                    "b.sha256 IN (SELECT body_sha256 FROM main.messages UNION SELECT "
-                    "content_sha256 FROM main.attachments UNION SELECT text_sha256 FROM "
-                    "main.attachments UNION SELECT text_sha256 FROM main.attachment_text_versions)")
-        dst.execute("COMMIT")
-    finally:
-        dst.close()
-
-
-def sharepoint_subset(live_state: Path, out_state: Path, keys: Iterable[tuple[str, ...]]
-                      ) -> None:
-    """The SharePoint drive capture holding only these items (every version, their blob
-    rows, every root and permission row; the blobs are the live capture's, read-only) and
-    the list-item capture holding only these list items."""
-    from ontology.project import SharePointCaptures
-    drive_live, lists_live = SharePointCaptures.stores(live_state)
-    drive_out, lists_out = SharePointCaptures.stores(out_state)
-    keys = list(keys)
-    items = [(k[1], k[2]) for k in keys if k[0] == "item"]
-    listed = [(k[0], k[1]) for k in keys if k[0] != "item"]
-    if drive_live.is_file():
-        drive_out.parent.mkdir(parents=True, exist_ok=True)
-        blobs = drive_out.parent / "blobs"
-        if not blobs.exists():
-            blobs.symlink_to((drive_live.parent / "blobs").resolve())
-        drive_out.unlink(missing_ok=True)
-        with contextlib.closing(_ro(drive_live)) as src, \
-                contextlib.closing(sqlite3.connect(drive_out, isolation_level=None)) as dst:
-            _copy_schema(src, dst)
-            dst.execute("ATTACH DATABASE ? AS live", (f"file:{drive_live}?mode=ro",))
-            dst.execute("BEGIN")
-            for table in [r[0] for r in dst.execute(
-                    "SELECT name FROM live.sqlite_master WHERE type = 'table' AND name NOT "
-                    "LIKE 'sqlite_%'")]:
-                if table in ("items", "blobs", "item_events", "walked_folders"):
-                    continue
-                dst.execute(f"INSERT INTO main.{table} SELECT * FROM live.{table}")
-            dst.execute("CREATE TEMP TABLE want (drive_id TEXT, item_id TEXT)")
-            dst.executemany("INSERT INTO want VALUES (?, ?)", items)
-            dst.execute("INSERT INTO main.items SELECT i.* FROM want w JOIN live.items i ON "
-                        "i.drive_id = w.drive_id AND i.item_id = w.item_id")
-            dst.execute("INSERT OR IGNORE INTO main.blobs SELECT b.* FROM live.blobs b WHERE "
-                        "b.sha256 IN (SELECT content_sha256 FROM main.items UNION SELECT "
-                        "text_sha256 FROM main.items)")
-            dst.execute("COMMIT")
-    if lists_live.is_file() and listed:
-        lists_out.parent.mkdir(parents=True, exist_ok=True)
-        store_subset(lists_live, lists_out, listed)
-
-
-def store_subset(live: Path, out: Path, keys: Iterable[tuple[str, str]]) -> None:
-    """A capture-store file holding only these records' versions and removals, with
-    every run, mark, ACL and meta row."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.unlink(missing_ok=True)
-    src = _ro(live)
-    dst = sqlite3.connect(out, isolation_level=None)
-    try:
-        _copy_schema(src, dst)
-        src.close()
-        _attach_copy(dst, live)
-        dst.execute("BEGIN")
-        tables = [r[0] for r in dst.execute("SELECT name FROM live.sqlite_master WHERE "
-                                            "type = 'table' AND name NOT LIKE 'sqlite_%'")]
-        dst.execute("CREATE TEMP TABLE want (kind TEXT, path TEXT, PRIMARY KEY (kind, path))")
-        dst.executemany("INSERT OR IGNORE INTO want VALUES (?, ?)", list(keys))
-        for table in tables:
-            if table in ("versions", "removals"):
-                dst.execute(f"INSERT INTO main.{table} SELECT t.* FROM want w JOIN live.{table} t "
-                            "ON t.kind = w.kind AND t.path = w.path")
-            else:
-                dst.execute(f"INSERT INTO main.{table} SELECT * FROM live.{table}")
-        dst.execute("COMMIT")
-    finally:
-        dst.close()
+from ontology.delta_subsets import (  # noqa: E402,F401
+    _attach_copy, _copy_schema, mail_subset, mirror_subset, sharepoint_subset, store_subset)
 
 
 # --------------------------------------------------------------------------- build
@@ -2142,6 +2028,13 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             if not any(fresh.values()):
                 report["seconds"]["total"] = round(time.monotonic() - started, 2)
                 report["layer"] = "none: nothing new"
+                if publish and not force_changed and (
+                        environ.get("PLX_DELTA_PG") == "1" or base.postgres):
+                    # every record each source's scan found is in a published layer: in
+                    # the served data once Postgres holds them all (``note_reads``)
+                    report["reads"] = _note_reads_now(
+                        environ, cycle_reads(report, _left_open(report, fresh, undecided)),
+                        [Path(item["store"]).name for item in state.get("layers") or []])
                 (delta_dir / CHECKPOINT).unlink(missing_ok=True)
                 shutil.rmtree(work, ignore_errors=True)
                 return report
@@ -2193,7 +2086,10 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             if documents is not None:
                 held, timed = held_documents(documents, sub_state, mine, report)
             t = lap("project", t)
-        owned_ids = finish_store(store, base, mine)
+        reads = None
+        if not force_changed and not compact_only:
+            reads = cycle_reads(report, _left_open(report, fresh, undecided))
+        owned_ids = finish_store(store, base, mine, reads)
         # the files pending are those of every held record, queued or held by this layer
         projected = {s: {_tuple(k) for k in keys} for s, keys in mine.items()}
         waiting = {s: [k for k in keys if k not in projected.get(s, set())]
@@ -2273,7 +2169,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     from operating.pg import config as pg_config
                     from operating.pg.ontology_delta import apply_listed
                     report["postgres"] = apply_listed(
-                        [item["store"] for item in layers], pg_config.dsn(environ))
+                        [item["store"] for item in layers], pg_config.dsn(environ),
+                        state_dir=state_dir, environ=environ)
                     if report["postgres"].get("stalled"):   # loud: the cycle's status too
                         report["status"] = "postgres_stalled"
                     # the traverse facts of the version Postgres holds now, kept here:
@@ -3009,15 +2906,48 @@ def _copy_object_id(type_id: str, binding_id: str, key_json: str) -> str:
         key, Mapping) else {"id": None})
 
 
-def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]]
-                 ) -> dict[str, tuple[str, Any]]:
+def _left_open(report: Mapping[str, Any], fresh: Mapping[str, Sequence[Any]],
+               undecided: Iterable[str]) -> dict[str, int]:
+    """Per source, the open records this cycle leaves open: those past the cycle cap
+    (``report["deferred"]``) and the followed mail of a mailbox the guard could not
+    decide (closed only by a cycle that can, ``build_delta``)."""
+    left = {s: int(n) for s, n in (report.get("deferred") or {}).items()}
+    undecided = set(undecided)
+    if undecided:
+        held = sum(1 for k in fresh.get("graph_mail", ()) if k[0] in undecided)
+        left["graph_mail"] = left.get("graph_mail", 0) + held
+    return left
+
+
+def _note_reads_now(environ: Mapping[str, str], reads: Mapping[str, Any],
+                    layers: Sequence[str]) -> dict[str, Any]:
+    """A cycle that publishes nothing still says what it read, into Postgres
+    (``operating.pg.ontology_delta.note_reads``); never fails the cycle."""
+    try:
+        from operating.pg import config as pg_config
+        from operating.pg.ontology_delta import note_reads
+        return note_reads(pg_config.dsn(environ), reads, layers)
+    except Exception as exc:  # noqa: BLE001 - reported; the served position waits a cycle
+        return {"noted": False, "error": f"{type(exc).__name__}"[:120]}
+
+
+def create_owned(conn: sqlite3.Connection) -> None:
+    """A delta layer's ``delta_owned`` table (the objects whose rows it replaces), the one
+    DDL of it: :func:`finish_store`'s and ``operating.pg.people_directory_scope``'s layers."""
+    conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+
+
+def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]],
+                 reads: Mapping[str, Any] | None = None) -> dict[str, tuple[str, Any]]:
     """Mark the objects of the changed records as owned and give the delta store the served
     generation's meta (its digest, so readers apply it only over that generation), with the
-    delta's own capture freshness for the families it read."""
+    delta's own capture freshness for the families it read, and what the cycle read of
+    each source (``reads``, :func:`cycle_reads`; none: no ``READS_KEY``, never the base's
+    copy)."""
     conn = sqlite3.connect(store, isolation_level=None)
     try:
         conn.execute("BEGIN")
-        conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+        create_owned(conn)
         owned: dict[str, tuple[str, Any]] = {}
         copies = _reinserted_bindings()
         for source in SOURCES:
@@ -3080,6 +3010,9 @@ def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]]
         merged["steps_digest"] = steps_digest()   # the build steps' code (step migrations)
         merged["delta_built_at"] = mine.get("built_at") or _now()
         merged["delta_families"] = json.dumps(sorted(families))
+        merged.pop(READS_KEY, None)
+        if reads:
+            merged[READS_KEY] = json.dumps(reads, sort_keys=True)
         conn.execute("DELETE FROM store_meta")
         conn.executemany("INSERT INTO store_meta (key, value) VALUES (?, ?)",
                          sorted(merged.items()))
@@ -3499,111 +3432,8 @@ def adopt(work: Path, delta_dir: Path) -> tuple[int, bool]:
 
 # --------------------------------------------------------------------------- equivalence
 
-# The rows of one object a reader is served, as comparable tuples (no rowids or interned
-# ids): its identity, every version, every value, identifier, event and link (either end).
-_OBJECT_ROWS = {
-    "objects": ("SELECT object_id, object_type, binding_id, audience_key FROM objects "
-                "WHERE object_id = ?", 1),
-    "object_versions": ("SELECT * FROM object_versions WHERE object_id = ?", 1),
-    "object_removals": ("SELECT * FROM object_removals WHERE object_id = ?", 1),
-    "object_values": ("SELECT * FROM object_values WHERE object_id = ?", 1),
-    "identifiers": ("SELECT * FROM identifiers WHERE object_id = ?", 1),
-    "events": ("SELECT e.* FROM events e JOIN event_objects eo ON eo.event_id = e.event_id "
-               "WHERE eo.object_id = ?", 1),
-    "links": ("SELECT * FROM links WHERE from_object = ? UNION ALL "
-              "SELECT * FROM links WHERE to_object = ?", 2),
-}
-
-
-def object_rows(conn: sqlite3.Connection, object_id: str) -> dict[str, list[tuple]]:
-    out: dict[str, list[tuple]] = {}
-    for table, (sql, n) in _OBJECT_ROWS.items():
-        try:
-            cur = conn.execute(sql, (object_id,) * n)
-        except sqlite3.OperationalError:
-            continue
-        names = [d[0] for d in cur.description]
-        drop = {i for i, name in enumerate(names) if name in ("rowid", "row_no", "id", "ver")}
-        out[table] = sorted(tuple(json.dumps(v) for i, v in enumerate(row) if i not in drop)
-                            for row in cur)
-    return out
-
-
-# What names a version rather than what it says: dropped when only the current state
-# is compared (a version restamped upstream cites a newer capture, says the same).
-_VERSION_NAMING = {"l1_handle", "digest", "recorded_at", "superseded_at", "event_id",
-                   "link_id", "reason", "evidence_handles"}
-
-
-def current_rows(conn: sqlite3.Connection, object_id: str) -> dict[str, list[tuple]]:
-    """What an object says now: the rows of its current version (and its current links,
-    identifiers and events), without the columns naming the version they came from."""
-    out: dict[str, list[tuple]] = {}
-    for table, (sql, n) in _OBJECT_ROWS.items():
-        try:
-            cur = conn.execute(sql, (object_id,) * n)
-        except sqlite3.OperationalError:
-            continue
-        names = [d[0] for d in cur.description]
-        live = names.index("superseded_at") if "superseded_at" in names else None
-        keep = [i for i, name in enumerate(names)
-                if name not in _VERSION_NAMING | {"rowid", "row_no", "id", "ver"}]
-        out[table] = sorted({tuple(json.dumps(_unnamed(row[i])) for i in keep) for row in cur
-                             if live is None or row[live] is None})
-    return out
-
-
-def _unnamed(value: Any) -> Any:
-    """A column's value without the version naming its JSON nests (a conflict's
-    citations name the captures they read)."""
-    if isinstance(value, str) and value[:1] in ("[", "{"):
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return value
-        return json.dumps(_unnamed(parsed), sort_keys=True)
-    if isinstance(value, dict):
-        return {k: _unnamed(v) for k, v in value.items() if k not in _VERSION_NAMING}
-    if isinstance(value, list):
-        return [_unnamed(v) for v in value]
-    return value
-
-
-def compare(delta_store: Path, other_store: Path, object_ids: Iterable[str],
-            *, link_ends: Iterable[str] | None = None, current: bool = False
-            ) -> dict[str, Any]:
-    """Row-for-row comparison of each object's served rows in the delta store and in
-    another store (a full build): equal objects, and per differing object the tables that
-    differ. ``link_ends``: compare only links whose other end is one of these (the rest of
-    a context end's links are not the delta's). ``current``: compare what each object
-    says now (:func:`current_rows`), not its version history."""
-    a, b = _ro(delta_store), _ro(other_store)
-    ends = None if link_ends is None else set(link_ends)
-    rows_of = current_rows if current else object_rows
-    f, t = (1, 2) if current else (2, 3)   # a link's ends (current rows drop link_id)
-    equal, differ = 0, {}
-    try:
-        for oid in object_ids:
-            mine, theirs = rows_of(a, oid), rows_of(b, oid)
-            if ends is not None:
-                for rows in (mine, theirs):
-                    rows["links"] = [r for r in rows.get("links", ())
-                                     if json.loads(r[f]) in ends and json.loads(r[t]) in ends]
-            tables = sorted(t for t in set(mine) | set(theirs) if mine.get(t) != theirs.get(t))
-            if tables:
-                differ[oid] = {t: {"delta": len(mine.get(t, ())), "full": len(theirs.get(t, ()))}
-                               for t in tables}
-            else:
-                equal += 1
-    finally:
-        a.close()
-        b.close()
-    tables: dict[str, int] = {}
-    for found in differ.values():
-        for table in found:
-            tables[table] = tables.get(table, 0) + 1
-    return {"equal": equal, "differ": len(differ), "tables": tables,
-            "examples": dict(list(differ.items())[:10]), "all_differ": sorted(differ)}
+from ontology.delta_compare import (  # noqa: E402,F401
+    _OBJECT_ROWS, _VERSION_NAMING, _unnamed, compare, current_rows, object_rows)
 
 
 # --------------------------------------------------------------------------- CLI

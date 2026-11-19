@@ -512,16 +512,34 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
         if groups is None:
             out.not_established.append(f"{label}, {period}: {_refusal(refused)}")
             continue
+        of_orders = link.startswith("SalesOrder.")
         for group in groups:
             money = _decimal_money(group.get("value"), group.get("currency"))
             cites = group.get("inputs_citations") or ()
             if money is None:
+                continue
+            if of_orders and Decimal(money.amount) == 0:
+                # order headers that hold 0 (an unpriced Portal copy, an invoiced Sage
+                # order): no sale of nothing, the orders' value is just not on them
+                out.not_established.append(
+                    f"{label}, {period}: not recorded (the orders' own totals read 0; "
+                    "each order below shows its value where its invoices or lines price it)")
                 continue
             system = system_of(next((c.get("l1_handle") for c in cites
                                      if isinstance(c, Mapping)), "") or "")
             out.revenue.append(m.CustomerAmount(
                 label=label, period=period, money=money, count=int(group.get("inputs") or 0),
                 system=system, sources=_cited(backend, view, cites)))
+            if of_orders:
+                _, zeroed = _related(view, oid, link, pages=1, filters=[
+                    {"property": when, "op": "gte", "value": since},
+                    {"property": "subtotal", "op": "eq", "value": "0"}])
+                if zeroed:
+                    n = len(zeroed)
+                    out.not_established.append(
+                        f"{label}, {period}: {'at least ' if n >= 50 else ''}"
+                        f"{n} order{'' if n == 1 else 's'} hold a total of 0 and add "
+                        "nothing to it")
     handle, orders = _related(view, oid, CUSTOMER_ORDERS)
     status: dict[str, str] = {}
     if handle is not None and orders:
@@ -550,7 +568,8 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
             found = []
             groups, _ = _aggregate_read(view, narrowed, {"property": "subtotal", "op": "sum"},
                                         ["order_date", "order_number"])
-            if groups is None:   # amounts this reader may not read: the orders, unpriced
+            hidden = groups is None
+            if hidden:   # amounts this reader may not read: the orders, unpriced
                 groups = [{**g, "value": None, "inputs_citations": ()} for g in _grouped(
                     view, narrowed, {"op": "count"}, ["order_date", "order_number"]) or ()]
             for group in groups:
@@ -559,14 +578,19 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
                 if not isinstance(number, str) or not number:
                     continue
                 target = by_number.get(number)
+                amount = _decimal_money(group.get("value"), group.get("currency"))
+                if amount is not None and Decimal(amount.amount) == 0:
+                    amount = None   # a header of 0 is no order value (``_order_worth``)
                 found.append(m.OrderRow(
                     object_id=target or number, label=number,
                     open_url=object_url("SalesOrder", target or number),
                     date=key.get("order_date") if isinstance(key.get("order_date"), str)
                     else None,
                     status=status.get(number) or None,
-                    amount=_decimal_money(group.get("value"), group.get("currency")),
-                    sources=_cited(backend, view, group.get("inputs_citations") or (), 1)))
+                    amount=amount,
+                    amount_note="not shown to you" if hidden else None,
+                    sources=_cited(backend, view, group.get("inputs_citations") or (), 1)
+                    if amount is not None else []))
             return sorted(found, key=lambda r: (r.date or "", r.label), reverse=True)
 
         for days in (90, CUSTOMER_DAYS, None):   # the latest orders, in a bounded read
@@ -576,7 +600,7 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
             recent = rows_of(window)
             if len(recent) >= CUSTOMER_ROWS or days is None:
                 break
-        out.recent_orders = recent[:CUSTOMER_ROWS]
+        out.recent_orders = _order_worth(backend, view, recent[:CUSTOMER_ROWS])
         counts = [g for g in _grouped(view, handle, {"op": "count"}, ["status"]) or ()
                   if plain((g.get("key") or {}).get("status"))]
         if counts:
@@ -594,8 +618,9 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
                     f"Open orders: {unread} order{'' if unread == 1 else 's'} hold a status "
                     "not read as open or closed, and are not counted")
             if open_states:
-                out.open_list = rows_of([{"property": "status", "op": "in",
-                                          "value": open_states[:50]}])[:CUSTOMER_ROWS]
+                out.open_list = _order_worth(backend, view, rows_of(
+                    [{"property": "status", "op": "in",
+                      "value": open_states[:50]}])[:CUSTOMER_ROWS])
         else:
             out.not_established.append("Open orders: no order status is recorded")
     elif not out.revenue:
@@ -618,8 +643,66 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
                       f"({system_word(obj['object_id'])})"[:200],
                 open_url=object_url(str(obj.get("object_type") or "Customer"),
                                     obj["object_id"])))
-    out.not_established.append("Contacts: none captured for this customer's record")
+    out.contacts = _contacts(view, [oid, *(r.object_id for r in out.also_in)])
+    if not out.contacts:
+        out.not_established.append(
+            "Contacts: no mail from this customer's people is linked to this record"
+            + (" or its copies" if out.also_in else ""))
     return out, orders, {n: st for n, st in status.items() if st}
+
+
+# The customer's people: who wrote the mail its record is linked to (the sender's address
+# names the customer), at corroborated or better, never a lead
+CONTACT_PATH = ({"link_type": "Email.sent_by_customer", "direction": "reverse"},
+                {"link_type": "Email.sent_by_person", "direction": "forward"})
+CONTACT_ROWS = 8
+# How an order's value is said when it is not the order's own total (``operating.order_value``)
+WORTH_NOTES = {"invoices": "from its invoices, before tax", "order_lines": "from its lines"}
+
+
+def _contacts(view: Any, roots: Sequence[str]) -> list[m.Person]:
+    """The people who wrote from the customer's mail, read as this reader along its own
+    record's links and its confirmed copies' (``also_in``), never a look-alike's."""
+    people: dict[str, m.Person] = {}
+    for root in dict.fromkeys(roots):
+        got = view._call("plx.around", {"from": root, "tier_floor": "corroborated",
+                                        "limit": CONTACT_ROWS, "path": list(CONTACT_PATH)})
+        for obj in (got or {}).get("objects") or ():
+            name = plain(obj.get("display")) if isinstance(obj, Mapping) else None
+            if not name or obj.get("object_id") in people:
+                continue
+            people[str(obj.get("object_id"))] = m.Person(
+                name=str(name)[:200], role="wrote from the customer's mail")
+    return list(people.values())[:CONTACT_ROWS]
+
+
+def _order_worth(backend: "WorkspaceBackend", view: Any, rows: Sequence[m.OrderRow]
+                 ) -> list[m.OrderRow]:
+    """``rows`` with each one whose own total is 0 or none valued as ``plx.object`` values
+    it (``operating.order_value``: from its invoices or lines, citing them), or said to be
+    not recorded; never 0 shown as what an order is worth."""
+    out = []
+    for row in rows:
+        if row.amount is not None or row.amount_note or not row.object_id.startswith(
+                "SalesOrder:"):
+            out.append(row)
+            continue
+        card = view._call("plx.object", {"object_id": row.object_id,
+                                         "properties": ["total_amount"]}) or {}
+        worth, note, cites = None, "value not recorded", []
+        for got in card.get("derived") or ():
+            if not isinstance(got, Mapping) or got.get("property") != "order_value":
+                continue
+            money = _decimal_money(got.get("value"), got.get("currency"))
+            inputs = [c for c in got.get("inputs") or () if isinstance(c, Mapping)]
+            if money is not None and Decimal(money.amount) != 0 and inputs \
+                    and got.get("derived_from") in WORTH_NOTES:
+                worth, note = money, WORTH_NOTES[got["derived_from"]]
+                cites = _cited(backend, view, inputs, 1)
+                break
+        out.append(row.model_copy(update={"amount": worth, "amount_note": note,
+                                          "sources": cites}))
+    return out
 
 
 def label_timeline(view: Any, page: m.ObjectPage, labels: Mapping[str, str],

@@ -40,6 +40,10 @@ prefix) alone (neither deleted nor copied from the layer), and after the layers 
 A failed run changes nothing (its transaction rolls back) and the mark stays, so the next
 cycle runs it again even with no new layer.
 
+A step whose inputs most layers replace has a run and a mark of its own (:data:`OWN_RUNS`):
+``with_people`` (``operating.pg.people_scope``, link prefix ``person:``), judged per object
+against the whole people directory after each cycle. The apply leaves its links alone too.
+
 ``python3 -m operating.pg.whole_steps [--full] [--dsn DSN]``: one run now (``--full``: the
 whole store), its report on stdout.
 
@@ -116,9 +120,25 @@ WHOLE_STEPS: Mapping[str, Step] = {
 }
 
 
+def _people_prefix() -> tuple[str, str]:
+    from operating.pg import people_scope
+    return people_scope.prefix()
+
+
+# Whole-store steps with a run and a mark of their own: their inputs are replaced by most
+# layers (every mail's), so they never join the run above, whose catch-up rule (a whole
+# store run past ``SCOPE_MAX`` replaced inputs) would then run pegging whole on every
+# mail catch-up. ``with_people`` (``operating.pg.people_scope``): a layer's closure holds
+# only the outside contacts who sent mail in it, so its person links for a re-projected
+# mail lose every other outside recipient.
+OWN_RUNS: Mapping[str, Callable[[], tuple[str, str]]] = {"with_people": _people_prefix}
+
+
 def ranges() -> list[tuple[str, str]]:
-    """The link id ranges ``[start, end)`` of the whole-store steps."""
-    return [step.prefix() for step in WHOLE_STEPS.values()]
+    """The link id ranges ``[start, end)`` of the whole-store steps (both kinds): the
+    links a layer apply leaves alone."""
+    return [step.prefix() for step in WHOLE_STEPS.values()] + \
+        [prefix() for prefix in OWN_RUNS.values()]
 
 
 def pg_excluded() -> str:
@@ -222,13 +242,13 @@ def _text(value: Any) -> Any:
     return None if value is None else str(value)
 
 
-def _write(cur: Any, new: Mapping[str, tuple], served: Mapping[str, Mapping[str, Any]],
-           replaced: Callable[[Mapping[str, Any]], bool]) -> tuple[dict[str, int], set[str]]:
-    """Make the served rows ``replaced`` selects the ``new`` ones (every new row must be
-    one it selects): only gone, new and changed rows are written. Their counts, and the
-    ends of every row written or removed."""
+def diff(new: Mapping[str, tuple], served: Mapping[str, Mapping[str, Any]],
+         replaced: Callable[[Mapping[str, Any]], bool]
+         ) -> tuple[list[str], list[str], list[str], int]:
+    """(gone, changed, added, kept) link ids making the served rows ``replaced`` selects
+    the ``new`` ones (every new row must be one it selects; a new id a served row of
+    another part holds is refused)."""
     from ontology import store_ddl
-    from operating.pg.ontology_delta import _copy
     cols = store_ddl.LINK_COLUMNS
     outside = [lid for lid, row in new.items() if not replaced(dict(zip(cols, row)))]
     if outside:
@@ -239,6 +259,18 @@ def _write(cur: Any, new: Mapping[str, tuple], served: Mapping[str, Mapping[str,
     added = sorted(set(new) - mine)
     if set(added) & set(served):   # a served row of another part: never two of one id
         raise ValueError("whole_step_row_of_another_part")
+    return gone, changed, added, len(mine) - len(gone) - len(changed)
+
+
+def _write(cur: Any, new: Mapping[str, tuple], served: Mapping[str, Mapping[str, Any]],
+           replaced: Callable[[Mapping[str, Any]], bool]) -> tuple[dict[str, int], set[str]]:
+    """Make the served rows ``replaced`` selects the ``new`` ones (:func:`diff`): only
+    gone, new and changed rows are written. Their counts, and the ends of every row
+    written or removed."""
+    from ontology import store_ddl
+    from operating.pg.ontology_delta import _copy
+    cols = store_ddl.LINK_COLUMNS
+    gone, changed, added, kept = diff(new, served, replaced)
     ends = {x for lid in gone + changed for x in (served[lid]["from_object"],
                                                   served[lid]["to_object"])}
     ends |= {x for lid in changed + added for x in (new[lid][2], new[lid][3])}
@@ -247,7 +279,7 @@ def _write(cur: Any, new: Mapping[str, tuple], served: Mapping[str, Mapping[str,
     if changed or added:
         _copy(cur, "link_rows", cols, (new[lid] for lid in changed + added), keys={})
     return {"gone": len(gone), "changed": len(changed), "added": len(added),
-            "kept": len(mine) - len(gone) - len(changed)}, ends
+            "kept": kept}, ends
 
 
 def _compute_full(dsn: str, folder: Path) -> tuple[dict[str, Any], int]:
@@ -380,10 +412,15 @@ def recompute(dsn: str, *, full: bool | None = None, work: str | Path | None = N
     return report
 
 
-def _record(cur: Any, ends: set[str], newest: int, now: float) -> str:
-    """The changed links' ends recorded as a layer of their own (module docstring)."""
+def _record(cur: Any, ends: set[str], newest: int, now: float,
+            prefix: str = LAYER_PREFIX) -> str:
+    """The changed links' ends recorded as a layer of their own (module docstring);
+    ``prefix``: its name's (one of ``LAYER_PREFIX``'s, which readers of
+    ``applied_owned`` skip as replacing no object's rows)."""
     from operating.pg import ontology_migrate
-    name = f"{LAYER_PREFIX}{newest}-{int(now * 1000)}"
+    if not prefix.startswith(LAYER_PREFIX):
+        raise ValueError("whole_step_layer_prefix")
+    name = f"{prefix}{newest}-{int(now * 1000)}"
     owned = sorted(ends)
     ontology_migrate.log_owned(cur, name, owned)
     cur.execute("SELECT value FROM ontology.load_state WHERE name = 'generation'")
@@ -424,8 +461,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["LAYER_PREFIX", "STATE", "WHOLE_STEPS", "pending", "pg_excluded", "ranges",
-           "recompute", "sqlite_excluded"]
+__all__ = ["LAYER_PREFIX", "OWN_RUNS", "STATE", "WHOLE_STEPS", "diff", "pending",
+           "pg_excluded", "ranges", "recompute", "sqlite_excluded"]
 
 
 if __name__ == "__main__":

@@ -163,6 +163,74 @@ class AgentPath(unittest.TestCase):
                     seen.append((events(block)[0], time.monotonic() - started))
         return seen
 
+    def kept_list(self, served, conversation, records):
+        """The reader's latest answer in ``conversation`` listing ``records`` (as a list
+        answer keeps its subjects)."""
+        self.ask_with(served, {"question": "which purchase orders are late?",
+                               "conversation_id": conversation})
+        backend = served.app.state.backend
+        with backend._lock:
+            kept = [k for k in backend._answers.values()
+                    if k.get("conversation_id") == conversation]
+            kept[-1]["subjects"] = [{"type": "PurchaseOrder", "object_id": r["object_id"],
+                                     "label": r["label"]} for r in records]
+
+    def test_a_follow_up_points_at_the_previous_answers_records_never_a_name(self):
+        """Owner walk F2: "open the second one" opened the second record of the answer
+        before it, never a record named "One ..."; a question about it is asked of that
+        record; an ordinal past the list, another reader's conversation or a record the
+        reader cannot read now says it cannot tell, in one line, and runs nothing."""
+        import sqlite3
+        with sqlite3.connect(self.state / case_console.ONTOLOGY_FILE) as db:
+            ids = [r[0] for r in db.execute(
+                "SELECT object_id FROM objects WHERE object_type = 'PurchaseOrder' "
+                "AND object_id != ? ORDER BY object_id LIMIT 1", (self.late[0]["object_id"],))]
+        self.assertEqual(len(ids), 1)
+        listed = [self.late[0], {"object_id": ids[0], "label": "the other order"}]
+        seen = {}
+        hosts = self.use(self.ops, lambda on_line: ScriptedSession(
+            on_line, [], answer_block(self.handle, "Overdue"), seen=seen))
+        self.kept_list(self.ops, "F2", listed)
+        hosts.clear()
+        got = self.ask_with(self.ops, {"question": "open the second one",
+                                       "conversation_id": "F2"})
+        m.AnswerPayload.model_validate(got)
+        self.assertEqual(got["outcome"], "answered")
+        self.assertEqual([s["object_id"] for s in got["subjects"]],
+                         [listed[1]["object_id"]])
+        self.assertEqual(hosts, [])                 # nothing looked up, no agent run
+        # the follow-up after it still counts the list
+        first = self.ask_with(self.ops, {"question": "show me the first one",
+                                         "conversation_id": "F2"})
+        self.assertEqual([s["object_id"] for s in first["subjects"]],
+                         [self.late[0]["object_id"]])
+        # a question about it is asked of that record, never of the word "one"
+        self.ask_with(self.ops, {"question": "who supplies the second one?",
+                                 "conversation_id": "F2"})
+        self.assertIn(listed[1]["object_id"], seen["prompt"])
+        self.assertIn(listed[1]["label"], seen["prompt"])
+        self.assertNotIn("the second one", seen["prompt"])
+        hosts.clear()
+        past = self.ask_with(self.ops, {"question": "open the fifth one",
+                                        "conversation_id": "F2"})
+        self.assertEqual((past["outcome"], past["subjects"], past["direct_answer"]),
+                         ("abstained", [], "I can't tell which record \"the fifth one\" "
+                          "means: the last answer listed only 2 orders. Ask again with its "
+                          "number or name."))
+        # another reader's conversation is not theirs to point into
+        self.use(self.outsider, lambda on_line: ScriptedSession(on_line, [], ""))
+        other = self.ask_with(self.outsider, {"question": "open the second one",
+                                              "conversation_id": "F2"})
+        self.assertEqual(other["subjects"], [])
+        self.assertIn("there is no earlier answer in this conversation", other["direct_answer"])
+        # a list of records the reader cannot read now names none of them
+        self.kept_list(self.outsider, "F2o", listed)
+        gone = self.ask_with(self.outsider, {"question": "open the first one",
+                                             "conversation_id": "F2o"})
+        self.assertEqual((gone["outcome"], gone["subjects"]), ("abstained", []))
+        self.assertNotIn(listed[0]["label"], gone["direct_answer"])
+        self.assertEqual(hosts, [])
+
     def test_ask_runs_the_card_path_as_the_reader_and_shows_only_what_the_gate_passed(self):
         status = "Overdue"
         lines = [tool_use(1, "plx.find", {"query": "late order"}),
@@ -427,7 +495,8 @@ class AgentPath(unittest.TestCase):
                 "PLX makes soaps and lotions under contract. "
                 "Our landed cost on PO 4501 was $4.10 per kg on March 3, 2026. "
                 "See lot L2024-17 for an example. Acme Chemicals supplies our glycerin.\n"
-                "[[DRAFT email]]\nSubject: Landed cost for [PO number]\nHello [supplier name],"
+                "[[DRAFT email]]\nTo: pat@maple.example\nSubject: Landed cost for [PO number]"
+                "\n\nHello [supplier name],"
                 "\nPlease send the freight and duty you charged on [PO number]. We paid "
                 "$7,450 last time.\n[[END]]\n"
                 "[[DRAFT payment]]\nWhat: Pay the freight invoice\nAmount: [amount]\n"
@@ -457,6 +526,12 @@ class AgentPath(unittest.TestCase):
                          ("email", "Landed cost for [PO number]", False))
         self.assertEqual([o["kind"] for o in email["actions"]], ["send_email"])
         self.assertIn("Please send the freight", email["body"])
+        # its header lines are fields, never body; an address the question never wrote
+        # (the model's guess) is no recipient
+        self.assertNotIn("pat@maple.example", json.dumps(answer))
+        self.assertFalse(email["body"].startswith(("To:", "Subject:")))
+        self.assertIsNone(email.get("to"))
+        self.assertIn("Add the recipient's address before sending.", email["missing"])
         self.assertEqual(payment["kind"], "payment")
         self.assertIn({"label": "Amount", "value": "[amount]"}, payment["details"])
         self.assertEqual({o["kind"] for o in payment["actions"]}, {"create_follow_up", "assign"})
@@ -538,10 +613,11 @@ class AgentPath(unittest.TestCase):
         self.assertTrue(kept["resume"]["turns"][0]["withheld"])
         self.assertNotIn(status, json.dumps(kept["resume"]))
 
-    def test_a_company_question_the_records_cannot_answer_still_gets_marked_help(self):
-        """Never a refusal: an answer the records could not give says what is missing, as
-        the evidence path wrote it, and the model's general help follows under the general
-        heading; the outcome stays the evidence path's own."""
+    def test_a_company_question_the_records_cannot_answer_gets_no_general_filler(self):
+        """11-17 owner: a question about PLX's own records that the records could not
+        answer says what is missing, as the evidence path wrote it, and nothing else: no
+        general how-to ("open your inbox", "paste the emails here") under a general
+        heading, and the general model is never asked."""
         from operating import general_answer as ga
         self.use(self.ops, lambda on_line: ScriptedSession(on_line, [], "I found nothing.",
                                                            pause=0.01))
@@ -550,10 +626,10 @@ class AgentPath(unittest.TestCase):
         answer = self.ask(self.ops, "when will the glycerin arrive?")[-1][0][1]
         self.assertNotEqual(answer["outcome"], "answered")
         self.assertEqual(answer["facts"], [])
-        company, general = answer["direct_answer"].split(ga.HEADING + "\n")
-        self.assertTrue(company.strip())                     # what is missing, said first
-        self.assertIn("two to six weeks", general)
-        self.assertIn("could not confirm all", prompts[0])
+        self.assertTrue(answer["direct_answer"].strip())     # what is missing, said
+        self.assertNotIn(ga.HEADING, answer["direct_answer"])
+        self.assertNotIn("two to six weeks", answer["direct_answer"])
+        self.assertEqual(prompts, [])
 
     def test_the_general_part_never_names_the_record_the_cited_part_answers(self):
         """In "Is PO 4501 confirmed by the supplier, and how should
@@ -772,8 +848,9 @@ class AgentPath(unittest.TestCase):
         # never "no records answer this"
         self.assertEqual(answer["outcome"], "abstained")
         self.assertTrue(answer["direct_answer"].startswith(
-            "The assistant is unavailable right now (it reached its 45 s time limit)."))
-        self.assertIn("narrow the question", answer["direct_answer"])
+            "I can't answer this right now: the assistant is unavailable (it reached its 45 s "
+            "time limit). Ask again in a few minutes, or name the record or the field you "
+            "need."))
         self.assertNotIn("couldn't find", answer["direct_answer"])
         self.assertEqual(answer["assistant_unavailable"], "it reached its 45 s time limit")
         self.assertEqual(answer["facts"], [])
@@ -797,7 +874,8 @@ class AgentPath(unittest.TestCase):
                 answer = self.ask(self.ops, f"What is going on with PO {label}?")[-1][0][1]
                 said = answer["direct_answer"]
                 self.assertTrue(said.startswith(
-                    f"The assistant is unavailable right now ({reason})."), said)
+                    f"I can't give a full answer right now: the assistant is unavailable "
+                    f"({reason})."), said)
                 self.assertNotIn("couldn't find", said)
                 self.assertNotIn("weekly limit", said)   # the CLI's words stay out
                 self.assertEqual(answer["assistant_unavailable"], reason)

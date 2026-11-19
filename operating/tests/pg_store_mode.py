@@ -20,7 +20,6 @@ import os
 import re
 import tempfile
 import threading
-import time
 from pathlib import Path
 import sqlite3
 import sys
@@ -69,61 +68,33 @@ def _stamp(path: str, conn: sqlite3.Connection) -> tuple:
 # One load at a time: a host opens readers of one store on more than one thread (its
 # warm-up beside the test's own call), and two loads into one database at once interleave
 # their TRUNCATE / range / key rebuilds ("multiple primary keys", "load_ranges_pkey").
+# A background facts read (``ontology_tools_traverse._keep_pg_facts_apart``) holds it too,
+# for the whole read (``install``): that read is a process of its own holding a
+# transaction on the database while its worker sessions read, and a load in place under
+# it (its ``DROP CONSTRAINT`` waits on that transaction, the workers queue behind the
+# ``DROP``) is a cycle through the client that Postgres never detects (a module hung to
+# its timeout, 2026-11-16). The served database is never loaded again under its readers;
+# with one lock a facts read and a load can never overlap, whichever starts first.
 _LOADING = threading.RLock()
 
 
 def _load(path: str, conn: sqlite3.Connection) -> str:
     """The store's rows in its own database, loaded again when the store changed (a write
     on its connection or a commit on another one) since the last load."""
-    _await_facts_reads(path, conn)
     with _LOADING:
         return _load_held(path, conn)
 
 
-# The longest a load waits for the facts reads of the version it replaces (seconds).
-FACTS_WAIT_SECONDS = 600
-FACTS_THREAD = "plx-store-facts"   # ontology_tools_traverse._background_prime's threads
-_WAITING: set = set()
-_WAIT_LOCK = threading.Lock()
-
-
-def _await_facts_reads(path: str, conn: sqlite3.Connection) -> None:
-    """Before a database is loaded again in place: every background facts read still
-    running ended first. Such a read (``ontology_tools_traverse._keep_pg_facts_apart``, a
-    process of its own) holds a transaction on the database while its worker sessions
-    read; the load's ``DROP CONSTRAINT`` waits on that transaction and the workers queue
-    behind the ``DROP``, a cycle through the client that Postgres never detects (a
-    module hung to its timeout, 2026-11-16). The served database is never loaded again
-    under its readers, so the harness waits as that order does. Called outside
-    ``_LOADING``: a facts read opens a reader of its own through ``_load`` (its thread
-    then waits on the other reads only). Raises past ``FACTS_WAIT_SECONDS`` rather than
-    hang."""
-    held = _STATE.get("dbs", {}).get(path or id(conn))
-    if held is None or held["loaded"] is None:
-        return   # a first load: no reader has seen this database yet
-    if held["loaded"] == _stamp(path, conn) and held.get("conn") is conn:
-        return   # no load due
-    # the reads' threads (``_background_prime``'s), not their events: a read opens a reader
-    # of its own through this very load and must not wait on itself; a read waiting here
-    # itself is not waited on (two would wait on each other)
-    me = threading.current_thread()
-    with _WAIT_LOCK:
-        _WAITING.add(me)
-    try:
-        deadline = time.monotonic() + FACTS_WAIT_SECONDS
-        for read in threading.enumerate():
-            if read is me or read.name != FACTS_THREAD:
-                continue
-            while read.is_alive() and read not in _WAITING:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise RuntimeError("pg_store_mode: a background facts read did not end "
-                                       f"within {FACTS_WAIT_SECONDS} s; the store is not "
-                                       "loaded under it")
-                read.join(min(left, 0.5))
-    finally:
-        with _WAIT_LOCK:
-            _WAITING.discard(me)
+def _facts_read_held(keep):  # noqa: ANN001, ANN202
+    """``keep`` (``_keep_pg_facts_apart``) run while holding ``_LOADING``. Its process is
+    plain (never this harness), so nothing it waits on takes the lock; its fold first
+    (``keep_pg_facts`` here, on this thread) re-enters the lock."""
+    def held(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        with _LOADING:
+            _STATE["facts_reads"] = _STATE.get("facts_reads", 0) + 1
+            return keep(*args, **kwargs)
+    held.__wrapped__ = keep
+    return held
 
 
 def _load_held(path: str, conn: sqlite3.Connection) -> str:
@@ -191,6 +162,7 @@ def _repack(dsn: str) -> None:
 
 def install() -> None:
     from operating import ontology_tools as ot
+    from operating import ontology_tools_traverse as traverse
     from operating.pg.ontology_reader import PgStoreReader
     from operating.pg.sqlite_compat import PgCompatConnection
 
@@ -209,12 +181,7 @@ def install() -> None:
                 # a test's own row written through the reader's connection: into its
                 # SQLite store, which the next read loads again (Postgres is read only)
                 return self._source.execute(sql, parameters)
-            try:
-                _await_facts_reads(self._source_path, self._source)
-            except sqlite3.ProgrammingError:   # the test closed its store
-                pass
-            # never read while another thread loads it again; a read here waits on no
-            # load (each one holds this lock) and the facts reads ended above
+            # never read while another thread loads it again or a facts read runs
             with _LOADING:
                 try:
                     _load_held(self._source_path, self._source)
@@ -243,6 +210,8 @@ def install() -> None:
             self.__class__ = PgStoreReader
 
     ot.StoreReader.__init__ = init
+    if not hasattr(traverse._keep_pg_facts_apart, "__wrapped__"):
+        traverse._keep_pg_facts_apart = _facts_read_held(traverse._keep_pg_facts_apart)
 
 
 # Tests of the SQLite store's own mechanics, which a Postgres store has no part of: a query

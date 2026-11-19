@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -20,12 +21,14 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from operating import alert_kinds
 from operating import proactive_engine as pe
 from operating import team_activity as ta
 from operator_api import team_view as tv
 from operator_api import backend as be
 from operator_api.app import create_app
 from operator_api.auth import DevAuth, fixture_identity
+from operator_api.serving import Worker
 
 ME = "00000000-0000-4000-8000-0000000000a1"
 B = "00000000-0000-4000-8000-0000000000b1"
@@ -67,8 +70,16 @@ class Backend(be.WorkspaceBackend):
     refuse: set = set()
 
     asked: list = []
+    policy_threads: list = []
 
     def _brief_run(self, reader, job):
+        return job(self.view())
+
+    def view(self):
+        def reader_policy():
+            self.policy_threads.append(threading.current_thread().name)
+            return None, SimpleNamespace(unrestricted=self.owner)
+
         def gap_inbox(**kw):
             self.asked.append(kw)   # the trim: a refused citation hides its whole item
             kept = [g for g in self.gaps if not set(g.get("citations") or ()) & self.refuse]
@@ -76,7 +87,7 @@ class Backend(be.WorkspaceBackend):
         view = SimpleNamespace(
             gap_inbox=gap_inbox,
             access=SimpleNamespace(
-                reader_policy=lambda: (None, SimpleNamespace(unrestricted=self.owner)),
+                reader_policy=reader_policy,
                 decide=lambda handles: {h: ({"reason": "no"} if h in self.refuse else None)
                                         for h in handles}),
             _request=lambda: mock.MagicMock(),
@@ -84,8 +95,9 @@ class Backend(be.WorkspaceBackend):
             _call=lambda tool, args: ({"error": {"code": "not_found"}}
                                       if args.get("object_id") in self.refuse else
                                       {"object": {"display": NAMES_OF.get(
-                                          args.get("object_id"), "")}}))
-        return job(view)
+                                          args.get("object_id"), "")}}),
+            bind=lambda session: None)
+        return view
 
 
 class Owner(unittest.TestCase):
@@ -112,6 +124,12 @@ class Owner(unittest.TestCase):
                                data_dir=self.dir)
         self.backend.owner, self.backend.gaps, self.backend.refuse = False, [], set()
         self.backend.asked = []
+        # the access worker's own queue answers the grant sheet's owner check; the read
+        # workers never run here, so a check queued behind them would never be answered
+        access = self.backend.access_worker = Worker(lambda session: self.backend.view())
+        threading.Thread(target=access.loop, name="access-lane", daemon=True).start()
+        self.backend.policy_threads = []
+        self.addCleanup(access.stopped.set)
         patcher = mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED,
                                                tv.HIDDEN_ENV: OWNER, tv.READERS_ENV: ""})
         patcher.start()
@@ -334,15 +352,15 @@ class Owner(unittest.TestCase):
         conn.close()
 
     def _saved(self, oid: str, n: int) -> None:
-        """``n`` answered Asks in ``oid``'s work log (each counts as one lookup saved)."""
+        """``n`` accepted autopilot items in ``oid``'s work log (each one entry saved)."""
         from operator_api import work_log as wl
         store = wl.WorkLog.for_backend(self.backend)
         reader = SimpleNamespace(key=f"employee:{oid},staff:demo", display_name=NAMES[oid],
                                  email=None, session=SimpleNamespace(identities=(oid,)))
         for i in range(n):
-            self.assertIsNotNone(store.record(reader, kind="ask", verb="asked", title="q",
-                                              thread=f"ask:t{oid[-2:]}{i}", source="ask",
-                                              source_id=f"a{oid[-2:]}{i}"))
+            self.assertIsNotNone(store.record(reader, kind="autopilot", verb="accepted",
+                                              title="q", thread=f"autopilot:t{oid[-2:]}{i}",
+                                              source="autopilot", source_id=f"a{oid[-2:]}{i}"))
         store.close()
 
     def test_tracker_weeks_count_work_done_closed_and_replies(self):
@@ -433,8 +451,12 @@ class Owner(unittest.TestCase):
             self.assertEqual(self.client(oid).get("/api/workload/grants").status_code, 403)
         self.assertEqual(self.client(login=False).get("/api/workload/grants").status_code, 401)
         self.backend.owner = True
+        self.backend.policy_threads.clear()
         found = self.client(OWNER).get("/api/workload/grants")
         self.assertEqual(found.status_code, 200, found.text)
+        # the owner check reads no policy at all (the session's owner code decides), so it
+        # never queues behind the page reads
+        self.assertEqual(self.backend.policy_threads, [])
         body = found.json()
         self.assertEqual([p["name"] for p in body["people"]], [NAMES[ME], NAMES[B], NAMES[C]])
         self.assertEqual({p["oid"]: (p["team"], p["sees"]) for p in body["people"]},
@@ -449,6 +471,29 @@ class Owner(unittest.TestCase):
             self.assertEqual(client.get("/api/workload/grants").status_code, 503)
             self.assertEqual(client.post("/api/workload/grants",
                                          json={"teams": {}, "managers": {}}).status_code, 503)
+        self.assertEqual(self.grants_file(), before)
+
+    def test_a_listed_full_reader_neither_reads_nor_rewrites_the_grant_sheet(self):
+        # A listed full reader (PLX_FULL_READERS) holds an unrestricted read policy, but its
+        # access code ends ':listed': assigning workload grants stays the owner's.
+        from operating import session_identity as si
+        from operating.employee_permissions import FULL_READ_SCOPES, EmployeePrincipal
+        (self.dir / "workload-grants.json").write_text(json.dumps(
+            {"teams": {ME: "SALES"}, "managers": {}}))
+        before = self.grants_file()
+        self.backend.owner = True   # the policy says unrestricted, as a listed reader's does
+        employee = EmployeePrincipal("00000000-0000-4000-8000-00000000f002", B)
+        session = si.SessionIdentity(
+            tenant="plx", channel=si.CHANNEL_CONSOLE, author_kind=si.AUTHOR_HUMAN,
+            proof=si.PROOF_CONFIGURED, employee=employee,
+            principals=frozenset({employee.principal}), identities=frozenset({B}),
+            access="full_read:" + "+".join(sorted(FULL_READ_SCOPES)) + ":mail_all:listed")
+        client = TestClient(create_app(self.backend, DevAuth(lambda: session),
+                                       secure_cookie=False), base_url="http://testserver")
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        self.assertEqual(client.get("/api/workload/grants").status_code, 403)
+        self.assertEqual(client.post("/api/workload/grants", json={
+            "teams": {B: "OPS"}, "managers": {B: ["SALES", "OPS"]}}).status_code, 403)
         self.assertEqual(self.grants_file(), before)
 
     def test_saving_the_sheet_keeps_the_entries_it_never_shows(self):
@@ -551,6 +596,33 @@ class Owner(unittest.TestCase):
         self.assertNotIn("Payroll", found.text)
         self.assertNotIn("Sample 2", found.text)
 
+    def test_drill_lists_what_the_row_counts(self):
+        # live 11-18: the owner saw "41 waiting" beside an empty list and "41 more not shown:
+        # marked, or not open to you": a whole-inbox read spent its limit on higher-priority
+        # kinds before any reply, and kinds kept off Home were counted but never read
+        self.backend.owner = True
+        self.bound_guard()
+        conn = sqlite3.connect(pe.inbox_path(self.dir / "store.sqlite"))
+        off = sorted(alert_kinds.off_gap_kinds(()) - {"mc_task_stuck"})[0]
+        conn.execute("INSERT INTO gaps VALUES (?, ?, 'open', NULL)",
+                     (off, json.dumps({"owner": B})))
+        conn.commit()
+        conn.close()
+        self.backend.gaps = [item(1, B), item(2, B, kind="mc_task_stuck"), item(3, B, kind=off)]
+        row = next(p for p in self.team(OWNER).json()["people"] if p["name"] == NAMES[B])
+        body = self.items_of(B).json()
+        asked = self.backend.asked[-1]
+        self.assertEqual((asked["kinds"], asked["include_off"]),
+                         (sorted([off, "mc_task_stuck", "reply_owed"]), True))
+        self.assertEqual(len(body["items"]), row["awaiting_reply"] + row["tasks"] + row["alerts"])
+        self.assertEqual(body["withheld"], 0)
+        # a person with nothing open is not read for at all
+        before = len(self.backend.asked)
+        self.snapshot([ME, B, C, OWNER, EXCLUDED, "0f0f0f0f-0000-4000-8000-000000000abc"])
+        body = self.items_of("0f0f0f0f-0000-4000-8000-000000000abc").json()
+        self.assertEqual((body["items"], body["withheld"], len(self.backend.asked)),
+                         ([], 0, before))
+
     def test_drill_cardinality_one_ten_sixty(self):
         self.backend.owner = True
         self.bound_guard()
@@ -565,49 +637,10 @@ class Owner(unittest.TestCase):
                                  sorted((i["age_days"] for i in body["items"]), reverse=True))
                 self.assertLess(time.process_time() - t0, 20)
 
-    # ---- the R&D board --------------------------------------------------------------------
-
-    def test_board_draft_card_is_never_sent_and_hides_addresses_elsewhere(self):
-        self.backend.gaps = [rd_line(1, "p1")]
-        found = self.client().get("/api/rd-projects")
-        self.assertEqual(found.status_code, 200, found.text)
-        body = found.json()
-        (project,) = body["projects"]
-        self.assertEqual((body["sent"], body["writes"], project["draft"]["sent"]), (0, 0, False))
-        self.assertEqual(project["card_id"], "rd:p1")
-        self.assertEqual(project["draft"]["to"], [{"address": "buyer1@synth-customer.example"}])
-        self.assertEqual(found.text.count("synth-customer.example"), 1)   # only inside the draft
-        self.assertNotIn("contact", project)
-        self.assertEqual((project["waiting_on"], project["owner"]), ("us", B))
-        self.assertEqual(project["customer_name"], "Acme Foods")   # its header names it
-
-    def test_restricted_reader_loses_a_project_whose_record_it_cannot_open(self):
-        self.backend.gaps = [rd_line(1, "p1", "Customer:1"), rd_line(2, "p2", "Customer:2")]
-        self.backend.refuse = {"Customer:2"}
-        found = self.client().get("/api/rd-projects")
-        ids = [p["id"] for p in found.json()["projects"]]
-        self.assertEqual(ids, ["p1"])
-        self.assertNotIn("Customer:2", found.text)
-        self.assertNotIn("Borealis", found.text)
-        self.assertNotIn("buyer2@", found.text)
-        # and its card cannot be rebuilt by guessing the id
-        card = self.client().post("/api/actions/preview", json={
-            "card_id": "rd:p2", "kind": "reply_in_thread", "payload": {}})
-        self.assertEqual(card.status_code, 404)
-
-    def test_board_cardinality_one_ten_sixty(self):
-        for n in (1, 10, 60):
-            with self.subTest(n=n):
-                self.backend.gaps = [rd_line(i, f"p{i}", f"Customer:{i}") for i in range(n)]
-                t0 = time.process_time()   # the route's work, which load does not add to
-                body = self.client().get("/api/rd-projects").json()
-                self.assertEqual(len(body["projects"]), n)
-                self.assertEqual(len({p["id"] for p in body["projects"]}), n)
-                self.assertEqual(len({p["customer"] for p in body["projects"]}), n)
-                # a customer with no display gets no name, never another's
-                self.assertEqual([p["customer_name"] for p in body["projects"]],
-                                 [NAMES_OF.get(p["customer"]) for p in body["projects"]])
-                self.assertLess(time.process_time() - t0, 20)
+    def test_removed_r_and_d_and_qc_endpoints_are_gone(self):
+        for path in ("/api/rd-projects", "/api/brief/qc-daily", "/api/brief/qc-audit", "/api/brief/qc-audit.txt"):
+            with self.subTest(path=path):
+                self.assertIn(self.client().get(path).status_code, (404, 422))   # the generic brief route refuses an unknown type
 
 
 if __name__ == "__main__":

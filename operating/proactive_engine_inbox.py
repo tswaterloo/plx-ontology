@@ -80,7 +80,8 @@ def _people(store_path: Path) -> Any:
     ``integrations.people_exclusion.environ_with_exclusion``) with the tenant's mail
     directory and domains
     from the mail capture of the state directory ``store_path`` sits in (the projection
-    file, or a generation's store under it); unreadable: an unavailable guard."""
+    file, or a generation's store under it), and its reader of a message's sending
+    platform (``mail_platform``: ``mail_envelope.reader``); unreadable: an unavailable guard."""
     from integrations.people_exclusion import environ_with_exclusion
     from .chunking.permissions import load_exclusion
 
@@ -89,9 +90,13 @@ def _people(store_path: Path) -> Any:
         else parent.parent
     try:
         # the passes' env file when this process was started without the exclusion
-        return load_exclusion(state, environ_with_exclusion())
+        people = load_exclusion(state, environ_with_exclusion())
     except Exception:  # noqa: BLE001 - no directory: the rule is blocked, never guessed
         return None
+    # the stored envelope of a captured message (read-only): mail a mailing platform sent
+    from .mail_envelope import reader
+    people.mail_platform = reader(state / "mail-capture" / "capture.db")
+    return people
 
 
 COUNTED_KEYS = ("late", "at_risk", "unconfirmed", "undated")
@@ -615,21 +620,121 @@ def _attach(path: Path, store: Path, *, write: bool = False) -> sqlite3.Connecti
 
 def _attach_postgres(conn: sqlite3.Connection) -> None:
     """``st`` for an inbox when Postgres is the only store (``ontology_reader.pg_only``):
-    the rows of the store the inbox's reads join, copied from Postgres into memory, so its
-    permission SQL (``_OBJECT_VISIBLE``, ``_reader_view``) runs as written: ``store_meta``
-    (format, content digest; ``audience_keys``: every audience key the ontology's objects
-    hold now), and the objects the inbox names (gaps, citations, unjudged records) with
-    their current versions' markings. Postgres not whole: ``StoreError``, never an inbox
-    read over a partial store."""
+    the rows of the store the inbox's reads join, copied from Postgres, so its permission
+    SQL (``_OBJECT_VISIBLE``, ``_reader_view``) runs as written: ``store_meta`` (format,
+    content digest; ``audience_keys``: every audience key the ontology's objects hold now),
+    and the objects the inbox names (gaps, citations, unjudged records) with their current
+    versions' markings. Postgres not whole: ``StoreError``, never an inbox read over a
+    partial store.
+
+    The copy is the same for every reader (store rows only: each reader's permission SQL
+    runs over it), so it is made once per (inbox file as it stands, Postgres change stamp)
+    and attached read only from memory this process shares (``_st_copy``): before, every
+    inbox open copied 129k objects (3-7 s, 11-17), and Home alone opens the inbox about ten
+    times, so the page reads queued behind each other for up to a minute. With no stamp to
+    key it by (an in-memory inbox, Postgres not saying) it is copied for this open alone."""
     from operating.pg import ontology_reader
     problem = ontology_reader.whole()
     if problem is not None:
         raise ostore.StoreError("store_not_whole", problem)
+    # only an open that cannot write shares the copy (``PRAGMA query_only``): an inbox
+    # opened to write (a "seen" mark) gets one of its own, so no open ever changes the
+    # rows another reader's permission SQL reads
+    shared = conn.execute("PRAGMA query_only").fetchone()[0] == 1
+    key = _st_copy_key(conn) if shared else None
+    if key is not None:
+        name = _st_copy(conn, key)
+        try:
+            conn.execute("ATTACH DATABASE ? AS st", (f"file:{name}?mode=memory&cache=shared",))
+            if conn.execute("SELECT count(*) FROM st.sqlite_master WHERE name = "
+                            "'store_meta'").fetchone()[0] == 1:
+                return
+            conn.execute("DETACH DATABASE st")   # dropped meanwhile: an empty database
+        except sqlite3.OperationalError:
+            pass   # the copy was dropped meanwhile: one of this open's own
+    _st_fill(conn, None)
+
+
+def _st_copy_key(conn: sqlite3.Connection) -> tuple[Any, ...] | None:
+    """What an inbox's ``st`` copy depends on, read before the copy is made (a change
+    after it gives a new key, so a copy is never served under the inbox or data it was
+    not read from): the inbox file and its WAL as they stand and Postgres's change stamp.
+    None when any part cannot be said (nothing is then shared)."""
+    files = {row[1]: row[2] for row in conn.execute("PRAGMA database_list")}
+    inbox = files.get("main") or ""
+    if not inbox:
+        return None
+    stamps = (_file_stamp(inbox), _wal_stamp(inbox + "-wal"))
+    if stamps[0] is None:
+        return None
+    from operating.pg import ontology_reader
+    stamp = ontology_reader.change_stamp()
+    if stamp is None:
+        return None
+    return (inbox, stamps, stamp)
+
+
+# per (inbox, store data): the shared in-memory ``st`` copies, each held open by one
+# connection of its own (a shared-cache memory database lives while one connection holds
+# it); the oldest is closed past ``_ST_KEPT``
+_ST_KEPT = 2
+_st_kept: OrderedDict[tuple[Any, ...], tuple[str, sqlite3.Connection]] = OrderedDict()
+_st_lock = threading.Lock()
+_st_building: dict[tuple[Any, ...], threading.Lock] = {}
+_st_serial = [0]
+
+
+def _st_copy(conn: sqlite3.Connection, key: tuple[Any, ...]) -> str:
+    """The name of the shared copy for ``key``, made once (the opens that ask meanwhile
+    wait for it rather than copying beside it)."""
+    with _st_lock:
+        held = _st_kept.get(key)
+        if held is not None:
+            _st_kept.move_to_end(key)
+            return held[0]
+        building = _st_building.setdefault(key, threading.Lock())
+    with building:
+        with _st_lock:
+            held = _st_kept.get(key)
+            if held is not None:
+                return held[0]
+            _st_serial[0] += 1
+            name = f"plx-inbox-st-{os.getpid()}-{_st_serial[0]}"
+        holder = sqlite3.connect(f"file:{name}?mode=memory&cache=shared", uri=True,
+                                 isolation_level=None, check_same_thread=False)
+        try:
+            holder.execute("ATTACH DATABASE ? AS src", (_main_file(conn),))
+            _st_fill(holder, "main", source="src")
+            holder.execute("DETACH DATABASE src")
+        except BaseException:
+            holder.close()
+            with _st_lock:
+                _st_building.pop(key, None)
+            raise
+        with _st_lock:
+            _st_kept[key] = (name, holder)
+            _st_building.pop(key, None)
+            while len(_st_kept) > _ST_KEPT:
+                _gone, (_n, old) = _st_kept.popitem(last=False)
+                old.close()   # the opens attached to it keep it until they close
+        return name
+
+
+def _main_file(conn: sqlite3.Connection) -> str:
+    path = next(row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main")
+    return f"file:{path}?mode=ro"
+
+
+def _st_fill(conn: sqlite3.Connection, schema: str | None, *, source: str = "main") -> None:
+    """Copy the store rows the inbox (``source``) names from Postgres into ``schema`` of
+    ``conn`` (None: a new in-memory ``st`` attached to this open alone)."""
+    from operating.pg import ontology_reader
     named: set[str] = set()
     for table in ("gaps", "gap_cites", "unjudged_causes"):
         try:
             named.update(r[0] for r in conn.execute(
-                f"SELECT DISTINCT object_id FROM {table} WHERE object_id IS NOT NULL"))
+                f"SELECT DISTINCT object_id FROM {source}.{table} "
+                "WHERE object_id IS NOT NULL"))
         except sqlite3.OperationalError:   # an inbox written before the table
             continue
     import psycopg
@@ -657,17 +762,23 @@ def _attach_postgres(conn: sqlite3.Connection) -> None:
                               "AND superseded_at IS NULL", (ids,)).fetchall()
     query_only = conn.execute("PRAGMA query_only").fetchone()[0]
     conn.execute("PRAGMA query_only = OFF")   # the copy in memory only; restored below
-    conn.execute("ATTACH DATABASE ':memory:' AS st")
-    conn.execute("CREATE TABLE st.store_meta (key TEXT PRIMARY KEY, value TEXT)")
-    conn.execute("CREATE TABLE st.objects (object_id TEXT PRIMARY KEY, audience_key TEXT)")
-    conn.execute("CREATE TABLE st.object_versions (object_id TEXT, superseded_at TEXT, "
-                 "markings TEXT)")
-    conn.execute("CREATE INDEX st.object_versions_by_object ON object_versions (object_id)")
-    conn.executemany("INSERT INTO st.store_meta VALUES (?, ?)",
+    if schema is None:
+        conn.execute("ATTACH DATABASE ':memory:' AS st")
+        schema = "st"
+    conn.execute(f"CREATE TABLE {schema}.store_meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(f"CREATE TABLE {schema}.objects (object_id TEXT PRIMARY KEY, "
+                 "audience_key TEXT)")
+    conn.execute(f"CREATE TABLE {schema}.object_versions (object_id TEXT, superseded_at "
+                 "TEXT, markings TEXT)")
+    conn.execute(f"CREATE INDEX {schema}.object_versions_by_object ON object_versions "
+                 "(object_id)")
+    conn.execute("BEGIN")
+    conn.executemany(f"INSERT INTO {schema}.store_meta VALUES (?, ?)",
                      [*meta.items(), ("audience_keys", json.dumps(keys))])
-    conn.executemany("INSERT INTO st.objects VALUES (?, ?)", objects)
-    conn.executemany("INSERT INTO st.object_versions VALUES (?, ?, ?)",
+    conn.executemany(f"INSERT INTO {schema}.objects VALUES (?, ?)", objects)
+    conn.executemany(f"INSERT INTO {schema}.object_versions VALUES (?, ?, ?)",
                      [(o, None if at is None else str(at), m) for o, at, m in versions])
+    conn.execute("COMMIT")
     if query_only:
         conn.execute("PRAGMA query_only = ON")
 
@@ -1115,9 +1226,12 @@ def engine_marking_grants(actor: Any) -> dict[str, list[str]]:
 # judged, and the next pass began again from the first. Here a pass is a plan of rules run
 # in groups, each group folded with the pass record (inbox meta ``pass:<kind>``: the plan,
 # the generation and code it is over, the rules done) in one transaction; a pass that stops
-# (its share spent, killed) is resumed by the next of its kind over the same generation and
-# code within ``PASS_RESUME_HOURS``, from the first group not folded. Every rule is judged
-# once either way, so a resumed pass leaves what one uninterrupted pass would.
+# (its share spent, killed) is resumed by the next of its kind over the same generation
+# within ``PASS_RESUME_HOURS``, from the first group not folded. Every rule is judged once
+# either way, so a resumed pass leaves what one uninterrupted pass would. A deploy between
+# two parts does not restart it (11-18: the engine's code version moved with every landing,
+# so each 4-hourly part began again at the first of 9 groups, ran 3 and no pass ended for
+# 17 h); the rules left are judged by the code deployed then, as an incremental pass is.
 PASS_KEY = "pass:"
 PASS_RESUME_HOURS = 12.0
 GROUP_SECONDS = 1200.0   # a group's planned length (its rules' windows over the threads)
@@ -1159,10 +1273,10 @@ def pass_record(inbox: Any, kind: str) -> dict[str, Any] | None:
 
 
 def _resumable(held: Mapping[str, Any] | None, plan: Sequence[str], generation: str | None,
-               code: str | None, moment: datetime) -> bool:
+               moment: datetime) -> bool:
     if not held or generation is None or held.get("generation") != generation:
         return False
-    if held.get("code") != code or list(held.get("plan") or ()) != list(plan):
+    if list(held.get("plan") or ()) != list(plan):
         return False
     started = _moment(held.get("started"))
     return started is not None and timedelta(0) <= moment - started \

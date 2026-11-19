@@ -112,6 +112,256 @@ class CaptureBackupTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any(p.startswith("skipped:") for p in checked["problems"]))
 
+    def test_a_database_is_guarded_at_its_compressed_size_not_a_raw_guess(self) -> None:
+        # 11-17: the 27 GB mail store (~3 GB compressed) was skipped on a raw/4 guess with
+        # 16 GB free over a 10 GB floor; the guard must weigh what is actually written.
+        with self.stage_free:
+            self.assertEqual(self.cb.backup()[0], 0)
+        db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        db.executemany("INSERT INTO t VALUES (?)", [("same text " * 50,) for _ in range(8000)])
+        db.commit()
+        db.close()
+        os.environ["PLX_CAPTURE_BACKUP_MIN_FREE_GB"] = "10"
+        real = shutil.disk_usage
+        key = "db/mail-capture.sqlite.zst"
+
+        def run(margin: int):
+            def usage(path):   # the backup disk sits `margin` bytes over its floor
+                if Path(path) == self.root:
+                    return mock.Mock(free=10 * 10**9 + margin)
+                return mock.Mock(free=real(path).free + 10**12)
+            with mock.patch.object(self.cb.shutil, "disk_usage", side_effect=usage):
+                return self.cb.backup()
+        raw = (self.state / "mail-capture" / "capture.db").stat().st_size
+        held = json.loads((self.root / "manifest.json").read_text())["pieces"][key]
+        # under the margin compressed, over it as raw/4: written
+        self.assertGreater(raw // 4, 400_000)
+        code, out = run(400_000)
+        self.assertEqual((code, out["skipped"]), (0, {}), out)
+        piece = json.loads((self.root / "manifest.json").read_text())["pieces"][key]
+        self.assertEqual(piece["raw_bytes"], raw)
+        self.assertNotEqual(piece["sha256"], held["sha256"])
+        self.assertEqual(self.cb.restore_test()[0], 0)
+        # over the margin even compressed: skipped, the held copy intact, no leftover anywhere
+        db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        db.executemany("INSERT INTO t VALUES (?)", [(os.urandom(64).hex(),) for _ in range(500)])
+        db.commit()
+        db.close()
+        code, out = run(1_000)
+        self.assertEqual((code, out["skipped"].get(key)), (3, "disk_guard"), out)
+        self.assertEqual(self.cb._sha256(self.root / key), piece["sha256"])
+        self.assertEqual([p.name for p in (self.root / "db").iterdir() if p.suffix == ".tmp"], [])
+        self.assertFalse((self.tmp / "stage" / "mail-capture.sqlite.zst").exists())
+        self.assertFalse((self.tmp / "stage" / "mail-capture.sqlite").exists())
+
+    def test_a_store_is_copied_with_no_room_to_stage_it_and_restore_checks_without_room(self):
+        # 11-18: the 27 GB mail store was staged as a plain copy on the data volume and skipped
+        # for want of ~51 GB there; the copy is now streamed, so a stage with no room is fine.
+        key = "db/mail-capture.sqlite.zst"
+        real = shutil.disk_usage
+
+        def usage(stage_free: int):
+            def fn(path):
+                if Path(path) == self.tmp / "stage":
+                    return mock.Mock(free=stage_free)
+                return mock.Mock(free=real(path).free + 10**12)
+            return mock.patch.object(self.cb.shutil, "disk_usage", side_effect=fn)
+        with usage(0):
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["skipped"]), (0, {}), out)
+        self.assertEqual(len(json.loads((self.root / "manifest.json").read_text())
+                             ["pieces"][key]["raw_sha256"]), 64)
+        self.assertEqual(list((self.tmp / "stage").iterdir()), [])   # nothing left staged
+        with usage(10**13):
+            self.assertEqual(self.cb.restore_test()[1]["digest_only"], [])   # room: unpacked
+        # no room to unpack beside the live stores: the unpacked bytes are checked against
+        # the digest of the snapshot that passed integrity_check
+        with usage(0):
+            code, checked = self.cb.restore_test()
+        self.assertEqual((code, checked["problems"]), (0, []), checked)
+        self.assertIn(key, checked["digest_only"])
+        manifest = json.loads((self.root / "manifest.json").read_text())
+        manifest["pieces"][key]["raw_sha256"] = "0" * 64
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        with usage(0):
+            self.assertIn(f"unreadable:{key}", self.cb.restore_test()[1]["problems"])
+
+    def test_an_unchanged_store_keeps_its_copy_when_there_is_no_room_for_another(self):
+        """11-18: the 6.5 GB mail blob pack, unchanged for days, could not be rewritten beside
+        its held copy on a 15 GB root disk; an unchanged store is confirmed current instead
+        (by its image digest; a copy from before the digest was recorded is unpacked once)."""
+        with self.stage_free:
+            self.assertEqual(self.cb.backup()[0], 0)
+        key = "db/mail-capture.sqlite.zst"
+        manifest = json.loads((self.root / "manifest.json").read_text())
+        del manifest["pieces"][key]["raw_sha256"]   # a copy of the previous release
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        held = (self.root / key).read_bytes()
+        os.environ["PLX_CAPTURE_BACKUP_MIN_FREE_GB"] = "10"
+        real = shutil.disk_usage
+
+        def tight(path):   # the backup disk has under one held copy over its floor
+            if Path(path) == self.root:
+                return mock.Mock(free=10 * 10**9 + len(held) // 2)
+            return mock.Mock(free=real(path).free + 10**12)
+        with mock.patch.object(self.cb.shutil, "disk_usage", side_effect=tight):
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["skipped"]), (0, {}), out)
+        self.assertEqual((self.root / key).read_bytes(), held)
+        piece = json.loads((self.root / "manifest.json").read_text())["pieces"][key]
+        self.assertEqual(len(piece["raw_sha256"]), 64)
+        self.assertEqual(piece["written_at"], manifest["pieces"][key]["written_at"])
+        self.assertGreaterEqual(piece["current_at"], piece["written_at"])
+        self.assertGreaterEqual(out["kept"], 1)
+        # changed: there is no room for its copy, the held one stays and the run says so
+        db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        db.executemany("INSERT INTO t VALUES (?)", [(os.urandom(64).hex(),) for _ in range(500)])
+        db.commit()
+        db.close()
+        with mock.patch.object(self.cb.shutil, "disk_usage", side_effect=tight):
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["skipped"].get(key)), (3, "disk_guard"), out)
+        self.assertEqual((self.root / key).read_bytes(), held)
+
+    def test_the_blob_pack_is_copied_and_its_writer_is_not_held_off_during_the_shards(self):
+        """The pack keeps a rollback journal: a snapshot held through the blob phase would stop
+        its writer. Its keys are taken under the snapshot and its lock let go at once."""
+        pack = self.state / "mail-capture" / "blobs" / "pack.sqlite"
+        db = sqlite3.connect(pack)
+        db.execute("PRAGMA journal_mode=DELETE")
+        db.execute("CREATE TABLE packed (id INTEGER PRIMARY KEY, name TEXT, data BLOB)")
+        db.execute("INSERT INTO packed VALUES (1, 'x.z', x'00')")
+        db.commit()
+        db.close()
+        wrote = []
+        real_blobs = self.cb.Run.blobs
+
+        def blobs(run, store, rel):   # the packer writes while the shards are copied
+            w = sqlite3.connect(pack, timeout=0.5)
+            try:
+                w.execute("INSERT INTO packed VALUES (?, 'y.z', x'01')", (len(wrote) + 2,))
+                w.commit()
+                wrote.append(store)
+            finally:
+                w.close()
+            self.assertEqual(run.packed("mail", {"0" * 64}), set())   # keys readable
+            return real_blobs(run, store, rel)
+        with self.stage_free, mock.patch.object(self.cb.Run, "blobs", blobs):
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["skipped"]), (0, {}), out)
+        self.assertIn("db/mail-blob-pack.sqlite.zst",
+                      json.loads((self.root / "manifest.json").read_text())["pieces"])
+        self.assertEqual(wrote, ["sharepoint", "mail"])
+        self.assertEqual(list((self.tmp / "stage").iterdir()), [])
+
+    def test_a_store_swapped_in_by_a_rename_while_held_is_never_read(self):
+        """The mail capture's vacuum renames a new file over the store: the snapshot's file
+        and the path must still be one, else the piece is skipped and the copy kept."""
+        with self.stage_free:
+            self.assertEqual(self.cb.backup()[0], 0)
+        key = "db/mail-capture.sqlite.zst"
+        held = (self.root / key).read_bytes()
+        source = (self.state / "mail-capture" / "capture.db").resolve()
+        real_stat = os.stat
+
+        def swapped(path, *a, **kw):   # the path now names another file
+            got = real_stat(path, *a, **kw)
+            if str(path) == str(source):
+                return os.stat_result((got.st_mode, got.st_ino + 1) + tuple(got)[2:])
+            return got
+        with self.stage_free, mock.patch.object(self.cb.os, "stat", side_effect=swapped):
+            code, out = self.cb.backup()
+        self.assertEqual((code, out["skipped"]),
+                         (3, {key: "snapshot_failed:store_replaced"}), out)
+        self.assertEqual((self.root / key).read_bytes(), held)
+
+    WRITER = """
+import os, sqlite3, sys, time
+w = sqlite3.connect(sys.argv[1], timeout=0.05)
+w.execute("PRAGMA journal_size_limit=65536")
+started = time.time()
+i = 0
+while time.time() - started < float(sys.argv[2]):
+    try:
+        w.execute("INSERT INTO t (v) VALUES (?)", (os.urandom(300).hex(),))
+        w.execute("INSERT INTO t (v) VALUES (?)", (str(i) * 50,))
+        w.execute("UPDATE n SET c = c + 1")
+        w.commit()
+        if i % 5 == 0:   # what the capture does after each run: never waits for a reader
+            w.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+    except sqlite3.OperationalError:
+        w.rollback()   # rollback journal: blocked while the snapshot is held
+    i += 1
+    time.sleep(0.002)
+"""
+
+    def test_the_streamed_image_is_the_held_snapshot_while_another_process_writes(self):
+        """The image is read from the file with the WAL laid over it while a writer in another
+        process keeps committing and checkpointing (TRUNCATE, a 64 KB WAL size limit): it must
+        equal the snapshot the read transaction holds (no torn transaction, every invariant
+        kept) and pass integrity_check once restored. In another process because POSIX locks
+        are per process: 11-18 a probe that opened and closed the -shm dropped the snapshot's
+        read lock, the writer restarted the WAL under it, and only a writer outside the
+        process could show it."""
+        import subprocess
+        import sys
+        import time
+
+        for mode in ("wal", "delete"):
+            with self.subTest(journal=mode):
+                path = self.tmp / f"live-{mode}.db"
+                w = sqlite3.connect(path)
+                w.execute(f"PRAGMA journal_mode={mode}")
+                w.execute("PRAGMA wal_autocheckpoint=0")
+                w.execute("CREATE TABLE t (k INTEGER PRIMARY KEY, v TEXT)")
+                w.execute("CREATE TABLE n (c INTEGER)")
+                w.execute("INSERT INTO n VALUES (0)")
+                w.commit()
+                for i in range(300):   # committed frames the overlay must carry
+                    w.execute("INSERT INTO t (v) VALUES (?)", (os.urandom(300).hex(),))
+                    w.execute("INSERT INTO t (v) VALUES (?)", (str(i) * 50,))
+                    w.execute("UPDATE n SET c = c + 1")
+                    w.commit()
+                w.close()
+                writer = subprocess.Popen([sys.executable, "-c", self.WRITER, str(path), "6"])
+                image = bytearray()
+
+                def slow(block: bytes) -> None:
+                    image.extend(block)
+                    time.sleep(0.004)
+                try:
+                    time.sleep(0.5)   # the writer is committing
+                    with mock.patch.object(self.cb, "READ_BYTES", 4096), \
+                            self.cb.snapshot(path, self.tmp) as (conn, reader, raw):
+                        held = (conn.execute("SELECT count(*) FROM t").fetchone()[0],
+                                conn.execute("SELECT c FROM n").fetchone()[0])
+                        size, sha = reader(slow)
+                        time.sleep(0.5)   # checkpoints keep trying under the held snapshot
+                        self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0],
+                                         "ok")
+                        again = conn.execute("SELECT count(*) FROM t").fetchone()[0]
+                finally:
+                    writer.wait(timeout=60)
+                self.assertEqual((size, len(image)), (raw, raw))
+                self.assertEqual(held[0], again)
+                restored = self.tmp / f"restored-{mode}.db"
+                restored.write_bytes(bytes(image))
+                r = sqlite3.connect(restored)
+                try:
+                    self.assertEqual(r.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                    got = (r.execute("SELECT count(*) FROM t").fetchone()[0],
+                           r.execute("SELECT c FROM n").fetchone()[0])
+                finally:
+                    r.close()
+                self.assertEqual(got, held)          # exactly the held snapshot
+                self.assertEqual(got[0], 2 * got[1])  # no torn transaction
+                after = sqlite3.connect(path)
+                try:
+                    final = after.execute("SELECT c FROM n").fetchone()[0]
+                finally:
+                    after.close()
+                self.assertGreater(final, got[1] + 10)   # the writer kept committing
+
     def test_the_copy_stays_within_its_root_disk_budget_and_prunes_what_no_piece_names(self):
         with self.stage_free:
             code, out = self.cb.backup()
@@ -258,7 +508,7 @@ class CaptureBackupTest(unittest.TestCase):
         held = self.pieces()["db/mail-capture.sqlite.zst"]
         real = sqlite3.connect
 
-        class Bad:   # the staged copy reads as damaged
+        class Bad:   # the store's snapshot reads as damaged
             def __init__(self, conn):
                 self.conn = conn
 
@@ -272,7 +522,7 @@ class CaptureBackupTest(unittest.TestCase):
 
         def connect(target, *a, **kw):
             conn = real(target, *a, **kw)
-            return Bad(conn) if "mail-capture.sqlite?mode=ro" in str(target) else conn
+            return Bad(conn) if "mail-capture/capture.db?mode=ro" in str(target) else conn
         with self.stage_free, mock.patch.object(self.cb.sqlite3, "connect", side_effect=connect):
             code, out = self.cb.backup()
         self.assertEqual((code, out["skipped"]),

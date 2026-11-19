@@ -185,8 +185,8 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
         if not tiers and po_status.binding_of(receipt) in NO_QC_SOURCE_BINDINGS and not any(
                 po_status.binding_of(t) in po_status.FM_RECEIPT_BINDINGS
                 for line in lines for t in twins.get(line, ())):
-            # Sage and BC keep no QC decision: no QC here is not a gap
-            skipped.note("no_qc_source_for_system", [receipt])
+            # Sage and BC keep no QC decision: out of the rule's scope, neither a gap nor
+            # "cannot check" (one scope note says so, ``unjudged_words.scope_notes``)
             continue
         if tiers & set(CONFIRMING):
             continue

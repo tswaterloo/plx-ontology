@@ -225,6 +225,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             "event_type": "message.received", "object_id": oid, "object_type": "Email",
             "channel": "mail", "at": at, "mailbox": mailbox, "audience": aud,
             "sender": sender, "to": to, "cc": cc, "to_me": bool(mine & set(to)),
+            "named_me": named_in(text, mine),
             "subject": subject[:200], "text": text[:TEXT_CHARS],
             "conversation_id": _v(row, "conversation_id"), "message_id": message_id,
             "intents": intents_of(subject, text), "side": side, "records": records[:MAX_RECORDS],
@@ -235,6 +236,25 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             "cleared": cleared,
             "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3]})
     return out
+
+
+_ROLE_WORDS = frozenset((
+    "info", "sales", "orders", "order", "billing", "admin", "accounts", "office", "purchasing",
+    "support", "service", "team", "hello", "contact", "dropship", "customerservice", "noreply",
+    "operations", "logistics", "accounting", "finance", "shipping", "receiving", "warehouse"))
+
+
+def named_in(text: str, addresses: Any) -> bool:
+    """The message's own text calls the person by the name their own addresses carry (the
+    first word of ``first.last@``, or a whole ``first@`` local part; a role mailbox's local
+    part names nobody): "Vince, can you ..." or "@Vince". Capitalised, as a name is written;
+    names under three letters are too ambiguous to count."""
+    names = set()
+    for a in addresses or ():
+        first = re.split(r"[._-]", str(a).split("@", 1)[0])[0]
+        if first.isalpha() and len(first) >= 3 and first.lower() not in _ROLE_WORDS:
+            names.add(first.capitalize())
+    return any(re.search(rf"(?<![\w@.]){re.escape(n)}\b(?!@)", text or "") for n in names)
 
 
 TEAMS_TYPES = ("TeamsChatMessage", "TeamsChannelMessage")
@@ -270,6 +290,7 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
     # a sender's address (the directory maps each address to its person): the name shown
     # when the message states none
     address_of: dict[str, str] = {}
+    persons = set(directory.values())
     for address, person in sorted(directory.items()):
         if "@" in address:
             address_of.setdefault(person, address)
@@ -298,6 +319,10 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                 skipped["teams_sender_not_member"] += 1
                 continue
             group, conversation = len(who) > 2, aud
+        # who reads a reply besides directory people: a chat's members the directory does
+        # not hold (a guest's #EXT# UPN or outside address, an unknown id); a channel's
+        # members are not captured, so unknown (None: ``senders_own`` holds)
+        outside = None if channel else sorted(x for x in who if x not in persons)
         if outbound is not None and _v(row, "created_at"):
             # the sender's own message: their side of the chat (a group's: the thread only)
             outbound.append({"owner": sender, "conversation": conversation, "message_id": oid,
@@ -329,9 +354,17 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                 "to": [owner], "cc": [], "to_me": owner in owners,
                 **({} if owner in owners else {"unaddressed": True}), "subject": "",
                 "text": text[:TEXT_CHARS], "conversation_id": conversation, "message_id": oid,
-                "intents": intents_of("", text), "side": "internal",
+                "intents": intents_of("", text), "side": "internal", "outside": outside,
                 "records": records[:MAX_RECORDS], "group": group, "cleared": cleared,
-                "asks": bool(it.reply_ask(text) or it.direct_question(text)),
+                # a message whose text is not read yet (the store's text index
+                # lags its records): its ask is unknown, so it is kept; the cycle that
+                # reads the text later closes its item when it asks nothing
+                # (``autopilot.name_teams_items``)
+                "asks": chat_ask(text, mentioned=owner in named) if text.strip() else True,
+                # the model reads whether it asks (``autopilot._judge_asks``)
+                **({"ask_check": "model"} if text.strip() and
+                   chat_ask(text, mentioned=owner in named) else {}),
+                "mentioned": owner in named, "mentions": sorted(named & set(who)),
                 "closing": closing(text, chat=True), "handles": _handles_of(row)[:3]})
     return out
 
@@ -431,6 +464,16 @@ def closing(text: Any, *, chat: bool = False) -> bool:
     if chat and (CLOSING_ACK_CHAT.search(own) or CLOSING_SORRY_CHAT.match(own)):
         return True
     return bool(CLOSING_ACK.search(own) or CLOSING_STEP.search(own))
+
+
+def chat_ask(text: Any, *, mentioned: bool = False) -> bool:
+    """Whether a chat message may ask its reader something (a Teams message's ``asks``):
+    False only when it certainly asks nothing (``chat_ask_model.certain_no``: no words, a
+    note to the whole chat that does not @mention the reader). Whether the rest ask is read
+    by a small model (``chat_ask_model.Judge``, the event's ``ask_check``), never a phrase
+    list: owner walk 2026-11-17, a hand-written list dropped real asks without a "?"."""
+    from .chat_ask_model import certain_no
+    return not certain_no(text, mentioned=mentioned)
 
 
 GREETING = re.compile(r"^\W*(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|evening)|morning|"

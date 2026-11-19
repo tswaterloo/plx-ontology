@@ -26,7 +26,7 @@ hard links in ``<dir>/weekly/``):
   file of the set. Written last: a set without a manifest is incomplete and is never
   restored or kept.
 
-Rotation keeps the 7 newest daily sets and the 4 newest weekly sets (a weekly set is taken
+Rotation keeps the 4 newest daily sets and the 4 newest weekly sets (a weekly set is taken
 when the newest weekly set is 7 days old or older, or there is none), then removes the
 oldest sets while all of them together exceed ``PLX_BACKUP_MAX_GB`` (default 20; the newest
 set is always kept). Disk guard: no set is started when the file system's free space,
@@ -168,7 +168,7 @@ def _secret_text(data: bytes) -> bool:
     return False
 
 
-KEEP_DAILY, KEEP_WEEKLY = 7, 4
+KEEP_DAILY, KEEP_WEEKLY = 4, 4   # daily 7 -> 4 (11-18: /data room; the newest daily also goes to a Spark)
 WEEK = dt.timedelta(days=7)
 _STAMP = re.compile(r"^manifest-(\d{8}T\d{6}Z)\.json$")
 _PART = re.compile(r"^(?:plx|state|config|secrets)-(\d{8}T\d{6}Z)\.(?:dump|tar\.gz|tar\.gpg)$")
@@ -433,6 +433,10 @@ def _config_tar(patterns: list[str], target: Path, secrets_target: Path,
             (secret if _is_secret(path) else plain).append(path)
         else:
             plain.append(path)
+            if not os.access(path, os.R_OK | os.X_OK):
+                # its files cannot even be listed (11-18: /etc/plx/bak, 0700 root): missing
+                # unless the root step carried the whole directory (a trailing slash)
+                unreadable.append(str(path).rstrip("/") + "/")
 
     def add(tar: tarfile.TarFile, path: Path) -> None:
         tar.add(path, arcname=str(path).lstrip("/"), recursive=False)
@@ -452,8 +456,12 @@ def _config_tar(patterns: list[str], target: Path, secrets_target: Path,
     # missing (exit 7), passphrase or not; readable secret files are covered by a passphrase
     covered = [] if (secret and passphrase_file) else [str(p) for p in secret if _restore_needed(p)]
     out["restore_files_missing"] = sorted(covered + unreadable_left)
-    if staged is not None:
-        out["root_staged"] = sorted(staged_paths & set(unreadable))
+    if unreadable_left:   # the run's log names each one, beside the manifest's list
+        print("plx_backup: cannot read and not staged by the root step: "
+              + ", ".join(sorted(unreadable_left)), file=sys.stderr)
+    if staged is not None:   # files only: a directory is carried as the files under it
+        out["root_staged"] = sorted(p for p in staged_paths & set(unreadable)
+                                    if not p.endswith("/"))
     else:
         out["root_staged"] = []
     if passphrase_file and (secret or staged is not None):

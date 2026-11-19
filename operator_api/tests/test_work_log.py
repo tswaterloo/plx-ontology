@@ -533,31 +533,35 @@ class TimeSaved(unittest.TestCase):
         self.put("ana", "action", "messaged", "c6", sent=False, outcome="sent")  # a live Teams message
         self.put("ana", "action", "messaged", "c7", sent=False)  # says nothing of its outcome
         self.put("ana", "action", "dismissed", "c4", sent=False)
-        self.put("ana", "ask", "asked", "q1")
+        self.put("ana", "ask", "asked", "q1")                 # a question is not work done
         self.put("ana", "ask", "failed", "q2")
         self.put("ana", "alert", "dismissed", "c5", sent=False)
         self.put("ana", "write", "executed", "w1", outcome="written")
         self.put("ana", "write", "executed", "w2", outcome="would_write")  # a dry-run write
         self.put("ana", "write", "executed", "w3")                         # no outcome: nothing
         # Sunday 11:30 PM ET is last week; Monday 12:30 AM ET is this week
-        self.put("ana", "ask", "asked", "q3", at=datetime(2026, 11, 9, 4, 30, tzinfo=timezone.utc))
-        self.put("ana", "ask", "asked", "q4", at=datetime(2026, 11, 9, 5, 30, tzinfo=timezone.utc))
-        self.put("ana", "ask", "asked", "q5", at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        self.put("ana", "autopilot", "accepted", "b3", at=datetime(2026, 11, 9, 4, 30, tzinfo=timezone.utc))
+        self.put("ana", "autopilot", "accepted", "b4", at=datetime(2026, 11, 9, 5, 30, tzinfo=timezone.utc))
+        self.put("ana", "autopilot", "accepted", "b5", at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        self.put("ana", "ask", "asked", "q7", at=datetime(2026, 11, 9, 4, 30, tzinfo=timezone.utc))
+        self.put("ben", "autopilot", "accepted", "b6")
         self.put("ben", "ask", "asked", "q6")
         found = wl.time_saved(self.store, reader="plx:staff:ana")
         self.assertEqual(found["weeks"], ["2026-10-19", "2026-10-26", "2026-11-02",
                                           "2026-11-09"])
         [ana] = found["people"]
-        self.assertEqual(ana["weeks"][-1]["items"], {"mail_sent": 2, "record": 4,
+        self.assertEqual(ana["weeks"][-1]["items"], {"mail_sent": 2, "record": 3,
                                                      "teams_sent": 1})
-        self.assertEqual(ana["weeks"][-1]["minutes"], 2 * 6 + 4 * 5 + 2)
+        self.assertEqual(ana["weeks"][-1]["minutes"], 2 * 6 + 3 * 5 + 2)
         self.assertEqual(ana["weeks"][-2], {"start": "2026-11-02", "minutes": 5,
                                             "items": {"record": 1}})
         self.assertEqual([w["minutes"] for w in ana["weeks"][:2]], [0, 0])
         self.assertIn("estimate", found["method"])
         self.assertIn("6 min", found["method"])
+        self.assertNotIn("Ask answered", found["method"])
         every = wl.time_saved(self.store, reader=None)
         self.assertEqual([p["name"] for p in every["people"]], ["Ana", "Ben"])
+        self.assertEqual(every["people"][1]["weeks"][-1]["items"], {"record": 1})  # Ben's ask: nothing
 
     def test_a_dry_run_teams_message_and_a_would_write_save_nothing(self):
         """Through the paths that log them (Notes.action, Notes.write): neither went out."""
@@ -758,7 +762,7 @@ class TimeSaved(unittest.TestCase):
                 self.store = wl.WorkLog(None, guard=lambda: self.guard,
                                         clock=lambda: self.now)
                 for i in range(n):
-                    self.put("ana", "ask", "asked", f"q{i}")
+                    self.put("ana", "autopilot", "accepted", f"q{i}")
                     self.put(f"p{i}", "autopilot", "sent", f"a{i}")
                 every = wl.time_saved(self.store, reader=None)
                 self.assertEqual(len(every["people"]), n + 1)
@@ -784,6 +788,13 @@ class TimeSaved(unittest.TestCase):
         ask(ana, "which orders are late")
         ask(owner, "which orders are late")
         self.store.clock = lambda: self.now
+        # a question asked is not work done: nothing counts yet
+        self.assertEqual(ana.get("/api/time-saved").json()["people"], [])
+        for who, item in (("ana", "x1"), ("owner", "x2")):   # the API's own reader keys
+            reader = self.reader(who)
+            reader.key = f"staff:{who}"
+            self.store.record(reader, kind="autopilot", verb="accepted", title="t",
+                              thread=f"autopilot:{item}", source="x", source_id=item)
         mine = ana.get("/api/time-saved").json()
         self.assertTrue(mine["available"])
         self.assertEqual([(p["mine"], p["weeks"][-1]["minutes"]) for p in mine["people"]],
@@ -894,6 +905,8 @@ class TheAutopilotReadsTheLog(engine_fixture.Fixture):
                              mailbox=engine_fixture.OURS_OID, conversation="conv-70",
                              n=31_000 + n, hour=hour) for n, hour in ((70, 9), (71, 13)))
         order = self.w.obj("SalesOrder", {"order_number": "SO-70", "status": "Open"})
+        # the order is the sender's own customer's (replies name only that customer's records)
+        self.w.link("SalesOrder.ordered_by", order, self.customer)
         for made in (first, later):
             self.w.link("Email.sent_by_customer", made, self.customer)
             self.w.link("Email.mentions_order", made, order)

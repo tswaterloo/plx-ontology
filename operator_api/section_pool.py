@@ -213,6 +213,9 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any],
     parent_watch.die_with(parent_watch.spawned_parent())
 
     def serve(ctx: Mapping[str, Any]) -> int:
+        if fixtures is None:   # people decided as the API's own requests decide them
+            from . import feedback
+            feedback.attach_capture_directory(ctx.get("mail_capture_dir"))
         backend = be.WorkspaceBackend(ctx["objects_for"], **settings)
         worker = backend.reads
         backend.warm_store()   # the generation's reader-independent facts, once here

@@ -821,5 +821,5 @@ __all__ = ["DEFAULT_CLIENT", "INTENT_IDENTITY_SCHEMA", "STATE_LABEL_FILE", "AUTH
            "intent_identity", "mint_session_ticket", "replay_guard_for", "session_secret",
            "state_label", "verify_session_ticket"]
 # ``SessionIdentity.access``: a full-read code (``FullReadGrant.code``).
-_ACCESS_CODE = re.compile(r"^full_read:[a-z]+(\+[a-z]+)*(:mail_[a-z_]+)?$")
+_ACCESS_CODE = re.compile(r"^full_read:[a-z]+(\+[a-z]+)*(:mail_[a-z_]+)?(:listed)?$")
 

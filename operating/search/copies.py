@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Sequence
 
-from operating.search.retrievers import PERM
+from operating.search.retrievers import PERM, groups_table
 
 MIN_BODY = 200
 SHORT_MAX_HANDLES = 10   # a short text shared by more items is a template, not a copy
@@ -32,14 +32,22 @@ def lookup(conn: Any, scope: Mapping[str, Any], groups: Sequence[str]
     groups = sorted({g for g in groups if g})
     if not groups:
         return {}
+    # the cluster rows (migration 0037) joined to their chunks on the text they were
+    # grouped from: the permission predicate reads the chunk, a cluster row alone shows
+    # nothing, a rewritten chunk's stale row is not a copy
+    if groups_table(conn):
+        source, key = ("search.chunk_groups g JOIN search.chunks c ON c.chunk_id = "
+                       "g.chunk_id AND c.content_sha = g.content_sha", "g.dup_group")
+    else:
+        source, key = "search.chunks c", "c.dup_group"
     rows = conn.execute(
-        f"""SELECT c.dup_group, c.source_handle, min(c.kind), min(c.title),
+        f"""SELECT {key}, c.source_handle, min(c.kind), min(c.title),
                    min(c.occurred_at), max(c.authority), min(c.audience_key),
                    max(length(c.body)), min(c.body)
-            FROM search.chunks c
-            WHERE c.dup_group = ANY(%(groups)s::text[]) AND {PERM}
-            GROUP BY c.dup_group, c.source_handle
-            ORDER BY c.dup_group, c.source_handle""",
+            FROM {source}
+            WHERE {key} = ANY(%(groups)s::text[]) AND {PERM}
+            GROUP BY {key}, c.source_handle
+            ORDER BY {key}, c.source_handle""",
         dict(scope, groups=groups)).fetchall()
     out: dict[str, list[dict[str, Any]]] = {g: [] for g in groups}
     for group, handle, kind, title, occurred, authority, key, length, body in rows:

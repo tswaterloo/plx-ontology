@@ -3,6 +3,7 @@
 import { BellRing, Bookmark, Bot, Eye, FileText, Mail, MessageCircle, Pin, StickyNote, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { realName } from "@/lib/actions";
 import { getWorkThread, organiseWorkThread } from "@/lib/api";
 import { clockET, formatDateTime, objectHref, recordLabel, typeLabel } from "@/lib/format";
 import type { WorkLogEvent, WorkLogKind } from "@/lib/types";
@@ -22,7 +23,7 @@ export const KIND_LABEL: Record<WorkLogKind, string> = {
   ask: "Ask",
   alert: "Alerts",
   autopilot: "Autopilot",
-  action: "Sent and done",
+  action: "Messages and tasks",
   write: "Approvals",
   watch: "Watching",
   note: "Notes",
@@ -150,11 +151,11 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
       <div className="min-w-0">
         <div className="truncate text-[13px] leading-[18px]">
           <span className="text-muted">{verbLabel(e)}: </span>
-          <span className="font-semibold">{e.thread_name || e.title}</span>
+          <span className="font-semibold">{realName(e.thread_name) ?? realName(e.title) ?? (e.kind === "action" ? "Email with no subject" : e.title)}</span>
           {e.pinned && <Pin className="ml-1.5 inline size-3 text-muted" aria-label="Pinned" />}
         </div>
         <div className="mt-0.5 flex flex-wrap gap-x-2 text-[12px] leading-4 text-muted">
-          <span className="text-faint">{KIND_LABEL[e.kind] ?? e.kind}</span>
+          <span className="text-faint">{e.kind === "action" && e.verb === "prepared" ? "Not sent" : (KIND_LABEL[e.kind] ?? e.kind)}</span>
           {showWho && e.reader_name && <span>{e.reader_name}</span>}
           {(e.records ?? []).slice(0, 3).map((r) =>
             r.type ? (

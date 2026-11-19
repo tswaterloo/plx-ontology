@@ -2020,4 +2020,6 @@ def real_state_env() -> str:
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

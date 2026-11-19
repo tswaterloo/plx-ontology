@@ -31,10 +31,16 @@ from .http import SourceHttpError, SourceUnavailable, check_https_base, get_json
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _QUALIFIED = re.compile(r"^([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)$")
+# Any catalog entry's name: two identifiers. One outside _QUALIFIED (mixed case) is
+# withheld from the catalog (``relations``); one outside this is a broken contract.
+_CATALOG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_RESPONSE = 5_500_000
-# Shape bound on the catalog and health relation lists, not a budget: the Portal listed
-# 246 relations on 2026-10-21, and a cap at the catalog size made every read unavailable.
-_MAX_RELATIONS = 1000
+# Shape bound on the catalog and health relation lists, not a budget: what bounds them
+# is the response cap (_MAX_RESPONSE; ~570 bytes an entry live, so ~9,600 entries). A
+# count cap near the catalog's size made every read unavailable twice: 200 at 246
+# relations (2026-10-21) and 1000 at 1,266 (2026-11-17 7:50 PM ET, the portal source
+# stale from then). This one sits above anything the response cap admits.
+_MAX_RELATIONS = 50_000
 # A reason is plain text: words, numbers and punctuation without URL, query, quote or
 # address characters, and never a key-shaped or long opaque token.
 _REASON = re.compile(r"[A-Za-z0-9 _.,:;=<>()\[\]+\-]{1,160}")
@@ -152,14 +158,15 @@ def _warnings(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _listed_gaps(value: Mapping[str, Any], field: str) -> dict[str, str]:
     """{relation: reason} of a health list: entries ``{name, reason}`` or ``{name,
-    columns}`` (the missing column names, reported as their count)."""
+    columns}`` (the missing column names, reported as their count). A mixed-case name
+    is listed as given: the catalog withholds that relation anyway (``relations``)."""
     items = value.get(field)
     if not isinstance(items, list) or len(items) > _MAX_RELATIONS:
         raise WorkbenchNotReady(f"health: {field} is not a list of at most {_MAX_RELATIONS} entries")
     out: dict[str, str] = {}
     for index, item in enumerate(items):
         name = item.get("name") if isinstance(item, dict) else None
-        if not isinstance(name, str) or _QUALIFIED.fullmatch(name) is None:
+        if not isinstance(name, str) or _CATALOG_NAME.fullmatch(name) is None:
             raise WorkbenchNotReady(f"health: {field}[{index}] names no schema.relation")
         columns = item.get("columns")
         if isinstance(item.get("reason"), str) and item["reason"].strip():
@@ -227,6 +234,8 @@ class WorkbenchReadApiClient:
         self._api_key = api_key
         self._fetch = fetch
         self._before_page = before_page
+        # Catalog entries the last relations() left out (named outside the grammar).
+        self.catalog_withheld = 0
         # GETs this client sent (each attempt, answered or not).
         self.requests_sent = 0
         # Mirror workers share one client: the count is taken under this lock.
@@ -313,17 +322,29 @@ class WorkbenchReadApiClient:
     def relations(self) -> dict[str, dict[str, Any]]:
         """``GET /v1/relations`` by name. An entry the service does not serve stays
         listed with its ``unavailable`` reason (:func:`served_entry` refuses it); a
-        broken contract is WorkbenchNotReady with the entry and the problem."""
+        broken contract is WorkbenchNotReady with the entry and the problem.
+
+        An entry named outside the lower-case ``schema.relation`` grammar is withheld:
+        left out of the result (never readable, as a relation absent from the catalog)
+        and counted in ``catalog_withheld``; the rest is served. The Portal added 96
+        mixed-case tables (``public.Customer`` beside ``public.customer``, 2026-11-17),
+        which a case-insensitive name would merge with another relation; refusing the
+        whole catalog for them stopped every relation. Without one entry in the grammar
+        the catalog is not ready."""
         value = self._get("/v1/relations")
         rows = value.get("relations") if isinstance(value, dict) else None
         if not isinstance(rows, list) or not 1 <= len(rows) <= _MAX_RELATIONS:
             raise WorkbenchNotReady(f"catalog: relations is not a list of 1 to {_MAX_RELATIONS} entries")
         result: dict[str, dict[str, Any]] = {}
+        withheld = 0
         for index, item in enumerate(rows):
             name = item.get("name") if isinstance(item, dict) else None
-            match = _QUALIFIED.fullmatch(name) if isinstance(name, str) else None
-            if match is None:
+            if not isinstance(name, str) or _CATALOG_NAME.fullmatch(name) is None:
                 raise WorkbenchNotReady(f"catalog: entry {index} names no schema.relation")
+            match = _QUALIFIED.fullmatch(name)
+            if match is None:
+                withheld += 1
+                continue
             columns = item.get("columns")
             key = item.get("key")
             if item.get("schema") != match[1] or item.get("relation") != match[2]:
@@ -344,6 +365,10 @@ class WorkbenchReadApiClient:
                 result[name] = item
                 continue
             raise WorkbenchNotReady(f"catalog: {name} {problem}")
+        self.catalog_withheld = withheld
+        if not result:
+            raise WorkbenchNotReady(f"catalog: none of the {withheld} relations is named "
+                                    "in the schema.relation grammar")
         return result
 
     def read_page(self, name: str, entry: Mapping[str, Any], *, columns: Sequence[str],

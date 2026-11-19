@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 import tarfile
 import tempfile
@@ -152,20 +153,69 @@ class RootStagedSecrets(unittest.TestCase):
             out = plx_backup._config_tar(["x"], tmp / "c.tar.gz", tmp / "s.gpg", None)
         self.assertEqual(out["restore_files_missing"], [str(tmp / "mint-readers.env")])
 
-    def test_the_unit_runs_the_root_step_with_a_runtime_dir_and_only_named_files(self):
+    def test_the_unit_runs_the_root_step_with_a_runtime_dir(self):
         root = Path(__file__).resolve().parents[2] / "deploy" / "backup"
         unit = (root / "plx-backup.service").read_text()
-        self.assertIn("ExecStartPre=+@PLX_CURRENT@/deploy/backup/root_secrets.sh", unit)
+        self.assertIn("ExecStartPre=+@PLX_CURRENT@/deploy/backup/root_secrets.sh\n", unit)
         self.assertIn("RuntimeDirectory=plx-backup", unit)
         script = (root / "root_secrets.sh").read_text()
-        self.assertIn("/etc/plx/live-session.env /etc/plx/mint-readers.env /etc/plx/api-model.env /etc/plx/backup-root.conf", script)
-        self.assertNotIn("/etc/plx/*", script)
         self.assertNotIn("chmod", script)
-        self.assertIn("/etc/plx/backup-root.conf", script)
         self.assertNotIn("PLX_BACKUP", script)        # the backup user's env is never read
         self.assertIn("mv -T", script)
         self.assertIn("| gpg", script)                 # tar piped into gpg, no plaintext file
-        self.assertNotIn("in.tar", script)
+
+    @unittest.skipUnless(shutil.which("gpg"), "needs gpg")
+    def test_the_root_step_carries_every_file_under_the_directory_by_rule(self):
+        """11-18: a new root-only file (ai-account-old.env) was not on the root step's named
+        list and the backup exited 7. Every regular file under /etc/plx, sub-directories
+        included, is carried now; a symlink is never followed; directories are listed with a
+        trailing slash so the backup knows an unreadable one was carried."""
+        import os
+        import subprocess
+        script = Path(__file__).resolve().parents[2] / "deploy" / "backup" / "root_secrets.sh"
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        src, out, run, gnupg = tmp / "plx", tmp / "out", tmp / "run", tmp / "gnupg"
+        for d in (src / "bak", out, run, gnupg):
+            d.mkdir(parents=True, mode=0o700)
+        (tmp / "pass").write_text("fixture-passphrase\n")
+        conf = src / "backup-root.conf"
+        conf.write_text(f"ROOT_SECRETS_DIR={out}\nROOT_SECRETS_OWNER={os.getuid()}\n"
+                        f"ROOT_SECRETS_PASSPHRASE_FILE={tmp / 'pass'}\n")
+        conf.chmod(0o600)
+        for rel in ("live-session.env", "brand-new-root-only.env", "bak/api-model.env.1117"):
+            (src / rel).write_text("X=1\n")
+            (src / rel).chmod(0o600)
+        (src / "outside.env").symlink_to(tmp / "pass")   # never followed
+        env = {"PATH": os.environ["PATH"], "GNUPGHOME": str(gnupg)}
+        done = subprocess.run(["bash", str(script), str(src), str(run)], env=env,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        listed = (out / "root-secrets.list").read_text().split()
+        files = sorted(str(src / r) for r in ("backup-root.conf", "bak/api-model.env.1117",
+                                               "brand-new-root-only.env", "live-session.env"))
+        self.assertEqual(sorted(listed), sorted(files + [f"{src / 'bak'}/"]))
+        plain = subprocess.run(["gpg", "--batch", "--quiet", "--decrypt", "--pinentry-mode",
+                                "loopback", "--passphrase-file", str(tmp / "pass"),
+                                str(out / "root-secrets.tar.gpg")], env=env,
+                               capture_output=True, timeout=60, check=True).stdout
+        import io
+        with tarfile.open(fileobj=io.BytesIO(plain)) as tar:
+            names = sorted(m.name for m in tar.getmembers())
+        self.assertEqual(names, sorted(f.lstrip("/") for f in files))
+        self.assertEqual(list(run.iterdir()), [])   # the staging directory is gone
+        # the backup counts an unreadable sub-directory as carried only when it is listed
+        with mock.patch.dict(os.environ, {"PLX_BACKUP_ROOT_SECRETS_DIR": str(out)}), \
+                mock.patch.object(plx_backup, "_config_files", return_value=[src / "bak"]), \
+                mock.patch.object(plx_backup.os, "access", return_value=False), \
+                mock.patch.object(plx_backup.subprocess, "run"):
+            got = plx_backup._config_tar(["x"], tmp / "c.tar.gz", tmp / "s.gpg", "/pass")
+        self.assertEqual((got["restore_files_missing"], got["root_staged"]), ([], []))
+        with mock.patch.dict(os.environ, {"PLX_BACKUP_ROOT_SECRETS_DIR": str(tmp / "none")}), \
+                mock.patch.object(plx_backup, "_config_files", return_value=[src / "bak"]), \
+                mock.patch.object(plx_backup.os, "access", return_value=False):
+            got = plx_backup._config_tar(["x"], tmp / "c.tar.gz", tmp / "s.gpg", "/pass")
+        self.assertEqual(got["restore_files_missing"], [f"{src / 'bak'}/"])
 
     def test_passphrase_and_readable_secrets_but_no_staging_is_still_missing(self):
         import os

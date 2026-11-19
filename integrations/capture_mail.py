@@ -244,7 +244,7 @@ from .plx_hub_guard import GRAPH_BLOCKS, upstream_blocks
 from operating import declared_schema as _schemas
 from operating.declared_schema import capture_mail as _CAPTURE_MAIL
 from operating.declared_schema.capture_mail import (_CARRIED_DDL, _FOLDER_COVERAGE_DDL,
-                                                    _FOLDER_LISTING_DDL,
+                                                    _FOLDER_LISTING_DDL, _MAILBOX_PURPOSE_DDL,
                                                     _MESSAGE_KEYS_DDL, _MESSAGE_KEYS_INDEX,
                                                     _PRIORITY_DDL, _PURGED_DDL,
                                                     _UNDECIDED_ADDRESSES_DDL,
@@ -258,6 +258,15 @@ from .capture_mail_standing import (
 from .capture_mail_extract import (
     EXTRACTION_GAPS, EXTRACTION_RETRIES, _Extractors, _GatedReader, _LockedStore,
     MAILBOX_CONCURRENCY)
+
+if __name__ == "__main__":
+    # ``python -m`` runs this file as ``__main__``; the stand-alone commands
+    # (``capture_mail_cli``: backlog, compact, ...) import it again as
+    # ``integrations.capture_mail``, and two copies register two ``graph_mail`` kinds
+    # (``source_kind_conflict``: 2026-11-17, every ``mail_backlog`` run of the host died
+    # so from 2:32 PM ET after the CLI split). Run the one registered copy instead.
+    from integrations.capture_mail import _entry
+    _entry()
 
 
 STORE_DIR = "mail-capture"
@@ -658,6 +667,7 @@ class MailCaptureStore:
                 if name not in columns:
                     self.db.execute(f"ALTER TABLE folders ADD COLUMN {name} TEXT")
             self.db.execute(_FOLDER_LISTING_DDL)
+            self.db.execute(_MAILBOX_PURPOSE_DDL)
             for statement in _PRIORITY_DDL:
                 self.db.execute(statement)
             # Compact storage: the size of a blob's stored form (NULL: its bytes, as
@@ -2091,6 +2101,38 @@ class MailCaptureStore:
             return []
         return [d for d in value if isinstance(d, str)] if isinstance(value, list) else []
 
+    def record_mailbox_kinds(self, kinds: Mapping[str, str], *,
+                             listing_complete: bool = False) -> None:
+        """The kind (``shared`` or ``personal``, ``mailbox_kind``) of each mailbox a
+        directory listing named, replacing what an earlier listing recorded; a mailbox
+        recorded ``personal`` once keeps when it first was (``personal_at``, never
+        cleared: readers then hold it personal unless allowed by id). Any other value is
+        not recorded (unknown: read as personal). ``listing_complete``: the listing named
+        every mailbox, so one it no longer names is unknown again (``personal``, its
+        ``personal_at`` kept). No kinds: nothing changes (a listing that decided none)."""
+        now = self.now()
+        rows = [(str(oid).strip().lower(), kind, now) for oid, kind in kinds.items()
+                if kind in ("shared", "personal")]
+        if not rows:
+            return
+        with self.lock, self.db:
+            self.db.executemany(
+                "INSERT INTO mailbox_purpose (mailbox_id, purpose, decided_at, personal_at) "
+                "VALUES (?1, ?2, ?3, CASE WHEN ?2 = 'personal' THEN ?3 END) "
+                "ON CONFLICT(mailbox_id) DO UPDATE SET purpose=excluded.purpose, "
+                "decided_at=excluded.decided_at, personal_at=COALESCE("
+                "mailbox_purpose.personal_at, excluded.personal_at)", rows)
+            if listing_complete:
+                self.db.execute("CREATE TEMP TABLE IF NOT EXISTS listed_kinds "
+                                "(mailbox_id TEXT PRIMARY KEY)")
+                self.db.execute("DELETE FROM temp.listed_kinds")
+                self.db.executemany("INSERT OR IGNORE INTO temp.listed_kinds VALUES (?)",
+                                    [(oid,) for oid, _kind, _now in rows])
+                self.db.execute(
+                    "UPDATE mailbox_purpose SET purpose='personal', decided_at=? WHERE "
+                    "purpose <> 'personal' AND mailbox_id NOT IN (SELECT mailbox_id FROM "
+                    "temp.listed_kinds)", (now,))
+
     def record_directory(self, departments: Mapping[str, Any]) -> None:
         """The directory department (any JSON value) of each mailbox a directory-wide
         listing named, recorded before the run so the deny list decides on it at read."""
@@ -2527,7 +2569,8 @@ class MailCaptureStore:
                 db.execute("DELETE FROM meta WHERE key='priority_through'")
                 db.execute("DELETE FROM meta WHERE key IN (SELECT ? || id FROM "
                            "temp.purge_boxes)", (_PARTIAL_LISTING,))
-                for table in ("folders", "mailbox_directory", "mailbox_folders") + (
+                for table in ("folders", "mailbox_directory", "mailbox_folders",
+                              "mailbox_purpose") + (
                         ("people_undecided",) if self._has_undecided_table() else ()) + (
                         ("folder_coverage",) if self._has_coverage_table() else ()):
                     db.execute(f"DELETE FROM {table} WHERE mailbox_id IN (SELECT id FROM "
@@ -4369,6 +4412,140 @@ def apply_fetched_pass(store: MailCaptureStore, reader: Any, actor: Actor,
     if readings is not None and monotonic() < deadline:
         counts["recapped"] = apply_recapped_pass(store, readings, held, deadline=deadline,
                                                  monotonic=monotonic)
+    if monotonic() < deadline and os.environ.get(GPU_OCR_APPLY_ENV) == "1":
+        counts["gpu_ocr"] = apply_gpu_ocr_pass(store, fetch_dir, held, deadline=deadline,
+                                               monotonic=monotonic)
+    return counts
+
+
+GPU_OCR_APPLY_ENV = "PLX_GPU_OCR_APPLY"
+# The event each filled attachment gets besides ``text_reextracted``: which engine read
+# the new text version (``image_ocr_gpu.engine_key``; the key's model, revision, prompt and
+# bounds are in ``image-ocr-gpu.sqlite``'s readings and the worker's hello).
+GPU_OCR_EVENT = "text_engine:gpu_ocr:"
+
+
+def _gpu_ocr_window(state_dir: Any) -> str | None:
+    """Why a maintenance window keeps the GPU OCR apply off now (any live hold of
+    ``ontology.window_lock``, as for a job the locks do not name, ``operating.pg.chunked``),
+    else None. A hold set that cannot be read keeps it off too (it is optional work)."""
+    try:
+        from ontology import window_lock
+        for hold in window_lock.holds(state_dir=state_dir):
+            if not hold.get("expired"):
+                return f"held by {hold.get('window')}"
+    except Exception:  # noqa: BLE001 - unreadable holds: do not apply now
+        return "window_unreadable"
+    return None
+
+
+def apply_gpu_ocr_pass(store: MailCaptureStore, fetch_dir: str | Path, held: set[str], *,
+                       deadline: float, monotonic: Callable[[], float] = time.monotonic
+                       ) -> dict[str, int]:
+    """Apply the GPU readings of the mail store's OCR-read images
+    (``integrations.image_ocr_gpu``, its store ``image-ocr-gpu.sqlite`` in ``fetch_dir``:
+    present only when an operator ran that pass there) as new text versions
+    (``fill_text``: the tesseract reading stays as the earlier version, its citations
+    resolve). Only readings of the configured engine (``image_ocr_gpu.engine_key``), and
+    never a worse one: a whole reading replaces an ``extracted_ocr`` or ``ocr_no_text``
+    image; a reading cut at the token bound only an ``ocr_no_text`` one; a GPU ``no_text``
+    or ``unreadable`` answer nothing (a model's false blank never erases text). Each
+    attachment of a current message version with those bytes, an OCR image type and one
+    of those statuses, in a mailbox the exclusion does not withhold now (``held``); one
+    already holding that text is left (no new version, no event). Resumes after the last
+    hash walked (``walk_cursor('gpu_ocr')``). Counts only."""
+    from .captured_text import _ocr_image
+    from .image_ocr_gpu import DB_NAME, MAX_TEXT_PER_PAGE, clean_result, engine_key, \
+        expected_hello
+    counts = {"applied": 0, "attachments_filled": 0, "kept": 0, "withheld": 0,
+              "same_text": 0, "budget_spent": 0}
+    path = Path(fetch_dir).expanduser().resolve() / DB_NAME
+    if not path.is_file():
+        return counts
+    state_dir = store.root.parent if hasattr(store, "root") else None
+    window = _gpu_ocr_window(state_dir)
+    if window:
+        counts["window"] = window
+        return counts
+    gpu = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    key = engine_key(expected_hello())
+    # A finished lap that applied nothing is not walked again until the readings change.
+    shape = list(gpu.execute("SELECT COUNT(*), MAX(read_at) FROM readings WHERE "
+                             "engine_key=?", (key,)).fetchone())
+    if store.walk_cursor("gpu_ocr_done") == [key, *shape]:
+        gpu.close()
+        counts["unchanged"] = 1
+        return counts
+    after = store.walk_cursor("gpu_ocr")
+    start = str(after[0]) if after and len(after) == 1 else ""
+    walked, last, lapped = 0, None, False
+    try:
+        for sha, status, text, truncated, pages in gpu.execute(
+                "SELECT content_sha256, status, text, truncated, pages FROM readings WHERE "
+                "engine_key=? AND content_sha256 > ? ORDER BY content_sha256", (key, start)):
+            if monotonic() >= deadline:
+                counts["budget_spent"] = 1
+                break
+            if last is not None and walked % WALK_SAVE_EVERY == 0:
+                store.save_walk_cursor("gpu_ocr", [last])
+                window = _gpu_ocr_window(state_dir)
+                if window:   # a window opened while this ran: stop at once
+                    counts["window"] = window
+                    break
+            # the box's bounds again (the pass applies them; a store written otherwise)
+            cleaned = clean_result({"status": status, "text": text, "pages": pages,
+                                    "truncated": truncated})
+            status, text, truncated = cleaned["status"], cleaned["text"], cleaned["truncated"]
+            walked += 1
+            last = sha
+            if status != "text" or not isinstance(text, str) or not text.strip():
+                counts["kept"] += 1
+                continue
+            replaces = ("ocr_no_text",) if truncated else (TEXT_OCR, "ocr_no_text")
+            text_sha = sha256(text.encode("utf-8")).hexdigest()
+            targets = []
+            for at in store.db.execute(
+                    "SELECT a.l1_handle, a.metadata, a.mailbox_id, a.text_status, "
+                    "a.text_sha256 FROM attachments a JOIN messages m ON "
+                    "m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+                    "a.content_sha256=? AND a.content_status='captured' AND "
+                    "a.l1_handle IS NOT NULL", (sha,)):
+                if at["text_status"] not in replaces:
+                    continue
+                meta = json.loads(at["metadata"])
+                if not _ocr_image(str(meta.get("name") or ""),
+                                  str(meta.get("content_type") or "")):
+                    continue
+                if str(at["mailbox_id"]).lower() in held:
+                    counts["withheld"] += 1
+                    continue
+                if at["text_sha256"] == text_sha:
+                    counts["same_text"] += 1
+                    continue
+                targets.append(at["l1_handle"])
+            if not targets:
+                continue
+            with store.lock:
+                pinned = store.put_text(text)
+                for handle in targets:
+                    store.fill_text(handle, TEXT_OCR, pinned)
+                    with store.db:
+                        store.db.execute("INSERT INTO message_events VALUES (?,?,?)",
+                                         (handle, GPU_OCR_EVENT + key, store.now()))
+            counts["applied"] += 1
+            counts["attachments_filled"] += len(targets)
+        else:
+            lapped = True
+    finally:
+        gpu.close()
+        counts["walked"] = walked
+        if lapped:
+            store.save_walk_cursor("gpu_ocr", None)
+            counts["lap_done"] = 1
+            if not counts["applied"] and not start:
+                store.save_walk_cursor("gpu_ocr_done", [key, *shape])
+        elif last is not None:
+            store.save_walk_cursor("gpu_ocr", [last])
     return counts
 
 
@@ -4910,6 +5087,9 @@ class MailCapture:
         # Mailbox ids the directory lists with their account disabled (the run's
         # ``directory`` callable fills it): never first-tier unless the scope names them.
         self.disabled_mailboxes: set[str] = set()
+        # Each listed mailbox's kind (``mailbox_kind``; the run's ``directory`` callable
+        # fills it), recorded in the store after the listing (``record_mailbox_kinds``).
+        self.mailbox_kinds: dict[str, str] = {}
         self._pages_read: dict[tuple[str, str], int] = {}   # per folder, this object's runs
         # Folders whose degraded versions (a pass that recovered nothing) and unread texts
         # this run retried already (``_repair_degraded``, ``_reextract``): not again at
@@ -6441,9 +6621,16 @@ class MailCapture:
         targets: list[tuple[str, tuple[str, ...]]] = list(scope.mailboxes)
         directory_status = None
         excluded = 0
+        shared = 0
         if scope.all_mailboxes:
+            self.mailbox_kinds.clear()
             listed, directory_status, excluded = (directory() if directory
                                                   else ([], "no_directory", 0))
+            kinds = {oid: kind for oid, kind in self.mailbox_kinds.items() if oid in
+                     {str(i).lower() for i in listed}}
+            self.store.record_mailbox_kinds(kinds,
+                                            listing_complete=directory_status == "complete")
+            shared = sum(1 for kind in kinds.values() if kind == "shared")
             addresses = {address for address, _ in targets}
             targets += [(user, scope.all_mailbox_folders) for user in listed
                         if user not in addresses]
@@ -6564,6 +6751,7 @@ class MailCapture:
                   if not m["folders"] for _folder in targets[m["index"]][1]]
         return {"mailboxes": mailboxes, "directory": directory_status,
                 "mailboxes_listed": len(targets) - named, "mailboxes_excluded": excluded,
+                "mailboxes_shared": shared,
                 "people_excluded": people_excluded, "people_blocked": None, "purged": purged,
                 # stored addresses the purge could not decide: kept, every reader
                 # withholds mail naming one (``undecided_free_sql``)
@@ -6586,17 +6774,83 @@ class MailCapture:
                 "ocr": ocr}
 
 
+# What ``mailbox_kind`` reads beyond the listing's own fields (asked only when a caller
+# records kinds; a listing refused them is read again without them, no kind decided).
+_KIND_FIELDS = ("assignedLicenses,givenName,surname,jobTitle,employeeId,employeeHireDate,"
+                "department")
+_PERSON_FIELDS = ("givenName", "surname", "jobTitle", "employeeId", "employeeHireDate",
+                  "department")
+
+
+def directory_names(users: Iterable[Mapping[str, Any]]) -> frozenset[str]:
+    """Every given-name and surname token (lower-cased letters, two or more) of the
+    directory's users: what a person's mail address is made of."""
+    out = set()
+    for user in users:
+        for field in ("givenName", "surname"):
+            value = user.get(field) if isinstance(user, Mapping) else None
+            if isinstance(value, str):
+                out.update(t for t in re.split(r"[^a-z]+", value.lower()) if len(t) >= 2)
+    return frozenset(out)
+
+
+def mailbox_kind(user: Mapping[str, Any], names: Iterable[str] = ()) -> str:
+    """``shared`` or ``personal`` for a directory user object, from what ``User.Read.All``
+    returns (no Exchange recipient type and no ``mailboxSettings`` read: the app holds no
+    MailboxSettings.Read). A shared mailbox's user object has sign-in disabled
+    (``accountEnabled`` false), no license (``assignedLicenses`` an empty list), none of a
+    person's attributes (``givenName``, ``surname``, ``jobTitle``, ``employeeId``,
+    ``employeeHireDate``, ``department`` all present and empty) and an address not made of
+    a person's name: no token of its local part is a given name or surname of any
+    directory user (``names``: ``directory_names``; first.last, name.x), and no such name
+    of five or more letters runs inside it (jsmith). A departed employee's disabled,
+    unlicensed account keeps a name, title, id or address of one, so it stays personal.
+    Anything else, a missing or malformed field included, is ``personal`` (fail closed: a
+    personal mailbox is private). A mailbox once recorded personal stays so for readers
+    unless allowed by id (``operating.staff_scope.SHARED_ALLOW_ENV``)."""
+    def blank(field: str) -> bool:
+        value = user.get(field, ...)
+        return value is None or (isinstance(value, str) and not value.strip())
+
+    licenses = user.get("assignedLicenses")
+    if user.get("accountEnabled") is not False or not isinstance(licenses, list) or licenses \
+            or not all(blank(f) for f in _PERSON_FIELDS):
+        return "personal"
+    mail = user.get("mail")
+    if not isinstance(mail, str) or mail.count("@") != 1:
+        return "personal"
+    local = mail.split("@", 1)[0].strip().lower()
+    held = {str(n).strip().lower() for n in names if isinstance(n, str) and n.strip()}
+    tokens = [t for t in re.split(r"[^a-z]+", local) if t]
+    letters = "".join(tokens)
+    if not tokens or any(t in held for t in tokens) \
+            or any(len(n) >= 5 and n in letters for n in held):
+        return "personal"
+    return "shared"
+
+
 def directory_members(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None,
-                      *, disabled: set[str] | None = None
+                      *, disabled: set[str] | None = None,
+                      kinds: dict[str, str] | None = None
                       ) -> tuple[list[tuple[str, str]], str, int]:
     """The one directory reader: ``(object id, mail)`` of every member user with a mail
     address, kept only when ``allowed([id, mail])``; guests are skipped. Also returns the
     status (``complete`` or ``truncated:<reason>``) and how many ``allowed`` refused.
     ``disabled``: filled with the listed ids whose account is disabled
-    (``accountEnabled`` false; a scheduling hint, never a filter)."""
-    url = grammar.url("graph.users", {"$select": "id,mail,userType,accountEnabled",
-                                      "$top": "999"})
-    users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
+    (``accountEnabled`` false; a scheduling hint, never a filter). ``kinds``: filled with
+    each kept id's ``mailbox_kind`` (``shared`` or ``personal``)."""
+    base = "id,mail,userType,accountEnabled"
+    users = completeness = None
+    if kinds is not None:
+        try:
+            users, completeness = api.get_pages(grammar.url("graph.users", {
+                "$select": f"{base},{_KIND_FIELDS}", "$top": "999"}),
+                max_pages=50, max_items=5000)
+        except Exception:  # noqa: BLE001 - kinds fail open for the capture: listed without
+            kinds = None   # them (no kind decided, none recorded; readers keep the last)
+    if users is None:
+        users, completeness = api.get_pages(grammar.url("graph.users", {
+            "$select": base, "$top": "999"}), max_pages=50, max_items=5000)
     members = {str(u["id"]).lower(): u["mail"].lower() for u in users
                if grammar.TYPES["user_id"].valid(str(u.get("id") or ""))
                and isinstance(u.get("mail"), str) and u["mail"]
@@ -6607,20 +6861,27 @@ def directory_members(api: Any, allowed: Callable[[Sequence[str]], bool] | None 
                         in members)
     found = [(i, mail) for i, mail in sorted(members.items())
              if allowed is None or allowed([i, mail])]
+    if kinds is not None:
+        kept = {i for i, _mail in found}
+        names = directory_names(users)
+        kinds.update((str(u["id"]).lower(), mailbox_kind(u, names)) for u in users
+                     if str(u.get("id") or "").lower() in kept)
     status = ("complete" if completeness["complete"]
               else f"truncated:{completeness['truncation_reason']}")
     return found, status, len(members) - len(found)
 
 
 def directory_mailboxes(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None,
-                        *, disabled: set[str] | None = None) -> tuple[list[str], str, int]:
+                        *, disabled: set[str] | None = None,
+                        kinds: dict[str, str] | None = None) -> tuple[list[str], str, int]:
     """Every member user of the tenant directory with a mail address (object ids),
     via the guarded, paged ``/users`` GET (``@odata.nextLink`` within the guard's
     caps), kept only when ``allowed([id, mail])`` (``CaptureScope.directory_allows``:
     not excluded); guests have no mailbox here and are skipped. Returns the ids, the
     status ``complete`` or ``truncated:<reason>`` (a run with a truncated listing is
-    never complete) and the number of member mailboxes ``allowed`` refused."""
-    found, status, refused = directory_members(api, allowed, disabled=disabled)
+    never complete) and the number of member mailboxes ``allowed`` refused. ``kinds``:
+    as ``directory_members``."""
+    found, status, refused = directory_members(api, allowed, disabled=disabled, kinds=kinds)
     return [i for i, _mail in found], status, refused
 
 
@@ -6792,6 +7053,7 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "incomplete_reasons": run["incomplete_reasons"],
             "people_excluded": run.get("people_excluded", 0),
             "mailboxes_absent": run.get("mailboxes_absent", 0),
+            "mailboxes_shared": run.get("mailboxes_shared", 0),
             "purged": dict(run.get("purged") or dict.fromkeys(PURGE_COUNTS, 0)),
             "purge_undecided": run.get("purge_undecided", 0),
             "mailboxes": mailboxes}
@@ -6972,7 +7234,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         runs, refused = [], []
         for number in range(1, args.runs + 1):
             run = capture.run(scope, directory=lambda: directory_mailboxes(
-                api, scope.directory_allows, disabled=capture.disabled_mailboxes))
+                api, scope.directory_allows, disabled=capture.disabled_mailboxes,
+                kinds=capture.mailbox_kinds))
             runs.append(_report_run(number, run))
             runs[-1]["ocr"] = {k: v for k, v in (run.get("ocr") or {}).items()
                                if isinstance(v, int)}
@@ -7119,258 +7382,21 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         store.close()
 
 
-# ------------------------------------------------------------------ compact (one-time)
-
-def compact_cli(argv: Sequence[str] | None = None) -> int:
-    """``python3 -m integrations.capture_mail compact --state-dir D``: compact a store
-    captured before compact storage (:meth:`MailCaptureStore.compact`), holding the
-    host's cycle lock (``<D>/host/cycle.lock``) so no capture runs beside it. Prints
-    counts and bytes only."""
-    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail compact",
-                                     description=compact_cli.__doc__.splitlines()[0])
-    parser.add_argument("--state-dir", required=True,
-                        help="Workbench state directory holding mail-capture/")
-    parser.add_argument("--no-vacuum", action="store_true",
-                        help="prune and compress only; leave the SQLite file as it is")
-    parser.add_argument("--defer-ocr", action="store_true",
-                        help="also drop the bytes of scans whose OCR is pending (status "
-                             "ocr_deferred; read later by the ocr-deferred command)")
-    args = parser.parse_args(argv)
-    return _locked(args.state_dir, lambda store: store.compact(
-        vacuum=not args.no_vacuum, defer_ocr=args.defer_ocr))
+# The stand-alone commands live in capture_mail_cli (same names here, bound on first call).
+def _cli(name: str) -> Callable[..., Any]:
+    def call(*args: Any, **kwargs: Any) -> Any:
+        from . import capture_mail_cli
+        return getattr(capture_mail_cli, name)(*args, **kwargs)
+    call.__name__ = call.__qualname__ = name
+    return call
 
 
-def sender_index_cli(argv: Sequence[str] | None = None) -> int:
-    """``python3 -m integrations.capture_mail sender-index --state-dir D``: key the
-    messages stored before the sender lookup (:meth:`MailCaptureStore.fill_sender_keys`),
-    holding the host's cycle lock. Opening the store as a writer adds the column and
-    its index; this fills the rows stored before. Prints counts only."""
-    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail sender-index",
-                                     description=sender_index_cli.__doc__.splitlines()[0])
-    parser.add_argument("--state-dir", required=True,
-                        help="Workbench state directory holding mail-capture/")
-    args = parser.parse_args(argv)
-    return _locked(args.state_dir, lambda store: store.fill_sender_keys())
-
-
-def _locked(state_dir: str, work: Callable[[Any], dict[str, Any]], *,
-            open_store: Callable[[Path], Any] = lambda state: MailCaptureStore(state),
-            exists: Callable[[Path], bool] = lambda state: store_exists(state),
-            missing: str = "mail_capture_missing", wait_seconds: float = 0,
-            purpose: str = "maintenance", poll: float = 1.0) -> int:
-    """``work`` on the store under ``state_dir`` (``open_store``; the mail store, or the
-    SharePoint store's ``compact``) while holding the host's cycle lock
-    (``<D>/host/cycle.lock``: no capture runs beside it); prints its counts.
-    ``wait_seconds`` > 0: a held lock is waited for that long, with a gap request
-    (``integrations.cycle_gap``) the continuous ingest answers by draining its captures
-    and letting go of the lock; refused (``host_cycle_running``) only past that."""
-    import fcntl
-
-    from integrations import cycle_gap
-
-    state = Path(state_dir).expanduser()
-    if not exists(state):
-        print(json.dumps({"ok": False, "error": missing}))
-        return 2
-    lock_dir = state / "host"
-    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    deadline = time.monotonic() + max(0.0, wait_seconds)
-    asked: Path | None = None
-    try:
-        with open(lock_dir / "cycle.lock", "a+") as lock:
-            while True:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        print(json.dumps({"ok": False, "error": "host_cycle_running"}))
-                        return 2
-                    if asked is None:
-                        asked = cycle_gap.request(lock_dir, purpose=purpose)
-                    time.sleep(poll)
-            try:
-                store = open_store(state)
-                try:
-                    result = work(store)
-                finally:
-                    store.close()
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-    finally:
-        cycle_gap.withdraw(asked)   # after the lock is let go: the host takes it back
-    print(json.dumps({"ok": True, **result}, sort_keys=True))
-    return 0
-
-
-def ocr_deferred_cli(argv: Sequence[str] | None = None, *,
-                     environ: Mapping[str, str] | None = None, sender: Any = None) -> int:
-    """``python3 -m integrations.capture_mail ocr-deferred --state-dir D --live-audience F
-    --budget-seconds N``: OCR the attachments whose OCR was deferred
-    (:func:`ocr_deferred_pass`), re-fetching each original by one guarded Graph GET
-    (credentials from the environment, as the capture). Needs a local OCR engine. Holds
-    the host's cycle lock. Prints counts only."""
-    from .graph_read import GraphMailReader, build_graph
-    from .live_source_guard import BoundedBackoff
-
-    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail ocr-deferred",
-                                     description=ocr_deferred_cli.__doc__.splitlines()[0])
-    parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--live-audience", required=True,
-                        help="plx-live-source-audience/v1 file granting the capture principal")
-    parser.add_argument("--principal", default=CAPTURE_PRINCIPAL)
-    parser.add_argument("--budget-seconds", type=float, required=True)
-    args = parser.parse_args(argv)
-    if not args.budget_seconds > 0:
-        print(json.dumps({"ok": False, "error": "budget_seconds_invalid"}))
-        return 2
-    if not _ocr_engine():
-        print(json.dumps({"ok": False, "error": "ocr_engine_unavailable"}))
-        return 2
-    audience = LiveSourceAudience.from_file(args.live_audience)
-    env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
-    reader = GraphMailReader(api, audience)
-    actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
-
-    def work(store: MailCaptureStore) -> dict[str, Any]:
-        store.people = reader.people   # every read applies this run's exclusion
-        return ocr_deferred_pass(store, reader, actor, audience,
-                                 budget_seconds=args.budget_seconds)
-    return _locked(args.state_dir, work)
-
-
-def deferred_attachments_cli(argv: Sequence[str] | None = None, *,
-                             environ: Mapping[str, str] | None = None,
-                             sender: Any = None) -> int:
-    """``python3 -m integrations.capture_mail deferred-attachments --state-dir D
-    --live-audience F --budget-seconds N [--workers K] [--extract-workers E] [--limit L]
-    [--min-free-gb G] [--dry-run]``: read the attachments not downloaded while the OCR
-    backlog was full (:func:`deferred_attachments_pass`), by guarded Graph GETs
-    (credentials and the people exclusion from the environment, as the capture). Holds
-    the host's cycle lock. ``--dry-run`` reads nothing from Graph: it counts the rows a
-    pass would read and those the exclusion withholds. Prints counts only."""
-    from .graph_read import GraphMailReader, build_graph
-    from .live_source_guard import BoundedBackoff
-
-    parser = argparse.ArgumentParser(
-        prog="python3 -m integrations.capture_mail deferred-attachments",
-        description=deferred_attachments_cli.__doc__.splitlines()[0])
-    parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--live-audience", required=True,
-                        help="plx-live-source-audience/v1 file granting the capture principal")
-    parser.add_argument("--principal", default=CAPTURE_PRINCIPAL)
-    parser.add_argument("--budget-seconds", type=float, required=True)
-    parser.add_argument("--workers", type=int, default=MAX_WORKERS,
-                        help="download threads (each mailbox still at most "
-                             f"{MAILBOX_CONCURRENCY} at once)")
-    parser.add_argument("--extract-workers", type=int, default=None,
-                        help="text extraction processes (default: every core but one)")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--min-free-gb", type=float,
-                        default=DEFERRED_MIN_FREE_BYTES / (1 << 30))
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
-    if not args.budget_seconds > 0:
-        print(json.dumps({"ok": False, "error": "budget_seconds_invalid"}))
-        return 2
-    audience = LiveSourceAudience.from_file(args.live_audience)
-    env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
-    reader = GraphMailReader(api, audience)
-    actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
-
-    def work(store: MailCaptureStore) -> dict[str, Any]:
-        store.people = reader.people   # every read applies this run's exclusion
-        if args.dry_run:
-            withheld = store.withheld_mailboxes(reader.people)
-            if withheld is None:
-                return {"error": "people_exclusion_unavailable"}
-            marks = ",".join("?" * len(withheld))
-            total, held = store.db.execute(
-                "SELECT COUNT(*), " + (f"SUM(a.mailbox_id IN ({marks}))" if withheld
-                                       else "0") +
-                " FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle AND "
-                "m.superseded_at IS NULL WHERE a.content_status=?",
-                (*withheld, ATTACHMENT_DEFERRED)).fetchone()
-            return {"dry_run": True, "deferred": total, "excluded": held or 0}
-        return deferred_attachments_pass(
-            store, reader, actor, budget_seconds=args.budget_seconds, workers=args.workers,
-            extract_workers=args.extract_workers, limit=args.limit,
-            min_free_bytes=int(args.min_free_gb * (1 << 30)))
-    return _locked(args.state_dir, work)
-
-
-def backlog_cli(argv: Sequence[str] | None = None, *,
-                environ: Mapping[str, str] | None = None, sender: Any = None,
-                monotonic: Callable[[], float] = time.monotonic) -> int:
-    """``python3 -m integrations.capture_mail backlog --state-dir D --live-audience F
-    --budget-seconds N [--apply-fetched-seconds S --apply-fetched-dir P]
-    [--deferred-attachments-seconds S] [--image-ocr-seconds S] [--host-child]``: the mail
-    store's backlog passes (:func:`after_capture`) as their own process, never inside a
-    mail capture, so a capture never waits on attachment reading or OCR (2026-11-13: a
-    pass inside the mail child held fresh mail back 2 h 22 min). ``--budget-seconds`` is
-    a hard deadline for every pass together, the work in flight included. SIGTERM drains
-    it (``integrations.drain``): each pass stops at its next row, what is unfinished stays
-    in the store's backlog for the next run, and the counts are printed. The ingest host
-    runs it as its ``mail_backlog`` source with ``--host-child``: the host already holds
-    the cycle lock and never runs it beside a mail capture (one writer to the store);
-    without that flag it takes the cycle lock like the other stand-alone commands.
-    Credentials and the people exclusion come from the environment, as the capture's.
-    Prints counts only."""
-    from .graph_read import GraphMailReader, build_graph
-    from .live_source_guard import BoundedBackoff
-
-    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail backlog",
-                                     description=backlog_cli.__doc__.splitlines()[0])
-    parser.add_argument("--state-dir", required=True)
-    parser.add_argument("--live-audience", required=True,
-                        help="plx-live-source-audience/v1 file granting the capture principal")
-    parser.add_argument("--principal", default=CAPTURE_PRINCIPAL)
-    parser.add_argument("--budget-seconds", type=float, default=None,
-                        help="every pass together (default: the passes' seconds summed)")
-    parser.add_argument("--host-child", action="store_true",
-                        help="run by the ingest host, which holds the cycle lock")
-    add_backlog_arguments(parser)
-    args = parser.parse_args(argv)
-    try:
-        check_after(args)
-        if args.budget_seconds is not None and not (
-                0 < args.budget_seconds < float("inf")):
-            raise ValueError("budget_seconds must be positive")
-    except ValueError as exc:
-        print(json.dumps({"ok": False, "error": code_of(str(exc))}))
-        return 2
-    drain.install()
-    clock = drain.clock(monotonic)
-    audience = LiveSourceAudience.from_file(args.live_audience)
-    env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
-    reader = GraphMailReader(api, audience)
-    actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
-    started = monotonic()
-
-    def work(store: MailCaptureStore) -> dict[str, Any]:
-        store.people = reader.people   # every read applies this run's exclusion
-        passes = after_capture(store, reader, actor, args, monotonic=clock,
-                               budget_seconds=args.budget_seconds) or {}
-        return {"check": "graph.mail_backlog", "passes": passes,
-                "drained": drain.requested(),
-                "seconds": round(monotonic() - started, 1)}
-
-    if not args.host_child:
-        return _locked(args.state_dir, work)
-    state = Path(args.state_dir).expanduser()
-    if not store_exists(state):
-        print(json.dumps({"ok": False, "error": "mail_capture_missing"}))
-        return 2
-    store = MailCaptureStore(state)
-    try:
-        result = work(store)
-    finally:
-        store.close()
-    print(json.dumps({"ok": True, **result}, sort_keys=True), flush=True)
-    return 0
+compact_cli = _cli("compact_cli")
+sender_index_cli = _cli("sender_index_cli")
+_locked = _cli("_locked")
+ocr_deferred_cli = _cli("ocr_deferred_cli")
+deferred_attachments_cli = _cli("deferred_attachments_cli")
+backlog_cli = _cli("backlog_cli")
 
 
 def code_of(message: str) -> str:
@@ -7413,7 +7439,8 @@ __all__ = ["CAPTURE_PRINCIPAL", "PERSISTENT_STATE_ASK", "CaptureError", "Capture
            "mail_cut_units", "run_cli", "schedule_units", "store_exists", "terminal_reason"]
 
 
-if __name__ == "__main__":
+def _entry() -> None:
+    """The ``python -m integrations.capture_mail`` process: run ``main`` and end it."""
     import faulthandler
     import signal as _signal
     # As graph_read's: a timed-out child's stacks to stderr before the host kills it.

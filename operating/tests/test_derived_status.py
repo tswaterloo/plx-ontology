@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -254,6 +257,89 @@ class ReadyTest(unittest.TestCase):
             {"scheme": "old", "versions": {a.name: "v" for a in ds.ARTIFACTS if a.roots}}))
         ds._WARMING.clear()
         self.assertFalse(ds._ready(self.state))
+
+
+class ReleaseFileTest(unittest.TestCase):
+    """A deploy restarted the API on a new tree with no cache file its user could read:
+    the first page waited 24-58 s for the code to be parsed. The release carries its own
+    versions (``versions --release``), read in milliseconds, for that tree only."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="release-"))
+        (self.root / "operating").mkdir()
+        (self.root / "operating" / "m.py").write_text("x = 1\n")
+        self.computed: list[str] = []
+
+        def compute(artifact, root):
+            self.computed.append(artifact.name)
+            return f"v-{artifact.name}"
+        for patch in (mock.patch.object(ds, "compute", compute),
+                      mock.patch.dict(ds._TREE, clear=True),
+                      mock.patch.dict(ds._VERSIONS, clear=True),
+                      mock.patch.dict(ds.OVERRIDES, clear=True),
+                      mock.patch.object(ds, "_cache_dirs", lambda state: [])):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _in_process(self):
+        # the release build runs the computation in child processes; here in process
+        return mock.patch.object(ds, "_compute_all", lambda arts, root: {
+            a.name: ds.compute(a, root) for a in arts})
+
+    def test_a_started_api_reads_the_release_versions_without_computing(self) -> None:
+        with self._in_process():
+            path = ds.write_release(self.root)
+        doc = json.loads(path.read_text())
+        self.assertEqual(doc["tree"], ds.tree_key(self.root))
+        named = [a.name for a in ds.ARTIFACTS if a.roots]
+        self.assertEqual(sorted(doc["versions"]), sorted(named))
+        self.computed.clear()
+        ds._TREE.clear()
+        got = ds.deployed(state_dir=None, root=self.root)
+        self.assertEqual(self.computed, [])
+        self.assertEqual({n: got[n] for n in named}, {n: f"v-{n}" for n in named})
+
+    def test_a_release_file_of_another_tree_is_not_trusted(self) -> None:
+        with self._in_process():
+            ds.write_release(self.root)
+        (self.root / "operating" / "m.py").write_text("x = 2\n")   # the tree changed
+        ds._TREE.clear()
+        self.computed.clear()
+        with self._in_process():
+            ds.deployed(["truth-check"], state_dir=None, root=self.root, write=False)
+        self.assertEqual(self.computed, ["truth-check"])
+        for bad in ({"scheme": "old"}, {"tree": None}, {"versions": "x"}):
+            doc = json.loads((self.root / ds.RELEASE_FILE).read_text())
+            doc.update({"tree": ds.tree_key(self.root), **bad})
+            (self.root / ds.RELEASE_FILE).write_text(json.dumps(doc))
+            ds._VERSIONS.clear()
+            self.computed.clear()
+            with self._in_process():
+                ds.deployed(["truth-check"], state_dir=None, root=self.root, write=False)
+            self.assertEqual(self.computed, ["truth-check"], bad)
+
+    def test_stored_versions_never_wait_for_a_computation_under_way(self) -> None:
+        # the preload thread computing (holding the lock) held the first page 24 s
+        with self._in_process():
+            ds.write_release(self.root)
+        ds._TREE.clear()
+        ds._VERSIONS.clear()
+        result: dict = {}
+        with ds._LOCK:
+            reader = threading.Thread(target=lambda: result.update(
+                ds.deployed(["truth-check"], state_dir=None, root=self.root)))
+            reader.start()
+            reader.join(5)
+            self.assertFalse(reader.is_alive())
+        self.assertEqual(result, {"truth-check": "v-truth-check"})
+
+    def test_the_cli_writes_the_release_file(self) -> None:
+        out = io.StringIO()
+        with self._in_process(), mock.patch.object(ds, "ROOT", self.root), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ds.main(["versions", "--release"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["tree"], ds.tree_key(self.root))
+        self.assertTrue((self.root / ds.RELEASE_FILE).is_file())
 
 
 if __name__ == "__main__":

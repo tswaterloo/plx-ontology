@@ -2,16 +2,17 @@
 
 import { useMemo } from "react";
 import { NotFoundBody } from "@/components/not-found-body";
-import { eastern } from "@/components/shell";
+import { eastern, SectionTabs } from "@/components/shell";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
 import { getTrust } from "@/lib/api";
 import { useRead } from "@/lib/use-read";
 import { countdownText, roleLabel, rowStateShown, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
-import type { AutopilotWorkflowRow, TrustAlert, TrustAnswerScore, TrustPage } from "@/lib/types";
+import type { AutopilotWorkflowRow, TrustAlert, TrustAnswerScore, TrustAnswerSet, TrustFreshness, TrustPage } from "@/lib/types";
 
 /** "2 h 10 min", "3 days": a lag as a person reads it. */
 function lagText(seconds: number | null | undefined): string {
@@ -47,6 +48,56 @@ function Score({ s, label }: { s: TrustAnswerScore | null | undefined; label: st
   );
 }
 
+/** "Email, File and Teams": names as a person lists them. */
+function listed(names: string[]): string {
+  return names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** One sentence: is the app's data keeping up with the systems it reads? */
+function sourcesSentence(fresh: TrustFreshness[]): string {
+  if (fresh.length === 0) return "No source system is read on this server.";
+  const behind = fresh.filter((f) => f.stale).map((f) => f.system);
+  const failed = fresh.filter((f) => !f.stale && f.capture === "failed").map((f) => f.system);
+  const head = behind.length === 0
+    ? `The app is up to date with all ${plural(fresh.length, "system", "systems")} it reads`
+    : behind.length === fresh.length
+      ? `The app is behind on every system it reads (${listed(behind)})`
+      : `The app is behind on ${listed(behind)}; the other ${plural(fresh.length - behind.length, "system is", "systems are")} up to date`;
+  return failed.length ? `${head}, though the last read of ${listed(failed)} failed (see below).` : `${head}.`;
+}
+
+/** One sentence: has answer accuracy on questions never used for tuning been measured? */
+function heldOutSentence(sets: TrustAnswerSet[]): string {
+  const measured = sets.filter((s) => s.held_out);
+  if (measured.length === 0) return "Answer accuracy on questions never used for tuning has not been measured yet; the measure runs after the served data's rebuild.";
+  const missing = sets.length - measured.length;
+  return `Answer accuracy on questions never used for tuning is measured for ${plural(measured.length, "question set", "question sets")}${missing ? `; ${missing} not yet` : ""} (scores below).`;
+}
+
+/** One sentence: which alert types reach people, and why the rest do not. */
+function alertsSentence(on: number, off: number, unmeasured: number, total: number): string {
+  if (total === 0) return "No alert types are set up.";
+  const rest: string[] = [];
+  if (off) rest.push(`${off} ${off === 1 ? "was" : "were"} checked by hand but ${off === 1 ? "has" : "have"} not passed yet`);
+  if (unmeasured) rest.push(`${unmeasured} ${unmeasured === 1 ? "has" : "have"} not been checked yet`);
+  return `${on} of the ${total} alert types ${on === 1 ? "is" : "are"} switched on${rest.length ? `; the rest stay off (${rest.join(", ")})` : ""}.`;
+}
+
+/** One sentence: what the autopilot does today. */
+function autopilotSentence(rows: AutopilotWorkflowRow[]): string {
+  if (rows.length === 0) return "No autopilot workflow is set up on this server yet.";
+  const drafted = rows.filter((r) => r.draft).length;
+  const live = rows.filter((r) => r.state === "live").length;
+  const parts: string[] = [];
+  if (drafted) parts.push(`prepares drafts for a person to approve in ${drafted}`);
+  if (live) parts.push(`acts on approval in ${live}`);
+  const rest = rows.length - drafted - live;
+  if (!parts.length) return `The autopilot has ${plural(rows.length, "workflow", "workflows")}; none sends or writes anything yet.`;
+  return `The autopilot ${parts.join(" and ")} of its ${rows.length} workflows${rest > 0 ? `; the other ${rest} send and write nothing` : ""}.`;
+}
+
 const STATE_TONE = { live: "text-ok", gated: "text-risk", pending: "text-muted" } as const;
 const STATE_WORD = { live: "Live", gated: "Gated", pending: "Pending" } as const;
 
@@ -62,7 +113,7 @@ function AlertRow({ a }: { a: TrustAlert }) {
       <td className="num py-1 pr-3 text-right">{a.correct ?? "—"}</td>
       <td className={cn("num py-1 pr-3 text-right", a.percent == null ? "text-faint" : under ? "text-risk" : "text-ok")}>{pctText(a.percent)}</td>
       <td className="num py-1 pr-3 whitespace-nowrap text-muted max-sm:hidden">{a.measured_on ?? ""}</td>
-      <td className={cn("py-1 text-[12px]", a.on ? "font-medium text-fg" : "text-muted")}>{a.on ? (a.home ? "On, My work" : "On") : "Off"}</td>
+      <td className={cn("py-1 text-[12px]", a.on ? "font-medium text-fg" : "text-muted")}>{a.on ? (a.home ? "On, Home" : "On") : "Off"}</td>
     </tr>
   );
 }
@@ -79,13 +130,12 @@ export default function TrustRoute() {
   }, [page]);
   if (error instanceof ApiError && error.status === 404) return <NotFoundBody />;
   const fresh = page?.freshness ?? [];
-  const staleCount = fresh.filter((f) => f.stale).length;
   const rows = page?.autopilot ?? [];
-  const drafted = rows.filter((r) => r.draft).length;
-  const measuredSets = (page?.answers ?? []).filter((s) => s.held_out).length;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Trust" />
+      <SectionTabs section="admin" />
+      <PageIntro path="/trust" />
       <div className="mx-auto w-full max-w-5xl space-y-6 overflow-y-auto px-4 py-4 sm:px-6" data-testid="trust-page">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
@@ -94,36 +144,12 @@ export default function TrustRoute() {
         ) : (
           <>
             <div className="border-b border-border pb-3">
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px] sm:grid-cols-4" data-testid="trust-summary">
-                <div>
-                  <dt className="text-[12px] text-muted">Source systems</dt>
-                  <dd className="num">
-                    <span className="text-[20px] font-semibold">{fresh.length}</span>
-                    <span className={cn("ml-2 text-[12px]", staleCount ? "text-late" : "text-muted")}>{staleCount ? `${staleCount} behind` : "all current"}</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[12px] text-muted">Held-out answer scores</dt>
-                  <dd className="num">
-                    <span className="text-[20px] font-semibold">{measuredSets}</span>
-                    <span className="ml-2 text-[12px] text-muted">of {(page.answers ?? []).length} question sets</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[12px] text-muted">Alert types on</dt>
-                  <dd className="num">
-                    <span className="text-[20px] font-semibold">{alerts.on.length}</span>
-                    <span className="ml-2 text-[12px] text-muted">of {(page.alerts ?? []).length}, {alerts.unmeasured.length} unmeasured</span>
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[12px] text-muted">Autopilot in Draft</dt>
-                  <dd className="num">
-                    <span className="text-[20px] font-semibold">{drafted}</span>
-                    <span className="ml-2 text-[12px] text-muted">of {rows.length} workflows scored</span>
-                  </dd>
-                </div>
-              </dl>
+              <ul className="space-y-1 text-[13px]" data-testid="trust-summary">
+                <li>{sourcesSentence(fresh)}</li>
+                <li>{heldOutSentence(page.answers ?? [])}</li>
+                <li>{alertsSentence(alerts.on.length, alerts.off.length, alerts.unmeasured.length, (page.alerts ?? []).length)}</li>
+                <li>{autopilotSentence(rows)}</li>
+              </ul>
               <p className="mt-2 text-[12px] text-muted">Checked {eastern(page.checked_at)}. Counts and times only; each figure comes from where it is kept.</p>
             </div>
 
@@ -148,10 +174,10 @@ export default function TrustRoute() {
                   <thead className="text-[12px] text-muted">
                     <tr className="border-b border-border">
                       <th className="py-1 pr-3 font-normal">System</th>
-                      <th className="py-1 pr-3 font-normal">Last captured</th>
-                      <th className="py-1 pr-3 font-normal">In the served data</th>
-                      <th className="py-1 pr-3 font-normal">Lag</th>
-                      <th className="py-1 font-normal max-sm:hidden">State</th>
+                      <th className="py-1 pr-3 font-normal">Last read</th>
+                      <th className="py-1 pr-3 font-normal">In the app up to</th>
+                      <th className="py-1 pr-3 font-normal">How long ago</th>
+                      <th className="py-1 font-normal">State</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -161,9 +187,8 @@ export default function TrustRoute() {
                         <td className="num py-1.5 pr-3">{f.captured_at ? eastern(f.captured_at) : <span className="text-faint">not in the ledger</span>}</td>
                         <td className={cn("num py-1.5 pr-3", f.stale && "text-late")}>{f.served_at ? eastern(f.served_at) : <span className="text-faint">not served yet</span>}</td>
                         <td className={cn("num py-1.5 pr-3", (f.lag_seconds ?? 0) > 6 * 3600 && "text-risk")}>{lagText(f.lag_seconds)}</td>
-                        <td className="py-1.5 text-[12px] text-muted max-sm:hidden">
-                          {f.stale ? "Behind" : "Current"}
-                          {f.capture && f.capture !== "complete" ? `, last capture ${f.capture.replace("_", " ")}` : ""}
+                        <td className="py-1.5 text-[12px] text-muted">
+                          {f.state_words ?? (f.stale ? "Behind." : "Up to date.")}
                         </td>
                       </tr>
                     ))}

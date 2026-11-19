@@ -32,6 +32,18 @@ class _GatesMixin:
 
         def gate(actor: Any, handle: str) -> bool:
             handle = str(handle)
+            fast = self._full_reader_set(actor, handle)
+            if fast is not None:
+                # A full reader (business rule 2026-11-17): of mail, Teams and meetings only
+                # the people exclusion's precomputed set withholds (no capture read), for
+                # a handle the set covers (served at or below its version number, nothing
+                # newer); one recorded since, or not served, goes through the gate below.
+                container = _member_container(handle)
+                versions, held = self._set_kept(fast, handle, container)
+                if fast.covered(handle, container, versions):
+                    withheld = fast.withholds(handle, container, held)
+                    if withheld is not None:   # None: unreadable, the gate decides
+                        return not withheld
             if handle.startswith("sharepoint://") and self.sharepoint_capture_dir is not None:
                 return self.captured(actor, handle) is not None
             if not handle.startswith("graph-mail://") or self.mail_capture_dir is None:
@@ -90,7 +102,10 @@ class _GatesMixin:
             bound = self._call_bound
             if not (bound.search or _PAGE_BUILD.get()):
                 return
-            handles = [_member_container(str(h)) or str(h) for h in handles]
+            handles = [str(h) for h in handles]
+            if self._set_ahead(actor, handles):
+                return   # the set decides them all: no capture read ahead
+            handles = [_member_container(h) or h for h in handles]
             files = [h for h in handles if h.startswith("sharepoint://")]
             if files and self.sharepoint_capture_dir is not None and bound.search:
                 self._sharepoint_ahead(files)   # a page build gates its files as before
@@ -105,9 +120,92 @@ class _GatesMixin:
         # What decides this gate for a reader beyond the host's stores (``item_gate_scope``):
         # the runtime gate's own material; none when it states none (no audience key).
         inner = getattr(runtime_gate, "key_material", None)
-        gate.key_material = ((lambda actor: None) if inner is None  # type: ignore[attr-defined]
-                             else (lambda actor: inner(actor)))
+
+        def key_material(actor: Any) -> Any:
+            # A full reader with a usable set: ``("people-excluded", tag)``, the key the
+            # session's ``ontology.sq_item_gate`` decides mail, Teams and meetings by
+            # (``people_excluded.reader_key``); anyone else: the runtime gate's own.
+            fast = self._full_reader_set(actor, "graph-mail://")
+            if fast is not None:
+                return ("people-excluded", fast.exclusion)
+            return None if inner is None else inner(actor)
+
+        gate.key_material = key_material  # type: ignore[attr-defined]
+
+        def full_reader_tag(actor: Any) -> str:
+            # ``people_excluded.full_reader``'s answer alone: the exclusion tag of a full
+            # reader with a usable set, else "" (never the runtime gate's own material,
+            # which reads the staff rule's SharePoint baselines: ~1 s on a session's
+            # first call, 2026-11-18, only to be told the reader is no full reader)
+            fast = self._full_reader_set(actor, "graph-mail://")
+            return fast.exclusion if fast is not None and isinstance(
+                fast.exclusion, str) else ""
+
+        gate.full_reader_tag = full_reader_tag  # type: ignore[attr-defined]
         return gate
+
+    def _set_kept(self, fast: Any, handle: str, container: str | None) -> tuple[Any, Any]:
+        """(the served version numbers ``fast.covered`` reads, the set's handles
+        ``fast.withholds`` reads) for ``handle``: from this call's memo when a read ahead
+        (``_set_ahead``) kept them all, else (None, None) (they read for themselves)."""
+        bound = self._call_bound
+        if not (bound.search or _PAGE_BUILD.get()):
+            return None, None
+        from operating.pg.people_excluded import related, withhold_names
+        kept = bound.memo.get(("people-excluded-versions", id(fast)))
+        if kept is None:
+            return None, None
+        names, versions, held = kept
+        wanted = set(related(handle, container)) | set(withhold_names(handle, container))
+        if not wanted <= names:
+            return None, None
+        return versions, held
+
+    def _set_ahead(self, actor: Any, handles: list[str]) -> bool:
+        """For a full reader with a usable set, read the served version numbers and the
+        set's own rows of every handle the set decides among ``handles`` (two index
+        statements, never the whole set), kept in this call's memo (``_set_kept``). True
+        when the set decides and covers every handle (nothing else to read ahead)."""
+        from operating.pg import people_excluded
+        mine = [h for h in handles if people_excluded.decides(h)]
+        fast = self._full_reader_set(actor, mine[0]) if mine else None
+        if fast is None:
+            return False
+        names: set[str] = set()
+        for h in mine:
+            container = _member_container(h)
+            names.update(people_excluded.related(h, container))
+            names.update(people_excluded.withhold_names(h, container))
+        key = ("people-excluded-versions", id(fast))
+        memo = self._call_bound.memo
+        kept = memo.get(key)
+        if kept is not None:
+            names |= kept[0]
+        versions = people_excluded.latest_versions(names)
+        held = None if versions is None else fast.withheld(names)
+        if versions is None or held is None:
+            memo.pop(key, None)
+            return False
+        memo[key] = (frozenset(names), versions, held)
+        return len(mine) == len(handles) and all(
+            fast.covered(h, _member_container(h), versions) for h in mine)
+
+    def _full_reader_set(self, actor: Any, handle: str) -> Any:
+        """The people exclusion's precomputed set (``operating.pg.people_excluded``) when
+        it decides ``handle`` for ``actor`` alone: the reader is a full reader
+        (``_unrestricted``), the handle's scheme is one the set covers and the set is
+        usable now (Postgres serves, built for this very exclusion list). Else None: the
+        gate decides as before (fail closed)."""
+        from operating.pg import people_excluded
+        if not people_excluded.decides(handle):
+            return None
+        try:
+            got = people_excluded.excluded()
+            if got is None or not self._unrestricted(self.runtime.employee_gate(actor)):
+                return None
+        except Exception:  # noqa: BLE001 - undecidable: the gate decides
+            return None
+        return got
 
     @staticmethod
     def _mail_facts(store: Any, handles: Iterable[str], memo: dict) -> None:

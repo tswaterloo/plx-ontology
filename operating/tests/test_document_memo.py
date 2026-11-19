@@ -275,6 +275,67 @@ class KeptSteps(unittest.TestCase):
             release.set()
             self.drained()
 
+    def test_a_poll_while_the_bank_is_read_waits_only_what_is_left_and_names_the_read(
+            self) -> None:
+        """The Templates page's whole answer bank (no subject) starts its own step only;
+        a request that comes while that read goes on waits only what is left of
+        ``MEMO_PAGE_WAIT`` counted from the read's start (the app's poll never holds a read
+        worker for the whole wait again); "still reading" names the read by an opaque
+        token through the tool contract onto the list (never sent), and ``running`` says
+        so until the read ends, then the list is read and gated as before."""
+        from operator_api import record_documents as rd
+        f, cust, _, _ = world(1)
+        conn = Serial(self.conn(f, check_same_thread=False))
+        release = threading.Event()
+        real = bd._answer_pairs
+
+        def slow(*args):
+            release.wait(30)
+            return real(*args)
+
+        class Base:
+            class store:
+                pass
+
+            class policy:
+                may_read = staticmethod(lambda actor, key: True)
+                held_markings = staticmethod(lambda actor: EVERY)
+        Base.store.conn = conn
+        tool = bd.BusinessDocumentsTool(Base, guard=lambda: FingerGuard())
+        actor = SimpleNamespace(tenant="t", principals={"p:a"})
+        view = SimpleNamespace(_call=lambda t, a: tool.call(a, actor))
+        self.addCleanup(lambda: (release.set(), self.drained()))
+        with mock.patch.object(bd.MEMO, "threads", lambda c: True), \
+                mock.patch.object(document_memo, "MEMO_PAGE_WAIT", 0.6), \
+                mock.patch.object(bd, "_answer_pairs", slow):
+            started = time.monotonic()
+            first = rd.doc_list(view, "answer_bank", None, AS_OF)
+            self.assertGreaterEqual(time.monotonic() - started, 0.55)   # the first waits
+            self.assertEqual((first.error, first.rows), (rd.STILL_READING, []))
+            # only the bank's own step: no forecast or price sheet read beside it
+            self.assertEqual([k[1] for k in bd.MEMO.reading], ["answer_pairs"])
+            token = first._reading_token
+            self.assertTrue(token and bd.MEMO.running(token))
+            self.assertNotIn(token, first.model_dump_json())
+            self.assertNotIn("_reading_token", first.model_dump())
+            started = time.monotonic()
+            again = rd.doc_list(view, "answer_bank", None, AS_OF)
+            self.assertLess(time.monotonic() - started, 0.3)   # the wait is spent
+            self.assertEqual(again.error, rd.STILL_READING)
+            self.assertFalse(bd.MEMO.running("not-a-token"))
+            self.assertFalse(bd.MEMO.running(None))
+            release.set()
+            self.drained()
+            self.assertFalse(bd.MEMO.running(token))
+            done = rd.doc_list(view, "answer_bank", None, AS_OF)
+            self.assertIsNone(done.error)
+            self.assertIsNone(done._reading_token)
+            # a reader who may read nothing gets nothing from the kept step
+            blind = SimpleNamespace(_call=lambda t, a: bd.answer(
+                conn, view="answer_bank", may_read=lambda k: False, held=EVERY,
+                guard=FingerGuard(), as_of=AS_OF, args={}, reader=None))
+            self.assertEqual(rd.doc_list(blind, "answer_bank", None, AS_OF).rows, [])
+
     def test_a_kept_customer_lookup_holds_no_connection(self) -> None:
         f, cust, _, _ = world(1)
         conn = self.conn(f, check_same_thread=False)

@@ -108,6 +108,10 @@ def reader_key(base: Any, actor: Any, environ: Mapping[str, str] | None = None
         return None
     if material is None:
         return None
+    from operating.pg.people_excluded import reader_key as full_key
+    full = full_key(material)
+    if full is not None:
+        return full   # a full reader: decided by the people exclusion's set (``sq_item_gate``)
     environ = os.environ if environ is None else environ
     body = {"v": KEY_VERSION, "generation": environ.get(GENERATION_ENV, ""),
             "scope": [str(part) for part in scope], "material": material}

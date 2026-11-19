@@ -171,13 +171,10 @@ function Checks({ preview }: { preview: ActionPreview }) {
       {preview.outbound && (preview.missing ?? []).length > 0 && (
         <div className="flex gap-2.5" data-testid="action-missing">
           <StatusGlyph status="suspect" size={14} className="mt-[3px]" />
+          {/* what exactly is missing (settings, app permissions) is for an admin, on the Admin page */}
           <div>
-            <p className="font-medium">Sending is off for you. Confirming logs a dry run and sends nothing. Missing:</p>
-            <ul className="mt-0.5 text-muted">
-              {(preview.missing ?? []).map((m, n) => (
-                <li key={n}>{m}</li>
-              ))}
-            </ul>
+            <p className="font-medium">Sending is off for your mailbox. Ask an admin to turn it on.</p>
+            <p className="text-muted">Saving keeps a record of this message; nothing is sent.</p>
           </div>
         </div>
       )}

@@ -42,8 +42,6 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/records": { icon: Database, hue: "text-[var(--place-work)]" },
   "/work": { icon: Briefcase, hue: "text-[var(--place-meetings)]" },
   "/admin": { icon: Activity, hue: "text-[var(--place-activity)]" },
-  "/qc": { icon: ClipboardCheck, hue: "text-[var(--place-team)]" },
-  "/rd-projects": { icon: FlaskConical, hue: "text-[var(--place-meetings)]" },
 };
 
 export function PlaceIcon({ href, className }: { href: string; className?: string }) {

@@ -25,8 +25,11 @@ export function applyEvent(turn: Turn, ev: AskEvent): Turn {
       return typeof ev.data?.text === "string" && ev.data.text.trim() ? { ...turn, verdict: ev.data.text.trim() } : turn;
     case "sources":
       return { ...turn, sourcesFound: Array.isArray(ev.data.sources) ? ev.data.sources.length : turn.sourcesFound };
-    case "token":
-      return { ...turn, phase: "streaming", streamed: turn.streamed + (typeof ev.data?.text === "string" ? ev.data.text : "") };
+    case "token": {
+      const text = typeof ev.data?.text === "string" ? ev.data.text : "";
+      // whole: the answer so far in full, as the server's gate passed it (replaces what was shown)
+      return { ...turn, phase: "streaming", streamed: ev.data?.whole ? text : turn.streamed + text, simple: turn.simple || !!ev.data?.whole };
+    }
     case "answer":
       return { ...turn, phase: "done", answer: ev.data, status: undefined };
     case "error":

@@ -81,6 +81,8 @@ log = logging.getLogger("operator_api.memory")
 
 ITEM_KINDS = ("fact", "preference", "instruction", "commitment", "summary")
 CORE_KINDS = ("instruction", "preference", "commitment", "fact")
+# the facts the Ask once kept from its answers' fields ("Count: 361"): not memory, never read
+ANSWER_FACT = " AND NOT (kind = 'fact' AND source = 'ask')"
 LOG_KINDS = ("question", "answer", "tool_call", "clarify", "draft", "edit", "decision",
              "action", "feedback", "note")
 # Sources that learn the same subject again on their own: a subject the person deleted is
@@ -108,7 +110,6 @@ ANSWER_CHARS = 3000
 MAX_CITATIONS = 60         # a summary carries its turns' citations
 ANSWER_CITATIONS = 12
 MAX_RECORDS = 20
-MAX_FACTS = 8
 MAX_TOOL_CALLS = 40
 
 CORE_CHARS = 6000          # ~1.5k tokens of core memory in every turn
@@ -274,19 +275,6 @@ def _coverage(terms: Sequence[str], text: str) -> float:
 def _key(text: Any, most: int = 4) -> str:
     """What a statement is about, without its numbers and dates: a subject key."""
     return " ".join([w for w in _terms(text, 40) if not _DIGIT.search(w)][:most])
-
-
-def _fact_subject(source: Mapping[str, Any], statement: str) -> str:
-    """What a checked fact is about: its record and the field it states (the citation's
-    ``#row.<column>``, or the fields the source shows), so a later fact on the same field
-    supersedes it whatever its words; without a field, the record and the statement's
-    words without their numbers."""
-    base, _, field = str(source.get("handle") or "").partition("#")
-    shown = sorted(source.get("fields") or {}) if isinstance(source.get("fields"),
-                                                              Mapping) else []
-    if field or shown:
-        return f"{base}#{field or ','.join(shown)}"
-    return f"{base} | {_key(statement)}"
 
 
 def _iso(moment: datetime) -> str:
@@ -988,8 +976,8 @@ class Memory:
             return []
         rows = self._query(conn, budget_ms, (
             "SELECT " + ", ".join(self._ITEM_COLUMNS) + " FROM memory.item WHERE reader = %s "
-            "AND kind = ANY(%s) AND superseded_by IS NULL AND deleted_at IS NULL ORDER BY "
-            "importance DESC, at DESC LIMIT 400"), (reader.key, list(CORE_KINDS)))
+            "AND kind = ANY(%s) AND superseded_by IS NULL AND deleted_at IS NULL" + ANSWER_FACT
+            + " ORDER BY importance DESC, at DESC LIMIT 400"), (reader.key, list(CORE_KINDS)))
         now = self.clock()
         items = [_row(self._ITEM_COLUMNS, r) for r in rows]
         items = [i for i in items if self._clear(guard, i)]
@@ -1133,7 +1121,7 @@ class Memory:
         try:
             item_rows = self._query(conn, budget_ms, sql(
                 "memory.item", self._ITEM_COLUMNS,
-                " AND superseded_by IS NULL AND deleted_at IS NULL"), args)
+                " AND superseded_by IS NULL AND deleted_at IS NULL" + ANSWER_FACT), args)
             left = None if budget_ms is None else \
                 budget_ms - (time.monotonic() - started) * 1000
             if left is not None and left <= 1:
@@ -1443,8 +1431,8 @@ class Memory:
             return []
         rows = [_row(self._ITEM_COLUMNS, r) for r in self._query(None, None, (
             "SELECT " + ", ".join(self._ITEM_COLUMNS) + " FROM memory.item WHERE reader = %s "
-            "AND kind = ANY(%s) AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY "
-            "at DESC, id DESC LIMIT %s"), (reader.key, list(kinds), int(limit)))]
+            "AND kind = ANY(%s) AND deleted_at IS NULL AND superseded_by IS NULL" + ANSWER_FACT
+            + " ORDER BY at DESC, id DESC LIMIT %s"), (reader.key, list(kinds), int(limit)))]
         return [self._public(r) for r in self._openable(
             [r for r in rows if self._clear(guard, r)], decide)]
 
@@ -1617,9 +1605,8 @@ class Memory:
 
     def from_answer(self, reader: Any, answer: Mapping[str, Any]) -> list[int]:
         """An Ask turn as its reader saw it: the question and the answer in the log (with
-        its citations and records), then distilled: the checked facts it stated, and a
-        standing instruction or commitment the question gave. Nothing of a finance or pay
-        answer."""
+        its citations and records), then distilled: a standing instruction or commitment the question gave. Nothing of a finance or pay
+        answer. The values the answer stated are never kept as facts (``ANSWER_FACT``)."""
         question = str(answer.get("question") or "").strip()
         if not question or answer.get("profitability") or finance_text(question):
             return []
@@ -1654,21 +1641,8 @@ class Memory:
                                      citations=cites[:ANSWER_CITATIONS],
                                      source_ref=f"a:{answer_id}")
             out += [replied] if replied is not None else []
-        for n, fact in enumerate(list(answer.get("facts") or ())[:MAX_FACTS]):
-            if not isinstance(fact, Mapping):
-                continue
-            statement = str(fact.get("text") or "").strip()
-            sources = [s for s in fact.get("sources") or ()
-                       if isinstance(s, Mapping) and s.get("handle")]
-            if not statement or not sources or finance_text(statement):
-                continue
-            kept = self.remember(
-                reader, kind="fact", source="ask", text=statement,
-                subject=_fact_subject(sources[0], statement), conversation=conversation,
-                source_ref=f"{answer_id}#{n}", records=records, log_ids=out,
-                citations=[{"handle": s["handle"], "label": s.get("label")} for s in sources],
-                confidence=0.85 if fact.get("check") else 0.75)
-            out += [kept] if kept is not None else []
+        # an answer's values ("Count: 361", "Order status: Open") are no memory: they stay
+        # in the log (searchable, cited, re-checked); memory keeps what the person states
         out += self._standing(reader, question, conversation, asked)
         return out
 
@@ -1849,16 +1823,34 @@ def backfill(store: Memory, work: Any, *, batch: int = 500) -> dict[str, int]:
         store.clock = clock
 
 
+def forget_answer_facts(store: Memory) -> int:
+    """The facts the Ask kept from its answers' fields before it stopped (``ANSWER_FACT``),
+    marked deleted for everyone (never read since); what a person wrote stays. The count."""
+    with store.connect() as conn:
+        n = conn.execute("UPDATE memory.item SET deleted_at = now() WHERE kind = 'fact' AND "
+                         "source = 'ask' AND deleted_at IS NULL").rowcount
+        conn.commit()
+    with store._lock:
+        store._cores.clear()
+    return int(n or 0)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m operator_api.memory")
     sub = parser.add_subparsers(dest="command", required=True)
     fill = sub.add_parser("backfill", help="remember the work log's Ask answers")
     fill.add_argument("--state-dir", required=True)
     purge = sub.add_parser("purge", help="delete what the people exclusion now covers")
-    for command in (fill, purge):
+    tidy = sub.add_parser("forget-answer-facts",
+                          help="mark deleted the facts once kept from Ask answers' fields")
+    for command in (fill, purge, tidy):
         command.add_argument("--dsn", default=None)
     args = parser.parse_args(argv)
     from operating.pg import config
+    if args.command == "forget-answer-facts":
+        print(json.dumps({"forgotten": forget_answer_facts(
+            Memory.for_dsn(args.dsn or config.dsn(), sync=True))}))
+        return 0
     names = ExcludedNames()
     if names.refresh() is None:
         print(json.dumps({"error": "excluded_names_unavailable"}))   # fail closed

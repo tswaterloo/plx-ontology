@@ -32,7 +32,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a sales order or customer PO number you are working on",
     asks: ["Where is sales order 10432 and when does it ship?", "What did Acme last ask us about their June order?", "Which of my customer orders are at risk of shipping late?"],
     autopilots: ["customer_po", "customer_request", "reply_prep"],
-    pages: [{ href: "/watching", label: "Watching" }, { href: "/rd-projects", label: "R&D and sample projects" }],
+    pages: [{ href: "/?show=alerts", label: "Alerts" }],
   },
   {
     role: "purchasing",
@@ -45,7 +45,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a PO number or a supplier you buy from",
     asks: ["Has the supplier confirmed PO 4512 and when does it ship?", "Which POs from Northfield are late this month?", "What did we last tell the supplier about the resin shortage?"],
     autopilots: ["po_followup", "supplier_eta", "reply_prep"],
-    pages: [{ href: "/late", label: "Late POs" }],
+    pages: [{ href: "/?show=late", label: "Late POs" }],
   },
   {
     role: "receivables",
@@ -58,12 +58,11 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "an invoice number or a customer with open invoices",
     asks: ["Which invoices does the remittance from Acme on Monday cover?", "What has Brightline promised to pay this month?", "Which shipments from last week have no invoice yet?"],
     autopilots: ["invoice_entry", "cash_application", "reply_prep"],
-    pages: [{ href: "/watching", label: "Watching" }],
+    pages: [{ href: "/?show=alerts", label: "Alerts" }],
   },
   {
     role: "rnd",
     does: [
-      "Lists R&D and sample projects with who is waiting on whom and since when.",
       "Finds the mail, specs and test results behind a project, including files on SharePoint you can open.",
       "Shows which samples went out, to which customer, and what they said back.",
       "Reminds you of tasks assigned to you in Planner and Mission Control.",
@@ -71,7 +70,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a sample project, a formula code or a customer you are developing for",
     asks: ["What is the status of the sample project for Acme's new coating?", "Which samples have we sent this month with no reply?", "Where is the latest spec sheet for formula 2207?"],
     autopilots: ["task_assigned", "reply_prep", "meeting_followup"],
-    pages: [{ href: "/rd-projects", label: "R&D and sample projects" }],
+    pages: [],
   },
   {
     role: "quality",
@@ -84,7 +83,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a lot number or a product you release",
     asks: ["Which lots are on hold and which orders are waiting on them?", "Do we have a CoA for lot 24-0815?", "What did the lab find on the last three batches of product 330?"],
     autopilots: ["qc_hold", "customer_request", "reply_prep"],
-    pages: [{ href: "/watching", label: "Watching" }],
+    pages: [{ href: "/?show=alerts", label: "Alerts" }],
   },
   {
     role: "production_planning",
@@ -98,7 +97,7 @@ export const GUIDES: RoleGuide[] = [
     asks: ["Which orders next week are short of material?", "When does the resin on PO 4512 arrive and which orders need it?", "What changed in the production plan since Monday?"],
     autopilots: ["supplier_eta", "task_assigned", "meeting_followup"],
     pages: [
-      { href: "/late", label: "Late POs" },
+      { href: "/?show=late", label: "Late POs" },
       { href: "/meetings", label: "Meetings" },
     ],
   },
@@ -113,7 +112,7 @@ export const GUIDES: RoleGuide[] = [
     lookUp: "a supplier invoice or a customer with an open balance",
     asks: ["Which approvals are waiting on me?", "Does the Northfield invoice for PO 4512 match what we received?", "What is Acme's open balance and when did they last pay?"],
     autopilots: ["approval_request", "mail_approval_request", "cash_application"],
-    pages: [{ href: "/watching", label: "Watching" }],
+    pages: [{ href: "/?show=alerts", label: "Alerts" }],
   },
 ];
 
@@ -145,7 +144,7 @@ export function checklistFor(role: GuideRole | null): Step[] {
   const g = role ? guideFor(role) : null;
   return [
     { id: "sign_in", label: "Sign in with Microsoft", hint: "Use your usual PLX account. There is no separate password." },
-    { id: "my_work", label: "Read today's My work", hint: "Open an item to see why it is listed.", href: "/" },
+    { id: "my_work", label: "Read today's Home", hint: "Open an item to see why it is listed.", href: "/" },
     { id: "look_up", label: "Look up a record", hint: `Type ${g ? g.lookUp : "an order, PO, lot or invoice number"} into Search.` },
     { id: "ask", label: "Ask one question", hint: g ? `For example: ${g.asks[0]}` : "Ask in your own words. The answer lists its sources.", href: "/ask" },
     { id: "autopilot", label: "Look at your autopilot switches", hint: "They are all off. Leave them off until you have used the Workbench for a few days.", href: "/autopilot" },

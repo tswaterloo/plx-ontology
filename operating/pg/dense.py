@@ -15,10 +15,23 @@ of the sign bits and yields ``bq_candidates(k)`` rows (200-400; never fewer than
 those are re-ranked by the exact halfvec cosine distance. The permission filter is the same
 WHERE clause inside the index query. A bit index is 1/16 of the halfvec one, which is what
 lets every mail chunk stay in memory. Any other flag value is off.
+
+``PLX_SEARCH_KINDS=1`` (default off; ``operating.search.retrievers.dense`` reads it) changes
+the chunk search's shape, not its filter: a reader whose audience units hold at most
+``NARROW_ROWS`` chunks gets the exact nearest rows of that set (an index walk under so
+selective a filter stops at ``hnsw.max_scan_tuples`` first); anyone else gets one walk per
+kind over the per-kind partial indexes (``kind_indexes``; built after a catch-up by
+``python3 -m operating.pg.kind_indexes build``), unioned, and an exact scan of each kind
+without a valid index. The narrow exact scan is bounded by ``NARROW_TIMEOUT_MS`` per
+statement (past it, the whole-table index). The permission predicate is the same WHERE
+clause in every branch.
 """
 from __future__ import annotations
 
 import os
+import re
+import threading
+import time
 from typing import Any, Mapping, Sequence
 
 import psycopg
@@ -33,6 +46,122 @@ BQ_MIN_CANDIDATES, BQ_MAX_CANDIDATES = 200, 400
 # hnsw.ef_search caps at 1000 in pgvector, so a bit-index candidate list does too.
 BQ_EF_CAP = 1000
 EXACT_TIMEOUT_MS = 5000
+
+
+KINDS_FLAG = "PLX_SEARCH_KINDS"
+# A reader whose audience units hold at most this many chunks is answered by an exact scan.
+NARROW_ROWS = 20000
+# Each statement of that exact scan is cancelled past this (measured cold 2.8 s at 20k rows on
+# the 10% copy); the search then runs on the whole-table index instead.
+NARROW_TIMEOUT_MS = 5000
+# Each per-kind walk's ef_search (pgvector's cap is 1000): 400 gave recall@10 0.94, 800 0.99
+# on the 10% copy of the served chunks.
+KIND_EF_SEARCH = 800
+_KIND = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+_KIND_PRED = re.compile(r"^\(kind = '([a-z][a-z0-9_]{0,40})'::text\)$")
+_KIND_INDEX_DEF = re.compile(r" USING hnsw \(embedding halfvec_cosine_ops\) ")
+_CACHE_SECONDS = 300.0
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+_cache_lock = threading.Lock()
+
+
+def kinds_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """The per-kind search flag: on only for ``1``/``on``/``true`` (any case)."""
+    value = (os.environ if env is None else env).get(KINDS_FLAG, "")
+    return value.strip().lower() in ("1", "on", "true")
+
+
+def _db_key(conn: Any) -> str:
+    info = getattr(conn, "info", None)
+    return (f"{getattr(info, 'host', '')}:{getattr(info, 'port', '')}/"
+            f"{getattr(info, 'dbname', '')}")
+
+
+def _cached(conn: Any, name: str, load: Any) -> Any:
+    key, now = (_db_key(conn), name), time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None and now - hit[0] < _CACHE_SECONDS:
+            return hit[1]
+    value = load()
+    with _cache_lock:
+        _cache[key] = (now, value)
+    return value
+
+
+def clear_cache() -> None:
+    """Forget the per-database index and kind lists (a test that adds or drops them)."""
+    with _cache_lock:
+        _cache.clear()
+
+
+def kind_indexes(conn: Any) -> frozenset[str]:
+    """The kinds with a valid, ready partial halfvec cosine HNSW on ``search.chunks`` whose
+    predicate is exactly ``kind = '<kind>'`` (kept 5 minutes per database). An index being
+    built CONCURRENTLY (not valid yet) or with any other predicate is not used."""
+    def load() -> frozenset[str]:
+        rows = conn.execute(
+            "SELECT pg_get_expr(i.indpred, i.indrelid), pg_get_indexdef(i.indexrelid) "
+            "FROM pg_index i JOIN pg_class x ON x.oid = i.indexrelid "
+            "JOIN pg_am a ON a.oid = x.relam "
+            "WHERE i.indrelid = to_regclass('search.chunks') AND a.amname = 'hnsw' "
+            "AND i.indisvalid AND i.indisready AND i.indpred IS NOT NULL").fetchall()
+        kinds = set()
+        for pred, definition in rows:
+            m = _KIND_PRED.match(pred or "")
+            if m and _KIND_INDEX_DEF.search(definition or ""):
+                kinds.add(m.group(1))
+        return frozenset(kinds)
+    return _cached(conn, "kind_indexes", load)
+
+
+def present_kinds(conn: Any) -> tuple[str, ...]:
+    """Every distinct ``search.chunks.kind`` (a skip scan over the kind btree, one probe per
+    kind; kept 5 minutes per database)."""
+    def load() -> tuple[str, ...]:
+        rows = conn.execute(
+            "WITH RECURSIVE k(kind) AS (SELECT min(kind) FROM search.chunks UNION ALL "
+            "SELECT (SELECT min(c.kind) FROM search.chunks c WHERE c.kind > k.kind) FROM k "
+            "WHERE k.kind IS NOT NULL) SELECT kind FROM k WHERE kind IS NOT NULL").fetchall()
+        return tuple(r[0] for r in rows)
+    return _cached(conn, "present_kinds", load)
+
+
+def narrow(conn: Any, allowed: Sequence[str], limit: int = NARROW_ROWS) -> bool:
+    """True when the reader's audience units hold at most ``limit`` chunks (an index-only
+    count over the audience btree, stopped at ``limit`` + 1): every visible row is in those
+    units, so an exact scan of them reads at most ``limit`` rows."""
+    if not allowed:
+        return True
+    n = conn.execute(
+        "SELECT count(*) FROM (SELECT 1 FROM search.chunks c "
+        "WHERE c.audience_key = ANY(%(a)s::text[]) LIMIT %(n)s) x",
+        {"a": list(allowed), "n": int(limit) + 1}).fetchone()[0]
+    return int(n) <= limit
+
+
+def kind_plan(conn: Any, kinds: Sequence[str] | None
+              ) -> tuple[list[str], list[str]] | None:
+    """(kinds walked through their own index, kinds scanned exactly) for a reader's kind
+    filter (None = every kind); None when no kind has an index or the kinds without one
+    hold more than ``NARROW_ROWS`` chunks (an exact scan of them would be slow: the caller
+    keeps the whole-table index). A kind name outside ``[a-z][a-z0-9_]*`` is never inlined
+    into SQL: it is scanned exactly, as a bound parameter."""
+    wanted = list(present_kinds(conn)) if kinds is None else list(dict.fromkeys(kinds))
+    indexed = kind_indexes(conn)
+    walk = sorted(k for k in wanted if k in indexed and _KIND.match(k))
+    rest = sorted(k for k in wanted if k not in walk)
+    if not walk:
+        return None
+    if rest:
+        key = "rest_rows:" + ",".join(rest)
+        n = _cached(conn, key, lambda: int(conn.execute(
+            "SELECT count(*) FROM (SELECT 1 FROM search.chunks c "
+            "WHERE c.kind = ANY(%(k)s::text[]) LIMIT %(n)s) x",
+            {"k": rest, "n": NARROW_ROWS + 1}).fetchone()[0]))
+        if n > NARROW_ROWS:
+            return None
+    return walk, rest
 
 
 def bq_enabled(env: Mapping[str, str] | None = None) -> bool:

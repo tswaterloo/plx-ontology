@@ -1,6 +1,7 @@
 """Injected contract tests for the deployed Portal Workbench API."""
 
 import copy
+import json
 import threading
 import unittest
 from urllib.parse import parse_qs, urlsplit
@@ -137,6 +138,51 @@ class DegradedHealthTests(unittest.TestCase):
         self.assertEqual(len(catalog), 246)
         self.assertIn("public.order_entry", catalog)
 
+    def test_a_catalog_beyond_1000_relations_with_mixed_case_tables_serves_the_rest(self):
+        # Live GET /v1/relations and /v1/health of 2026-11-18 01:49Z (counts and names
+        # only): 1,266 catalog relations in 725,170 bytes, 92 marked unavailable, 96
+        # mixed-case tables (public.Customer beside public.customer), health ok. The
+        # 1000-entry cap, then the mixed-case names, refused every read as
+        # source_unavailable (the ingest's portal source stale from 7:50 PM ET 11-17).
+        fake = DegradedApi()
+        fake.health_body.update(ok=True, unavailable=[], missingColumns=[])
+        listed = DegradedApi.__call__
+        mixed = ["Customer", "OrderEntry"] + [f"Model{i}" for i in range(94)]
+
+        def fetch(url, headers, *, max_bytes):
+            value = listed(fake, url, headers, max_bytes=max_bytes)
+            if urlsplit(url).path == "/v1/relations":
+                value["relations"] += [
+                    {"name": f"public.{table}", "schema": "public", "relation": table,
+                     "columns": ["id", "createdAt"], "key": ["id"], "since": "createdAt"}
+                    for table in mixed]
+                value["relations"] += [
+                    {"name": f"sage.extra_{i}", "schema": "sage", "relation": f"extra_{i}",
+                     "columns": ["id"], "key": ["id"], "since": None,
+                     **({"unavailable": gap_reason(1)} if i < 92 else {})}
+                    for i in range(1266 - len(value["relations"]))]
+                self.assertEqual(len(value["relations"]), 1266)
+                self.assertLess(len(json.dumps(value)), max_bytes)
+            return value
+        client = WorkbenchReadApiClient("https://api.example.test", KEY, fetch=fetch)
+        self.assertIs(client.health()["degraded"], False)
+        catalog = client.relations()
+        self.assertEqual((len(catalog), client.catalog_withheld), (1266 - 96, 96))
+        self.assertFalse(any(name.lower() != name for name in catalog))
+        served_entry(catalog, "public.order_entry", {})
+        self.assertEqual(client.read_relation("public.order_entry",
+                                              columns=["id"])["row_count"], 2)
+        # A withheld table is not readable under its own name or a case-folded one.
+        with self.assertRaises(RelationUnavailable):
+            served_entry(catalog, "public.Customer", {})
+        with self.assertRaises(ValueError):
+            client.read_relation("public.OrderEntry", columns=["id"])
+        # Health may list a withheld table: the rest is still served.
+        fake.health_body.update(ok=False, unavailable=[{"name": "public.Customer",
+                                                        "reason": "replica lag"}])
+        health = WorkbenchReadApiClient("https://api.example.test", KEY, fetch=fetch).health()
+        self.assertEqual(health["unavailable_relations"], {"public.Customer": "replica lag"})
+
     def test_observed_degraded_body_serves_the_rest_and_names_the_gaps(self):
         for shape in ("reason", "columns"):
             with self.subTest(missing_columns_entries=shape):
@@ -251,10 +297,17 @@ class DegradedHealthTests(unittest.TestCase):
         entry = {"name": "public.order_entry", "schema": "public", "relation": "order_entry",
                  "columns": ["id"], "key": ["id"]}
         for relations, reason in (
-                ({}, "catalog: relations is not a list of 1 to 1000 entries"),
+                ({}, "catalog: relations is not a list of 1 to 50000 entries"),
                 ([{**entry, "key": ["idoe"]}],
                  "catalog: public.order_entry key is not distinct listed columns"),
-                ([entry, entry], "catalog: public.order_entry is listed twice")):
+                ([entry, entry], "catalog: public.order_entry is listed twice"),
+                ([entry, {**entry, "name": "public.order entry"}],
+                 "catalog: entry 1 names no schema.relation"),
+                ([entry, {**entry, "name": "Public"}],
+                 "catalog: entry 1 names no schema.relation"),
+                ([{**entry, "name": "public.Customer", "relation": "Customer"}],
+                 "catalog: none of the 1 relations is named in the schema.relation "
+                 "grammar")):
             with self.subTest(reason=reason), self.assertRaises(WorkbenchNotReady) as caught:
                 broken_catalog(relations).relations()
             self.assertEqual(caught.exception.reason, reason)

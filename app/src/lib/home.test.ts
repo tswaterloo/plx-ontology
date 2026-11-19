@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headline, keyOwner, morningNotice, staleLine, yourMorning } from "./home";
+import { headline, keyOwner, morningNotice, refreshingLine, staleLine, yourMorning } from "./home";
 import type { Briefing, BriefingItem, HomeResponse } from "./types";
 
 const home = (late_total: number | null, status: "read" | "unavailable" = "read") =>
@@ -23,12 +23,22 @@ describe("Home headline", () => {
     expect(headline(null, null)).toBeNull();
   });
 
-  it("never says nothing is late while the checks are re-running on newer data", () => {
+  it("says nothing is late only as of the last late-PO check while it re-runs, with its time", () => {
     const na = { status: "read", late_total: 0, late_pos: [], refreshing: true, checked_on: "2026-11-01T08:14:36+00:00" };
     const h = headline({ greeting_name: "V", examples: [], recent_questions: [], needs_attention: na } as unknown as HomeResponse, brief([]));
-    expect(h?.text).toBe("Rechecking against the latest data.");
-    expect(h?.sub).toMatch(/re-running on the latest data \(last checked 1 Nov\)/);
-    expect(headline(home(0), brief([], { refreshing: true }))?.text).toBe("Rechecking against the latest data.");
+    expect(h?.text).toBe("No late POs at the last check.");
+    expect(h?.sub).toBe("Checked 1 Nov, 3:14 AM ET. The check runs again on the newest data; a late PO it finds shows here.");
+    // owner walk 11-17: another rule re-running never holds the late line (it read as loading for days)
+    expect(headline(home(0), brief([], { refreshing: true }))?.text).toBe("No late POs.");
+    // an unknown time is left out, never invented
+    expect(headline({ greeting_name: "V", examples: [], recent_questions: [], needs_attention: { ...na, checked_on: null } } as unknown as HomeResponse, brief([]))?.sub).toBe(
+      "The check runs again on the newest data; a late PO it finds shows here.",
+    );
+  });
+
+  it("an empty list while checks re-run says nothing needed action as of their last runs", () => {
+    expect(refreshingLine("2026-11-17T06:01:50Z")).toBe("Nothing needs action as of the last checks (17 Nov, 1:01 AM ET). Some run again on the newest data; what they find shows here.");
+    expect(refreshingLine(null)).toBe("Nothing needs action as of the last checks. Some run again on the newest data; what they find shows here.");
   });
 });
 

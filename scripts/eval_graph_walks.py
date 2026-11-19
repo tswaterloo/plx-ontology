@@ -193,13 +193,14 @@ class Store:
     def rows(self, ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {}
         for chunk in self._chunks(ids, 200):
-            for oid, prop, vtype, value, unit, currency, marks in self.conn.execute(
-                    "SELECT object_id, property, value_type, value, unit, currency, markings "
-                    f"FROM object_values WHERE object_id IN ({','.join('?' * len(chunk))}) "
+            for oid, prop, vtype, value, unit, currency, marks, basis in self.conn.execute(
+                    "SELECT object_id, property, value_type, value, unit, currency, markings, "
+                    f"tax_basis FROM object_values WHERE object_id IN ({','.join('?' * len(chunk))}) "
                     "AND superseded_at IS NULL", chunk):
                 out.setdefault(oid, []).append(
                     {"property": prop, "value_type": vtype, "value": value, "unit": unit,
-                     "currency": currency, "markings": marks})
+                     "currency": currency, "markings": marks,
+                     **({"tax_basis": basis} if basis else {})})   # as Postgres reads
         return out
 
     def versions(self, ids: Sequence[str]) -> dict[str, tuple[str, str]]:
@@ -494,4 +495,6 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
 
 
 if __name__ == "__main__":
+    from scripts.eval_guard import enforce
+    enforce()
     raise SystemExit(main())

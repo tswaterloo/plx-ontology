@@ -329,6 +329,21 @@
    ]
   },
   {
+   "type": "customer_order_open_long",
+   "kind": "customer_order_late",
+   "label": "Customer order open longer than usual (no promised date)",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "ACCTMGMT",
+    "SALES",
+    "OPS"
+   ],
+   "unmeasured": "not measurable yet: new 2026-11-18 (operating.pg.alerts customer_order_open_long), no hand-checked sample yet"
+  },
+  {
    "type": "stock_out_risk",
    "kind": "shortage",
    "label": "Stock cannot cover open orders",

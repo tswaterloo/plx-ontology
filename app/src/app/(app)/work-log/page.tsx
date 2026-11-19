@@ -7,6 +7,8 @@ import { useAuth } from "@/components/auth";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
+import { SectionTabs } from "@/components/shell";
 import { AutopilotScorecardPanel } from "@/components/autopilot-scorecard";
 import { TimeSavedPanel } from "@/components/time-saved";
 import { KIND_LABEL, WorkLogRow } from "@/components/work-log";
@@ -102,7 +104,7 @@ function WorkLog() {
         title={
           <>
             Work log
-            {main.page?.total ? <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint"><span className="sr-only">, </span>{main.page.total}</span> : null}
+            {main.page?.total ? <>{" "}<span className="ml-1 text-[13px] font-normal tracking-normal tabular-nums text-faint">{main.page.total}</span></> : null}
           </>
         }
         actions={
@@ -114,6 +116,8 @@ function WorkLog() {
         }
         className="bg-list"
       />
+      <SectionTabs section="work-log" />
+      <PageIntro path="/work-log" />
       {/* a closed log has no counts and nothing to search: no figures that read as zero */}
       {!closedLog && <form
         className="flex flex-wrap items-center gap-2 px-6 pt-3"

@@ -1,0 +1,5 @@
+# Optional feature packages, default off and not installed in /data/venv: a host turns the
+# feature on by installing the pin. Kept out of requirements.txt so the host drift alarm
+# (operating/ops_alarms.py drift_findings) does not report them missing.
+-r requirements.txt
+azure-eventhub==5.15.1    # integrations/graph_notifications.py (Event Hubs receiver; deploy/systemd/plx-graph-notify.service)

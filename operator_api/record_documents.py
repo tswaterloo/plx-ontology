@@ -303,6 +303,8 @@ def doc_list(view: Any, view_name: str, oid: Optional[str], today: Optional[date
     if (got.get("counts") or {}).get("still_reading"):
         # its documents are being read for the whole company now, kept for the next page
         out.error, out.complete = STILL_READING, False
+        token = got.get("still_reading_token")
+        out._reading_token = token if isinstance(token, str) else None
         return out
     withheld = {k: int(v) for k, v in (got.get("withheld_counts") or {}).items()
                 if isinstance(v, int)}

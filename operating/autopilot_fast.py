@@ -165,14 +165,24 @@ def waiting(state_dir: Path, marks: Mapping[str, Any]) -> dict[str, tuple[str, i
     return out
 
 
+def _first_version(conn: sqlite3.Connection, earlier: str, args: tuple) -> bool:
+    """Whether a taken version is its message's first (``earlier`` finds an older version of
+    the same message by the store's own index). Only a first version is a latency sample: a
+    later one (an edit, a reaction, a moved or re-read mail) was sent long before it was
+    stored again, and timing it as a new message read an hour-old Teams edit as an hour's
+    reply time (11-17: all 4 Teams samples over 6 min were later versions)."""
+    return conn.execute(earlier, args).fetchone() is None
+
+
 def take(state_dir: Path, marks: Mapping[str, Any], people: Any, *,
          horizon: datetime, times: dict | None = None
          ) -> tuple[dict[str, list[tuple[str, str]]], dict[str, list], dict[str, int]]:
     """(source -> the record keys to project, the marks once they are, counts) of the
     message versions past the marks (module doc: oldest first, at most ``MAX_RECORDS``,
     cleared units only). ``times``: filled with (source, key) -> (sent, captured) of each
-    taken message, its first version's (the latency samples); an approval's are (requested,
-    captured)."""
+    taken message whose version is its first (``_first_version``; a mail's sent is the
+    capture's ``received_at``, and a mail received before the horizon, a history read, is
+    no sample); an approval's are (requested, captured)."""
     from .autopilot_records import _instant
     keys: dict[str, list[tuple[str, str]]] = {"teams": [], "mail": []}
     new_marks: dict[str, list] = {}
@@ -211,7 +221,9 @@ def take(state_dir: Path, marks: Mapping[str, Any], people: Any, *,
                         counts["before_horizon"] += 1
                         continue
                     keys["teams"].append((kind, path))
-                    if times is not None:
+                    if times is not None and _first_version(
+                            conn, "SELECT 1 FROM versions WHERE kind = ? AND path = ? AND "
+                            "capture_id < ? LIMIT 1", (kind, path, capture_id)):
                         times.setdefault(("teams", (kind, path)),
                                          (row.get("created_at"), recorded))
                 if len(rows) < SCAN and len(keys["teams"]) < MAX_RECORDS:
@@ -219,7 +231,8 @@ def take(state_dir: Path, marks: Mapping[str, Any], people: Any, *,
             else:
                 rows = conn.execute(
                     "SELECT version_id, mailbox_id, message_id, recorded_at, "
-                    "json_extract(record, '$.receivedDateTime') FROM messages WHERE "
+                    "coalesce(json_extract(record, '$.received_at'), "
+                    "json_extract(record, '$.receivedDateTime')) FROM messages WHERE "
                     "version_id > ? AND version_id <= ? ORDER BY version_id LIMIT ?",
                     (mark, newest, MAX_RECORDS)).fetchall()
                 for version_id, mailbox, message, recorded, sent in rows:
@@ -229,7 +242,12 @@ def take(state_dir: Path, marks: Mapping[str, Any], people: Any, *,
                         counts["not_cleared"] += 1
                         continue
                     keys["mail"].append((mailbox, message))
-                    if times is not None:
+                    received = _instant(sent)
+                    if times is not None and (received is None or received >= horizon) \
+                            and _first_version(
+                                conn, "SELECT 1 FROM messages WHERE mailbox_id = ? AND "
+                                "message_id = ? AND version_id < ? LIMIT 1",
+                                (mailbox, message, version_id)):
                         times.setdefault(("mail", (mailbox, message)), (sent, recorded))
                 if len(rows) < MAX_RECORDS:
                     last = newest
@@ -517,11 +535,12 @@ def cycle(state_dir: Path, st: Any, queue: Any, people: Any, registry: Mapping[s
         fast = _Store(store, threads=1, file_only=True)
         try:
             limits = {**registry["limits"], "cycle_seconds": CYCLE_SECONDS}
+            from .chat_ask_model import from_environ as chat_ask_judge
             out = ap.run_cycle(st, queue, ids, people=people,
                                registry={**registry, "limits": limits}, gate=gate, now=now,
                                read_work_log=True, event_queue=True, horizon=horizon,
                                discover_store=fast, due=False, settle_items=False,
-                               environ=environ)
+                               environ=environ, ask_judge=chat_ask_judge(environ))
         finally:
             fast.close()
     except Exception as error:  # noqa: BLE001 - a batch that fails is retried, then left
@@ -603,6 +622,7 @@ def latency(samples: Any, now: datetime, *, window: timedelta | None = timedelta
     for key in ("all", *MESSAGE_SOURCES, "mission_control"):
         if captured_ready.get(key) or sent_ready.get(key):
             out[key] = {"messages": len(captured_ready.get(key) or ()),
+                        "timed": len(sent_ready.get(key) or ()),
                         "captured_to_ready_p50_s": _pct(captured_ready.get(key) or [], 0.5),
                         "captured_to_ready_p95_s": _pct(captured_ready.get(key) or [], 0.95),
                         "sent_to_ready_p50_s": _pct(sent_ready.get(key) or [], 0.5),
@@ -636,9 +656,46 @@ def run(state_dir: Path, st: Any, queue: Any, people: Any, registry: Mapping[str
 
 
 def alarm_checks(state_dir: Path, now: datetime) -> list[dict[str, Any]]:
-    """The continuous consumer's restart loop (``restart_check``) and the feed's own two
-    alarms (``feed_checks``)."""
-    return restart_check(state_dir) + feed_checks(state_dir, now)
+    """The continuous consumer's restart loop (``restart_check``), the feed's own two
+    alarms (``feed_checks``) and the settle pass's failed checks (``settle_checks``)."""
+    return restart_check(state_dir) + feed_checks(state_dir, now) + \
+        settle_checks(state_dir, now)
+
+
+def settle_checks(state_dir: Path, now: datetime) -> list[dict[str, Any]]:
+    """``autopilot_settle_errors``: the last settle pass (``autopilot_engine.settle``, its
+    note in the queue's meta) could not check some open items, which then stay open past
+    the owner's reply or decision. Any failure alarms; a note older than a day or none:
+    nothing is checked (the cycle's own unit alarms cover a cycle that stopped)."""
+    from .autopilot_engine import SETTLE_ERRORS
+    from .autopilot_queue import QUEUE_FILE
+    from .ops_health import _check
+    path = state_dir / "autopilot" / QUEUE_FILE
+    if not path.is_file():
+        return []
+    try:
+        with contextlib.closing(_ro(path)) as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = ?",
+                               (SETTLE_ERRORS,)).fetchone()
+        note = json.loads(row[0]) if row else None
+        if note is not None and not isinstance(note, dict):
+            raise ValueError("note")
+    except (sqlite3.Error, ValueError):
+        return [_check("autopilot_settle_errors", None, 0, None, "checks",
+                       "the autopilot queue's settle note is unreadable")]
+    at = _when(note.get("at")) if note else None
+    if at is None or now - at > timedelta(days=1):
+        return []
+    try:
+        errors, checked = int(note.get("errors") or 0), int(note.get("checked") or 0)
+    except (TypeError, ValueError):
+        return [_check("autopilot_settle_errors", None, 0, None, "checks",
+                       "the autopilot queue's settle note is unreadable")]
+    rules = ", ".join(f"{k} {v}" for k, v in sorted((note.get("by_rule") or {}).items()))
+    return [_check("autopilot_settle_errors", errors, 0, errors > 0, "checks",
+                   f"{errors} of {checked} open items could not be checked for done "
+                   f"({rules}); they stay open: {str(note.get('last_error') or '')[:160]}"
+                   if errors else f"all {checked} open items checked")]
 
 
 def feed_checks(state_dir: Path, now: datetime) -> list[dict[str, Any]]:
@@ -666,8 +723,9 @@ def feed_checks(state_dir: Path, now: datetime) -> list[dict[str, Any]]:
     minutes = None if p95 is None else round(p95 / 60, 1)
     checks = [_check("autopilot_reply_latency", minutes if minutes is not None else 0,
                      READY_MINUTES, minutes is not None and minutes > READY_MINUTES, "minutes",
-                     f"p95 {minutes} min from a message to its prepared reply over "
-                     f"{found['messages']} messages in the last 2 h" if minutes is not None
+                     f"p95 {minutes} min from a message to its prepared reply over the "
+                     f"{found['all']['timed']} new messages with a sent time of "
+                     f"{found['messages']} handled in the last 2 h" if minutes is not None
                      else "no message handled in the last 2 h")]
     oldest = None
     try:

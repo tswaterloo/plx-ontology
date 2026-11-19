@@ -894,6 +894,38 @@ class InstructApi(Desk):
         self.assertEqual([f["name"] for f in again["files"]], ["list.txt"])
 
 
+class SimpleAskKeepsTheBoxFlows(Desk):
+    """On the simple Ask (PLX_ASK_SIMPLE=1) a line asking for something done still goes
+    to the instruction engine (its drafts, nothing sent) and never to the simple model;
+    the question/do pick is still asked."""
+
+    def test_email_reminder_and_unsure_lines_reach_the_instruction_engine(self):
+        import os
+        from unittest import mock
+        from operator_api import simple_ask
+        drafted = ("Drafted the email.\n[[DRAFT email]]\nSubject: PO 90412 ship date\nHi Pat,"
+                   "\nPO 90412 ships on 4 November.\nAna\n[[END]]")
+        self.backend.instruct_call = Model(drafted, drafted)
+        with mock.patch.dict(os.environ, {"PLX_ASK_SIMPLE": "1"}), \
+                mock.patch.object(simple_ask, "run",
+                                  side_effect=AssertionError("simple model reached")), \
+                mock.patch.object(simple_ask, "ask",
+                                  side_effect=AssertionError("simple path reached")):
+            email = self.instruct(self.ana, "send an email to Pat that PO 90412 ships on "
+                                  "4 November")
+            remind = self.instruct(self.ana, "remind me to chase PO 90412 on Friday")
+            unsure = self.instruct(self.ana, "what are our open POs? and email them to Pat")
+        for out in (email, remind):
+            self.assertEqual(out.status_code, 200, out.text)
+            self.assertIsNotNone(out.json()["answer"]["instruction"], out.text)
+        self.assertTrue(email.json()["drafts"])
+        self.assertFalse(any(d["sent"] for d in email.json()["drafts"]))
+        self.assertEqual(self.sends, [])
+        self.assertEqual(unsure.status_code, 200, unsure.text)
+        self.assertEqual(unsure.json()["status"], "route")
+        self.assertEqual(unsure.json()["answer"]["direct_answer"], ROUTE_QUESTION)
+
+
 class People:
     """The captures' directory as ``operating.assist`` reads it: Ana, Ben and an excluded
     colleague (Cal), the company's own domain."""
@@ -987,6 +1019,46 @@ class AssistInDrafting(Desk):
         # a line naming nobody proposes nobody
         _prompt, draft = self.drafted("reply to this")
         self.assertIsNone(draft["to"])
+
+    def test_an_email_to_a_typed_address_carries_its_fields_into_the_send_preview(self):
+        """Owner walk 11-17 (E1-E3): "Send an email to <me> with the subject X saying Y"
+        gave a card whose body held "To:/Subject:" lines, an empty To, the subject "Draft
+        email", "Add the recipient's address", and asked who "an email" was, offering
+        newsletter senders."""
+        mail = list(OWN_MAIL) + [{"at": "2026-11-11T09:00:00Z", "in": True,
+                                  "from": "hello@roboflow.example", "to": [ANA[0]], "cc": [],
+                                  "subject": "Join our webinar on vision models"}]
+        self.backend.instruct_history = lambda reader: (People(), mail)
+        line = f"Send an email to {ANA[0]} with the subject Lot update saying the lot shipped"
+        self.backend.instruct_call = Model(
+            f"[[DRAFT email]]\nTo: {ANA[0]}\nCc: guessed@else.example\nSubject: Lot update"
+            "\n\nThe lot shipped.\n[[END]]")
+        out = self.instruct(self.ana, line, mode="do")
+        self.assertEqual(out.status_code, 200, out.text)
+        draft = out.json()["drafts"][0]
+        self.assertEqual((draft["title"], draft["email_subject"], draft["to"]),
+                         ("Lot update", "Lot update", ANA[0]))
+        self.assertNotRegex(draft["body"], r"(?im)^\s*(to|cc|subject)\s*:")
+        # an address the line never wrote is never proposed
+        self.assertNotIn("guessed@else.example", json.dumps(draft))
+        self.assertFalse([n for n in draft["missing"] if "recipient's address" in n])
+        # "an email" is no one, and a mailing's sender is never offered
+        self.assertFalse([q for q in draft.get("recipient_questions") or ()
+                          if q["pick"] == "one" or "an email" in q["label"]])
+        self.assertNotIn("roboflow", json.dumps(out.json()))
+        preview = self.ana.post("/api/actions/preview", json={
+            "card_id": draft["id"], "kind": "send_email"})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        payload = preview.json()["payload"]
+        self.assertEqual((payload["to"], payload["subject"]), ([ANA[0]], "Lot update"))
+        self.assertNotIn("Subject:", payload["body"])
+        # with no mail history read yet, the typed address alone fills the To
+        self.backend.instruct_history = lambda reader: None
+        self.backend.instruct_call = Model(
+            f"[[DRAFT email]]\nSubject: Lot update\nTo: {ANA[0]}\nThe lot shipped.\n[[END]]")
+        out = self.instruct(self.ana, line, mode="do")
+        self.assertEqual(out.status_code, 200, out.text)
+        self.assertEqual(out.json()["drafts"][0]["to"], ANA[0])
 
     def test_a_withheld_recipient_keeps_a_short_number_unread(self):
         # Ben is inside, Cal is excluded (withheld, never named): who Cal stands for is not

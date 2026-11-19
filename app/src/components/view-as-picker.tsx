@@ -32,7 +32,7 @@ export default function ViewAsPicker({ open, onOpenChange }: { open: boolean; on
           <div className="border-b border-border px-4 py-3">
             <Dialog.Title className="text-[14px] font-semibold">View as someone</Dialog.Title>
             <Dialog.Description className="mt-0.5 text-[12px] leading-4 text-muted">
-              Their My work, alerts and drafts, exactly as they see them. Read only; each view is audited.
+              Their Home, alerts and drafts, exactly as they see them. Read only; each view is audited.
             </Dialog.Description>
           </div>
           <label className="flex items-center gap-2 border-b border-border px-4 py-2">

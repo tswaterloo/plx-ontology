@@ -299,6 +299,30 @@ class McpStartupTests(HostCase):
         # The later outage's own label, not the first generation's.
         self.assertNotEqual(fresh[0]["label"], fresh[2]["label"])
 
+    def test_a_retired_sqlite_generation_without_postgres_is_refused_never_served_empty(self):
+        """The state folder names a committed generation whose SQLite store is gone (the
+        generations are retired; Postgres serves) and the host runs without
+        PLX_ONTOLOGY_PG=only: every ontology read is refused ``no_projection_store``,
+        never answered from an empty placeholder store as "not in the projection"."""
+        projection = self.state / "projection"
+        self.assertTrue((projection / "CURRENT").is_file())
+        (projection / "ontology.sqlite").unlink()
+        reads = {2: ("plx.find", {"query": "SO100305", "object_type": "SalesOrder"}),
+                 3: ("plx.find", {"query": "SO100305"}),
+                 4: ("plx.around", {"handle": "plx://SalesOrder/SO100305"}),
+                 5: ("plx.aggregate", {"object_type": "SalesOrder", "metric": "count"}),
+                 6: ("plx.process", {"handle": "plx://SalesOrder/SO100305"})}
+        with patch.dict(os.environ):
+            os.environ.pop("PLX_ONTOLOGY_PG", None)
+            code, replies, err = self.mcp(Lines(INIT + [call(i, name, arguments) for i, (
+                name, arguments) in reads.items()]))
+        self.assertEqual(code, 0, err)
+        for request, (name, _arguments) in reads.items():
+            result = replies[request]["result"]
+            self.assertTrue(result["isError"], (name, result))
+            self.assertIn("no_projection_store", json.dumps(result), name)
+            self.assertNotIn("SO100305\"", json.dumps(result.get("structuredContent")), name)
+
     def test_a_replayed_ticket_is_refused_after_a_restart(self):
         code, replies, err = self.mcp(Lines(INIT))
         self.assertEqual(code, 0, err)

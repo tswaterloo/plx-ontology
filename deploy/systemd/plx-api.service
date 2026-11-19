@@ -30,6 +30,11 @@ EnvironmentFile=/etc/plx/workbench-api.env
 Environment=PLX_PRECEDENCE_TABLE=/data/plx-state/precedence/measured.json
 # every model call counted (operating/model_ledger.py: no prompt or answer text)
 Environment=PLX_MODEL_LEDGER=/var/lib/plx-workbench/model-calls.jsonl
+# the model that writes a reply from a person's one line (POST /api/autopilot/items/{id}/reply-from-line,
+# operating/autopilot_drafter.py); unset it answers 409. It runs on the autopilot's own access-token-only
+# claude home, never an operator's ~/.claude (operating/chat_ask_model.py)
+Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
+Environment=PLX_CHAT_ASK_CLAUDE_HOME=/var/lib/plx-autopilot/claude-home
 ExecStart=/usr/bin/env python3 -m operator_api serve --bind 127.0.0.1 --port 8780 $PLX_API_ARGS
 # always: a clean exit (0, or a stop that was not systemctl's) is brought back too
 Restart=always
@@ -44,7 +49,7 @@ StateDirectory=plx-workbench
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/plx-workbench
+ReadWritePaths=/var/lib/plx-workbench -/var/lib/plx-autopilot/claude-home
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

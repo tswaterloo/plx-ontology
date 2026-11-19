@@ -15,7 +15,7 @@ export function savedText(min: number): string {
 const ITEM_WORD: Record<string, [string, string]> = {
   mail_sent: ["message sent from a draft", "messages sent from a draft"],
   teams_sent: ["Teams message", "Teams messages"],
-  record: ["lookup or entry done for you", "lookups and entries done for you"],
+  record: ["entry done for you", "entries done for you"],
 };
 
 function itemsText(items: Record<string, number> | undefined): string {

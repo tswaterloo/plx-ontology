@@ -19,7 +19,7 @@ export function NotFoundBody() {
             Search
           </Button>
           <Button size="sm" variant="secondary" asChild>
-            <Link href="/">Open My work</Link>
+            <Link href="/">Open Home</Link>
           </Button>
         </div>
       </div>

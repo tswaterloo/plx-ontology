@@ -26,6 +26,8 @@ describe("Memory", () => {
     api.getMemory.mockResolvedValue({ available: true, items: [item(), item({ id: 4, kind: "fact", source: "you", text: "M lot codes are Mississauga.", records: [] })] });
     render(<MemoryPage />);
     expect(await screen.findByText("Always give quantities in cases.")).toBeTruthy();
+    // the intro says plainly what it is for and who sees it
+    expect(screen.getByText(/Only you can see it\./)).not.toHaveTextContent(/owner included|pay or finance/);
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual(["Tell it something to remember", "Standing instructions 1", "Facts 1"]);
     expect(screen.getByText("From a question of yours")).toBeTruthy();

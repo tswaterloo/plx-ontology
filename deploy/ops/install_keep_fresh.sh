@@ -20,6 +20,8 @@
 #                                (question: /etc/plx/ask-canary.json, installed from
 #                                deploy/ops/ask-canary.json when missing)
 #     plx-expiry.timer           daily 06:20 UTC  credential expiry list (alarm within 30 days)
+#     plx-answer-bank.timer      10 min after the last build: the questionnaire answer bank for the
+#                                company (Templates), decided per reader at read; capture read-only
 #     plx-labour.timer           daily 05:40 ET   labour-hours build (department and week totals; capture read-only)
 #     plx-doc-style.timer        daily 04:50 ET   each person's document templates re-learned from what they
 #                                sent (Templates "learned from your documents"; capture read-only)
@@ -45,9 +47,10 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-labour plx-doc-style plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued"
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-labour plx-doc-style plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-business-comms-recheck"
 SYS_PATHS="plx-autopilot-follow plx-autopilot-fast"   # also started by a .path unit
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously
+SYS_AFTER="plx-alerts"                                 # started by another unit (OnSuccess=)
 
 python3 "$render" --out "$tmp/sys" >/dev/null
 # systemd-analyze verify: a non-zero exit is a failure unless every line it printed is a
@@ -65,7 +68,7 @@ verify_unit() {  # verify_unit [--user] service timer
 }
 for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
 for u in $SYS_PATHS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.path"; done
-for u in $SYS_DAEMONS; do verify_unit "$tmp/sys/$u.service"; done
+for u in $SYS_DAEMONS $SYS_AFTER; do verify_unit "$tmp/sys/$u.service"; done
 for f in "$tmp"/sys/plx-{sheet-readings,system-activity,team-activity,work-graph,proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast,autopilot-fast-serve,labour,write-readiness,spark-health}.*; do
   # <unit>.d/ drop-in folders (deploy/systemd/host) are installed by deploy/ops/host/install.py,
   # not here; the unit file itself must carry MemoryMax and Nice
@@ -99,7 +102,7 @@ for u in $SYS_PATHS; do
   dst=/etc/systemd/system/$u.path
   cmp -s "$tmp/sys/$u.path" "$dst" || { sudo -n install -m 644 "$tmp/sys/$u.path" "$dst"; schanged=1; }
 done
-for u in $SYS_DAEMONS; do
+for u in $SYS_DAEMONS $SYS_AFTER; do
   dst=/etc/systemd/system/$u.service
   cmp -s "$tmp/sys/$u.service" "$dst" || { sudo -n install -m 644 "$tmp/sys/$u.service" "$dst"; schanged=1; }
 done

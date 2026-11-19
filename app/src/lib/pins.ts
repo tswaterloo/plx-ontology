@@ -28,30 +28,29 @@ export interface PinReader {
  */
 export const ROLE_PINS: Record<string, PinnedPage[]> = {
   owner: [
-    { href: "/team#approvals", label: "Approvals" },
-    { href: "/autopilot", label: "Autopilot approvals" },
-    { href: "/watching#alerts", label: "Alerts" },
+    { href: "/team#approvals", label: "Approvals waiting on others" },
+    { href: "/autopilot", label: "Autopilot review queue" },
+    { href: "/?show=alerts#alerts", label: "Alerts" },
   ],
   purchasing: [
-    { href: "/late", label: "Late POs" },
-    { href: "/watching?for=purchasing#alerts", label: "Supplier issues" },
+    { href: "/?show=late", label: "Late POs" },
+    { href: "/?show=alerts&for=purchasing#alerts", label: "Supplier issues" },
   ],
   customer_service: [
     { href: "/?view=reply", label: "Replies to send" },
-    { href: "/watching?for=customer_service#alerts", label: "Customer issues" },
+    { href: "/?show=alerts&for=customer_service#alerts", label: "Customer issues" },
   ],
-  quality: [{ href: "/qc", label: "Quality" }],
+  quality: [],
   production_planning: [
-    { href: "/late", label: "Late POs" },
-    { href: "/qc", label: "Quality" },
+    { href: "/?show=late", label: "Late POs" },
   ],
-  receivables: [{ href: "/watching?for=finance#alerts", label: "Finance alerts" }],
-  payables: [{ href: "/watching?for=finance#alerts", label: "Finance alerts" }],
-  finance: [{ href: "/watching?for=finance#alerts", label: "Finance alerts" }],
-  rnd: [{ href: "/rd-projects", label: "R&D and sample projects" }],
+  receivables: [{ href: "/?show=alerts&for=finance#alerts", label: "Finance alerts" }],
+  payables: [{ href: "/?show=alerts&for=finance#alerts", label: "Finance alerts" }],
+  finance: [{ href: "/?show=alerts&for=finance#alerts", label: "Finance alerts" }],
+  rnd: [],
 };
 const FALLBACK: PinnedPage[] = [
-  { href: "/watching#alerts", label: "Alerts" },
+  { href: "/?show=alerts#alerts", label: "Alerts" },
   { href: "/ask", label: "Ask" },
 ];
 
@@ -63,9 +62,12 @@ export function defaultPins(reader: PinReader | null | undefined): PinnedPage[] 
   return out.length ? out : FALLBACK;
 }
 
+/** Pages taken out of the app (R&D projects, Quality): an old pin to one is not shown. */
+const GONE = /^\/(qc|rd-projects)(?:[/?#]|$)/;
+
 /** A page href that may be pinned: this app's own path, never another origin. */
 export function pinnable(href: string): boolean {
-  return href.startsWith("/") && !href.startsWith("//") && !href.includes("\\") && href.length <= 300;
+  return !GONE.test(href) && href.startsWith("/") && !href.startsWith("//") && !href.includes("\\") && href.length <= 300;
 }
 
 function pagesOf(items: SavedItem[]): SavedItem[] {

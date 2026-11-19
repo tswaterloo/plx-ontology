@@ -4,21 +4,23 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Toolbar } from "@/components/ui/toolbar";
+import { PageIntro } from "@/components/ui/page-intro";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { safeHref, typeLabel } from "@/lib/format";
+import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { useSaved } from "@/lib/saved";
 import type { SuggestResponse } from "@/lib/types";
 
-/** The four kinds of record people look for, and the record types each one holds. */
+/** Every record ("All", the first tab), then the four kinds people look for and the record types each one holds. */
 const RECORD_KINDS = [
-  { key: "customers", label: "Customers", types: ["Customer", "customer"], hint: "a customer's name or number" },
+  { key: "all", label: "All", types: [], hint: "a name or any number: customer, supplier, order, PO, item or batch" },
+  { key: "customers", label: "Customers", types: ["Customer", "customer", "Chain"], hint: "a customer's name or number" },
   { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number" },
   { key: "suppliers", label: "Suppliers", types: ["Supplier", "Vendor", "supplier"], hint: "a supplier's name or number" },
-  { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot"], hint: "an item number, name or lot" },
+  { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot", "Product", "Batch"], hint: "an item number, name or lot" },
 ] as const;
 type Kind = (typeof RECORD_KINDS)[number];
 
@@ -40,7 +42,7 @@ function Records() {
   const [problem, setProblem] = useState<unknown>(null);
   const [round, setRound] = useState(0);
   const saved = useSaved();
-  const mine = useMemo(() => saved.filter((s) => s.kind === "object" && (kind.types as readonly string[]).includes(savedType(s.key) ?? "")), [saved, kind]);
+  const mine = useMemo(() => saved.filter((s) => s.kind === "object" && (kind.key === "all" || (kind.types as readonly string[]).includes(savedType(s.key) ?? ""))), [saved, kind]);
   const query = q.trim();
 
   useEffect(() => {
@@ -59,7 +61,7 @@ function Records() {
     };
   }, [query, round]);
 
-  const rows = (found?.query === query ? found.suggestions : []).filter((s) => (kind.types as readonly string[]).includes(s.type));
+  const rows = (found?.query === query ? found.suggestions : []).filter((s) => kind.key === "all" || (kind.types as readonly string[]).includes(s.type));
   const elsewhere = (found?.query === query ? found.suggestions : []).length - rows.length;
   const go = (key: string) => {
     const next = new URLSearchParams(params.toString());
@@ -70,6 +72,7 @@ function Records() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar heading title="Records" pin={`Records: ${kind.label}`} />
+      <PageIntro path="/records" />
       <div className="w-full max-w-[880px] overflow-y-auto px-6 py-5">
         <div role="tablist" aria-label="Kind of record" className="flex h-9 gap-5 border-b border-border">
           {RECORD_KINDS.map((k) => (
@@ -92,6 +95,14 @@ function Records() {
           id="records-q"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter opens the best match ("106093" opens that PO)
+            const top = rows[0] && safeHref(rows[0].open_url);
+            if (e.key === "Enter" && top) {
+              e.preventDefault();
+              router.push(top);
+            }
+          }}
           autoComplete="off"
           spellCheck={false}
           maxLength={100}
@@ -110,7 +121,7 @@ function Records() {
                   <li key={`${r.type}/${r.object_id}`}>
                     <Link href={safeHref(r.open_url) ?? "/records"} className="flex items-baseline gap-3 py-2 text-[13px] hover:bg-hover">
                       <span className="w-32 shrink-0 text-[12px] text-muted">{typeLabel(r.type)}</span>
-                      <span className="min-w-0 flex-1 truncate font-medium">{r.label}</span>
+                      <span className="min-w-0 flex-1 truncate font-medium">{recordLabel(r.type, r.label)}</span>
                       {r.sublabel && <span className="min-w-0 max-w-[40%] truncate text-[12px] text-muted">{r.sublabel}</span>}
                     </Link>
                   </li>

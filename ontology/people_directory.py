@@ -339,6 +339,22 @@ def is_composite(key: Any) -> bool:
     return isinstance(key, str) and _COMPOSITE.fullmatch(key) is not None
 
 
+# the last tuple of mailbox ids ``decode_audience`` was given and its sorted ids: a policy
+# decodes thousands of keys against one list (sorting it for each: ~0.3 s of a staff
+# reader's first call, 2026-11-18); a tuple cannot change under the cache
+_ORDERED: list[tuple[Any, list[str]]] = []
+
+
+def _ordered(every: Sequence[str]) -> list[str]:
+    held = _ORDERED[0] if _ORDERED else None
+    if held is not None and held[0] is every:
+        return held[1]
+    ordered = sorted(set(m for m in every if isinstance(m, str)))
+    if isinstance(every, tuple):
+        _ORDERED[:] = [(every, ordered)]
+    return ordered
+
+
 def decode_audience(key: Any, every: Sequence[str]) -> tuple[str, ...] | None:
     """The mailbox ids a ``mail-any:`` key names, decoded against ``every`` (the
     capture's mailbox ids now); None (no grant) for any other key, a bit past the list,
@@ -348,7 +364,7 @@ def decode_audience(key: Any, every: Sequence[str]) -> tuple[str, ...] | None:
     found = _COMPOSITE.fullmatch(key)
     if found is None:
         return None
-    ordered = sorted(set(m for m in every if isinstance(m, str)))
+    ordered = _ordered(every)
     bits = int(found.group(1), 16)
     if bits >> len(ordered):
         return None

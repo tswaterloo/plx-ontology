@@ -34,6 +34,7 @@ is never named or counted here. Nothing is written; no source is called.
 
 from __future__ import annotations
 
+import functools
 import re
 import threading
 from typing import Any, Iterable, Mapping, Sequence
@@ -76,6 +77,55 @@ SYSTEM_PLACE_PAIRS = frozenset({("apart", "from"), ("aside", "from"), ("other", 
 SYSTEM_WORDS = frozenset({"sage", "bc", "business central", "filemaker", "portal",
                           "the portal", "mission control", "mc", "teams", "microsoft teams",
                           "sharepoint", "outlook", "planner"})
+# Words that never name a kind of record (an object type's name may hold one: "Bill Of
+# Materials").
+FUNCTION_WORDS = frozenset(
+    "a an the and or nor but if so as is are was were be been being am has have had do does "
+    "did will would shall should can could may might must to of in on at by for from with "
+    "without about into onto over under than then that this these those there here it its "
+    "they them their we us our you your he she him her his i me my who whom whose which what "
+    "when where why how not no yes all any some each every both either neither one ones".split())
+# A system name after one of these is the subject of a verb ("did Sage order", "has Portal
+# sent"), never the place records are held: the word after it is that verb, not a noun.
+AUXILIARIES = frozenset("do does did will would shall should can could may might must has "
+                        "have had is are was were".split())
+
+
+@functools.lru_cache(maxsize=1)
+def record_nouns() -> frozenset[str]:
+    """The nouns of the kinds of record the schema declares, as a question writes them:
+    each word of a declared object type's name ("MCApproval" -> "approval", "SalesOrder" ->
+    "sales", "order"), lower case, no system's name or function word. Relation mirror types
+    (``Rel...``) are left out: their names spell the source table ("RelPublicApp..."). The
+    schema unreadable: none (a system name is then always a mention, the stricter reading)."""
+    try:
+        from ontology.schema import load_schema
+        types = list(load_schema().object_types)
+    except Exception:  # noqa: BLE001 - no vocabulary is the conservative reading
+        return frozenset()
+    systems = {w for name in SYSTEM_WORDS for w in name.split()}
+    out = set()
+    for name in types:
+        if re.match(r"Rel[A-Z]", name):
+            continue
+        for word in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+", name):
+            word = word.casefold()
+            if len(word) > 2 and word not in FUNCTION_WORDS and word not in systems:
+                out.add(word)
+    return frozenset(out)
+
+
+def _record_noun(word: str) -> bool:
+    """Whether ``word`` (lower case) is a record noun of the schema, singular or plural."""
+    nouns = record_nouns()
+    forms = {word}
+    if word.endswith("ies"):
+        forms.add(word[:-3] + "y")
+    if word.endswith("es"):
+        forms.add(word[:-2])
+    if word.endswith("s"):
+        forms.add(word[:-1])
+    return bool(forms & nouns)
 
 
 def system_of(object_id: str) -> str:
@@ -162,16 +212,37 @@ def mentions(text: str) -> list[dict[str, Any]]:
     run: list[str] = []
     before: tuple[str, str] = ("", "")
     last: tuple[str, str] = ("", "")   # the two words before this one, "the" skipped
+    parted = False   # the word before this one ended with punctuation ("Sage, orders")
 
-    def close() -> None:
+    def close(after: str = "") -> None:
         # "sales orders in Sage", "approvals in the Portal", "apart from Sage": the system
         # the records are held in (or set apart), never a record named so (the vendor Sage
-        # Software, read first as the subject)
+        # Software, read first as the subject). "Mission Control approvals", "the Portal
+        # acct X", "BC locations": a system's name qualifying the record noun after it
+        # (``after``: the lower-case word that ended the run, ``record_nouns``) is that
+        # place too (dev 11-17:
+        # "Mission Control" resolved to tasks titled so, and the gate refused every count
+        # of approvals as off the question).
         place = before[1] in SYSTEM_PLACE_WORDS or before in SYSTEM_PLACE_PAIRS
-        if not (place and _fold(" ".join(run)) in SYSTEM_WORDS):
+        # a noun of a kind of record the schema declares ("approvals", "locations", "sales
+        # orders"), never any lower-case word: "pay Sage last year", "did Sage reply" name
+        # the supplier or the person Sage (review 11-17)
+        qualifies = bool(re.fullmatch(r"[a-z][a-z-]*", after)) and _record_noun(after) \
+            and before[1] not in AUXILIARIES
+        if not ((place or qualifies) and _fold(" ".join(run)) in SYSTEM_WORDS):
             add(" ".join(run), "name")
 
-    for match in re.finditer(r"\S+", text):
+    tokens = list(re.finditer(r"\S+", text))
+
+    def capital(at: int) -> bool:
+        """Whether the word at ``at`` is a capitalised word of a name (a stopword too)."""
+        if not 0 <= at < len(tokens) or any(a <= tokens[at].start() < b for a, b in taken):
+            return False
+        word = tokens[at].group(0).strip(",;:()\"'?!.")
+        return bool(_CAPITALISED.fullmatch(word)) and len(word) > 1 \
+            and _fold(word) not in _CALENDAR_WORDS and not re.search(r"\d", word)
+
+    for at, match in enumerate(tokens):
         token = match.group(0).strip(",;:()\"'?!.")
         inside = any(a <= match.start() < b for a, b in taken)
         word = _fold(token)
@@ -179,15 +250,27 @@ def mentions(text: str) -> list[dict[str, Any]]:
                      and match.start() not in sentence_start and word not in STOPWORDS
                      and word not in _CALENDAR_WORDS and len(token) > 1
                      and (not re.search(r"\d", token) or len(token) <= 4))
+        # "For & Against", "Bath & Body", "Out & About": an ampersand between capitalised
+        # words is inside one name, a stopword beside it included (dev 11-17: the
+        # customer "For & Against" was looked up as "Against" alone)
+        ampersand = match.group(0) == "&" and capital(at - 1) and capital(at + 1)
+        # (the first word of a sentence too: "Tom & Jerry Co ordered what?")
+        if ampersand or (capital(at) and (
+                (at + 1 < len(tokens) and tokens[at + 1].group(0) == "&"
+                 and capital(at + 2))
+                or (at > 0 and tokens[at - 1].group(0) == "&" and capital(at - 2)))):
+            name_like = True
         if name_like:
             if not run:
                 before = last
             run.append(token)
         elif run:
-            close()
+            # the word ending the run, when nothing (a comma, a full stop) parts them
+            close(token if token == match.group(0) and not parted else "")
             run = []
         if word != "the":
             last = (last[1], word)
+        parted = match.group(0) != match.group(0).rstrip(",;:()\"'?!.")
     if run:
         close()
     return out

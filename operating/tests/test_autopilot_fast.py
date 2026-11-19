@@ -195,7 +195,7 @@ class FastFeed(tct.CaptureCase):
             conn.execute("CREATE TABLE messages (version_id INTEGER PRIMARY KEY, "
                          "mailbox_id TEXT, message_id TEXT, "
                          "recorded_at TEXT DEFAULT '2026-11-13T11:58:00+00:00', "
-                         "record TEXT DEFAULT '{\"receivedDateTime\": \"2026-11-13T11:57:00Z\"}')")
+                         "record TEXT DEFAULT '{\"received_at\": \"2026-11-13T11:57:00Z\"}')")
             conn.execute("INSERT INTO messages (version_id, mailbox_id, message_id) "
                          "VALUES (1, ?, 'm0')", (tct.U_COS,))
         marks = self.marks()
@@ -258,7 +258,7 @@ class FastFeedEdges(unittest.TestCase):
             conn.execute("CREATE TABLE messages (version_id INTEGER PRIMARY KEY, "
                          "mailbox_id TEXT, message_id TEXT, "
                          "recorded_at TEXT DEFAULT '2026-11-13T11:58:00+00:00', "
-                         "record TEXT DEFAULT '{\"receivedDateTime\": \"2026-11-13T11:57:00Z\"}')")
+                         "record TEXT DEFAULT '{\"received_at\": \"2026-11-13T11:57:00Z\"}')")
         conn.close()
         patcher = mock.patch.object(af, "stores", lambda _s: {"teams": self.teams,
                                                               "mail": self.mail})
@@ -336,6 +336,39 @@ class FastFeedEdges(unittest.TestCase):
         self.assertEqual(keys["teams"], [("teams_chat", "c/1"), ("teams_chat", "c/2")])
         self.assertEqual(keys["mail"], [("mbx", "m1")])
         self.assertEqual(counts["versions"], 5)
+
+    def test_only_a_new_messages_first_version_is_a_latency_sample(self):
+        # 11-17 live: the reply p95 (62.6 min) was 4 Teams edits of hour-old messages, and
+        # no mail had a sent time (the feed read Graph's key, the capture keeps received_at)
+        self.versions((1, "teams_chat", "c/1", "chat:a", _row()),
+                      (2, "teams_chat", "c/1", "chat:a", _row()),    # edited after the mark
+                      (3, "teams_chat", "c/2", "chat:a", _row()))
+        with sqlite3.connect(self.mail) as conn:
+            conn.executemany(
+                "INSERT INTO messages (version_id, mailbox_id, message_id, record) "
+                "VALUES (?, ?, ?, ?)", [
+                    (1, "mbx", "m1", '{"received_at": "2026-11-13T11:50:00Z"}'),
+                    (2, "mbx", "m1", '{"received_at": "2026-11-13T11:50:00Z"}'),  # re-read
+                    (3, "mbx", "m2", '{"received_at": "2026-11-13T11:57:00Z"}'),
+                    (4, "mbx", "m3", '{"received_at": "2019-04-23T14:04:00Z"}'),  # history
+                    (5, "mbx", "m4", '{"subject": "no time"}')])
+        conn.close()
+        times: dict = {}
+        keys, _m, _c = af.take(self.state, {"teams": [GEN, 1], "mail": ["", 1]}, _Clears(),
+                               horizon=self.horizon, times=times)
+        # every version is still handled; only first versions are timed
+        self.assertEqual(keys["teams"], [("teams_chat", "c/1"), ("teams_chat", "c/2")])
+        self.assertEqual(keys["mail"], [("mbx", "m1"), ("mbx", "m2"), ("mbx", "m3"),
+                                        ("mbx", "m4")])
+        self.assertEqual(times, {
+            ("teams", ("teams_chat", "c/2")): ("2026-11-13T10:00:00Z",
+                                               "2026-11-13T11:58:00+00:00"),
+            ("mail", ("mbx", "m2")): ("2026-11-13T11:57:00Z", "2026-11-13T11:58:00+00:00"),
+            ("mail", ("mbx", "m4")): (None, "2026-11-13T11:58:00+00:00")})
+        samples = [["2026-11-13T11:59:00+00:00", s, *t] for (s, _k), t in times.items()]
+        found = af.latency(samples, datetime(2026, 11, 13, 12, tzinfo=timezone.utc))
+        self.assertEqual((found["messages"], found["all"]["timed"]), (3, 2))
+        self.assertEqual(found["mail"]["sent_to_ready_p95_s"], 120.0)   # 11:57 -> 11:59
 
     def test_a_full_scan_or_page_stops_the_mark_at_its_last_row(self):
         self.versions(*[(i, "teams_chat", f"c/{i}", "chat:a", _row(kind="chat_member"))

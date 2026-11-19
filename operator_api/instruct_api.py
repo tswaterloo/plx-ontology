@@ -640,8 +640,16 @@ class InstructMixin(ia.InstructAssistMixin):
                     # a proposed address the reader's own exclusion check would strip
                     # is never proposed
                     draft["to"] = to if to and clean(to, guard, 300) == to else None
+                    stated = [a for a in d.to if plain(a) == a]
+                    typed = draft["to"] is None and bool(stated)
+                    if typed:
+                        # the address the instruction wrote (its draft's To line): the
+                        # preview's To, checked there like any typed; no note to add one
+                        draft["to"], draft["also_to"] = stated[0], stated[1:]
+                        draft["cc"] = [a for a in d.cc if plain(a) == a]
+                        said_to = [n for n in said_to if "recipient's address" not in n]
                     draft["missing"][:0] = said_to
-                    if draft["to"] and aim.recipients is not None:
+                    if draft["to"] and aim.recipients is not None and not typed:
                         draft["also_to"] = [a for a in aim.recipients.to[1:] if plain(a) == a]
                         draft["cc"] = [a for a in aim.recipients.cc if plain(a) == a]
                     draft["recipient_questions"] = ia.recipient_questions(aim.recipients,

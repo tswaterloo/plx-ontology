@@ -1032,13 +1032,61 @@ class DetectorTest(Case):
                             "not_evaluated_by_reason": {}}]}
         out = bf.build(inbox, routing=EVERYTHING, hidden=None, last_visit=None)
         self.assertEqual([n["words"] for n in out["data_notes"]], [
-            "customer orders past their required date: cannot check 9 records that lack "
-            "order lines",
-            "customer orders past their required date: cannot check 3 records that hold a "
-            "status no rule reads"])
+            "9 records for customer orders past their required date: the order has no lines",
+            "3 records for customer orders past their required date: the status recorded "
+            "isn't one the check reads yet"])
         check = next(c for c in out["checks"] if c["check"] == "late_customer_order")
         self.assertEqual(check["status"], "failed")
         self.assertIn("check failed at 2026-11-07 2:00 PM ET", check["words"])
+
+    def test_data_notes_are_plain_sentences_ordered_by_who_can_fix_them(self):
+        """Owner 11-17: every reason a plain sentence (never its code name), a passed check
+        never listed, a check's scope one note without a count, and the list ordered by
+        what a person can fix (enter a record, read a document, then ours), then by count."""
+        inbox = {"status": "read", "gaps": [], "complete": False, "detectors": {},
+                 "rules": [
+                     {"rule": "late_or_unconfirmed_po", "status": "partial",
+                      "not_evaluated_by_reason": {"confirmation_unsettled": 64,
+                                                  "no_need_date": 192, "sage_unmapped": 71,
+                                                  "a_reason_never_worded": 2}},
+                     {"rule": "late_order", "status": "partial",
+                      "not_evaluated_by_reason": {"order_not_late": 21}},
+                     {"rule": "receipt_without_qc", "status": "complete",
+                      "not_evaluated_by_reason": {}},
+                     {"rule": "production_late", "status": "not_run",
+                      "not_evaluated_by_reason": {}},
+                     {"rule": "late_customer_order", "status": "partial",
+                      "not_evaluated_by_reason": {"sage_unmapped": 3}}]}
+        out = bf.build(inbox, routing=EVERYTHING, hidden=None, last_visit=None)
+        notes = out["data_notes"]
+        self.assertEqual([(n["reason"], n["scope"]) for n in notes], [
+            ("no_need_date", False), ("confirmation_unsettled", False),
+            ("a_reason_never_worded", False),
+            ("out_of_scope", True), ("out_of_scope", True), ("sage_unmapped", True)])
+        self.assertEqual(notes[0]["words"], "192 purchase orders: no due date is recorded "
+                                            "on the order or any copy of it")
+        for note in notes:   # no code name, no "cannot check ... that"
+            self.assertNotRegex(note["words"], r"[a-z]+_[a-z]+|cannot check")
+        self.assertEqual({n["check"] for n in notes if n["scope"]},
+                         {"late_order", "receipt_without_qc", "late_or_unconfirmed_po"})
+        # Sage-open orders stay unknown (decision 2026-11-02): a scope note, never "71 ...",
+        # said once whichever checks met it
+        self.assertEqual(notes[-1]["words"],
+                         "Sage leaves old orders open, so lateness isn't judged for them.")
+        # production: Portal-only copies are scope; an empty scheduled date a person enters
+        inbox["rules"][3] = {"rule": "production_late", "status": "partial",
+                             "not_evaluated_by_reason": {"status_source_absent": 740,
+                                                         "no_scheduled_date": 43}}
+        notes = bf.build(inbox, routing=EVERYTHING, hidden=None,
+                         last_visit=None)["data_notes"]
+        self.assertIn("43 production orders: no scheduled date is set",
+                      [n["words"] for n in notes])
+        (portal,) = [n for n in notes if n["reason"] == "status_source_absent"]
+        self.assertEqual((portal["scope"], portal["count"]), (True, 0))
+        self.assertIn("only in the Portal", portal["words"])
+        self.assertTrue(all(n["count"] == 0 for n in notes if n["scope"]))
+        self.assertIn("Business Central or Sage", next(
+            n["words"] for n in notes if n["check"] == "receipt_without_qc"))
 
     def test_a_credited_order_is_a_loss_unless_its_goods_came_back(self):
         """Revenue zero after credit memos: a no-charge order only when the goods were

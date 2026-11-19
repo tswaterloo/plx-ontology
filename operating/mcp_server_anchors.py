@@ -258,8 +258,16 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
     A find of any other words adds nothing, so an agent's own search never widens what
     the question names."""
     from ontology.identifiers import find_identifiers
+    from .entity_resolution import SYSTEM_WORDS, mentions as asked_mentions
+    from .query_understanding import fold
     words = _tokens(asked)
     said = lambda text: _names(text, words, cell=False)  # noqa: E731 - on whole words
+    # A system's name the question writes only as the place records are held ("Mission
+    # Control approvals", "in Sage": ``entity_resolution.mentions`` leaves it out) is no
+    # record of the question, however an agent's own find of those words resolves it.
+    named_systems = {fold(m["text"]) for m in asked_mentions(asked)} & SYSTEM_WORDS
+    place_only = lambda text: (fold(str(text or "")) in SYSTEM_WORDS  # noqa: E731
+                               and fold(str(text or "")) not in named_systems)
     codes = {_letters_digits(mention.text) for mention in find_identifiers(asked)}
     mentions: list[Any] = []
     ids: set[str] = set()
@@ -271,11 +279,14 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
             if len(text) < MIN_ANCHOR_CHARS or not said(text):
                 continue
             named = [entity for entity in _named_entities(result.get("entities"))
-                     if said(_letters_digits(str(entity.get("mention") or "")))]
+                     if said(_letters_digits(str(entity.get("mention") or "")))
+                     and not place_only(entity.get("mention"))]
             mentions += [entity.get("mention") for entity in named]
             ids |= _entity_records(named)
             continue
         query = _letters_digits(str(arguments.get("query") or ""))
+        if place_only(arguments.get("query")):
+            continue
         candidates = [c for c in result.get("candidates") or () if isinstance(c, Mapping)]
         if query in codes:
             if result.get("status") != "found" or len(candidates) != 1:
@@ -442,7 +453,7 @@ def _reader_visible(server: "MCPServer") -> Callable[[Iterable[str]], set[str]] 
             return set()
         with host.request(), host.per_call():
             tools = host.tools
-            tools.policy = host.policy_now(gated)
+            tools.policy = host.policy_for(gated)
             with tools.store.lock:
                 scope = tools._scope(gated, tools._as_known_at({}))
                 return set(tools._visible_versions(scope, ids))

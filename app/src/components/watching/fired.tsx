@@ -17,6 +17,10 @@ export type Fired = {
   fresh: number;
   top: BriefingItem[];
   rest: { type: string; label: string; more: number }[];
+  /** The oldest "as of" of its types' checks (ISO), when the server says it. */
+  asOf?: string | null;
+  /** Its types whose check is not current: never shown as current, said unavailable. */
+  unavailable?: { type: string; label: string; since: string | null }[];
 };
 
 /** What fired, per alert kind, most first: its count, how many are new since your visit,
@@ -29,7 +33,9 @@ export function firedKinds(reg: AlertKinds | null, briefing: Briefing | null): F
     const types = reg.types.filter((t) => t.kind === k.kind);
     const groups = (briefing.groups ?? []).filter((g) => types.some((t) => t.type === g.event_type));
     const count = groups.reduce((n, g) => n + g.count, 0);
-    if (!count) continue;
+    const unavailable = groups.filter((g) => g.unavailable).map((g) => ({ type: g.event_type, label: g.label, since: g.unavailable_since ?? null }));
+    if (!count && unavailable.length === 0) continue;
+    const asOfs = groups.map((g) => g.as_of).filter((a): a is string => !!a).sort();
     out.push({
       kind: k.kind,
       label: k.label,
@@ -38,6 +44,8 @@ export function firedKinds(reg: AlertKinds | null, briefing: Briefing | null): F
       fresh: groups.reduce((n, g) => n + g.new_since_visit, 0),
       top: (briefing.items ?? []).filter((i) => (i.alert_kind ?? kindOf.get(i.event_type)) === k.kind),
       rest: groups.filter((g) => g.count > g.in_top).map((g) => ({ type: g.event_type, label: g.label, more: g.count - g.in_top })),
+      asOf: asOfs[0] ?? null,
+      unavailable,
     });
   }
   return out.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
@@ -45,16 +53,19 @@ export function firedKinds(reg: AlertKinds | null, briefing: Briefing | null): F
 
 function ItemRow({ it }: { it: BriefingItem }) {
   const href = safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id);
+  const line = shortSummary(it.summary);
+  // nothing to say beside the title (a reply waiting says its subject and days): the title takes the line
+  const bare = !line && !it.counterpart;
   return (
     <li className="grid grid-cols-[10px_minmax(0,11rem)_minmax(0,1fr)_auto] items-baseline gap-x-3 py-1.5 text-[13px] max-sm:grid-cols-[10px_minmax(0,1fr)_auto]">
       <span aria-hidden className={cn("size-1.5 translate-y-[-1px] rounded-full", it.new_since_visit ? "bg-accent" : "")} />
-      <Link href={href} className="truncate font-medium hover:underline max-sm:col-start-2">
+      <Link href={href} className={cn("truncate font-medium hover:underline max-sm:col-start-2", bare && "col-span-2 max-sm:col-span-1")}>
         {recordLabel(it.object_type, it.subject_label)}
       </Link>
-      <span className="truncate text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2 max-sm:line-clamp-2 max-sm:whitespace-normal" title={readable(it.summary)}>
+      {!bare && <span className="truncate text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2 max-sm:line-clamp-2 max-sm:whitespace-normal" title={readable(it.summary)}>
         {it.counterpart ? <span className="text-fg">{it.counterpart} · </span> : null}
-        {shortSummary(it.summary)}
-      </span>
+        {line}
+      </span>}
       <span className={cn("num shrink-0 text-[12px] max-sm:col-start-3 max-sm:row-start-1", it.days != null && it.days > 0 ? "text-late" : "text-muted")}>{it.days != null ? `${it.days} d` : ""}</span>
       {it.new_since_visit && <span className="sr-only">new</span>}
       <ItemNext it={it} />
@@ -86,12 +97,18 @@ export function FiredKind({ f }: { f: Fired }) {
         <span className="font-semibold">{f.label}</span>
         <span className="num text-fg">{f.count}</span>
         {f.fresh > 0 && <span className="num text-[12px] text-accent">{f.fresh} new</span>}
+        {f.asOf && <span className="text-[11px] text-faint" data-testid="fired-as-of">as of {formatDateTime(f.asOf)}</span>}
         <span className="ml-auto text-[11px] text-faint">{f.on ? "On" : "Off: shown here only"}</span>
       </h3>
+      {(f.unavailable ?? []).map((u) => (
+        <p key={u.type} className="mt-1 pl-[22px] text-[12px] text-muted" data-testid={`unavailable-${u.type}`}>
+          {u.label}: unavailable{u.since ? ` since ${formatDateTime(u.since)}` : ""}. Shown again after its next check.
+        </p>
+      ))}
       {f.top.length > 0 && <ul className="mt-1">{f.top.map((it) => <ItemRow key={it.id} it={it} />)}</ul>}
       {f.rest.map((r) => (
         <div key={r.type} className="mt-1 pl-[22px] text-[12px]">
-          <TypeItems type={r.type} count={r.more} more={`${r.more} more ${r.label.toLowerCase()}`} />
+          <TypeItems type={r.type} count={r.more} more={`${f.top.length ? `${r.more} more` : `Show ${r.more === 1 ? "the 1" : `all ${r.more}`}`}: ${r.label.toLowerCase()}`} />
         </div>
       ))}
     </section>

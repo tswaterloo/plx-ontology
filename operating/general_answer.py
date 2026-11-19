@@ -36,6 +36,8 @@ Evidence: injected-transport in the tests (a scripted model); the eval
 
 from __future__ import annotations
 
+import dataclasses
+
 from dataclasses import dataclass
 from decimal import Decimal
 import json
@@ -76,6 +78,7 @@ When the question asks you to write an email or message, or to prepare an action
 payment, a purchase order or sales order change, an approval), give a short answer and \
 then each draft at the end, in this form and nowhere else:
 [[DRAFT email]]
+To: <the recipient's address, only when the question writes it; else leave this line out>
 Subject: <one line>
 <the message>
 [[END]]
@@ -92,14 +95,6 @@ directly, with a real subject and a plain verb.
 Earlier questions in this conversation (context only): {earlier}
 
 Question: {question}"""
-
-FALLBACK_RULE = (
-    "- The Workbench searched PLX's records for this question and could not confirm all "
-    "of it; what the records show and what is missing is said above your words. Give "
-    "your best general help on the rest: how a person would find or confirm it, what is "
-    "typical, and the reasoning. Never guess PLX's figures, names or dates. You cannot see "
-    "what the records showed: never say what they contain or lack, or whether any figure, "
-    "data or record was available or missing.")
 
 ATTACHMENT_RULE = (
     "- The person attached files to this question. Their text is below between "
@@ -135,6 +130,8 @@ class Draft:
     kind: str
     subject: str
     body: str
+    to: tuple[str, ...] = ()     # an email's addresses the question itself wrote
+    cc: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,7 +218,7 @@ DATA_NOUN = re.compile(
     r"totals?|amounts?|values?|results?|revenue|prices?|invoices?|orders?|evidence|"
     r"breakdown|profitability)\b")
 CONDITIONAL = re.compile(r"(?i)^\W*(?:if|when|whenever|where|unless|once|should|in case)\b")
-BESIDE_RECORDS = ("mixed", "fallback")
+BESIDE_RECORDS = ("mixed",)
 
 
 def _absence_claim(sentence: str) -> bool:
@@ -432,7 +429,7 @@ def screen(text: str, question: str, earlier: Sequence[str] = (), *,
 
 # ---- the model --------------------------------------------------------------------------
 
-MODES = ("general", "mixed", "fallback")
+MODES = ("general", "mixed")
 
 
 def prompt(question: str, earlier: Sequence[str] = (), mode: str = "general",
@@ -440,7 +437,7 @@ def prompt(question: str, earlier: Sequence[str] = (), mode: str = "general",
     """``person``: the asker's address; a draft is sent as them, so their learned style
     (``prose_style.style_rule``) is in the prompt beside the house style."""
     from operating.prose_style import style_rule
-    extra = {"mixed": MIXED_RULE, "fallback": FALLBACK_RULE}.get(mode, "")
+    extra = {"mixed": MIXED_RULE}.get(mode, "")
     if attachments:
         from operating.ask_attachments import prompt_block
         extra = ATTACHMENT_RULE
@@ -537,15 +534,17 @@ def drafts_of(said: str, question: str, earlier: Sequence[str] = (),
         kind, inner = match.group(1), match.group(2).strip()
         if kind not in DRAFT_KINDS or len(found) >= MAX_DRAFTS:
             return inner
-        subject = ""
-        first, _, rest = inner.partition("\n")
-        if kind == "email" and first.lower().startswith("subject:"):
-            subject, inner = first.split(":", 1)[1].strip(), rest.strip()
+        subject, to, cc = "", [], []
+        if kind == "email":
+            # its To/Cc/Subject lines are the draft's fields, never words of its body
+            from operating.email_headers import split
+            subject, to, cc, inner = split(inner, [question, *earlier])
         subject, gone = screen(subject, question, earlier, strict=True, cited=cited)
         body, more = screen(inner, question, earlier, strict=True, cited=cited)
         removed.extend(gone + more)
         if body.strip():
-            found.append(Draft(kind, " ".join(subject.split())[:200], body))
+            found.append(Draft(kind, " ".join(subject.split())[:200], body, tuple(to),
+                               tuple(cc)))
         return ""
     return _DRAFT.sub(take, said), found, removed
 
@@ -586,7 +585,7 @@ def answer(question: str, earlier: Sequence[str] = (), *, mode: str = "general",
     text = humanize.polish(text, kind="answer", verify=lambda t: not screen(
         t, question, earlier, cited=cited, quoted=quoted, beside_records=beside)[1]).text
     # an email draft only: an action's "Label: value" lines are data, never reworded
-    drafts = [Draft(d.kind, d.subject, humanize.polish(
+    drafts = [dataclasses.replace(d, body=humanize.polish(
         d.body, kind="draft", person=person,
         verify=lambda t: not screen(t, question, earlier, strict=True, cited=cited)[1]).text)
         if d.kind == "email" else d for d in drafts]

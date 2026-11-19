@@ -353,31 +353,25 @@ class ProfitAskTests(unittest.TestCase):
         self.assertEqual(held["trail"]["hidden_message"], "3 more steps in places you can't "
                                                           "open.")
 
-    def test_the_general_help_under_a_partial_answer_never_denies_its_figures(self):
-        """The 11-16 box repro: under a partial answer that states its margins, the
-        general pass (which sees only the question) wrote that no margin figures were
-        available. That sentence goes; the general help and every figure stay."""
+    def test_a_partial_company_answer_gets_no_general_filler(self):
+        """11-17 owner: a partial answer about a customer's own figures says them and
+        what is missing, and nothing else: the general model is not asked, no general
+        heading follows, and no general sentence can deny a figure the answer states
+        (the 11-16 box repro: "No margin figures were available" under stated margins)."""
         from operating import general_answer
         self.general_said = (
             "No margin figures were available for this customer, so it is hard to say. "
-            "To judge a customer, compare revenue with all costs, including labour and "
-            "overhead.\nThe records don't show the cost of each order. If the cost isn't "
-            "booked, the margin is overstated.")
+            "To judge a customer, compare revenue with all costs.")
         _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable and why not?")
         text = answer["direct_answer"]
         self.assertEqual(answer["outcome"], "partial")
-        self.assertEqual(len(self.general_asked), 1)
-        self.assertIn("whether any figure, data or record was available",
-                      self.general_asked[0])
+        self.assertEqual(self.general_asked, [])
         self.assertTrue(text.startswith("Northwind Test Foods is not profitable in the last "
                                         "12 months: revenue 190.00 CAD"), text)
-        company, _, general = text.partition(general_answer.HEADING)
-        self.assertIn("margin on item cost only: -41.00 CAD (-21.58%)", company)
-        self.assertIn("compare revenue with all costs, including labour and overhead",
-                      general)
-        self.assertIn("If the cost isn't booked, the margin is overstated.", general)
+        self.assertIn("margin on item cost only: -41.00 CAD (-21.58%)", text)
+        self.assertNotIn(general_answer.HEADING, text)
         self.assertNotIn("No margin figures were available", text)
-        self.assertNotIn("don't show", text)
+        self.assertNotIn("compare revenue with all costs", text)
 
     def test_past_the_read_limit_there_is_no_verdict_only_a_partial_ranking(self):
         from unittest import mock

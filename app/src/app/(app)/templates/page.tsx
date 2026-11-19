@@ -259,7 +259,7 @@ export default function TemplatesPage() {
       />
       <div className="w-full max-w-[60rem] overflow-y-auto px-6 py-5">
         <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-muted">
-          Documents you write often, with {"{{field}}"} where a record&apos;s value goes. Using one fills each field from the record you name, with where it came from; anything the records don&apos;t settle is left marked check. In the Ask box, type &ldquo;use my order confirmation template for SO 5512&rdquo;.
+          Documents you write often, with blanks where a record&apos;s details go. Using one fills each blank from the record you name and shows where it came from; anything the records don&apos;t settle is marked to check. In the Ask box, type &ldquo;use my order confirmation template for SO 5512&rdquo;.
         </p>
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
         {!list && !problem && <Pending label="Reading your templates" />}

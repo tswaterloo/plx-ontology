@@ -39,7 +39,7 @@ from .claim_checks_counts import (
     _aggregate_counts, _calculation_currency_problem, _check_add_days, _check_days,
     _check_page_claim, _check_quote, _computed_problem, _engine_currencies, _home_late_count,
     _input_dimensions, _lead_cells, _lead_records, _MIXED_CODES, _money_values, _note_listing,
-    _op_calculation, _query_counts, _states_whole_cell,
+    _op_calculation, _query_counts, _states_whole_cell, _table_counts,
 )
 
 if TYPE_CHECKING:
@@ -259,7 +259,12 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
                     and result != to_decimal(calc.get("result")):
                 return _fail(out, "claim_uncited", f"{name} does not recompute "
                              "from its cited rows as read now")
-            if claim["kind"] != "number" or to_decimal(claim["value"]) != result \
+            if claim["kind"] == "number" and to_decimal(claim["value"]) != result \
+                    and not evidence.tool_sum(claim) and evidence.tool_sum(claim, floors=True):
+                # the tool's sum of every input it holds of a source read in part: the
+                # value is a lower bound, written "at least" (``lower_bounds``)
+                out["bound"] = "at_least"
+            elif claim["kind"] != "number" or to_decimal(claim["value"]) != result \
                     and not evidence.tool_sum(claim):
                 # a sum of more cells than one claim cites: the complete aggregate that
                 # added every one of them states it (its cited cells re-read above)
@@ -847,5 +852,12 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
         return into
     if tool == "plx.query":
         _query_counts(arguments, result, into)
+        return into
+    if tool in ("plx.table", "plx.business"):
+        _table_counts(arguments, result, into)
+        # a plx.business overview: each section binds as the request it states
+        for section in result.get("sections") or () if tool == "plx.business" else ():
+            if isinstance(section, Mapping) and isinstance(section.get("answer"), Mapping):
+                _table_counts(section.get("request"), section["answer"], into)
         return into
     return _aggregate_counts(tool, arguments, result, into)

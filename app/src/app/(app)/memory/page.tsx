@@ -187,7 +187,7 @@ function Memory() {
       <Toolbar heading title="Memory" />
       <div className="w-full max-w-[60rem] overflow-y-auto px-6 py-5">
         <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-muted">
-          What the Workbench keeps about you and uses in every answer and draft of yours. No one else sees it, the owner included. It never keeps pay or finance. In the Ask box you can also say &ldquo;from now on &hellip;&rdquo; or &ldquo;remind me to &hellip;&rdquo;.
+          What the Workbench remembers about how you work, so your answers and drafts fit you. Only you can see it. To add something, type &ldquo;from now on &hellip;&rdquo; or &ldquo;remind me to &hellip;&rdquo; in the Ask box.
         </p>
         {viewing ? (
           <EmptyState title="Memory stays with its person." line="Viewing as someone shows none of what the Workbench remembers about them." />

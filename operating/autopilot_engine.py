@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 import time
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
@@ -457,6 +458,53 @@ def with_draft(gate: Callable[..., bool], drafted: Mapping[str, frozenset[str]]
     return drafted_gate
 
 
+class SwitchGate:
+    """The live prepare gate (follow and fast; owner walk 2026-11-17: 509 items prepared by
+    role membership for 16 people, none of whom asked, 0 used): a workflow is prepared for
+    a person only when that person switched its drafts on themselves
+    (``autopilot_write.drafts_on`` over the write path's audit journal, re-read whenever
+    the file changes, so a switch takes effect at the next cycle) or it is in Draft for
+    them (``autopilot_draft.json``: the owner's own items). The replay gate no longer
+    decides what is prepared; it still decides what may be performed (``write_state``).
+    No journal, an unreadable or broken one: only Draft (fail closed)."""
+
+    def __init__(self, journal_path: Optional[Path],
+                 drafted: Mapping[str, frozenset[str]]) -> None:
+        self.path = Path(journal_path) if journal_path else None
+        self.drafted = {str(k).lower(): frozenset(v) for k, v in drafted.items()}
+        self._stamp: Any = None
+        self._on: dict[str, frozenset[str]] = {}
+
+    def switched(self) -> dict[str, frozenset[str]]:
+        """person -> workflows on (their own switch, else Draft), read now."""
+        if self.path is not None:
+            try:
+                st = self.path.stat()
+                stamp = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                stamp = None
+            if stamp != self._stamp:
+                self._stamp, self._on = stamp, {}
+                if stamp is not None:
+                    from . import autopilot_write as aw
+                    from .card_actions import Journal, JournalBroken
+                    try:
+                        self._on = aw.drafts_on(Journal(self.path).rows())
+                    except (OSError, ValueError, JournalBroken):
+                        self._on = {}
+        out = dict(self.drafted)
+        for who, flows in self._on.items():
+            out[who] = frozenset(out.get(who, frozenset()) | flows)
+        return out
+
+    @property
+    def passed(self) -> dict[str, list[str]]:
+        return {who: sorted(flows) for who, flows in self.switched().items() if flows}
+
+    def __call__(self, owner: str, workflow: str, roles: Iterable[str] = ()) -> bool:
+        return workflow in self.switched().get(str(owner).lower(), ())
+
+
 def item_roles(ap: Mapping[str, Any]) -> frozenset[str]:
     """The roles an autopilot's item reaches its owner through: its business rule's role
     (``role:<x>``; ``buyer`` is purchasing, ``approvers`` the owner role) and the mailbox
@@ -576,9 +624,20 @@ def shown_item(item: Mapping[str, Any]) -> dict[str, Any]:
             NO_TEXT if happened.get("snippet_missing") == "no_text" else NOT_READ)
     if "happened" in body:
         body["happened"] = happened
+    if isinstance(prepared.get("your_call"), Mapping):
+        # what the card keeps to write the reply from (the thread, the screens' event) is
+        # the server's; the person is shown the question and its facts
+        prepared["your_call"] = {k: v for k, v in prepared["your_call"].items()
+                                 if k in ("ask", "facts")}
     if "prepared" in body:
         body["prepared"] = prepared
     return {**item, "title": title, "body": body}
+
+
+# A handler's "my rules found nothing" skips: a model-drafted workflow lets the model
+# decide instead. Every other skip (an ambiguous customer, a record not the sender's,
+# a copy gate) stands.
+MODEL_DECIDES = frozenset({"nothing_to_prepare"})
 
 
 def _prepare(st: Any, ap: Mapping[str, Any], event: Mapping[str, Any], as_of: date,
@@ -592,6 +651,19 @@ def _prepare(st: Any, ap: Mapping[str, Any], event: Mapping[str, Any], as_of: da
     st.watch(lambda: 1 if time.monotonic() > deadline else 0)
     try:
         work = HANDLERS[ap["handler"]](ctx, event)
+        if ap.get("draft") == "model" and isinstance(work, Mapping) \
+                and work.get("skip") in MODEL_DECIDES:
+            # the handler's rules found nothing to state; the model reads the thread and
+            # decides whether a reply would help (``autopilot_drafter``: none, no item)
+            work = {"kind": "reply", "summary": "Reply to " + sender_label(
+                event.get("sender"), event.get("sender_name"))
+                + f": {str(event.get('subject') or '')[:100]}"}
+        if ap.get("draft") == "model" and isinstance(work, dict) and not work.get("skip"):
+            # what the model writes the reply from (``autopilot_drafter``), read under
+            # this ``ctx``: its records' audiences and markings are the item's
+            from .autopilot_drafter import material_of
+            from .autopilot_work import body_text
+            work["material"] = material_of(ctx, event, work, body_text(ctx, event))
     except HandlerTimeout:
         return {"error": "handler_timeout"}
     except sqlite3.OperationalError as exc:
@@ -646,11 +718,47 @@ def _event_body(queue: Queue, event_id: str) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+SETTLE_ERRORS = "settle_errors"   # queue meta: the last settle pass's failed checks
+
+
+def _owner_mailed_in_thread(st: Any, queue: Queue, item: Mapping[str, Any],
+                            addresses_of: Mapping[str, set]) -> bool:
+    """Whether the item's owner sent a mail in the item's conversation after its message.
+    First the queue's own ``sent`` rows (``note_sent``: each cycle notes the owners' own
+    captured mail by its conversation's digest), read on any store. Only a store with a
+    value word index (SQLite: replays and tests) is then searched for the conversation's
+    copies; on Postgres that search cannot run (no word index: ``Untranslatable``) and a
+    match by value reads for a minute a conversation (11-17 live), so ``sent`` is the
+    answer there. A lookup that fails raises: the caller counts it and the item stays
+    open (never settled on an error)."""
+    body = _event_body(queue, item["event_id"])
+    after = _instant(body.get("at"))
+    conv = body.get("conversation_id")
+    if not conv or after is None:
+        return False
+    if queue.conn.execute(
+            "SELECT 1 FROM sent WHERE owner = ? AND thread = ? AND at > ? LIMIT 1",
+            (item["owner"], _digest("thread", conv), _iso(after))).fetchone():
+        return True
+    mine = addresses_of.get(item["owner"], set())
+    if not mine or getattr(st, "pg", False):   # ``proactive_engine._Store.pg``
+        return False
+    from . import proactive_threads as pt
+    members = pt._members(st, {conv}, True).get(conv, [])
+    rows = _read(st, members, ("sender", "sent_at"))
+    return any((_addresses(_v(r, "sender")) or [""])[0] in mine
+               and (_instant(_v(r, "sent_at")) or after) > after for r in rows.values())
+
+
 def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
            now: datetime) -> Counter:
-    """Mark open items done from evidence (module doc)."""
-    from . import proactive_threads as pt
+    """Mark open items done from evidence (module doc). A check that fails leaves its item
+    open; the failures are counted per rule, written to the queue's meta
+    (``SETTLE_ERRORS``, the ``autopilot_settle_errors`` ops alarm reads it) and printed."""
     done: Counter = Counter()
+    errors: Counter = Counter()
+    last_error = ""
+    checked = 0
     directory, addresses_of, domains = _people_maps(people)
     stamp = _iso(now)
     for item in queue.items():
@@ -658,19 +766,11 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
         happened = item["body"].get("happened") or {}
         oid = happened.get("object_id")
         reason = None
+        checked += 1
         try:
             if rule == "owner_replied" and happened.get("channel") == "mail":
-                ev = queue.conn.execute("SELECT body FROM events WHERE event_id = ?",
-                                        (item["event_id"],)).fetchone()
-                body = json.loads(ev[0]) if ev else {}
-                conv, at = body.get("conversation_id"), body.get("at") or ""
-                mine = addresses_of.get(item["owner"], set())
-                if conv and mine:
-                    members = pt._members(st, {conv}, True).get(conv, [])
-                    rows = _read(st, members, ("sender", "sent_at"))
-                    if any((_addresses(_v(r, "sender")) or [""])[0] in mine
-                           and _v(r, "sent_at") > at for r in rows.values()):
-                        reason = "owner_replied"
+                if _owner_mailed_in_thread(st, queue, item, addresses_of):
+                    reason = "owner_replied"
             elif rule == "owner_replied" and happened.get("channel") == "teams":
                 # AUTOMATION-009: the owner's own message in the same chat or thread
                 # after this one (``note_sent``: the thread digest and time)
@@ -717,10 +817,21 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                 r = _read(st, [oid], ("quality_status",)).get(oid)
                 if r and _v(r, "quality_status") == "Released":
                     reason = "batch_released"
-        except sqlite3.Error:
+        except (sqlite3.Error, ValueError) as exc:
+            # the item stays open; the failure is counted, never silent
+            errors[f"{rule}:{happened.get('channel') or '-'}"] += 1
+            last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
             continue
         if reason:
             with queue.conn:
                 queue.settle_item(item["item_id"], "done", reason, stamp)
             done[reason] += 1
+    note = {"at": stamp, "checked": checked, "errors": sum(errors.values()),
+            "by_rule": dict(sorted(errors.items())), "last_error": last_error}
+    with queue.conn:
+        queue.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                           (SETTLE_ERRORS, json.dumps(note, sort_keys=True)))
+    if errors:
+        print(f"autopilot settle: {note['errors']} of {checked} open item checks failed "
+              f"(items stay open) {note['by_rule']}; last: {last_error}", file=sys.stderr)
     return done

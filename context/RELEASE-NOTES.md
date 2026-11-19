@@ -7,6 +7,22 @@ break the last one.
 Template:
 
 ```
+## v0.21 (2026-11-18)
+Changed:
+- Staff see business records company-wide and only their own mail, chats, OneDrive and calendar; people on the exclusion list are denied everywhere, and a check that cannot decide refuses.
+- The people exclusion is one precomputed set that mail, Teams and meetings all read, so Ask is never locked out while it updates.
+- Ask answers faster: a database read takes 16-21 ms instead of 360-600 ms, the first call under half a second, lighter default effort, one ready session per reader, whole-word streaming, memory kept per conversation.
+- Ask search no longer drops document and email hits or scans every chunk per call, results fit one response, and tables show copy statuses and source systems.
+- Account and order pages use one business search.
+- Alerts as rules over the business tables (off by default): they run after each refresh, resume after an update, show "unavailable since" for stale rules and have a permission-scoped page.
+- Simpler tabs: Home (Needs you, Alerts, Late POs), Ask, Records, Meetings, Autopilot, Team; Memory, Templates and Work log moved to the account menu.
+- Home no longer jams the server; Records search and Team drill-down are faster.
+- Business views build in streamed chunks and email and Teams tables build without whole-table rewrites, stopping cleanly when the disk runs low; purchase orders show a receipt note once per conflict.
+- Outside contacts get a contact record as mail arrives and their visibility follows their mail, with undo.
+- Teams chat listings read in guarded segments, and a cut listing is named and alarmed.
+- Backups stream each capture store as one snapshot with no large staging copy, carry every configuration file, keep four daily sets and alarm on partial, stale or failed runs.
+- Session files of other users are never replaced or removed.
+
 ## vX.Y (YYYY-MM-DD)
 Added:
 Changed:

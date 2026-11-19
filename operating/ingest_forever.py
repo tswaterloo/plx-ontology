@@ -470,6 +470,15 @@ def summarize_teams(report: Mapping[str, Any]) -> dict[str, Any]:
               "resumed": row.get("resumed_from") is not None,
               "reason": (_codes(row.get("reasons")) or [row.get("status")])[0]}
              for row in kept]
+    # A member's chat listing cut at the client's cap left chats undiscovered: one
+    # incomplete unit each (``cap:chat_listing_<why>``), so the source is partial with that
+    # reason in the host ledger, never a silent complete.
+    for part in (_last_run(report).get("discovery"), report.get("census")):
+        part = part if isinstance(part, Mapping) else {}
+        why = next((c for c in _codes(part.get("reasons"))
+                    if c.startswith("cap:chat_listing_")), "cap:chat_listing_page_cap")
+        units += [{"complete": False, "resumed": False, "reason": why}
+                  for _ in range(min(count(part.get("chat_listings_capped")) or 0, MAX_ITEMS))]
     return _units(units, report, excluded=len(rows) - len(kept))
 
 

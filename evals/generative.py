@@ -70,6 +70,9 @@ HOPS = {"single_hop": {1: 1.0}, "multi_hop": {3: 0.4, 4: 0.35, 5: 0.25},
         "cross_system": {1: 0.3, 2: 0.4, 3: 0.3}}
 MAX_LIST = 8
 MAX_TABLE = 90_000
+# A money sum over these orders' header totals is a sum of what they are worth
+# (``order_values``; the names are ``operating.order_value``'s TYPE and TOTAL).
+ORDER_TYPE, ORDER_TOTAL = "SalesOrder", "total_amount"
 MIN_SIBLINGS = 6
 OUTLIER = Decimal(3)
 # The identifier properties among ``gw.NAME_PROPS``: another way to name the same record in
@@ -290,6 +293,75 @@ def _hash(*parts: Any) -> str:
 
 def _cents(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"))
+
+
+def order_values(source: Any, orders: Sequence[str],
+                 header: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
+    """Sales order id -> its value as the product states it (``operating.order_value.judge``:
+    the header's own total when it states one that its lines do not contradict, else the
+    settled invoices of a closed order, else the priced lines of an open one, else no value
+    with its reason), read from ``source`` (``header``: the orders' rows, already read).
+
+    Why (dev 11-17): a sum of Sage ``SalesOrder.total_amount`` cells is not what the orders
+    are worth. Sage zeroes an order header's total once the order is invoiced (audit C-01:
+    73,472 of 75,189 headers read 0), so the stored sum counted only the few open orders:
+    checked on Postgres 11-17, all 40 cited orders of a 2026 USD question had a 0 header
+    and were each worth their invoice (684,520.64 USD between them) while the question's
+    truth (1,667,743.13) came from the handful of non-zero headers alone. The truth is
+    the same value the product's readers see, never the source cell's sum.
+
+    Links are the source's firm ones (``Records.step``); the product counts settled tiers
+    only (verified, reviewed): on 11-17 every served line and billing link is verified."""
+    from operating import order_value as ov
+    from operating import po_status
+    from operating import sales_order_status as so_status
+
+    orders = sorted(set(orders))
+
+    def props(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+        out: dict[str, list[Mapping[str, Any]]] = {}
+        for row in rows:
+            out.setdefault(row["property"], []).append(row)
+        return out
+
+    def code(row: Mapping[str, Any] | None) -> str | None:
+        text = str((row or {}).get("currency") or "").strip().upper()
+        return text or None
+
+    lines_of: dict[str, set[str]] = {o: set() for o in orders}
+    for order, line in source.step(orders, ov.LINE_OF, "in") if orders else ():
+        if order in lines_of:
+            lines_of[order].add(line)
+    invoices_of: dict[str, set[str]] = {o: set() for o in orders}
+    for link in ov.BILLS:
+        for order, invoice in source.step(orders, link, "in") if orders else ():
+            if order in invoices_of:
+                invoices_of[order].add(invoice)
+    invoices = sorted({i for got in invoices_of.values() for i in got})
+    billed: dict[str, set[str]] = {i: set() for i in invoices}
+    for link in ov.BILLS:
+        for invoice, order in source.step(invoices, link, "out") if invoices else ():
+            if invoice in billed:
+                billed[invoice].add(order)
+    lines = sorted({ln for got in lines_of.values() for ln in got})
+    line_rows = source.rows(lines) if lines else {}
+    invoice_rows = source.rows(invoices) if invoices else {}
+    out: dict[str, Any] = {}
+    for oid in orders:
+        head = props(header.get(oid) or ())
+        status = so_status.record_status(head, binding=po_status.binding_of(oid))
+        got_lines = [line_rows.get(ln) for ln in sorted(lines_of[oid])]
+        got_invoices = [(invoice_rows.get(i), billed[i] == {oid})
+                        for i in sorted(invoices_of[oid])]
+        out[oid] = ov.judge(
+            head, closed=status.cls == so_status.CLOSED,
+            # a line or invoice the source no longer lists: not known in full
+            lines=None if any(r is None for r in got_lines) else
+            [props(r) for r in got_lines],
+            invoices=None if any(r is None for r, _x in got_invoices) else
+            [(props(r), alone) for r, alone in got_invoices],
+            currency=code)
+    return out
 
 
 def _plural(noun: str, n: int = 2) -> str:
@@ -661,19 +733,35 @@ class Generator:
             currencies, where = {pick}, where + f" recorded in {pick}"
         if not scope:
             raise Dropped("empty")
-        amounts = [gw._decimal(rows[o]["value"]) for o in scope]
+        unit = currencies.pop()
+        marked = [rows[o] for o in scope]
+        rule = f"sum of {prop}"
+        if t == ORDER_TYPE and prop == ORDER_TOTAL:
+            # what the orders are worth (``order_values``), never the sum of header cells a
+            # source zeroes: every order valued in the asked currency, or no question
+            worth = order_values(self.source, scope, {o: table[o] for o in scope})
+            amounts = []
+            for o in scope:
+                got = worth[o]
+                if got.amount is None:
+                    raise Dropped(f"order_value_{got.reason}")
+                if unit and got.currency != unit:
+                    raise Dropped("order_value_currency")
+                amounts.append(got.amount)
+                marked += list(got.rows)
+            rule = f"sum of the orders' value ({prop} unless zeroed: operating.order_value)"
+        else:
+            amounts = [gw._decimal(rows[o]["value"]) for o in scope]
         if any(a is None for a in amounts):
             raise Dropped("amount_unreadable")
         total = _cents(sum(amounts, Decimal(0)))
         noun = gw.plural(gw.noun(t))
         q = f"What is the total {gw.words(prop)} of all {noun} in {gw.system_of(b)}{where}?"
-        unit = currencies.pop()
-        fact = self.fact("number", scope, [rows[o] for o in scope], id="total",
+        fact = self.fact("number", scope, marked, id="total",
                          value=str(total), label=[gw.words(prop), "total"],
                          **({"unit": unit} if unit else {}))
         return Question("money", q, [fact], f"{t}:{b}", where or noun,
-                        systems=[gw.system_of(b)], tags=["sum", "table"],
-                        rule=f"sum of {prop}")
+                        systems=[gw.system_of(b)], tags=["sum", "table"], rule=rule)
 
     def c_time_comparison(self, rng: random.Random, turn: int) -> Question:
         if rng.random() < 0.5:
@@ -877,9 +965,16 @@ class Generator:
         prop = gw.words(row["property"])
         q = (f"Why is {self.say(oid, label)} showing {prop} {value}? "
              f"What do its {gw.plural(noun)} say?")
+        # the linked records as said once the record is named: "its two status entries"
+        # for its "assembly order status entries" (dev 11-17: the answer said so and was
+        # graded as missing the count)
+        own = gw.noun(gw.object_type(oid))
+        short = noun[len(own):].strip() if noun.startswith(own + " ") else ""
+        if len(short.split()) < 2:
+            short = ""   # one word ("lines", "events") is too loose a label to read a figure by
+        labels = [gw.plural(noun), noun] + ([gw.plural(short), short] if short else [])
         facts = [self.fact("set", [oid], [row], id="status", members=[[value]]),
-                 self.fact("number", kids, id="linked", value=str(len(kids)),
-                           label=[gw.plural(noun), noun])]
+                 self.fact("number", kids, id="linked", value=str(len(kids)), label=labels)]
         return Question("why", q, facts, oid, label, hops=[hop.link.id],
                         systems=sorted({self.system(oid), self.system(kids[0])}),
                         tags=[row["property"]], rule="status and its linked records")

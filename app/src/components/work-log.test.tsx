@@ -21,7 +21,7 @@ describe("work log", () => {
     // a note left on a general page continues on that page (WEB-035), as the server's resume says
     expect(continueHref("record:page/team")).toBe("/team");
     expect(continueHref("record:page/late")).toBe("/late");
-    expect(continueHref("record:page/rd-projects")).toBe("/rd-projects");
+    expect(continueHref("record:page/meetings")).toBe("/meetings");
     expect(continueHref("record:page/ask/history")).toBe("/ask/history");
     // never a path that leaves the app or climbs out of it
     expect(continueHref("record:page//evil.example/x")).toBe("/evil.example/x"); // still a path in this app, never a host
@@ -44,7 +44,13 @@ describe("work log", () => {
     render(<ul><WorkLogRow e={sent({ verb: "prepared", loop: null })} /></ul>);
     const row = screen.getByTestId("work-log-row");
     expect(row).toHaveTextContent("Prepared (not sent): PO 90412 ship date");
-    expect(row).not.toHaveTextContent(/\bSent\b/);
+    expect(row).not.toHaveTextContent(/\bSent\b|Sent and done/);
+    expect(row).toHaveTextContent("Not sent");
+  });
+
+  it("a draft with no subject is never named \"Draft email\"", () => {
+    render(<ul><WorkLogRow e={sent({ verb: "prepared", loop: null, thread_name: "Draft email", title: "Draft email" } as Partial<WorkLogEvent>)} /></ul>);
+    expect(screen.getByTestId("work-log-row")).not.toHaveTextContent("Draft email");
   });
 
   it("someone else's line (the owner's view) offers no continue, pin or close", () => {

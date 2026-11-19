@@ -221,6 +221,12 @@ class Pool:
             conn.isolation_level = None
             conn.execute("RESET ALL")
             self._limits(conn)
+            # committed before the defaults, as a new connection's (``_new``): a configure
+            # that turns autocommit on (plx.sql's and the pages' pools) cannot inside the
+            # transaction RESET ALL opened, which discarded the connection after every
+            # borrow (a new connection per plx.sql call, 2026-11-18)
+            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                conn.commit()
             self._configure(conn)
             if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
                 conn.commit()

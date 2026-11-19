@@ -7,7 +7,8 @@ vi.mock("./auth", () => ({
   useAuth: () => ({ state: auth.state }),
   RequireAuth: ({ children }: { children: unknown }) => children,
 }));
-vi.mock("next/navigation", () => ({ usePathname: () => "/", useRouter: () => ({ push: () => undefined }) }));
+const nav = vi.hoisted(() => ({ path: "/" }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useRouter: () => ({ push: () => undefined }), useSearchParams: () => new URLSearchParams() }));
 
 const api = vi.hoisted(() => ({ ops: null as unknown, alarms: null as unknown, asked: 0 }));
 vi.mock("@/lib/api", async (orig) => ({
@@ -22,7 +23,7 @@ vi.mock("@/lib/api", async (orig) => ({
 import { readdirSync } from "node:fs";
 import { ApiError } from "@/lib/errors";
 import { join } from "node:path";
-import { AccessBanner, DevBanner, navFor, OpsAlarmBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
+import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, navFor, OpsAlarmBanner, pageSources, personNotice, SidebarNav, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -104,61 +105,76 @@ describe("page banners", () => {
   });
 });
 
-describe("ops status line", () => {
+describe("data as of: one quiet line, amber only for a source the page reads", () => {
   afterEach(() => {
+    nav.path = "/";
     auth.state = {};
-    api.ops = null;
+    api.alarms = null;
+    api.asked = 0;
   });
-  const breach = {
-    status: "breach",
-    checked_at: "2030-01-02T12:00:00Z",
-    breaches: ["delta_last_cycle", "truth_contradicted_share"],
-    checks: [
-      { name: "delta_last_cycle", value: 107, target: 15, unit: "min", state: "breach", detail: "" },
-      { name: "truth_contradicted_share", value: 0.75, target: 0.25, unit: "share", state: "breach", detail: "" },
-      { name: "capture:mail", value: 30, target: 360, unit: "min", state: "ok", detail: "" },
-    ],
-  };
+  const at = new Date().toISOString();
+  const src = (system: string, age: number, extra: Record<string, unknown> = {}) => ({ system, as_of: at, age_seconds: age, stale: false, capture: "complete", ...extra });
+  const home = (sources: unknown[]) => ({ freshness: { as_of: at, sources } }) as never;
 
-  it("names each missed target to an ops reader", async () => {
-    auth.state = me({ ops_reader: true });
-    api.ops = breach;
-    render(<OpsStatus />);
-    const line = await screen.findByTestId("ops-status");
-    expect(line).toHaveTextContent("2 ops targets missed");
-    expect(line).toHaveTextContent("Last update cycle, Alerts contradicted");
-    expect(line).not.toHaveTextContent("Capture");
+  it("says only the time while every source the page reads is within the hour", () => {
+    render(<DataAsOf home={home([src("Email", 600), src("BC", 1200)])} />);
+    const line = screen.getByTestId("home-freshness");
+    expect(line.textContent).toMatch(/^Data as of \d/);
+    expect(line).not.toHaveAttribute("data-behind");
+    expect(line.textContent).not.toMatch(/behind|ops|missed|not updating/i);
   });
 
-  it("names a capture by its system and says long delays in hours or days", async () => {
-    auth.state = me({ ops_reader: true });
-    api.ops = {
-      ...breach,
-      breaches: ["capture:sharepoint_lists", "delta_last_cycle"],
-      checks: [
-        { name: "capture:sharepoint_lists", value: 12865.4, target: 160, unit: "min", state: "breach", detail: "" },
-        { name: "delta_last_cycle", value: 2877.6, target: 15, unit: "min", state: "breach", detail: "" },
-      ],
-    };
-    render(<OpsStatus />);
-    const line = await screen.findByTestId("ops-status");
-    expect(line).toHaveTextContent("SharePoint lists capture, Last update cycle");
-    expect(line).not.toHaveTextContent("sharepoint_lists");
-    await userEvent.click(line);
-    const detail = await screen.findByTestId("ops-detail");
-    expect(detail).toHaveTextContent("9 days (target 3 h)");
-    expect(detail).toHaveTextContent("2 days (target 15 min)");
-    expect(detail).not.toHaveTextContent("12865");
+  it("names a source the page reads that is more than an hour behind, and only that one", () => {
+    nav.path = "/";
+    render(<DataAsOf home={home([src("Email", 3 * 3600), src("File", 9 * 3600), src("BC", 60)])} />);
+    const line = screen.getByTestId("home-freshness");
+    expect(line).toHaveAttribute("data-behind");
+    // Home reads mail, not SharePoint files: Files is not named on Home
+    expect(line.textContent).toMatch(/· Mail behind$/);
   });
 
-  it("says nothing to other readers, or when every target holds", async () => {
-    auth.state = me({});
-    api.ops = breach;
-    render(<OpsStatus />);
+  it("stays quiet on a page that reads none of the late sources", () => {
+    nav.path = "/templates";
+    render(<DataAsOf home={home([src("Email", 30 * 3600, { capture: "failed" })])} />);
+    expect(screen.getByTestId("home-freshness")).not.toHaveAttribute("data-behind");
+    expect(pageSources("/templates")).toEqual([]);
+    expect(pageSources("/po/106093")).toContain("BC");
+    expect(pageSources("/poland")).toEqual([]);
+  });
+
+  it("a failed or never-run capture is behind whatever its age; nothing before the data's time is known", () => {
+    nav.path = "/"; // Home and its Late POs tab read Business Central
+    const { unmount } = render(<DataAsOf home={home([src("BC", 10, { capture: "failed" })])} />);
+    expect(screen.getByTestId("home-freshness").textContent).toMatch(/Business Central behind$/);
+    unmount();
+    render(<DataAsOf home={null} />);
+    expect(screen.queryByTestId("home-freshness")).toBeNull();
+  });
+
+  it("puts the reliability banner on the Admin screens only, never on a person's page", async () => {
     auth.state = me({ ops_reader: true });
-    api.ops = { ...breach, status: "ok", breaches: [], checks: [] };
-    render(<OpsStatus />);
-    await waitFor(() => expect(screen.queryByTestId("ops-status")).toBeNull());
+    api.alarms = { configured: true, running: true, checked_at: at, open: [{ key: "capture_failing:sharepoint", line: "", opened_at: at }], recovered: [], checks: [] };
+    nav.path = "/";
+    const { unmount } = render(<AdminAlarm />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
+    unmount();
+    nav.path = "/ops";
+    render(<AdminAlarm />);
+    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("SharePoint files are not updating");
+  });
+
+  it("marks the Admin item with a dot for an ops reader when a problem is open; nothing asked for anyone else", async () => {
+    api.alarms = { configured: true, running: true, checked_at: at, open: [{ key: "delta_last_cycle", line: "", opened_at: at }], recovered: [], checks: [] };
+    const { unmount } = render(<SidebarNav me={{ principal: "p", ops_reader: true } as never} late={null} />);
+    expect(await screen.findByTestId("admin-dot")).toBeInTheDocument();
+    expect(screen.queryByText(/ops targets? missed/)).toBeNull();
+    unmount();
+    api.asked = 0;
+    render(<SidebarNav me={{ principal: "q" } as never} late={null} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId("admin-dot")).toBeNull();
+    expect(api.asked).toBe(0);
   });
 });
 
@@ -179,74 +195,75 @@ describe("reliability banner on every page", () => {
     recovered: [],
     checks: [],
   };
+  const check = (name: string, value: number, unit = "h") => ({ name, value, target: 5, unit, state: "breach", detail: "", line: "" });
+  const internals = [
+    { key: "unit:plx-ingest.service", line: "plx-ingest.service (system): killed: out of memory", opened_at: "2030-01-02T16:40:00Z" },
+    { key: "delta_apply_cost", line: "Data refresh apply cost 7.9 then 40.2 ms", opened_at: "2030-01-02T16:40:00Z" },
+    { key: "pg_connections", line: "Postgres 91% of connections", opened_at: "2030-01-02T16:40:00Z" },
+  ];
 
-  it("shows an ops reader every open problem in red, linked to /ops", async () => {
+  it("says in one plain line only what changes what the person sees, linked to Admin", async () => {
     auth.state = me({ ops_reader: true });
-    api.alarms = alarms;
+    api.alarms = {
+      ...alarms,
+      open: [...internals, ...alarms.open, { key: "capture_newest:mail", line: "mail: newest 9:10 AM ET (2.2 h ago; target 1 h)", opened_at: "2030-01-02T16:40:00Z" }],
+      checks: [check("capture_newest:mail", 2.2)],
+    };
     render(<OpsAlarmBanner />);
     const banner = await screen.findByTestId("ops-alarm-banner");
     expect(banner).toHaveAttribute("role", "alert");
-    expect(banner).toHaveTextContent("2 reliability problems");
-    expect(banner).toHaveTextContent("killed: out of memory");
     expect(banner).toHaveAttribute("href", "/ops");
-    // one calm line: no second row, nothing that blinks or pulses
+    expect(banner.textContent).toBe("Mail is 2 hours behind. Records may be out of date. Alerts show the last check's findings; new ones follow when the check runs again.");
+    // no unit names, numbers of milliseconds, internal keys or counts of "problems", in the line or its tooltip
+    const all = `${banner.textContent} ${banner.getAttribute("title")}`;
+    expect(all).not.toMatch(/plx-|\.service|\.timer|ms\b|Postgres|target|reliability problem|_/);
     expect(banner.querySelectorAll(".block")).toHaveLength(0);
     expect(banner.outerHTML).not.toMatch(/animate-|rounded-full/);
   });
 
-  it("keeps the count, each problem's headline and the failed-poll notice in view of one line", async () => {
+  it("shows nothing for problems only the Admin page needs, nor when the checks or the poll fail", async () => {
     auth.state = me({ ops_reader: true });
-    const long = (n: number) => ({ key: `k${n}`, line: `mail capture last refreshed ${n} days ago (target 5 h); stale since Nov 10; last error child_timeout`, opened_at: "2030-01-02T16:40:00Z" });
-    api.alarms = { ...alarms, open: [long(1), long(2), long(3), long(4)] };
-    render(<OpsAlarmBanner every={30} />);
-    const banner = await screen.findByTestId("ops-alarm-banner");
-    expect(banner.textContent).toMatch(/^4 reliability problems: mail capture last refreshed 1 days ago \(target 5 h\) · /);
-    expect(banner).toHaveTextContent("· mail capture last refreshed 4 days ago (target 5 h)");
-    expect(banner).not.toHaveTextContent(/\d+ more/);
-    expect(banner).not.toHaveTextContent("child_timeout");
-    // the detail is not lost: every line in full in the tooltip
-    expect(banner.getAttribute("title")).toContain("4 days ago (target 5 h); stale since Nov 10; last error child_timeout");
-    api.alarms = new Error("network");
-    await waitFor(() => expect(screen.getByTestId("ops-alarm-banner").textContent).toMatch(/^Monitoring unavailable/));
-  });
-
-  it("says when the checks themselves stopped", async () => {
-    auth.state = me({ ops_reader: true });
-    api.alarms = { ...alarms, running: false, open: [] };
-    render(<OpsAlarmBanner />);
-    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Reliability checks are not running");
-  });
-
-  it("keeps the last alarms on screen and says monitoring is unavailable when the next poll fails", async () => {
-    auth.state = me({ ops_reader: true });
-    api.alarms = alarms;
-    render(<OpsAlarmBanner every={30} />);
-    const banner = await screen.findByTestId("ops-alarm-banner");
-    expect(banner).toHaveTextContent("2 reliability problems");
-    expect(banner).not.toHaveTextContent("Monitoring unavailable");
-    api.alarms = new Error("network");
-    await waitFor(() => expect(screen.getByTestId("ops-alarm-banner")).toHaveTextContent("Monitoring unavailable"));
-    expect(screen.getByTestId("ops-alarm-banner")).toHaveTextContent("killed: out of memory");
-    // a good poll clears the warning
-    api.alarms = alarms;
-    await waitFor(() => expect(screen.getByTestId("ops-alarm-banner")).not.toHaveTextContent("Monitoring unavailable"));
-  });
-
-  it("says monitoring is unavailable when the very first poll fails", async () => {
-    auth.state = me({ ops_reader: true });
-    api.alarms = new Error("network");
-    render(<OpsAlarmBanner />);
-    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Monitoring unavailable");
-  });
-
-  it("an all-clear banner that loses its poll no longer looks like normal operation", async () => {
-    auth.state = me({ ops_reader: true });
-    api.alarms = { ...alarms, open: [] };
+    api.alarms = { ...alarms, open: internals };
     render(<OpsAlarmBanner every={30} />);
     await waitFor(() => expect(api.asked).toBeGreaterThan(0));
-    expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
+    api.alarms = { ...alarms, open: [], running: false };
+    await waitFor(() => expect(api.asked).toBeGreaterThan(1));
     api.alarms = new Error("network");
-    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Monitoring unavailable");
+    await waitFor(() => expect(api.asked).toBeGreaterThan(2));
+    expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
+  });
+
+  it("names several behind sources in one sentence and says when one has stopped", async () => {
+    const at = "2030-01-02T16:40:00Z";
+    expect(personNotice({ ...alarms, open: [{ key: "capture_failing:teams", line: "", opened_at: at }] } as never)?.text).toBe("Teams messages are not updating.");
+    expect(personNotice({
+      ...alarms,
+      open: ["mail", "teams", "bc"].map((s) => ({ key: `served_lag:${s}`, line: "", opened_at: at })),
+      checks: [check("served_lag:mail", 0.5)],
+    } as never)?.text).toBe("Mail, Teams messages and Business Central records are behind.");
+    expect(personNotice({ ...alarms, open: [{ key: "capture:portal", line: "", opened_at: at }], checks: [check("capture:portal", 3 * 24 * 60, "min")] } as never)?.text)
+      .toBe("Customer Portal records are 3 days behind.");
+  });
+
+  it("alerts or search catching up is a calm line; a source behind stays the red one", async () => {
+    const at = "2030-01-02T16:40:00Z";
+    const mending = personNotice({ ...alarms, open: [{ key: "proactive_last_pass", line: "", opened_at: at }, { key: "search_follow_lag", line: "", opened_at: at }] } as never);
+    expect(mending).toEqual({ text: "Alerts show the last check's findings; new ones follow when the check runs again. Search may not find the newest items yet; it catches up on its own.", calm: true });
+    expect(personNotice({ ...alarms, open: [{ key: "proactive_last_pass", line: "", opened_at: at }, { key: "capture_failing:teams", line: "", opened_at: at }] } as never)?.calm).toBe(false);
+    expect(personNotice({ ...alarms, open: [{ key: "delta_last_cycle", line: "", opened_at: at }] } as never)?.calm).toBe(false);
+  });
+
+  it("planned maintenance is one calm line; an overrun says so plainly", async () => {
+    auth.state = me({ ops_reader: true });
+    api.alarms = { ...alarms, open: [], maintenance: { state: "in_window", reason: "Postgres migration train 4", until: "2030-01-02T19:30:00Z" } };
+    render(<OpsAlarmBanner />);
+    const banner = await screen.findByTestId("ops-alarm-banner");
+    expect(banner).toHaveAttribute("role", "status");
+    expect(banner.textContent).toMatch(/^Planned maintenance until .*2:30 PM ET: alerts and updates are paused\.$/);
+    expect(banner).not.toHaveTextContent("Postgres");
+    expect(banner.querySelector("svg")).toBeNull();
+    expect(personNotice({ ...alarms, open: [], maintenance: { state: "overrun", until: "2030-01-02T19:30:00Z" } } as never)?.text)
+      .toBe("Maintenance is taking longer than planned.");
   });
 
   it("is never asked for by other readers and says nothing when all is well or refused", async () => {
@@ -265,7 +282,7 @@ describe("reliability banner on every page", () => {
     expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
   });
 
-  it("a refused poll (403) says nothing and is not asked again; only a failed read says unavailable", async () => {
+  it("a refused poll (403) says nothing and is not asked again", async () => {
     auth.state = me({ ops_reader: true });
     api.alarms = new ApiError(403, "forbidden");
     render(<OpsAlarmBanner every={20} />);

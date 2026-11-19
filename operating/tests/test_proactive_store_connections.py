@@ -35,6 +35,8 @@ class ThreadConnectionsTest(unittest.TestCase):
             # the helper threads and the idle part connections close() reads)
             store._conn_thread, store._helpers, store._parts = {}, [], []
             store.interrupt, store.path, store.file_only = None, Path(d), False
+            # and what close() lets go of (the run's reads)
+            store.link_rows, store._pass, store._memo, store._making = pe._LinkRows(), None, {}, {}
 
             def read():
                 self.assertIs(store.conn, store.conn)   # one per thread, reused
@@ -51,6 +53,32 @@ class ThreadConnectionsTest(unittest.TestCase):
             self.assertFalse(main.closed)
             store.close()
             self.assertTrue(main.closed)
+
+
+class RunLetsGoTest(unittest.TestCase):
+    """A run's store and all it read are freed when the run ends. The run thread's
+    connection finalizer held the store's bound ``_release``, so every store whose run
+    thread lived on (the main thread) was kept with its populations and links: each rule
+    group of a whole pass added its reads to the process (11-17: the whole pass grew to
+    14.5 GB and was OOM-killed, the incremental pass at its 12 GB cap)."""
+
+    def test_no_store_outlives_its_run_and_a_closed_store_holds_no_reads(self):
+        from operating.tests.test_proactive_engine import AS_OF, World, people, seeded
+
+        with tempfile.TemporaryDirectory() as d:
+            w, _ids = seeded(World())
+            path = w.build(Path(d) / "store.sqlite")
+            for n in (1, 2, 3):
+                pe.run(path, pe.inbox_path(path), AS_OF, people=people(), threads=4)
+                gc.collect()
+                live = [o for o in gc.get_objects() if isinstance(o, pe._Store)]
+                self.assertEqual(live, [], f"after run {n}")
+            st = pe._Store(path)
+            st.memo("held", lambda: list(range(10)))
+            st.links(["PurchaseOrderLine.line_of"])
+            self.assertTrue(st._memo and st.link_rows.by_type)
+            st.close()
+            self.assertEqual((st._memo, st.link_rows.by_type), ({}, {}))
 
 
 if __name__ == "__main__":

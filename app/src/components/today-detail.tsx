@@ -17,6 +17,7 @@ import { AlertFired } from "./alert-fired";
 import { ActionDialog } from "./card-actions";
 import { SourceChip } from "./source-chip";
 import { lateFigure, DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
+import { RECORD_LIMIT_MS } from "./ui/skeleton";
 
 export interface QueueRow {
   key: string;
@@ -366,9 +367,13 @@ export function TodayDetail({
     const c = new AbortController();
     setPage(null);
     setFailed(false);
+    // no wait without an end: past the record limit the pane says it didn't load (a later answer still shows)
+    const limit = setTimeout(() => !c.signal.aborted && setFailed(true), RECORD_LIMIT_MS);
     getObject(row.type, row.objectId, c.signal, true)
       .then((p) => {
         if (c.signal.aborted) return;
+        clearTimeout(limit);
+        setFailed(false);
         // the briefing already read this PO's trail: shown at once, then the page's own
         const withTrail = !p.trail && row.item?.trail ? ({ ...p, trail: row.item.trail } as ObjectPage) : p;
         setPage(withTrail);
@@ -379,7 +384,10 @@ export function TodayDetail({
             .catch(() => undefined);
       })
       .catch(() => !c.signal.aborted && setFailed(true));
-    return () => c.abort();
+    return () => {
+      clearTimeout(limit);
+      c.abort();
+    };
   }, [row.type, row.objectId, row.item?.trail]);
 
   const head = page ? recordHead(page) : null;
@@ -551,7 +559,7 @@ export function TodayDetail({
                     </Property>
                   ))}
                 </dl>
-              ) : (
+              ) : failed ? null : (
                 <div className="space-y-3 pt-1">
                   {[0, 1, 2, 3].map((i) => (
                     <div key={i} className="skeleton h-3.5" style={{ width: `${70 - i * 9}%` }} />

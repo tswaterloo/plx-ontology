@@ -196,6 +196,18 @@ export function TeamDashboard({ data }: { data: TeamView }) {
 
   // time saved is only ever filled for rows the reader may see a figure for
   const savedShown = people.some((p) => thisWeek(p)?.saved_minutes != null);
+  // the other columns too: one nobody has a figure in is left out
+  const has = {
+    week: people.some((p) => (thisWeek(p)?.done ?? 0) > 0),
+    awaiting_reply: people.some((p) => p.awaiting_reply > 0),
+    tasks: people.some((p) => p.tasks > 0),
+    alerts: people.some((p) => p.alerts > 0),
+    reply: people.some((p) => replyOf(p, period) != null),
+    trend: people.some((p) => (p.trend ?? []).some((n) => n > 0)),
+    hours: people.some((p) => !!busiest(p.hours)),
+  };
+  const openSpan = [has.awaiting_reply, has.tasks, has.alerts].filter(Boolean).length;
+  const tailSpan = [has.reply, has.trend, has.hours].filter(Boolean).length;
 
   const sum = (f: (p: TeamPerson) => number) => rows.reduce((s, p) => s + f(p), 0);
   const replies = rows.map((p) => replyOf(p, period)).filter((n): n is number => n != null).sort((a, b) => a - b);
@@ -221,6 +233,9 @@ export function TeamDashboard({ data }: { data: TeamView }) {
 
   return (
     <div className="space-y-3" data-testid="team-dashboard">
+      <p className="max-w-[80ch] text-[13px] leading-5 text-muted" data-testid="team-intro">
+        Who is busy and what is waiting on whom: what each person sent and did over the period, and the replies and tasks still open with them. Open a name to see their week.
+      </p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div role="radiogroup" aria-label="Period" className="flex h-7 overflow-hidden rounded-md border border-control text-[12px] max-sm:h-10">
           {([7, 28] as Period[]).map((p) => (
@@ -263,27 +278,27 @@ export function TeamDashboard({ data }: { data: TeamView }) {
           <thead className="sticky top-0 z-10 bg-bg text-left text-[11.5px] text-muted">
             <tr className="text-[11px] uppercase tracking-[0.04em] text-faint">
               {/* person, team (when any is on record), all, this week and saved (when shown) */}
-              <th colSpan={(teams.length > 0 ? 3 : 2) + 1 + (savedShown ? 1 : 0)} />
+              <th colSpan={(teams.length > 0 ? 2 : 1) + (has.week ? 1 : 0) + 1 + (savedShown ? 1 : 0)} />
               {groups.map((g) => (
                 <th key={g.system} colSpan={g.span} scope="colgroup" className="whitespace-nowrap border-b-2 px-2 pt-1 text-center font-normal"
                   style={{ borderColor: GROUPS[g.system].tone }}>{GROUPS[g.system].label}</th>
               ))}
-              <th colSpan={3} scope="colgroup" className="whitespace-nowrap border-b-2 border-dot-risk px-2 pt-1 text-center font-normal">Open</th>
-              <th colSpan={3} />
+              {openSpan > 0 && <th colSpan={openSpan} scope="colgroup" className="whitespace-nowrap border-b-2 border-dot-risk px-2 pt-1 text-center font-normal">Open</th>}
+              {tailSpan > 0 && <th colSpan={tailSpan} />}
             </tr>
             <tr className="border-b border-border">
               {head("name", "Person", "Name", "min-w-[150px]")}
               {teams.length > 0 && head("team", "Team", "Team, from the owner's assignment, the directory or the role the work shows")}
               {head("total", "All", "Everything they did in the period except mail received", "text-right")}
-              {head("week", "Week", "Work done this week so far (Monday on): everything but mail received", "text-right")}
+              {has.week && head("week", "Week", "Work done this week so far (Monday on): everything but mail received", "text-right")}
               {savedShown && head("saved", "Saved", "Time the Workbench saved them this week (the work log's estimate)", "text-right")}
               {shown.map((c) => head(c.key, c.head, c.title, cn("text-right", system === c.system && "text-fg")))}
-              {head("awaiting_reply", "Reply", "Threads awaiting their reply", "text-right")}
-              {head("tasks", "Tasks", "Open tasks", "text-right")}
-              {head("alerts", "Alerts", "Other open alerts", "text-right")}
-              {head("reply", "Median", "Median time to reply to a message addressed to them", "text-right")}
-              <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Everything they did per day, last 28 days">28-day trend</th>
-              <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>
+              {has.awaiting_reply && head("awaiting_reply", "Reply", "Threads awaiting their reply", "text-right")}
+              {has.tasks && head("tasks", "Tasks", "Open tasks", "text-right")}
+              {has.alerts && head("alerts", "Alerts", "Other open alerts", "text-right")}
+              {has.reply && head("reply", "Median", "Median time to reply to a message addressed to them", "text-right")}
+              {has.trend && <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Everything they did per day, last 28 days">28-day trend</th>}
+              {has.hours && <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>}
             </tr>
           </thead>
           <tbody>
@@ -301,22 +316,22 @@ export function TeamDashboard({ data }: { data: TeamView }) {
                   </td>
                   {teams.length > 0 && <td className="whitespace-nowrap px-2 py-1.5 text-muted">{p.team ?? <span className="text-faint">·</span>}</td>}
                   <td className="px-2 py-1.5 text-right"><Figure n={total(p, period)} strong /></td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-right" data-testid="team-week"
+                  {has.week && <td className="whitespace-nowrap px-2 py-1.5 text-right" data-testid="team-week"
                     title={lastWeek(p) ? `Last week: ${lastWeek(p)!.done.toLocaleString("en-US")}` : undefined}>
                     <Figure n={thisWeek(p)?.done} />
-                  </td>
+                  </td>}
                   {savedShown && <td className="whitespace-nowrap px-2 py-1.5 text-right num">{thisWeek(p)?.saved_minutes ? minutes(thisWeek(p)!.saved_minutes) : <span className="text-faint">·</span>}</td>}
                   {shown.map((ch) => (
                     <td key={ch.key} className={cn("px-2 py-1.5 text-right", system === ch.system && "bg-accent-soft/40")}><Figure n={c[ch.key]} /></td>
                   ))}
-                  <td className="px-2 py-1.5 text-right">{p.awaiting_reply ? <span className="num font-medium text-risk">{p.awaiting_reply}</span> : <Figure n={0} />}</td>
-                  <td className="px-2 py-1.5 text-right"><Figure n={p.tasks} /></td>
-                  <td className="px-2 py-1.5 text-right"><Figure n={p.alerts} /></td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-right num">{minutes(replyOf(p, period)) || <span className="text-faint">·</span>}</td>
-                  <td className="px-2 py-1.5"><Spark values={p.trend ?? []} /></td>
-                  <td className="whitespace-nowrap px-2 py-1.5" title={busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : undefined}>
+                  {has.awaiting_reply && <td className="px-2 py-1.5 text-right">{p.awaiting_reply ? <span className="num font-medium text-risk">{p.awaiting_reply}</span> : <Figure n={0} />}</td>}
+                  {has.tasks && <td className="px-2 py-1.5 text-right"><Figure n={p.tasks} /></td>}
+                  {has.alerts && <td className="px-2 py-1.5 text-right"><Figure n={p.alerts} /></td>}
+                  {has.reply && <td className="whitespace-nowrap px-2 py-1.5 text-right num">{minutes(replyOf(p, period)) || <span className="text-faint">·</span>}</td>}
+                  {has.trend && <td className="px-2 py-1.5"><Spark values={p.trend ?? []} /></td>}
+                  {has.hours && <td className="whitespace-nowrap px-2 py-1.5" title={busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : undefined}>
                     <span className="inline-flex flex-col items-start gap-0.5"><Hours hours={p.hours} /><span className="num text-[11px] leading-3 text-muted">{busiest(p.hours)}</span></span>
-                  </td>
+                  </td>}
                 </tr>
               );
             })}

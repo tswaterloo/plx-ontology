@@ -1,4 +1,4 @@
-import { getAutopilot, getMyWork, getOpsAlarms, getRdBoard, getTrust } from "./api";
+import { getAutopilot, getMyWork, getOpsAlarms, getTrust } from "./api";
 import { readAhead } from "./use-read";
 
 // A page's main read by its link, so hovering or focusing the link reads it ahead: the page
@@ -9,7 +9,6 @@ const READS: Record<string, [string, (signal: AbortSignal) => Promise<unknown>]>
   "/autopilot": ["autopilot", (s) => getAutopilot(s)],
   "/ops": ["ops", (s) => getOpsAlarms(s)],
   "/trust": ["trust", (s) => getTrust(s)],
-  "/rd-projects": ["rd-projects", (s) => getRdBoard(s)],
 };
 
 /** Read the page at `href` ahead, when it has a main read to read. */

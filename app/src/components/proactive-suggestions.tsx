@@ -289,7 +289,7 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
               </button>
             )}
             {data.more > 0 && (
-              <Link href="/watching" className="text-muted hover:text-fg">
+              <Link href="/?show=alerts" className="text-muted hover:text-fg">
                 {plural(data.more, "more record")} in the briefing
               </Link>
             )}

@@ -526,6 +526,46 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
             {"public.app_sales_order": ["staff:operations"]}, tenant="plx")
         self.assertIn("object", call("plx.object", {"object_id": self.fixture.SO}))
 
+    def test_a_session_decides_its_policy_again_only_when_its_inputs_change(self):
+        """A session's calls read the policy kept while what it is decided from is
+        unchanged (``operating.kept_policy``: one decision, not one per call); a grant
+        revoked applies to the next call; a policy holding a transient answer is never
+        kept."""
+        import sqlite3
+
+        from operating.mcp_server_results import META_RESERVE_BYTES
+        from operating.ontology_host import CaseHostTools
+        path = Path(self.temp.name) / "kept.sqlite"
+        target = sqlite3.connect(path)
+        self.store.conn.backup(target)
+        target.close()
+        actor = Actor("plx", frozenset({"staff:operations"}))
+        host = CaseHostTools(self.runtime, actor, store_path=path, schema=self.fixture.SCHEMA,
+                             grammar=self.fixture.FixtureGrammar(),
+                             reserve_bytes=META_RESERVE_BYTES)
+        host.tools.clock = lambda: self.fixture.NOW
+        call = local_client(MCPServer(case_runtime=self.runtime, actor=actor, ontology=host),
+                            "kept")
+        so = {"object_id": self.fixture.SO}
+        with mock.patch.object(host, "policy_now", wraps=host.policy_now) as decided:
+            for _ in range(3):
+                self.assertEqual(call("plx.object", so)["object"]["object_id"],
+                                 self.fixture.SO)
+            self.assertEqual(decided.call_count, 1)
+            self.runtime.mirror.set_audience_map(
+                {"public.app_purchase_order": ["staff:purchasing"]}, tenant="plx")
+            self.assertEqual(call("plx.object", so)["error"]["code"], "object_not_found")
+            self.assertEqual(decided.call_count, 2)
+            self.runtime.mirror.set_audience_map(
+                {"public.app_sales_order": ["staff:operations"]}, tenant="plx")
+            self.assertIn("object", call("plx.object", so))
+            self.assertEqual(decided.call_count, 3)
+            with mock.patch.object(host, "policy_settled", lambda actor: False):
+                host.kept_policies.clear()
+                for n in (4, 5):
+                    self.assertIn("object", call("plx.object", so))
+                    self.assertEqual(decided.call_count, n)
+
     def test_a_set_with_missing_and_revoked_objects_reports_both_gaps(self):
         # Review wh-2 (minor 5): only not_in_projection was reported, and the revoked
         # count told the reader how many objects a revocation hid.
@@ -817,6 +857,62 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         finally:
             conn.rollback()
             conn.close()
+
+    def test_teams_memberships_kept_between_calls_follow_every_change(self):
+        """The Teams memberships' digests are kept between calls (``_TeamsAcl``) and read
+        again on any commit to the store, a store file replaced, or a membership crossing
+        the serving bound: each call's digests are what reading the store then gives."""
+        import hashlib
+        from datetime import datetime as real_datetime, timedelta, timezone as tz
+        from integrations import capture_store, capture_teams
+        folder = Path(self.runtime.state_dir) / capture_teams.STORE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        database = folder / capture_teams.DB_FILE
+        start = real_datetime.now(tz.utc)
+        fresh = (start - timedelta(hours=1)).isoformat()
+        old = (start - capture_store.UNIT_ACL_MAX_AGE + timedelta(hours=2)).isoformat()
+
+        def make(path, rows):
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE unit_acl (kind TEXT, unit TEXT, acl TEXT, "
+                         "recorded_at TEXT)")
+            conn.executemany("INSERT INTO unit_acl VALUES (?, ?, ?, ?)", rows)
+            conn.commit()
+            return conn
+
+        def digest(acl, fresh=True):
+            return hashlib.sha256((acl if fresh else "stale:" + acl).encode()).hexdigest()
+        clock = {"now": start}
+
+        class Clock(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock["now"]
+
+        def units():
+            with mock.patch.object(mcp_server, "datetime", Clock):
+                reads = mcp_server._permission_reads(self.runtime, None)
+            reads.close()
+            return {key[2]: value for key, value in reads.units.items()}
+        conn = make(database, [("teams-chat", "c1", '["a"]', fresh),
+                               ("teams-chat", "c2", '["b"]', old)])
+        try:
+            first = units()
+            self.assertEqual(first, {"c1": digest('["a"]'), "c2": digest('["b"]')})
+            self.assertEqual(units(), first)
+            conn.execute("UPDATE unit_acl SET acl = '[\"a\", \"x\"]' WHERE unit = 'c1'")
+            conn.commit()   # another connection's commit: read again, c1 alone moves
+            self.assertEqual(units(), {"c1": digest('["a", "x"]'), "c2": digest('["b"]')})
+            # three hours on, nothing committed: c2's membership is past the bound
+            clock["now"] = start + timedelta(hours=3)
+            self.assertEqual(units(), {"c1": digest('["a", "x"]'),
+                                       "c2": digest('["b"]', fresh=False)})
+        finally:
+            conn.close()
+        # the store replaced by a new file (as a rebuild does): opened and read again
+        make(folder / "replacement.db", [("teams-chat", "c3", '["c"]', fresh)]).close()
+        os.replace(folder / "replacement.db", database)
+        self.assertEqual(units(), {"c3": digest('["c"]')})
 
     def test_a_record_read_stays_citable_when_the_permission_read_fails_at_the_gate(self):
         """F29 gen 7 (sage_order_shipped, no_such_po and 26 other dev items): the item

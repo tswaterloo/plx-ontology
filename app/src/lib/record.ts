@@ -3,7 +3,7 @@
 // lists (messages by thread, activity by month, related by type). Display only: nothing
 // is recomputed that the server did not state; an unknown value is left out, never guessed.
 
-import { currencyCode, decodeEscapes, formatDate, formatMoney, plainWords, plural, readable, recordLabel, typeLabel } from "./format";
+import { currencyCode, decodeEscapes, formatDate, formatMoney, plainWords, plural, readable, recordLabel, SYSTEM_LABEL, typeLabel } from "./format";
 import { etaShown as etaHeadline } from "./eta";
 import { lateness, recordState, type Shown, type Status } from "./status";
 import type { Fact, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
@@ -225,7 +225,7 @@ function usefulSummary(obj: ObjectPage, counterpart?: string): string | null {
 
 /** The status sentence when it says something; "not established" says nothing. */
 function fallbackLead(obj: ObjectPage): string | null {
-  if (!obj.status || /not_established|not_applicable|^read$/i.test(obj.status.state)) return null;
+  if (!obj.status || /not_established|not_applicable|^read$|^reading$/i.test(obj.status.state)) return null;
   return readable(obj.status.text);
 }
 
@@ -287,7 +287,18 @@ function customerHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   const limit = get(f, "credit_limit");
   const open = c?.open_orders;
   const legal = (obj.conflicts ?? []).find((x) => x.field === "name")?.values.find((v) => v.trusted)?.value;
-  const codes = [get(f, "code"), get(f, "erp_code")].filter((v, i, a) => v && a.indexOf(v) === i);
+  // the account codes, each named by the system that holds it ("Customer Portal code KH ·
+  // account no. AQUIS12"), never a bare row of codes beside the name (owner walk 11-17 C4)
+  const sys = (key: string) => {
+    const s = srcOf(f, key)?.system;
+    return s ? (SYSTEM_LABEL as Record<string, string>)[s] ?? s : null;
+  };
+  const code = get(f, "code");
+  const erp = get(f, "erp_code");
+  const codes = [
+    code ? `${sys("code") ? `${sys("code")} code` : "Code"} ${code}` : null,
+    erp && erp !== code ? `${sys("erp_code") === SYSTEM_LABEL.BC ? "Business Central no." : "Account no."} ${erp}` : null,
+  ];
   const lead = [
     blocked ? "Blocked in Business Central." : null,
     balance !== undefined ? (isZero(balance) ? "No balance owing." : `Balance ${moneyText(balance, currency)} owing.`) : null,
@@ -306,11 +317,12 @@ function customerHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   const curConflict = (obj.conflicts ?? []).some((x) => /currency/i.test(x.field));
   return {
     title: obj.label,
-    subline: [legal && legal !== obj.label ? legal : null, ...codes].filter(Boolean).join(" · ") || null,
+    subline: codes.filter(Boolean).join(" · ") || null,
     lead: lead || null,
     badges: blocked ? [{ status: "late", label: "Blocked" }] : [],
     stats: stats.slice(0, 4),
     keyFacts: [
+      { label: "Also named", value: legal && legal !== obj.label ? legal : "" },
       { label: "Currency", value: currency ?? "", status: curConflict ? "suspect" : undefined },
       { label: "Business line", value: titleCase(get(f, "business_line")) ?? "", source: srcOf(f, "business_line") },
       { label: "Payment terms", value: get(f, "payment_terms", "payment_terms_code") ?? "", source: srcOf(f, "payment_terms", "payment_terms_code") },
@@ -415,7 +427,7 @@ function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   // the order it ships stays in the label's place below
   const ownNo = OWN_NUMBER[obj.type] ? get(f, ...OWN_NUMBER[obj.type]) : undefined;
   const name = ownNo && !named.includes(ownNo) ? ownNo : named;
-  const s = obj.status && !/not_established|^read$/.test(obj.status.state) ? { status: recordState(obj.status.state), label: shortState(obj.status.state) } : null;
+  const s = obj.status && !/not_established|^read$|^reading$/.test(obj.status.state) ? { status: recordState(obj.status.state), label: shortState(obj.status.state) } : null;
   return {
     title: name.charAt(0).toUpperCase() + name.slice(1),
     subline: name !== named ? named : usefulSummary(obj),

@@ -645,6 +645,11 @@ class ReaderCache:
                 self._flights.pop(key, None)
             event.set()
 
+    def in_flight(self, key: Optional[tuple]) -> bool:
+        """A live request is reading ``key`` now (``flight``)."""
+        with self._lock:
+            return key is not None and key in self._flights
+
     def kept(self, view: Any, key: Optional[tuple], read: Callable[[], Any],
              handles: Callable[[Any], Iterable[str]],
              copy: Callable[[Any], Any] = lambda value: value) -> Any:

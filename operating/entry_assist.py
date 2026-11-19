@@ -366,6 +366,35 @@ def _suggest(field: dict[str, Any], from_sender: Mapping[str, Any]) -> dict[str,
     return field
 
 
+def _invoice_price(ln: Mapping[str, Any], src: Mapping[str, Any]) -> dict[str, Any]:
+    """An invoice line's unit price: cited only when the line states it for its own unit
+    (``document_lines.stated_unit_price``; the vendor's currency is not known here, so a
+    price naming a currency code is a check)."""
+    stated, why = dl.stated_unit_price(dict(ln), None)
+    return cited(stated, dict(src)) if stated else check(why or "no unit price on the line")
+
+
+def _po_number_of(docs: Sequence[Mapping[str, Any]], subject: str) -> dict[str, Any]:
+    """The PO number: cited only when the documents and the subject label exactly one PO
+    number and no PO label whose number cannot be read (W1-W3 11-15: both wrong cited PO
+    numbers came from threads naming another PO: "PO# A for one site and B for the other",
+    and "here is a new P.O. # for another 20 cs... B" read as no number). Several numbers
+    are a check with the candidates; an unread one, a check with the read one suggested."""
+    got = dl.the_po_number([*((d["text"] or "", d["name"]) for d in docs), (subject, "subject")])
+    if len(got["candidates"]) > 1:
+        return check("several PO numbers in the documents", got["candidates"])
+    if not got["candidates"]:
+        return check("no labelled PO number in the documents")
+    number, where = got["candidates"][0], got["where"]
+    if got["number"]:
+        return cited(number, {"document": where})
+    out = check("the documents also label a PO whose number is not read: the mail may be "
+                "about another PO")
+    out["suggestions"] = [{"value": number, "document": where,
+                           "basis": "the one PO number read"}]
+    return out
+
+
 def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
                 sender: str | None = None) -> dict[str, Any]:
     """The pre-filled Sage order (module doc) from a received mail (``email``: its record
@@ -380,22 +409,7 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
         subject = autopilot_records._v(row, "subject")
     else:
         subject = ""
-    # PO number: the documents' labelled numbers, the subject's too
-    found: list[tuple[str, str]] = []
-    for d in docs:
-        for p in dl.po_numbers(d["text"] or ""):
-            if p.upper() not in {f[0].upper() for f in found}:
-                found.append((p, d["name"]))
-    for p in dl.po_numbers(subject or ""):
-        if p.upper() not in {f[0].upper() for f in found}:
-            found.append((p, "subject"))
-    if len(found) == 1:
-        head["po_number"] = cited(found[0][0], {"document": found[0][1]})
-    elif found:
-        head["po_number"] = check("several PO numbers in the documents",
-                                  [f[0] for f in found])
-    else:
-        head["po_number"] = check("no labelled PO number in the documents")
+    head["po_number"] = _po_number_of(docs, subject or "")
     # customer
     all_text = "\n".join(d["text"] or "" for d in docs)[:MAX_TEXT]
     head["customer"] = customer_of(ctx, all_text, email, sender)
@@ -456,12 +470,24 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
              "suggestions": [{"value": str(qty), **src}]} if other_unit or earlier else \
             cited(str(qty), src)
         unit = cited(ln["unit"], src) if ln.get("unit") else check("the line states no unit")
+        stated, why = dl.stated_unit_price(ln, want_currency)
         if ln.get("unit_price") and earlier:
             price = {**check("the price is read from an earlier message of the thread: "
                              "confirm it"),
                      "suggestions": [{"value": ln["unit_price"], **src}]}
-        elif ln.get("unit_price"):
-            price = cited(ln["unit_price"], {**src, "basis": "the PO's price"})
+        elif why:
+            # "5 cases @ $4.50 each", "@ $4.50 USD" for a CAD customer, "@ $45 for 10":
+            # stated, but no price of the line's own unit in the customer's currency
+            price = check(why)
+            if ln.get("unit_price"):
+                price["suggestions"] = [{"value": ln["unit_price"], "unit": ln.get("price_per"),
+                                         "currency": ln.get("price_currency"), **src}]
+        elif stated and item["status"] != "cited":
+            # "SYN-10 and SYN-20 6 cases @ $4.50": the price of an item not settled
+            price = {**check("the line's item is a check: confirm the price with it"),
+                     "suggestions": [{"value": stated, **src}]}
+        elif stated:
+            price = cited(stated, {**src, "basis": "the PO's price"})
         elif hit and prices.get(hit[0]):
             last = prices[hit[0]]
             same = bool(want_currency and ln.get("unit") and
@@ -661,12 +687,23 @@ def purchase_order(ctx: Any, *, supplier: str | None = None,
     else:
         # never cited from history: the items' last supplier is a suggestion to confirm
         # (DEV 10-27..11-03: the inferred supplier was the PO's own 0 times of 2)
+        # suggested only when the items' latest POs all went to one supplier (its twin
+        # records included): items bought from two suppliers by turns have no "usual" one
+        # (08-03..09-19: both wrong suggestions were the last of two alternating suppliers)
         ident = _supplier_identity(ctx, [h["supplier"] for h in history])
         sups = {ident[h["supplier"]] for h in history if h["supplier"]}
         last = next((h for h in reversed(history) if h["supplier"]), None)
-        head["supplier"] = check("name the supplier: the records do not say who to buy from"
-                                 if history else "no earlier PO for the items")
-        if last:
+        recent: dict[str, frozenset[str]] = {}
+        for h in reversed(history):
+            if h["supplier"] and len(recent) < RECENT_POS:
+                recent.setdefault(h["po"], ident[h["supplier"]])
+        split = len(set(recent.values())) > 1
+        head["supplier"] = check(
+            f"name the supplier: the items' latest {len(recent)} POs went to "
+            f"{len(set(recent.values()))} different suppliers" if split else
+            "name the supplier: the records do not say who to buy from"
+            if history else "no earlier PO for the items")
+        if last and not split:
             head["supplier"]["suggestions"] = [{
                 "value": last["supplier"], "basis": "the items' last PO" +
                 ("" if len(sups) == 1 else f" (of {len(sups)} suppliers)"),
@@ -839,8 +876,7 @@ def supplier_invoice(ctx: Any, *, email: str | None = None, text: str | None = N
                     "text": ln["text"],
                     "quantity": cited(str(qty), src) if qty is not None and qty > 0
                     else check("no quantity on the line"),
-                    "unit_price": cited(ln["unit_price"], src) if ln.get("unit_price")
-                    else check("no unit price on the line"),
+                    "unit_price": _invoice_price(ln, src),
                     "amount": cited(ln["extended"], src) if ln.get("extended")
                     else check("no line amount")})
             break
@@ -1022,7 +1058,11 @@ def accuracy(prefill: Mapping[str, Any], truth: Mapping[str, Any]) -> dict[str, 
     """Per field, cited right / cited wrong / check, against what people keyed (``truth``:
     ``customer`` (its numbers), ``po_number``, ``lines`` [(item, quantity, unit_price)]).
     A line's quantity and price are scored only on a line whose item is right (else
-    ``<field>_unscored``: no keyed line to compare with). A PO number is right when the
+    ``<field>_unscored``: no keyed line to compare with); a quantity is right when one
+    keyed line of the item has it or all of them sum to it, when every one names the same
+    unit (a keyed line's 4th value) and no two are the same keyed line
+    (``quantity_sum_unverified`` counts the sums that fail this; ``quantity_strict``: one
+    line only, reported beside it). A PO number is right when the
     keyed one is it, or starts with it followed by words (people key "PO-153 Paw lotion")."""
     def norm(x: Any) -> str:
         return "".join(ch for ch in str(x or "").upper() if ch.isalnum())
@@ -1042,6 +1082,11 @@ def accuracy(prefill: Mapping[str, Any], truth: Mapping[str, Any]) -> dict[str, 
             return True
         lead = re.match(r"[A-Z0-9#/._-]+", k)
         return bool(lead) and norm(lead.group(0)) == v
+    def summable(match: list[Sequence[Any]]) -> bool:
+        from ontology.units import unit_token
+        units = {unit_token(t[3]) if len(t) > 3 else None for t in match}
+        keys = [tuple(norm(x) for x in t) for t in match]
+        return None not in units and len(units) == 1 and len(set(keys)) == len(keys)
     h = prefill["header"]
     score("customer", h["customer"], norm(h["customer"]["value"]) in
           {norm(c) for c in truth.get("customer") or ()})
@@ -1053,8 +1098,19 @@ def accuracy(prefill: Mapping[str, Any], truth: Mapping[str, Any]) -> dict[str, 
             if item["status"] == "cited" else []
         score("item", item, bool(match))
         qty = autopilot_records._decimal(ln["quantity"]["value"])
-        score("quantity", ln["quantity"], any(autopilot_records._decimal(t[1]) == qty for t in match)
-              if match else None)
+        one = any(autopilot_records._decimal(t[1]) == qty for t in match)
+        # people key one ordered item on several lines (lots, a part shipped now and the
+        # rest later: W1-W3 11-15, "10 cases" keyed 2 + 8): their sum is the order's quantity
+        summed = len(match) > 1 and qty is not None and sum(
+            (autopilot_records._decimal(t[1]) or Decimal(0) for t in match), Decimal(0)) == qty
+        if summed and not one and not summable(match):
+            # keyed in several units, a unit not given, or one line keyed twice: the sum is
+            # no quantity, so it is not scored right (counted apart for the reader)
+            summed = False
+            out["quantity_sum_unverified"] = out.get("quantity_sum_unverified", 0) + 1
+        score("quantity", ln["quantity"], (one or summed) if match else None)
+        if match and ln["quantity"]["status"] != "check":
+            score("quantity_strict", ln["quantity"], one)
         price = autopilot_records._decimal(ln["unit_price"]["value"])
         score("unit_price", ln["unit_price"], any(
             (p := autopilot_records._decimal(t[2])) is not None and price is not None and
