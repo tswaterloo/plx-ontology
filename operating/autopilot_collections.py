@@ -690,6 +690,6 @@ def h_collection_draft(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                        for m in p["chases"]],
             "draft": msg, "gaps": [], "dry_run": True,
             "links": [{"label": "Open the oldest invoice",
-                       "href": f"/object/{listed[0].oid}"},
+                       "href": autopilot_records.object_href(listed[0].oid)},
                       {"label": "Open the conversation",
-                       "href": f"/object/{p['source']['id']}"}]}
+                       "href": autopilot_records.object_href(p['source']['id'])}]}

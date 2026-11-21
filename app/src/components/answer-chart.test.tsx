@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AnswerCharts, withoutChartBlocks, type AskChart } from "./answer-chart";
 import { chartNotes } from "./charts/chart-view";
-import { PALETTE, conversion, extent, ramp, short, ticks, waterfall } from "./charts/scale";
+import { PALETTE, conversion, dateLabel, extent, human, ramp, short, ticks, waterfall } from "./charts/scale";
 import { panelGrid, wrap } from "./charts/export";
 
 const bars: AskChart = {
@@ -65,7 +65,7 @@ describe("answer charts", () => {
     const combo = drawn({ ...people, title: "C", kind: "combo", series: [{ name: "mail", values: [5, 6, 7] }, { name: "share", values: [0.1, 0.5, 0.9], axis: "right" }] });
     expect(marks(combo, "rect")).toHaveLength(3);
     expect(combo.querySelectorAll("polyline")).toHaveLength(1);
-    expect(screen.getByText(/share \(right axis\)/i)).toBeTruthy();
+    expect(screen.getByText(/share \(scale on the right\)/i)).toBeTruthy();
     const fall = drawn({ ...people, title: "W", kind: "waterfall", series: [{ name: "change", values: [10, -4, 3] }] });
     expect(marks(fall, "rect")).toHaveLength(4);
     expect(fall.textContent).toContain("Total");
@@ -113,7 +113,7 @@ describe("answer charts", () => {
     expect(screen.getByTestId("axis-caption").textContent).toBe("Invoiced cad by currency");
     cleanup();
     render(<AnswerCharts charts={[{ ...people, title: "S", kind: "scatter", xs: [1, 2, 3], series: [{ name: "invoiced_cad", values: [5, 6, 7] }] }]} />);
-    expect(screen.getByTestId("axis-caption").textContent).toBe("Up: Invoiced cad. Across: person.");
+    expect(screen.getByTestId("axis-caption").textContent).toBe("Each dot is one row: person along the bottom, invoiced cad up the side. Point at a dot for its name.");
   });
 
   it("a donut faceted by currency draws one donut per currency", () => {
@@ -164,8 +164,8 @@ describe("answer charts", () => {
 
   it("a KPI compares by place on the axis and names a period not over yet", () => {
     render(<AnswerCharts charts={[{ x: "month", labels: ["2026-09", "2026-10", "2026-11"], title: "K", kind: "kpi", as_of: "2026-11-18T22:00:00+00:00", open_period: "2026-11", series: [{ name: "orders", values: [197, null, 197] }] }]} />);
-    expect(screen.getByTestId("kpi-tile").textContent).toContain("▲ 0 (+0%), 2026-11 so far vs 2026-09");
-    expect(screen.getByText("2026-11 is not over yet: its figures are of part of it.")).toBeTruthy();
+    expect(screen.getByTestId("kpi-tile").textContent).toContain("▲ 0 (+0%), Nov 2026 so far vs Sep 2026");
+    expect(screen.getByText("Nov 2026 is still in progress, so its figures are partial.")).toBeTruthy();
   });
 
   it("draws a waterfall per panel on one scale of running totals", () => {
@@ -189,9 +189,22 @@ describe("answer charts", () => {
     expect(notes).toContain("2 smaller series are not drawn");
   });
 
-  it("offers the files and PNG under a chart", () => {
+  it("offers the files and PNG under a chart in one Save menu", () => {
     render(<AnswerCharts charts={[bars]} />);
-    for (const name of ["PNG", "Excel", "PowerPoint", "Word", "PDF"]) expect(screen.getByRole("button", { name })).toBeTruthy();
+    // one control under the chart, not five
+    expect(screen.getAllByText("Save as")).toHaveLength(1);
+    expect(screen.queryAllByRole("button", { name: /^(PNG|Excel|PowerPoint|Word|PDF)$/ })).toHaveLength(0);
+    fireEvent.click(screen.getByLabelText("Save the chart"));
+    for (const name of ["Picture (PNG)", "Excel", "PowerPoint", "Word", "PDF"]) expect(screen.getByRole("menuitem", { name })).toBeTruthy();
+  });
+
+  it("writes dates on an axis the way the app does", () => {
+    const now = new Date(2026, 10, 21);
+    expect(dateLabel("2026-11-16", now)).toBe("16 Nov");
+    expect(dateLabel("2025-12-29", now)).toBe("29 Dec 2025");
+    expect(dateLabel("2026-11", now)).toBe("Nov 2026");
+    for (const other of ["Croda", "2026-13-01", "2026-W46", "50023359"]) expect(dateLabel(other, now)).toBe(other);
+    expect(human("busiest_share_pct")).toBe("Busiest share %");
   });
 
   it("draws nothing without charts", () => {

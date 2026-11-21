@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => nav }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   suggest: (q: string) =>
-    Promise.resolve({
+    q === "Soapbox" ? Promise.reject(new Error("refused")) : Promise.resolve({
       query: q,
       suggestions: /^\d+$/.test(q)
         ? [
@@ -100,5 +100,19 @@ describe("the command bar's Enter", () => {
     } finally {
       window.history.pushState({}, "", "/");
     }
+  });
+});
+
+describe("a record search that could not run", () => {
+  it("says the search failed, never that no record has that name", async () => {
+    render(
+      <CommandPaletteProvider>
+        <Opener />
+      </CommandPaletteProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await userEvent.type(await screen.findByTestId("palette-input"), "Soapbox");
+    expect(await screen.findByText("Records couldn't be searched just now. Ask still works.")).toBeInTheDocument();
+    expect(screen.queryByText("No record by that name or number.")).toBeNull();
   });
 });

@@ -411,8 +411,8 @@ def prepare_invoice(ctx: Any, shipment: str, order: str | None = None,
             "object": {"object_id": together[0], "number": number,
                        "date": shipped.isoformat()},
             "entry": entry, "gaps": gaps, "dry_run": True,
-            "links": [{"label": "Open the shipment", "href": f"/object/{together[0]}"},
-                      {"label": "Open the order", "href": f"/object/{order}"}]}
+            "links": [{"label": "Open the shipment", "href": autopilot_records.object_href(together[0])},
+                      {"label": "Open the order", "href": autopilot_records.object_href(order)}]}
 
 
 def h_invoice_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -566,7 +566,7 @@ def prepare_posting(ctx: Any, order: str) -> dict[str, Any]:
             "entry": {"kind": "oe_shipment", "order": number,
                       "ship_date": ctx.as_of.isoformat(), "lines": lines},
             "gaps": [], "dry_run": True,
-            "links": [{"label": "Open the order", "href": f"/object/{order}"}]}
+            "links": [{"label": "Open the order", "href": autopilot_records.object_href(order)}]}
 
 
 def h_shipment_posting(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -787,7 +787,7 @@ def prepare_cash(ctx: Any, rows: Sequence[Any], payer: str | None = None) -> dic
                       "applied": applied, "total": _money(total),
                       "invoices_of": customers if len(customers) > 1 else None},
             "gaps": [], "dry_run": True,
-            "links": [{"label": "Open the remittance", "href": f"/object/{rows[0].cite['object_id']}"}]}
+            "links": [{"label": "Open the remittance", "href": autopilot_records.object_href(rows[0].cite['object_id'])}]}
 
 
 def h_cash_application(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:

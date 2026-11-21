@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useAuth } from "@/components/auth";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { setAutopilotOptIn, setAutopilotPaused, setMyWorkMode, setSwitchLimits, type SwitchLimits } from "@/lib/api";
@@ -136,9 +137,10 @@ function Limits({ c, onArea }: { c: AutopilotDraftChoice; onArea: (a: Area) => v
   );
 }
 
-function DraftRow({ c, busy, onSet, onArea }: { c: AutopilotDraftChoice; busy: boolean; onSet: (mode: Mode) => void; onArea: (a: Area) => void }) {
+function DraftRow({ c, busy, onSet, onArea, owner = false }: { c: AutopilotDraftChoice; busy: boolean; onSet: (mode: Mode) => void; onArea: (a: Area) => void; owner?: boolean }) {
   const on = c.partly ? "Partly on" : "On";
-  const state = !c.on ? "Off" : c.by_owner ? `${on}, set by the owner` : c.since && !c.partly ? `On since ${formatDateTime(c.since)}` : on;
+  // the owner reads their own choices: "set by the owner" is said only to the people they set it for
+  const state = !c.on ? "Off" : c.by_owner && !owner ? `${on}, set by the owner` : c.since && !c.partly ? `On since ${formatDateTime(c.since)}` : on;
   const auto = c.mode === "auto";
   return (
     <li className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-2" data-testid="draft-choice">
@@ -178,6 +180,8 @@ function DraftRow({ c, busy, onSet, onArea }: { c: AutopilotDraftChoice; busy: b
 export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { state: auth } = useAuth();
+  const owner = auth.status === "signed-in" && auth.me.owner === true;
   const choices = area.my_drafts ?? [];
   if (choices.length === 0) return null;
   const set = async (choice: string, mode: Mode) => {
@@ -197,12 +201,12 @@ export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) =>
         What to prepare for me
       </h2>
       <p className="max-w-[46rem] text-[12px] text-muted">
-        Turned on, replies and changes are prepared for you and wait on Home until you confirm them. Auto lets them go without your click, and only opens where replaying past days matched what you did often enough; money and anything unclear still wait for you. You can turn off what the owner turned on for you.
+        Turned on, replies and changes are prepared for you and wait on Home until you confirm them. Auto lets them go without your click, and only opens where replaying past days matched what you did often enough; money and anything unclear still wait for you.{owner ? "" : " You can turn off what the owner turned on for you."}
       </p>
       {error && <ErrorNotice message={error} />}
       <ul className="divide-y divide-border" aria-label="What to prepare for me">
         {choices.map((c) => (
-          <DraftRow key={c.choice} c={c} busy={busy} onSet={(mode) => void set(c.choice, mode)} onArea={onArea} />
+          <DraftRow key={c.choice} c={c} busy={busy} owner={owner} onSet={(mode) => void set(c.choice, mode)} onArea={onArea} />
         ))}
       </ul>
     </section>

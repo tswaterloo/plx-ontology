@@ -266,6 +266,12 @@ class ScreensMixin:
                 checked_on=checked if late_behind and isinstance(checked, str) else None),
             recent_questions=recent, freshness=self.freshness(inbox))
 
+    def data_health(self, reader: Reader) -> m.DataHealth:
+        """Admin, Data health (``operator_api.data_health``): every data-health check with
+        the findings this reader may see and the count hidden from them."""
+        from . import data_health
+        return self.reads.run(reader, data_health.page, timeout=READ_TIMEOUT_SECONDS)
+
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         from . import page_sql
         if page_sql.alerts_on() or page_sql.on("purchase_order"):

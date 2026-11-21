@@ -18,6 +18,7 @@ export interface SavedItem {
 }
 
 const PREFIX = "plx.saved.v2:";
+export const RECENT_PREFIX = "plx.recent.v1:";
 const LEGACY = "plx.saved.v1"; // pre-per-user list: removed on sight
 const listeners = new Set<() => void>();
 const EMPTY: SavedItem[] = [];
@@ -29,7 +30,60 @@ function storageKey(u: string): string {
 }
 
 function emit() {
+  recentCache = null;
   listeners.forEach((l) => l());
+}
+
+// ---------------------------------------------------------------- the records opened lately
+// Kept like the saved list: in this browser, per signed-in person, deleted on sign-out; the
+// Records tabs list them so a tab is never only a search box.
+
+export interface OpenedRecord {
+  type: string;
+  label: string;
+  href: string;
+  at: string;
+}
+const RECENT_MAX = 30;
+const EMPTY_RECENT: OpenedRecord[] = [];
+let recentCache: OpenedRecord[] | null = null;
+
+function readRecent(): OpenedRecord[] {
+  if (!user) return EMPTY_RECENT;
+  if (recentCache) return recentCache;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_PREFIX + user) ?? "[]") as unknown;
+    recentCache = Array.isArray(parsed)
+      ? parsed.filter((x): x is OpenedRecord => !!x && typeof x.type === "string" && typeof x.label === "string" && typeof x.href === "string" && x.href.startsWith("/") && !x.href.startsWith("//"))
+      : [];
+  } catch {
+    recentCache = [];
+  }
+  return recentCache;
+}
+
+/** A record page was opened: it goes to the top of this person's recent list (once). */
+export function rememberOpened(r: Omit<OpenedRecord, "at">): void {
+  if (!user || !r.label.trim() || !r.href.startsWith("/") || r.href.startsWith("//")) return;
+  const next = [{ ...r, at: new Date().toISOString() }, ...readRecent().filter((x) => x.href !== r.href)].slice(0, RECENT_MAX);
+  try {
+    window.localStorage.setItem(RECENT_PREFIX + user, JSON.stringify(next));
+  } catch {
+    /* storage full or blocked */
+  }
+  recentCache = next;
+  listeners.forEach((l) => l());
+}
+
+export function useRecentRecords(): OpenedRecord[] {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    readRecent,
+    () => EMPTY_RECENT,
+  );
 }
 
 /** Called by the auth layer: the signed-in principal, or null when signed out. */
@@ -45,11 +99,17 @@ export function setSavedUser(principal: string | null) {
   emit();
 }
 
-/** Sign-out: delete this person's saved list from the browser. */
+/** The person whose lists this browser holds now (null: nobody signed in). */
+export function savedUser(): string | null {
+  return user;
+}
+
+/** Sign-out: delete this person's saved list (and the records they opened) from the browser. */
 export function clearSavedFor(principal: string | null) {
   if (principal) {
     try {
       window.localStorage.removeItem(storageKey(principal));
+      window.localStorage.removeItem(RECENT_PREFIX + principal);
     } catch {
       /* storage blocked */
     }

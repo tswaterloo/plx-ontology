@@ -80,6 +80,10 @@ Changed:
 - job_approval keeps the rule-based recommendation when the model proposes no change (fresh days 142/149)
 - Approval items: recommendation after the last failed try
 
+## Update 2026-11-21
+Changed:
+- UI fixes from the 11-21 walk: working card links, Insights names and charts, one count per alert kind, record page facts, Data health from the checks' own findings
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

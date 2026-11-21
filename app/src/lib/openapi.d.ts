@@ -1028,6 +1028,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/data-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Data Health
+         * @description Every data-health check: the findings you may see, and how many more it found on
+         *     records you may not open (counted, never named).
+         */
+        get: operations["data_health_api_data_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/doc-fill": {
         parameters: {
             query?: never;
@@ -6445,6 +6466,81 @@ export type components = {
             same_name?: components["schemas"]["ObjectRef"][];
         };
         /**
+         * DataHealth
+         * @description Admin, Data health: every check the registry files under data health, each with its
+         *     findings for this reader; ``unread``: the checks' findings could not be read now
+         *     (never a list of zeros).
+         */
+        DataHealth: {
+            /** As Of */
+            as_of?: string | null;
+            /** Checks */
+            checks?: components["schemas"]["DataHealthCheck"][];
+            /**
+             * Partial
+             * @description The read stopped at its limit: counts are at least these.
+             * @default false
+             */
+            partial: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "read" | "unread" | "not_configured";
+        };
+        /**
+         * DataHealthCheck
+         * @description One data-health check as this reader reads it: what it found that they may see, and
+         *     how many more it found on records they may not open (counted, never named).
+         */
+        DataHealthCheck: {
+            /**
+             * Count
+             * @description Open findings this reader may see.
+             * @default 0
+             */
+            count: number;
+            /**
+             * Hidden
+             * @description Open findings on records this reader may not open: never named, never listed.
+             * @default 0
+             */
+            hidden: number;
+            /** Items */
+            items?: components["schemas"]["DataHealthItem"][];
+            /** Label */
+            label: string;
+            /**
+             * More
+             * @description Findings this reader may see past those listed.
+             * @default 0
+             */
+            more: number;
+            /**
+             * On
+             * @description Shown to readers (measured right); off: named only.
+             */
+            on: boolean;
+            /** Type */
+            type: string;
+        };
+        /**
+         * DataHealthItem
+         * @description One finding of a data-health check this reader may open.
+         */
+        DataHealthItem: {
+            /** Id */
+            id: string;
+            /** Object Id */
+            object_id: string;
+            /** Object Type */
+            object_type: string;
+            /** Open Url */
+            open_url: string;
+            /** Summary */
+            summary: string;
+        };
+        /**
          * DerivedCode
          * @description Derived data on screen made by older code than the code deployed
          *     (``operating.derived_status``): being refreshed, or flagged when model-made.
@@ -11615,6 +11711,11 @@ export type components = {
         TimelineEvent: {
             /** At */
             at?: string | null;
+            /**
+             * Own
+             * @description False: an event of a linked record shown beside the record (its title names that record), never the record's own last change; true or absent: the record's own.
+             */
+            own?: boolean | null;
             source?: components["schemas"]["Source"] | null;
             /** Summary */
             summary?: string | null;
@@ -15398,6 +15499,35 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    data_health_api_data_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataHealth"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

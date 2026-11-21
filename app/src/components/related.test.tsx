@@ -128,6 +128,8 @@ describe("Related panel", () => {
     render(<Related records={[PO]} />);
     await waitFor(() => expect(screen.queryByText(/Reading your memory/)).toBeNull());
     expect(screen.queryByTestId("related-failed")).toBeNull();
+    // and never says the memory it was not served holds nothing
+    expect(screen.queryByTestId("related-empty")).toBeNull();
   });
 
   it("memory that can't be read (people list not loaded) is a failure, never an empty memory", async () => {

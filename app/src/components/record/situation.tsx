@@ -37,7 +37,8 @@ const PARTY = new Set(["Supplier", "Customer"]);
 
 export function cellsOf(obj: ObjectPage, party?: ObjectRef | null): Cell[] {
   const people = obj.people ?? [];
-  const dated = (obj.timeline ?? []).filter((e) => e.at && !Number.isNaN(Date.parse(e.at)));
+  // the record's own events only: a linked customer's orders are not this record's change
+  const dated = (obj.timeline ?? []).filter((e) => e.own !== false && e.at && !Number.isNaN(Date.parse(e.at)));
   dated.sort((a, b) => Date.parse(b.at!) - Date.parse(a.at!));
   const last = dated[0];
   const head: Cell[] = (HEADS[obj.type] ?? []).map(([label, types]) => {

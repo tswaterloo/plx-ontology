@@ -33,7 +33,12 @@ describe("the help page", () => {
     const { unmount } = render(<HelpPage />);
     expect(screen.getByTestId("role-guide")).toHaveTextContent("Finds the mail, specs and test results");
     unmount();
+    // the owner has a guide of their own
     nav.params = new URLSearchParams("role=owner");
+    const { unmount: again } = render(<HelpPage />);
+    expect(screen.getByTestId("role-guide")).toHaveTextContent("Puts what needs you first on Home");
+    again();
+    nav.params = new URLSearchParams("role=janitor");
     render(<HelpPage />);
     expect(screen.getByTestId("help-pick")).toBeInTheDocument();
   });

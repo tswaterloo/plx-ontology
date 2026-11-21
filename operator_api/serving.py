@@ -497,7 +497,7 @@ DEPARTMENTS = {"ACCTMGMT": "Account Management", "ARTWORK": "Artwork", "COMPOUND
                "WH": "Warehouse"}
 
 # L1 handle scheme -> the contract's system label.
-SCHEMES = (("bc://", "BC"), ("api://", "Portal"), ("graph-mail://", "Email"),
+SCHEMES = (("bc://", "BC"), ("api://sage.", "Sage"), ("api://", "Portal"), ("graph-mail://", "Email"),
            ("mail://", "Email"), ("teams", "Teams"), ("sharepoint", "File"),
            ("original://", "File"), ("repo://", "File"), ("mc://", "MC"),
            ("sage", "Sage"), ("filemaker", "FileMaker"), ("fm://", "FileMaker"))
@@ -587,11 +587,21 @@ def system_of(handle: str) -> str:
     return "File"
 
 
+_BC_ID = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d+|"
+                    r"production|sandbox)$", re.I)
+
+
 def record_words(handle: str) -> str:
     """'Portal purchase order' from api://public.app_purchase_order/..., no value."""
     system = system_of(handle)
     path = urlsplit(handle)
     part = (path.netloc or "").split("/")[0] or (path.path.strip("/").split("/") or [""])[0]
+    if handle.startswith("bc://"):
+        # bc://<environment>/<company id>/<table>/<id>: the table names the record, never
+        # the environment ("BC production")
+        segs = [unquote(x) for x in [path.netloc, *path.path.split("/")] if x]
+        part = next((x for x in segs if not _BC_ID.match(x)), "")
+        part = re.sub(r"s$", "", part) if part.endswith("s") and not part.endswith("ss") else part
     part = unquote(part).split(".")[-1]
     part = re.sub(r"^app_", "", part)
     part = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", part).replace("_", " ").strip().lower()

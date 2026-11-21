@@ -17,7 +17,7 @@ import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
 import { HomeAsk } from "@/components/home-start";
-import { AssistQueue } from "@/components/home/assist-queue";
+import { AssistQueue, type PreparedCount } from "@/components/home/assist-queue";
 import { YourCommitments } from "@/components/your-commitments";
 import { InsightNewsList } from "@/components/insights/news";
 import { YourTurn } from "@/components/memory-people";
@@ -236,7 +236,7 @@ function Today() {
     return () => c.abort();
   }, []);
   // how many items the queue holds (AssistQueue reports it once read; null until then or on a failed read)
-  const [queued, setQueued] = useState<number | null>(null);
+  const [queued, setQueued] = useState<PreparedCount | null>(null);
   const [picked, setPicked] = useState<string | null>(params.get("sel"));
   const [replyPick, setReplyPick] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -359,7 +359,9 @@ function Today() {
         .filter((i) => !homeOnly || i.home)
         .filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)))
         .map((i) => itemRow(i, bySubject.get(i.object_id)));
-      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: homeOnly ? rows.length : g.count, rows, more: !homeOnly && rows.length < g.count });
+      // the group's count is every alert of its kind firing for you (the count Alerts shows),
+      // never just the rows read so far: Home said 25 below cost while Alerts said 65
+      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: Math.max(g.count, rows.length), rows, more: rows.length < g.count });
     }
     return out.sort((a, b) => rankOf(a.type) - rankOf(b.type));
   }, [briefing, late, home, suggestions, pages]);
@@ -444,13 +446,15 @@ function Today() {
   const loading = !error && groups.length === 0 && (!home || late === null);
   const alertsReading = !briefing && !briefingError && !error;
   const refreshing = briefing?.refreshing || na?.refreshing;
-  const prepared = queued ?? 0;
+  // drafts to confirm count under Confirm; alerts waiting on you (nothing to confirm) under Decide
+  const prepared = queued?.confirm ?? 0;
+  const preparedAlerts = queued?.alerts ?? 0;
   // replies or prepared items listed below: no "nothing needs action" line above them
-  const othersListed = filter === "all" && !supplier && ((replies?.total ?? 0) > 0 || prepared > 0);
+  const othersListed = filter === "all" && !supplier && ((replies?.total ?? 0) > 0 || prepared + preparedAlerts > 0);
   // the one count, shared with the sidebar: late, alerts, replies you owe and prepared items;
   // unknown (null) until every part is read, and while any part failed (never a partial number)
   const everyRead = !loading && !error && !!briefing && briefing.status === "read" && late !== null && replies !== null && !repliesError && queued !== null;
-  const total = everyRead ? groups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared : null;
+  const total = everyRead ? groups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared + preparedAlerts : null;
   useEffect(() => {
     if (!supplier) publishNeedsCount(total);
   }, [total, supplier]);
@@ -460,9 +464,9 @@ function Today() {
   const wide = desktop && !loading && !shownRow && !replyShown;
 
   const tabs =
-    bySupplier.length > 1 || (replies?.total ?? 0) > 0 || prepared > 0 ? (
+    bySupplier.length > 1 || (replies?.total ?? 0) > 0 || prepared + preparedAlerts > 0 ? (
       <div className="flex h-full min-w-0 gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
-        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "confirm" ? (supplier ? 0 : prepared) : v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) })).filter((v) => v.count > 0)].map((g) => (
+        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "confirm" ? (supplier ? 0 : prepared) : v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) + (v.verb === "decide" && !supplier ? preparedAlerts : 0) })).filter((v) => v.count > 0)].map((g) => (
           <button
             key={g.type}
             type="button"
@@ -527,8 +531,8 @@ function Today() {
         {/* prepared work is its own chip (Confirm): listed under All and Confirm, never under
             another verb, so All is the sum of the chips; kept mounted so its count stays read */}
         {!supplier && !error && (
-          <div hidden={filter !== "all" && filter !== "confirm"}>
-            <AssistQueue onCount={setQueued} />
+          <div hidden={filter !== "all" && filter !== "confirm" && filter !== "decide"}>
+            <AssistQueue onCount={setQueued} only={filter === "confirm" ? "confirm" : filter === "decide" ? "alerts" : undefined} />
           </div>
         )}
         {/* sections no chip counts: under All only (a chip lists what its count says) */}
@@ -601,7 +605,7 @@ function Today() {
                   className="mx-5 mt-1 mb-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer"
                   data-testid="home-folded"
                 >
-                  Show {g.folded} more
+                  Show {Math.max(g.folded, g.count - g.rows.length)} more
                 </button>
               )}
               {g.folded === 0 && g.more && pages[g.type]?.more !== false && (

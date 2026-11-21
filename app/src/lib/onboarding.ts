@@ -4,7 +4,7 @@
 // operating/autopilot_registry.json (copy.test-style check in onboarding.test.ts).
 import { roleLabel } from "./autopilot";
 
-export type GuideRole = "customer_service" | "purchasing" | "receivables" | "rnd" | "quality" | "production_planning" | "finance";
+export type GuideRole = "owner" | "customer_service" | "purchasing" | "receivables" | "rnd" | "quality" | "production_planning" | "finance";
 
 export type RoleGuide = {
   role: GuideRole;
@@ -21,6 +21,19 @@ export type RoleGuide = {
 };
 
 export const GUIDES: RoleGuide[] = [
+  {
+    role: "owner",
+    does: [
+      "Puts what needs you first on Home: late purchase orders, orders losing money, quality holds and approvals.",
+      "Answers questions across BC, the Portal, Sage, mail and Teams in one place, with the records behind each number.",
+      "Shows on Team who is busy and what is waiting on whom, and on Insights how the company's work and customers move week to week.",
+      "Reviews the week with you on Meetings: orders, shipments, invoices and what slipped, against the week before.",
+    ],
+    lookUp: "a customer, a supplier or an order you want the latest on",
+    asks: ["What needs my attention today?", "Which customers owe us the most, and how overdue are they?", "How did this week's orders compare with last week's?"],
+    autopilots: [],
+    pages: [{ href: "/team", label: "Team" }, { href: "/insights", label: "Insights" }, { href: "/meetings?view=weekly", label: "Weekly review" }],
+  },
   {
     role: "customer_service",
     does: [

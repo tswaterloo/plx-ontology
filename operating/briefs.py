@@ -1594,7 +1594,7 @@ def weekly_review(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
             "subject": None, "subject_sources": [], "when": start.isoformat(),
             "as_of": today.isoformat(), "parties": [], "possible_parties": [],
             "sections": sections, "gaps": reads.gaps(), "budget": reads.cited.budget(),
-            "basis": ("Counted from the records you may read, no model call; alerts are those "
+            "basis": ("Counted from the records you may read; alerts are those "
                       "open now on your alert list; money per currency, never converted.")}
 
 

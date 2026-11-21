@@ -117,7 +117,7 @@ export function FiredKind({ f }: { f: Fired }) {
       {f.top.length > 0 && <ul className="mt-1">{f.top.map((it) => <ItemRow key={it.id} it={it} />)}</ul>}
       {f.rest.map((r) => (
         <div key={r.type} className="mt-1 pl-[22px] text-[12px]">
-          <TypeItems type={r.type} count={r.more} more={`${f.top.length ? `${r.more} more` : `Show ${r.more === 1 ? "the 1" : `all ${r.more}`}`}: ${r.label.toLowerCase()}`} />
+          <TypeItems type={r.type} count={r.more} skip={f.top.filter((t) => t.event_type === r.type).map((t) => t.id)} more={`${f.top.length ? `${r.more} more` : `Show ${r.more === 1 ? "the 1" : `all ${r.more}`}`}: ${r.label.toLowerCase()}`} />
         </div>
       ))}
     </section>

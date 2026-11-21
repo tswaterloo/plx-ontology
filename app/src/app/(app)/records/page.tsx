@@ -10,8 +10,8 @@ import { Pending } from "@/components/ui/skeleton";
 import { suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { recordLabel, safeHref, typeLabel } from "@/lib/format";
-import { useSaved } from "@/lib/saved";
+import { formatDateTime, recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { useRecentRecords, useSaved } from "@/lib/saved";
 import type { SuggestResponse } from "@/lib/types";
 
 /** Every record ("All", the first tab), then the four kinds people look for and the record types each one holds. */
@@ -43,6 +43,12 @@ function Records() {
   const [round, setRound] = useState(0);
   const saved = useSaved();
   const mine = useMemo(() => saved.filter((s) => s.kind === "object" && (kind.key === "all" || (kind.types as readonly string[]).includes(savedType(s.key) ?? ""))), [saved, kind]);
+  // what this person opened lately, of the tab's kind (a saved one is listed under Saved only)
+  const opened = useRecentRecords();
+  const recent = useMemo(() => {
+    const savedHrefs = new Set(mine.map((s) => s.href));
+    return opened.filter((r) => (kind.key === "all" || (kind.types as readonly string[]).includes(r.type)) && !savedHrefs.has(r.href)).slice(0, 10);
+  }, [opened, kind, mine]);
   const query = q.trim();
 
   useEffect(() => {
@@ -134,6 +140,24 @@ function Records() {
               </p>
             )
           ) : (
+            <>
+            {recent.length > 0 && (
+              <section aria-labelledby="records-recent" className="mb-6">
+                <h2 id="records-recent" className="text-[13px] font-semibold">
+                  Opened lately
+                </h2>
+                <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="records-recent-list">
+                  {recent.map((r) => (
+                    <li key={r.href}>
+                      <Link href={r.href} className="flex items-baseline justify-between gap-4 py-2 text-[13px] hover:bg-hover">
+                        <span className="truncate">{r.label}</span>
+                        <span className="shrink-0 text-[12px] text-muted">{formatDateTime(r.at)}</span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <section aria-labelledby="records-saved">
               <h2 id="records-saved" className="text-[13px] font-semibold">
                 Your saved {kind.label.toLowerCase()}
@@ -152,6 +176,7 @@ function Records() {
                 <p className="mt-1 text-[13px] text-muted">None saved yet. Open one and press Save to keep it here.</p>
               )}
             </section>
+            </>
           )}
         </div>
       </div>

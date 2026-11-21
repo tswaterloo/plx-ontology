@@ -755,10 +755,13 @@ def label_timeline(view: Any, page: m.ObjectPage, labels: Mapping[str, str],
     """Each timeline row names the record it is about (an order's number) and, when
     known, that record's status: "Required" alone says nothing."""
     about_of = []
-    for event in events:
-        others = [o.get("object_id") for o in event.get("objects") or ()
-                  if isinstance(o, Mapping) and o.get("object_id") != page.object_id]
+    for row, event in zip(page.timeline, events):
+        objects = [o.get("object_id") for o in event.get("objects") or () if isinstance(o, Mapping)]
+        others = [o for o in objects if o != page.object_id]
         about_of.append(next((o for o in others if isinstance(o, str)), None))
+        # an event the record takes no part in (a linked customer's order) is shown beside
+        # it, never as its own last change
+        row.own = not objects or page.object_id in objects
     labels, read_status = dict(labels), {}
     for oid in list(dict.fromkeys(o for o in about_of if o and not labels.get(o)))[:40]:
         card = view._call("plx.object", {"object_id": oid, "properties": ["status"]}) or {}

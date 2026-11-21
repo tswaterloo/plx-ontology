@@ -9,6 +9,7 @@ import { useRef, useState, type ReactNode } from "react";
 import type { Answer } from "@/lib/types";
 import {
   INK, MOVE, clip, colour, conversion, extent, full, human, inkOn, ramp, short, ticks, waterfall, type Theme,
+  dateLabel,
 } from "./scale";
 
 export type AskChart = NonNullable<Answer["charts"]>[number];
@@ -80,8 +81,9 @@ function Svg({ chart, width = W, height = H, children }: { chart: AskChart; widt
 
 type Plot = { chart: AskChart; labels: string[]; series: Series[]; theme: Theme; width?: number; height?: number; range?: [number, number]; compact?: boolean; onTip: ReturnType<typeof useTip> };
 
-function Cartesian({ chart, labels, series, theme, width = W, height: given = H, range, compact, onTip }: Plot) {
+function Cartesian({ chart, labels: given0, series, theme, width = W, height: given = H, range, compact, onTip }: Plot) {
   const ink = INK[theme];
+  const labels = given0.map((l) => dateLabel(l));
   const spec = chart.spec ?? undefined;
   const kind = chart.kind;
   const stacked = !!spec?.stacked;
@@ -468,7 +470,7 @@ function Kpis({ chart, theme }: { chart: AskChart; theme: Theme }) {
                 {`${change >= 0 ? "▲" : "▼"} ${full(Math.abs(change))}`}
                 {before ? ` (${change >= 0 ? "+" : "−"}${Math.abs(Math.round((change / before) * 1000) / 10)}%)` : ""}
                 {nowLabel !== undefined && beforeLabel !== undefined
-                  ? `, ${nowLabel}${nowLabel === chart.open_period ? " so far" : ""} vs ${beforeLabel}${beforeLabel === chart.first_period ? " (part)" : ""}`
+                  ? `, ${dateLabel(nowLabel)}${nowLabel === chart.open_period ? " so far" : ""} vs ${dateLabel(beforeLabel)}${beforeLabel === chart.first_period ? " (part)" : ""}`
                   : " vs the row before"}
               </div>
             )}
@@ -498,7 +500,7 @@ export function chartKey(chart: AskChart, theme: Theme): { items: { name: string
     const one = names[0];
     if (!one) return none;
     const by = (chart.x ?? "").replace(/_/g, " ").trim();
-    const caption = chart.kind === "scatter" ? `Up: ${human(one.name)}. Across: ${by}.`
+    const caption = chart.kind === "scatter" ? `Each dot is one row: ${by} along the bottom, ${human(one.name).toLowerCase()} up the side. Point at a dot for its name.`
       : chart.kind === "histogram" ? `Rows by ${human(one.name).toLowerCase()}`
       : by ? `${human(one.name)} by ${by}` : human(one.name);
     return { items: [], caption };
@@ -507,7 +509,7 @@ export function chartKey(chart: AskChart, theme: Theme): { items: { name: string
   const right = names.filter((s) => s.axis === "right");
   return {
     items: names.map((s) => ({
-      name: `${human(s.name)}${s.axis === "right" ? " (right axis)" : ""}`,
+      name: `${human(s.name)}${s.axis === "right" ? " (scale on the right)" : ""}`,
       colour: colour(s.axis === "right" ? left.length + right.indexOf(s) : left.indexOf(s), theme),
     })),
     caption: "",
@@ -543,8 +545,8 @@ export function chartNotes(chart: AskChart): string[] {
     const strength = Math.abs(r) >= 0.7 ? "strongly" : Math.abs(r) >= 0.4 ? "moderately" : "weakly";
     out.push(`Fitted line: r = ${r.toFixed(2)} over ${chart.trend.n} points (${strength} ${r >= 0 ? "rising" : "falling"} together). That alone does not show one causes the other.`);
   }
-  if (chart.open_period) out.push(`${chart.open_period} is not over yet: its figures are of part of it.`);
-  if (chart.first_period) out.push(`${chart.first_period} is only partly inside the window: its figures are of part of it.`);
+  if (chart.open_period) out.push(`${dateLabel(chart.open_period)} is still in progress, so its figures are partial.`);
+  if (chart.first_period) out.push(`${dateLabel(chart.first_period)} started before the period shown, so its figures are partial.`);
   if (chart.kind === "waterfall") out.push("Each bar starts where the one before ended; the last bar is the total.");
   if (chart.kind === "funnel") out.push("Each percentage is of the step before.");
   if (chart.currency && !["kpi", "pie", "donut"].includes(chart.kind)) out.push(`Amounts in ${chart.currency}.`);

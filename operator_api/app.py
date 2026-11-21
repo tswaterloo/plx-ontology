@@ -58,7 +58,8 @@ CANARY_ROUTES = frozenset({("GET", "/api/me"), ("POST", "/api/ask")})
 MEASURE_ROUTES = frozenset({
     "/api/me", "/api/home", "/api/sidebar", "/api/briefing", "/api/briefing/items",
     "/api/briefing/pages", "/api/briefing/unjudged", "/api/suggestions", "/api/insights",
-    "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/labour", "/api/my-work",
+    "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/data-health", "/api/labour",
+    "/api/my-work",
     "/api/biz/page", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
     "/api/workload/grants", "/api/approvals", "/api/replies", "/api/autopilot",
     "/api/autopilot/catalog", "/api/autopilot/schedules", "/api/autopilot/drafts",
@@ -979,6 +980,13 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         and kept for you (never Home's lists); null count when it could not be read."""
         with first_partial():
             return backend.sidebar(who)
+
+    @app.get("/api/data-health", response_model=m.DataHealth, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}})
+    def data_health(who: Reader = Depends(reader)) -> m.DataHealth:
+        """Every data-health check: the findings you may see, and how many more it found on
+        records you may not open (counted, never named)."""
+        return backend.data_health(who)
 
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})

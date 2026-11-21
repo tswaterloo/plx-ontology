@@ -21,6 +21,7 @@ export const PAGE_INTROS = {
   "/activity": "Each message and task you started here, and whether it went out.",
   "/help": "How the Workbench helps in your role, and what to try in your first week.",
   "/ops": "What is broken in the Workbench now, what to do about it, and what is paused on purpose.",
+  "/data-health": "Records to fix in the systems we read: customers or suppliers entered twice, missing fields and values that disagree between systems.",
   "/trust": "Whether the data keeps up with the systems it reads, how accurate the answers measured, and what is switched on.",
   "/feedback": "Feedback sent with Give feedback, and what became of it.",
 } as const satisfies Record<string, string>;

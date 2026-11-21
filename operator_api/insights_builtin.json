@@ -5,7 +5,7 @@
    "id": "team_output",
    "group": "Team",
    "title": "Work sent per person, last 28 days",
-   "about": "Per person: distinct emails sent from their work address (counted once, whichever mailboxes hold it), Teams messages they posted and meetings they organised (not cancelled), over the last 28 days. Sorted by mail plus Teams; the long tail on the right is the L-curve. Floor, lab and phone work is not seen, and mail sent from another address of theirs is not counted.",
+   "about": "Per person: distinct emails sent from their work address (counted once, whichever mailboxes hold it), Teams messages they posted and meetings they organised (not cancelled), over the last 28 days. Sorted by mail plus Teams, busiest first. Floor, lab and phone work is not seen, and mail sent from another address of theirs is not counted.",
    "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE received_at >= now() - interval '28 days' AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     g AS (SELECT organizer, count(DISTINCT ical_uid) AS n FROM meetings\n           WHERE start_at >= now() - interval '28 days' AND NOT is_cancelled GROUP BY 1)\nSELECT s.name AS person, s.department, coalesce(m.n, 0) AS mail_sent, coalesce(t.n, 0) AS teams_sent,\n       coalesce(g.n, 0) AS meetings_organised, s.person_id\nFROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id LEFT JOIN g ON g.organizer = s.email\nWHERE coalesce(m.n, 0) + coalesce(t.n, 0) + coalesce(g.n, 0) > 0\nORDER BY coalesce(m.n, 0) + coalesce(t.n, 0) DESC",
    "chart": {
     "kind": "bar",
@@ -331,7 +331,7 @@
    "id": "decisions_said",
    "group": "Decisions",
    "title": "Decisions in mail and Teams, last 14 days",
-   "about": "Decisions, agreements and confirmations stated in the mail and Teams messages you can read over the last 14 days, newest first: who decided and what, and how many days ago. Each is a model's one-line reading of one message (Ask to see the message itself).",
+   "about": "Decisions, agreements and confirmations stated in the mail and Teams messages you can read over the last 14 days, newest first: who decided and what, and how many whole days ago. One row per person and subject in a conversation (messages says how many said it). Each is a one-line reading of a message; Ask to see the message itself.",
    "scope": "everyone",
    "chart": {
     "kind": "table",
@@ -340,7 +340,7 @@
      "days_ago"
     ]
    },
-   "sql": "SELECT coalesce(nullif(f.who, ''), f.sender) || ': ' || f.summary AS decision, round((extract(epoch FROM now() - f.said_at) / 86400)::numeric, 1) AS days_ago, f.topic, f.source, f.handle FROM comms_findings f WHERE f.kind = 'decision' AND f.said_at >= now() - interval '14 days' ORDER BY f.said_at DESC LIMIT 100",
+   "sql": "WITH named AS (SELECT f.*, coalesce(CASE WHEN length(btrim(f.who)) < 2 OR lower(btrim(f.who)) ~ '^(us|we|i|me|they|you|our team|petra staff|customer|supplier|vendor|sender|speaker|colleague|someone|unknown|outside( sender| party| supplier| customer)?)( \\(.*\\))?$' THEN NULL ELSE btrim(f.who) END, s.name, CASE WHEN f.sender LIKE '{%}' THEN nullif(btrim((f.sender::jsonb) ->> 'display_name'), '') END, nullif(btrim(f.sender), ''), 'Unknown sender') AS by_whom, coalesce(nullif(f.thread, ''), f.handle) AS thread_key FROM comms_findings f LEFT JOIN staff s ON (f.source = 'email' AND s.email = lower(f.sender)) OR (f.source = 'teams' AND f.sender LIKE '{%}' AND s.person_id = (f.sender::jsonb) ->> 'id') WHERE f.kind = 'decision' AND f.said_at >= now() - interval '14 days'), issues AS (SELECT DISTINCT ON (thread_key, by_whom, topic) *, count(*) OVER (PARTITION BY thread_key, by_whom, topic) AS messages FROM named ORDER BY thread_key, by_whom, topic, said_at DESC) SELECT by_whom || ': ' || summary AS decision, floor(extract(epoch FROM now() - said_at) / 86400)::int AS days_ago, messages, topic, source, handle FROM issues ORDER BY said_at DESC LIMIT 100",
    "fast": true
   },
   {
@@ -401,7 +401,7 @@
    "id": "complaints_latest",
    "group": "Customers",
    "title": "Latest complaints from outside, last 30 days",
-   "about": "The complaints customers, suppliers and other outside parties made in the mail and Teams messages you can read over the last 30 days, newest first: who (the customer when the message is linked to one) and what, and how many days ago.",
+   "about": "The complaints customers, suppliers and other outside parties made in the mail and Teams messages you can read over the last 30 days, newest first: who (the customer when the message is linked to one) and what, and how many whole days ago. One row per person and subject in a conversation (messages says how many said it).",
    "scope": "everyone",
    "chart": {
     "kind": "table",
@@ -410,7 +410,7 @@
      "days_ago"
     ]
    },
-   "sql": "SELECT coalesce((SELECT c.name FROM customers c WHERE c.handle = ANY(f.customers) ORDER BY c.name LIMIT 1), nullif(f.who, ''), f.sender) || ': ' || f.summary AS complaint, round((extract(epoch FROM now() - f.said_at) / 86400)::numeric, 1) AS days_ago, f.topic, f.handle FROM comms_findings f WHERE f.kind = 'complaint' AND f.from_side IN ('customer', 'outside') AND f.said_at >= now() - interval '30 days' ORDER BY f.said_at DESC LIMIT 100",
+   "sql": "WITH named AS (SELECT f.*, coalesce(CASE WHEN length(btrim(f.who)) < 2 OR lower(btrim(f.who)) ~ '^(us|we|i|me|they|you|our team|petra staff|customer|supplier|vendor|sender|speaker|colleague|someone|unknown|outside( sender| party| supplier| customer)?)( \\(.*\\))?$' THEN NULL ELSE btrim(f.who) END, s.name, CASE WHEN f.sender LIKE '{%}' THEN nullif(btrim((f.sender::jsonb) ->> 'display_name'), '') END, nullif(btrim(f.sender), ''), 'Unknown sender') AS by_whom, coalesce(nullif(f.thread, ''), f.handle) AS thread_key FROM comms_findings f LEFT JOIN staff s ON (f.source = 'email' AND s.email = lower(f.sender)) OR (f.source = 'teams' AND f.sender LIKE '{%}' AND s.person_id = (f.sender::jsonb) ->> 'id') WHERE f.kind = 'complaint' AND f.from_side IN ('customer', 'outside') AND f.said_at >= now() - interval '30 days'), issues AS (SELECT DISTINCT ON (thread_key, by_whom, topic) *, count(*) OVER (PARTITION BY thread_key, by_whom, topic) AS messages FROM named ORDER BY thread_key, by_whom, topic, said_at DESC) SELECT coalesce((SELECT c.name FROM customers c WHERE c.handle = ANY(i.customers) ORDER BY c.name LIMIT 1), by_whom) || ': ' || summary AS complaint, floor(extract(epoch FROM now() - said_at) / 86400)::int AS days_ago, messages, topic, handle FROM issues i ORDER BY said_at DESC LIMIT 100",
    "fast": true
   },
   {

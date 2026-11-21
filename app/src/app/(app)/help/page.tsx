@@ -114,7 +114,7 @@ function Help() {
               <a href="/desktop/" className="text-fg underline underline-offset-2" data-testid="help-desktop-download">
                 Download the desktop app
               </a>
-              . The installers are not signed yet: on Windows choose More info, then Run anyway; on a Mac right-click the app and choose Open.
+              . Ask IT to install it for you if your computer asks whether to trust it.
             </p>
           </section>
         )}

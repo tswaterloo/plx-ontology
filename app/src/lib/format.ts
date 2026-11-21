@@ -198,6 +198,15 @@ export function opsHeadline(line: string): string {
   return line.split("; ")[0].replace(/_/g, " ");
 }
 
+/** A problem as a person reads it at a glance: its first clause (the measurements and the
+ * check's own words are a click away under Details). */
+export function problemParts(line: string): { head: string; more: string | null } {
+  const first = opsHeadline(line);
+  const head = first.length > 90 && first.includes(": ") ? first.slice(0, first.indexOf(": ")) : first;
+  const more = line.trim() === head.trim() ? null : line;
+  return { head, more };
+}
+
 /** "5 min ago", "3 h ago", "2 days ago" relative to `now`. */
 export function ago(iso: string, now: Date = new Date()): string {
   const d = new Date(iso);
@@ -425,6 +434,8 @@ export function readable(text: string | null | undefined): string {
   return plainDates(
     plainReasons(withoutFloatNoise(text))
       .replace(/_x([0-9A-Fa-f]{4})_/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+      // "PO PO100109": the number already says what it is
+      .replace(/\b(PO|SO) (?=\1-?\d)/g, "")
       .replace(OBJECT_KEY, (_m, type: string) => typeLabel(type))
       .replace(/\b[A-Z]{2,}(?:_[A-Z]{2,})+:\s+(?=\w)/g, "")
       .replace(/\b[A-Z]{2,}(?:_[A-Z]{2,})+\b/g, (code) => code.replace(/_/g, " ").toLowerCase()),
@@ -512,6 +523,8 @@ export function recordKind(handle: string | null | undefined, label?: string | n
 export function recordLabel(type: string | null | undefined, label: string): string {
   // "PO PO100095" (a type word before a number that already carries it) is said once
   const l = label.trim().replace(/^(PO|SO) (?=\1[- ]?\d)/i, "").replace(/^(PO|SO)(?=\d)/, "$1 "); // "PO100095" reads as "PO 100095", like the rest
+  // a linked order whose number its source left empty arrives as the bare prefix: say so
+  if (/^(?:PO|SO)$/i.test(l)) return `${l.toUpperCase()} (no number on record)`;
   if (/^\d[\w-]*$/.test(l)) {
     if (/^PurchaseOrder$|^purchase_order$/.test(type ?? "")) return `PO ${l}`;
     if (/^SalesOrder$|^sales_order$/.test(type ?? "")) return `SO ${l}`;

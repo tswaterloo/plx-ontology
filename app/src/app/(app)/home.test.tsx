@@ -208,6 +208,26 @@ describe("Home stays a short list", () => {
   });
 });
 
+describe("Home counts an alert kind the way Alerts does", () => {
+  it("heads a group with every alert of its kind firing, not the rows read so far", async () => {
+    ok.on = true;
+    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
+    const item = (n: number) => ({ id: `c${n}`, event_type: "price_below_cost", object_type: "Customer", object_id: `Customer:${n}`, subject_label: `C-${n}`, summary: `Customer ${n} paid below cost.`, home: true, rank: n });
+    // 65 fire; the briefing's first page holds 25 of them
+    ok.briefing = {
+      status: "read", count: 65, home_count: 65, items: Array.from({ length: 25 }, (_, i) => item(i + 1)),
+      groups: [{ event_type: "price_below_cost", label: "Customer price below cost", count: 65, in_top: 25, new_since_visit: 0, acknowledged: 0 }],
+    };
+    ok.replies = { total: 0, items: [] };
+    render(<HomePage />);
+    const more = await screen.findByTestId("home-folded");
+    expect(more).toHaveTextContent("Show 62 more");
+    expect(screen.getByRole("heading", { name: /below cost\s*65/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /below cost\s*25/i })).toBeNull();
+    ok.on = false;
+  });
+});
+
 describe("The visit is marked seen after the suggestion cards have settled", () => {
   it("sends no mark while the cards are still being read (the mark makes their kept read stale)", async () => {
     ok.on = true;
@@ -275,7 +295,7 @@ describe("Home while the alerts are still being read", () => {
 });
 
 describe("Home's counts add up", () => {
-  it("All is the sum of its chips: prepared work is its own chip and lists only under All and Confirm", async () => {
+  it("All is the sum of its chips: a draft to confirm counts under Confirm, an alert waiting on you (nothing to confirm) under Decide", async () => {
     ok.on = true;
     ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
     const item = (n: number) => ({ id: `h${n}`, event_type: "lot_on_hold", object_type: "Batch", object_id: `Batch:${n}`, subject_label: `BC-${n}`, summary: `Lot ${n} is on quality hold.`, home: true, rank: n });
@@ -287,17 +307,29 @@ describe("Home's counts add up", () => {
     const alert = { item_id: "ap_q", sender: "", channel: "system", kind: "alert", subject: "QC hold or fail", message: "", body: "", to: [], cc: [], edited: false, ask: "", summary: "Lot L-1 is on-hold; it holds up 1 open order.", facts: ["OR-9, Three Ships"], note: "", links: [], created_at: "2026-11-18T14:00:00Z" };
     ok.drafts = [alert, { ...alert, item_id: "ap_r", summary: "Lot L-2 is on-hold; it holds up 1 open order." }];
     try {
-      render(<HomePage />);
+      const { unmount } = render(<HomePage />);
       const header = await screen.findByTestId("home-header");
       const chip = (name: string) => within(header).getByRole("tab", { name: new RegExp(`^${name}`) });
       await waitFor(() => expect(chip("All")).toHaveTextContent("All5"));
-      expect(chip("Confirm")).toHaveTextContent("Confirm2");
-      expect(chip("Decide")).toHaveTextContent("Decide3");
-      // under Decide only what Decide counts: the prepared cards are not listed
+      // nothing to confirm: no Confirm chip, and the alerts are not called prepared
+      expect(within(header).queryByRole("tab", { name: /^Confirm/ })).toBeNull();
+      expect(chip("Decide")).toHaveTextContent("Decide5");
+      expect(screen.getByTestId("assist-queue")).toHaveAccessibleName("Waiting on you");
+      expect(screen.queryByText("Prepared for you")).toBeNull();
+      // under Decide the alerts waiting on you are listed with the rest Decide counts
       fireEvent.click(chip("Decide"));
-      expect(screen.getByTestId("assist-queue").closest("[hidden]")).not.toBeNull();
-      fireEvent.click(chip("Confirm"));
       expect(screen.getByTestId("assist-queue").closest("[hidden]")).toBeNull();
+      unmount();
+      // a draft to confirm is prepared for you and counts under Confirm alone
+      ok.drafts = [alert, { ...alert, item_id: "ap_d", kind: "reply", subject: "Re: order", summary: "Reply drafted." }];
+      render(<HomePage />);
+      const header2 = await screen.findByTestId("home-header");
+      const chip2 = (name: string) => within(header2).getByRole("tab", { name: new RegExp(`^${name}`) });
+      await waitFor(() => expect(chip2("All")).toHaveTextContent("All5"));
+      expect(chip2("Confirm")).toHaveTextContent("Confirm1");
+      expect(chip2("Decide")).toHaveTextContent("Decide4");
+      fireEvent.click(chip2("Confirm"));
+      expect(screen.getByTestId("assist-queue")).toHaveAccessibleName("Prepared for you");
       expect(screen.queryByText("Lot 1 is on quality hold.", { exact: false })).toBeNull();
     } finally {
       ok.on = false;

@@ -8790,6 +8790,139 @@
         "title": "CustomerSummary",
         "type": "object"
       },
+      "DataHealth": {
+        "additionalProperties": false,
+        "description": "Admin, Data health: every check the registry files under data health, each with its\nfindings for this reader; ``unread``: the checks' findings could not be read now\n(never a list of zeros).",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/DataHealthCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "partial": {
+            "default": false,
+            "description": "The read stopped at its limit: counts are at least these.",
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "unread",
+              "not_configured"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "DataHealth",
+        "type": "object"
+      },
+      "DataHealthCheck": {
+        "additionalProperties": false,
+        "description": "One data-health check as this reader reads it: what it found that they may see, and\nhow many more it found on records they may not open (counted, never named).",
+        "properties": {
+          "count": {
+            "default": 0,
+            "description": "Open findings this reader may see.",
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "hidden": {
+            "default": 0,
+            "description": "Open findings on records this reader may not open: never named, never listed.",
+            "minimum": 0.0,
+            "title": "Hidden",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DataHealthItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "more": {
+            "default": 0,
+            "description": "Findings this reader may see past those listed.",
+            "minimum": 0.0,
+            "title": "More",
+            "type": "integer"
+          },
+          "on": {
+            "description": "Shown to readers (measured right); off: named only.",
+            "title": "On",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "label",
+          "on"
+        ],
+        "title": "DataHealthCheck",
+        "type": "object"
+      },
+      "DataHealthItem": {
+        "additionalProperties": false,
+        "description": "One finding of a data-health check this reader may open.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "object_id",
+          "object_type",
+          "summary",
+          "open_url"
+        ],
+        "title": "DataHealthItem",
+        "type": "object"
+      },
       "DerivedCode": {
         "additionalProperties": false,
         "description": "Derived data on screen made by older code than the code deployed\n(``operating.derived_status``): being refreshed, or flagged when model-made.",
@@ -21473,6 +21606,18 @@
             ],
             "title": "At"
           },
+          "own": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "False: an event of a linked record shown beside the record (its title names that record), never the record's own last change; true or absent: the record's own.",
+            "title": "Own"
+          },
           "source": {
             "anyOf": [
               {
@@ -28132,6 +28277,38 @@
         "summary": "Chart File",
         "tags": [
           "insights"
+        ]
+      }
+    },
+    "/api/data-health": {
+      "get": {
+        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named).",
+        "operationId": "data_health_api_data_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataHealth"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Data Health",
+        "tags": [
+          "home"
         ]
       }
     },

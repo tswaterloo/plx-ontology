@@ -23,6 +23,18 @@ export function figureText(f: Pick<BriefFigure, "value" | "unit" | "currency">):
   return f.value;
 }
 
+/** A signed change written like its figure: "+12", "+$164,734.39 CAD", "−1 pts". */
+export function signedDelta(f: Pick<BriefFigure, "delta" | "unit" | "currency">): string | null {
+  if (f.delta == null) return null;
+  const n = Number(f.delta);
+  if (!Number.isFinite(n)) return f.delta;
+  const size = f.delta.replace(/^[-+]/, "");
+  const body = f.unit === "money" && f.currency ? formatMoney(size, f.currency)
+    : f.unit === "percent" ? `${size} pts`
+    : Number(size).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return `${n < 0 ? "−" : n > 0 ? "+" : ""}${body}`;
+}
+
 /** A week-over-week change as words ("+3 vs 7", "-2.5 pts vs 90%"). */
 export function deltaText(f: Pick<BriefFigure, "delta" | "previous" | "unit" | "currency">): string | null {
   if (f.delta == null || f.previous == null) return null;

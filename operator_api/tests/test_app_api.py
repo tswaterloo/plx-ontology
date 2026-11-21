@@ -1019,6 +1019,14 @@ class BriefRoutes(unittest.TestCase):
                                 frozenset(), {"status": "not_configured"},
                                 week=date(2026, 11, 2), today=date(2026, 11, 10))
         self.assertEqual(set(states), {s["key"] for s in real["sections"]})
+        # late purchase orders are Home's Late list, the same orders and the same count
+        late = client.get("/api/late", params={"limit": 10}).json()
+        section = next(s for s in body["sections"] if s["key"] == "late_pos")
+        self.assertTrue(late["items"])
+        self.assertEqual([r["object"]["object_id"] for r in section["rows"]],
+                         [i["object_id"] for i in late["items"]])
+        self.assertEqual(len(section["rows"]) + section["more"], late["total"])
+        self.assertEqual(section["figures"][0]["value"], str(late["total"]))
         self.assertEqual(client.get("/api/brief/weekly", params={"week": "nope"}).status_code,
                          422)
         meetings = client.get("/api/brief/meetings").json()["meetings"]

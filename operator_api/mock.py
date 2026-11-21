@@ -792,6 +792,23 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     def forget_reader(self, reader: Reader) -> None:
         return None
 
+    def data_health(self, reader: Reader) -> m.DataHealth:
+        """The demo's data-health findings through the real page builder: one duplicate
+        pair the demo reader sees and two findings on records it may not open."""
+        from . import data_health
+
+        class Demo:
+            def data_health_gaps(self, kinds: Any, *, limit: int = 0) -> dict[str, Any]:
+                gaps = [{"id": "dh-1", "kind": "duplicate_party_candidate",
+                         "object_id": "Customer:demo:maple-leaf", "object_type": "Customer",
+                         "summary": "Maple Leaf Soapworks and MAPLE LEAF SOAPWORKS INC look "
+                                    "like one customer entered twice."}]
+                return {"status": "read", "as_of": "2026-10-29",
+                        "gaps": [g for g in gaps if g["kind"] in kinds],
+                        "hidden": {"key_field_missing": 2} if "key_field_missing" in kinds
+                        else {}}
+        return data_health.page(Demo())
+
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         late = self._late()
         page = late[offset:offset + limit]
@@ -1158,8 +1175,9 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     def weekly_review(self, reader: Reader, week: Any, **_ahead: Any) -> m.Brief:
         """A synthetic finished week (``mock_meetings.weekly``) in the builder's own shape."""
         from . import mock_meetings
-        from .briefs import brief_model
-        return brief_model(mock_meetings.weekly(week))
+        from .briefs import LATE_ROWS, brief_model, late_from_home
+        return late_from_home(brief_model(mock_meetings.weekly(week)),
+                              lambda: self.late_list(reader, limit=LATE_ROWS))
 
     def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
         """A demo alert's playbook by the real builder over the demo briefing; no record

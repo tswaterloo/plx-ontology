@@ -12,7 +12,7 @@ import re
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .autopilot_records import _addresses, _decimal, _instant, _internal, _linked, _read, _v
+from .autopilot_records import object_href, _addresses, _decimal, _instant, _internal, _linked, _read, _v
 from .autopilot_queue import (
     CLOSED,
     HandlerTimeout,
@@ -960,7 +960,7 @@ def h_task(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"skip": "no_record_named" if not named else "nothing_to_answer"}
     out = {"summary": f"Task: {f.get('title', '')[:140]}",
            "records": named, "orders": facts, "gaps": [] if named else ["no_record_named"],
-           "links": [{"label": "Open the task's records", "href": f"/object/{o}"}
+           "links": [{"label": "Open the task's records", "href": object_href(o)}
                      for o in named[:5]]}
     if facts:
         out["answer"] = [f"Order {x['order_number']}: {x['status'] or 'in progress'}"
@@ -993,8 +993,8 @@ def h_question(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         "summary": text[:140], "question": text, "context": str(q.get("context") or ""),
         "options": options, "task_id": q.get("task_id"), "task_title": title[:200],
         "records": named, "orders": facts,
-        "links": ([{"label": "Open the task", "href": f"/object/{task}"}] if task else [])
-        + [{"label": "Open a record it names", "href": f"/object/{o}"} for o in named[:4]],
+        "links": ([{"label": "Open the task", "href": object_href(task)}] if task else [])
+        + [{"label": "Open a record it names", "href": object_href(o)} for o in named[:4]],
         "note": "Answer in Mission Control; nothing is answered from here."}
     if task:
         out["task"] = {"object_id": task}     # the question is the item, not the whole task

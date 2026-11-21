@@ -38,6 +38,7 @@ from operating import autopilot_engine
 from operating import autopilot_events
 from operating import autopilot_outcomes as ao
 from operating import autopilot_queue
+from operating.autopilot_records import object_href
 from operating import learning
 from operating import autopilot_write as aw
 from operating import workflows as wf
@@ -82,6 +83,21 @@ NOT_RUN = frozenset({"dry_run", "needs_confirm", "killed", "refused", "excluded"
                      "not_routine", "unavailable", "rate_limited", "duplicate",
                      "not_performed"})
 
+
+
+
+_ONE_SEGMENT = re.compile(r"^/object/([^/?#]+)$")
+
+
+def card_href(href: str) -> str:
+    """A card link as the app routes it: ``/object/<type>/<id>``. Items prepared before the
+    writers named the type say ``/object/<id>`` (Page not found); the id's own prefix is the
+    type, so the link is rebuilt from it. Any other address is kept as it is."""
+    from urllib.parse import unquote
+    one = _ONE_SEGMENT.match(href)
+    if one and ":" in unquote(one.group(1)):
+        return object_href(unquote(one.group(1)))
+    return href
 
 
 def shown_message(text: Any) -> str:
@@ -150,7 +166,7 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
     for link in prepared.get("links") or ():
         if isinstance(link, Mapping) and str(link.get("href") or "").startswith("/object/"):
             links.append(m.AutopilotLink(label=str(link.get("label") or "Open")[:80],
-                                         href=str(link["href"])[:600]))
+                                         href=card_href(str(link["href"]))[:600]))
     if not [link for link in links if link.href.startswith("/object/")]:
         named = {str(a.get("object_id")): str(a.get("order_number") or "")
                  for a in affected if a.get("object_id")}
@@ -165,7 +181,7 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
             if orders > 1 and named.get(oid):
                 # two order links must say which order each one opens
                 label = f"Open order {named[oid]}"
-            links.append(m.AutopilotLink(label=label, href="/object/" + quote(oid, safe=":")))
+            links.append(m.AutopilotLink(label=label, href=object_href(oid)))
     action = prepared.get("action") if isinstance(prepared.get("action"), Mapping) else {}
     note = str(prepared.get("note") or action.get("note") or "").strip()
     # the title is "<workflow>: <summary>": shown above the summary it would say it twice,

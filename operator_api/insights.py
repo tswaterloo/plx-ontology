@@ -8,7 +8,7 @@ anyone more than their own Ask would.
 Two kinds, one engine:
 
 * **built-in** (``insights_builtin.json``): declared definitions of the team, org and
-  customer views (work sent per person and its L-curve, reply time, threads waiting on
+  customer views (work sent per person, reply time, threads waiting on
   each person, span of control, org levels, the weekly mail pulse, customers by mail).
   Each names no person, customer or case; a definition is a spec entry, never code.
 * **saved**: a person's own (``insights.insight``, migration 0046): a chart the Ask drew

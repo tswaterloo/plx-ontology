@@ -151,7 +151,7 @@ export function AlertsView() {
         {data && !data.configured && <EmptyState title="Watchlists are off on this server." />}
         {health ? (
           <div className="max-w-4xl">
-            <DataHealthSection reg={reg} briefing={briefing} error={panelError} retry={retryKinds} />
+            <DataHealthSection />
           </div>
         ) : (
         <>

@@ -19,7 +19,7 @@ vi.mock("@/lib/api", async (orig) => ({
   },
 }));
 
-import { AlertKindsSection } from "./alert-kinds";
+import { AlertKindsSection, TypeItems } from "./alert-kinds";
 
 describe("Watching alert counts", () => {
   it("open the alerts they count, a page at a time, each linked to its record", async () => {
@@ -34,6 +34,22 @@ describe("Watching alert counts", () => {
     expect(await within(list).findByRole("link", { name: /PO 91001/ })).toBeInTheDocument();
     expect(calls.items).toEqual([["po_late", 0], ["po_late", 1]]);
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+});
+
+describe("A kind's further alerts", () => {
+  it("never lists again the rows already shown above them", async () => {
+    calls.items = [];
+    render(<TypeItems type="po_late" count={1} more="1 more" skip={["pe-91000"]} />);
+    await userEvent.click(screen.getByRole("button", { name: "1 more" }));
+    // the first page held only the row shown above: nothing listed, never "none of these"
+    await userEvent.click(await screen.findByRole("button", { name: "Show more" }));
+    expect(screen.queryByText(/None of these/)).toBeNull();
+    // the next page starts past the rows read, the skipped one included
+    const list = await screen.findByTestId("items-po_late");
+    expect(await within(list).findByRole("link", { name: /PO 91001/ })).toBeInTheDocument();
+    expect(within(list).queryByRole("link", { name: /PO 91000/ })).toBeNull();
+    expect(calls.items).toEqual([["po_late", 0], ["po_late", 1]]);
   });
 });
 

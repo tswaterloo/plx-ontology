@@ -42,7 +42,7 @@ describe("autopilot scorecard in the work log", () => {
     expect(api.days).toHaveBeenCalledWith(3, expect.anything());
     // the gate per drafted workflow of yours, in judged items
     const gates = await screen.findByTestId("scorecard-gates");
-    expect(gates).toHaveTextContent("12 of 15 items at ≥90% · 91.7% right so far");
+    expect(gates).toHaveTextContent("Checked 12 of the 15 items it needs; 91.7% right so far, 90% needed");
     expect(gates).toHaveTextContent("No held-out items judged yet");
     expect(gates).not.toHaveTextContent("Teams chat");
   });

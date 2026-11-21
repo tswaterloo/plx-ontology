@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { getTeamPerson } from "@/lib/api";
+import { getInsight, getTeamPerson } from "@/lib/api";
 import type { TeamPerson, TeamView } from "@/lib/types";
-import { TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
+import { PLANNER_INSIGHT, TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
 
+const planner = vi.hoisted(() => ({ rows: [] as string[][], people: [] as (string | null)[] }));
 vi.mock("@/lib/api", () => ({
+  getInsight: vi.fn(async () => ({ columns: ["person", "department", "open_tasks", "overdue", "overdue_90_days", "person_id"], rows: planner.rows, people: planner.people })),
   getTeamPerson: vi.fn(async (key: string) => ({ person: person(key, "Avery Lindqvist"), items: [], withheld: 0, truncated: false, timeline: [], partners: [] })),
 }));
 
@@ -49,12 +51,30 @@ describe("Team dashboard", () => {
     fireEvent.click(within(table).getByText("Median"));
     expect(names()[0]).toBe("Bea Okafor");
     fireEvent.click(screen.getByTestId("period-28"));
-    expect(within(table).getByTitle(/Planner tasks/)).toBeTruthy();
+    // a system's own columns are one System filter away, not 17 columns wide by default
+    expect(within(table).queryByTitle(/Planner tasks created/)).toBeNull();
+    fireEvent.change(screen.getByTestId("filter-system"), { target: { value: "planner" } });
+    expect(within(table).getByTitle(/Planner tasks created/)).toBeTruthy();
+    expect(within(table).queryByTitle("Mail sent")).toBeNull();
+    fireEvent.change(screen.getByTestId("filter-system"), { target: { value: "" } });
     // no disclaimer: only the count time, on one short line
     const note = screen.getByTestId("team-note");
     expect(note.textContent?.length).toBeLessThan(40);
     expect(note.getAttribute("title")).toBeNull();
     expect(screen.queryByText(/What is counted/)).toBeNull();
+  });
+
+  it("counts open tasks the way Insights does: the Planner tasks assigned to each person", async () => {
+    planner.rows = [["Avery Lindqvist", "Purchasing", "5", "2", "0", "p1"], ["Someone Hidden", "", "9", "0", "0", "p9"]];
+    planner.people = ["k1", null];
+    render(<TeamDashboard data={view} />);
+    await waitFor(() => expect(screen.getByTestId("team-planner-total").textContent).toBe("5"));
+    expect(getInsight).toHaveBeenCalledWith(PLANNER_INSIGHT, expect.anything());
+    const table = screen.getByTestId("team-table");
+    expect(within(table).getByTitle("Open Planner tasks assigned to them")).toBeTruthy();
+    expect(within(table).getByTitle("2 past due").textContent).toBe("5");
+    planner.rows = [];
+    planner.people = [];
   });
 
   it("/team?person= opens that person by Team key or by a name only one row has, else narrows the list", async () => {

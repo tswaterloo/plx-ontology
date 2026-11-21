@@ -11,6 +11,18 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 
+# ----------------------------------------------------------------------------- links
+
+def object_href(object_id: Any) -> str:
+    """The app address of a record's page, ``/object/<type>/<id>`` (the type is the id's own
+    prefix, ``SalesOrder:portal...`` -> ``SalesOrder``); a card link built any other way opens
+    Page not found."""
+    from urllib.parse import quote
+    oid = str(object_id or "")
+    kind = oid.split(":", 1)[0] if ":" in oid else "Object"
+    return f"/object/{quote(kind, safe='')}/{quote(oid, safe='')}"
+
+
 # ----------------------------------------------------------------------------- reading
 
 def _digest(*parts: Any) -> str:

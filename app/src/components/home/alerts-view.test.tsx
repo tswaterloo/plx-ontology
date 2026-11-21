@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { ApiError } from "@/lib/errors";
 import { describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ briefing: null as null | (() => Promise<unknown>), watchlist: { configured: true, alerts: [], follows: [], rules: [], unread: 0 } as Record<string, unknown> }));
+const api = vi.hoisted(() => ({ health: null as null | (() => Promise<unknown>), briefing: null as null | (() => Promise<unknown>), watchlist: { configured: true, alerts: [], follows: [], rules: [], unread: 0 } as Record<string, unknown> }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getWatchlist: () => Promise.resolve(api.watchlist),
@@ -14,6 +14,7 @@ vi.mock("@/lib/api", async (orig) => ({
       types: [{ type: "po_late", kind: "late_po", label: "Late purchase order", default: "on", home: true, precision: null }],
     }),
   getBriefing: () => api.briefing!(),
+  getDataHealth: () => (api.health ? api.health() : Promise.resolve({ status: "read", checks: [], partial: false })),
 }));
 
 import { AlertsView as WatchingPage } from "./alerts-view";
@@ -54,7 +55,8 @@ describe("Watching figures", () => {
 
   it("says the briefing failed on the Data health tab too, never waits on it forever, and Retry reads it again", async () => {
     let calls = 0;
-    api.briefing = () => (++calls === 1 ? Promise.reject(new ApiError(500, "boom")) : Promise.resolve({ status: "read", count: 0, new_since_visit: 0, groups: [], items: [] }));
+    api.briefing = () => Promise.resolve({ status: "read", count: 0, new_since_visit: 0, groups: [], items: [] });
+    api.health = () => (++calls === 1 ? Promise.reject(new ApiError(500, "boom")) : Promise.resolve({ status: "read", checks: [], partial: false }));
     window.location.hash = "#data-health";
     try {
       render(<WatchingPage />);
@@ -66,6 +68,7 @@ describe("Watching figures", () => {
       await vi.waitFor(() => expect(within(screen.getByTestId("data-health")).queryByRole("button", { name: /try again|retry/i })).toBeNull());
     } finally {
       window.location.hash = "";
+      api.health = null;
     }
   });
 
@@ -101,12 +104,24 @@ describe("Data health on Watching", () => {
     const mod = await import("@/lib/api");
     const spy = vi.spyOn(mod, "getAlertKinds").mockResolvedValue(reg as never);
     api.watchlist = { configured: true, alerts: [], follows: [], rules: [], unread: 0 };
-    api.briefing = () => Promise.resolve({ status: "read", count: 3, new_since_visit: 0, groups: [{ event_type: "duplicate_party_candidate", count: 3, in_top: 0, new_since_visit: 0, label: "x" }], items: [] });
+    api.briefing = () => Promise.resolve({ status: "read", count: 0, new_since_visit: 0, groups: [], items: [] });
+    const item = (n: number) => ({ id: `d${n}`, object_id: `Customer:x:${n}`, object_type: "Customer", summary: `Pair ${n} looks entered twice.`, open_url: `/object/Customer/Customer%3Ax%3A${n}` });
+    api.health = () => Promise.resolve({ status: "read", partial: false, checks: [
+      { type: "duplicate_party_candidate", label: "Customer or supplier entered twice", on: true, count: 3, hidden: 0, more: 0, items: [item(1), item(2), item(3)] },
+      { type: "sync_mismatch", label: "Record differs in its other system", on: true, count: 0, hidden: 0, more: 0, items: [] },
+      // found, but every finding is on records this reader may not open: never "None"
+      { type: "order_without_customer_po", label: "Order without a customer PO", on: true, count: 0, hidden: 166, more: 0, items: [] },
+      { type: "source_stale", label: "Source not updated lately", on: false, count: 0, hidden: 0, more: 0, items: [] },
+    ] });
     window.location.hash = "#data-health";
     const tab = render(<WatchingPage />);
     const row = await screen.findByTestId("data-health-duplicate_party_candidate");
-    expect(row).toHaveTextContent("3");
+    expect(screen.getByTestId("data-health-count-duplicate_party_candidate")).toHaveTextContent("3");
+    expect(within(row).getAllByRole("link")[0]).toHaveAttribute("href", "/object/Customer/Customer%3Ax%3A1");
     expect(screen.getByTestId("data-health-sync_mismatch")).toHaveTextContent("None");
+    expect(screen.getByTestId("data-health-count-order_without_customer_po")).toHaveTextContent("Hidden from you");
+    expect(screen.getByTestId("data-health-hidden-order_without_customer_po")).toHaveTextContent("166 on records your access doesn");
+    expect(screen.getByTestId("data-health-order_without_customer_po")).not.toHaveTextContent("None");
     expect(screen.getByTestId("data-health-off")).toHaveTextContent("source not updated lately");
     // the Data health tab is its own view: no alert figures, no What fired
     expect(screen.queryByTestId("watching-figures")).toBeNull();
@@ -117,12 +132,13 @@ describe("Data health on Watching", () => {
     render(<WatchingPage />);
     expect(await screen.findByText("Nothing fired on the alert kinds you can see.")).toBeInTheDocument();
     expect(screen.queryByTestId("health-elsewhere")).toBeNull();
-    expect(screen.getByTestId("surface-data_health")).toHaveAttribute("href", "/?show=alerts#data-health");
+    expect(screen.getByTestId("surface-data_health")).toHaveAttribute("href", "/data-health");
     expect(screen.queryByTestId("data-health")).toBeNull();
     expect(screen.getByText("Nothing fired on the alert kinds you can see.")).toBeInTheDocument();
     // zero counters are not drawn
     expect(screen.queryByText("Firing now")).toBeNull();
     expect(screen.queryByText("Kinds firing")).toBeNull();
     spy.mockRestore();
+    api.health = null;
   });
 });

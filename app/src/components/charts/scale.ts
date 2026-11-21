@@ -76,8 +76,24 @@ export function full(n: number | null | undefined, currency?: string | null): st
 
 /** A column name as people read it (mail_sent -> Mail sent). */
 export function human(name: string): string {
-  const s = name.replace(/_/g, " ").trim();
+  const s = name.replace(/_/g, " ").replace(/\bpct\b/gi, "%").replace(/\s+%/g, " %").trim();
   return s ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** An axis or period label as the app writes dates: "2026-11-16" -> "16 Nov" (the year added
+ * when it is not this year's), "2026-11" -> "Nov 2026"; anything else as it is. */
+export function dateLabel(label: string, now: Date = new Date()): string {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(label);
+  if (day) {
+    const [y, m, d] = [Number(day[1]), Number(day[2]), Number(day[3])];
+    if (m < 1 || m > 12 || d < 1 || d > 31) return label;
+    return `${d} ${MONTHS[m - 1]}${y === now.getFullYear() ? "" : ` ${y}`}`;
+  }
+  const month = /^(\d{4})-(\d{2})$/.exec(label);
+  if (month && Number(month[2]) >= 1 && Number(month[2]) <= 12) return `${MONTHS[Number(month[2]) - 1]} ${month[1]}`;
+  return label;
 }
 
 export function clip(text: string, n: number): string {

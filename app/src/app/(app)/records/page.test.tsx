@@ -78,3 +78,28 @@ describe("Records page", () => {
     expect(nav.push).not.toHaveBeenCalled();
   });
 });
+
+describe("a Records tab before any search", () => {
+  it("lists the records of its kind this person opened lately, never another person's", async () => {
+    const { setSavedUser, rememberOpened, clearSavedFor } = await import("@/lib/saved");
+    setSavedUser("employee:a");
+    rememberOpened({ type: "Customer", label: "Soapbox Soaps", href: "/object/Customer/Customer%3As1" });
+    rememberOpened({ type: "PurchaseOrder", label: "PO 106001", href: "/object/PurchaseOrder/PurchaseOrder%3Ap1" });
+    rememberOpened({ type: "Customer", label: "Soapbox Soaps", href: "/object/Customer/Customer%3As1" }); // once
+    nav.params = new URLSearchParams("kind=customers");
+    const { unmount } = render(<RecordsPage />);
+    const list = await screen.findByTestId("records-recent-list");
+    expect([...list.querySelectorAll("a")].map((a) => a.textContent?.replace(/\d.*$/, ""))).toEqual(["Soapbox Soaps"]);
+    unmount();
+    // the next person on this browser sees none of it; sign-out deletes it
+    setSavedUser("employee:b");
+    const { unmount: u2 } = render(<RecordsPage />);
+    expect(screen.queryByTestId("records-recent-list")).toBeNull();
+    u2();
+    clearSavedFor("employee:a");
+    setSavedUser("employee:a");
+    render(<RecordsPage />);
+    expect(screen.queryByTestId("records-recent-list")).toBeNull();
+    nav.params = new URLSearchParams("");
+  });
+});

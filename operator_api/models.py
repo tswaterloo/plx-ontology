@@ -1207,6 +1207,10 @@ class TimelineEvent(_Model):
     title: str
     summary: Optional[str] = None
     source: Optional[Source] = None
+    own: Optional[bool] = Field(None, json_schema_extra=_optional,
+                                description="False: an event of a linked record shown beside "
+                                "the record (its title names that record), never the record's "
+                                "own last change; true or absent: the record's own.")
 
 
 class LinkedItem(_Model):
@@ -3817,6 +3821,39 @@ class AutopilotHandRequest(_Model):
 class AutopilotColleagues(_Model):
     """Whom an alert can be passed to: an opaque key and a name each, never an id."""
     people: list[ViewAsPerson] = Field(default_factory=list)
+
+
+class DataHealthItem(_Model):
+    """One finding of a data-health check this reader may open."""
+    id: str
+    object_id: str
+    object_type: str
+    summary: str
+    open_url: str
+
+
+class DataHealthCheck(_Model):
+    """One data-health check as this reader reads it: what it found that they may see, and
+    how many more it found on records they may not open (counted, never named)."""
+    type: str
+    label: str
+    on: bool = Field(description="Shown to readers (measured right); off: named only.")
+    count: int = Field(0, ge=0, description="Open findings this reader may see.")
+    hidden: int = Field(0, ge=0, description="Open findings on records this reader may "
+                        "not open: never named, never listed.")
+    items: list[DataHealthItem] = Field(default_factory=list)
+    more: int = Field(0, ge=0, description="Findings this reader may see past those listed.")
+
+
+class DataHealth(_Model):
+    """Admin, Data health: every check the registry files under data health, each with its
+    findings for this reader; ``unread``: the checks' findings could not be read now
+    (never a list of zeros)."""
+    status: Literal["read", "unread", "not_configured"]
+    checks: list[DataHealthCheck] = Field(default_factory=list)
+    as_of: Optional[str] = None
+    partial: bool = Field(False, description="The read stopped at its limit: counts are "
+                          "at least these.")
 
 
 class AutopilotLink(_Model):

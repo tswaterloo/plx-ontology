@@ -318,3 +318,17 @@ describe("an amount whose currency the document does not state", () => {
     expect(moneyText("1993.33")).toBe("1993.33");
   });
 });
+
+describe("identifiers read as written", () => {
+  it("a customer PO, an invoice or a lot number is a reference, never a figure; an amount is not", async () => {
+    const { identifierLabel } = await import("./record");
+    for (const l of ["Customer PO", "PO reference", "Invoice number", "Lot", "Order no", "Account code", "UPC"]) expect(identifierLabel(l)).toBe(true);
+    for (const l of ["Total", "Amount due", "Quantity shipped", "Unit price", "Weight", "Invoice total", "Order value"]) expect(identifierLabel(l)).toBe(false);
+  });
+
+  it("a linked order with no number says so instead of a bare PO", async () => {
+    const { recordLabel } = await import("./format");
+    expect(recordLabel("PurchaseOrder", "PO")).toBe("PO (no number on record)");
+    expect(recordLabel("PurchaseOrder", "PO100095")).toBe("PO 100095");
+  });
+});

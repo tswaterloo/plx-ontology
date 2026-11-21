@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Sheet } from "@/components/ui/sheet";
-import { getTeamPerson } from "@/lib/api";
+import { getInsight, getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { eastern } from "@/lib/format";
-import type { TeamItem, TeamPerson, TeamPersonDetail, TeamTrackerWeek, TeamView } from "@/lib/types";
+import type { InsightResult, TeamItem, TeamPerson, TeamPersonDetail, TeamTrackerWeek, TeamView } from "@/lib/types";
 
 // The Team view: one dense row per person, every captured system over 7 or 28 days, open
 // work, reply time, a 28-day trend and busiest hours. Sort by any column, filter by team,
@@ -146,7 +146,38 @@ function Select({ label, value, onChange, options, testId }: { label: string; va
   );
 }
 
+// the channels a row shows with no system picked: the rest are one System filter away (the
+// table ran to 17 columns and scrolled sideways)
+const FIRST: ReadonlySet<Channel> = new Set<Channel>(["mail_sent", "teams", "meetings"]);
+
+/** The Planner insight every screen counts open tasks by (Insights: "Open Planner tasks per
+ * person"), read once for the page. */
+export const PLANNER_INSIGHT = "planner_open";
+
+/** Pure: a person's open and overdue Planner tasks by their Team key, from the Planner
+ * insight's rows (its `people` are the rows' Team keys); a row with no key counts for nobody. */
+export function plannerByKey(result: InsightResult | null): Map<string, { open: number; overdue: number }> {
+  const out = new Map<string, { open: number; overdue: number }>();
+  if (!result) return out;
+  const [o, d] = [result.columns.indexOf("open_tasks"), result.columns.indexOf("overdue")];
+  if (o < 0) return out;
+  result.rows.forEach((r, i) => {
+    const key = result.people?.[i];
+    if (!key) return;
+    const was = out.get(key) ?? { open: 0, overdue: 0 };
+    out.set(key, { open: was.open + (Number(r[o]) || 0), overdue: was.overdue + (d < 0 ? 0 : Number(r[d]) || 0) });
+  });
+  return out;
+}
+
 export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: string }) {
+  const [planner, setPlanner] = useState<Map<string, { open: number; overdue: number }> | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    getInsight(PLANNER_INSIGHT, ctl.signal).then((r) => setPlanner(plannerByKey(r)), () => !ctl.signal.aborted && setPlanner(null));
+    return () => ctl.abort();
+  }, []);
+  const tasksOf = (p: TeamPerson) => planner?.get(p.key)?.open ?? 0;
   const people = useMemo(() => data.people ?? [], [data.people]);
   const [period, setPeriod] = useState<Period>(7);
   const [team, setTeam] = useState("");
@@ -183,7 +214,9 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         case "total": return total(p, period);
         case "week": return thisWeek(p)?.done ?? 0;
         case "saved": return thisWeek(p)?.saved_minutes ?? -1;
-        case "awaiting_reply": case "tasks": case "alerts": return p[sort.key];
+        case "awaiting_reply": return p.awaiting_reply;
+        case "tasks": return tasksOf(p);
+        case "alerts": return p.alerts + p.tasks;
         case "reply": return replyOf(p, period) ?? (sort.desc ? -1 : Number.MAX_SAFE_INTEGER);
         default: return counts(p, period)[sort.key] ?? 0;
       }
@@ -196,7 +229,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
   }, [people, team, role, system, query, period, sort]);
 
   // a column nobody has a figure in (for this period) is left out, so the table carries no rows of zeros
-  const shown = CHANNELS.filter((c) => people.some((p) => (counts(p, period)[c.key] ?? 0) > 0));
+  const shown = CHANNELS.filter((c) => (system ? c.system === system : FIRST.has(c.key)) && people.some((p) => (counts(p, period)[c.key] ?? 0) > 0));
   const groups = shown.reduce<{ system: string; span: number }[]>((acc, c) => {
     const last = acc[acc.length - 1];
     if (last && last.system === c.system) last.span += 1;
@@ -205,13 +238,14 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
   }, []);
 
   // time saved is only ever filled for rows the reader may see a figure for
-  const savedShown = people.some((p) => thisWeek(p)?.saved_minutes != null);
+  const savedShown = people.some((p) => (thisWeek(p)?.saved_minutes ?? 0) > 0);
   // the other columns too: one nobody has a figure in is left out
   const has = {
-    week: people.some((p) => (thisWeek(p)?.done ?? 0) > 0),
+    // over 7 days "this week" is all but the same figure as All
+    week: period === 28 && people.some((p) => (thisWeek(p)?.done ?? 0) > 0),
     awaiting_reply: people.some((p) => p.awaiting_reply > 0),
-    tasks: people.some((p) => p.tasks > 0),
-    alerts: people.some((p) => p.alerts > 0),
+    tasks: people.some((p) => tasksOf(p) > 0),
+    alerts: people.some((p) => p.alerts + p.tasks > 0),
     reply: people.some((p) => replyOf(p, period) != null),
     trend: people.some((p) => (p.trend ?? []).some((n) => n > 0)),
     hours: people.some((p) => !!busiest(p.hours)),
@@ -276,10 +310,12 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
           ["Teams messages", sum((p) => counts(p, period).teams ?? 0)],
           ["Meetings", sum((p) => counts(p, period).meetings ?? 0)],
           ["Awaiting reply", sum((p) => p.awaiting_reply)],
-          ["Open tasks", sum((p) => p.tasks)],
         ] as [string, number][]).map(([k, v]) => (
           <div key={k} className="flex items-baseline gap-1.5"><dt>{k}</dt><dd className="num text-[15px] text-fg">{v.toLocaleString("en-US")}</dd></div>
         ))}
+        <div className="flex items-baseline gap-1.5" title="Microsoft Planner tasks not completed, assigned to the people listed (the same count as the Open Planner tasks per person chart)">
+          <dt>Open Planner tasks</dt><dd className="num text-[15px] text-fg" data-testid="team-planner-total">{planner ? sum(tasksOf).toLocaleString("en-US") : "·"}</dd>
+        </div>
         <div className="flex items-baseline gap-1.5"><dt>Median reply</dt><dd className="num text-[15px] text-fg">{minutes(medianReply) || "·"}</dd></div>
       </dl>
 
@@ -304,8 +340,8 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
               {savedShown && head("saved", "Saved", "Time the Workbench saved them this week (the work log's estimate)", "text-right")}
               {shown.map((c) => head(c.key, c.head, c.title, cn("text-right", system === c.system && "text-fg")))}
               {has.awaiting_reply && head("awaiting_reply", "Reply", "Threads awaiting their reply", "text-right")}
-              {has.tasks && head("tasks", "Tasks", "Open tasks", "text-right")}
-              {has.alerts && head("alerts", "Alerts", "Other open alerts", "text-right")}
+              {has.tasks && head("tasks", "Tasks", "Open Planner tasks assigned to them", "text-right")}
+              {has.alerts && head("alerts", "Alerts", "Other open alerts on them, stuck or overdue tasks among them", "text-right")}
               {has.reply && head("reply", "Median", "Median time to reply to a message addressed to them", "text-right")}
               {has.trend && <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Everything they did per day, last 28 days">28-day trend</th>}
               {has.hours && <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>}
@@ -335,8 +371,8 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                     <td key={ch.key} className={cn("px-2 py-1.5 text-right", system === ch.system && "bg-accent-soft/40")}><Figure n={c[ch.key]} /></td>
                   ))}
                   {has.awaiting_reply && <td className="px-2 py-1.5 text-right">{p.awaiting_reply ? <span className="num font-medium text-risk">{p.awaiting_reply}</span> : <Figure n={0} />}</td>}
-                  {has.tasks && <td className="px-2 py-1.5 text-right"><Figure n={p.tasks} /></td>}
-                  {has.alerts && <td className="px-2 py-1.5 text-right"><Figure n={p.alerts} /></td>}
+                  {has.tasks && <td className="px-2 py-1.5 text-right" title={planner?.get(p.key)?.overdue ? `${planner.get(p.key)!.overdue} past due` : undefined}><Figure n={tasksOf(p)} /></td>}
+                  {has.alerts && <td className="px-2 py-1.5 text-right"><Figure n={p.alerts + p.tasks} /></td>}
                   {has.reply && <td className="whitespace-nowrap px-2 py-1.5 text-right num">{minutes(replyOf(p, period)) || <span className="text-faint">·</span>}</td>}
                   {has.trend && <td className="px-2 py-1.5"><Spark values={p.trend ?? []} /></td>}
                   {has.hours && <td className="whitespace-nowrap px-2 py-1.5" title={busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : undefined}>

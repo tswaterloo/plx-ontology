@@ -786,6 +786,28 @@ class ObjectWorkspace:
                 **({"include_off": True} if include_off else {}))
             return {**base, **found}
 
+    def data_health_gaps(self, kinds: Sequence[str], *, limit: int = 2000) -> dict[str, Any]:
+        """The data-health checks' open findings this reader may see (``gap_inbox``'s trim:
+        subject, every citation group and the grant), and per kind how many open ones they
+        may NOT see (``proactive_engine.hidden_counts``: a count, never an id, a subject or a
+        summary), so a check is never said to have none when it has some hidden from them.
+        ``not_configured`` without a grant or a store."""
+        from operating import proactive_engine as pe
+
+        found = self.gap_inbox(kinds=list(kinds), limit=limit)
+        if found.get("status") != "read":
+            return {**found, "hidden": {}}
+        with self._request():
+            grant = getattr(self.access, "grant", None)
+            path = getattr(self.store_status, "store_path", None)
+            if grant is None or path is None:
+                return {**found, "hidden": {}}
+            may_read, held = grant()
+            hidden = pe.hidden_counts(pe.inbox_path(path), path, kinds=list(kinds),
+                                      may_read=may_read, held=held,
+                                      decide=self.access.decide)
+        return {**found, "hidden": hidden}
+
     def unjudged(self, rule: str, reason: str | None = None, *, offset: int = 0,
                  limit: int = 50) -> dict[str, Any]:
         """The records one check left unjudged that this reader is counted on its briefing

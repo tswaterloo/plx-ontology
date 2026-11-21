@@ -13,9 +13,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from urllib.parse import quote, unquote
 
 from fastapi.testclient import TestClient
 
@@ -25,6 +28,7 @@ from operating import autopilot_queue
 from operating import autopilot_engine
 from operating import autopilot_write as aw
 from operating import autopilot_write_adapters as wa
+from operating.autopilot_records import object_href
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operating.tests.test_autopilot_write import (
     BC_COMPANY, NEW_ID, Transport, admit_judged, po_item)
@@ -1250,8 +1254,11 @@ class AlertCards(unittest.TestCase):
                          ("Decide in Mission Control", "https://mc.plxcustomer.io/tasks/TASK-1"))
         self.assertEqual([lk["label"] for lk in appr["links"]],
                          ["Decide in Mission Control", "Open the task"])
-        self.assertTrue(appr["links"][1]["href"].startswith("/object/MCTask:"))
+        self.assertEqual(appr["links"][1]["href"], object_href(
+            'MCTask:mission_control.tasks:{"id":"TASK-1","scope":"live"}'))
         self.assertEqual([lk["label"] for lk in hold["links"]], ["Open the order"])
+        self.assertEqual(hold["links"][0]["href"],
+                         "/object/SalesOrder/" + quote('SalesOrder:portal.app_sales_order:{"id":"s1"}', safe=""))
         self.assertEqual(hold["facts"], ["OR-9, Three Ships"])
         self.assertEqual(hold["links"][0]["label"], "Open the order")
         self.assertNotIn("apg_secret1", json.dumps(mine))
@@ -1260,6 +1267,40 @@ class AlertCards(unittest.TestCase):
         self.assertEqual(got.status_code, 200, got.text)
         self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
         self.assertEqual(self.bc.calls, [])
+
+    def test_every_record_link_on_a_card_opens_a_record_page(self):
+        """The app opens a record at /object/<type>/<id> only; a link a handler stored
+        before as /object/<id> is rebuilt from the id's own prefix, and no writer builds the
+        one-part form again."""
+        q = ap.Queue(self.backend.autopilot_queue)
+        old = ReplyFromLine.card("ap_old", OWNER[1])
+        old.update(autopilot="order_entry", title="Order entered")
+        order = 'SalesOrder:portal.app_sales_order:{"id":"s2"}'
+        old["body"]["prepared"] = {"summary": "PO 7 is entered as order OR-7.",
+                                   "links": [{"label": "Open the order", "href": "/object/" + order},
+                                             {"label": "Mission Control", "href": "https://mc.plxcustomer.io/x"}]}
+        with q.conn:
+            q.add_item(old)
+        q.close()
+        record = re.compile(r"^/object/([A-Za-z][A-Za-z0-9]*)/([^/?#]+)$")
+        items = self.client(OWNER).get("/api/autopilot/drafts").json()["items"]
+        seen = 0
+        for item in items:
+            for link in item["links"]:
+                if not link["href"].startswith("/object/"):
+                    continue
+                got = record.match(link["href"])
+                self.assertIsNotNone(got, link["href"])
+                self.assertTrue(unquote(got.group(2)).startswith(got.group(1) + ":"), link["href"])
+                seen += 1
+        self.assertGreaterEqual(seen, 3)
+        mine = {i["item_id"]: i for i in items}
+        self.assertEqual(mine["ap_old"]["links"][0]["href"], object_href(order))
+        root = Path(__file__).resolve().parents[2]
+        for path in [*(root / "operating").glob("*.py"), *(root / "operator_api").glob("*.py")]:
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+                self.assertIsNone(re.search(r'f"/object/\{(?!quote\()[^}]+\}"|"/object/" \+ (?!ref\b)', line),
+                                  f"{path.name}:{n} builds a one-part record link: {line.strip()}")
 
     def test_one_card_per_lot_one_line_per_order_and_no_title_saying_the_summary_twice(self):
         """Items stored before the handler kept one card per lot: the newest item about a lot

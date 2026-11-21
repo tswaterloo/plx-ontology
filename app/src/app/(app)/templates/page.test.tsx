@@ -64,3 +64,27 @@ describe("templates page: the answer bank while it is first read", () => {
     expect(asked).toBe(2);
   });
 });
+
+describe("templates not ready on the first read", () => {
+  it("reads again by itself and never says templates are not available", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).includes("/api/templates/learned")) return json({ status: "none", templates: [] });
+      if (String(url).includes("/api/templates/answer-bank")) return json(bank);
+      reads += 1;
+      return json(reads === 1 ? { ...list, available: false } : list);
+    }));
+    try {
+      render(<TemplatesPage />);
+      await waitFor(() => expect(reads).toBe(1));
+      expect(screen.queryByText(/not available/)).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+      await waitFor(() => expect(reads).toBe(2));
+      expect(await screen.findByTestId("template-new")).toBeInTheDocument();
+      expect(screen.queryByText(/not available|couldn't be read/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

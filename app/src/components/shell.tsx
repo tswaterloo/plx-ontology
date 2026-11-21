@@ -169,14 +169,35 @@ export function loadLate(fresh = false): Promise<LatePo[]> {
  * (null: unknown, nothing shown). */
 let needsCount: number | null = null;
 const needsListeners = new Set<(n: number | null) => void>();
-export function publishNeedsCount(n: number | null) {
+// Home's last full count, kept for this browser tab so every page's sidebar shows it (it showed
+// only while Home was open); kept 30 minutes, dropped when the person signs out or changes
+const NEEDS_KEY = "plx.needs-count";
+export const NEEDS_KEPT_MS = 30 * 60 * 1000;
+function keptNeeds(now = Date.now()): number | null {
+  try {
+    const kept = JSON.parse(window.sessionStorage.getItem(NEEDS_KEY) ?? "null") as { n?: unknown; at?: unknown } | null;
+    return kept && typeof kept.n === "number" && typeof kept.at === "number" && now - kept.at < NEEDS_KEPT_MS ? kept.n : null;
+  } catch {
+    return null;
+  }
+}
+// whether Home published in this page load: then its own count (or its unknown) is said, never a kept one
+let needsPublished = false;
+export function publishNeedsCount(n: number | null, reset = false) {
   needsCount = n;
+  needsPublished = !reset;
+  try {
+    if (reset) window.sessionStorage.removeItem(NEEDS_KEY);
+    else if (n !== null) window.sessionStorage.setItem(NEEDS_KEY, JSON.stringify({ n, at: Date.now() }));
+  } catch {
+    // no storage (a private window): the count shows while Home is open, as before
+  }
   for (const f of needsListeners) f(n);
 }
 export function useNeedsCount(): number | null {
   const [n, setN] = useState<number | null>(needsCount);
   useEffect(() => {
-    setN(needsCount);
+    setN(needsPublished ? needsCount : keptNeeds());
     needsListeners.add(setN);
     return () => void needsListeners.delete(setN);
   }, []);
@@ -190,7 +211,7 @@ onSessionReset(() => {
   lateOnce = null;
   homeOnce = null;
   sidebarOnce = null;
-  publishNeedsCount(null);
+  publishNeedsCount(null, true);
 });
 /** /api/home read once per page load, shared by Today, the sidebar and Ask: never tied to one
  * caller's abort (a caller that leaves ignores the answer), so leaving Today early, or React
@@ -363,7 +384,7 @@ export const NAV_SECTIONS: NavSection[] = [
     key: "admin", href: "/ops", label: "Admin", place: "/admin", icon: Activity, holds: [], group: "last",
     children: [
       { href: "/ops", label: "Reliability", ops: true },
-      { href: `${ALERTS_HREF}#data-health`, label: "Data health", ops: true },
+      { href: "/data-health", label: "Data health", ops: true },
       { href: "/trust", label: "Trust", ops: true },
       { href: "/autopilot-log", label: "Autopilot log", ops: true },
       { href: "/feedback", label: "Feedback triage", admin: true },
@@ -1310,7 +1331,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/autopilot", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/account", "/order", "/insights"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/autopilot", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/account", "/order", "/insights", "/data-health"];
 
 /** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
  * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */

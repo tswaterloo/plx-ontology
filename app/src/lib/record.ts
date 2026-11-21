@@ -410,6 +410,13 @@ export function factValue(raw: string): string {
   return formatDate(`${m[3]}-${String(mon + 1).padStart(2, "0")}-${m[2].padStart(2, "0")}`) || value;
 }
 
+/** A label that names an identifier (a customer PO, an invoice or lot number, a code): its
+ * value is a reference to read as written ("50023359"), never an amount to total or group. */
+export function identifierLabel(label: string): boolean {
+  return /\b(?:po|so|id|ids|code|ref|reference|number|no|invoice|order|lot|batch|account|document|receipt|shipment|phone|fax|zip|postal|sku|upc|gtin|barcode)\b/i.test(label)
+    && !/\b(?:total|amount|value|price|cost|balance|qty|quantity|due|paid|tax|discount|weight)\b/i.test(label);
+}
+
 /** Row keys a person never reads: surrogate ids and sync stamps ("Ord uniq", "Row version"). */
 const INTERNAL_FACT = /(?:^|_)(?:\w*uniq|guid|row_?version|etag|system_id|last_modified_date_time)$/i;
 

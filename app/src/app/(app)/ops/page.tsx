@@ -8,6 +8,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { getOpsAlarms, type OpsAlarms, type OpsCheck, type OpsIncident, type OpsQueue } from "@/lib/api";
 import { useRead } from "@/lib/use-read";
 import { cn } from "@/lib/cn";
+import { problemParts } from "@/lib/format";
 import { noticeKind, plainError } from "@/lib/errors";
 
 type Area = "Data freshness" | "Services" | "Postgres" | "Machine" | "Backups" | "Other";
@@ -25,13 +26,14 @@ function areaOf(key: string): Area {
 
 /** What the operator does first for an open problem in each area. */
 const NEXT: Record<Area, string> = {
-  "Data freshness": "Check that the update cycle (plx-delta) and the capture it names are running",
-  Services: "Read the unit's log, then restart it once the cause is fixed",
-  Postgres: "Close the idle sessions or the client holding connections",
-  Machine: "Free space or stop the top consumer named in the line",
-  Backups: "Read the backup log and run the backup again",
-  Other: "Read the line; the check names what stopped",
+  "Data freshness": "Ask IT to check the data refresh and the capture it names",
+  Services: "Ask IT to read the job's log and restart it once the cause is fixed",
+  Postgres: "Ask IT to close the idle database sessions",
+  Machine: "Ask IT to free disk space or stop the largest job",
+  Backups: "Ask IT to check the backup log and run the backup again",
+  Other: "Ask IT to look at it; the details say what stopped",
 };
+
 
 function span(fromIso?: string | null, toIso?: string | null): string {
   const from = fromIso ? Date.parse(fromIso) : NaN;
@@ -222,7 +224,22 @@ export default function OpsPage() {
                   <tbody className="divide-y divide-border">
                     {alarms.open.map((i: OpsIncident) => (
                       <tr key={i.key} className="align-top">
-                        <td className="py-1.5 pr-3 text-late" title={i.key}>{opsLine(i.key, i.line)}</td>
+                        <td className="py-1.5 pr-3 text-late" title={i.key}>
+                          {(() => {
+                            const { head, more } = problemParts(opsLine(i.key, i.line));
+                            return (
+                              <>
+                                {head}
+                                {more && (
+                                  <details className="mt-0.5 text-[12px] text-muted">
+                                    <summary className="cursor-pointer">Details</summary>
+                                    <p className="mt-0.5">{more}</p>
+                                  </details>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </td>
                         <td className="py-1.5 pr-3 text-muted max-sm:hidden">{areaOf(i.key)}</td>
                         <td className="py-1.5 pr-3 whitespace-nowrap tabular-nums" title={`since ${eastern(i.opened_at)}`}>
                           {span(i.opened_at)}

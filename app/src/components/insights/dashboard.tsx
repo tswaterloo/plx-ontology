@@ -8,9 +8,33 @@ import { Pending } from "@/components/ui/skeleton";
 import { deleteInsight, getInsight, setInsightSchedule } from "@/lib/api";
 import { noticeKind, plainError, tileError } from "@/lib/errors";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
 const quiet = "h-7 rounded-md px-2 text-[12px] font-medium hover:bg-hover cursor-pointer disabled:cursor-default disabled:opacity-50";
+
+// a chart with more names than this shows its first ones (the tile's own order: the largest
+// first) and a "Show all" switch; the slanted names of 48 people were cut off and unreadable
+export const TOP = 15;
+type Drawn = NonNullable<InsightResult["drawn"]>;
+
+/** Pure: a chart cut to its first `n` names (bars, lines and their series alike); a chart
+ * with no more names than that, or of a kind with no names along an axis, as it is. */
+export function topOf(chart: Drawn, n = TOP): Drawn {
+  if (!["bar", "line", "area", "combo", "stacked_bar"].includes(chart.kind) || chart.panels?.length || chart.labels.length <= n) return chart;
+  return {
+    ...chart,
+    labels: chart.labels.slice(0, n),
+    series: chart.series.map((s) => ({ ...s, values: s.values.slice(0, n) })),
+    shown: n,
+    rows: chart.rows ?? chart.labels.length,
+  };
+}
+
+/** What to type into Ask about a tile: its title as a question the reader can edit. */
+export function askAbout(title: string): string {
+  return `About the Insights chart "${title}": what changed lately, and why?`;
+}
 
 /** Pure: the dashboard's groups in the order they first appear, each with its insights. */
 export function grouped(items: InsightInfo[]): [string, InsightInfo[]][] {
@@ -33,7 +57,7 @@ function Rows({ data }: { data: InsightResult }) {
     <div className="max-h-80 overflow-auto">
       <table className="w-full text-left text-[12px]">
         <thead className="sticky top-0 bg-bg text-muted">
-          <tr>{data.columns.map((c) => <th key={c} className="px-2 py-1 font-medium">{c.replace(/_/g, " ")}</th>)}</tr>
+          <tr>{data.columns.map((c) => <th key={c} className="px-2 py-1 font-medium">{human(c)}</th>)}</tr>
         </thead>
         <tbody>
           {data.rows.map((r, i) => (
@@ -133,6 +157,7 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
   const [error, setError] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
   const [round, setRound] = useState(0);
+  const [all, setAll] = useState(false);
   const retry = useCallback(() => setRound((n) => n + 1), []);
   useEffect(() => {
     const ctl = new AbortController();
@@ -157,9 +182,9 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
     <section id={`insight-${item.id}`} ref={here} className="space-y-2 border-t border-border pt-3" data-testid={`insight-${item.id}`} aria-labelledby={`insight-${item.id}-title`}>
       <div className="flex items-baseline gap-2">
         <h3 id={`insight-${item.id}-title`} className="flex-1 text-[14px] font-semibold">{item.title}</h3>
-        <button type="button" className={quiet} onClick={retry}>Refresh</button>
+        <Link href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`} className={`${quiet} inline-flex items-center`}>Ask about this</Link>
         <button type="button" className={quiet} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-          {open ? "Hide definition and rows" : "Definition and rows"}
+          {open ? "Hide details" : "Details"}
         </button>
         {item.saved && <button type="button" className={quiet} onClick={remove}>Remove</button>}
       </div>
@@ -170,18 +195,20 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
         <Pending label="Reading" />
       ) : (
         <>
-          {data.drawn ? <AnswerCharts charts={[data.drawn]} caption={false} /> : <Rows data={data} />}
-          <p className="text-[12px] text-muted">
-            {data.row_count} {data.row_count === 1 ? "row" : "rows"}, read {formatDateTime(data.read_at)}
-            {data.as_of ? `; data as of ${formatDate(data.as_of)}` : ""}
+          {data.drawn ? <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} /> : <Rows data={data} />}
+          <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
+            <span>
+              {data.drawn && !all && topOf(data.drawn) !== data.drawn ? `Top ${TOP} of ${data.drawn.labels.length}` : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`}
+              {data.drawn?.as_of ? "" : data.as_of ? `, data as of ${formatDate(data.as_of)}` : `, read ${formatDateTime(data.read_at)}`}
+            </span>
+            {data.drawn && topOf(data.drawn) !== data.drawn && (
+              <button type="button" className={quiet} onClick={() => setAll((a) => !a)}>{all ? `Show top ${TOP}` : `Show all ${data.drawn.labels.length}`}</button>
+            )}
+            <button type="button" className={quiet} onClick={retry}>Refresh</button>
           </p>
           {open && (
             <div className="space-y-2" data-testid="insight-definition">
               {data.about && <p className="text-[13px] leading-5">{data.about}</p>}
-              <details>
-                <summary className="cursor-pointer text-[12px] text-muted">The statement it reads</summary>
-                <pre className="mt-1 overflow-auto whitespace-pre-wrap rounded-md bg-hover p-2 text-[11px] leading-4">{data.sql}</pre>
-              </details>
               {data.drawn && <Rows data={data} />}
             </div>
           )}

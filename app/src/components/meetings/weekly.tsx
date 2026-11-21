@@ -3,7 +3,7 @@
 import { ArrowDownRight, ArrowUpRight, ChevronLeft, ChevronRight, MapPin, MessageCircle, Users, Video } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { figureText, mondayBefore } from "@/components/brief-view";
+import { figureText, mondayBefore, signedDelta } from "@/components/brief-view";
 import { SourceChips } from "@/components/source-chip";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -166,8 +166,7 @@ function Figure({ f }: { f: BriefFigure }) {
         {d != null && d !== 0 && (
           <span className={cn("num inline-flex items-center", bad ? "text-late" : "text-ok")}>
             <Arrow className="size-3.5" strokeWidth={2} aria-hidden />
-            {f.delta}
-            {f.unit === "percent" ? " pts" : ""}
+            {signedDelta(f)}
           </span>
         )}
         {d === 0 && <span className="text-muted">no change</span>}
@@ -238,9 +237,8 @@ function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?:
         </section>
       ))}
       {quiet.length > 0 && (
-        <p className="text-[12px] text-muted">
-          Nothing this week on {quiet.map((s) => s.title.toLowerCase()).join(", ")}
-          {quiet.some((s) => s.state === "finance_marked") ? " (finance-marked sections show only to finance readers)" : ""}
+        <p className="text-[12px] text-muted" title={quiet.map((s) => s.title).join(" · ")} data-testid="weekly-quiet">
+          {quiet.length === 1 ? `Nothing this week on ${quiet[0].title.charAt(0).toLowerCase()}${quiet[0].title.slice(1)}` : `${quiet.length} more topics had nothing this week`}
           {quiet.some((s) => s.state === "unread" || s.state === "blocked" || s.state === "partial") ? "; some could not be read in full" : ""}.
         </p>
       )}

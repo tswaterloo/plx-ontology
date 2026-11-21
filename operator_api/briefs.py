@@ -55,6 +55,40 @@ def brief_url(object_id: str) -> str:
     return f"/meetings/brief/{quote(br.type_of(object_id), safe='')}/{quote(object_id, safe='')}"
 
 
+LATE_ROWS = 10
+
+
+def late_from_home(brief: m.Brief, late: Any) -> m.Brief:
+    """The review's "Late purchase orders (open now)" as Home's Late list counts them (the
+    same reader-scoped read, ``late_list``): the review's own section read another alert
+    store and said nothing while Home listed late orders. ``late`` failing leaves the
+    section as the review had it."""
+    try:
+        got = late()
+    except Exception:  # noqa: BLE001 - the section keeps what the review read
+        return brief
+    rows = []
+    for po in got.items:
+        bits = [po.supplier or "", f"{po.days_late} days late" if po.days_late else "",
+                f"needed {po.due_date}" if po.due_date else ""]
+        rows.append(m.BriefRow(
+            label=po.label, detail=", ".join(b for b in bits if b) or None, date=po.due_date,
+            amount=po.amount,
+            object=m.ObjectRef(object_id=po.object_id, type=po.object_id.split(":", 1)[0],
+                               label=po.label, open_url=po.open_url),
+            sources=po.sources))
+    section = m.BriefSection(
+        key="late_pos", title="Late purchase orders (open now)",
+        state="shown" if rows else "empty", rows=rows, more=max(0, got.total - len(rows)),
+        note="The same list as Home's Late, longest late first.",
+        figures=[m.BriefFigure(label="Late purchase orders", value=str(got.total),
+                               unit="records")] if got.total else [])
+    sections = [section if s.key == "late_pos" else s for s in brief.sections]
+    if not any(s.key == "late_pos" for s in brief.sections):
+        sections.insert(1, section)
+    return brief.model_copy(update={"sections": sections})
+
+
 def brief_model(raw: Mapping[str, Any]) -> m.Brief:
     sections = []
     for s in raw.get("sections") or ():
@@ -883,7 +917,7 @@ class BriefsMixin:
                 and (raw.get("budget") or {}).get("stopped"):
             WeeklyCuts(Path(data_dir) / WEEKLY_CUT_FILE).mark(
                 reader.key, br.week_of(date.today()) - timedelta(days=7))
-        return brief_model(raw)
+        return late_from_home(brief_model(raw), lambda: self.late_list(reader, limit=LATE_ROWS))
 
     def labour(self, reader: Reader) -> m.LabourPage:
         """Department and week labour hours (``operating.labour_hours``): only for a reader

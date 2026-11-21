@@ -28,7 +28,7 @@ function Autopilot() {
   useStaleRefresh(area?.stale_since, retry);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar heading title="Home" />
+      <Toolbar heading title="Switches" />
       <SectionTabs section="home" />
       <PageIntro path="/autopilot" />
       <div className="w-full px-6 py-5">

@@ -5,11 +5,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { getAlertKinds, getBriefing, getBriefingItems } from "@/lib/api";
+import { getAlertKinds, getBriefing, getBriefingItems, getDataHealth } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { objectHref, recordLabel, safeHref } from "@/lib/format";
+import { objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { noticeKind, plainError } from "@/lib/errors";
-import type { AlertKinds, AlertType, Briefing, BriefingItem } from "@/lib/types";
+import type { AlertKinds, AlertType, Briefing, BriefingItem, DataHealth } from "@/lib/types";
 
 /** How a type's default reads: on, or off with its measurement. */
 export function standing(t: Pick<AlertType, "default" | "precision" | "home">): string {
@@ -30,56 +30,82 @@ export function surfaceWord(k: { label: string; surface: string; types: Pick<Ale
 
 /** Where a kind with a page of its own is shown (null: an alert, shown here). */
 export function surfaceHref(surface: string): string | null {
-  return surface === "data_health" ? "/?show=alerts#data-health" : surface === "weekly" ? "/meetings?view=weekly" : null;
+  return surface === "data_health" ? "/data-health" : surface === "weekly" ? "/meetings?view=weekly" : null;
 }
 
 /**
- * Data health: each on data-health check (customers or suppliers entered twice, key fields
- * missing, orders without a customer PO, records that differ in their other system) with
- * how many it holds for this reader now and its records, read as this reader. The checks
- * that are off are named once under them.
+ * Data health: every check the registry files under data health (customers or suppliers
+ * entered twice, key fields missing, orders without a customer PO, records out of step with
+ * their other system) with the findings this reader may see; a check whose findings are on
+ * records they may not open says how many are hidden, never "None". The checks that are off
+ * are named once under them. A read that failed is said, never zeros.
  */
-export function DataHealthSection({ reg, briefing, error, retry }: { reg: AlertKinds | null; briefing: Briefing | null; error: unknown; retry: () => void }) {
-  const types = (reg?.types ?? []).filter((t) => reg?.kinds.find((k) => k.kind === t.kind)?.surface === "data_health");
-  const on = types.filter((t) => t.default === "on");
-  const off = types.filter((t) => t.default !== "on");
-  const read = briefing?.status === "read";
-  const count = (type: string) => (read ? ((briefing.groups ?? []).find((g) => g.event_type === type)?.count ?? 0) : null);
+export function DataHealthSection({ titled = true }: { titled?: boolean }) {
+  const [data, setData] = useState<DataHealth | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    const ctl = new AbortController();
+    setError(null);
+    setData(null);
+    getDataHealth(ctl.signal).then(setData, (e) => !ctl.signal.aborted && setError(e));
+    return () => ctl.abort();
+  }, [round]);
+  const retry = () => setRound((n) => n + 1);
+  const on = (data?.checks ?? []).filter((c) => c.on);
+  const off = (data?.checks ?? []).filter((c) => !c.on);
   return (
     <section aria-labelledby="data-health-title" id="data-health" className="scroll-mt-16" data-testid="data-health">
-      <h2 id="data-health-title" className="text-[15px] font-semibold">Data health</h2>
-      <p className="mt-0.5 text-[12px] text-muted">Records entered twice, missing a key field or out of step with their other system, as you may read them.</p>
+      {/* on its own Admin page the page title and its one sentence say this already */}
+      <h2 id="data-health-title" className={titled ? "text-[15px] font-semibold" : "sr-only"}>Data health</h2>
+      {titled && <p className="mt-0.5 text-[12px] text-muted">Records entered twice, missing a key field or out of step with their other system, as you may read them.</p>}
       {error ? (
         <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} className="mt-2" />
-      ) : !reg || !briefing ? (
+      ) : !data ? (
         <Pending label="Reading data health" />
-      ) : !read ? (
-        <p className="mt-2 text-[13px] text-muted">The checks couldn&rsquo;t be read just now. Try again in a few minutes.</p>
+      ) : data.status === "not_configured" ? (
+        <p className="mt-2 text-[13px] text-muted">The data-health checks are not set up on this server.</p>
+      ) : data.status !== "read" ? (
+        <LoadProblem message="The checks couldn't be read just now. Try again in a few minutes." onRetry={retry} className="mt-2" />
       ) : on.length === 0 ? (
         <p className="mt-2 text-[13px] text-muted">No data-health check is on.</p>
       ) : (
         <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="data-health-checks">
-          {on.map((t) => {
-            const n = count(t.type) ?? 0;
-            return (
-              <li key={t.type} className="py-2 text-[13px]" data-testid={`data-health-${t.type}`}>
-                <div className="flex items-baseline gap-3">
-                  <span className="min-w-0 flex-1 font-medium">{t.label}</span>
-                  <span className="shrink-0 tabular-nums text-muted">{n > 0 ? n : "None"}</span>
-                </div>
-                {n > 0 && (
-                  <div className="mt-1 text-[12px]">
-                    <TypeItems type={t.type} count={n} more={n === 1 ? "Show it" : `Show the ${n}`} />
-                  </div>
-                )}
-              </li>
-            );
-          })}
+          {on.map((c) => (
+            <li key={c.type} className="py-2 text-[13px]" data-testid={`data-health-${c.type}`}>
+              <div className="flex items-baseline gap-3">
+                <span className="min-w-0 flex-1 font-medium">{c.label}</span>
+                <span className="shrink-0 tabular-nums text-muted" data-testid={`data-health-count-${c.type}`}>
+                  {c.count > 0 ? `${c.count}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
+                </span>
+              </div>
+              {c.hidden > 0 && (
+                <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-hidden-${c.type}`}>
+                  {c.count > 0 ? "Also " : ""}{c.hidden} on records your access doesn&rsquo;t open.
+                </p>
+              )}
+              {(c.items ?? []).length > 0 && (
+                <details className="mt-1 text-[12px]">
+                  <summary className="cursor-pointer font-medium">{c.count === 1 ? "Show it" : `Show ${c.more > 0 ? `the first ${(c.items ?? []).length}` : `the ${c.count}`}`}</summary>
+                  <ul className="mt-1 space-y-1">
+                    {(c.items ?? []).map((it) => (
+                      <li key={it.id} className="min-w-0">
+                        <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block truncate text-fg hover:underline" title={it.summary}>
+                          {readable(it.summary)}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                  {c.more > 0 && <p className="mt-1 text-muted">{c.more} more; ask about them in Ask.</p>}
+                </details>
+              )}
+            </li>
+          ))}
         </ul>
       )}
-      {reg && off.length > 0 && (
+      {off.length > 0 && (
         <p className="mt-2 text-[12px] text-faint" data-testid="data-health-off">
-          Not shown yet, until we have checked they are right: {off.map((t) => t.label.toLowerCase()).join("; ")}.
+          Not shown yet, until we have checked they are right: {off.map((c) => c.label.toLowerCase()).join("; ")}.
         </p>
       )}
     </section>
@@ -87,22 +113,27 @@ export function DataHealthSection({ reg, briefing, error, retry }: { reg: AlertK
 }
 
 /** One alert type's items, read when asked for: a count on Watching opens what it counts. */
-export function TypeItems({ type, count, more: label }: { type: string; count: number; more?: string }) {
+export function TypeItems({ type, count, more: label, skip = [] }: { type: string; count: number; more?: string; skip?: string[] }) {
   const [items, setItems] = useState<BriefingItem[] | null>(null);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  // how many rows the server has given so far (the skipped ones too): where the next page starts
+  const [served, setServed] = useState(0);
   const read = (offset: number) => {
     setBusy(true);
     setError(null);
     getBriefingItems(type, offset)
       .then((r) => {
-        setItems((cur) => [...(offset ? (cur ?? []) : []), ...(r.items ?? [])]);
+        const got = r.items ?? [];
+        // the rows already shown above ("2 shown, 65 more") are not listed again
+        setItems((cur) => [...(offset ? (cur ?? []) : []), ...got.filter((it) => !skip.includes(it.id))]);
+        setServed(offset + got.length);
         setMore(!!r.more);
       }, setError)
       .finally(() => setBusy(false));
   };
-  if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={() => read(items?.length ?? 0)} className="mt-1" />;
+  if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={() => read(items ? served : 0)} className="mt-1" />;
   if (!items)
     return (
       <button type="button" onClick={() => read(0)} disabled={busy} aria-busy={busy || undefined} className="text-[12px] font-medium text-fg underline underline-offset-2 hover:no-underline disabled:text-muted cursor-pointer">
@@ -112,7 +143,7 @@ export function TypeItems({ type, count, more: label }: { type: string; count: n
   return (
     <div className="mt-1 w-full">
       {items.length === 0 ? (
-        <p className="text-muted">None of these are yours to see now.</p>
+        !more && <p className="text-muted">None of these are yours to see now.</p>
       ) : (
         <ul className="space-y-1" data-testid={`items-${type}`}>
           {items.map((it) => (
@@ -126,7 +157,7 @@ export function TypeItems({ type, count, more: label }: { type: string; count: n
         </ul>
       )}
       {more && (
-        <button type="button" onClick={() => read(items.length)} disabled={busy} className="mt-1 text-[12px] font-medium text-fg underline underline-offset-2 hover:no-underline disabled:text-muted cursor-pointer">
+        <button type="button" onClick={() => read(served)} disabled={busy} className="mt-1 text-[12px] font-medium text-fg underline underline-offset-2 hover:no-underline disabled:text-muted cursor-pointer">
           {busy ? "Reading" : "Show more"}
         </button>
       )}

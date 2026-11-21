@@ -515,8 +515,8 @@ def prepare(ctx: Any, inv: Received, *, people: Any = None,
     head = {"vendor": inv.vendor, "invoice_number": inv.number,
             "invoice_date": inv.day.isoformat(), "currency": inv.currency,
             "po": inv.po or None}
-    links = [{"label": "Open the invoice", "href": f"/object/{inv.oid}"}] + \
-        [{"label": "Open the purchase order", "href": f"/object/{o}"}
+    links = [{"label": "Open the invoice", "href": autopilot_records.object_href(inv.oid)}] + \
+        [{"label": "Open the purchase order", "href": autopilot_records.object_href(o)}
          for o in found.get("purchase_orders", [])[:2]]
     if dupes:
         for d in dupes:
@@ -528,7 +528,7 @@ def prepare(ctx: Any, inv: Received, *, people: Any = None,
                            "date": inv.day.isoformat()},
                 "duplicate_of": [d["oid"] for d in dupes], "entry": None,
                 "invoice": head, "match": found, "gaps": [], "dry_run": True,
-                "links": links + [{"label": "Open the earlier record", "href": f"/object/{d['oid']}"}
+                "links": links + [{"label": "Open the earlier record", "href": autopilot_records.object_href(d['oid'])}
                                   for d in dupes[:2]]}
     net = inv.total - inv.tax
     if any(it["amount"] is None for it in inv.items):

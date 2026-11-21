@@ -8,8 +8,12 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { bizPage } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
-import { formatDate, money, safeHref } from "@/lib/format";
+import { formatDate, money, objectHref, safeHref } from "@/lib/format";
+import { rememberOpened } from "@/lib/saved";
 import type { BizCell, BizKind, BizPage as Page, BizTable } from "@/lib/types";
+
+/** The record type each page of the business tables shows (Records' tabs file it by it). */
+const TYPE_OF_KIND: Record<BizKind, string> = { purchase_order: "PurchaseOrder", sales_order: "SalesOrder", customer: "Customer", supplier: "Supplier", chain: "Chain" };
 
 const KINDS: readonly BizKind[] = ["customer", "chain", "supplier", "purchase_order", "sales_order"];
 
@@ -101,6 +105,9 @@ export function BizRecordPage({ allowed, fallbackTitle }: { allowed: readonly Bi
   }, [kind, h, chain, round]);
 
   const title = page?.title ?? fallbackTitle;
+  useEffect(() => {
+    if (kind && page?.title) rememberOpened({ type: TYPE_OF_KIND[kind], label: page.title, href: `${window.location.pathname}${window.location.search}` });
+  }, [kind, page?.title]);
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar heading title={title} />
@@ -162,6 +169,9 @@ export function BizOrObject({ kind, record, title, fallback }: { kind: BizKind; 
     bizPage(kind, { record }, ctl.signal).then(setPage, () => !ctl.signal.aborted && setNone(true));
     return () => ctl.abort();
   }, [kind, record]);
+  useEffect(() => {
+    if (page?.title) rememberOpened({ type: TYPE_OF_KIND[kind], label: page.title, href: objectHref(TYPE_OF_KIND[kind], record) });
+  }, [page?.title, kind, record]);
   if (none) return <>{fallback}</>;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">

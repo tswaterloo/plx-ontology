@@ -64,16 +64,16 @@ export function rowStateShown(row: Pick<AutopilotWorkflowRow, "state" | "draft">
   return stateShown(row.state, owner);
 }
 
-/** The gate countdown in one line, in judged held-out items (fresh days, or past days never tuned on): "12 of 15 items at ≥90% · 91.7% right
- * so far", and when the role's newest scorer run was not admitted, that it was not and why.
+/** The gate countdown in one line, in judged held-out items (fresh days, or past days never tuned on): "Checked 12 of the 15 items
+ * it needs; 91.7% right so far, 90% needed", and when the role's newest scorer run was not admitted, that it was not and why.
  * Null before the gate admitted any counts for the role. */
 export function countdownText(c: AutopilotCountdown | null | undefined): string | null {
   if (!c) return null;
   const need = `${c.need_percent % 1 === 0 ? c.need_percent.toFixed(0) : c.need_percent}%`;
-  const items = c.judged < c.need_judged ? `${c.judged} of ${c.need_judged} items at ≥${need}` : `${c.judged} items (${c.need_judged} needed) at ≥${need}`;
-  const pct = c.percent == null ? "none judged yet" : `${c.percent.toFixed(1)}% right so far`;
-  const refused = c.refused ? ` · newest scorer run not counted (${c.refused.replace(/_/g, " ")}): these counts are from an earlier run` : "";
-  return `${items} · ${pct}${c.passes ? ": meets the gate" : ""}${refused}`;
+  const items = c.judged < c.need_judged ? `Checked ${c.judged} of the ${c.need_judged} items it needs` : `Checked ${c.judged} items (${c.need_judged} needed)`;
+  const pct = c.percent == null ? "none checked yet" : `${c.percent.toFixed(1)}% right so far, ${need} needed`;
+  const refused = c.refused ? `. The newest check was not counted (${c.refused.replace(/_/g, " ")}), so these are from an earlier one` : "";
+  return `${items}; ${pct}${c.passes ? ": meets the bar" : ""}${refused}`;
 }
 
 /** Each scored window the gate counts, in words: "Fresh days 6 Nov to 10 Nov: 14 of 15 right"

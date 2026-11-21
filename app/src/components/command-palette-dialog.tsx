@@ -37,7 +37,7 @@ const PLACES: { label: string; href: string; hint: string; words: string }[] = [
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
   { label: "Messages and tasks", href: "/activity", hint: "Work log: each message and task you started, and whether it went out", words: "activity actions messages tasks sent log journal" },
-  { label: "Data health", href: "/?show=alerts#data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
+  { label: "Data health", href: "/data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
   { label: "Records", href: "/records", hint: "Find a customer, order, supplier or product", words: "records customers orders suppliers products items find" },
   { label: "Switches", href: "/autopilot", hint: "What gets prepared for you, and Auto", words: "autopilot switches auto assist prepare" },
   { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
@@ -53,6 +53,8 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   const [q, setQ] = useState("");
   const [records, setRecords] = useState<Arranged[]>([]);
   const [searching, setSearching] = useState(false);
+  // the record search could not run (a refused or failed read): never "no record by that name"
+  const [unsearched, setUnsearched] = useState(false);
   const [active, setActive] = useState(0);
   const list = useRef<HTMLUListElement>(null);
   // the text the records shown were looked up for
@@ -79,9 +81,14 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
       suggest(text, c.signal)
         .then((r) => {
           setRecords(Array.isArray(r.suggestions) ? arrange(r.suggestions, text).slice(0, 7) : []);
+          setUnsearched(false);
           settledFor.current = text;
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (c.signal.aborted) return;
+          setRecords([]);
+          setUnsearched(true);
+        })
         .finally(() => !c.signal.aborted && setSearching(false));
     }, 120);
     return () => {
@@ -247,8 +254,8 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
               </li>
             ))}
             {typed && !searching && records.length === 0 && (
-              <li role="presentation" className="px-3 pt-3 text-[12px] leading-4 text-faint">
-                No record by that name or number.
+              <li role="presentation" className="px-3 pt-3 text-[12px] leading-4 text-faint" data-testid="palette-no-record">
+                {unsearched ? "Records couldn't be searched just now. Ask still works." : "No record by that name or number."}
               </li>
             )}
           </ul>

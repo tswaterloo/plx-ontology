@@ -65,7 +65,7 @@ describe("Trust page", () => {
     expect(teams).toHaveTextContent("Vince");
     expect(teams).toHaveTextContent("Draft");
     expect(teams).toHaveTextContent("88.2%");
-    expect(teams).toHaveTextContent("12 of 15 items at ≥90% · 91.7% right so far");
+    expect(teams).toHaveTextContent("Checked 12 of the 15 items it needs; 91.7% right so far, 90% needed");
     expect(within(auto).getByText(/question/i).closest("tr")).toHaveTextContent("not scored yet");
     // a rate with no whole count shows no invented count
     const rough = within(screen.getByTestId("trust-alerts")).getByText("Customer order late").closest("tr")!;
@@ -110,7 +110,7 @@ describe("Trust page", () => {
     render(<TrustRoute />);
     const auto = await screen.findByTestId("trust-autopilot");
     expect(within(auto).getByText("Teams chat").closest("tr")).toHaveTextContent(
-      "12 of 15 items at ≥90% · 91.7% right so far · newest scorer run not counted (status:partial): these counts are from an earlier run",
+      "Checked 12 of the 15 items it needs; 91.7% right so far, 90% needed. The newest check was not counted (status:partial), so these are from an earlier one",
     );
   });
 

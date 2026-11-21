@@ -198,3 +198,14 @@ describe("readable: the reasoning engine's words, said plainly", () => {
     expect(readable("Needed by the supplier; ask Purchasing.")).toBe("Needed by the supplier; ask Purchasing.");
   });
 });
+
+describe("a reliability problem at a glance", () => {
+  it("leads with its first clause; the measurements are under Details", async () => {
+    const { problemParts } = await import("./format");
+    const cost = "Data refresh apply cost: apply 50.5 then 42.4 ms per record, over 2x the best 2.0 ms of 14 days and still well past the limit set for it";
+    expect(problemParts(cost)).toEqual({ head: "Data refresh apply cost", more: cost });
+    const mail = "Mail capture against Graph's counts: 3,274,264 of 3,468,189 messages held (94.4%); 1 folder(s) re-listing (3,032 short)";
+    expect(problemParts(mail).head).toBe("Mail capture against Graph's counts: 3,274,264 of 3,468,189 messages held (94.4%)");
+    expect(problemParts("Backup restore test: last run failed")).toEqual({ head: "Backup restore test: last run failed", more: null });
+  });
+});

@@ -38,7 +38,7 @@ export interface RelatedProps {
   className?: string;
 }
 
-type Read<T> = { rows: T[]; failed: boolean } | null;
+type Read<T> = { rows: T[]; failed: boolean; refused?: boolean } | null;
 
 const MEMORY_KIND: Record<string, string> = {
   instruction: "Instruction",
@@ -125,7 +125,7 @@ function settle<T>(p: Promise<T[]>, set: (r: Read<T>) => void, signal: AbortSign
     (rows) => !signal.aborted && set({ rows, failed: false }),
     // a service session (the page measure) is never served the reader's own memory, log or
     // runs: nothing to show rather than a read that failed
-    (err) => !signal.aborted && set({ rows: [], failed: !(err instanceof ApiError && err.code === "canary_route_refused") }),
+    (err) => !signal.aborted && set(err instanceof ApiError && err.code === "canary_route_refused" ? { rows: [], failed: false, refused: true } : { rows: [], failed: true }),
   );
 }
 
@@ -236,7 +236,10 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
   const templateRows = (templates?.rows ?? []).filter((t) => t.id !== listed.template);
   const name = label?.trim() || (first ? recordName({ object_id: first }) : "");
   const loading = (recs.length > 0 && (!memory || !log)) || ((recs.length > 0 || docTypes.length > 0) && !templates) || (owner && !!(itemId || workflow) && !runs);
-  const empty = !loading && !memoryRows.length && !templateRows.length && !log?.rows.length && !runs?.rows.length;
+  // "holds nothing" only when every read answered: a read that failed or was not served to
+  // this session is never said to be empty
+  const unread = [memory, templates, log, runs].some((r) => r?.failed || r?.refused);
+  const empty = !loading && !unread && !memoryRows.length && !templateRows.length && !log?.rows.length && !runs?.rows.length;
   const failed = [memory?.failed && "memory", templates?.failed && "templates", log?.failed && "work log", runs?.failed && "run log"].filter(Boolean) as string[];
   const memoryHref = first ? `/memory?record=${encodeURIComponent(first)}` : "/memory";
   const logHref = first ? `/work-log?record=${encodeURIComponent(first)}` : "/work-log";

@@ -70,3 +70,49 @@ describe("on record: who, linked, last change and next step on a record without 
     }
   });
 });
+
+describe("a record's own facts, said once", () => {
+  const shipment = {
+    ...base,
+    object_id: "Shipment:sage.oe_shipment_header:{\"shiuniq\":\"513\"}",
+    type: "Shipment",
+    label: "Shipment SH1000000001",
+    timeline: [
+      { title: "Shipped", at: "2016-10-06T10:00:00Z", system: "Sage", own: true },
+      // a linked customer's later orders are beside the shipment, not its change
+      { title: "Ordered: customer GRANITE CLUB", at: "2019-09-05T10:00:00Z", system: "Sage", own: false },
+    ],
+    links: [
+      { role: "linked", type: "ArOpenDocument", type_label: "AR open document", words: "AR open document", records: [
+        { object_id: "ArOpenDocument:a", type: "ArOpenDocument", label: "1000099210", open_url: "" },
+        { object_id: "ArOpenDocument:b", type: "ArOpenDocument", label: "1000099210", open_url: "" },
+      ] },
+      { role: "linked", type: "Customer", words: "Customer", records: [{ object_id: "Customer:g", type: "Customer", label: "GRANITE CLUB", open_url: "" }] },
+    ],
+    related: [
+      { object_id: "ArOpenDocument:a", type: "ArOpenDocument", label: "1000099210", open_url: "" },
+      { object_id: "ArOpenDocument:b", type: "ArOpenDocument", label: "1000099210", open_url: "" },
+      { object_id: "Customer:g", type: "Customer", label: "GRANITE CLUB", open_url: "" },
+      { object_id: "Customer:g", type: "Customer", label: "GRANITE CLUB", open_url: "" },
+    ],
+  } as unknown as ObjectPage;
+
+  it("takes the last change from the record's own events, never a linked record's", () => {
+    expect(answer(shipment, "Last change").a).toMatch(/^Shipped, 6 Oct 2016$/);
+    const onlyOthers = { ...shipment, timeline: [shipment.timeline![1]] } as ObjectPage;
+    expect(answer(onlyOthers, "Last change").empty).toBe(true);
+  });
+
+  it("counts the linked records the Linked list shows, a document's repeated rows once", () => {
+    expect(answer(shipment, "Linked to").a).toBe("1000099210 and GRANITE CLUB");
+    // without link groups: each record once by its id (one was listed twice: 4, not 5)
+    const r = (n: number) => ({ object_id: `Customer:${n}`, type: "Customer", label: `C${n}`, open_url: "" });
+    const many = { ...shipment, links: undefined, related: [r(1), r(2), r(3), r(4), r(4)] } as unknown as ObjectPage;
+    expect(answer(many, "Linked to").a).toBe("4 linked records");
+  });
+
+  it("leaves the last change to the situation strip on a type that has one", () => {
+    render(<OnRecord obj={shipment} />);
+    expect(screen.getByTestId("on-record")).not.toHaveTextContent("Last change");
+  });
+});

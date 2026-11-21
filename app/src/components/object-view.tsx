@@ -12,8 +12,8 @@ import { useStaleRefresh } from "@/lib/stale-refresh";
 import { custodyOf } from "@/lib/custody";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
-import { activityTitle, factMap, groupLinked, groupRelated, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
-import { toggleSaved, useSaved } from "@/lib/saved";
+import { activityTitle, factMap, groupLinked, groupRelated, identifierLabel, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
+import { rememberOpened, toggleSaved, useSaved } from "@/lib/saved";
 import { lateness, recordState, type Shown } from "@/lib/status";
 import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectSection, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, HiddenNotice, missingText, SourceLine } from "./answer-parts";
@@ -374,7 +374,7 @@ function ActivityRow({ e, count }: { e: TimelineEvent; count: number }) {
         {e.summary && count === 1 && <span className="block truncate text-[12px] leading-4 text-muted">{readable(e.summary)}</span>}
         <span className="sr-only">{SYSTEM_LABEL[e.system] ?? e.system}</span>
       </span>
-      <span className="shrink-0 pt-0.5 text-[12px] leading-4 tabular-nums text-muted">{e.at ? formatDate(e.at, { short: true }).replace(/ \d{4}$/, "") : ""}</span>
+      <span className="shrink-0 pt-0.5 text-[12px] leading-4 tabular-nums text-muted">{e.at ? formatDate(e.at, { short: true }) : ""}</span>
     </>
   );
   return (
@@ -1323,6 +1323,11 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
 
   const key = `o:${type}/${id}`;
   const isSaved = saved.some((s) => s.key === key);
+  // a record opened goes to the top of Records' recently opened list (this browser, this person)
+  const openedLabel = obj ? recordHead(obj).askLabel : null;
+  useEffect(() => {
+    if (openedLabel) rememberOpened({ type, label: openedLabel, href: objectHref(type, id) });
+  }, [openedLabel, type, id]);
 
   if (error && !obj && notFound)
     return (
@@ -1370,7 +1375,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   // a minor record (an order line, a product) shows its numbers as figures, the rest as details
   const numeric = (v: string) => /^-?\$?[\d,]+(?:\.\d+)?(?:\s[A-Z]{3})?$/.test(v.trim());
   // a rate, a count or a number field is a detail, never the page's headline figure ("Exchange rate 1")
-  const factFigures = generic ? head.keyFacts.filter((k) => k.value && numeric(k.value) && !/\b(?:rate|count|number|no)\b/i.test(k.label)).slice(0, 5) : [];
+  const factFigures = generic ? head.keyFacts.filter((k) => k.value && numeric(k.value) && !/\b(?:rate|count|number|no)\b/i.test(k.label) && !identifierLabel(k.label)).slice(0, 5) : [];
   const facts = head.keyFacts.filter((k) => k.value && !factFigures.includes(k));
   const trail = obj.trail?.trails?.[0];
   const trailPending = pending.has("trail");

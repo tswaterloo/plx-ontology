@@ -7,7 +7,7 @@ import { ApiError, apiErrorFrom } from "./errors";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { AskChatUpdate, AskChats, DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+import type { AskChatUpdate, AskChats, DataHealth, DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
@@ -555,6 +555,11 @@ export async function markAlertsRead(alertIds: string[]): Promise<WatchReadResul
 }
 
 /** Every late purchase order you may see, a page at a time, longest late first ("show all"). */
+/** Every data-health check: the findings you may see and how many are on records you may not open. */
+export function getDataHealth(signal?: AbortSignal): Promise<DataHealth> {
+  return getJson<DataHealth>("/api/data-health", signal);
+}
+
 export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
   const n = Math.min(100, Math.max(1, Math.floor(limit)));
   return getRead<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);

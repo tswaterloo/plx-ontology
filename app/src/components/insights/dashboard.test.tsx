@@ -15,7 +15,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { AnswerCharts } from "@/components/answer-chart";
-import { InsightsDashboard, ScheduleControl, grouped } from "./dashboard";
+import { InsightsDashboard, ScheduleControl, TOP, askAbout, grouped, topOf } from "./dashboard";
 
 const base = { about: "Per person: mail sent.", group: "Team", saved: false, question: null, schedule: "" as const, notify: "never" as const };
 const list: InsightList = {
@@ -52,7 +52,7 @@ describe("insights dashboard", () => {
     expect(grouped(list.items).map(([g]) => g)).toEqual(["Team", "Pinned by you"]);
   });
 
-  it("reads each insight live, draws it, and opens its definition, statement and rows", async () => {
+  it("reads each insight live, draws it, and opens its definition and rows", async () => {
     const changed = vi.fn();
     render(<InsightsDashboard list={list} onChanged={changed} />);
     expect(screen.getByText("The team views show your own row only.")).toBeTruthy();
@@ -61,15 +61,31 @@ describe("insights dashboard", () => {
     // Refresh reads it again now, not the answer kept from a few minutes ago
     fireEvent.click(screen.getAllByText("Refresh")[0]);
     await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true));
-    fireEvent.click(screen.getAllByText("Definition and rows")[0]);
+    fireEvent.click(screen.getAllByText("Details")[0]);
     expect(screen.getByText("Per person: mail sent.")).toBeTruthy();
-    expect(screen.getByText("SELECT person, mail_sent FROM x")).toBeTruthy();
+    // the reader sees what it counts in words, never the database statement
+    expect(screen.queryByText("SELECT person, mail_sent FROM x")).toBeNull();
+    // each tile asks about itself in Ask
+    expect(screen.getAllByRole("link", { name: "Ask about this" })[0].getAttribute("href")).toBe(`/ask?q=${encodeURIComponent(askAbout("Work sent per person"))}`);
     // a saved one without a chart shows its rows; only a saved one can be removed
     await waitFor(() => expect(screen.getAllByText("A. Person").length).toBeGreaterThan(0));
     expect(screen.getAllByText("Remove")).toHaveLength(1);
     fireEvent.click(screen.getByText("Remove"));
     await waitFor(() => expect(deleteInsight).toHaveBeenCalledWith("s7"));
     expect(changed).toHaveBeenCalled();
+  });
+
+  it("a chart of many people shows the top ones, every series cut alike, and says how many there are", () => {
+    const names = Array.from({ length: 48 }, (_, i) => `P${i}`);
+    const chart = { kind: "bar", title: "T", x: "person", labels: names, series: [{ name: "mail_sent", values: names.map((_, i) => 48 - i) }, { name: "teams_sent", values: names.map(() => 1) }] } as unknown as Parameters<typeof topOf>[0];
+    const top = topOf(chart);
+    expect(top.labels).toEqual(names.slice(0, TOP));
+    expect(top.series.map((s) => s.values.length)).toEqual([TOP, TOP]);
+    expect([top.shown, top.rows]).toEqual([TOP, 48]);
+    // a short chart, a pie and a scatter are never cut
+    expect(topOf({ ...chart, labels: names.slice(0, TOP) })).toEqual({ ...chart, labels: names.slice(0, TOP) });
+    const scatter = { ...chart, kind: "scatter" } as typeof chart;
+    expect(topOf(scatter)).toBe(scatter);
   });
 
   it("a person's name in the rows opens them on Team by the row's Team key", async () => {

@@ -33,7 +33,7 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
 
   it("Admin shows to an ops reader (Reliability, Trust) and to a feedback admin (triage only)", () => {
     const ops = navSectionsFor({ ops_reader: true }).find((s) => s.key === "admin")!;
-    expect(ops.children.map((c) => c.href)).toEqual(["/ops", "/?show=alerts#data-health", "/trust", "/autopilot-log"]);
+    expect(ops.children.map((c) => c.href)).toEqual(["/ops", "/data-health", "/trust", "/autopilot-log"]);
     const fb = navSectionsFor({ feedback_admin: true }).find((s) => s.key === "admin")!;
     expect(fb.children.map((c) => c.href)).toEqual(["/feedback"]);
     expect(fb.href).toBe("/feedback"); // its link goes where this reader may go
@@ -93,11 +93,12 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(sectionOf("/help")).toBeNull(); // Help is the foot link, not an item
   });
 
-  it("Home's tab follows its ?show=: plain / is what needs you, a #fragment tab (Data health) is Admin's", () => {
+  it("Home's tab follows its ?show=: plain / is what needs you; Data health is Admin's own page", () => {
     const home = NAV_SECTIONS.find((s) => s.key === "home")!.children;
     const admin = NAV_SECTIONS.find((s) => s.key === "admin")!.children;
-    expect(sectionOf("/", NAV_SECTIONS, "#data-health", "show=alerts")?.key).toBe("admin");
-    expect(currentChild(admin, "/", "#data-health", "show=alerts")).toBe("/?show=alerts#data-health");
+    // Data health is Admin's own page: Admin stays marked and its tabs stay on screen
+    expect(sectionOf("/data-health", NAV_SECTIONS)?.key).toBe("admin");
+    expect(currentChild(admin, "/data-health", "", "")).toBe("/data-health");
     expect(currentChild(home, "/", "", "")).toBe("/");
     expect(currentChild(home, "/", "", "supplier=Acme")).toBe("/"); // Home's own supplier filter
     expect(currentChild(home, "/", "", "show=alerts&for=purchasing")).toBe("/?show=alerts");
@@ -135,7 +136,7 @@ describe("the sidebar drawn on every page is identical", () => {
   const owner = { owner: true, ops_reader: true, feedback_admin: true, roles: ["purchasing"] };
   const PAGES: [string, string, string][] = [
     // path, #fragment, the one row that is highlighted
-    ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"], ["/?show=alerts", "#data-health", "/ops"],
+    ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"], ["/data-health", "", "/ops"],
     ["/ask", "", "/ask"], ["/memory", "", ""], ["/templates", "", ""],
     ["/autopilot", "", "/"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
     ["/records", "", "/records"], ["/supplier/S-1", "", "/records"], ["/object/PurchaseOrder/x", "", "/records"],

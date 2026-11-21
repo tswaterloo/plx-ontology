@@ -12,7 +12,7 @@ const rules = JSON.parse(readFileSync(join(__dirname, "../../../operating/autopi
 
 describe("the first-week guides", () => {
   it("cover the seven staff roles with the roster's ids and labels", () => {
-    expect(GUIDES.map((g) => g.role).sort()).toEqual(["customer_service", "finance", "production_planning", "purchasing", "quality", "receivables", "rnd"]);
+    expect(GUIDES.map((g) => g.role).sort()).toEqual(["customer_service", "finance", "owner", "production_planning", "purchasing", "quality", "receivables", "rnd"]);
     expect(GUIDES.map((g) => guideLabel(g.role))).toContain("R&D");
     expect(guideFor("payables")).toBeNull();
   });

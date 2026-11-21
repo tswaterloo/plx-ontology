@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { Brief } from "@/lib/types";
-import { BriefView, deltaText, figureText, mondayBefore } from "./brief-view";
+import { BriefView, deltaText, figureText, mondayBefore, signedDelta } from "./brief-view";
 
 const brief = (over: Partial<Brief> = {}): Brief => ({
   kind: "weekly",
@@ -109,6 +109,11 @@ describe("brief view", () => {
     expect(figureText({ value: "92.5", unit: "percent", currency: null })).toBe("92.5%");
     expect(deltaText({ delta: "-2.5", previous: "95.0", unit: "percent", currency: null })).toBe("-2.5 pts vs 95.0% the week before");
     expect(deltaText({ delta: null, previous: "1", unit: "records", currency: null })).toBeNull();
+    // a change is written like its figure: money with its currency and separators, never "+164734.39"
+    expect(signedDelta({ delta: "164734.39", unit: "money", currency: "CAD" })).toMatch(/^\+\$164,734\.39/);
+    expect(signedDelta({ delta: "-17", unit: "records", currency: null })).toBe("−17");
+    expect(signedDelta({ delta: "1200", unit: "records", currency: null })).toBe("+1,200");
+    expect(signedDelta({ delta: "-1", unit: "percent", currency: null })).toBe("−1 pts");
     expect(mondayBefore(new Date(2026, 10, 8), 1)).toBe("2026-10-26");
     expect(mondayBefore(new Date(2026, 10, 9), 0)).toBe("2026-11-09");
   });

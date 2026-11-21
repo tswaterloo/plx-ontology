@@ -24,7 +24,15 @@ export function autoDigest(items: PreparedItem[]): { send: number; wait: number 
   };
 }
 
-export function AssistQueue({ onCount }: { onCount?: (n: number | null) => void }) {
+/** Pure: the queue's items split the way Home's chips count them: what you confirm (a draft,
+ * a question, a change) and alerts waiting on you, which have nothing to confirm. */
+export function splitPrepared(items: PreparedItem[]): { confirm: PreparedItem[]; alerts: PreparedItem[] } {
+  return { confirm: items.filter((i) => i.kind !== "alert"), alerts: items.filter((i) => i.kind === "alert") };
+}
+
+export type PreparedCount = { confirm: number; alerts: number };
+
+export function AssistQueue({ onCount, only }: { onCount?: (n: PreparedCount | null) => void; only?: "confirm" | "alerts" }) {
   const params = useSearchParams();
   const linked = params?.get("item") ?? null;
   const [items, setItems] = useState<PreparedItem[] | null>(null);
@@ -44,18 +52,28 @@ export function AssistQueue({ onCount }: { onCount?: (n: number | null) => void 
     );
     return () => ctl.abort();
   }, [round]);
-  useEffect(() => onCount?.(error ? null : items ? items.length : null), [items, error, onCount]);
+  useEffect(() => {
+    if (error || !items) return onCount?.(null);
+    const { confirm, alerts } = splitPrepared(items);
+    onCount?.({ confirm: confirm.length, alerts: alerts.length });
+  }, [items, error, onCount]);
   useEffect(() => {
     if (linked && items) document.getElementById(`prepared-${linked}`)?.scrollIntoView({ block: "center" });
   }, [linked, items]);
   if (error) return <div className="px-5 pt-3"><LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={reload} /></div>;
   if (!items) return null;            // the rest of Home shows meanwhile; the queue joins it when read
-  const { send, wait } = autoDigest(items);
+  const split = splitPrepared(items);
+  const listed = only === "confirm" ? split.confirm : only === "alerts" ? split.alerts : items;
+  if (only && listed.length === 0) return null;
+  const { send, wait } = autoDigest(listed);
+  // the heading says what is there: drafts to confirm are prepared for you; alerts alone
+  // (a QC hold) have nothing to confirm, so they are not called prepared
+  const heading = split.confirm.length === 0 && split.alerts.length > 0 || only === "alerts" ? "Waiting on you" : "Prepared for you";
   return (
-    <section className="border-b border-border px-5 pt-3 pb-1" aria-label="Prepared for you" data-testid="assist-queue">
+    <section className="border-b border-border px-5 pt-3 pb-1" aria-label={heading} data-testid="assist-queue">
       <h2 className="flex items-baseline gap-2 text-[13px] font-semibold">
-        Prepared for you
-        {items.length > 0 && <span className="num text-[12px] font-normal text-muted">{items.length}</span>}
+        {heading}
+        {listed.length > 0 && <span className="num text-[12px] font-normal text-muted">{listed.length}</span>}
         <Link href={SWITCHES_HREF} className="ml-auto text-[12px] font-normal text-muted hover:text-fg">
           Switches
         </Link>
@@ -66,12 +84,12 @@ export function AssistQueue({ onCount }: { onCount?: (n: number | null) => void 
           Dry run of Auto: {send} of these would go by themselves, {wait} would still wait for you. Nothing is sent from here without your click.
         </p>
       )}
-      {items.length === 0 ? (
+      {listed.length === 0 ? (
         <p className="py-3 text-[13px] text-muted" data-testid="prepared-empty">
           Nothing is waiting for you. What gets prepared is set on <Link href={SWITCHES_HREF} className="underline-offset-2 hover:underline">Switches</Link>.
         </p>
       ) : (
-        <PreparedView items={items} empty="" linked={linked} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />
+        <PreparedView items={listed} empty="" linked={linked} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />
       )}
       {never.length > 0 && (
         <ul className="space-y-1 pt-2 pb-2 text-[12px] text-muted" aria-label="Never prepared from">

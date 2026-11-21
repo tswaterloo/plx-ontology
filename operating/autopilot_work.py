@@ -763,7 +763,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"summary": f"PO {facts['po']} is already entered as order "
                            f"{f['order_number']}.", "order": f, "draft": msg,
                 "availability": atp,
-                "links": [{"label": "Open the order", "href": f"/object/{entered[0]}"}],
+                "links": [{"label": "Open the order", "href": autopilot_records.object_href(entered[0])}],
                 "done_hint": "order_entered", "gaps": []}
     lines, read_from = [], None
     for name, form, text, handle in sources:
@@ -1097,7 +1097,7 @@ def h_po_followup(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                                "expected": autopilot_records._v(head, "expected_date")[:10] or None,
                                "supplier": autopilot_records._v(head, "vendor_name"), "lines": lines},
             "draft": msg, "gaps": [],
-            "links": [{"label": "Open the PO", "href": f"/object/{po}"}]}
+            "links": [{"label": "Open the PO", "href": autopilot_records.object_href(po)}]}
 
 
 _MONTH = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug",
@@ -1199,7 +1199,7 @@ def h_supplier_eta(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         "eta": {"stated": new.isoformat(), "previous": old_d.isoformat() if old_d else None,
                 "slip_days": slip, "source": event["object_id"]},
         "gaps": [] if old_d else ["po_had_no_expected_date"],
-        "links": [{"label": "Open the PO", "href": f"/object/{po}"}]}
+        "links": [{"label": "Open the PO", "href": autopilot_records.object_href(po)}]}
     if via_items:
         out["matched_by_supplier_item"] = [{"supplier_number": tok, "items": items}
                                            for tok, items in sorted(via_items.items())]
@@ -1380,7 +1380,7 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         if msg is None:
             return {"skip": "draft_failed_copy_gate"}
         out.update(kind="answer", summary=f"Answer drafted: {' '.join(lines)[:140]}",
-                   draft=msg, links=[{"label": "Open the order", "href": f"/object/{o}"}
+                   draft=msg, links=[{"label": "Open the order", "href": autopilot_records.object_href(o)}
                                      for o in orders[:3]])
         return out
     if PRICE_ASK.search(own) and (orders or pos):
@@ -1417,7 +1417,7 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             "engaged": bool(event.get("engaged")),
             "correspondent": bool(event.get("correspondent"))},
         "records": [{"object_id": o} for o in records],
-        "links": [{"label": "Open the record", "href": f"/object/{o}"} for o in records[:3]],
+        "links": [{"label": "Open the record", "href": autopilot_records.object_href(o)} for o in records[:3]],
         "gaps": [] if lines else ["sender_customer_unresolved"] if mine is None
         else ["no_record_states_the_answer"]}
     if lines and event.get("channel") == "mail":
@@ -1601,7 +1601,7 @@ def h_invoice_send(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             "object": {"object_id": inv, "number": number, "date": day, "total": amount},
             "draft": msg, "gaps": [] if amount else ["total not stated"],
             "attach": [{"label": f"Invoice {number}", "object_id": inv}],
-            "links": [{"label": "Open the invoice", "href": f"/object/{inv}"}]}
+            "links": [{"label": "Open the invoice", "href": autopilot_records.object_href(inv)}]}
 
 
 # ----------------------------------------------------------------------------- routine update
@@ -1722,7 +1722,7 @@ def h_routine_update(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                        "last_sent": last_day},
             "draft": msg, "template": text[:autopilot_queue.TEXT_CHARS],
             "gaps": ["the update's content: start from the last one"],
-            "links": [{"label": "Open the last one", "href": f"/object/{event['object_id']}"}]}
+            "links": [{"label": "Open the last one", "href": autopilot_records.object_href(event['object_id'])}]}
 
 
 
@@ -1814,8 +1814,8 @@ def h_rd_status_update(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                        "kind": f.get("kind"), "state": f.get("state")},
             "draft": msg,
             "gaps": ["what is done and what is next: add it before you send"],
-            "links": [{"label": "Open the R&D board", "href": "/rd-projects"},
-                      {"label": "Open the last message", "href": f"/object/{event['object_id']}"}]}
+            "links": [{"label": "Open the last message",
+                       "href": autopilot_records.object_href(event['object_id'])}]}
 
 
 _ISO_DAY = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")
