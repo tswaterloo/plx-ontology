@@ -1847,6 +1847,18 @@
             "description": "A histogram's bin edges.",
             "title": "Edges"
           },
+          "first_period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The label of the earliest calendar period the statement's window starts inside (a month, quarter or year): its figures are of part of it.",
+            "title": "First Period"
+          },
           "kind": {
             "enum": [
               "bar",
@@ -3134,6 +3146,48 @@
         "title": "AutopilotCatalog",
         "type": "object"
       },
+      "AutopilotChoiceModeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "choice": {
+            "description": "One of ``my_drafts``' choices.",
+            "maxLength": 60,
+            "title": "Choice",
+            "type": "string"
+          },
+          "mode": {
+            "description": "off, confirm (prepared, one click performs it) or auto (only where your replay score earned it).",
+            "enum": [
+              "off",
+              "confirm",
+              "auto"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "choice",
+          "mode"
+        ],
+        "title": "AutopilotChoiceModeRequest",
+        "type": "object"
+      },
+      "AutopilotColleagues": {
+        "additionalProperties": false,
+        "description": "Whom an alert can be passed to: an opaque key and a name each, never an id.",
+        "properties": {
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/ViewAsPerson"
+            },
+            "title": "People",
+            "type": "array"
+          }
+        },
+        "title": "AutopilotColleagues",
+        "type": "object"
+      },
       "AutopilotCountdown": {
         "additionalProperties": false,
         "description": "The workflow's way to its write gate: the counts the gate admitted\n(``autopilot_write.gate_counts``), items judged on held-out days (fresh days, or past\ndays never tuned on) against the\n``need_judged`` the gate asks for, and the precision so far against ``need_percent``.\nRecomputed from the counts at every read.",
@@ -3426,6 +3480,11 @@
         "additionalProperties": false,
         "description": "Work the autopilot prepares for you: a draft or a prepared action waiting in My work\nfor your confirm. On when you switched it on yourself or the owner's Draft file turned\nit on for you; your own off or pause wins over the Draft file. Nothing is sent or\nwritten by itself.",
         "properties": {
+          "auto_ok": {
+            "description": "Your replay score earned auto for some of it, so auto can be chosen.",
+            "title": "Auto Ok",
+            "type": "boolean"
+          },
           "by_owner": {
             "description": "On because the owner's Draft file turned it on for you, not your own switch.",
             "title": "By Owner",
@@ -3439,6 +3498,16 @@
             "title": "Label",
             "type": "string"
           },
+          "mode": {
+            "description": "off: nothing prepared; confirm: prepared in full, one click of yours performs it; auto: performed without the click for the workflows your replay score earned (the rest still wait for it).",
+            "enum": [
+              "off",
+              "confirm",
+              "auto"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "on": {
             "description": "Some or all of it is prepared for you now (not switched off or paused by you).",
             "title": "On",
@@ -3448,6 +3517,17 @@
             "description": "On for only some of its workflows (the owner's Draft file turned on part of it).",
             "title": "Partly",
             "type": "boolean"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotScoreBar"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its replay score for you, against the bar auto needs."
           },
           "since": {
             "anyOf": [
@@ -3546,6 +3626,14 @@
               "$ref": "#/components/schemas/AutopilotPrepared"
             },
             "title": "Items",
+            "type": "array"
+          },
+          "never_senders": {
+            "description": "Senders you said never to prepare anything for you from (yours only).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Never Senders",
             "type": "array"
           }
         },
@@ -3716,6 +3804,34 @@
           "matched"
         ],
         "title": "AutopilotGatePart",
+        "type": "object"
+      },
+      "AutopilotHandRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "to": {
+            "description": "The colleague's opaque key (GET /api/autopilot/colleagues).",
+            "maxLength": 40,
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "title": "AutopilotHandRequest",
         "type": "object"
       },
       "AutopilotItem": {
@@ -3966,6 +4082,26 @@
         "title": "AutopilotLineRequest",
         "type": "object"
       },
+      "AutopilotLink": {
+        "additionalProperties": false,
+        "description": "A page of the Workbench an alert points to (the record or task it is about).",
+        "properties": {
+          "href": {
+            "title": "Href",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "href"
+        ],
+        "title": "AutopilotLink",
+        "type": "object"
+      },
       "AutopilotMemoryUse": {
         "additionalProperties": false,
         "description": "One memory entry an autopilot draft read (``operator_api.autopilot_context``).",
@@ -4037,6 +4173,29 @@
           "mode"
         ],
         "title": "AutopilotModeRequest",
+        "type": "object"
+      },
+      "AutopilotNeverRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "never": {
+            "description": "true: never prepare anything for you from this sender; false: prepare again.",
+            "title": "Never",
+            "type": "boolean"
+          },
+          "sender": {
+            "description": "The sender's address, as an item on your list shows it.",
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "Sender",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sender",
+          "never"
+        ],
+        "title": "AutopilotNeverRequest",
         "type": "object"
       },
       "AutopilotNoticeAck": {
@@ -4385,6 +4544,12 @@
             "title": "Ask",
             "type": "string"
           },
+          "auto_would": {
+            "default": "",
+            "description": "A dry run of Auto on this reply, when your replay score earned its workflow: \"send\" (it would go by itself once you switch Auto on) or \"keep: <reasons>\" (it would still wait for your click); empty otherwise. Nothing is done.",
+            "title": "Auto Would",
+            "type": "string"
+          },
           "body": {
             "default": "",
             "description": "The reply as it stands now (your edit when you made one); empty on a \"your call\" card until you say what to reply.",
@@ -4423,6 +4588,18 @@
             "title": "Facts",
             "type": "array"
           },
+          "handed_from": {
+            "default": "",
+            "description": "On an alert passed to you: by whom.",
+            "title": "Handed From",
+            "type": "string"
+          },
+          "handed_to": {
+            "default": "",
+            "description": "On an alert you passed on: to whom.",
+            "title": "Handed To",
+            "type": "string"
+          },
           "item_id": {
             "title": "Item Id",
             "type": "string"
@@ -4439,7 +4616,8 @@
               "reply",
               "your_call",
               "job",
-              "todo"
+              "todo",
+              "alert"
             ],
             "title": "Kind",
             "type": "string"
@@ -4452,10 +4630,24 @@
             "title": "Learned",
             "type": "array"
           },
+          "links": {
+            "description": "On an alert: the records or task it is about.",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotLink"
+            },
+            "title": "Links",
+            "type": "array"
+          },
           "message": {
             "default": "",
             "description": "What they wrote, as far as the item keeps it.",
             "title": "Message",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "description": "On an alert: where it is decided or answered (never from this card).",
+            "title": "Note",
             "type": "string"
           },
           "options": {
@@ -4465,6 +4657,12 @@
             },
             "title": "Options",
             "type": "array"
+          },
+          "redo": {
+            "default": false,
+            "description": "On a reply the model wrote: it can be written again from one line of what you want to say (reply-from-line).",
+            "title": "Redo",
+            "type": "boolean"
           },
           "sender": {
             "title": "Sender",
@@ -4477,7 +4675,7 @@
           },
           "summary": {
             "default": "",
-            "description": "On a job or a to-do: what the event asks to be done.",
+            "description": "On a job, a to-do or an alert: what the event asks to be done, or what happened.",
             "title": "Summary",
             "type": "string"
           },
@@ -18198,6 +18396,246 @@
         "title": "RecordQuestion",
         "type": "object"
       },
+      "RecurringChange": {
+        "additionalProperties": false,
+        "properties": {
+          "hour": {
+            "anyOf": [
+              {
+                "maximum": 23.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hour"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "active",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "enum": [
+                  "monday",
+                  "tuesday",
+                  "wednesday",
+                  "thursday",
+                  "friday",
+                  "saturday",
+                  "sunday"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          }
+        },
+        "title": "RecurringChange",
+        "type": "object"
+      },
+      "RecurringInstruction": {
+        "additionalProperties": false,
+        "description": "One of your recurring instructions: what it does, when it runs (US Eastern), its\nstate, and its last and next run.",
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "number"
+          },
+          "hour": {
+            "title": "Hour",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Result"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          },
+          "next_run": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "paused"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "label",
+          "kind",
+          "words",
+          "hour",
+          "state",
+          "created"
+        ],
+        "title": "RecurringInstruction",
+        "type": "object"
+      },
+      "RecurringInstructions": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "items": {
+              "$ref": "#/components/schemas/RecurringInstruction"
+            },
+            "title": "Instructions",
+            "type": "array"
+          }
+        },
+        "title": "RecurringInstructions",
+        "type": "object"
+      },
+      "RecurringKeep": {
+        "additionalProperties": false,
+        "properties": {
+          "hour": {
+            "anyOf": [
+              {
+                "maximum": 23.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hour"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A \"whenever\" line: the mail is from this address or domain.",
+            "title": "Sender"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A \"whenever\" line: every one of these words is in the subject.",
+            "title": "Subject"
+          },
+          "text": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "RecurringKeep",
+        "type": "object"
+      },
       "ReplyLine": {
         "additionalProperties": false,
         "properties": {
@@ -24998,6 +25436,38 @@
         ]
       }
     },
+    "/api/autopilot/colleagues": {
+      "get": {
+        "description": "Whom an alert on your list can be passed to: a key and a name each.",
+        "operationId": "autopilot_colleagues_api_autopilot_colleagues_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotColleagues"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Autopilot Colleagues",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/drafts": {
       "get": {
         "description": "Your open prepared replies and \"your call\" cards, newest first.",
@@ -25193,6 +25663,89 @@
         ]
       }
     },
+    "/api/autopilot/items/{item_id}/hand": {
+      "post": {
+        "description": "Pass an alert on your list to a colleague: on their list too, under their own\naccess, only to set aside there; nothing is decided, sent or written.",
+        "operationId": "autopilot_hand_api_autopilot_items__item_id__hand_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotHandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotDrafts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Hand",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/items/{item_id}/jobs/{index}/prepare": {
       "post": {
         "description": "Review one system change an autopilot proposed on an item of yours: it is\nprepared as you (the record read from its system, before and after); confirm it in\ntwo steps on /api/prepared/{id}. Nothing is written here.",
@@ -25353,6 +25906,160 @@
           }
         },
         "summary": "Autopilot Reply From Line",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/mode": {
+      "post": {
+        "description": "Set one category of your own work to off, confirm (prepared in full, one click\nof yours performs it) or auto (performed by itself only where your replay score\nearned it: 409 otherwise). Always your own; recorded on the audit log.",
+        "operationId": "autopilot_mode_api_autopilot_mode_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotChoiceModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotArea"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Mode",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/never": {
+      "post": {
+        "description": "Never (or again) prepare anything for you from one sender: your list, back.",
+        "operationId": "autopilot_never_api_autopilot_never_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotNeverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotDrafts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Never",
         "tags": [
           "actions"
         ]
@@ -28616,6 +29323,215 @@
           }
         },
         "summary": "Upload Approve",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/instructions/recurring": {
+      "get": {
+        "description": "Your recurring instructions (only yours).",
+        "operationId": "recurring_list_api_instructions_recurring_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecurringInstructions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Recurring List",
+        "tags": [
+          "actions"
+        ]
+      },
+      "post": {
+        "description": "Keep a recurring instruction (\"every Monday ...\"): when it runs is read from the\nline. Each run prepares its work for you to confirm; nothing is sent on its own.",
+        "operationId": "recurring_keep_api_instructions_recurring_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecurringKeep"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecurringInstruction"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Recurring Keep",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/instructions/recurring/{rid}": {
+      "delete": {
+        "description": "Stop one of yours: it is deleted and never runs again.",
+        "operationId": "recurring_stop_api_instructions_recurring__rid__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rid",
+            "required": true,
+            "schema": {
+              "title": "Rid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recurring Stop",
+        "tags": [
+          "actions"
+        ]
+      },
+      "patch": {
+        "description": "Change one of yours: its hour, weekday or name, or pause and resume it.",
+        "operationId": "recurring_change_api_instructions_recurring__rid__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rid",
+            "required": true,
+            "schema": {
+              "title": "Rid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecurringChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecurringInstruction"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Recurring Change",
         "tags": [
           "actions"
         ]

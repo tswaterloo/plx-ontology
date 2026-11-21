@@ -193,6 +193,13 @@ ROUTES = [
     ("I need you to tell me who approved PO 1234", "ask"),
     ("Can you fill me in on the Maple account?", "ask"),
     ("What ships every Monday?", "ask"),
+    # a frequency word in a plain data question is a measure (devin-6 11-20, 6 of 9 unsure)
+    ("what is monthly revenue by customer", "ask"),
+    ("show monthly sales", "ask"),
+    ("how many orders weekly by site", "ask"),
+    ("which customers buy monthly", "ask"),
+    ("what are the weekly open orders", "ask"),
+    ("list monthly invoices for Acme", "ask"),
     ("PO 1234", "ask"),
     ("late shipments this week", "ask"),
     ("reply to this", "do"),

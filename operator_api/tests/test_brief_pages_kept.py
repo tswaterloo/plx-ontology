@@ -88,6 +88,34 @@ class WeeklyKeptTests(unittest.TestCase):
             self.assertEqual(budgets, [briefs.WARM_WEEK_BUDGET_SECONDS])
             self.assertEqual(len(backend._weekly_archive().weeks("r1", "g1")), 1)
 
+    def test_a_read_ahead_cut_by_its_budget_waits_before_it_is_read_ahead_again(self):
+        budgets = []
+
+        def weekly(call, held, alerts, *, budget_seconds, **kw):
+            budgets.append(budget_seconds)
+            return review(budget_seconds, stopped=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = SimpleNamespace(data_dir=Path(tmp))
+            backend._weekly_archive = lambda: briefs.BriefsMixin._weekly_archive(backend)
+            job = briefs.BriefsMixin._weekly_ahead(backend, SimpleNamespace(key="r1"))
+            other = briefs.BriefsMixin._weekly_ahead(backend, SimpleNamespace(key="r2"))
+            with mock.patch.object(br, "weekly_review", weekly), \
+                    mock.patch.object(briefs, "_grant_key", lambda view, held: "g1"):
+                job(View())
+                job(View())                       # cut just now: not read again
+                other(View())                     # another reader is read as before
+                self.assertEqual(len(budgets), 2)
+                self.assertEqual(backend._weekly_archive().weeks("r1", "g1"), [])
+                cuts = briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE)
+                week = br.week_of(date.today()) - briefs.timedelta(days=7)
+                self.assertTrue(cuts.recent("r1", week))
+                later = __import__("time").time() + briefs.WEEKLY_CUT_SECONDS + 1
+                self.assertFalse(cuts.recent("r1", week, now=later))
+                self.assertFalse(cuts.recent("r1", week - briefs.timedelta(days=7)))
+                (Path(tmp) / briefs.WEEKLY_CUT_FILE).write_text("not json")
+                job(View())                       # an unreadable file is a miss
+                self.assertEqual(len(budgets), 3)
+
     def test_this_week_keeps_the_live_budget_and_a_cut_week_is_read_again(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive = br.WeeklyArchive(Path(tmp) / "w.sqlite")

@@ -172,6 +172,51 @@ class ScreensAgain(unittest.TestCase):
         self.assertEqual(calls, ["bank"])   # past the limit: not read again
 
 
+class WeeklyScreenAfterACut(unittest.TestCase):
+    def test_the_weekly_screen_is_not_read_ahead_while_its_week_was_cut_lately(self):
+        import tempfile
+        from datetime import date, timedelta
+        from pathlib import Path
+        from operating import briefs as br
+        from operator_api import briefs
+        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
+        self.addCleanup(backend.stop)
+        read = []
+        backend.weekly_review = lambda reader, week, **k: read.append(reader.key)
+        with tempfile.TemporaryDirectory() as tmp:
+            backend.data_dir = Path(tmp)
+            week = br.week_of(date.today()) - timedelta(days=7)
+            briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE).mark("r1", week)
+            self.assertEqual(backend._screens_ahead(
+                mock.Mock(key="r1"), (("weekly_review", None),)), 0)
+            self.assertEqual(backend._screens_ahead(
+                mock.Mock(key="r2"), (("weekly_review", None),)), 1)
+            briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE).mark(
+                "r1", week, now=be.time.time() - briefs.WEEKLY_CUT_SECONDS - 1)
+            self.assertEqual(backend._screens_ahead(
+                mock.Mock(key="r1"), (("weekly_review", None),)), 1)
+        self.assertEqual(read, ["r2", "r1"])
+
+
+class WeeklyScreenMarksItsCut(unittest.TestCase):
+    def test_a_weekly_screen_read_cut_by_its_budget_is_not_read_ahead_again(self):
+        import tempfile
+        from pathlib import Path
+        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
+        self.addCleanup(backend.stop)
+        runs = []
+        backend._weekly_archive = lambda: None
+        backend._serving = lambda reader, key, read, inputs: read()
+        backend._brief_run = lambda reader, job, **k: runs.append(reader.key) or {
+            "budget": {"stopped": reader.key == "cut"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            backend.data_dir = Path(tmp)
+            for _ in range(2):
+                for key in ("cut", "whole"):
+                    backend._screens_ahead(mock.Mock(key=key), (("weekly_review", None),))
+        self.assertEqual(runs, ["cut", "whole", "whole"])   # the cut one read once
+
+
 class ScreensSideBySide(unittest.TestCase):
     """The warm-up process reads a reader's screens side by side on its workers, most
     visited first, and the first pass waits for every one of them."""
@@ -274,6 +319,42 @@ class FirstPass(unittest.TestCase):
         threading.Thread(target=backend.reads.loop, daemon=True).start()
         self.assertEqual(wp.first_pass(backend, stop, warmed), 14)
         self.assertEqual(warmed.value, 1)
+
+
+class FirstPassDirectory(unittest.TestCase):
+    """11-19: up to 60 directory employees' main screens kept every deploy's first pass,
+    and so the API's port, held to its whole 420 s budget. The first pass waits for every
+    reader's Today reads, the directory's too, but not the directory's screens."""
+
+    backend = FirstPass.backend
+
+    def test_the_first_pass_waits_for_the_directory_s_today_not_its_screens(self):
+        gate = threading.Event()
+        gate.set()
+        backend = self.backend(gate)
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        backend._screens_ahead = lambda reader, screens=(), until=None: (
+            stuck.wait(10) if reader.key == "d1" else None)
+        today: list[str] = []
+        backend._upcoming_cached = lambda view, reader: today.append(reader.key)
+        session = mock.Mock(view_as=False, principals=["d1"])
+        backend.identity_for = lambda oid, exp: session
+        backend.directory_for = lambda: ["d1"]
+        backend.signed_out = lambda: set()
+        backend.recent_users = lambda: []
+        known = backend.warm_known
+        backend.warm_known = lambda **kw: known() + backend._warm_directory(set())
+        warmed, stop = _Value("b", 0), threading.Event()
+        self.addCleanup(stop.set)
+        threading.Thread(target=backend.reads.loop, daemon=True).start()
+        began = time.monotonic()
+        self.assertGreater(wp.first_pass(backend, stop, warmed, budget=5.0), 0)
+        self.assertLess(time.monotonic() - began, 4.0)   # not held to the budget
+        self.assertEqual(warmed.value, 1)
+        self.assertEqual(sorted(today), ["d1", "r1", "r2"])   # every reader's Today
+        self.assertFalse(stuck.is_set())                 # d1's screens still running
+        self.assertFalse(getattr(be.DIRECTORY_ROUND, "on", False))
 
 
 class FirstPassBounded(unittest.TestCase):
@@ -484,6 +565,31 @@ class KnownReadersAcrossProcesses(unittest.TestCase):
         self.assertFalse(done.is_alive())
         self.assertEqual(backend.known_readers(), {})
 
+
+
+class WeeklyReviewAfterFirstPass(unittest.TestCase):
+    def test_the_weekly_review_is_read_ahead_only_outside_the_first_pass(self):
+        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
+        self.addCleanup(backend.stop)
+        backend.warm_enabled = True
+        backend.yield_to_live = True
+        backend.warmer = backend.reads
+        done = lambda *a, **k: None   # noqa: E731
+        for name in ("_attention_cached", "_suggestions_cached", "_late_held",
+                     "_upcoming_cached"):
+            setattr(backend, name, done)
+        backend._briefing_ahead = lambda reader: done
+        asked = []
+        backend._weekly_ahead = lambda reader: asked.append(reader.key) or done
+        reader = mock.Mock(key="r1")
+        reader.session.view_as = False
+        reader.session.principals = ["r1"]
+        backend.warm_pending = []
+        backend.warm(reader, force=True)
+        self.assertEqual(asked, [])
+        backend.warm_pending = None
+        backend.warm(reader, force=True)
+        self.assertEqual(asked, ["r1"])
 
 if __name__ == "__main__":
     unittest.main()

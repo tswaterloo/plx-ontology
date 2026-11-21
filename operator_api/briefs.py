@@ -98,6 +98,54 @@ def _held(view: Any) -> frozenset[str] | None:
 
 
 WEEKLY_FILE = "weekly-reviews.sqlite"
+# A read-ahead cut by its budget keeps nothing (``WeeklyArchive.put``), so the same reader's
+# same week is not read ahead again for ``WEEKLY_CUT_SECONDS``: on the live box 345 of 382
+# read-aheads in two days ran their whole 300 s of Postgres aggregates and were cut (11-19),
+# beside the readers' live requests. Opening the weekly view reads it as before.
+WEEKLY_CUT_FILE = "weekly-cut.json"
+WEEKLY_CUT_SECONDS = 6 * 3600.0
+
+
+class WeeklyCuts:
+    """Which reader's read-ahead of which week was last cut by its budget, and when (a
+    JSON file beside the archive, owner-only). Any failure of the file is a miss: the week
+    is read ahead as before."""
+
+    def __init__(self, path: Any) -> None:
+        self.path = Path(path)
+
+    def _read(self) -> dict[str, Any]:
+        import json
+        try:
+            held = json.loads(self.path.read_text())
+            return held if isinstance(held, dict) else {}
+        except Exception:  # noqa: BLE001 - a miss
+            return {}
+
+    def recent(self, reader: str, week: date, now: Optional[float] = None) -> bool:
+        import time
+        held = self._read().get(reader)
+        try:
+            return (isinstance(held, list) and held[0] == week.isoformat()
+                    and (now if now is not None else time.time()) - float(held[1])
+                    < WEEKLY_CUT_SECONDS)
+        except Exception:  # noqa: BLE001 - a miss
+            return False
+
+    def mark(self, reader: str, week: date, now: Optional[float] = None) -> None:
+        import json
+        import time
+        try:
+            held = self._read()
+            held[reader] = [week.isoformat(), now if now is not None else time.time()]
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            part = self.path.with_name(f"{self.path.name}.{os.getpid()}.part")
+            part.write_text(json.dumps(held))
+            from operating.file_modes import keep_private
+            keep_private(part, 0o600)
+            os.replace(part, self.path)
+        except Exception:  # noqa: BLE001 - not marked: read ahead again next round
+            return
 
 
 def _alerts(view: Any, *, resolved: bool = False,
@@ -782,6 +830,15 @@ class BriefsMixin:
         data_dir = getattr(self, "data_dir", None)
         return br.WeeklyArchive(data_dir / WEEKLY_FILE) if data_dir is not None else None
 
+    def _weekly_cut_recently(self, reader: Reader) -> bool:
+        """Last week's read-ahead for ``reader`` was cut by its budget within
+        ``WEEKLY_CUT_SECONDS`` (``WeeklyCuts``)."""
+        data_dir = getattr(self, "data_dir", None)
+        if data_dir is None:
+            return False
+        week = br.week_of(date.today()) - timedelta(days=7)
+        return WeeklyCuts(Path(data_dir) / WEEKLY_CUT_FILE).recent(reader.key, week)
+
     def _weekly_ahead(self, reader: Reader) -> Any:
         """Last week's review for ``reader`` as ``/api/brief/weekly`` reads it, kept in the
         archive (read whole once, served from there after); nothing when no archive."""
@@ -790,9 +847,15 @@ class BriefsMixin:
         def job(view: Any) -> None:
             if archive is None:
                 return
+            cuts = WeeklyCuts(Path(self.data_dir) / WEEKLY_CUT_FILE)
+            week = br.week_of(date.today()) - timedelta(days=7)
+            if cuts.recent(reader.key, week):
+                return
             try:
-                weekly_review_of(view, None, archive=archive, reader=reader.key,
-                                 kept_budget=WARM_WEEK_BUDGET_SECONDS)
+                raw = weekly_review_of(view, None, archive=archive, reader=reader.key,
+                                       kept_budget=WARM_WEEK_BUDGET_SECONDS)
+                if isinstance(raw, Mapping) and (raw.get("budget") or {}).get("stopped"):
+                    cuts.mark(reader.key, week)
             except Exception as error:  # noqa: BLE001 - read when opened instead
                 import logging
                 import traceback
@@ -802,7 +865,11 @@ class BriefsMixin:
                     Path(where.filename).name, where.lineno)
         return job
 
-    def weekly_review(self, reader: Reader, week: Optional[date]) -> m.Brief:
+    def weekly_review(self, reader: Reader, week: Optional[date], *,
+                      ahead: bool = False) -> m.Brief:
+        """Read ``ahead`` (the warm-up's screen read): last week's review cut by its budget
+        kept nothing, so it is marked in ``WeeklyCuts`` and not read ahead again while the
+        mark holds."""
         archive = self._weekly_archive()
         try:
             raw = self._brief_run(reader, lambda view: weekly_review_of(
@@ -811,6 +878,11 @@ class BriefsMixin:
             raise UserFacing("invalid_request", "That week has not started yet.", 422)
         if raw is None:
             raise UserFacing("not_found", "The weekly review needs a signed-in reader.", 404)
+        data_dir = getattr(self, "data_dir", None)
+        if ahead and week is None and data_dir is not None and isinstance(raw, Mapping) \
+                and (raw.get("budget") or {}).get("stopped"):
+            WeeklyCuts(Path(data_dir) / WEEKLY_CUT_FILE).mark(
+                reader.key, br.week_of(date.today()) - timedelta(days=7))
         return brief_model(raw)
 
     def labour(self, reader: Reader) -> m.LabourPage:

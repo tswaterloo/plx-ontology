@@ -136,10 +136,11 @@ class ScreensMixin:
                              self._screen_inputs(
                                  extra=lambda: _follow_up_stamp(self.state_dir)))
 
-    def weekly_review(self, reader: Reader, week: Optional[date]) -> m.Brief:
+    def weekly_review(self, reader: Reader, week: Optional[date], *,
+                      ahead: bool = False) -> m.Brief:
         from .briefs import WEEKLY_FILE
         return self._serving(reader, ("weekly", week.isoformat() if week else None),
-                             lambda: BriefsMixin.weekly_review(self, reader, week),
+                             lambda: BriefsMixin.weekly_review(self, reader, week, ahead=ahead),
                              self._screen_inputs(files=(
                                  self.data_dir / WEEKLY_FILE if self.data_dir else None,)))
 

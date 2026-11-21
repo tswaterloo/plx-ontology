@@ -146,7 +146,7 @@ function Select({ label, value, onChange, options, testId }: { label: string; va
   );
 }
 
-export function TeamDashboard({ data }: { data: TeamView }) {
+export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: string }) {
   const people = useMemo(() => data.people ?? [], [data.people]);
   const [period, setPeriod] = useState<Period>(7);
   const [team, setTeam] = useState("");
@@ -155,6 +155,16 @@ export function TeamDashboard({ data }: { data: TeamView }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "total", desc: true });
   const [open, setOpen] = useState<string | null>(null);
+  // /team?person=<Team key or name> (a person row on Insights): opens them when exactly one row you
+  // can see has that key or name, else narrows the list to it
+  useEffect(() => {
+    const want = person.trim().toLowerCase();
+    if (!want) return;
+    const byKey = people.filter((p) => p.key === person.trim());
+    const hits = byKey.length ? byKey : people.filter((p) => p.name.toLowerCase() === want);
+    if (hits.length === 1) setOpen(hits[0].key);
+    else setQuery(person.trim());
+  }, [person, people]);
 
   const teams = useMemo(() => [...new Set(people.map((p) => p.team).filter((t): t is string => !!t))].sort(), [people]);
   const roles = useMemo(() => [...new Set(people.flatMap((p) => p.roles ?? []))].sort(), [people]);

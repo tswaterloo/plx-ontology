@@ -832,7 +832,11 @@ class EmailsThroughTheDoor(unittest.TestCase):
                     f"SELECT handle FROM {bv.SCHEMA}.emails WHERE words @@ %s::tsquery",
                     (cs.tsquery(word),))}
                 at = dict(pg.execute(f"SELECT handle, received_at FROM {bv.SCHEMA}.emails"))
-            every = self.found(tmp.OWNER, query=word)
+            # the word match's own rows (a widening, by stem or meaning, is a first
+            # page's of few rows: never paged)
+            widened = {h["citation"] for h in self.search(tmp.OWNER, query=word, limit=50)[
+                "documents"] if "match" in h}
+            every = [h for h in self.found(tmp.OWNER, query=word) if h not in widened]
             for limit in (1, 3, 50):
                 with self.subTest(word=word, limit=limit):
                     walk, cursor = [], None
@@ -844,7 +848,8 @@ class EmailsThroughTheDoor(unittest.TestCase):
                         if not cursor:
                             break
                     self.assertEqual(len(walk), len(set(walk)), "a hit doubled across pages")
-                    self.assertEqual(set(walk), every)
+                    walk = [h for h in walk if h not in widened]
+                    self.assertEqual(set(walk), set(every))
                     tiers = [h in header for h in walk]
                     self.assertEqual(tiers, sorted(tiers, reverse=True), (word, walk))
                     for tier in (True, False):
@@ -939,6 +944,138 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 with self.assertRaises(ts.ToolError) as caught:
                     self.search(tmp.OWNER, **args)
                 self.assertEqual(caught.exception.code, "invalid_input")
+
+    def _attachment(self, pg, handle, *texts, markings="[]"):
+        """A stored attachment of the mail version ``handle``: one text field per text
+        (pieces of one version), as the capture stores a PDF's pages."""
+        import zlib
+        from operating.pg import words
+        version = f"{handle}#attachment=zzatt{abs(hash(texts)) % 10 ** 8}&sha256=00"
+        oid = f"Attachment:graph_mail.attachments:{version[-24:]}"
+        for page, text in enumerate(texts, start=1):
+            fid = pg.execute("SELECT coalesce(max(field_id), 0) + 1 FROM "
+                             "ontology.text_fields").fetchone()[0]
+            pg.execute("INSERT INTO ontology.text_fields VALUES (%s, %s, %s, %s, "
+                       "'row.content_text', 'attachment', 'external', %s, 'x')",
+                       (fid, oid, version, f"{version}&page={page}", markings))
+            cid = pg.execute("SELECT coalesce(max(chunk_id), 0) + 1 FROM "
+                             "ontology.text_chunks").fetchone()[0]
+            body = zlib.compress(text.encode())
+            pg.execute("INSERT INTO ontology.text_chunks VALUES (%s, %s, 0, %s)",
+                       (cid, fid, body))
+            for chunk, vec in words.chunk_word_rows([(cid, body)]):
+                pg.execute("INSERT INTO ontology.chunk_words VALUES (%s, %s::tsvector)",
+                           (chunk, vec))
+        pg.execute(f"UPDATE {bv.SCHEMA}.emails SET attachments = greatest(attachments, 1) "
+                   "WHERE handle = %s", (handle,))
+        return oid
+
+    def test_mail_holding_every_word_by_its_stem_is_found_through_the_same_view(self):
+        """Few rows hold every word as typed: the rows holding every word by its English
+        stem (small words dropped) are added, each saying so, through the reader's own
+        guarded view (never a mail its word search could not show)."""
+        import psycopg
+        from operating.pg import words as wd
+        owner, narrow = self.handles(tmp.OWNER), self.handles(tmp.NARROW)
+        mine, both = sorted(owner - narrow)[0], sorted(owner & narrow)[0]
+        subject = "Zzrenovation Zzideas"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            saved = pg.execute(f"SELECT handle, subject, words FROM {bv.SCHEMA}.emails "
+                               "WHERE handle = ANY(%s)", ([mine, both],)).fetchall()
+
+            def restore():
+                with psycopg.connect(self.dsn, autocommit=True) as c:
+                    for handle, subj, words in saved:
+                        c.execute(f"UPDATE {bv.SCHEMA}.emails SET subject = %s, words = %s "
+                                  "WHERE handle = %s", (subj, words, handle))
+            self.addCleanup(restore)
+            pg.execute(f"UPDATE {bv.SCHEMA}.emails SET subject = %s, words = %s::tsvector "
+                       "WHERE handle = ANY(%s)", (subject, wd.tsvector_text(
+                           wd.text_words([subject])[0]), [mine, both]))
+
+        def got(actor, q):
+            return {h["citation"]: h.get("match")
+                    for h in self.search(actor, query=q, limit=50)["documents"]}
+        for q in ("zzrenovating zzidea", "the zzrenovations"):
+            hits = got(tmp.OWNER, q)
+            self.assertEqual(hits.get(mine), "every word, by its stem", q)
+            self.assertEqual(hits.get(both), "every word, by its stem", q)
+            hits = got(tmp.NARROW, q)
+            self.assertNotIn(mine, hits, q)
+            self.assertEqual(hits.get(both), "every word, by its stem", q)
+        held = got(tmp.OWNER, "zzrenovation zzideas")   # every word as typed
+        self.assertIn(mine, held)
+        self.assertIsNone(held[mine])
+
+    def test_a_full_readers_search_finds_mail_by_its_attachments_own_text(self):
+        """Mail whose attachment's text (not its own) holds every query word: on a full
+        reader's first page, after the word match, through the same guarded view (never
+        a mail the reader cannot read), each attachment's whole text checked for
+        Freightcom first (any field of its version naming it: left out), never a marked
+        field's text, never an attachment the people exclusion holds, the dates and
+        party still bound, never on a later page, the walk
+        and the word index giving the same rows; not for a reader who is not full."""
+        import psycopg
+        from operating.pg import comms_search as cs
+        owner, narrow = self.handles(tmp.OWNER), self.handles(tmp.NARROW)
+        mine = sorted(h for h in owner - narrow
+                      if h not in self.found(tmp.OWNER, person=True, query="Freightcom"))
+        self.assertGreaterEqual(len(mine), 5)
+        plain, freight, marked, late, gone = mine[:5]
+        q = "zzwidget quarterly"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            saved = dict(pg.execute(f"SELECT handle, attachments FROM {bv.SCHEMA}.emails"))
+            ids = [self._attachment(pg, plain, "the zzwidget quarterly report"),
+                   self._attachment(pg, freight, "zzwidget quarterly",
+                                    "shipped by Freightcom"),
+                   self._attachment(pg, marked, "zzwidget quarterly", markings='["x"]'),
+                   self._attachment(pg, late, "zzwidget only"),
+                   self._attachment(pg, gone, "zzwidget quarterly")]
+            # the attachment itself in the people exclusion's objects
+            pg.execute("INSERT INTO ontology.people_excluded_objects VALUES (%s, %s, "
+                       "'participant')", (gone, ids[-1]))
+
+        def undo():
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                pg.execute("DELETE FROM ontology.people_excluded_objects WHERE "
+                           "object_id = ANY(%s)", (ids,))
+                pg.execute("DELETE FROM ontology.chunk_words w USING ontology.text_chunks "
+                           "c, ontology.text_fields fd WHERE w.chunk_id = c.chunk_id AND "
+                           "c.field_id = fd.field_id AND fd.object_id = ANY(%s)", (ids,))
+                pg.execute("DELETE FROM ontology.text_chunks c USING ontology.text_fields "
+                           "fd WHERE c.field_id = fd.field_id AND fd.object_id = ANY(%s)",
+                           (ids,))
+                pg.execute("DELETE FROM ontology.text_fields WHERE object_id = ANY(%s)",
+                           (ids,))
+                for h, n in saved.items():
+                    pg.execute(f"UPDATE {bv.SCHEMA}.emails SET attachments = %s WHERE "
+                               "handle = %s", (n, h))
+        self.addCleanup(undo)
+        full = mock.patch.object(people_excluded, "full_reader", lambda base, a: "tag")
+        with full:
+            for walk in (1, cs.ATTACH_WALK):
+                with self.subTest(walk=walk), \
+                        mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk):
+                    out = self.search(tmp.OWNER, query=q)
+                    docs = [h for h in out["documents"] if "attachment" in h.get("match", "")]
+                    self.assertEqual([h["citation"] for h in docs], [plain])
+                    self.assertIn("zzwidget", docs[0]["snippet"]["untrusted_text"])
+                    self.assertEqual(docs[0]["kind"], "email")
+                    self.assertIn("attachment", out["searched"]["widened"])
+            # on the first page only (``found`` fails a hit doubled across pages)
+            self.assertIn(plain, self.found(tmp.OWNER, query=q))
+            self.assertFalse(self.search(tmp.OWNER, query=q, since="2100-01-01")["documents"])
+            self.assertNotIn(plain, {h["citation"] for h in self.search(
+                tmp.NARROW, query=q)["documents"]})
+            # the person's own search: the same rule (Freightcom attachments left out too)
+            got = {h["citation"] for h in self.search(tmp.OWNER, person=True, query=q)
+                   ["documents"]}
+            self.assertIn(plain, got)
+            self.assertFalse({freight, marked, late, gone} & got)
+        # not a full reader: no attachment's text read
+        with mock.patch.object(people_excluded, "full_reader", lambda base, a: ""):
+            self.assertNotIn(plain, {h["citation"] for h in self.search(
+                tmp.OWNER, query=q)["documents"]})
 
     def test_a_full_readers_search_and_open_run_with_the_longer_limit_same_rows(self):
         # a full reader's mail/Teams statements get SEARCH_FULL_MS (a common word over
@@ -1500,6 +1637,19 @@ class EmailsThroughTheDoor(unittest.TestCase):
                                        (hit,)).fetchone()[0])
         self.assertIn(hit, self.handles(tmp.OWNER))
 
+    def test_a_day_filter_reads_its_own_index(self):
+        import psycopg
+        with psycopg.connect(self.dsn) as pg:
+            days = [r[0] for r in pg.execute(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND tablename = "
+                "'emails'", (bv.SCHEMA,)).fetchall()]
+            pg.execute("SET LOCAL enable_seqscan = off")
+            plan = "\n".join(r[0] for r in pg.execute(
+                f"EXPLAIN SELECT handle FROM {bv.SCHEMA}.emails WHERE received_date >= "
+                "'2026-09-01'").fetchall())
+        self.assertTrue(any(d.endswith("(received_date)") for d in days), days)
+        self.assertRegex(plan, r"Cond: \(received_date")
+
     def test_hidden_ids_are_one_hashed_set_per_statement(self):
         import psycopg
         with psycopg.connect(self.dsn) as pg:
@@ -1512,6 +1662,10 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 "true)::json))").fetchall())
         self.assertIn("plx.reader_hidden", ddl)
         self.assertIn("hashed SubPlan", plan)
+        # each setting is checked once per statement (an InitPlan), never per rescan
+        for name in sql_views.SETTINGS:
+            self.assertRegex(ddl, r"\(\s*SELECT \(?current_setting\('" + name.replace(".", r"\.")
+                             + r"'::text, true\) IS NOT NULL\)?\s*\)")
 
 
 class _Explaining:

@@ -56,6 +56,10 @@ export function sourceCount(cited: Cited[] | null | undefined): number {
 }
 
 /** ``written``: a table the answer wrote (its cells' **bold** is bold, never shown as asterisks); else rows as read from the records, shown as they are. */
+// a code, number, amount or date (one short token) stays on one line: the table scrolls instead
+// of breaking PO100415 into "PO1004 / 15" in a narrow column
+const ONE_TOKEN = /^\S{1,24}$/;
+
 function Table({ head, rows, caption, written = false }: { head: string[]; rows: (string | null)[][]; caption?: ReactNode; written?: boolean }) {
   const cell = (text: string) => (written ? <Inlines xs={inlines(text)} /> : checked(text));
   return (
@@ -75,7 +79,7 @@ function Table({ head, rows, caption, written = false }: { head: string[]; rows:
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-border/60 last:border-0">
               {head.map((_, j) => (
-                <td key={j} className="num px-2 py-1 align-top">
+                <td key={j} className={`num px-2 py-1 align-top${ONE_TOKEN.test(r[j] ?? "") ? " whitespace-nowrap" : ""}`}>
                   {cell(r[j] ?? "")}
                 </td>
               ))}
@@ -132,7 +136,7 @@ export function SimpleAnswer({ answer, streamed, busy, status, progress }: { ans
         </ul>
       )}
       {answer && (answer.prepared ?? []).length > 0 && <PreparedChanges ids={answer.prepared ?? []} />}
-      {answer && (
+      {answer && !answer.assistant_unavailable && (
         <footer className="flex items-center gap-1">
           <Feedback answerId={answer.answer_id} />
         </footer>

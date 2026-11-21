@@ -295,6 +295,26 @@ class AutopilotArea(unittest.TestCase):
             "workflow": lee_flow, "on": True}).status_code, 409)
         self.assertEqual(self.bc.calls, [])
 
+    def test_a_dry_run_of_auto_shows_only_for_an_earned_workflow_and_does_nothing(self) -> None:
+        from operating import workflows as wf
+        from operator_api import autopilot_area as aa
+        mixin = next(v for v in vars(aa).values()
+                     if isinstance(v, type) and "_apa_auto_would" in vars(v))
+        item = {"item_id": "ap_x", "autopilot": "customer_request", "title": "Re: COA",
+                "body": {"happened": {"sender": "kim@customer.example", "subject": "COA please"},
+                         "prepared": {"draft": {"to": ["kim@customer.example"],
+                                                "subject": "Re: COA please", "body": "Attached."}}}}
+        flow = wf.of_item("customer_request", item["body"]["happened"])
+        self.assertEqual(mixin._apa_auto_would(self.state, {OWNER[1]})(item), "")  # not earned
+        self.score_fresh({ROLE: ([OWNER[1]], {flow: (16, 15)})})
+        before = aw.Journal(self.state / aw.AUDIT_FILE).rows()
+        got = mixin._apa_auto_would(self.state, {OWNER[1], OWNER[0]})(item)
+        self.assertTrue(got == "send" or got.startswith("keep: "), got)
+        self.assertEqual(mixin._apa_auto_would(self.state, {COLLEAGUE[1]})(item), "")
+        self.assertEqual(mixin._apa_auto_would(None, {OWNER[1]})(item), "")
+        self.assertEqual(aw.Journal(self.state / aw.AUDIT_FILE).rows(), before)
+        self.assertEqual(self.bc.calls, [])
+
     def test_the_owner_is_told_once_of_a_first_gate_pass_and_nobody_else_is(self) -> None:
         """AP-22: a workflow's first fresh-gate pass reaches the owner's page as a notice
         until they acknowledge it; it turns nothing on, nobody else sees or acks it, and a
@@ -396,6 +416,71 @@ class AutopilotArea(unittest.TestCase):
         off = them.post("/api/autopilot/drafts", json={"choice": "teams_replies", "on": False})
         self.assertFalse(any(c["on"] for c in off.json()["my_drafts"]))
         self.assertEqual(switched(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
+
+    def test_one_switch_per_category_off_confirm_auto_and_auto_only_where_earned(self) -> None:
+        """Each category is off, confirm
+        (prepared in full; nothing is performed without the person's click) or auto (only
+        for the workflows the person's replay score earned). Only their own; an unearned
+        auto, an unknown mode or choice, a nameless session write nothing."""
+        lee = ("lee@plx.example", "66666666-6666-4666-8666-666666666666")
+        lee_role, lee_flow = f"person:{lee[0]}", "supplier_eta_receiving"
+        self.score_fresh({lee_role: ([lee[1]], {lee_flow: (40, 38)})})
+        them = self.client(lee)
+        journal = aw.Journal(self.state / aw.AUDIT_FILE)
+
+        def row(area, choice="supplier_followups"):
+            return next(c for c in area["my_drafts"] if c["choice"] == choice)
+        start = row(them.get("/api/autopilot").json())
+        self.assertEqual((start["mode"], start["auto_ok"], start["score"]["judged"],
+                          start["score"]["matched"]), ("off", True, 40, 38))
+        self.assertEqual(row(them.get("/api/autopilot").json(), "teams_replies")["auto_ok"],
+                         False)
+        for body, code in (({"choice": "supplier_followups", "mode": "live"}, 422),
+                           ({"choice": "supplier_followups"}, 422),
+                           ({"choice": "no_such", "mode": "confirm"}, 404),
+                           ({"choice": "supplier_followups", "mode": "auto",
+                             "person": OWNER[1]}, 422),
+                           ({"choice": "teams_replies", "mode": "auto"}, 409)):
+            self.assertEqual(them.post("/api/autopilot/mode", json=body).status_code, code, body)
+        nobody = self.client(("nobody@plx.example", None))
+        self.assertEqual(nobody.post("/api/autopilot/mode", json={
+            "choice": "supplier_followups", "mode": "confirm"}).status_code, 403)
+        self.assertFalse([r for r in journal.rows() if r.get("person")])
+        # confirm: prepared, never performed by itself (the write path stays a dry run
+        # until the person's own click approves the exact item)
+        got = them.post("/api/autopilot/mode", json={"choice": "supplier_followups",
+                                                     "mode": "confirm"})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertEqual(row(got.json())["mode"], "confirm")
+        rows = journal.rows()
+        self.assertEqual(switched(rows)[lee[1]], frozenset(
+            aw.draft_choice("supplier_followups")))
+        self.assertFalse(any(o["on"] for o in aw.opt_ins(rows).values()))
+        gate = aw.WriteGate(self.state / aw.WRITE_GATE_FILE, aw.load_rules())
+        env = {aw.MASTER_ENV: "1"}
+        self.assertEqual(aw.write_state(gate, rows, env, lee[1], lee_flow, ()),
+                         ("dry_run", ["not_switched_on_by_person"]))
+        # auto: only the earned workflow performs by itself, the rest of it still waits
+        got = them.post("/api/autopilot/mode", json={"choice": "supplier_followups",
+                                                     "mode": "auto"})
+        self.assertEqual(row(got.json())["mode"], "auto")
+        rows = journal.rows()
+        self.assertEqual({w for (p, w), o in aw.opt_ins(rows).items() if o["on"]}, {lee_flow})
+        self.assertEqual(aw.write_state(gate, rows, env, lee[1], lee_flow, ())[0], "live")
+        self.assertEqual(aw.write_state(gate, rows, {}, lee[1], lee_flow, ())[1],
+                         [f"master_switch_off:{aw.MASTER_ENV}"])
+        # back to confirm, then off: performing stops, then preparing stops
+        back = them.post("/api/autopilot/mode", json={"choice": "supplier_followups",
+                                                      "mode": "confirm"})
+        self.assertEqual(row(back.json())["mode"], "confirm")
+        self.assertFalse(any(o["on"] for o in aw.opt_ins(journal.rows()).values()))
+        off = them.post("/api/autopilot/mode", json={"choice": "supplier_followups",
+                                                     "mode": "off"})
+        self.assertEqual(row(off.json())["mode"], "off")
+        self.assertEqual(switched(journal.rows()), {})
+        self.assertTrue(all(r["by"] == r["person"] == lee[1] for r in journal.rows()
+                            if r.get("person")))
+        self.assertEqual(self.bc.calls, [])
 
     def test_the_owners_draft_file_shows_on_and_the_persons_own_off_wins_on_page_and_feed(
             self) -> None:
@@ -1013,6 +1098,154 @@ class TodoItems(unittest.TestCase):
         self.assertNotIn("ap_todo2", items)
 
 
+class NeverSender(unittest.TestCase):
+    """``POST /api/autopilot/never``: a person says never (or again) to prepare anything for
+    them from one sender; only their own list changes, and nothing is decided or written."""
+
+    client = AutopilotArea.client
+
+    def setUp(self) -> None:
+        AutopilotArea.setUp(self)
+        q = ap.Queue(self.backend.autopilot_queue)
+        mine = ReplyFromLine.card("ap_a", OWNER[1])
+        mine["body"]["prepared"].pop("your_call")
+        mine["body"]["prepared"]["draft"]["body"] = "Thanks, noted."
+        other = json.loads(json.dumps(mine))
+        other.update(item_id="ap_b", event_id="e-ap_b")
+        other["body"]["happened"]["sender"] = "other@supplier.example"
+        theirs = json.loads(json.dumps(mine))
+        theirs.update(item_id="ap_c", event_id="e-ap_c", owner=COLLEAGUE[1],
+                      audiences=["mail:" + COLLEAGUE[1]])
+        with q.conn:
+            for item in (mine, other, theirs):
+                q.add_item(item)
+        q.close()
+
+    def listed(self, client) -> tuple[set, list]:
+        got = client.get("/api/autopilot/drafts").json()
+        return {i["item_id"] for i in got["items"]} & {"ap_a", "ap_b", "ap_c"}, \
+            got["never_senders"]
+
+    def test_never_hides_that_senders_items_for_that_person_only_and_is_undone(self) -> None:
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        self.assertEqual(self.listed(owner), ({"ap_a", "ap_b"}, []))
+        got = owner.post("/api/autopilot/never",
+                         json={"sender": " Buyer@Customer.example ", "never": True})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertIn("ap_b", [i["item_id"] for i in got.json()["items"]])
+        self.assertNotIn("ap_a", [i["item_id"] for i in got.json()["items"]])
+        self.assertEqual(self.listed(owner), ({"ap_b"}, ["buyer@customer.example"]))
+        self.assertEqual(self.listed(sam), ({"ap_c"}, []))
+        # never needs a sender on the person's own list
+        self.assertEqual(sam.post("/api/autopilot/never", json={
+            "sender": "other@supplier.example", "never": True}).status_code, 404)
+        self.assertEqual(owner.post("/api/autopilot/never", json={
+            "sender": "buyer@customer.example", "never": "yes"}).status_code, 422)
+        back = owner.post("/api/autopilot/never",
+                          json={"sender": "buyer@customer.example", "never": False})
+        self.assertEqual(back.status_code, 200, back.text)
+        self.assertEqual(self.listed(owner), ({"ap_a", "ap_b"}, []))
+        self.assertFalse((self.state / ws.DECISIONS_FILE).exists())
+        self.assertEqual(self.bc.calls, [])
+
+
+class AlertCards(unittest.TestCase):
+    """An approval asked of the person, a QC hold or a Mission Control question sits in
+    their Assist list as an alert: what happened, why, where it is decided and its records;
+    only Later and Not needed act on it here, and nothing is written."""
+
+    client = AutopilotArea.client
+
+    def setUp(self) -> None:
+        AutopilotArea.setUp(self)
+        q = ap.Queue(self.backend.autopilot_queue)
+        task = 'MCTask:mission_control.tasks:{"id":"TASK-1","scope":"live"}'
+        approval = ReplyFromLine.card("ap_appr", OWNER[1])
+        approval.update(autopilot="approval_request", title="Approval requested: TASK-1")
+        approval["body"]["prepared"] = {
+            "summary": "Approval requested for TASK-1: merge gate.",
+            "reasons": ["no earlier approval of this task"], "evidence": [{"object_id": task}],
+            "recommendation": "review",
+            "action": {"kind": "mc_approval", "gate": "apg_secret1",
+                       "note": "Decide in Mission Control."}}
+        hold = ReplyFromLine.card("ap_hold", OWNER[1])
+        hold.update(autopilot="qc_hold", title="QC hold: Lot L-1")
+        hold["body"]["prepared"] = {
+            "summary": "Lot L-1 is on-hold; it holds up 1 open order.", "lot": "L-1",
+            "affected": [{"customer": "Three Ships", "order_number": "OR-9",
+                          "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s1"}'}]}
+        theirs = json.loads(json.dumps(approval))
+        theirs.update(item_id="ap_appr2", event_id="e-ap_appr2", owner=COLLEAGUE[1],
+                      audiences=["mail:" + COLLEAGUE[1]])
+        with q.conn:
+            for item in (approval, hold, theirs):
+                q.add_item(item)
+        q.close()
+
+    def alerts(self, client) -> dict:
+        got = client.get("/api/autopilot/drafts")
+        self.assertEqual(got.status_code, 200, got.text)
+        return {i["item_id"]: i for i in got.json()["items"] if i["kind"] == "alert"}
+
+    def test_alerts_are_the_persons_own_with_records_and_no_secret_and_set_aside_only(self):
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        mine = self.alerts(owner)
+        self.assertEqual(set(mine), {"ap_appr", "ap_hold"})
+        appr, hold = mine["ap_appr"], mine["ap_hold"]
+        self.assertEqual((appr["channel"], appr["note"], appr["facts"]),
+                         ("system", "Decide in Mission Control.",
+                          ["no earlier approval of this task"]))
+        self.assertEqual([lk["label"] for lk in appr["links"]], ["Open the task"])
+        self.assertTrue(appr["links"][0]["href"].startswith("/object/MCTask:"))
+        self.assertEqual(hold["facts"], ["OR-9, Three Ships"])
+        self.assertEqual(hold["links"][0]["label"], "Open the order")
+        self.assertNotIn("apg_secret1", json.dumps(mine))
+        self.assertEqual(set(self.alerts(sam)), {"ap_appr2"})
+        got = owner.post("/api/autopilot/items/ap_hold/decision", json={"decision": "reject"})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
+        self.assertEqual(self.bc.calls, [])
+
+    def test_an_alert_passed_to_a_colleague_is_on_their_list_to_set_aside_only(self):
+        from operator_api import view_as as va
+        gone = {"sam": False}
+        self.backend.view_as = va.ViewAs(
+            candidates=lambda: [(OWNER[1], OWNER[0]), (COLLEAGUE[1], COLLEAGUE[0])],
+            identity=lambda oid, seconds: None,
+            excluded=lambda: (lambda oid: gone["sam"] and oid == COLLEAGUE[1]))
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        people = owner.get("/api/autopilot/colleagues").json()["people"]
+        self.assertEqual([p["name"] for p in people], ["Sam"])
+        self.assertNotIn(COLLEAGUE[1], json.dumps(people))
+        key = people[0]["key"]
+        hand = lambda who, item: who.post(  # noqa: E731
+            f"/api/autopilot/items/{item}/hand", json={"to": key})
+        self.assertEqual(hand(sam, "ap_hold").status_code, 404)        # not on Sam's list
+        self.assertEqual(hand(owner, "ap_hold").status_code, 200)
+        self.assertEqual(self.alerts(owner)["ap_hold"]["handed_to"], "Sam")
+        theirs = self.alerts(sam)
+        self.assertEqual(set(theirs), {"ap_appr2", "ap_hold"})
+        self.assertEqual(theirs["ap_hold"]["handed_from"], "Ana")
+        for decision in ("accept", "edit"):
+            got = sam.post("/api/autopilot/items/ap_hold/decision",
+                           json={"decision": decision, "text": "ok"})
+            self.assertIn(got.status_code, (409, 422), got.text)
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.add_item(ReplyFromLine.card("ap_call", OWNER[1]))
+        q.close()
+        self.assertEqual(hand(owner, "ap_call").status_code, 422)     # only an alert
+        gone["sam"] = True                                              # excluded since
+        self.assertEqual(hand(owner, "ap_appr").status_code, 404)
+        self.assertEqual(owner.get("/api/autopilot/colleagues").json()["people"], [])
+        gone["sam"] = False
+        got = sam.post("/api/autopilot/items/ap_hold/decision", json={"decision": "reject"})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertNotIn("ap_hold", self.alerts(owner))
+        self.assertNotIn("ap_hold", self.alerts(sam))
+        self.assertEqual(self.bc.calls, [])
+
+
 class ReplyFromLine(unittest.TestCase):
     """``POST /api/autopilot/items/{id}/reply-from-line``: a "your call" card of the reader's
     own gets its reply written from their line (figures only from the line and the card's
@@ -1255,6 +1488,46 @@ class ReplyFromLine(unittest.TestCase):
                          json={"decision": "accept"})
         self.assertEqual(got.status_code, 200, got.text)
         self.assertFalse(got.json()["decision"]["sent"])
+
+    def test_a_model_reply_is_rewritten_from_a_line_and_never_shows_its_material(self) -> None:
+        q = ap.Queue(self.backend.autopilot_queue)
+        item = self.card("ap_redo", OWNER[1])
+        prepared = item["body"]["prepared"]
+        prepared["redo"] = prepared.pop("your_call")
+        prepared["redo"].pop("ask"), prepared["redo"].pop("facts")
+        prepared["draft"]["body"] = "Hi,\n\nLet me check the price.\n\nAna"
+        plain = self.card("ap_plain", OWNER[1])
+        plain["body"]["prepared"].pop("your_call")
+        plain["body"]["prepared"]["draft"]["body"] = "Thanks, noted."
+        with q.conn:
+            q.add_item(item)
+            q.add_item(plain)
+        q.close()
+        owner = self.client(OWNER)
+        listed = {i["item_id"]: i for i in owner.get("/api/autopilot/drafts").json()["items"]}
+        self.assertEqual((listed["ap_redo"]["kind"], listed["ap_redo"]["redo"]), ("reply", True))
+        self.assertFalse(listed["ap_plain"]["redo"])
+        shown = next(i for i in owner.get("/api/autopilot").json()["items"]
+                     if i["item_id"] == "ap_redo")
+        self.assertNotIn("redo", shown["prepared"])
+        self.assertNotIn("material", json.dumps(shown))
+        self.backend.autopilot_writer, model = self.writer(
+            "Hi,\n\nYes, 12.50 a case works for 400 cases.\n\nAna")
+        got = self.ask(owner, "ap_redo", "say yes to 12.50 for 400")
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertIn("12.50 a case works", got.json()["decision"]["text"])
+        self.assertFalse(got.json()["decision"]["sent"])
+        self.assertIn("say yes to 12.50 for 400", model.prompts[0])
+        again = {i["item_id"]: i for i in owner.get("/api/autopilot/drafts").json()["items"]}
+        self.assertEqual((again["ap_redo"]["body"], again["ap_redo"]["edited"]),
+                         ("Hi,\n\nYes, 12.50 a case works for 400 cases.\n\nAna", True))
+        self.assertEqual(self.bc.calls, [])
+        # a reply kept without its material: refused, and the model is never asked
+        n = len(model.prompts)
+        self.assertEqual(self.ask(owner, "ap_plain", "say yes").status_code, 422)
+        self.assertEqual(len(model.prompts), n)
+        # someone else's: not found
+        self.assertEqual(self.ask(self.client(COLLEAGUE), "ap_redo", "yes").status_code, 404)
 
     def test_refusals_fail_closed(self) -> None:
         owner = self.client(OWNER)

@@ -71,6 +71,28 @@ def tsquery(query: str) -> str:
         raise SearchInputError(f"the query cannot be searched: {exc}") from None
 
 
+def stem_tsquery(stems: Any) -> str | None:
+    """Every word of the query by its stem: ``plainto_tsquery('english', query)``'s text
+    (small words dropped) as a prefix of each stem of 3 letters or more ("renov*" finds
+    "renovation" and "renovating"; a Porter final i, "happi", made "happ*"), the shorter
+    exactly; None when it holds no stem."""
+    import sqlite3
+    from operating.pg import words
+    got = re.findall(r"'((?:[^']|'')+)'", stems if isinstance(stems, str) else "")
+    terms_ = []
+    for stem in got[:MAX_TERMS]:
+        stem = stem.replace("''", "'")
+        stem = stem[:-1] if stem.endswith("i") and len(stem) > 3 else stem
+        quoted = '"' + stem.replace('"', '""') + '"'
+        terms_.append(quoted + "*" if len(stem) >= 3 else quoted)
+    if not terms_:
+        return None
+    try:
+        return words.tsquery(" ".join(terms_))
+    except sqlite3.OperationalError:
+        return None
+
+
 def instant(text: str | None, *, end: bool = False) -> dt.datetime | None:
     """A ``since`` / ``until`` bound: a day (``until``: the whole day) or an instant."""
     if text is None:
@@ -296,6 +318,134 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         return ""
     return (("WITH " + ", ".join(ctes) + " " if ctes else "")
             + _quoted(" UNION ALL ".join(parts), views, biz, query=query))
+
+
+# a full reader's first page with query words also lists the mail whose attachment's own
+# text holds every word (``attachment_sql``): a common word ("invoice payment") walks the
+# attachments of the reader's newest this many mails with any (live: 0.2 s; 11-19 under
+# load ~24 s, so it runs within ``ATTACH_MS``), a rarer one
+# (``walk_rows`` 1) reads the word index's attachment matches at once ("QuikPAK orders
+# appearing": 0.06 s; its walk of 4,000 mails took 2.2 s and found none). Reading every
+# match of a common word took 17.8 s.
+ATTACH_WALK = 4000
+# an attachment's whole text is checked for Freightcom before its mail is listed: one
+# stored in more pieces than this is left out unchecked (live: at most 56)
+ATTACH_CHECK_CHUNKS = 400
+# a rare word's attachment matches are read as at most this many mails (their newest
+# ingest first), then those mails through the reader's view by handle: joined whole, the
+# planner scanned the reader's 300k mails (live 11-20: past 25 s; by handle 0.07 s)
+ATTACH_MAILS = 2000
+
+
+def attachment_mails_sql() -> str:
+    """The mails (handles) whose unmarked attachment text holds every word of ``q``, at
+    most ``mails``, newest ingest first: ``attachment_sql``'s ``mails`` for a rare word."""
+    return ("SELECT split_part(fd.citation, '#', 1) AS mail FROM ontology.chunk_words w "
+            "JOIN ontology.text_chunks c ON c.chunk_id = w.chunk_id JOIN "
+            "ontology.text_fields fd ON fd.field_id = c.field_id WHERE w.words @@ "
+            "%(q)s::tsquery AND fd.document_kind = 'attachment' AND fd.markings = '[]' "
+            "GROUP BY 1 ORDER BY max(fd.field_id) DESC LIMIT %(mails)s")
+
+
+def attachment_sql(*, guarded: str, party_kind: str | None, since: bool, until: bool,
+                   common: bool) -> str:
+    """The reader's mail (``guarded``.emails, the same door as ``search_sql``) whose
+    attachment text holds every query word (parameters q, party, since, until, k, walk),
+    newest first, at most ``k``, one row per mail: ``search_sql``'s columns with the first
+    matching chunk of an unmarked attachment field of that mail version, then the
+    attachment's version handle and object id (for ``attachment_check_sql``). An
+    attachment's citation starts with its mail's handle and ``#attachment=``; ``common``:
+    the walk (``ATTACH_WALK``), else the word index's attachment match of the mails
+    ``mails`` (``attachment_mails_sql``)."""
+    conds = ["e.attachments > 0", "e.received_at IS NOT NULL"]
+    if party_kind is not None:
+        conds.append(_PARTY[party_kind])
+    conds += (["e.received_at >= %(since)s"] if since else []) + (
+        ["e.received_at < %(until)s"] if until else [])
+    where = " AND ".join(conds)
+    piece = ("c.body, c.start, fd.sender_class, fd.version_handle AS attachment, "
+             "fd.object_id AS attachment_id")
+    owned = ("starts_with(fd.citation, {h} || '#attachment=') AND fd.document_kind = "
+             "'attachment' AND fd.markings = '[]'")
+    if common:
+        return (f"SELECT m.*, a.* FROM (SELECT {_cols('emails')} FROM {guarded}.emails e "
+                f"WHERE {where} ORDER BY e.received_at DESC, e.handle DESC LIMIT %(walk)s) m "
+                f"CROSS JOIN LATERAL (SELECT {piece} FROM ontology.text_fields fd JOIN "
+                "ontology.text_chunks c ON c.field_id = fd.field_id WHERE fd.citation >= "
+                "m.handle || '#attachment=' AND fd.citation < m.handle || '#attachment>' AND "
+                + owned.format(h="m.handle") + " AND (SELECT w.words FROM "
+                "ontology.chunk_words w WHERE w.chunk_id = c.chunk_id) @@ %(q)s::tsquery "
+                "ORDER BY fd.citation, c.start LIMIT 1) a "
+                "ORDER BY m.at DESC, m.handle DESC LIMIT %(k)s")
+    return ("WITH a AS MATERIALIZED (SELECT fd.citation, fd.document_kind, fd.markings, "
+            "fd.sender_class, fd.version_handle, fd.object_id, c.body, c.start, "
+            "split_part(fd.citation, '#', 1) AS mail FROM ontology.chunk_words w JOIN "
+            "ontology.text_chunks c ON c.chunk_id = w.chunk_id JOIN ontology.text_fields fd "
+            "ON fd.field_id = c.field_id WHERE w.words @@ %(q)s::tsquery AND "
+            "fd.document_kind = 'attachment' AND fd.markings = '[]' AND "
+            "split_part(fd.citation, '#', 1) = ANY(%(mails)s::text[])) "
+            f"SELECT DISTINCT ON (e.received_at, e.handle) {_cols('emails')}, "
+            f"{piece.replace('c.', 'a.').replace('fd.', 'a.')} FROM a JOIN {guarded}.emails e "
+            "ON e.handle = a.mail AND " + owned.format(h="e.handle").replace("fd.", "a.")
+            + f" WHERE e.handle = ANY(%(mails)s::text[]) AND {where} ORDER BY "
+            "e.received_at DESC, e.handle DESC, a.citation, "
+            "a.start LIMIT %(k)s")
+
+
+def listed_sql(biz: str) -> str:
+    """The mail of ``handles`` whose own header or text holds every word of ``q``
+    (``search_sql``'s rule: a word page lists it), each row read by its own handle and
+    object: ``attachment_sql``'s rows that are not new."""
+    return (f"SELECT b.handle FROM {biz}.emails b WHERE b.handle = ANY(%(handles)s::text[]) "
+            "AND (b.words @@ %(q)s::tsquery OR EXISTS (SELECT 1 FROM ontology.text_fields "
+            "fd JOIN ontology.text_chunks c ON c.field_id = fd.field_id WHERE fd.object_id = "
+            "b.object_ids[1] AND fd.version_handle = b.handle AND fd.markings = '[]' AND "
+            "(SELECT w.words FROM ontology.chunk_words w WHERE w.chunk_id = c.chunk_id) @@ "
+            "%(q)s::tsquery))")
+
+
+def attachment_check_sql() -> str:
+    """Every stored piece of every field (marked or not) of the attachment versions
+    (parameters ids, handles): ``attachment_clear``'s text."""
+    return ("SELECT fd.version_handle, fd.field_id, c.start, c.body FROM "
+            "ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = fd.field_id "
+            "WHERE fd.object_id = ANY(%(ids)s::text[]) AND fd.version_handle = "
+            "ANY(%(handles)s::text[]) ORDER BY fd.version_handle, fd.field_id, c.start")
+
+
+def attachment_blocked_sql() -> str:
+    """The attachment objects of ``ids`` a reader is kept from on their own (the guarded
+    view checks only the mail's object): in the people exclusion's objects, or one of
+    the reader's hidden documents (``plx.reader_hidden``)."""
+    # EXISTS, not IN: inside the OR an IN reads all of the exclusion (1.37M rows, 9.6 s
+    # for 40 ids on 11-20); EXISTS looks each id up by its index (4 ms)
+    return ("SELECT x FROM unnest(%(ids)s::text[]) x WHERE EXISTS (SELECT 1 FROM "
+            "ontology.people_excluded_objects p WHERE p.object_id = x) OR x IN (SELECT "
+            "json_array_elements_text("
+            "coalesce(nullif(current_setting('plx.reader_hidden', true), ''), '[]')::json))")
+
+
+def attachment_clear(rows: Sequence[Sequence[Any]], pieces: Sequence[Sequence[Any]]
+                     ) -> tuple[list[Any], int]:
+    """``attachment_sql``'s ``rows`` whose attachment's whole text (``pieces``, every field
+    of its version) names no Freightcom (``image_ocr_gpu.FREIGHTCOM``), and how many were
+    left out: one naming it, or not checkable (no pieces, too many, unreadable), is left
+    out (fail closed)."""
+    from integrations.image_ocr_gpu import FREIGHTCOM
+    by: dict[str, list[Any]] = {}
+    for handle, field, start, body in pieces:
+        by.setdefault(handle, []).append((field, start, body))
+    kept = []
+    for row in rows:
+        got = by.get(row[-2])
+        try:
+            clear = bool(got) and len(got) <= ATTACH_CHECK_CHUNKS and not FREIGHTCOM.search(
+                assemble(got))
+        except (zlib.error, TypeError, ValueError):
+            clear = False
+        if clear:
+            kept.append(row)
+    return kept, len(rows) - len(kept)
 
 
 def tsquery_any(query: str) -> str | None:
@@ -658,7 +808,8 @@ def searched(views: Sequence[str], args: Mapping[str, Any], words: Sequence[str]
     return out
 
 
-__all__ = ["Party", "SEARCH_ONLY", "SearchInputError", "VIEWS", "assemble", "cursor_of", "exists_sql",
+__all__ = ["Party", "SEARCH_ONLY", "SearchInputError", "VIEWS", "assemble", "stem_tsquery",
+           "attachment_blocked_sql", "attachment_check_sql", "attachment_clear", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
            "meaning_sql", "tsquery_any", "words_held",
            "hits", "instant", "open_sql", "opened", "party", "present", "read_cursor",
            "search_sql", "searched", "snippet", "terms", "tsquery"]

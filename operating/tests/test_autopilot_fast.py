@@ -18,6 +18,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import time
+import copy
 import unittest
 from unittest import mock
 
@@ -848,6 +849,19 @@ def mc_people(*, unavailable: bool = False) -> Exclusion:
                      internal_domains=["petrasoap.com"], chat_members={})
 
 
+def with_mc_approvals(load):
+    """The registry with MC approval requests on: the owner switched them off (3dfdbb78a5,
+    Mission Control's own queue); these tests check the fast path for when they are on."""
+    def on(*a, **k):
+        reg = copy.deepcopy(load(*a, **k))
+        for entry in reg.get("autopilots") or []:
+            if entry.get("id") == "approval_request":
+                entry.pop("enabled", None)
+                entry.pop("off_reason", None)
+        return reg
+    return on
+
+
 class FastFeedApprovals(unittest.TestCase):
     """An MC approval gate the capture stores as requested is the regular feed's
     ``approval.requested`` event on the fast path, only when every person it names clears."""
@@ -870,6 +884,21 @@ class FastFeedApprovals(unittest.TestCase):
         self.gate("apg_old", status="approved", decided=True)
         self.queue = ap.Queue(self.state / "autopilot" / ap.QUEUE_FILE)
         self.addCleanup(self.queue.close)
+        self.shipped = ap.load_registry
+        switched_on = mock.patch.object(ap, "load_registry", with_mc_approvals(ap.load_registry))
+        switched_on.start()
+        self.addCleanup(switched_on.stop)
+
+    def test_the_shipped_registry_keeps_mc_approvals_off_and_prepares_nothing(self) -> None:
+        (entry,) = [e for e in self.shipped()["autopilots"] if e["id"] == "approval_request"]
+        self.assertIs(entry["enabled"], False)
+        with mock.patch.object(ap, "load_registry", self.shipped):
+            served = self.projected("served")
+            self.gate("apg_new")
+            out = af.cycle(self.state, served, self.queue, mc_people(), ap.load_registry(),
+                           gate=lambda *a, **k: True, now=self.now, environ={})
+        self.assertEqual(out["status"], "complete", out)
+        self.assertEqual(self.queue.conn.execute("SELECT count(*) FROM items").fetchone()[0], 0)
 
     def save(self, collection: str, record_id: str, row: dict, *more: tuple[str, dict]
              ) -> None:

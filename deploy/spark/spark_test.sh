@@ -11,6 +11,8 @@
 #     Both at most (MemAvailable - SPARK_MEM_RESERVE_GB 16) / SPARK_WORKER_GB 2,
 #     and the run's scope holds MemoryMax = MemAvailable - reserve. SPARK_JOBS sets the count (still memory-bounded).
 # Pushes only the git objects of <sha> (no secrets, no .env, no data) to ~/plx-tests/repo.git over ssh,
+# plus origin/main as refs/remotes/origin/main (tests that diff against main, e.g. tools/tests/test_timing_policy,
+# otherwise fall back to a dated baseline), and
 # runs in a fresh detached checkout against a throwaway socket-only Postgres 17 (+pgvector).
 # A test id that passed on this commit's tree (same tree = same code and data) on a Spark within 24 h
 # is not run again: the host reports it as "cached pass" and counts it as a pass. Every complete result
@@ -86,7 +88,8 @@ n=${#up[@]}
 run_host() {  # <host> <shard index>
   local h=$1 i=$2 R="ssh -F $ssh_cfg $1" shard=""
   [ "$n" -gt 1 ] && shard="SHARD=$i/$n"
-  GIT_SSH_COMMAND="ssh -F $ssh_cfg" git -C "$repo" push -q $h:plx-tests/repo.git "$sha:refs/plx/$sha" \
+  GIT_SSH_COMMAND="ssh -F $ssh_cfg" git -C "$repo" push -q -f $h:plx-tests/repo.git "$sha:refs/plx/$sha" \
+    "$(git -C "$repo" rev-parse --verify -q refs/remotes/origin/main || echo "$sha"):refs/remotes/origin/main" \
     || { echo "push to $h failed" >&2; return 96; }
   # Concurrent runs overwrote ~/plx-tests/spark_test_remote.sh mid-read (bash "unexpected EOF" -> a host's half never ran).
   #  The scripts go to content-hashed names, copied to a temp name then renamed atomically.

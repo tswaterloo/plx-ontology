@@ -9,6 +9,11 @@
   reply alone: a few-shot example, ``learning_fewshot``); another item answered
   is ``item_acted``; an item still open ``LEFT_HOURS`` past its due time
   is ``draft_ignored``. A replay's queue reads the same way (``scripts.learning_replay``).
+* **Assist's kept reply drafts** (``from_reply_drafts``): a draft ready for a person's open
+  reply (``operating.reply_drafts``) that they then answered in the same mail thread is a
+  ``draft_sent`` signal of what their reply kept, changed, added and dropped of it (sent as
+  is, edited or rewritten alike), so Assist learns from each edit and confirm as the
+  autopilot queue's drafts do.
 * **The feedback store** (``from_feedback``): an answer's thumbs (``answer_rated``: the
   systems its claims cited, the markings it was served under), its right answer
   (``answer_corrected``) and an alert's verdict (``alert_verdict``: the item's kind).
@@ -310,6 +315,55 @@ def from_queue(queue_path: Path, st: Any, people: Any, *, now: datetime
     return item_signals(items, events, reply_of=reply_of, now=now)
 
 
+def from_reply_drafts(kept_path: Path, st: Any, people: Any) -> list[L.Signal]:
+    """``draft_sent`` signals of Assist's kept mail drafts their person answered in the
+    thread (module doc): one per (person, message), the reply their first own mail in the
+    conversation after the message (``REPLY_DAYS``)."""
+    from . import autopilot as ap
+    from . import autopilot_records as ar
+    _directory, addresses_of, _domains = ap._people_maps(people)
+    conn = _ro(kept_path)
+    try:
+        kept = [dict(r) for r in conn.execute(
+            "SELECT owner, object_id, body FROM drafts WHERE state = 'ready' AND kind = 'reply' "
+            "AND body != '' AND object_id LIKE 'Email:%'")]
+    finally:
+        conn.close()
+    ids = sorted({k["object_id"] for k in kept})
+    rows: dict[str, Any] = {}
+    for start in range(0, len(ids), 2000):
+        rows.update(ar._read(st, ids[start:start + 2000],
+                             ("conversation_id", "sent_at", "sender", "subject")))
+    wants: dict[tuple[str, str], tuple[str, str, frozenset]] = {}
+    for k in kept:
+        r = rows.get(k["object_id"]) or {}
+        mine = frozenset(addresses_of.get(k["owner"], set()))
+        conv, at = str(ar._v(r, "conversation_id") or ""), str(ar._v(r, "sent_at") or "")
+        if conv and at and mine:
+            wants[(k["owner"], k["object_id"])] = (conv, at, mine)
+    found = replies_in_threads(st, wants.values())
+    out: list[L.Signal] = []
+    for k in kept:
+        want = wants.get((k["owner"], k["object_id"]))
+        reply = found.get(want) if want else None
+        if reply is None:
+            continue
+        r = rows.get(k["object_id"]) or {}
+        sender = (ar._addresses(ar._v(r, "sender")) or [""])[0]
+        subject = str(ar._v(r, "subject") or "")
+        rid, at, text = reply
+        feats = L.edit_features(str(k["body"]), str(text or ""))
+        out.append(L.Signal(
+            kind="draft_sent", person=str(k["owner"]), at=at,
+            ref=f"assist:{L.digest(k['owner'], k['object_id'])[:24]}",
+            people=(sender,) if "@" in sender else (), texts=(subject,),
+            data={"autopilot": "assistant", "channel": "mail",
+                  "sender": L.sender_key(sender), "message": k["object_id"],
+                  "thread": L.digest("thread", want[0])[:16] if want else None,
+                  **feats, "reply": rid, "topic": L.topic_keys(subject)}))
+    return out
+
+
 def from_feedback(directory: Path) -> list[L.Signal]:
     path = Path(directory) / "feedback.sqlite"
     if not path.is_file():
@@ -411,6 +465,26 @@ def collect(state_dir: Path, *, store: Optional[str] = None, source: Optional[st
             signals += got
         except Exception as exc:  # noqa: BLE001 - one source's failure is reported
             sources["autopilot"] = f"unreadable:{type(exc).__name__}"
+    from . import reply_drafts as rd
+    kept = rd.path_of(Path(state_dir))
+    if not kept.is_file():
+        sources["assist"] = "no_drafts"
+    elif not store:
+        sources["assist"] = "no_store_given"
+    else:
+        try:
+            from . import autopilot as ap
+            from . import proactive_engine as pe
+            people = pe._people(Path(store))
+            st = ap._store(store, source)
+            try:
+                got = from_reply_drafts(kept, st, people)
+            finally:
+                st.close()
+            sources["assist"] = len(got)
+            signals += got
+        except Exception as exc:  # noqa: BLE001 - one source's failure is reported
+            sources["assist"] = f"unreadable:{type(exc).__name__}"
     sources["asks"] = "not_served"   # Read once it serves one
     return signals, sources
 

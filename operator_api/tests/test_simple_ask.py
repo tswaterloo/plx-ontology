@@ -332,6 +332,29 @@ class SessionTest(unittest.TestCase):
             self.assertTrue(payload.direct_answer.strip())
             self.assertEqual(payload.outcome, "not_found")
 
+    def test_a_spent_limit_says_asking_again_will_not_help(self):
+        def words(failure):
+            ran = sa.SimpleRun(text="", agent_text="", unverified=[], events=[],
+                               seconds=1.0, stopped=False, failure=failure)
+            return sa.answer_payload(ran, "q", "c", 1, "g" * 24).direct_answer
+        self.assertIn("will not help", words("usage_limit"))
+        self.assertNotIn("Ask again shortly", words("usage_limit"))
+        self.assertIn("signed in again", words("sign_in"))
+        self.assertIn("Ask again shortly", words("error"))
+
+    def test_the_cli_limit_line_is_never_an_answer(self):
+        line = "You've hit your weekly limit · resets Nov 23, 10am (America/Toronto)"
+        for failure in ("usage_limit", "sign_in"):
+            ran = sa.SimpleRun(text=line, agent_text=line, unverified=[], events=[],
+                               seconds=1.0, stopped=False, failure=failure)
+            payload = sa.answer_payload(ran, "q", "c", 1, "e" * 24)
+            self.assertEqual(payload.outcome, "not_found")
+            self.assertNotIn("weekly limit", payload.direct_answer)
+            self.assertEqual(payload.assistant_unavailable, failure)
+        ran = sa.SimpleRun(text=line, agent_text=line, unverified=[], events=[],
+                           seconds=1.0, stopped=False, failure=None)
+        self.assertEqual(sa.answer_payload(ran, "q", "c", 1, "f" * 24).direct_answer, line)
+
     def test_every_read_failed_is_never_answered(self):
         timeout = {"type": "tool_call", "name": "plx.sql", "is_error": False,
                    "result": {"error": {"code": "timeout", "message": "past 10 s"}}}

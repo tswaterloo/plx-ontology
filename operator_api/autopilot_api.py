@@ -66,7 +66,8 @@ class AutopilotMixin:
         return found.load() if found is not None else {"teams": {}, "managers": {}}
 
     def _ap_visible(self, reader: Reader, everyone: bool = False,
-                    states: tuple[str, ...] = ("open",)) -> Optional[list[dict[str, Any]]]:
+                    states: tuple[str, ...] = ("open",), also: tuple[str, ...] = ()
+                    ) -> Optional[list[dict[str, Any]]]:
         """The reader's visible items; ``everyone`` (the owner-open reader only, decided by
         the caller): every person's items, still under the same audience, marking and
         citation checks."""
@@ -90,7 +91,7 @@ class AutopilotMixin:
                 may_read, held, decide = self.autopilot_grant
                 return autopilot_reading.visible(queue, reader=_principals(reader), may_read=may_read,
                                   held=held, decide=decide, grants=grants(),
-                                  states=states)
+                                  states=states, also=also)
 
             def job(view: Any) -> Any:
                 access = getattr(view, "access", None)
@@ -100,7 +101,7 @@ class AutopilotMixin:
                     may_read, held = access.grant()
                     return autopilot_reading.visible(queue, reader=_principals(reader), may_read=may_read,
                                       held=held, decide=access.decide,
-                                      grants=grants(), states=states)
+                                      grants=grants(), states=states, also=also)
             return self.reads.run(reader, job, timeout=60)  # type: ignore[attr-defined]
         finally:
             queue.close()

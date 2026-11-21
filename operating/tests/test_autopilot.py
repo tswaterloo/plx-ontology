@@ -874,6 +874,22 @@ class Readers(Fixture):
         self.assertEqual(autopilot_reading.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
                                     decide=opens_all, grants=other_team), [])
 
+    def test_an_item_passed_on_shows_to_its_colleague_only_under_their_own_checks(self):
+        q = self.prepared()
+        ids = [i["item_id"] for i in autopilot_reading.visible(
+            q, reader=READER, may_read=everyone, held=["finance"], decide=opens_all)]
+        seen = lambda **kw: autopilot_reading.visible(  # noqa: E731
+            q, reader=OTHER, **{"may_read": everyone, "held": ["finance"],
+                                "decide": opens_all, "also": ids + ["nope"], **kw})
+        passed = seen()
+        self.assertEqual(sorted(i["item_id"] for i in passed), sorted(ids))
+        self.assertTrue(all(i["handed"] and not i["mine"] for i in passed))
+        self.assertEqual(len(seen(held=[])), 1)                    # not their marking
+        self.assertEqual(seen(may_read=lambda a: False), [])       # not their audience
+        self.assertEqual(seen(decide=lambda hs: {h: {"reason": "x"} for h in hs}), [])
+        self.assertEqual(seen(states=("done",)), [])
+        self.assertEqual(seen(also=()), [])
+
     def test_every_citation_of_an_item_is_checked_fail_closed(self):
         q = self.prepared()
         (item,) = [i for i in q.items([OURS_OID], ("open",))][:1]
@@ -1052,6 +1068,25 @@ class SupplierFollowUp(Fixture):
                     n=40_000 + i)
         w.link("Email.mentions_po", sent, po)
         return po
+
+    def test_a_po_no_mail_names_goes_to_the_buyer_its_purchaser_code_names(self):
+        w = self.w
+        pos = {code: w.obj("PurchaseOrder", {"po_number": f"P-7{i}", "order_date": "2026-10-14",
+                                            "status": "Released", "vendor_name": "Synth",
+                                            "purchaser_code": code})
+               for i, code in enumerate(("OPS", "ZZQX"))}
+        for i, po in enumerate(pos.values()):
+            w.link("PurchaseOrder.ordered_from", po, w.obj("Supplier", {
+                "name": f"Synth supplier 7{i}", "csr_email": f"anna.reed7{i}@synth-supplier.example"}))
+            w.link(autopilot_queue.PO_LINE_OF, w.obj("PurchaseOrderLine", {
+                "item_code": "SYN-7", "ordered_quantity": "4", "uom": "CS"}), po)
+        self.build(events=[("PurchaseOrder.created", p, "2026-10-14T10:00:00Z")
+                           for p in pos.values()])
+        reg = ap.load_registry()
+        ran = self.cycle([], registry=reg)
+        owners = {i["body"]["happened"]["object_id"]: i["owner"] for i in self.queue().items()}
+        self.assertEqual(owners.get(pos["OPS"]), OURS_OID, ran)
+        self.assertNotIn(pos["ZZQX"], owners)             # a code naming nobody: nobody
 
     def test_open_pos_without_confirmation_get_one_follow_up_each(self):
         for n in (1, 10, 60):

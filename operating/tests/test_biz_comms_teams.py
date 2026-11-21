@@ -287,6 +287,34 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         self.assertEqual(set(got), {"2026-09-30", "2026-10-01"}, got)
         self.assertEqual(sum(got.values()), len(self.gated(tct.COS_ONLY) - self.fc()))
 
+    def test_a_teams_finding_shows_only_with_the_message_the_reader_reads(self):
+        """The findings view checks a Teams finding against its one message by equality
+        (``comms_findings.view_ddl``): each reader sees exactly the findings of the messages
+        their own guarded view shows, and a day filter has its own index."""
+        import psycopg
+        from operating.pg import comms_findings as cf
+        with psycopg.connect(self.dsn) as pg:
+            cf.ensure(pg)
+            pg.execute(f"INSERT INTO {bv.SCHEMA}.{cf.VIEW} (source_view, message_key, n, "
+                       "handles, kind, topic, summary, said_at, model, found_at) SELECT "
+                       "'teams_messages', handle, 0, ARRAY[handle], 'request', 'order', "
+                       f"'Asked', created_at, 'stand-in', now() FROM {bv.SCHEMA}.teams_messages")
+            cf.create_view(pg)
+            days = [r[0] for r in pg.execute(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND tablename = "
+                "'teams_messages'", (bv.SCHEMA,)).fetchall()]
+        self.assertTrue(any(d.endswith("(created_date)") for d in days), days)
+        seen = 0
+        for actor in READERS:
+            with self.subTest(actor=sorted(actor.principals)):
+                out = self.sql(actor, "SELECT handle, source FROM comms_findings")
+                self.assertFalse(out["truncated"])
+                got = [tuple(_cell(c) for c in r["cells"]) for r in out["rows"]]
+                self.assertEqual(sorted(h for h, _s in got), sorted(self.handles(actor)))
+                self.assertEqual({s for _h, s in got} - {"teams"}, set())
+                seen += len(got)
+        self.assertTrue(seen)
+
     def test_unindexed_text_unset_window_or_other_exclusion_shows_nothing(self):
         import psycopg
         for tag in ("", "another-list"):

@@ -1,4 +1,5 @@
-"""Autopilot lookups for opted-in staff: their own row in the Autopilot host's access snapshot.
+"""Autopilot lookups for opted-in staff (and, with ``--all-staff``, Assist drafts for every
+staff member): their own row in the Autopilot host's access snapshot.
 
 The Autopilot's tool sessions (``operator_api.autopilot_context.Lookup``) read the records as
 the person an item is for, through the Autopilot host (``PLX_AUTOPILOT_HOST_CONFIG``): only a
@@ -18,6 +19,13 @@ switched Autopilot on for themselves (the write path's audit journal,
   the GET-only reporting client, else the host's source mirror), never a grant made up here;
   the Portal's scopes and denies must have been read. What they then read is decided by the
   hosts' own rules (the staff rule, the markings) exactly as for any other reader.
+* **All staff** (``--all-staff``, Assist drafts a reply for every staff member,
+  each sees only their own): everyone the same checks admit counts as wanted, opted in or not:
+  each active Portal user whose e-mail resolves to exactly one Entra object id. A person the
+  people exclusion names is never wanted (no row, no readers entry; a row this script added
+  earlier is taken out). A lookup that fails for anyone removes nobody that run. A readers
+  entry gives the drafting and Autopilot sessions an identity only; what is sent or written
+  still needs the person's own confirm (Autopilot writes stay opt-in by the journal).
 * **Removed**: a row (and its readers entry) this script added whose person no longer has a
   workflow on. Rows it did not add (the owner-declared ones) are never touched here; the
   daily re-check (``scripts/refresh_owner_access.py``) drops any row whose person left.
@@ -28,7 +36,7 @@ first. Never prints a claim, an e-mail or an id: counts and codes only.
 
     python3 -m scripts.autopilot_staff_access --snapshot DIR/portal_access.json
         --readers autopilot-readers.json --journal STATE/autopilot-write/AUDIT
-        [--mirror source-mirror.sqlite] [--no-live] [--dry-run]
+        [--mirror source-mirror.sqlite] [--no-live] [--dry-run] [--all-staff]
 """
 
 from __future__ import annotations
@@ -85,11 +93,15 @@ def _write(path: Path, doc: Any, check: Callable[[str], Any] | None = None) -> N
 def plan(snapshot: Mapping[str, Any], readers: Mapping[str, Any], added: Sequence[str],
          wanted: set[str], portal: Sequence[Mapping[str, Any]] | None,
          lookup: Callable[[str], str | None] | None,
-         enabled: Callable[[str], tuple[bool, str]] | None, guard: Any
+         enabled: Callable[[str], tuple[bool, str]] | None, guard: Any,
+         directory: Mapping[str, str] | None = None
          ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str], dict[str, int]]:
     """(the snapshot's users, the readers, the added ids, counts) after this run. ``portal``
     (``rollout_access.portal_rows``), ``lookup`` (e-mail -> object id) and ``enabled`` are
-    needed only when someone is to be added (None: nobody is added)."""
+    needed only when someone is to be added (None: nobody is added). ``directory``
+    (``--all-staff``: object id -> address of each staff member the org chart lists): a
+    wanted person no Portal user carries (no row at all under their address, active or
+    not) gets the plain staff row (``staff_row``) instead of a Portal row."""
     users = [dict(u) for u in snapshot.get("users") or ()]
     readers = {str(k).lower(): dict(v) for k, v in readers.items()}
     have = {str(u.get("entraObjectId") or "").lower() for u in users}
@@ -108,8 +120,10 @@ def plan(snapshot: Mapping[str, Any], readers: Mapping[str, Any], added: Sequenc
         counts["not_added"] += len(todo)
         return users, readers, added_now, counts
     by_email: dict[str, list[Mapping[str, Any]]] = {}
+    any_email: set[str] = set()
     for row in portal or ():
         email = str(row.get("_served_email") or "").strip().lower()
+        any_email.add(email)
         if email and row.get("isActive") is True:
             by_email.setdefault(email, []).append(row)
     resolved: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
@@ -123,6 +137,9 @@ def plan(snapshot: Mapping[str, Any], readers: Mapping[str, Any], added: Sequenc
                 resolved.setdefault(oid, []).extend((email, r) for r in rows)
     for oid in todo:
         found = resolved.get(oid) or []
+        plain = str((directory or {}).get(oid) or "").strip().lower()
+        if not found and plain and plain not in any_email:
+            found = [(plain, staff_row(oid))]
         ok = len(found) == 1
         if ok:
             try:
@@ -146,11 +163,71 @@ def plan(snapshot: Mapping[str, Any], readers: Mapping[str, Any], added: Sequenc
     return users, readers, sorted(set(added_now)), counts
 
 
+def staff_row(oid: str) -> dict[str, Any]:
+    """The plain row of a staff member with no Portal user: the Portal's own staff role at
+    the level it bootstraps for it (``LEGACY_ROLE_BOOTSTRAP``), no department, scope or MRP
+    module. What they read is the hosts' staff
+    rule (every employee: the business records, their own mail and chats); no marking
+    (finance, pay) is granted through it."""
+    return {"id": oid, "role": "STAFF", "accessLevel": "L2", "isActive": True,
+            "mrpWarehouse": False, "mrpProduction": False, "mrpRnD": False,
+            "departmentIds": [], "accessScopes": [], "policyDenies": []}
+
+
+def directory_staff(rows: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    """object id -> address of each enabled member the org chart capture lists
+    (``integrations.capture_org.current_rows``: members with a mail address, never an
+    excluded, undecided or HR / payroll deny-listed user)."""
+    out: dict[str, str] = {}
+    for oid, row in rows.items():
+        upn = str(row.get("upn") or "").strip().lower()
+        if row.get("account_enabled") is True and "@" in upn and "#ext#" not in upn:
+            out[str(oid).lower()] = upn
+    return out
+
+
+def everyone(portal: Sequence[Mapping[str, Any]], lookup: Callable[[str], str | None],
+             guard: Any, directory: Mapping[str, str] | None = None
+             ) -> tuple[set[str], bool]:
+    """(every staff member's object id, whether any lookup failed): each active Portal user
+    whose e-mail resolves and each staff member of ``directory``, minus anyone the people
+    exclusion names (fail closed)."""
+    staff: set[str] = set()
+    unsure = False
+    for oid, email in (directory or {}).items():
+        if ra.drop_excluded([{"email": email, "entraObjectId": oid}], guard)[0]:
+            staff.add(oid)
+    for row in portal:
+        email = str(row.get("_served_email") or "").strip().lower()
+        if not email or row.get("isActive") is not True:
+            continue
+        try:
+            oid = str(lookup(email) or "").lower()
+        except Exception:  # noqa: BLE001 - unresolved: not added, and nobody is removed
+            unsure = True
+            continue
+        if oid and ra.drop_excluded([{"email": email, "entraObjectId": oid}], guard)[0]:
+            staff.add(oid)
+    return staff, unsure
+
+
+def _memo(look: Callable[[str], str | None]) -> Callable[[str], str | None]:
+    seen: dict[str, str | None] = {}
+
+    def once(email: str) -> str | None:
+        if email not in seen:
+            seen[email] = look(email)
+        return seen[email]
+    return once
+
+
 def run(snapshot_path: Path, readers_path: Path, journal: Path, *,
         portal_reader: Callable[[], tuple[list[dict[str, Any]] | None, Mapping[str, Any]]],
         lookup: Callable[[], Callable[[str], str | None]],
         enabled: Callable[[], Callable[[str], tuple[bool, str]]],
-        guard: Callable[[], Any], dry_run: bool = False) -> dict[str, Any]:
+        guard: Callable[[], Any], dry_run: bool = False,
+        all_staff: bool = False,
+        directory: Callable[[], Mapping[str, str]] = dict) -> dict[str, Any]:
     from operating import employee_permissions as ep
     from operator_api import autopilot_context as ac
     out: dict[str, Any] = {"changed": False}
@@ -174,7 +251,7 @@ def run(snapshot_path: Path, readers_path: Path, journal: Path, *,
     have = {str(u.get("entraObjectId") or "").lower() for u in snapshot["users"]}
     portal = look = check = keep = None
     problems: list[str] = []
-    if wanted - have:
+    if wanted - have or all_staff:
         portal, basis = portal_reader()
         if portal is None:
             problems.append("portal_unread")
@@ -187,8 +264,24 @@ def run(snapshot_path: Path, readers_path: Path, journal: Path, *,
         except Exception as error:  # noqa: BLE001 - no Graph or exclusion: nobody added
             problems.append(f"unavailable:{type(error).__name__}")
             look = check = keep = None
+    staff_dir: Mapping[str, str] | None = None
+    if all_staff:
+        try:
+            staff_dir = directory()
+        except Exception:  # noqa: BLE001 - handled as unread below
+            staff_dir = {}
+        if portal is None or look is None or keep is None or not staff_dir:
+            # never fall back to the opted-in set alone: that would take every staff row out
+            return {**out, "problems": problems or ["staff_unread"]}
+        look = _memo(look)
+        staff, unsure = everyone(portal, look, keep, staff_dir)
+        out["staff"] = len(staff)
+        wanted = wanted | staff
+        if unsure:
+            wanted |= set(added)       # a lookup outage never removes anyone
+            problems.append("lookup_failed")
     users, new_readers, new_added, counts = plan(snapshot, readers, added, wanted, portal,
-                                                 look, check, keep)
+                                                 look, check, keep, staff_dir)
     out.update(counts)
     if problems:
         out["problems"] = problems
@@ -216,6 +309,9 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
     parser.add_argument("--mirror", type=Path)
     parser.add_argument("--no-live", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--all-staff", action="store_true",
+                        help="every staff member (org chart + Portal), not excluded, is wanted")
+    parser.add_argument("--org", type=Path, help="the org chart capture store (--all-staff)")
     args = parser.parse_args(argv)
     env = os.environ if environ is None else environ
 
@@ -244,9 +340,14 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
         except ra.RolloutError:
             return None, {}
 
+    def org() -> dict[str, str]:
+        from integrations import capture_org
+        return directory_staff(capture_org.current_rows(args.org)) if args.org else {}
+
     result = run(args.snapshot, args.readers, args.journal, portal_reader=portal,
                  lookup=lambda: ra._graph_lookup(env), enabled=lambda: roa.graph_enabled(env),
-                 guard=lambda: ra.exclusion_guard(env), dry_run=args.dry_run)
+                 guard=lambda: ra.exclusion_guard(env), dry_run=args.dry_run,
+                 all_staff=args.all_staff, directory=org)
     print(json.dumps(result, sort_keys=True))
     return 0 if not result.get("problems") else 1
 

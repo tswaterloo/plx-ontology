@@ -29,15 +29,17 @@ function ChartSaves({ chart, figure }: { chart: AskChart; figure: React.RefObjec
     }
   };
   const svgs = () => Array.from(figure.current?.querySelectorAll<SVGSVGElement>("svg[data-chart-svg]") ?? []);
-  const png = !["table", "kpi"].includes(chart.kind) && !chart.panels?.length;
+  // tables and KPI tiles are not drawings: Excel / PowerPoint / Word / PDF carry them
+  const png = !["table", "kpi"].includes(chart.kind);
   return (
     <span className="inline-flex flex-wrap items-center gap-x-1 text-[12px] text-muted" aria-label="Save the chart">
       <span>Save as</span>
       {png && (
         <button type="button" className={quiet} disabled={!!busy}
           onClick={() => run("png", async () => {
-            const s = svgs()[0];
-            if (s) await savePng(s, chart.title, INK[theme].ground, INK[theme].text, { ...chartKey(chart, theme), notes: [...chartNotes(chart), ...(chart.as_of ? [`As of ${formatDate(chart.as_of)}.`] : [])], muted: INK[theme].muted });
+            const s = svgs();
+            const panels = chart.panels?.length ? chart.panels.map((p) => p.title) : undefined;
+            if (s.length) await savePng(panels ? s : s[0], chart.title, INK[theme].ground, INK[theme].text, { ...chartKey(chart, theme), panels, notes: [...chartNotes(chart), ...(chart.as_of ? [`As of ${formatDate(chart.as_of)}.`] : [])], muted: INK[theme].muted });
           })}>
           PNG
         </button>

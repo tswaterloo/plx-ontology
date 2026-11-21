@@ -55,6 +55,17 @@ class ReplyDrafts(unittest.TestCase):
                                 .isoformat()}, now))
         self.assertFalse(rd.due({"state": "ready", "at": "2020-01-01T00:00:00+00:00"}, now))
 
+    def test_a_line_without_a_session_is_tried_again_soon_a_judged_none_late(self):
+        now = datetime.now(timezone.utc)
+        hour = (now - timedelta(hours=1)).isoformat()
+        self.assertTrue(rd.due({"state": "none", "why": "agent_no_session", "at": hour}, now))
+        self.assertFalse(rd.due({"state": "none", "why": "agent_no_session",
+                                 "at": now.isoformat()}, now))
+        self.assertTrue(rd.due({"state": "none", "why": "draft_failed:HostListRefused",
+                                "at": hour}, now))
+        for why in ("nothing_to_do", "excluded_in_thread", "draft_failed:OSError"):
+            self.assertFalse(rd.due({"state": "none", "why": why, "at": hour}, now), why)
+
     def test_run_marks_drafting_first_then_keeps_each_outcome(self):
         seen = []
 
@@ -161,6 +172,136 @@ class ReplyDrafts(unittest.TestCase):
                 self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r"),
                                  [{"why": "pay_or_hr"}])
             self.assertEqual(len(ran), 3)
+
+    def test_a_sender_the_person_said_never_to_is_not_drafted_and_again_is(self):
+        from unittest import mock
+        from operating import autopilot as apm, autopilot_engine as eng
+        from operating.autopilot_agent import Decision
+        from operating.card_actions import Journal
+        reg = {"autopilots": [{"id": "assistant"}], "limits": {"handler_seconds": 5}}
+        ev = {"event_type": "message.received", "cleared": True, "object_id": "Email:r",
+              "side": "internal", "sender": "Bo@plx.example", "to": ["ana@plx.example"],
+              "to_me": True, "asks": True}
+        ran = []
+
+        class Assistant:
+            def run(self, event, owner, described, person, people, **kw):
+                ran.append(owner)
+                return Decision(reply="Will do."), ""
+        maps = ({}, {ANA: {"ana@plx.example"}}, ("plx.example",))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / rd.NEVER_FILE
+            path.parent.mkdir(parents=True)
+
+            def say(never, ids):
+                with Journal(path).locked() as held:
+                    held.append({"event": "never_sender", "sender": "bo@plx.example",
+                                 "never": never, "by": ids[0], "ids": ids})
+
+            def draft():
+                return rd.line_draft(None, reg, None, maps, Assistant(), ANA, "Email:r",
+                                     state_dir=Path(tmp))
+            with mock.patch.object(apm, "discover", return_value=([ev], {})), \
+                    mock.patch.object(eng, "_prepare",
+                                      return_value={"work": {"material": {"text": "When?"}}}):
+                say(True, ["employee:BEN"])                  # someone else's never
+                self.assertEqual(draft(), [{"draft": "Will do.", "note": ""}])
+                say(True, ["ana@plx.example", "tenant:" + ANA.upper()])
+                self.assertEqual(draft(), [{"why": "never_sender"}])
+                self.assertEqual(rd.never_senders(tmp, ANA), {"bo@plx.example"})
+                say(False, [ANA])
+                self.assertEqual(draft(), [{"draft": "Will do.", "note": ""}])
+            self.assertEqual(ran, [ANA, ANA])
+
+    def test_line_draft_keeps_proposed_changes_as_the_persons_job_item(self):
+        from unittest import mock
+        from operating import autopilot as apm, autopilot_engine as eng
+        from operating.autopilot_agent import Decision
+        reg = {"autopilots": [{"id": "assistant", "label": "Assistant"}],
+               "limits": {"handler_seconds": 5, "per_owner_per_hour": 2}}
+        ev = {"event_id": "ev1", "event_type": "message.received", "cleared": True,
+              "object_id": "Email:r", "side": "internal", "sender": "bo@plx.example",
+              "to": ["ana@plx.example"], "to_me": True, "asks": True, "subject": "PO date"}
+        po = {"system": "portal", "operation": "purchase-order.update",
+              "target": {"id": "cmpo0001"}, "change": {"expectedDate": "2026-11-20"},
+              "reason": "The supplier confirmed delivery on 20 November."}
+        move = {"tool": "plx.prepare_write", "arguments": po}
+        unknown = {"tool": "plx.send_now", "arguments": po}
+
+        class Assistant:
+            answer = Decision(reply="Will do.", summary="Move the PO date",
+                              proposals=[move, unknown])
+
+            def run(self, event, owner, described, person, people, **kw):
+                return Decision(**dict(self.answer.__dict__)), ""
+        a = Assistant()
+        maps = ({}, {ANA: {"ana@plx.example"}, "employee:BO": {"bo@plx.example"}},
+                ("plx.example",))
+        now = datetime(2026, 11, 20, 9, tzinfo=timezone.utc)
+        queue = apm.Queue(self.tmp / "autopilot" / apm.QUEUE_FILE)
+        self.addCleanup(queue.close)
+        prep = {"work": {"material": {"text": "When?"}}, "audiences": ["tenant:" + ANA],
+                "citations": ["mail://Email:r"]}
+
+        def draft():
+            return rd.line_draft(None, reg, None, maps, a, ANA, "Email:r", now=now, queue=queue)
+        with mock.patch.object(apm, "discover", return_value=([ev], {})), \
+                mock.patch.object(eng, "_prepare", return_value=prep):
+            # no queue: the reply as before, nothing kept
+            self.assertEqual(rd.line_draft(None, reg, None, maps, a, ANA, "Email:r", now=now),
+                             [{"draft": "Will do.", "note": ""}])
+            self.assertEqual(queue.items(), [])
+            got = draft()
+            self.assertEqual(got[0]["draft"], "Will do.")
+            [item] = queue.items()
+            self.assertEqual(got[0]["jobs"], item["item_id"])
+            self.assertEqual(item["owner"], ANA)
+            self.assertEqual(item["autopilot"], "assistant")
+            self.assertEqual(item["state"], "open")
+            self.assertEqual(item["audiences"], ["tenant:" + ANA])
+            self.assertEqual(item["citations"], ["mail://Email:r"])
+            # only a proposal the write path takes is kept; it waits for the person's confirm
+            self.assertEqual(item["body"]["prepared"],
+                             {"kind": "job", "summary": "Move the PO date",
+                              "jobs": [move], "drafted_by": "model"})
+            # a redraft of the line keeps the one item, and spends no more of the cap
+            self.assertEqual(draft()[0]["jobs"], item["item_id"])
+            self.assertEqual(len(queue.items()), 1)
+            # changes alone, with no reply: the line says so, the item is the same one
+            a.answer = Decision(summary="Move the PO date", proposals=[move])
+            self.assertEqual(draft(), [{"why": "changes_prepared", "jobs": item["item_id"]}])
+            # a question card carries them too
+            a.answer = Decision(ask={"question": "Which day?", "options": []}, proposals=[move])
+            self.assertEqual(draft()[0]["jobs"], item["item_id"])
+            # nothing the write path takes: no item
+            ev["event_id"] = "ev2"
+            a.answer = Decision(reply="Sure.", proposals=[unknown])
+            self.assertEqual(draft(), [{"draft": "Sure.", "note": ""}])
+            # the kill switch: no item
+            a.answer = Decision(reply="Sure.", proposals=[move])
+            queue.killed_file.touch()
+            self.assertEqual(draft(), [{"draft": "Sure.", "note": ""}])
+            queue.killed_file.unlink()
+            # the person's hourly cap (2 here, one spent): the next line's changes wait
+            self.assertIn("jobs", draft()[0])
+            ev["event_id"] = "ev3"
+            self.assertEqual(draft(), [{"draft": "Sure.", "note": ""}])
+            self.assertEqual(sorted(i["event_id"] for i in queue.items()), ["ev1", "ev2"])
+            # things to do by hand alone (no write path): a to-do item, nothing to confirm
+            ev["event_id"] = "ev5"
+            queue.conn.execute("DELETE FROM rate")
+            todo = {"system": "QuickBooks", "record": "INV-9", "what": "Mark INV-9 paid."}
+            a.answer = Decision(reply="Sure.", todos=[todo, {"system": "x", "what": " "}])
+            got = draft()
+            done = queue.item(got[0]["jobs"])
+            self.assertEqual(done["body"]["prepared"]["jobs"], [])
+            self.assertEqual(done["body"]["prepared"]["todos"], [todo])
+            # a queue that cannot be written: the draft stands, without the changes
+            with mock.patch.object(queue, "add_item", side_effect=sqlite3.OperationalError):
+                ev["event_id"] = "ev4"
+                a.answer = Decision(reply="Sure.", proposals=[move])
+                queue.conn.execute("DELETE FROM rate")
+                self.assertEqual(draft(), [{"draft": "Sure.", "note": ""}])
 
 
 if __name__ == "__main__":

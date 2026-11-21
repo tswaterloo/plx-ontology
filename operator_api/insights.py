@@ -618,6 +618,11 @@ class InsightsMixin:
     def _insight_scope(self, reader: Any) -> tuple:
         return self._team_scope(reader)   # type: ignore[attr-defined]
 
+    def insight_tools(self, reader: Any) -> list:
+        """The Ask's ``plx.insight`` bound to ``reader`` (``insight_tool``); none while off."""
+        from .insight_tool import tools
+        return tools(self, reader)
+
     def _builtin_for(self, reader: Any, everyone: bool) -> list[Spec]:
         """The built-ins ``reader`` is shown: the scope's own, less the views over the
         communications findings (message text) for a reader without full read over every

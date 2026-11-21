@@ -174,7 +174,8 @@ class ConnectionLimitTests(unittest.TestCase):
         with mock.patch.object(pg_pool.psycopg, "connect", side_effect=connect), \
                 mock.patch.object(sqlite_compat.PgCompatConnection, "_session", lambda self, c: None):
             got = sqlite_compat.PgCompatConnection._open(mock.Mock(dsn="postgresql://made-up/db",
-                                                             _session=lambda c: None))
+                                                             _session=lambda c: None,
+                                                             _named=lambda: {}))
         self.assertIsInstance(got, Conn)
         self.assertEqual(len(calls), 3)
 

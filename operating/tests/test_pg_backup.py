@@ -395,6 +395,20 @@ class GuardAndAgeTest(unittest.TestCase):
         self.assertEqual(set(dropped) & set(names), set(names[:2]))
         self.assertEqual(left, {names[2]})
 
+    def test_the_restore_guard_counts_what_the_restore_writes_not_just_the_dump(self) -> None:
+        # 11-20: a 4 GB dump restored ~87 GB; 81 GB free passed the dump-only guard
+        from unittest import mock
+        dump = self.tmp / "daily" / f"plx-{self.stamp}.dump"
+        live = 87_000_000_000
+        for free, refused in ((81_000_000_000, True), (live + 40_000_000_000 - 1, True),
+                              (live + 40_000_000_000, False)):
+            with mock.patch.object(plx_backup.shutil, "disk_usage",
+                                   return_value=mock.Mock(free=free)):
+                out = plx_backup.restore_disk_guard(dump, live_bytes=live)
+            self.assertEqual(out is not None, refused, free)
+        with mock.patch.object(plx_backup.psycopg, "connect", side_effect=OSError("down")):
+            self.assertIsNone(plx_backup.restored_bytes_estimate())
+
     def test_the_restore_guard_needs_the_dump_plus_40_gb_and_skips_with_a_problem(self) -> None:
         from unittest import mock
         dump = self.tmp / "daily" / f"plx-{self.stamp}.dump"

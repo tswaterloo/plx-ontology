@@ -2,6 +2,7 @@
 
 import { Suspense } from "react";
 import { AutopilotView } from "@/components/autopilot/area";
+import { RecurringView } from "@/components/autopilot/recurring";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
@@ -35,6 +36,7 @@ function Autopilot() {
           <>
             <StaleNote since={area.stale_since} readAt={area.read_at} className="mb-2" />
             <AutopilotView area={area} onReload={retry} />
+            <RecurringView />
           </>
         ) : (
           <Pending page label="Reading the autopilots" />

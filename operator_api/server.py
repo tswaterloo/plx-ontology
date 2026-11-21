@@ -230,6 +230,10 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
         else:
             threading.Thread(target=_insight_copies, args=(backend,), daemon=True,
                              name="insights-prewarm").start()
+        if not args.unix_socket and owner_loop is not None:
+            start = getattr(backend, "start_recurring", None)
+            if callable(start):   # the standby never runs them: one process runs each
+                start()
         served = (f"unix:{args.unix_socket}" if args.unix_socket
                   else f"http://{args.bind}:{args.port}")
         print(f'{{"operator_api": "{served}", "mode": "{mode}"}}', file=sys.stderr, flush=True)

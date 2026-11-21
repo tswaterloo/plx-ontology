@@ -66,6 +66,7 @@ class StaffAccessTest(unittest.TestCase):
         self.disabled: set[str] = set()
         self.guard = Guard()
         self.graph_calls = 0
+        self.org = lambda: {STAFF: "staff@example.test"}
 
     def switch(self, person: str, on: bool) -> None:
         aw.set_drafts(Journal(self.journal), person, "ar_collections", on, person, NOW)
@@ -178,6 +179,87 @@ class StaffAccessTest(unittest.TestCase):
                 self.assertEqual(len(rows), n + 1)
                 self.assertEqual(len({r["entraObjectId"] for r in rows}), n + 1)
                 self.assertEqual(set(ac.readers(self.readers)), {OWNER, *ids})
+
+    def test_all_staff_adds_every_active_staff_member_but_the_excluded(self) -> None:
+        self.portal.append(portal_row("p-gone", "gone@example.test", active=False))
+        self.portal.append(portal_row("p-excl", "excl@example.test"))
+        self.directory.update({"gone@example.test": "44444444-0000-4000-8000-000000000000",
+                               "excl@example.test": "55555555-0000-4000-8000-000000000000"})
+        self.guard = Guard(["excl@example.test"])
+        out = self.run_it(all_staff=True, directory=self.org)  # nobody opted in
+        self.assertEqual((out["added"], out["staff"]), (2, 2), out)
+        self.assertEqual(set(ac.readers(self.readers)), {OWNER, STAFF, OTHER})
+        self.assertEqual(set(self.rows()), {OWNER, STAFF, OTHER})
+        # without --all-staff (the opt-in run) the same files would take them out again;
+        # with it, a second run changes nothing
+        self.assertFalse(self.run_it(all_staff=True, directory=self.org)["changed"])
+        # a person who leaves (Portal inactive) is taken out; the owner's row stays
+        self.portal = [portal_row("p-staff", "staff@example.test")]
+        out = self.run_it(all_staff=True, directory=self.org)
+        self.assertEqual(out["removed"], 1, out)
+        self.assertEqual(set(ac.readers(self.readers)), {OWNER, STAFF})
+        # later excluded: taken out at the next run
+        self.guard = Guard([STAFF])
+        self.assertEqual(self.run_it(all_staff=True, directory=self.org)["removed"], 1)
+        self.assertEqual(set(ac.readers(self.readers)), {OWNER})
+
+    def test_all_staff_gives_staff_without_a_portal_user_the_plain_row(self) -> None:
+        plain = "66666666-0000-4000-8000-000000000000"
+        excl = "77777777-0000-4000-8000-000000000000"
+        inactive = "88888888-0000-4000-8000-000000000000"
+        self.portal.append(portal_row("p-in", "inactive@example.test", active=False))
+        self.guard = Guard([excl])
+        org = {plain: {"upn": "Plain@Example.test", "account_enabled": True},
+               excl: {"upn": "excl@example.test", "account_enabled": True},
+               inactive: {"upn": "inactive@example.test", "account_enabled": True},
+               "99999999-0000-4000-8000-000000000000": {"upn": "off@example.test",
+                                                        "account_enabled": False}}
+        out = self.run_it(all_staff=True, directory=lambda: sa.directory_staff(org))
+        self.assertEqual(out["added"], 3, out)       # staff, other (Portal) + plain
+        row = self.rows()[plain]
+        self.assertEqual((row["role"], row["accessLevel"], row["accessScopes"],
+                          row["departmentIds"], row["email"]),
+                         ("STAFF", "L2", [], [], "plain@example.test"))
+        # the hosts' own resolver takes it as an employee (a known role, a level)
+        from operating import employee_permissions_portal as portal
+        self.assertIn(row["role"], portal.EMPLOYEE_ROLES)
+        self.assertEqual(row["accessLevel"], portal.LEGACY_ROLE_BOOTSTRAP[row["role"]])
+        self.assertEqual(ac.readers(self.readers)[plain]["uid"], plain)
+        # excluded: no entry; Portal user inactive: no plain row either; disabled: none
+        self.assertEqual(set(ac.readers(self.readers)), {OWNER, STAFF, OTHER, plain})
+        # the org chart unread: nothing changes (never shrinks to the Portal staff)
+        before = self.readers.read_text()
+        out = self.run_it(all_staff=True, directory=dict)
+        self.assertEqual(out["problems"], ["staff_unread"])
+        self.assertEqual(self.readers.read_text(), before)
+        # gone from the org chart: taken out
+        org.pop(plain)
+        out = self.run_it(all_staff=True, directory=lambda: sa.directory_staff(org))
+        self.assertEqual(out["removed"], 1, out)
+        self.assertNotIn(plain, ac.readers(self.readers))
+
+    def test_all_staff_never_removes_on_an_outage(self) -> None:
+        self.assertEqual(self.run_it(all_staff=True, directory=self.org)["added"], 2)
+        before = (self.snap.read_text(), self.readers.read_text())
+
+        def broken():
+            def look(email):
+                raise OSError("graph down")
+            return look
+        for name, kw in {"portal unread": dict(portal_reader=lambda: (None, {})),
+                         "graph raises": dict(lookup=broken)}.items():
+            with self.subTest(name):
+                out = sa.run(self.snap, self.readers, self.journal,
+                             portal_reader=kw.get("portal_reader", lambda: (
+                                 self.portal, {sa.ra.GRANTS: {"basis": "mirror"},
+                                               sa.ra.SCOPES: {"basis": "mirror"}})),
+                             lookup=kw.get("lookup", lambda: self.directory.get),
+                             enabled=lambda: (lambda oid: (True, "")),
+                             guard=lambda: self.guard, all_staff=True,
+                             directory=self.org)
+                self.assertTrue(out.get("problems"), out)
+                self.assertEqual(out.get("removed", 0), 0, out)
+                self.assertEqual((self.snap.read_text(), self.readers.read_text()), before)
 
 
 class LeaverDropTest(unittest.TestCase):

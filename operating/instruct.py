@@ -131,6 +131,25 @@ def clean_text(text: Any) -> str:
     return text
 
 
+_AT_HOUR = re.compile(r"^\s*(?:at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)?"
+                      r"\s*(?:morning|evening)?\s*[,;:-]?\s*", re.I)
+
+
+def one_off(text: str) -> str:
+    """A recurring line with its "every Monday (at 8)," words taken out: what one run
+    does ("every Monday at 8, chase the late POs" -> "chase the late POs")."""
+    found = _EVERY.search(text or "")
+    if not found:
+        return (text or "").strip()
+    if found.group("event"):   # "whenever X, do Y" -> "Do Y"
+        rest = text[found.end():].split(",", 1)
+        line = rest[1].strip() if len(rest) == 2 else ""
+        return line[:1].upper() + line[1:] if line else (text or "").strip()
+    rest = _AT_HOUR.sub("", text[found.end():], count=1)
+    line = f"{text[:found.start()].rstrip(' ,;:-')} {rest}".strip()
+    return line[:1].upper() + line[1:] if line else (text or "").strip()
+
+
 def recurring(text: str) -> Optional[dict[str, Any]]:
     """The trigger a recurring instruction names (a workflow step: ``kind``, ``words``,
     ``params``), or None for a one-off."""
@@ -228,7 +247,10 @@ def route(text: str, *, mode: Optional[str] = None, continuing: bool = False) ->
     if _FOR_ME.match(text) or _QUESTION.match(text):
         if _SELF_DOUBT.match(text) and _SOMEWHERE.search(text):
             return "unsure"                       # "should I reply to this?"
-        return "unsure" if then_do or (recurring(text) and not asked) else "ask"
+        # a schedule word alone ("monthly revenue by customer") is a measure, not an
+        # instruction: unsure only with something to do in it, as the last branch asks
+        return "unsure" if then_do or (recurring(text) and not asked
+                                       and _SOMEWHERE.search(text)) else "ask"
     if _SELF_DOUBT.match(text):
         return "unsure" if _SOMEWHERE.search(text) else "ask"
     doing = _DOING.match(text)

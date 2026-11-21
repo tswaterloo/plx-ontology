@@ -20,6 +20,7 @@ MODE = ("read-only (specs from devloop/live-checks: GET-only adapters, OAuth tok
 ALLOWED_MODULES = frozenset({
     "integrations.graph_read",
     "integrations.graph_directory",  # Entra user + transitive groups, GET only
+    "integrations.capture_org",  # org chart (users, managers), GET only; token POST only
     "integrations.shared_link",  # /shares/{u!..}/driveItem + item /content, GET only
     "integrations.bc_read",
     "integrations.bc_purchase",

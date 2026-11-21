@@ -252,6 +252,20 @@ def _kind_confirmation(d: Path) -> Path:
     return d / "kc.sqlite"
 
 
+def _recurring(d: Path) -> Path:
+    from operating.recurring_instructions import RecurringStore
+    store = RecurringStore(d / "ri")
+    store.list("owner")
+    return store.path
+
+
+def _recurring_fires(d: Path) -> Path:
+    from operating import recurring_events
+    fires = recurring_events.Fires(d / "rf")
+    fires._db().close()
+    return Path(fires.path)
+
+
 OPENERS: dict[str, Callable[[Path], Path]] = {
     "capture_mail": _mail, "capture_sharepoint": _sharepoint, "capture_store": _capture_store,
     "sheet_readings": _sheet_readings, "cases": _cases, "playbook_reports": _playbook,
@@ -265,6 +279,7 @@ OPENERS: dict[str, Callable[[Path], Path]] = {
     "autopilot_queue": _autopilot, "delta_state": _delta, "delta_held": _delta_held, "project_objects": _project_objects,
     "session_replay": _replay_guard, "session_journal": _journal,
     "confirmation_forms": _confirmation_forms, "kind_confirmation": _kind_confirmation,
+    "recurring_instructions": _recurring, "recurring_fires": _recurring_fires,
 }
 
 

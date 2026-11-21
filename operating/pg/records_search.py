@@ -82,7 +82,8 @@ def candidates(off: int, k: int) -> int:
     return max(CANDIDATES, PER_ROW * (off + k))
 
 
-def candidates_sql(positions: Sequence[int], *, biz: str, since: bool, until: bool) -> str:
+def candidates_sql(positions: Sequence[int], *, biz: str, since: bool, until: bool,
+                   whole: bool = False) -> str:
     """The handles of the records whose label holds the words at ``positions`` (each found
     by the label index), in the hits' order, at most ``%(cap)s``: read from the store's own
     table, never shown (``SqlTool.records_search`` reads the hits through the reader's
@@ -95,6 +96,8 @@ def candidates_sql(positions: Sequence[int], *, biz: str, since: bool, until: bo
     if not re.fullmatch(r"[a-z_][a-z0-9_]*", biz):
         raise SearchInputError("not a schema name")
     where = [f"label ILIKE %(w{i})s ESCAPE '\\'" for i in positions]
+    if whole:   # each word also whole (``whole``: the patterns ``r0..``)
+        where += [f"lower(label) ~ %(r{i})s" for i in positions]
     if since:
         where.append("record_date >= %(since)s")
     if until:
@@ -147,6 +150,119 @@ def close_candidates_sql(*, biz: str, trgm: str, since: bool, until: bool) -> st
             + f" ORDER BY {trgm}.similarity(label, %(q)s) DESC, handle LIMIT %(cap)s")
 
 
+# A record whose label holds every word of the query by its stem (English stemming, the
+# small words dropped: "calibrating the pH meter" finds "pH meter calibration"): the
+# stems of 3 letters or more found by the label's trigram index, every stem then checked
+# on the label's own English words (``stem_candidates_sql``).
+STEM_MIN_LETTERS = 3
+# A word of the query with this many digits names a record ("purchase order 5626" for
+# "PO#5626"): few labels hold every word, the labels holding every such word are added.
+IDENT_MIN_DIGITS = 3
+
+
+def numbers(words: Sequence[str]) -> list[str]:
+    """The words of the query that name a record by number (``IDENT_MIN_DIGITS``)."""
+    return [w for w in words if sum(ch.isdigit() for ch in w) >= IDENT_MIN_DIGITS]
+
+
+def stems(tsquery: Any) -> list[str]:
+    """The ILIKE patterns of the stems (``plainto_tsquery('english', q)``'s text) the label
+    index finds: a Porter stem is the word's start but for a final y made i ("happi")."""
+    got = re.findall(r"'((?:[^']|'')+)'", tsquery if isinstance(tsquery, str) else "")
+    out = []
+    for stem in got[:MAX_TERMS]:
+        stem = stem.replace("''", "'")
+        stem = stem[:-1] if stem.endswith("i") and len(stem) > STEM_MIN_LETTERS else stem
+        if len(stem) >= STEM_MIN_LETTERS:
+            out.append(_like(stem))
+    return out
+
+
+TYPE_GROUPS = 3
+
+
+def lexemes(tsquery: Any) -> set[str]:
+    """The lexemes of a ``plainto_tsquery('english', ...)`` text."""
+    return {m.replace("''", "'") for m in re.findall(
+        r"'((?:[^']|'')+)'", tsquery if isinstance(tsquery, str) else "")}
+
+
+def named_types(type_stems: Sequence[Sequence[Any]], word_stems: Mapping[str, set]
+                ) -> list[tuple[list[str], list[str]]]:
+    """The record types the query names by the stems of their plain name ("assembly
+    orders for tubes": AssemblyOrder's "assembly order"), the types sharing a name
+    together, the longest names first, at most ``TYPE_GROUPS``; each with the query's other
+    words (those not of its name), never empty: (types, words)."""
+    held = set().union(*word_stems.values()) if word_stems else set()
+    groups: dict[frozenset, list[str]] = {}
+    for rtype, stems_ in type_stems:
+        name = frozenset(stems_)
+        if name and name <= held:
+            groups.setdefault(name, []).append(str(rtype))
+    out = []
+    for name, types in sorted(groups.items(), key=lambda g: (-len(g[0]), sorted(g[0]))):
+        rest = [w for w, st in word_stems.items() if st and not st <= name]
+        if rest:
+            out.append((sorted(types), rest))
+    return out[:TYPE_GROUPS]
+
+
+SMALL_WORDS = frozenset(
+    "the and for from with that this into onto over about what when where which who whom "
+    "our your their them they its was were are has have had not any all".split())
+
+
+def whole(word: str) -> str:
+    """A case-blind POSIX pattern for ``word`` standing whole in a label: a number not
+    inside a longer number ("1030" in "ORDER #1030", "PO1030", not "10300022"), a code
+    not inside a longer code."""
+    edge = "0-9" if word.isdigit() else "0-9a-z"
+    return f"(^|[^{edge}]){re.escape(word.lower())}([^{edge}]|$)"
+
+
+def by_number(rows: Sequence[Sequence[Any]], idents: Sequence[str],
+              words: Sequence[str]) -> list[Any]:
+    """``rows`` (``hits``' shape) whose label holds every number word of ``idents`` whole
+    (not inside a longer number or code: "1030" is not in "10300022"), the ones whose
+    type or label holds more of the query's other words first, else in their order."""
+    want = {w.lower() for w in idents}
+    rest = [w.lower()[:4] for w in words if w not in idents and len(w) >= INDEXED_LETTERS
+            and w.lower() not in SMALL_WORDS]
+    kept = []
+    for row in rows:
+        label = str(row[4] or "")
+        runs = {x.lower() for x in re.findall(r"[0-9]+|[^\W\d_]+", label)}
+        runs |= {x.lower() for x in _WORD.findall(label)}
+        if want <= runs:
+            text = f"{row[1]} {label}".lower()
+            kept.append((-sum(w in text for w in rest), len(kept), row))
+    return [row for *_, row in sorted(kept, key=lambda k: k[:2])]
+
+
+def stem_candidates_sql(n_stems: int, *, biz: str, since: bool, until: bool,
+                        typed: bool = False) -> str:
+    """The handles of the records whose label holds every stem of ``%(stq)s`` (the
+    query's ``plainto_tsquery('english', ...)``), the patterns ``s0..`` (``stems``) by the
+    label index first, in the hits' order, at most ``%(cap)s``: read from the store's own
+    table like ``candidates_sql``, never shown (the hits are read through the reader's
+    guarded view by these handles, ``among_sql``)."""
+    if n_stems < 1:
+        raise SearchInputError("no stem the label index finds")
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", biz):
+        raise SearchInputError("not a schema name")
+    where = [f"label ILIKE %(s{i})s ESCAPE '\\'" for i in range(n_stems)]
+    where += ["to_tsvector('english'::regconfig, label) @@ %(stq)s::tsquery",
+              "handle IS NOT NULL"]
+    if typed:   # only records of the types ``%(types)s`` (``named_types``)
+        where.append("type = ANY(%(types)s::text[])")
+    if since:
+        where.append("record_date >= %(since)s")
+    if until:
+        where.append("record_date <= %(until)s")
+    return (f"SELECT handle FROM {biz}.records WHERE " + " AND ".join(where)
+            + " ORDER BY " + order_sql() + " LIMIT %(cap)s")
+
+
 def among_sql(*, since: bool, until: bool) -> str:
     """The reader's guarded ``records`` rows among the handles ``hs``, in their order
     (``close_candidates_sql``), at most ``%(k)s``."""
@@ -195,5 +311,5 @@ def searched(args: Mapping[str, Any], words: Sequence[str]) -> dict[str, Any]:
     return out
 
 
-__all__ = ["CLOSE_CAP", "CLOSE_SIMILARITY", "KIND", "SOURCE", "SearchInputError", "among_sql",
-           "candidates", "candidates_sql", "close_candidates_sql", "day", "hits", "indexed", "params", "read_cursor", "search_sql", "searched", "terms"]
+__all__ = ["CLOSE_CAP", "by_number", "CLOSE_SIMILARITY", "KIND", "SOURCE", "SearchInputError", "among_sql",
+           "candidates", "candidates_sql", "close_candidates_sql", "day", "hits", "indexed", "numbers", "whole", "params", "read_cursor", "search_sql", "searched", "stem_candidates_sql", "lexemes", "named_types", "stems", "terms"]

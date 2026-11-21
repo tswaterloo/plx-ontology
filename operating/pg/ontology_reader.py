@@ -78,6 +78,11 @@ _WHOLE_SQL = (
     "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'ontology' "
     "AND c.relname IN ('value_cells_words', 'chunk_words_words') AND i.indisvalid) = 2")
 
+# (the search write generation exists, its last value: NULL before the first write, as
+# ``permissions.write_generation`` reads it 0); never an error when the table is absent
+_GENERATION_SQL = (", to_regclass('search.write_generation') IS NOT NULL, "
+                   "pg_sequence_last_value(to_regclass('search.write_generation'))")
+
 
 def whole_problem(row: Sequence[Any] | None) -> str | None:
     """Why Postgres cannot be served alone, from a ``_WHOLE_SQL`` row; None: it can."""
@@ -955,16 +960,37 @@ class PgStoreReader(StoreReader):
 
     def whole_stamp(self) -> Any:
         """``check_whole`` and ``state_stamp`` in one statement (one round trip, one
-        snapshot): what a host asks at every request when Postgres is the only store."""
+        snapshot): what a host asks at every request when Postgres is the only store.
+        The same statement reads the search write generation (``search_generation``: the
+        staff scope's units are kept per generation, ``staff_scope.load_units``); None
+        when the search tables are absent or the generation could not be read with it
+        (then the statement is the one without it, and the staff scope reads its own)."""
+        self.search_generation = None
         with self.lock, self.conn._lock:
-            try:
-                row = self.conn._pg.execute(_WHOLE_SQL.replace("%%", "%")
-                                            + ", ontology.sq_data_version()").fetchone()
-            except Exception as error:  # noqa: BLE001 - unreadable: refused
-                raise PostgresNotWhole(f"unreachable:{type(error).__name__}") from error
+            row = None
+            if getattr(self, "_whole_with_generation", True):
+                try:
+                    row = self.conn._pg.execute(_WHOLE_SQL.replace("%%", "%")
+                                                + ", ontology.sq_data_version()"
+                                                + _GENERATION_SQL).fetchone()
+                except Exception:  # noqa: BLE001 - asked without it from now on
+                    self._whole_with_generation = False
+                    try:
+                        self.conn._pg.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    row = None
+            if row is None:
+                try:
+                    row = self.conn._pg.execute(_WHOLE_SQL.replace("%%", "%")
+                                                + ", ontology.sq_data_version()").fetchone()
+                except Exception as error:  # noqa: BLE001 - unreadable: refused
+                    raise PostgresNotWhole(f"unreachable:{type(error).__name__}") from error
         problem = whole_problem(row)
         if problem is not None:
             raise PostgresNotWhole(problem)
+        if len(row) > 5 and row[4]:
+            self.search_generation = int(row[5]) if row[5] is not None else 0
         return ("postgres", int(row[3]))
 
     def state_stamp(self) -> Any:

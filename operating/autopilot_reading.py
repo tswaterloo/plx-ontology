@@ -21,8 +21,11 @@ from .autopilot_queue import CARD_PREFIX, Queue
 def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
             held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
             grants: Mapping[str, Any] | None = None,
-            states: Sequence[str] = ("open",)) -> list[dict[str, Any]]:
-    """The items this reader may see (module doc), fail closed."""
+            states: Sequence[str] = ("open",), also: Iterable[str] = ()
+            ) -> list[dict[str, Any]]:
+    """The items this reader may see (module doc), fail closed; ``also``: the ids of
+    items passed to them (not theirs: ``mine`` false, ``handed`` true), under the same
+    checks of their own."""
     from .proactive_commitments import owner_ids
     mine = owner_ids(reader)
     if not mine:
@@ -35,24 +38,34 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
     reports = {o for o, t in teams.items() if t in held_teams}
     owners = mine | reports
     held = set(held)
-    out = []
-    for item in queue.items(owners, states):
+
+    def readable(item: Mapping[str, Any]) -> bool:
         try:
             if not all(may_read(a) for a in item["audiences"]):
-                continue
+                return False
             if not set(item["markings"]) <= held:
-                continue
+                return False
             cited = item_handles(item)
             if cited:
                 refused = decide(cited)
                 # every handle decided readable, or the item is not shown (fail closed)
                 if not isinstance(refused, Mapping) or \
                         any(h not in refused or refused[h] is not None for h in cited):
-                    continue
+                    return False
         except Exception:  # noqa: BLE001 - an undecidable item is not shown
-            continue
-        item["mine"] = item["owner"] in mine
-        out.append(item)
+            return False
+        return True
+    out = []
+    for item in queue.items(owners, states):
+        if readable(item):
+            item["mine"] = item["owner"] in mine
+            out.append(item)
+    seen = {i["item_id"] for i in out}
+    for item_id in dict.fromkeys(also):
+        item = None if item_id in seen else queue.item(str(item_id))
+        if item is not None and item["state"] in states and readable(item):
+            item.update(mine=False, handed=True)
+            out.append(item)
     return out
 
 

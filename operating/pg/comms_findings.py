@@ -150,9 +150,12 @@ def view_ddl(src: str, dst: str, sources: Sequence[str]) -> str:
                          f"e.suppliers FROM {dst}.emails e WHERE f.source_view = 'emails' "
                          "AND e.handle = ANY(f.handles)")
         else:
+            # a Teams finding's handles are its one message (``candidates_sql``): equality
+            # on that handle reads the handle index alone (``= ANY`` made the planner AND it
+            # with the unit index, ~266k entries per finding: 24 s for a page of them)
             parts.append(f"SELECT t.handle, t.sender, t.subject, t.chat, t.customers, "
                          f"t.suppliers FROM {dst}.teams_messages t WHERE f.source_view = "
-                         "'teams_messages' AND t.handle = ANY(f.handles)")
+                         "'teams_messages' AND t.handle = f.handles[1]")
     if not parts:
         raise ValueError("no communications view to guard the findings with")
     return (f"CREATE VIEW {dst}.{VIEW} WITH (security_barrier) AS SELECT f.kind, f.topic, "

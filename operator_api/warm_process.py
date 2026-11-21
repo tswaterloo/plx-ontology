@@ -302,6 +302,12 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
             # read side by side, most visited first (``_screens_all``)
             for number in range(1, workers):
                 be.start_read_worker(backend, argv, f"warm-{number}")
+            # the kept pages access checks on workers of their own, as the APIs: on the
+            # read workers they wait behind minutes-long screen reads (and for the API to
+            # be quiet), past ``ACCESS_WAIT_SECONDS``, and the kept page is read again
+            be.start_read_worker(backend, argv, "warm-check", access=True, checks=True)
+            be.start_read_worker(backend, argv, "warm-state", access=True, checks=True,
+                                 states=True)
         if live is not None:
             # each read-ahead starts only while the API serves no request
             backend.reads.scope = lambda: _after_live(live, stop_event=backend.reads.stopped)

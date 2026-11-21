@@ -86,6 +86,12 @@ from .autopilot_engine import (
 from .autopilot_reading import (
     _plain, _store, digest)
 from . import autopilot_agent_io, autopilot_engine, autopilot_handlers
+from .autopilot_teams_names import (  # noqa: F401  (re-exported)
+    OLD_LABELS, RETITLE_BATCH, TEAMS_NAME_BATCH, name_teams_items, retitle_old_labels)
+from .autopilot_memory import (  # noqa: F401  (re-exported)
+    AGENT_ENV, AGENT_EVENTS, AGENT_PEOPLE_ENV, CARD_EVENT, LEARNED_AT, MEMORY_LINES,
+    _LiveQueue, _model_agent, _writing_style, agent_for, agent_mode, agent_people,
+    aj_described, learned_style, ours_only, person_memory, prime_memory)
 
 REGISTRY_FILE = Path(__file__).with_name("autopilot_registry.json")
 REPLAY_CONFIG_FILE = Path(__file__).with_name("autopilot_replay.json")
@@ -568,6 +574,13 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
         # sender's answered share (``reply_history``) never counts it
         queue.note_inbound(e for e in events if e.get("event_type") == "message.received"
                            and not e.get("unaddressed"))
+    try:   # a person's "whenever" instructions (``recurring_events``): the API runs each fire
+        from . import recurring_events as rev
+        rules = rev.read_rules(queue.path.parent)
+        if rules:
+            summary["recurring_fires"] = rev.Fires(queue.path.parent).note(rules, events)
+    except Exception as error:  # noqa: BLE001 - never stalls the cycle; the next one retries
+        summary["recurring_fires_error"] = type(error).__name__
     if any(e.get("unaddressed") for e in events):
         # only a member who wrote in the conversation in the turn rule's days can have a
         # turn there (``own_posts`` decides, from the messages before the event): the
@@ -854,170 +867,8 @@ def _judge_asks(judge: Any, queue: Queue, waiting: Sequence[tuple[dict[str, Any]
         counts[k] = round(counts.get(k, 0) + v - before.get(k, 0), 2)
 
 
-TEAMS_NAME_BATCH = 500
-
-
-def name_teams_items(st: Any, queue: Queue, directory: Mapping[str, str],
-                     limit: int = TEAMS_NAME_BATCH, skipped: Counter | None = None,
-                     ask_rules: Iterable[str] = (), now: str | None = None,
-                     judge: Any = None, people: Any = None,
-                     addresses_of: Mapping[str, Any] | None = None) -> int:
-    """Open Teams message items with no line of their text yet (prepared before the item
-    carried who wrote and what, or typed from a store with no text index): each gets the
-    sender's name as the stored message states it (``from.display_name``; else their
-    address in the directory) and the start of the message's own text (its stored event's,
-    else the served store's text index), or the mark that it has none; a reply item's line
-    and title are written again from them (``reply_summary``). Once per item (an item with
-    a ``snippet`` or a ``snippet_missing`` is done); an item whose message the served store
-    does not hold yet waits for a later cycle; at most ``limit`` a cycle. Returns how many
-    were named. An item of an autopilot in ``ask_rules`` (its rule needs an ask) prepared
-    while the text was not read yet is closed (done, "no_ask", at ``now``) once the read
-    text certainly asks nothing (``autopilot_events.chat_ask``) or, with a ``judge``
-    (``chat_ask_model.Judge``, its screen read against ``people``), the model reads that it
-    asks the item's owner nothing (a failure keeps the item). An unreadable store names none this cycle (the next one tries again); an
-    item or event row that does not parse is left as it is and counted in ``skipped``
-    (``teams_item_unreadable``), never failing the cycle."""
-    from . import autopilot_engine as engine
-    from . import proactive_threads as pt
-    from .autopilot_events import chat_ask, teams_bodies, teams_sender_name
-    from .autopilot_work import reply_summary
-    # a body that is not JSON is never read by json_extract (it would fail the query)
-    rows = queue.conn.execute(
-        "SELECT i.item_id, i.body, e.body, i.autopilot FROM (SELECT item_id, event_id, body, autopilot, "
-        "CASE WHEN json_valid(body) THEN json_extract(body, '$.happened') END AS h "
-        "FROM items WHERE state = 'open') i JOIN events e USING (event_id) "
-        "WHERE json_valid(i.h) AND json_extract(i.h, '$.channel') = 'teams' "
-        "AND json_extract(i.h, '$.event_type') = 'message.received' "
-        "AND json_extract(i.h, '$.snippet') IS NULL "
-        "AND json_extract(i.h, '$.snippet_missing') IS NULL "
-        "ORDER BY i.item_id LIMIT ?", (int(limit),)).fetchall()
-    if skipped is not None:
-        bad = queue.conn.execute("SELECT count(*) FROM items WHERE state = 'open' AND NOT "
-                                 "json_valid(body)").fetchone()[0]
-        if bad:
-            skipped["teams_item_unreadable"] += bad
-    if not rows:
-        return 0
-    items = []
-    asking = set(ask_rules)
-    rule_of = {item_id: rule for item_id, _b, _e, rule in rows}
-    for item_id, body, event, _rule in rows:
-        try:
-            parsed = (item_id, json.loads(body), json.loads(event or "{}"))
-        except (TypeError, ValueError):
-            parsed = None
-        if parsed is None or not isinstance(parsed[1], dict) or \
-                not isinstance(parsed[2], dict) or \
-                not isinstance(parsed[1].get("happened"), dict):
-            if skipped is not None:
-                skipped["teams_item_unreadable"] += 1
-            continue
-        items.append(parsed)
-    oids = {str((b.get("happened") or {}).get("object_id") or "") for _i, b, _e in items}
-    # an event typed with no text: the message's body from the served store's text index
-    handles = [str((e.get("handles") or [""])[0]) for _i, _b, e in items
-               if not str(e.get("text") or "").strip() and e.get("handles")]
-    try:
-        stored = _read(st, [o for o in oids if o], ("from",))
-        bodies = teams_bodies(st, handles) if handles else {}
-    except Exception:  # noqa: BLE001 - an unreadable store names nothing this cycle
-        return 0
-    address_of: dict[str, str] = {}
-    for address, person in sorted(directory.items()):
-        if "@" in address:
-            address_of.setdefault(person, address)
-    named = 0
-    later: list[tuple[str, dict[str, Any], str]] = []
-    with queue.conn:
-        for item_id, body, event in items:
-            happened = dict(body.get("happened") or {})
-            if not str(event.get("text") or "").strip() and \
-                    happened.get("object_id") not in stored:
-                continue   # the served store does not hold the message yet: a later cycle
-            sender = str(happened.get("sender") or "").lower()
-            name = teams_sender_name(_v(stored.get(happened.get("object_id")), "from")) or \
-                engine.person_name(event.get("sender_name")) or address_of.get(sender, "")
-            if name:
-                happened["sender_name"] = name
-            snippet = engine.message_snippet(event.get("text")) or engine.message_snippet(
-                pt._own(bodies.get(str((event.get("handles") or [""])[0])) or ""))
-            happened.update({"snippet": snippet} if snippet else {"snippet_missing": "no_text"})
-            read = str(event.get("text") or "").strip() or \
-                pt._own(bodies.get(str((event.get("handles") or [""])[0])) or "")
-            ask_rule = rule_of.get(item_id) in asking
-            no_ask = ask_rule and not chat_ask(read, mentioned=bool(event.get("mentioned")))
-            if ask_rule and not no_ask and read and judge is not None and \
-                    people is not None:
-                held = queue.item(item_id)
-                if held is not None:
-                    later.append((item_id, {**event, "text": read}, str(held["owner"])))
-            body["happened"] = happened
-            prepared = body.get("prepared")
-            title = None
-            if isinstance(prepared, dict) and prepared.get("kind") == "reply":
-                prepared["summary"] = reply_summary(
-                    {**happened, "text": snippet}, len(prepared.get("asked") or ()))
-                title = f"{body.get('label') or ''}: " + prepared["summary"][:SUMMARY_CHARS]
-            queue.conn.execute(
-                "UPDATE items SET body = ?, title = COALESCE(?, title) WHERE item_id = ?",
-                (json.dumps(body, sort_keys=True, default=str), title, item_id))
-            if no_ask:
-                queue.settle_item(item_id, "done", "no_ask", now or _iso(_utcnow()))
-                if skipped is not None:
-                    skipped["teams_item_no_ask"] += 1
-            named += 1
-    if later:
-        stamp = now or _iso(_utcnow())
-        got = judge.ask(queue, [
-            (item_id, event, owner, (_reader_names(owner, addresses_of or {}) or [""])[0]
-             .capitalize()) for item_id, event, owner in later], people, stamp)
-        with queue.conn:
-            for item_id, _event, _owner in later:
-                if got.get(item_id, True) is False:
-                    queue.settle_item(item_id, "done", "no_ask", stamp)
-                    if skipped is not None:
-                        skipped["teams_item_no_ask"] += 1
-    return named
-
-
 # workflow labels an item's title may still start with (the registry's earlier wording),
 # by autopilot id: the open items are re-titled to the registry's label now
-OLD_LABELS = {"teams_reply": ("Someone is waiting on your reply in Teams",),
-              "reply_prep": ("Someone is waiting on your reply",)}
-RETITLE_BATCH = 500
-
-
-def retitle_old_labels(queue: Queue, registry: Mapping[str, Any],
-                       limit: int = RETITLE_BATCH) -> int:
-    """Open items whose title starts with an earlier label of their workflow get the
-    registry's label in its place (title and the body's ``label``); the rest of the title
-    is kept. Idempotent (a re-titled item no longer matches), only open items, at most
-    ``limit`` a cycle, in its own transaction. Returns how many were re-titled."""
-    labels = {a["id"]: a.get("label") for a in registry.get("autopilots") or ()}
-    done = 0
-    with queue.conn:
-        for ap_id, olds in OLD_LABELS.items():
-            new = labels.get(ap_id)
-            if not new or done >= limit:
-                continue
-            for old in olds:
-                rows = queue.conn.execute(
-                    "SELECT item_id, title, body FROM items WHERE state = 'open' AND "
-                    "autopilot = ? AND substr(title, 1, ?) = ? AND substr(title, ?, 2) = ': ' "
-                    "ORDER BY item_id LIMIT ?",
-                    (ap_id, len(old), old, len(old) + 1, limit - done)).fetchall()
-                for item_id, title, body in rows:
-                    try:
-                        parsed = json.loads(body)
-                    except (TypeError, ValueError):
-                        parsed = None
-                    if isinstance(parsed, dict):
-                        parsed["label"] = new
-                        body = json.dumps(parsed, sort_keys=True, default=str)
-                    queue.conn.execute("UPDATE items SET title = ?, body = ? WHERE "
-                                       "item_id = ?", (new + title[len(old):], body, item_id))
-                    done += 1
-    return done
 
 
 def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str, Any], *,
@@ -1336,8 +1187,6 @@ def _drafts_done(drafting: Mapping[str, Any], waiting: list[dict[str, Any]],
 # What a "your call" card keeps of its event: what the writer's screens read again when
 # the person answers it (``autopilot_drafter.screened``: clearance, the people exclusion,
 # pay or HR, Freightcom) and the reply's place.
-CARD_EVENT = ("object_id", "channel", "sender", "sender_name", "subject", "cleared",
-              "audience", "records", "side", "to", "cc", "conversation_id", "intents")
 
 
 def _draft_key(event: Mapping[str, Any], owner: str) -> str:
@@ -1428,152 +1277,6 @@ def _model_job(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
 # rule-matched ones of those kinds); anything else: the rules, as before.
 # ``AGENT_PEOPLE_ENV`` (person ids or mail addresses, comma or space separated) narrows it to
 # those people, whatever ``AGENT_ENV`` says: everyone else keeps the rules.
-AGENT_ENV = "PLX_AUTOPILOT_AGENT"
-AGENT_PEOPLE_ENV = "PLX_AUTOPILOT_AGENT_PEOPLE"
-AGENT_EVENTS = ("message.received", "assistant.look")
-
-
-def agent_people(environ: Optional[Mapping[str, str]] = None) -> Optional[frozenset[str]]:
-    """Who the assistant decides for: None = everyone (``AGENT_ENV`` "1" and no list), else
-    the listed ids and addresses, lower-cased (empty: no one)."""
-    env = os.environ if environ is None else environ
-    listed = frozenset(p.lower() for p in re.split(r"[\s,;]+", str(env.get(AGENT_PEOPLE_ENV)
-                                                                 or "")) if p)
-    if listed:
-        return listed
-    return None if str(env.get(AGENT_ENV) or "").strip() == "1" else frozenset()
-
-
-def agent_mode(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the assistant decides for anyone (``agent_people``)."""
-    return agent_people(environ) != frozenset()
-
-
-def agent_for(owner: str, addresses_of: Mapping[str, Any],
-              environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the assistant decides ``owner``'s events: everyone's on, or the list names
-    their id (whole, or the object id after the tenant prefix) or one of their addresses."""
-    people = agent_people(environ)
-    if people is None:
-        return True
-    own = str(owner or "").lower()
-    names = {own, own.rsplit(":", 1)[-1], *(str(a).lower() for a in addresses_of.get(owner, ()))}
-    return bool(people & (names - {""}))
-
-
-def _model_agent(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
-                 event: Mapping[str, Any], owner: str, work: Mapping[str, Any], people: Any,
-                 addresses_of: Mapping[str, Any], checks: Any = None
-                 ) -> tuple[dict[str, Any], Optional[str]]:
-    """(``work`` with what the assistant prepared, None) or (work, why there is no item):
-    the jobber's reasons (``job_model_off``, ``job_busy``, ``job_pending``, ``job_failed``,
-    a screen) or ``nothing_to_do``. A question to the person is a ``your_call`` card (its
-    options' replies on the usual reply path), a reply the item's draft, changes a job
-    (``also_jobs`` beside a reply or question: their own job item); to-dos for a system with
-    no write path ride on the item (``todos``).
-
-    A conversation with a reader outside the company (not ``ours_only``): the session has no
-    record read tool and writes from the message and that party's own records' lines
-    (``autopilot_outbound``); every reply, option and proposed message to an outside reader
-    is checked there (``checks`` builds the store's ``Ctx``): a held reply becomes a
-    question card saying why, a held message is dropped and named in ``held_back``. The
-    drafter's reply checks hold too: a figure in no material, a hollow thanks, a copy tic."""
-    from . import autopilot_agent as ag
-    from . import autopilot_drafter as ad
-    material = work.get("material") if isinstance(work.get("material"), Mapping) else {}
-    out = {k: v for k, v in work.items() if k != "material"}
-    if held.get("agent_cycle") is not summary:
-        held["agent_cycle"] = summary
-        if "assistant" not in held:
-            held["assistant"] = ag.from_environ(os.environ)
-        if held["assistant"] is not None:
-            held["assistant"].new_cycle()
-    assistant = held.get("assistant")
-    if assistant is None:
-        return out, "job_model_off"
-    key = _digest("agent", event.get("event_id"), owner) if held.get("parallel") else None
-    if assistant.busy and not (key and key in assistant.pending()):
-        return out, "job_busy"
-    text = str(material.get("text") or event.get("text") or "")
-    if not text.strip() and event.get("channel") == "teams":
-        from . import autopilot_chat as _chat_text
-        text = _chat_text.message_text(queue.path.parent.parent, event)
-    mine = sorted(addresses_of.get(owner) or ())
-    sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
-    person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
-    from . import autopilot_agent_io as io
-    # reads as the person also with an outside reader; the outbound check on the finished
-    # text holds what it flags for the person (Guard the output, not the reads)
-    described, _inside = io.agent_input(event, text, material, addresses_of)
-    got, why = assistant.run(event, owner, described, str(person), people, key=key,
-                             reads=True)
-    if got is None:
-        # an invitation the session left nothing on: its answer is still a to-do
-        got = io.invitation_only(event, material, why)
-    if got is None:
-        return out, why
-    teams = event.get("channel") == "teams"
-    got, held_back, why = io.agent_output(got, event, owner, text, material, addresses_of,
-                                          checks, str(person))
-    if held_back:
-        out["held_back"] = held_back
-    if got.empty:
-        return out, why
-    out.update({"summary": got.summary, "drafted_by": "model"})
-    if got.note:
-        out["note"] = got.note
-    if got.todos:
-        out["todos"] = got.todos
-    if got.ask or got.reply:
-        if teams:
-            out.pop("draft", None)
-            out["teams_draft"] = {"channel": "teams",
-                                  "conversation": event.get("conversation_id"),
-                                  "reply_to": event.get("object_id"), "body": got.reply,
-                                  "post": False}
-        else:
-            out.pop("teams_draft", None)
-            base = autopilot_handlers._reply(event, [])
-            out["draft"] = {**{k: v for k, v in base.items() if k != "copy_check"},
-                            "body": got.reply}
-        out["kind"] = "reply"
-        if got.ask:
-            m = ad.Material(reader="", channel="teams" if teams else "mail",
-                            sender=autopilot_engine.sender_label(event.get("sender"),
-                                                                 event.get("sender_name")),
-                            subject=str(event.get("subject") or ""),
-                            text=text[:ad.MESSAGE_CHARS], address=str(person),
-                            relation=ad.relation_of(event))
-            out["your_call"] = {"ask": got.ask["question"], "facts": [],
-                                "options": got.ask["options"], "material": m.kept(),
-                                "event": {k: event[k] for k in CARD_EVENT if k in event}}
-        out["message"] = {"text": text[:ad.MESSAGE_CHARS]}
-        if got.proposals:
-            out["also_jobs"] = got.proposals
-        return out, None
-    out.update({"kind": "job", "jobs": got.proposals})
-    return out, None
-
-
-def aj_described(event: Mapping[str, Any], text: str, linked: Sequence[str]) -> str:
-    from . import autopilot_jobs as aj
-    return aj.described(event, text, linked)
-
-
-def ours_only(event: Mapping[str, Any], addresses_of: Mapping[str, Any]) -> bool:
-    """Whether every reader of a reply to ``event`` is the company's own (the sender and
-    everyone it went to or copied are directory people's addresses, or for Teams a chat with
-    no outside member): only then may the draft read the records as its person, so a reply
-    never carries another party's records to an outside reader (an outside thread's draft
-    reads its own party's account lines only: ``autopilot_drafter.account_lines``). A
-    channel (members unknown) or anything unreadable: no."""
-    if event.get("side") != "internal":
-        return False
-    if event.get("channel") == "teams":
-        return event.get("outside") == [] and not event.get("unaddressed")
-    ours = {str(a).lower() for v in addresses_of.values() for a in (v or ())}
-    who = [event.get("sender"), *(event.get("to") or ()), *(event.get("cc") or ())]
-    return bool(ours) and all(isinstance(a, str) and a.lower() in ours for a in who)
 
 
 def _model_draft(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
@@ -1668,6 +1371,10 @@ def _model_draft(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
         base = out.get("draft") if isinstance(out.get("draft"), Mapping) else \
             autopilot_handlers._reply(event, [])
         out["draft"] = {**{k: v for k, v in base.items() if k != "copy_check"}, "body": reply}
+    # what the reply can be written again from, from the person's one line ("Rewrite"):
+    # the same material and screens' event a "your call" card keeps, never shown
+    out["redo"] = {"material": m.kept(),
+                   "event": {k: event[k] for k in CARD_EVENT if k in event}}
     out["drafted_by"] = "model"
     return out, None
 
@@ -1804,67 +1511,6 @@ def _dry_drafts(st: Any, registry: Mapping[str, Any], people: Any, ids: Sequence
                                                     event, work)})
         if len(out) == before:
             out.append({**base, "why": "no_owner"})
-    return out
-
-
-LEARNED_AT = 0.6     # a style lesson the model drafter is told (``operating.learning``)
-
-
-def learned_style(learned: Any, owner: str, event: Mapping[str, Any]) -> list[str]:
-    """The owner's style lessons learned from their own replies and edits of drafts
-    (``learning.Lessons``: greeting, sign-off, length, sentences they add or take out),
-    for this message's side and sender, each as "Learned from your replies: ...";
-    [] when there are none or the lessons cannot be read."""
-    from . import learning
-    try:
-        lessons = learned.of(owner) if learned else []
-    except Exception:  # noqa: BLE001 - unreadable lessons: none
-        return []
-    side = str(event.get("side") or "")
-    sender = learning.sender_key(str(event.get("sender") or "")) or ""
-    out: list[str] = []
-    for lesson in lessons:
-        key = str(lesson.key)
-        if lesson.kind != "style" or lesson.confidence < LEARNED_AT or not lesson.text:
-            continue
-        if key.startswith("side:") and not key.startswith(f"side:{side}:"):
-            continue
-        if key.startswith("sender:") and not (sender and key.startswith(f"sender:{sender}:")):
-            continue
-        line = f"Learned from their replies: {lesson.text}"
-        if line not in out:
-            out.append(line)
-    return out[:8]
-
-
-def _writing_style(queue: Queue, held: dict[str, Any], owner: str, mine: Sequence[str],
-                   event: Mapping[str, Any], work: Mapping[str, Any]) -> list[str]:
-    """How ``owner`` writes: their writing memory (the draft-context provider's
-    ``writing``) and their learned style (``person_style``); [] when neither is known."""
-    out: list[str] = []
-    out += learned_style(held.get("learned"), owner, event)
-    provider = _draft_context(queue, held)
-    writing = getattr(provider, "writing", None)
-    if writing is not None:
-        try:
-            out += [str(x) for x in writing(owner, event, work) or ()][:8]
-        except Exception:  # noqa: BLE001 - memory never stops a draft
-            pass
-    if mine:
-        from . import person_style
-        if "style" not in held:
-            held["style"] = person_style.StyleSource(queue.path.parent.parent)
-        # the first of the person's addresses whose mailbox gives a style: an alias the
-        # exclusion does not decide gives none, and the person's own mailbox still does
-        got: Mapping[str, Any] = {}
-        for address in mine:
-            try:
-                got = held["style"](address) or {}
-            except Exception:  # noqa: BLE001 - no learned style: plain
-                got = {}
-            if got.get("rules"):
-                break
-        out += [str(x) for x in got.get("rules") or ()][:8]
     return out
 
 

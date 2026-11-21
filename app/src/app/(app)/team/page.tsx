@@ -46,7 +46,9 @@ export default function TeamPage() {
   // /labour lands on #labour: a reader without the grant is told so there, never left on Team
   // wondering where the hours went (nobody else sees a word about labour)
   const [hash, setHash] = useState("");
+  const [person, setPerson] = useState("");
   useEffect(() => {
+    setPerson(new URLSearchParams(window.location.search).get("person") ?? "");
     const read = () => setHash(window.location.hash);
     read();
     window.addEventListener("hashchange", read);
@@ -77,7 +79,7 @@ export default function TeamPage() {
             {people.error ? (
               <LoadProblem message={plainError(people.error)} busy={noticeKind(people.error) === "busy"} onRetry={people.retry} />
             ) : people.data ? (
-              <TeamDashboard data={people.data} />
+              <TeamDashboard data={people.data} person={person} />
             ) : (
               <Pending label="Counting activity" />
             )}

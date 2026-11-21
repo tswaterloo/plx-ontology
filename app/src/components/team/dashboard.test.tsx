@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { getTeamPerson } from "@/lib/api";
 import type { TeamPerson, TeamView } from "@/lib/types";
 import { TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
 
@@ -54,6 +55,19 @@ describe("Team dashboard", () => {
     expect(note.textContent?.length).toBeLessThan(40);
     expect(note.getAttribute("title")).toBeNull();
     expect(screen.queryByText(/What is counted/)).toBeNull();
+  });
+
+  it("/team?person= opens that person by Team key or by a name only one row has, else narrows the list", async () => {
+    const { unmount } = render(<TeamDashboard data={view} person="k3" />);
+    await waitFor(() => expect(vi.mocked(getTeamPerson).mock.calls.at(-1)?.[0]).toBe("k3"));
+    unmount();
+    const { unmount: again } = render(<TeamDashboard data={view} person="bea okafor" />);
+    await waitFor(() => expect(vi.mocked(getTeamPerson).mock.calls.at(-1)?.[0]).toBe("k2"));
+    again();
+    vi.mocked(getTeamPerson).mockClear();
+    render(<TeamDashboard data={view} person="Nobody Here" />);
+    expect(screen.queryAllByTestId("team-row")).toHaveLength(0);
+    expect(getTeamPerson).not.toHaveBeenCalled();
   });
 
   it("filters by team, role and system", () => {

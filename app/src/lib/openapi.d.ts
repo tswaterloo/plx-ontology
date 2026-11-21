@@ -381,6 +381,26 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/colleagues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Colleagues
+         * @description Whom an alert on your list can be passed to: a key and a name each.
+         */
+        get: operations["autopilot_colleagues_api_autopilot_colleagues_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/drafts": {
         parameters: {
             query?: never;
@@ -429,6 +449,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/items/{item_id}/hand": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Hand
+         * @description Pass an alert on your list to a colleague: on their list too, under their own
+         *     access, only to set aside there; nothing is decided, sent or written.
+         */
+        post: operations["autopilot_hand_api_autopilot_items__item_id__hand_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/items/{item_id}/jobs/{index}/prepare": {
         parameters: {
             query?: never;
@@ -466,6 +507,48 @@ export type paths = {
          *     edit of its draft for you to change and confirm. Nothing is sent.
          */
         post: operations["autopilot_reply_from_line_api_autopilot_items__item_id__reply_from_line_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Mode
+         * @description Set one category of your own work to off, confirm (prepared in full, one click
+         *     of yours performs it) or auto (performed by itself only where your replay score
+         *     earned it: 409 otherwise). Always your own; recorded on the audit log.
+         */
+        post: operations["autopilot_mode_api_autopilot_mode_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/never": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Never
+         * @description Never (or again) prepare anything for you from one sender: your list, back.
+         */
+        post: operations["autopilot_never_api_autopilot_never_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1292,6 +1375,55 @@ export type paths = {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/instructions/recurring": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recurring List
+         * @description Your recurring instructions (only yours).
+         */
+        get: operations["recurring_list_api_instructions_recurring_get"];
+        put?: never;
+        /**
+         * Recurring Keep
+         * @description Keep a recurring instruction ("every Monday ..."): when it runs is read from the
+         *     line. Each run prepares its work for you to confirm; nothing is sent on its own.
+         */
+        post: operations["recurring_keep_api_instructions_recurring_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/instructions/recurring/{rid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Recurring Stop
+         * @description Stop one of yours: it is deleted and never runs again.
+         */
+        delete: operations["recurring_stop_api_instructions_recurring__rid__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Recurring Change
+         * @description Change one of yours: its hour, weekday or name, or pause and resume it.
+         */
+        patch: operations["recurring_change_api_instructions_recurring__rid__patch"];
         trace?: never;
     };
     "/api/label-changes/{object_id}": {
@@ -3351,6 +3483,11 @@ export type components = {
              */
             edges?: number[] | null;
             /**
+             * First Period
+             * @description The label of the earliest calendar period the statement's window starts inside (a month, quarter or year): its figures are of part of it.
+             */
+            first_period?: string | null;
+            /**
              * Kind
              * @enum {string}
              */
@@ -3868,6 +4005,28 @@ export type components = {
             /** Triggers */
             triggers: components["schemas"]["AutopilotStep"][];
         };
+        /** AutopilotChoiceModeRequest */
+        AutopilotChoiceModeRequest: {
+            /**
+             * Choice
+             * @description One of ``my_drafts``' choices.
+             */
+            choice: string;
+            /**
+             * Mode
+             * @description off, confirm (prepared, one click performs it) or auto (only where your replay score earned it).
+             * @enum {string}
+             */
+            mode: "off" | "confirm" | "auto";
+        };
+        /**
+         * AutopilotColleagues
+         * @description Whom an alert can be passed to: an opaque key and a name each, never an id.
+         */
+        AutopilotColleagues: {
+            /** People */
+            people?: components["schemas"]["ViewAsPerson"][];
+        };
         /**
          * AutopilotCountdown
          * @description The workflow's way to its write gate: the counts the gate admitted
@@ -3992,6 +4151,11 @@ export type components = {
          */
         AutopilotDraftChoice: {
             /**
+             * Auto Ok
+             * @description Your replay score earned auto for some of it, so auto can be chosen.
+             */
+            auto_ok?: boolean;
+            /**
              * By Owner
              * @description On because the owner's Draft file turned it on for you, not your own switch.
              */
@@ -4000,6 +4164,12 @@ export type components = {
             choice: string;
             /** Label */
             label: string;
+            /**
+             * Mode
+             * @description off: nothing prepared; confirm: prepared in full, one click of yours performs it; auto: performed without the click for the workflows your replay score earned (the rest still wait for it).
+             * @enum {string}
+             */
+            mode?: "off" | "confirm" | "auto";
             /**
              * On
              * @description Some or all of it is prepared for you now (not switched off or paused by you).
@@ -4010,6 +4180,8 @@ export type components = {
              * @description On for only some of its workflows (the owner's Draft file turned on part of it).
              */
             partly?: boolean;
+            /** @description Its replay score for you, against the bar auto needs. */
+            score?: components["schemas"]["AutopilotScoreBar"] | null;
             /**
              * Since
              * @description When you switched it on yourself (absent when set by the owner).
@@ -4055,6 +4227,11 @@ export type components = {
         AutopilotDrafts: {
             /** Items */
             items?: components["schemas"]["AutopilotPrepared"][];
+            /**
+             * Never Senders
+             * @description Senders you said never to prepare anything for you from (yours only).
+             */
+            never_senders?: string[];
         };
         /**
          * AutopilotDraftsPerson
@@ -4159,6 +4336,16 @@ export type components = {
             matched: number;
             /** Window */
             window?: string[];
+        };
+        /** AutopilotHandRequest */
+        AutopilotHandRequest: {
+            /** Note */
+            note?: string | null;
+            /**
+             * To
+             * @description The colleague's opaque key (GET /api/autopilot/colleagues).
+             */
+            to: string;
         };
         /**
          * AutopilotItem
@@ -4291,6 +4478,16 @@ export type components = {
             line: string;
         };
         /**
+         * AutopilotLink
+         * @description A page of the Workbench an alert points to (the record or task it is about).
+         */
+        AutopilotLink: {
+            /** Href */
+            href: string;
+            /** Label */
+            label: string;
+        };
+        /**
          * AutopilotMemoryUse
          * @description One memory entry an autopilot draft read (``operator_api.autopilot_context``).
          */
@@ -4320,6 +4517,19 @@ export type components = {
              * @description draft/auto: the role (or person: role) it applies to.
              */
             role?: string | null;
+        };
+        /** AutopilotNeverRequest */
+        AutopilotNeverRequest: {
+            /**
+             * Never
+             * @description true: never prepare anything for you from this sender; false: prepare again.
+             */
+            never: boolean;
+            /**
+             * Sender
+             * @description The sender's address, as an item on your list shows it.
+             */
+            sender: string;
         };
         /** AutopilotNoticeAck */
         AutopilotNoticeAck: {
@@ -4489,6 +4699,12 @@ export type components = {
              */
             ask: string;
             /**
+             * Auto Would
+             * @description A dry run of Auto on this reply, when your replay score earned its workflow: "send" (it would go by itself once you switch Auto on) or "keep: <reasons>" (it would still wait for your click); empty otherwise. Nothing is done.
+             * @default
+             */
+            auto_would: string;
+            /**
              * Body
              * @description The reply as it stands now (your edit when you made one); empty on a "your call" card until you say what to reply.
              * @default
@@ -4510,6 +4726,18 @@ export type components = {
             edited: boolean;
             /** Facts */
             facts?: string[];
+            /**
+             * Handed From
+             * @description On an alert passed to you: by whom.
+             * @default
+             */
+            handed_from: string;
+            /**
+             * Handed To
+             * @description On an alert you passed on: to whom.
+             * @default
+             */
+            handed_to: string;
             /** Item Id */
             item_id: string;
             /** Jobs */
@@ -4518,12 +4746,17 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "reply" | "your_call" | "job" | "todo";
+            kind: "reply" | "your_call" | "job" | "todo" | "alert";
             /**
              * Learned
              * @description On a draft you edited: what your edit changed, as the Workbench learns it for your next drafts (greeting, sign-off, length, a sentence you add or take out).
              */
             learned?: string[];
+            /**
+             * Links
+             * @description On an alert: the records or task it is about.
+             */
+            links?: components["schemas"]["AutopilotLink"][];
             /**
              * Message
              * @description What they wrote, as far as the item keeps it.
@@ -4531,10 +4764,22 @@ export type components = {
              */
             message: string;
             /**
+             * Note
+             * @description On an alert: where it is decided or answered (never from this card).
+             * @default
+             */
+            note: string;
+            /**
              * Options
              * @description On a "your call" card: the replies written for each choice you could make; pick one to edit and confirm.
              */
             options?: components["schemas"]["AutopilotOption"][];
+            /**
+             * Redo
+             * @description On a reply the model wrote: it can be written again from one line of what you want to say (reply-from-line).
+             * @default false
+             */
+            redo: boolean;
             /** Sender */
             sender: string;
             /**
@@ -4544,7 +4789,7 @@ export type components = {
             subject: string;
             /**
              * Summary
-             * @description On a job or a to-do: what the event asks to be done.
+             * @description On a job, a to-do or an alert: what the event asks to be done, or what happened.
              * @default
              */
             summary: string;
@@ -9965,6 +10210,77 @@ export type components = {
             /** Record */
             record: string;
         };
+        /** RecurringChange */
+        RecurringChange: {
+            /** Hour */
+            hour?: number | null;
+            /** Label */
+            label?: string | null;
+            /** State */
+            state?: ("active" | "paused") | null;
+            /** Weekday */
+            weekday?: ("monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday") | null;
+        };
+        /**
+         * RecurringInstruction
+         * @description One of your recurring instructions: what it does, when it runs (US Eastern), its
+         *     state, and its last and next run.
+         */
+        RecurringInstruction: {
+            /** Created */
+            created: number;
+            /** Hour */
+            hour: number;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Last Result */
+            last_result?: string | null;
+            /** Last Run */
+            last_run?: number | null;
+            /** Next Run */
+            next_run?: number | null;
+            /** Params */
+            params?: {
+                [key: string]: unknown;
+            };
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "active" | "paused";
+            /** Text */
+            text: string;
+            /** Words */
+            words: string;
+        };
+        /** RecurringInstructions */
+        RecurringInstructions: {
+            /** Instructions */
+            instructions?: components["schemas"]["RecurringInstruction"][];
+        };
+        /** RecurringKeep */
+        RecurringKeep: {
+            /** Hour */
+            hour?: number | null;
+            /** Label */
+            label?: string | null;
+            /**
+             * Sender
+             * @description A "whenever" line: the mail is from this address or domain.
+             */
+            sender?: string | null;
+            /**
+             * Subject
+             * @description A "whenever" line: every one of these words is in the subject.
+             */
+            subject?: string | null;
+            /** Text */
+            text: string;
+        };
         /** ReplyLine */
         ReplyLine: {
             /**
@@ -13230,6 +13546,35 @@ export interface operations {
             };
         };
     };
+    autopilot_colleagues_api_autopilot_colleagues_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotColleagues"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_prepared_list_api_autopilot_drafts_get: {
         parameters: {
             query?: never;
@@ -13390,6 +13735,68 @@ export interface operations {
             };
         };
     };
+    autopilot_hand_api_autopilot_items__item_id__hand_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotHandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotDrafts"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_job_prepare_api_autopilot_items__item_id__jobs__index__prepare_post: {
         parameters: {
             query?: never;
@@ -13471,6 +13878,135 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AutopilotItem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_mode_api_autopilot_mode_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotChoiceModeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_never_api_autopilot_never_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotNeverRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotDrafts"];
                 };
             };
             /** @description Unauthorized */
@@ -15762,6 +16298,177 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recurring_list_api_instructions_recurring_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecurringInstructions"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    recurring_keep_api_instructions_recurring_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecurringKeep"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecurringInstruction"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    recurring_stop_api_instructions_recurring__rid__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recurring_change_api_instructions_recurring__rid__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecurringChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecurringInstruction"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

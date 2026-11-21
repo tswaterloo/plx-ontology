@@ -6,6 +6,7 @@ mirror-shaped SQLite file; no network, no credential, nobody signed in.
 from __future__ import annotations
 
 import io
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -76,6 +77,8 @@ def policy(full_read: list[str] = (OWNER,)) -> ep.EmployeePermissionPolicy:
                       for o in full_read]})
 
 
+READ_AT = datetime(2026, 11, 13, 10, tzinfo=timezone.utc)   # the fixture's oldest input
+
 class FakeClient:
     """The reporting service's three routes; ``app_user`` listed unavailable."""
 
@@ -140,7 +143,8 @@ class SnapshotTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "s.json"
             path.write_text(json.dumps(doc))
-            read = ep.PortalAccessSnapshot(path)(ep.EmployeePrincipal(TENANT, oid(1)))
+            read = ep.PortalAccessSnapshot(path, clock=lambda: READ_AT + timedelta(hours=1))(
+                ep.EmployeePrincipal(TENANT, oid(1)))
         self.assertEqual((read.role, read.clearance_departments), ("MANAGER", frozenset({"FIN"})))
 
     def test_no_snapshot_without_the_portals_denies_and_scopes(self):

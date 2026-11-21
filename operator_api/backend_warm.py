@@ -48,6 +48,14 @@ from .backend_common import (
 )
 
 
+# Set on the thread reading ahead for the directory's employees (``_warm_directory``):
+# the warm-up's first pass waits for their Today reads but not their main screens, which
+# go on in the background. Up to 60 employees' screens kept the first pass, and so the
+# API's port, held to its whole budget at every deploy (11-19: cut at 420 s with 56
+# still running; every session reader's reads were done by 175 s).
+DIRECTORY_ROUND = threading.local()
+
+
 def prewarm_shared_reads() -> None:
     """The process-wide reads every reader's first page waits on, read once at start in
     the background (11-18 profile, a fresh API: the documents marked beyond a reader, 10 s;
@@ -134,6 +142,11 @@ class WarmMixin:
         # whole read (Autopilot, My work, suggestions 14 s after a restart, 11-19)
         self.check_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.check_worker: Optional[Worker] = None
+        # the checks of a reader's state alone (no record named: ~0.01 s each) on a worker
+        # of their own: behind the record-naming checks (0.85 s each, 2.6 s p90) on the
+        # check workers they queued 1.45 s median, 4.65 s p90 (11-20, 538 checks in 70 min)
+        self.state_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+        self.state_worker: Optional[Worker] = None
         self._access_started = False
         self.ask_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.ask_stopped = threading.Event()
@@ -209,7 +222,7 @@ class WarmMixin:
         return worker
 
     def add_access_worker(self, objects_for: Callable[[Any], Any],
-                          checks: bool = False) -> Worker:
+                          checks: bool = False, states: bool = False) -> Worker:
         """An access worker (its own runtime, built by the caller on the thread that runs
         its ``loop``), on the access workers' one queue (``access_jobs``): the known
         readers' policies decided on it first (``prewarm_policies``), then it takes the
@@ -217,7 +230,8 @@ class WarmMixin:
         owner thread's. The first one up serves alone until the next is. ``checks``: the
         check worker instead, on its own queue (``check_jobs``): the kept pages' access
         checks only, never a door read."""
-        worker = Worker(objects_for, self.check_jobs if checks else self.access_jobs)
+        worker = Worker(objects_for, self.state_jobs if states else
+                        self.check_jobs if checks else self.access_jobs)
         worker.stopped = self.reads.stopped
         worker.scope = page_scope
         with self._lock:
@@ -227,6 +241,11 @@ class WarmMixin:
             threading.Thread(target=prewarm_shared_reads, name="shared-reads-warm",
                              daemon=True).start()
         self.prewarm_policies(worker=worker)
+        if states:   # ``states``: the state worker (the checks that name no record)
+            with self._lock:
+                if self.state_worker is None:
+                    self.state_worker = worker
+            return worker
         if checks:
             with self._lock:
                 if self.check_worker is None:
@@ -503,6 +522,13 @@ class WarmMixin:
         directory = getattr(self, "directory_for", None)
         if self.identity_for is None or not callable(directory):
             return 0
+        DIRECTORY_ROUND.on = True
+        try:
+            return self._warm_directory_round(directory, known, today=today)
+        finally:
+            DIRECTORY_ROUND.on = False
+
+    def _warm_directory_round(self, directory: Any, known: set, *, today: bool) -> int:
         try:
             people = list(directory())
         except Exception:  # noqa: BLE001 - no directory now: nobody beyond the sessions
@@ -719,11 +745,12 @@ class WarmMixin:
             with view._request():
                 page_key(view, ("policy",))
         worker.submit(reader, decide, priority=ACCESS_WARM_PRIORITY)
-        checks = getattr(self, "check_worker", None)
-        if checks is not None and not checks.stopped.is_set():
-            # the check worker's own runtime too: the reader's first kept page is checked
-            # there (``_access_later``)
-            checks.submit(reader, decide, priority=ACCESS_WARM_PRIORITY)
+        for name in ("check_worker", "state_worker"):
+            checks = getattr(self, name, None)
+            if checks is not None and not checks.stopped.is_set():
+                # the check workers' own runtimes too: the reader's first kept page is
+                # checked there (``_access_later``)
+                checks.submit(reader, decide, priority=ACCESS_WARM_PRIORITY)
         return True
 
     def me(self, reader: Reader) -> m.Me:

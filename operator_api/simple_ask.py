@@ -86,8 +86,9 @@ def effort(environ: Mapping[str, str] = os.environ) -> Optional[str]:
 
 
 METHOD = """Working habits:
-- Independent reads go in one turn: issue several plx.sql/plx.search calls at once when none needs another's result (they run in parallel). Every round of reads costs the person seconds, so plan the reads to need few rounds: a party, item or person the question names needs no lookup round of its own (filter its rows by the name in the same read: customer ILIKE '%name%', or a join to customers or suppliers), and a cross-check read goes in the same turn as the read it checks when it needs nothing from its result.
+- Independent reads go in one turn: issue several plx.sql/plx.search/plx.open calls at once when none needs another's result (they run in parallel); open every message or file you need from one result's hits in the same turn, never one per turn. Every round of reads costs the person seconds, so plan the reads to need few rounds: a party, item or person the question names needs no lookup round of its own (filter its rows by the name in the same read: customer ILIKE '%name%', or a join to customers or suppliers), and a cross-check read goes in the same turn as the read it checks when it needs nothing from its result.
 - Date windows on mail and Teams: filter emails.received_at and teams_messages.created_at (timestamps, indexed), each day boundary in the business time zone (received_at >= '2026-11-16 00:00 America/New_York'); a filter on received_date or created_date reads every message the reader may see and is many times slower.
+- plx.search already widens a query that few items match word for word (by stem, close spelling and meaning; its searched.widened says so): never search again with the same words or a near rewording; change what narrows it instead (the date window, sources or party), or read the rows with plx.sql. Call each tool by its full name in your tool list (it starts with mcp__); a bare plx_sql is no tool.
 - A question one query answers: run it and answer at once. Plan, check and query again only when the question takes several steps.
 - Look before you rely on a guess: plx.sql {"describe": "<view>"} shows a view's sample rows and commonest values; zero rows or odd values mean refine before you conclude. The list, library, folder or site a record belongs to may be named only in a URL or path field (web_url, path: .../Lists/<List%20Name>/...), so match the name there too.
 - "The <customer or supplier> order/PO" with no number means the one that matters now: read all of that party's open ones whatever their date (never cut them by a recent-date window or a small LIMIT first), lead with the late or at-risk one (verdict, days_late), then name the others in a line; ask back only when two are equally likely. "Latest on" means the latest news about it, not the newest-dated record.
@@ -131,7 +132,7 @@ def search_line(contracts: Optional[Mapping[str, Any]] = None) -> str:
         contracts = load_contracts()
     served = ((((contracts.get("tools") or {}).get("plx.search") or {}).get("input") or {})
               .get("properties", {}).get("sources", {}).get("items", {}).get("enum")) or []
-    line = "- Mail, Teams, meetings and documents: plx.search; plx.open reads one hit in full."
+    line = "- Mail, Teams, meetings and documents: plx.search; plx.open reads one hit or row in full (send its short ref)."
     if RECORDS_SOURCE in served:
         line += (" plx.search also finds a record of any system by the words of its name "
                  "or number (a record hit): use it for a kind of record no view above holds.")
@@ -220,7 +221,7 @@ def write_tools(backend: Any, reader: Any) -> list[Any]:
     their memory, templates and documents, ``operator_api.assistant_tools``), none when the
     backend has none or they cannot be made (the Ask never fails for them)."""
     out: list[Any] = []
-    for hook in ("prepared_tools", "assistant_tools"):
+    for hook in ("prepared_tools", "assistant_tools", "insight_tools"):
         make = getattr(backend, hook, None)
         if not callable(make):
             continue
@@ -543,7 +544,8 @@ def cited(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             columns = []
             for hit in hits:
                 # plain values and text envelopes; nested structures are not a column
-                columns += [k for k, v in hit.items() if k not in columns and (
+                # (a hit's ``ref`` is the session's own short handle: no column)
+                columns += [k for k, v in hit.items() if k not in columns and k != "ref" and (
                     not isinstance(v, (Mapping, list)) or (
                         isinstance(v, Mapping) and "untrusted_text" in v))]
             rows = [[_cell_text(h.get(c)) for c in columns] for h in hits]
@@ -1470,7 +1472,12 @@ def result_step(tool: str, result: Any, error: bool) -> Optional[str]:
 
 TIMEOUT_WORDS = ("I ran out of time before I could finish checking this. "
                  "Ask again, or narrow the question (one customer, one month).")
-FAILED_WORDS = "The assistant could not work this question just now ({why}). Ask again shortly."
+FAILED_WORDS = "The assistant could not work this question just now ({why}).{again}"
+# what asking again does after each failure: a spent quota or a lost sign-in does not pass
+# in a moment
+AGAIN_WORDS = {"usage_limit": " It is back once its usage limit resets: asking again before "
+                              "then will not help.",
+               "sign_in": " It is back once it is signed in again."}
 
 
 def answer_payload(ran: SimpleRun, question: str, conversation: str, latency_ms: int,
@@ -1480,10 +1487,15 @@ def answer_payload(ran: SimpleRun, question: str, conversation: str, latency_ms:
     from . import assistant_tools
     from . import models as m
 
-    text = ran.text.strip()
+    # a session that read nothing and failed on its login (a spent quota, a lost sign-in):
+    # its text is the CLI's own words, never an answer
+    spoke = bool(ran.text.strip()) and not (ran.failure in ("usage_limit", "sign_in")
+                                            and not ran.calls)
+    text = ran.text.strip() if spoke else ""
     if not text:
         text = TIMEOUT_WORDS if ran.stopped else FAILED_WORDS.format(
-            why=(ran.failure or "error").replace("_", " "))
+            why=(ran.failure or "error").replace("_", " "),
+            again=AGAIN_WORDS.get(ran.failure or "", " Ask again shortly."))
         outcome = "not_found"
     elif ran.calls and not ran.returned:
         # every read the session tried failed: whatever it says was checked against
@@ -1499,7 +1511,7 @@ def answer_payload(ran: SimpleRun, question: str, conversation: str, latency_ms:
         prepared=prepared_ids(ran.events),
         documents=[m.AskDocument(**d) for d in assistant_tools.documents(ran.events)],
         charts=[m.AskChart(**c) for c in ran.charts],
-        assistant_unavailable=None if ran.text.strip() else (
+        assistant_unavailable=None if spoke else (
             "timeout" if ran.stopped else ran.failure or "error"))
 
 

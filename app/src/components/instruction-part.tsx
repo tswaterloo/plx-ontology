@@ -8,7 +8,10 @@
 // preview and Confirm click.
 
 import { useState } from "react";
-import type { AskRequest, InstructPart, InstructWrite } from "@/lib/types";
+import { keepRecurring } from "@/lib/api";
+import { plainError } from "@/lib/errors";
+import type { AskRequest, InstructPart, InstructWrite, RecurringInstruction } from "@/lib/types";
+import { hourWords } from "./autopilot/recurring";
 import { EntryHold } from "./entry-hold";
 import { FillReview } from "./fill-review";
 import { TemplateFilledView } from "./templates";
@@ -26,6 +29,44 @@ export function pageOf(context: Record<string, unknown>): InstructAsk {
   if (context.kind === "email" && typeof context.handle === "string") return { source: context.handle };
   if (context.kind === "record" && typeof context.object_id === "string") return { object_id: context.object_id };
   return { context: context as AskRequest["context"] };
+}
+
+/** Keep a proposed repeating instruction when the person asks; each run prepares its work
+ * for them to confirm. A line that waits for an event is not kept here yet. */
+function KeepRecurring({ text, trigger }: { text: string; trigger: { kind: string; words: string } }) {
+  const [kept, setKept] = useState<RecurringInstruction | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [sender, setSender] = useState("");
+  const [subject, setSubject] = useState("");
+  const note = "text-[12px] leading-4 text-muted";
+  const event = trigger.kind === "message.received";
+  if (!event && !trigger.kind.startsWith("schedule."))
+    return <p className={note}>Proposed in Draft mode: it prepares work for approval and never acts on its own; this proposal stays in your work log.</p>;
+  if (kept)
+    return (
+      <p className="text-[12px] leading-4" data-testid="recurring-kept">
+        Kept: {event ? "when a matching mail reaches you" : `${kept.words.toLowerCase()} at ${hourWords(kept.hour)} (Eastern)`} it prepares this for you to confirm. Change, pause or stop it on the Autopilot page.
+      </p>
+    );
+  const keep = () => {
+    setBusy(true);
+    setError(null);
+    keepRecurring(event ? { text, sender: sender.trim() || null, subject: subject.trim() || null } : { text }).then(setKept, setError).finally(() => setBusy(false));
+  };
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      {event && (
+        <>
+          <input aria-label="Mail from (address or domain)" placeholder="From (acme.com)" value={sender} onChange={(e) => setSender(e.target.value)} className="rounded-[3px] border border-border bg-transparent px-1 py-0.5 text-[12px]" />
+          <input aria-label="Subject has these words" placeholder="Subject has" value={subject} onChange={(e) => setSubject(e.target.value)} className="rounded-[3px] border border-border bg-transparent px-1 py-0.5 text-[12px]" />
+        </>
+      )}
+      <Button disabled={busy || (event && !sender.trim() && !subject.trim())} onClick={keep}>Keep it repeating</Button>
+      <span className={note}>Each run prepares work for you to confirm; nothing is sent on its own.</span>
+      {error ? <span role="alert" className="text-[12px]">{plainError(error)}</span> : null}
+    </div>
+  );
 }
 
 function Writes({ writes }: { writes: InstructWrite[] }) {
@@ -183,7 +224,7 @@ export function InstructionPart({
               {a.words}
             </p>
           ))}
-          <p className="text-[12px] leading-4 text-muted">Proposed in Draft mode: it prepares work for approval and never acts on its own. The Autopilot studio cannot keep workflows on this server yet; this proposal stays in your work log.</p>
+          <KeepRecurring text={part.text} trigger={part.workflow.trigger} />
         </section>
       )}
       {part.entry ? <EntryHold entry={part.entry} renderWrite={(w) => <Writes writes={[w]} />} /> : <Writes writes={part.writes ?? []} />}

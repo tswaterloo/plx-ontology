@@ -175,6 +175,23 @@ class ViewAs:
                if oid not in mine and email not in mine and not gone(oid)]
         return sorted(out, key=lambda p: p["name"])
 
+    def named(self, key: str, owner_ids: Iterable[str]) -> Optional[tuple[str, str]]:
+        """(object id, name) of the one person ``people`` lists now under ``key``, else
+        None."""
+        key = str(key or "").strip().lower()[:40]
+        if not any(p["key"] == key for p in self.people(owner_ids)):
+            return None
+        found = self._table().get(key)
+        return (found[0], name_of(found[1])) if found else None
+
+    def name_among(self, owner_ids: Iterable[str]) -> str:
+        """The name of the first of these ids the table holds, else "A colleague"."""
+        ids = {str(i).lower() for i in owner_ids}
+        for oid, email in self._table().values():
+            if oid in ids:
+                return name_of(email)
+        return "A colleague"
+
     def reader_for(self, owner: Any, key: str, *, method: str, route: str,
                    is_owner: Callable[[Any], bool], reader_type: Any) -> Any:
         """The reader to serve this view-as request with (rules: module doc), audited

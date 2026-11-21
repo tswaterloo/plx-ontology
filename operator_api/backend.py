@@ -186,7 +186,8 @@ from .backend_common import (
     _clean_text, _iso, GRANT_SCREENS, REWARM_FLOOR_SECONDS, SCREENS_AGAIN_MOST,
     SCREENS_AGAIN_SECONDS, SCREENS_AHEAD, SHAPE_SECONDS, SHAPE_WAIT_FACTOR, STOP_JOIN_SECONDS,
     FRESHNESS_SECONDS)
-from .backend_warm import WarmMixin  # noqa: F401 - re-export
+from .recurring_api import RecurringMixin
+from .backend_warm import DIRECTORY_ROUND, WarmMixin  # noqa: F401 - re-export
 from .backend_ask import AskMixin  # noqa: F401 - re-export
 from .backend_serving import ServingMixin  # noqa: F401 - re-export
 from .backend_screens import ScreensMixin  # noqa: F401 - re-export
@@ -218,7 +219,7 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
 # the parts of a full reader's policy (``policy_parts``) left out of a kept page's access
 # state (``_access_job``): they grow with the data's source keys, never with what that
 # reader may read; a staff reader's stay whole (a new specific grant can narrow a family)
-FULL_READER_MOVING_PARTS = ("audiences", "units")
+FULL_READER_MOVING_PARTS = ("audiences", "audiences_held", "audiences_keys", "units")
 
 
 def shared_key(reader: Any) -> Any:
@@ -236,7 +237,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                        AutopilotMixin,
                        AutopilotAreaMixin, AutopilotStudioMixin, InstructMixin, DocFillMixin,
                        PreparedWritesMixin, AssistantToolsMixin, DocStyleMixin, EntryCreateMixin,
-                       WatchMixin,
+                       WatchMixin, RecurringMixin,
                        AskDraftsMixin, CorePageMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
@@ -459,6 +460,11 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 futures.append(worker.submit(
                     reader, lambda view, r=reader: self._prewarm_kept_checks(view, r, until),
                     priority=-1, deadline=until))
+                states = getattr(self, "state_worker", None)
+                if states is not None and not states.stopped.is_set():
+                    # the state worker's runtime too: a reader's first state checks run there
+                    states.submit(reader, lambda view, r=reader: self._prewarm_kept_checks(
+                        view, r, until), priority=-1, deadline=until)
             except Exception as error:  # noqa: BLE001 - checked on their first visit
                 logging.getLogger("operator_api").info("kept checks not queued: %s",
                                                        type(error).__name__)
@@ -568,7 +574,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             # as kept, re-checked, and read again)
             future = self.reads.submit(reader, warm_timed(
                 "screens", lambda view: self._screens_all(reader)), priority=WARM_PRIORITY)
-            if pending is not None:
+            if pending is not None and not getattr(DIRECTORY_ROUND, "on", False):
                 future.plx_warm = "screens"
                 pending.append(future)
         if warmer is not None and not warmer.stopped.is_set():
@@ -577,9 +583,12 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             warmer.submit(reader, self.yielding(warm_timed("pages", pages)),
                           priority=WARM_PRIORITY + 1 if warmer is self.reads and today
                           else 0)
-            if today:
+            if today and pending is None:
                 # last week's review, read whole once and kept (``WeeklyArchive``): the
-                # Meetings page's weekly view then opens from the archive
+                # Meetings page's weekly view then opens from the archive. Not in the
+                # warm-up's first pass: its Postgres aggregates for every known and
+                # directory reader held the first Home after a restart 14-20 s (11-19);
+                # the next round (REWARM_SECONDS) reads it
                 warmer.submit(reader, self.yielding(warm_timed(
                     "weekly review", self._weekly_ahead(reader))),
                     priority=WARM_PRIORITY + 1 if warmer is self.reads else 0)
@@ -611,6 +620,14 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             if name == "_home_served" and page_sql.alerts_on():
                 name = "home"   # the SQL alerts' Home, not the old engine's
             named = args.pop() if args and isinstance(args[-1], dict) else {}
+            if name == "weekly_review" and self._weekly_cut_recently(reader):
+                # cut by its budget at every read (11-19: the first session's top Postgres
+                # wait after each restart); its last good page stays on disk 12 h and
+                # opens the first visit
+                log.info("warm screen weekly_review skipped: cut by its budget lately")
+                continue
+            if name == "weekly_review":
+                named = {**named, "ahead": True}   # a cut read marks itself (WeeklyCuts)
             began = time.monotonic()
             try:
                 got = getattr(self, name)(reader, *args, **named)
@@ -2027,7 +2044,9 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 else [i for i, (a, b) in enumerate(zip(now[0], held[2])) if a != b],
                 # which parts of the reader's policy changed (``policy_parts``: names only)
                 "policy_parts": _parts_changed(now[0] if now is not None else None,
-                                               held[2])}))
+                                               held[2]),
+                # the marks stamp each was under (a digest prefix, None or "unreadable")
+                "marks": _marks_moved(now[0] if now is not None else None, held[2])}))
             return None
         return held[1].model_copy(deep=True, update={"stale_since": _iso(held[0])})
 
@@ -2100,7 +2119,9 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         handles = tuple(handles)
         objects = None if objects is None else tuple(objects)
         job = self._access_job(handles, screen, objects, who=shared_key(reader))
-        worker = getattr(self, "check_worker", None)
+        worker = getattr(self, "state_worker", None) if not handles and not objects else None
+        if worker is None or worker.stopped.is_set():
+            worker = getattr(self, "check_worker", None)
         if worker is None or worker.stopped.is_set():
             worker = getattr(self, "access_worker", None)   # no check worker up yet
         if worker is None or worker.stopped.is_set():
@@ -3366,6 +3387,18 @@ def _all_done(futures: Sequence[Future]) -> Future:
     return out
 
 
+def _marks_moved(now: Any, held: Any) -> Optional[list[Any]]:
+    """[kept, now] marks stamps (``_marks_stamp``, part 3 of an access state) when they
+    differ, each a digest prefix or None / "unreadable"; else None."""
+    try:
+        kept, current = held[3], now[3]
+    except (TypeError, IndexError, KeyError):
+        return None
+    if kept == current:
+        return None
+    return [k[:12] if isinstance(k, str) else k for k in (kept, current)]
+
+
 def _parts_changed(now: Any, held: Any) -> Optional[list[str]]:
     """The policy parts (``policy_parts``) that differ between two access states; None
     when either holds no parts (a state kept by older code: a single fingerprint)."""
@@ -4215,6 +4248,8 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                           access=True, checks=True)
                         for n in range(max(1, getattr(args, "check_workers",
                                                       CHECK_WORKERS)))]
+            threads.append(start_read_worker(backend, argv, "state", access=True,
+                                             checks=True, states=True))
         settings = {"data_label": str(label), "state_dir": Path(ctx["state_dir"]),
                     "store_path": ctx.get("ontology_path"),
                     "freshness_bounds": ctx.get("freshness_bounds"),
@@ -4300,7 +4335,7 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
 
 def start_read_worker(backend: WorkspaceBackend, argv: list[str],
                       number: Any, access: bool = False,
-                      checks: bool = False) -> threading.Thread:
+                      checks: bool = False, states: bool = False) -> threading.Thread:
     """One more read worker: the console's builder run again on its own thread (its own
     case runtime and stores, every check again), serving reads from the read queue once
     it is up; until then the owner thread serves them all. ``access``: the access worker
@@ -4310,7 +4345,8 @@ def start_read_worker(backend: WorkspaceBackend, argv: list[str],
 
     def serve_reads(ctx: Mapping[str, Any]) -> int:
         if access:
-            backend.add_access_worker(ctx["objects_for"], checks=checks).loop()
+            backend.add_access_worker(ctx["objects_for"], checks=checks,
+                                      states=states).loop()
         else:
             backend.add_read_worker(ctx["objects_for"]).loop()
         return 0

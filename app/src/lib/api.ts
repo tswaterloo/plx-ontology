@@ -48,6 +48,10 @@ import type { AskChatUpdate, AskChats, DocList, Explore, LabourPage, LateList, R
   AutopilotMode,
   AutopilotReplay,
   AutopilotSchedules,
+  RecurringChange,
+  RecurringInstruction,
+  RecurringInstructions,
+  RecurringKeep,
   AutopilotWorkflowDetail,
   AutopilotWorkflowDraft,
   TeamView,
@@ -684,9 +688,15 @@ onSessionReset(() => (autopilotLast = null));
 /** One thing prepared for you: who wrote, what they wrote, and the reply or the question. */
 export type PreparedItem = {
   item_id: string; sender: string; channel: "mail" | "teams" | "system"; subject: string; message: string;
-  kind: "reply" | "your_call" | "job" | "todo"; to: string[]; cc: string[]; body: string; edited: boolean;
+  kind: "reply" | "your_call" | "job" | "todo" | "alert"; to: string[]; cc: string[]; body: string; edited: boolean;
+  /** On an alert: where it is decided or answered (never from the card), and its records. */
+  note?: string; links?: { label: string; href: string }[];
+  handed_to?: string; handed_from?: string;
+  auto_would?: string;
   /** On a job or a to-do: what the event asks to be done, and each system change proposed for it. */
   summary?: string; jobs?: ProposedJob[];
+  /** On a reply the model wrote: it can be written again from one line (replyFromLine). */
+  redo?: boolean;
   /** Things to do by hand that no prepared change reaches, on any kind of item. */
   todos?: TodoStep[];
   ask: string; facts: string[]; options?: { label: string; reply: string }[]; created_at: string;
@@ -728,8 +738,23 @@ export async function forgetTeams(): Promise<TeamsConnection> {
 }
 
 /** Your open prepared replies, newest first (the one list Home reads too). */
-export async function getAutopilotDrafts(signal?: AbortSignal): Promise<{ items: PreparedItem[] }> {
-  return getJson<{ items: PreparedItem[] }>("/api/autopilot/drafts", signal);
+export async function getAutopilotDrafts(signal?: AbortSignal): Promise<{ items: PreparedItem[]; never_senders?: string[] }> {
+  return getJson<{ items: PreparedItem[]; never_senders?: string[] }>("/api/autopilot/drafts", signal);
+}
+
+/** Never (or again) prepare anything for you from one sender; your list comes back. */
+export async function setNeverSender(sender: string, never: boolean): Promise<{ items: PreparedItem[]; never_senders?: string[] }> {
+  return (await (await call("/api/autopilot/never", { method: "POST", json: { sender, never } })).json()) as { items: PreparedItem[]; never_senders?: string[] };
+}
+
+/** Whom an alert on your list can be passed to: a key and a name each. */
+export function getAutopilotColleagues(signal?: AbortSignal): Promise<ViewAsPeople> {
+  return getJson<ViewAsPeople>("/api/autopilot/colleagues", signal);
+}
+
+/** Pass an alert on your list to a colleague: on their list too, only to set aside there. */
+export async function handAutopilotItem(itemId: string, to: string): Promise<{ items: PreparedItem[] }> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/hand`, { method: "POST", json: { to } })).json()) as { items: PreparedItem[] };
 }
 
 /** The reply to a "your call" card, written from your one line and kept as your edit. */
@@ -793,10 +818,11 @@ export async function setAutopilotOptIn(workflow: string, on: boolean): Promise<
   return (await (await call("/api/autopilot/opt-in", { method: "POST", json: { workflow, on } })).json()) as AutopilotArea;
 }
 
-/** Switch one choice of prepared work (drafts and prepared actions waiting in My work for
- * your confirm) on or off for yourself. Answers the area as it now reads. */
-export async function setAutopilotDrafts(choice: string, on: boolean): Promise<AutopilotArea> {
-  return (await (await call("/api/autopilot/drafts", { method: "POST", json: { choice, on } })).json()) as AutopilotArea;
+/** Set one category of your own work to off, confirm (prepared in full; one click of yours
+ * performs it) or auto (performed by itself only where your replay score earned it; 409
+ * otherwise). Answers the area as it now reads. */
+export async function setMyWorkMode(choice: string, mode: "off" | "confirm" | "auto"): Promise<AutopilotArea> {
+  return (await (await call("/api/autopilot/mode", { method: "POST", json: { choice, mode } })).json()) as AutopilotArea;
 }
 
 /** Owner only: acknowledge that a workflow passed its check for a role (the owner is told
@@ -1325,4 +1351,24 @@ export function getLearnedTemplates(signal?: AbortSignal): Promise<LearnedTempla
 /** The templates to offer when you start a document of this type. */
 export function suggestTemplates(docType: TemplateDocType, signal?: AbortSignal): Promise<TemplateSuggestions> {
   return getJson<TemplateSuggestions>(`/api/templates/suggest?doc_type=${encodeURIComponent(docType)}`, signal);
+}
+
+/** Your recurring instructions ("every Monday ..."); only yours. */
+export function getRecurring(signal?: AbortSignal): Promise<RecurringInstructions> {
+  return getJson<RecurringInstructions>("/api/instructions/recurring", signal);
+}
+
+/** Keep a recurring instruction: when it runs is read from the line on the server. */
+export async function keepRecurring(body: RecurringKeep): Promise<RecurringInstruction> {
+  return (await (await call("/api/instructions/recurring", { method: "POST", json: body })).json()) as RecurringInstruction;
+}
+
+/** Change one of yours: its hour, weekday or name, or pause and resume it. */
+export async function changeRecurring(id: string, body: RecurringChange): Promise<RecurringInstruction> {
+  return (await (await call(`/api/instructions/recurring/${encodeURIComponent(id)}`, { method: "PATCH", json: body })).json()) as RecurringInstruction;
+}
+
+/** Stop one of yours: it is deleted and never runs again. */
+export async function stopRecurring(id: string): Promise<void> {
+  await call(`/api/instructions/recurring/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

@@ -3628,6 +3628,15 @@ class AutopilotDraftChoice(_Model):
                            "owner's Draft file turned it on for you, not your own switch.")
     since: Optional[str] = Field(None, json_schema_extra=_optional, description="When you "
                                  "switched it on yourself (absent when set by the owner).")
+    mode: Literal["off", "confirm", "auto"] = Field(
+        "off", json_schema_extra=_optional, description="off: nothing prepared; confirm: "
+        "prepared in full, one click of yours performs it; auto: performed without the "
+        "click for the workflows your replay score earned (the rest still wait for it).")
+    auto_ok: bool = Field(False, json_schema_extra=_optional, description="Your replay "
+                          "score earned auto for some of it, so auto can be chosen.")
+    score: Optional[AutopilotScoreBar] = Field(None, json_schema_extra=_optional,
+                                               description="Its replay score for you, "
+                                               "against the bar auto needs.")
 
 
 class AutopilotOptIn(_Model):
@@ -3756,6 +3765,23 @@ class AutopilotLineRequest(_Model):
                       "reply to a \"your call\" card is written from it.")
 
 
+class AutopilotHandRequest(_Model):
+    to: str = Field(max_length=40, description="The colleague's opaque key "
+                    "(GET /api/autopilot/colleagues).")
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class AutopilotColleagues(_Model):
+    """Whom an alert can be passed to: an opaque key and a name each, never an id."""
+    people: list[ViewAsPerson] = Field(default_factory=list)
+
+
+class AutopilotLink(_Model):
+    """A page of the Workbench an alert points to (the record or task it is about)."""
+    label: str
+    href: str
+
+
 class AutopilotOption(_Model):
     """One choice on a "your call" card and the reply written for it."""
     label: str = ""
@@ -3797,9 +3823,19 @@ class AutopilotPrepared(_Model):
     channel: Literal["mail", "teams", "system"]
     subject: str = ""
     message: str = Field("", description="What they wrote, as far as the item keeps it.")
-    kind: Literal["reply", "your_call", "job", "todo"]
-    summary: str = Field("", description="On a job or a to-do: what the event asks to be "
-                         "done.")
+    kind: Literal["reply", "your_call", "job", "todo", "alert"]
+    summary: str = Field("", description="On a job, a to-do or an alert: what the event asks "
+                         "to be done, or what happened.")
+    note: str = Field("", description="On an alert: where it is decided or answered (never "
+                      "from this card).")
+    links: list[AutopilotLink] = Field(
+        default_factory=list, description="On an alert: the records or task it is about.")
+    handed_to: str = Field("", description="On an alert you passed on: to whom.")
+    handed_from: str = Field("", description="On an alert passed to you: by whom.")
+    auto_would: str = Field("", description="A dry run of Auto on this reply, when your "
+                            "replay score earned its workflow: \"send\" (it would go by "
+                            "itself once you switch Auto on) or \"keep: <reasons>\" (it would "
+                            "still wait for your click); empty otherwise. Nothing is done.")
     jobs: list[AutopilotJob] = Field(default_factory=list)
     todos: list[AutopilotTodo] = Field(
         default_factory=list, description="Things to do by hand, on any kind of item.")
@@ -3808,6 +3844,8 @@ class AutopilotPrepared(_Model):
     body: str = Field("", description="The reply as it stands now (your edit when you made "
                       "one); empty on a \"your call\" card until you say what to reply.")
     edited: bool = False
+    redo: bool = Field(False, description="On a reply the model wrote: it can be written "
+                       "again from one line of what you want to say (reply-from-line).")
     ask: str = ""
     facts: list[str] = Field(default_factory=list)
     options: list[AutopilotOption] = Field(
@@ -3826,6 +3864,15 @@ class AutopilotPrepared(_Model):
 class AutopilotDrafts(_Model):
     """Your open prepared replies, newest first; mail you already answered is not here."""
     items: list[AutopilotPrepared] = Field(default_factory=list)
+    never_senders: list[str] = Field(default_factory=list, description="Senders you said "
+                                     "never to prepare anything for you from (yours only).")
+
+
+class AutopilotNeverRequest(_Model):
+    sender: str = Field(min_length=1, max_length=320, description="The sender's address, "
+                        "as an item on your list shows it.")
+    never: bool = Field(strict=True, description="true: never prepare anything for you from "
+                        "this sender; false: prepare again.")
 
 
 class AutopilotSwitchRequest(_Model):
@@ -3846,6 +3893,13 @@ class AutopilotOptInRequest(_Model):
 class AutopilotDraftsRequest(_Model):
     choice: str = Field(max_length=60, description="One of ``my_drafts``' choices.")
     on: bool = Field(strict=True, description="true: prepare these for you; false: stop.")
+
+
+class AutopilotChoiceModeRequest(_Model):
+    choice: str = Field(max_length=60, description="One of ``my_drafts``' choices.")
+    mode: Literal["off", "confirm", "auto"] = Field(
+        description="off, confirm (prepared, one click performs it) or auto (only where "
+        "your replay score earned it).")
 
 
 class AutopilotPauseRequest(_Model):
@@ -4799,6 +4853,10 @@ class AskChart(_Model):
         None, json_schema_extra=_optional,
         description="The label of a calendar period not over at as_of (a month, quarter, "
                     "year, week or day): its figures are of part of it.")
+    first_period: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="The label of the earliest calendar period the statement's window "
+                    "starts inside (a month, quarter or year): its figures are of part of it.")
 
 
 class ChartFile(_Model):
@@ -5156,3 +5214,42 @@ TemplateFillField.model_rebuild()
 TemplateFilled.model_rebuild()
 TemplateProposal.model_rebuild()
 InstructPart.model_rebuild()
+
+
+class RecurringInstruction(_Model):
+    """One of your recurring instructions: what it does, when it runs (US Eastern), its
+    state, and its last and next run."""
+    id: str
+    text: str
+    label: str
+    kind: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    words: str
+    hour: int
+    state: Literal["active", "paused"]
+    created: float
+    last_run: Optional[float] = None
+    next_run: Optional[float] = None
+    last_result: Optional[str] = None
+
+
+class RecurringInstructions(_Model):
+    instructions: list[RecurringInstruction] = Field(default_factory=list)
+
+
+class RecurringKeep(_Model):
+    text: str = Field(min_length=1, max_length=1000)
+    sender: Optional[str] = Field(None, max_length=120, description="A \"whenever\" line: "
+                                  "the mail is from this address or domain.")
+    subject: Optional[str] = Field(None, max_length=120, description="A \"whenever\" line: "
+                                   "every one of these words is in the subject.")
+    label: Optional[str] = Field(None, max_length=120)
+    hour: Optional[int] = Field(None, ge=0, le=23)
+
+
+class RecurringChange(_Model):
+    label: Optional[str] = Field(None, max_length=120)
+    hour: Optional[int] = Field(None, ge=0, le=23)
+    weekday: Optional[Literal["monday", "tuesday", "wednesday", "thursday", "friday",
+                              "saturday", "sunday"]] = None
+    state: Optional[Literal["active", "paused"]] = None

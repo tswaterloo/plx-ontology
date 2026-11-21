@@ -445,6 +445,42 @@ def types_sql(notes: Mapping[str, Any]) -> str:
     return out
 
 
+def narrowed(served: Mapping[str, Any], choice: Mapping[str, Any]) -> list[str]:
+    """What a build's type choice (``type_choice``) leaves out that the served build's
+    (its kept ``notes``) held: types, ``Rel*`` (the mirrors) or ``<prefix>*``. A rebuild
+    that narrows the served records takes those types out of plx.search and the door
+    without a word (11-19 live: a rebuild with ``--uncovered`` and without ``--business``
+    left out every customer, product, order, invoice, supplier, PO and batch). Empty:
+    nothing the served records hold is lost."""
+    old_skip = set(served.get("skip_types") or ())
+    old_mirrors = bool(served.get("skip_mirrors"))
+    old_prefixes = [p for p in served.get("skip_prefixes") or () if isinstance(p, str)]
+    new_mirrors = bool(choice.get("skip_mirrors"))
+
+    def held(name: str) -> bool:
+        return not ((old_mirrors and name.startswith("Rel"))
+                    or any(name.startswith(p) for p in old_prefixes))
+    out = sorted(t for t in set(choice.get("skip_types") or ()) - old_skip if held(t))
+    if new_mirrors and not old_mirrors:
+        out.append("Rel*")
+    out += sorted(f"{p}*" for p in set(choice.get("skip_prefixes") or ())
+                  if held(p) and not (new_mirrors and p.startswith("Rel")))
+    return out
+
+
+def served_notes(pg: Any, s: str) -> dict[str, Any] | None:
+    """The served ``records`` build's kept notes (its type choice); ``None`` before a
+    first build."""
+    if not pg.execute("SELECT to_regclass(%s) IS NOT NULL AND to_regclass(%s) IS NOT NULL",
+                      (f"{s}.state", f"{s}.records")).fetchone()[0]:
+        return None
+    row = pg.execute(f"SELECT notes FROM {s}.state WHERE view = 'records'").fetchone()
+    if row is None:
+        return None
+    notes = row[0]
+    return dict(json.loads(notes) if isinstance(notes, str) else notes or {})
+
+
 def door_side(pg: Any, s: str, touched: Mapping[str, str] | None = None) -> None:
     """The door's side tables for the generic tables: their ``lineage`` (each row's own
     records: the people exclusion drops a row naming one, ``door.exclude``; a handle two
@@ -472,19 +508,28 @@ def door_side(pg: Any, s: str, touched: Mapping[str, str] | None = None) -> None
 
 def build(dsn: str, schema: str | None = None, workers: int = 4, *,
           uncovered: bool = False, mirrors: bool = False,
-          skip_prefixes: Sequence[str] = (), business: bool = False) -> dict[str, Any]:
+          skip_prefixes: Sequence[str] = (), business: bool = False,
+          narrow: bool = False) -> dict[str, Any]:
     """Build ``records`` and ``record_links`` beside the live ones, index them, then swap
     them in with the guarded views re-made (one transaction: readers see old or new).
     ``uncovered``: the types no curated table holds; ``mirrors`` with it: the raw relational
     mirrors (``Rel...``, 184 types and 7.8M records on 11-18, Sage's history among them)
     too, else they are left out (a first build that must stay small); ``business`` with it:
-    the curated tables' own types too (``type_choice``)."""
+    the curated tables' own types too (``type_choice``). A choice that leaves out types the
+    served build holds (``narrowed``) is refused before anything is dropped or written,
+    unless ``narrow``."""
     import psycopg
     s = schema or bv.SCHEMA
     started = time.monotonic()
     choice = type_choice(uncovered, mirrors, skip_prefixes, business)
     which = types_sql(choice)
     with psycopg.connect(dsn, autocommit=True) as pg:
+        served = served_notes(pg, s)
+        lost = narrowed(served, choice) if served is not None else []
+        if lost and not narrow:
+            raise ValueError("this build leaves out types the served records hold: "
+                             f"{', '.join(lost)} (same types: the served build's choice, e.g. "
+                             "--uncovered --mirrors --business; on purpose: --narrow)")
         ac.ensure(pg, s)
         pg.execute(gv.CATALOG_DDL.format(s=s))
         got = _marks(pg)
@@ -576,6 +621,21 @@ def _state(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any]) ->
                 json.dumps({**notes, "marks": dict(got)})))
 
 
+def _probe_plan(pg: Any, *temps: str | None) -> None:
+    """Keep the store's links read by index probes (11-20 live: from 12:54 PM ET every
+    refresh failed past ``temp_file_limit``). The temp tables are analysed first (a table
+    made a moment ago has no statistics, so the planner merge-sorted all 45M live link rows
+    against it), and hash and merge joins are off for the transaction: the planner still
+    judged a hash join over every link partition cheaper than 11k index probes, and its
+    union then spilled 10 GB. Called with no table to turn them back on."""
+    on = "on" if not [t for t in temps if t] else "off"
+    for t in temps:
+        if t:
+            pg.execute(f"ANALYZE {t}")
+    pg.execute(f"SET LOCAL enable_hashjoin = {on}")
+    pg.execute(f"SET LOCAL enable_mergejoin = {on}")
+
+
 def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict[str, Any]:
     """Update the live tables in place, one transaction: records with a version recorded or
     a link changed since the last marks are read again; records removed from their source,
@@ -647,6 +707,7 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                 f"gr_lt t JOIN {s}.records f ON f.record_id = t.from_object JOIN {s}.records "
                 "x ON x.record_id = t.to_object WHERE f.rid = l.from_rid AND x.rid = "
                 "l.to_rid AND t.link_type = l.link_type) RETURNING l.handle) SELECT * FROM d")
+            _probe_plan(pg, "gr_lt", "gr_gone")
             pg.execute(
                 f"CREATE TEMP TABLE gr_lid AS SELECT l.link_id, l.link_type FROM "
                 f"{ONT}.link_rows l JOIN gr_lt t ON t.from_object = l.from_object AND "
@@ -654,6 +715,7 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                 f"l.link_id, l.link_type FROM {ONT}.link_rows l JOIN gr_gone g ON "
                 "g.record_id = l.from_object UNION SELECT l.link_id, l.link_type FROM "
                 f"{ONT}.link_rows l JOIN gr_gone g ON g.record_id = l.to_object")
+            _probe_plan(pg, None)
             linked = _link_insert(pg, s, "records", "record_links",
                                   "(l.link_id, l.link_type) IN (SELECT link_id, link_type "
                                   "FROM gr_lid)")
@@ -740,6 +802,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--business", action="store_true",
                     help="build --uncovered: the curated tables' types too, each system's "
                          "copy its own record (only the comms tables' types left out)")
+    ap.add_argument("--narrow", action="store_true",
+                    help="build: allow leaving out types the served records hold")
     ap.add_argument("--skip-prefix", action="append", default=[],
                     help="build: leave out the types whose name starts so (e.g. RelSage)")
     args = ap.parse_args(argv)
@@ -751,7 +815,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gv.build_catalog(dsn, SchemaView.from_compiled(load_schema()), args.schema)
         out = build(dsn, args.schema, args.workers, uncovered=args.uncovered,
                     mirrors=args.mirrors, skip_prefixes=args.skip_prefix,
-                    business=args.business)
+                    business=args.business, narrow=args.narrow)
     else:
         out = refresh(dsn, args.schema)
     print(json.dumps(out, default=str))

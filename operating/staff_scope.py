@@ -358,11 +358,13 @@ _UNITS_LOCK = threading.Lock()
 _UNITS: dict[Any, tuple[int, dict[str, Unit]]] = {}
 
 
-def load_units(reader: Any) -> Mapping[str, Unit] | None:
+def load_units(reader: Any, generation: int | None = None) -> Mapping[str, Unit] | None:
     """``search.audience_units`` read through a Postgres store reader's own connection
     (``operating.pg.ontology_reader.PgStoreReader``), kept per search write generation
-    (one read per generation, not per session). None: no Postgres reader, or the table
-    or the generation cannot be read (the caller decides as before)."""
+    (one read per generation, not per session). ``generation``: the one the caller's
+    request already read on this connection (``PgStoreReader.whole_stamp``); None: read
+    it here. None: no Postgres reader, or the table or the generation cannot be read
+    (the caller decides as before)."""
     conn = getattr(reader, "conn", None)
     pg = getattr(conn, "_pg", None)
     if pg is None:
@@ -370,7 +372,8 @@ def load_units(reader: Any) -> Mapping[str, Unit] | None:
     from operating.pg.permissions import write_generation
     try:
         with reader.lock, conn._lock:
-            generation = write_generation(pg)
+            if generation is None:
+                generation = write_generation(pg)
             with _UNITS_LOCK:
                 hit = _UNITS.get(id(reader))
             if hit is not None and hit[0] == generation:

@@ -143,7 +143,7 @@ class BcCaptures(Reopenable):
         self._named = (frozenset(c for c in named if isinstance(c, str))
                        if isinstance(named, list) else None)
         self._units = self._unit_states()
-        self._passes = self._pass_starts()
+        self._passes_held: dict[int, str] | None = None
 
     def _end_snapshot(self) -> None:
         if self._snapshot:
@@ -184,6 +184,15 @@ class BcCaptures(Reopenable):
                 "settled": bool(settled), "full_at": full if settled else None,
                 "refreshed_at": run["updated_at"]}
         return out
+
+    @property
+    def _passes(self) -> dict[int, str]:
+        """``_pass_starts``, read when a record first needs it: a store status
+        (``describe``) never scans every run for it (on the request path that cost a
+        cold Home's approvals and replies seconds each)."""
+        if self._passes_held is None:
+            self._passes_held = self._pass_starts()
+        return self._passes_held
 
     def _pass_starts(self) -> dict[int, str]:
         """run id -> start of the capture pass it belongs to. The store records runs per

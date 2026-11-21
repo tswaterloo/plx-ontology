@@ -232,10 +232,11 @@ from .proactive_engine_inbox import (
     _served_digest, _shown, _summary, _table_from_disk, _tables_building, _TABLES_KEPT,
     _tables_kept, _today, UNJUDGED_SHOWN, UnknownCheck, _visible, _write_pass)
 from .proactive_engine_budget import (
-    Budget, _cgroup_limit, _cgroup_used, detector_reserve, DETECTOR_RESERVE_BYTES, detector_threads,
-    _failure_cause, HELPER_JOIN_SECONDS, HOST_MEMINFO, _lanes, _margin_head_start,
-    MEMORY_GATE_POLL_SECONDS, MEMORY_GATE_SHARE, MEMORY_SHARE_ENV, _not_due, _own_cgroup, pass_lock,
-    _Runner, _share, TimeBudgetSpent, _Watchdog)
+    Budget, _cgroup_limit, _cgroup_used, detector_reserve, DETECTOR_RESERVE_BYTES,
+    detector_threads, _failure_cause, HELPER_JOIN_SECONDS, _host_available, HOST_MEMINFO,
+    _host_room, _lanes, _margin_head_start, MEMORY_GATE_POLL_SECONDS, MEMORY_GATE_SHARE,
+    MEMORY_SHARE_ENV, _MemoryGate, _not_due, _own_cgroup, pass_lock, _Runner, _share,
+    TimeBudgetSpent, _Watchdog)
 from .proactive_engine_population import (
     _drop_inactive_orders, inactive_records, _po_classes, TEST_ORDER_LINKS, test_records,
     TEST_TWIN_LINKS)
@@ -1427,111 +1428,6 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
                 else (margin_map if margins is not None else pmap)(task, items)),
             roots=roots(), read=one_margin, **common),
         "margin_erosion": erosion}
-
-
-def _host_available(meminfo: str = HOST_MEMINFO) -> int | None:
-    """The host's MemAvailable in bytes; None when it cannot be read."""
-    try:
-        with open(meminfo, encoding="ascii") as handle:
-            for line in handle:
-                if line.startswith("MemAvailable:"):
-                    parts = line.split()
-                    return int(parts[1]) * (1024 if parts[2:3] == ["kB"] else 1)
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
-
-
-def _host_room(directory: str | None, meminfo: str = HOST_MEMINFO) -> int | None:
-    """The memory this process's cgroup may grow to: the lower of its own limit and its
-    use now plus what the host still has available (the host's OOM killer, not the
-    unit's limit, ends a pass on a loaded host). A host figure that cannot be read leaves
-    the cgroup's limit; a use that cannot be read with a readable host figure: the host
-    figure alone (never no limit)."""
-    limit = _cgroup_limit(directory)
-    available = _host_available(meminfo)
-    if available is None:
-        return limit
-    room = (_cgroup_used(directory) or 0) + available
-    return room if limit is None else min(limit, room)
-
-
-class _MemoryGate:
-    """Admission of detectors by memory (``MEMORY_GATE_SHARE``): ``enter`` waits while
-    another detector runs and ``used()`` plus ``reserve`` for each running or cut-off
-    (``abandon``) detector is at or over ``share`` of ``limit()``; ``leave`` when it ends.
-    ``held`` counts the detectors that waited, ``most`` the most that ran at once."""
-
-    def __init__(self, used: Callable[[], int | None], limit: Callable[[], int | None],
-                 share: float = MEMORY_GATE_SHARE, reserve: int = DETECTOR_RESERVE_BYTES,
-                 poll: float = MEMORY_GATE_POLL_SECONDS) -> None:
-        if not 0 < share <= 1 or reserve < 0:
-            raise ValueError("memory_gate_invalid")
-        self.used, self.limit, self.share, self.reserve = used, limit, share, reserve
-        self.poll = poll
-        self.running = self.most = self.held = self.orphans = self.relieved = 0
-        self._cond = threading.Condition()
-
-    @classmethod
-    def for_process(cls, environ: Mapping[str, str] | None = None) -> "_MemoryGate":
-        env = os.environ if environ is None else environ
-        share = MEMORY_GATE_SHARE
-        raw = (env.get(MEMORY_SHARE_ENV) or "").strip()
-        if raw:
-            try:
-                share = float(raw)
-            except ValueError:
-                share = MEMORY_GATE_SHARE   # unreadable: the default, never no gate
-            if not 0 < share <= 1:
-                share = MEMORY_GATE_SHARE
-        directory = _own_cgroup()
-        return cls(lambda: _cgroup_used(directory), lambda: _host_room(directory, HOST_MEMINFO),
-                   share)
-
-    def over(self) -> bool:
-        limit = self.limit()
-        if limit is None:
-            return False
-        used = self.used()
-        if used is None:
-            return True   # a limit whose use cannot be read: over (one at a time)
-        return used + (self.running + self.orphans) * self.reserve >= self.share * limit
-
-    def enter(self, stop: Callable[[], bool] = lambda: False,
-              relieve: Callable[[], None] | None = None) -> None:
-        """``relieve``: called once when the memory is over (the run's held reads let
-        go: ``_Store.let_go``) before waiting on it, so what earlier rules read and no
-        running one holds is reused, not added to (11-17: a group of 36 rules held each
-        one's populations and orders to its end, past the incremental pass's cap)."""
-        with self._cond:
-            waited = False
-            if relieve is not None and self.over():
-                relieve()
-                self.relieved += 1
-            while self.running > 0 and not stop() and self.over():
-                waited = True
-                self._cond.wait(self.poll)
-            self.held += waited
-            self.running += 1
-            self.most = max(self.most, self.running)
-
-    def leave(self) -> None:
-        with self._cond:
-            self.running -= 1
-            self._cond.notify_all()
-
-    def abandon(self, ended: threading.Event) -> None:
-        """A detector cut off at its window whose thread still runs: its memory is counted
-        (a reserve) until ``ended`` is set, without holding up the others' turns."""
-        with self._cond:
-            self.orphans += 1
-
-        def wait() -> None:
-            ended.wait()
-            with self._cond:
-                self.orphans -= 1
-                self._cond.notify_all()
-        threading.Thread(target=wait, name="proactive-gate-orphan", daemon=True).start()
 
 
 def run(store_path: Any, inbox: Any, as_of: date | None = None, *,

@@ -43,6 +43,14 @@ MAIL = [("i1", "pm", OZ, 2, "to", False, 2, "t1"),
         ("s4", "pm", MIA, 3, "from", False, None, "t11"),
         ("old", "pm", OZ, 40, "to", False, None, "t12")]        # outside every window
 
+# chat, sender's person id, days ago (one-to-one chats name their two people)
+CHATS = [("19:pl_pm@unq.gbl.spaces", "pm", 29.5), ("19:pl_pm@unq.gbl.spaces", "pl", 29),
+         ("19:pm_pn@unq.gbl.spaces", "pm", 29.5), ("19:pm_pn@unq.gbl.spaces", "pn", 28.5),
+         ("19:pm_po@thread.v2", "pm", 29.5), ("19:pm_po@thread.v2", "po", 29),   # a group chat
+         ("19:pm_pp@unq.gbl.spaces", "pp", 29),               # Mia never wrote in it
+         ("19:gx_pm@unq.gbl.spaces", "pm", 29.5), ("19:gx_pm@unq.gbl.spaces", "gx", 29),
+         ("19:pl_po@unq.gbl.spaces", "po", 29.5), ("19:pl_po@unq.gbl.spaces", "pl", 29)]
+
 
 def spec(sid: str) -> ins.Spec:
     return next(s for s in ins.builtin() if s.id == sid)
@@ -60,7 +68,8 @@ class OrgTiles(unittest.TestCase):
             pg.execute(f"CREATE TABLE {S}.emails (message_id text, mailbox text, sender text, "
                        "received_at timestamptz, owner_role text, is_bulk boolean, "
                        "owner_replied_at timestamptz, thread text)")
-            pg.execute(f"CREATE TABLE {S}.teams_messages (sender text, created_at timestamptz)")
+            pg.execute(f"CREATE TABLE {S}.teams_messages (sender text, created_at timestamptz, "
+                       "chat text, message_type text)")
             pg.execute(f"CREATE TABLE {S}.records (type text, fields jsonb)")
             for row in STAFF:
                 pg.execute(f"INSERT INTO {S}.staff VALUES (%s, %s, %s, %s, %s, %s)", row)
@@ -77,6 +86,11 @@ class OrgTiles(unittest.TestCase):
                 pg.execute(f"INSERT INTO {S}.teams_messages VALUES (%s, now() - interval "
                            "'2 days')", (json.dumps({"id": "pn"}),))
             pg.execute(f"INSERT INTO {S}.teams_messages VALUES ('Guest', now())")
+            # Teams chats 28-30 days ago (past the other tiles' 28 days): who wrote, when
+            for chat, sender, days in CHATS:
+                pg.execute(f"INSERT INTO {S}.teams_messages VALUES (%s, now() - make_interval("
+                           "secs => %s), %s, 'message')",
+                           (json.dumps({"id": sender}), days * 86400, chat))
             # approvals: Lee 10 and 90 minutes (one rejected), Mia 5 minutes; one pending
             # and one decided 40 days ago are not counted
             for who, minutes, status, days in (("LEE@plx.example", 10, "approved", 1),
@@ -143,11 +157,52 @@ class OrgTiles(unittest.TestCase):
 
     def test_colleagues_waiting_counts_only_colleagues_in_threads_the_person_is_in(self):
         got = self.table("colleagues_waiting", "person")
-        # t3 (Oz) and t8 (Ned); not t10 (Mia never wrote), t11 (outside), t7 (too new),
-        # t6 (bulk); her answers to colleagues: i1 only (2 h)
-        self.assertEqual(got, {"Mia": {"colleagues_waiting": 2, "threads_waiting": 2,
-                                       "waiting_over_3_days": 2, "oldest_days": 6.0,
-                                       "median_reply_hours_to_colleagues": 2.0}})
+        # mail t3 (Oz) and t8 (Ned); not t10 (Mia never wrote), t11 (outside), t7 (too new),
+        # t6 (bulk); her answers to colleagues: i1 only (2 h). Teams: Lee's and Ned's chats
+        # (Ned is one colleague by mail and Teams), not the group chat, Pat's (Mia never
+        # wrote) or the guest's; Oz waits on Lee's last message in their chat; Lee is last
+        # in his chat with Mia, so he waits on nobody
+        self.assertEqual(got, {"Mia": {"colleagues_waiting": 3, "threads_waiting": 2,
+                                       "chats_waiting": 2, "waiting_over_3_days": 4,
+                                       "oldest_days": 29.0,
+                                       "median_reply_hours_to_colleagues": 2.0},
+                               "Oz": {"colleagues_waiting": 1, "threads_waiting": 0,
+                                      "chats_waiting": 1, "waiting_over_3_days": 1,
+                                      "oldest_days": 29.0,
+                                      "median_reply_hours_to_colleagues": None}})
+
+    def test_two_latest_messages_at_the_same_time_give_one_answer(self):
+        """Mail times are often to the minute: when a thread's two latest messages carry the
+        same time, the one with the larger message id is the latest, whatever order the rows
+        are read in (tie: Oz's z1 is latest, Mia waits; tie2: her own z2 is, nobody waits)."""
+        def waiting(pg, sid):
+            cur = pg.execute(spec(sid).sql)
+            cols = [d.name for d in cur.description]
+            return {r[cols.index("person")]: r[cols.index("threads_waiting")]
+                    for r in cur.fetchall()}
+        with psycopg.connect(self.dsn) as pg:
+            pg.execute(f"SET search_path = {S}")
+            before = {sid: waiting(pg, sid) for sid in ("team_waiting", "colleagues_waiting")}
+            for mid, sender, role, thread in (("z1", OZ, "to", "tie"), ("a1", MIA, "from", "tie"),
+                                              ("a2", OZ, "to", "tie2"), ("z2", MIA, "from", "tie2")):
+                pg.execute(f"INSERT INTO {S}.emails VALUES (%s, 'pm', %s, now() - interval "
+                           "'2 days', %s, false, NULL, %s)", (mid, sender, role, thread))
+            for sid in before:
+                self.assertEqual(waiting(pg, sid)["Mia"], before[sid]["Mia"] + 1, sid)
+            pg.rollback()
+
+    def test_every_latest_message_of_a_thread_breaks_a_time_tie(self):
+        """The same rule in every tile that takes a thread's latest message (the customer and
+        outside-waiting tiles read columns this fixture does not have)."""
+        import re
+        found = 0
+        for s in ins.builtin():
+            for m in re.finditer(r"DISTINCT ON \((e\.)?mailbox, (e\.)?thread\)", s.sql or ""):
+                end = s.sql.index(")", s.sql.index("ORDER BY", m.end()))
+                self.assertTrue(s.sql[:end].endswith("received_at DESC, "
+                                                     f"{m.group(1) or ''}message_id DESC"), s.id)
+                found += 1
+        self.assertGreaterEqual(found, 4)
 
     def test_approval_speed_per_person_who_decided(self):
         got = self.table("approval_speed", "decided_by")

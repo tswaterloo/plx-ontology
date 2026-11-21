@@ -115,6 +115,55 @@ class KindsTest(unittest.TestCase):
                 self.assertEqual((usd["labels"], [s["name"] for s in usd["series"]]),
                                  (["W1"], ["spend"] if "split" not in spec else ["C"]))
 
+    def test_kpi_tiles_in_two_currencies_are_one_set_per_currency(self):
+        cols = ["month", "currency", "revenue"]
+        rows = [["2026-10", "CAD", 10], ["2026-11", "CAD", 12], ["2026-10", "USD", 7],
+                ["2026-11", "USD", 5]]
+        out = ch.build({"kind": "kpi", "x": "month", "y": ["revenue"], "facet": "currency"},
+                       cols, rows)
+        cad, usd = out["panels"]
+        self.assertEqual((cad["title"], cad["series"][0]["values"]), ("CAD", [10.0, 12.0]))
+        self.assertEqual((usd["title"], usd["series"][0]["values"]), ("USD", [7.0, 5.0]))
+        with self.assertRaisesRegex(ch.NotDrawn, "currenc"):
+            ch.build({"kind": "kpi", "x": "month", "y": ["revenue"]}, cols, rows)
+
+    def test_shares_in_two_currencies_are_one_pie_per_currency(self):
+        cols = ["line_type", "currency", "revenue"]
+        rows = [["Misc", "CAD", 10], ["Item", "CAD", 90], ["Item", "USD", 19], ["Misc", "USD", 1]]
+        out = ch.build({"kind": "donut", "x": "line_type", "y": ["revenue"], "facet": "currency"},
+                       cols, rows)
+        cad, usd = out["panels"]
+        self.assertEqual((cad["title"], cad["labels"], cad["series"][0]["values"]),
+                         ("CAD", ["Item", "Misc"], [90.0, 10.0]))
+        self.assertEqual((usd["title"], usd["series"][0]["values"]), ("USD", [19.0, 1.0]))
+        with self.assertRaisesRegex(ch.NotDrawn, "currenc"):
+            ch.build({"kind": "donut", "x": "line_type", "y": ["revenue"]}, cols, rows)
+        with self.assertRaisesRegex(ch.NotDrawn, "negative"):
+            ch.build({"kind": "pie", "x": "line_type", "y": ["revenue"], "facet": "currency"},
+                     cols, rows + [["Credit", "USD", -3]])
+
+    def test_a_change_in_two_currencies_is_a_waterfall_per_currency(self):
+        cols = ["customer", "currency", "change"]
+        rows = [["A", "CAD", 10], ["B", "CAD", -4], ["All others (3)", "CAD", 2],
+                ["C", "USD", -7]]
+        out = ch.build({"kind": "waterfall", "x": "customer", "y": ["change"],
+                        "facet": "currency"}, cols, rows)
+        cad, usd = out["panels"]
+        self.assertEqual((cad["labels"], cad["series"][0]["values"]),
+                         (["A", "B", "All others (3)"], [10.0, -4.0, 2.0]))
+        self.assertEqual(usd["series"][0]["values"], [-7.0])
+        with self.assertRaisesRegex(ch.NotDrawn, "currenc"):
+            ch.build({"kind": "waterfall", "x": "customer", "y": ["change"]}, cols, rows)
+        with self.assertRaises(ch.NotDrawn):   # a split is no way to keep a sum apart
+            ch.build({"kind": "waterfall", "x": "customer", "y": ["change"],
+                      "split": "currency"}, cols, rows)
+        twice = rows + [["A", "CAD", 1]]
+        for split in ({}, {"split": "region"}):   # a label twice in a panel: no sum
+            with self.subTest(split=split), self.assertRaises(ch.NotDrawn):
+                ch.build({"kind": "waterfall", "x": "customer", "y": ["change"],
+                          "facet": "currency", **split}, cols + ["region"],
+                         [r + [f"R{i}"] for i, r in enumerate(twice)])
+
     def test_the_split_is_a_column_whose_values_tell_the_repeated_rows_apart(self):
         # region is the same on both April rows: it cannot be the split; customer can
         cols = ["month", "region", "orders", "customer"]
@@ -250,6 +299,38 @@ class OpenPeriodTest(unittest.TestCase):
     """A period the data's as-of falls inside (this month, this week) is named: its figures
     are of part of it, and a chart or a KPI change would otherwise read as a drop."""
 
+    def test_a_window_starting_inside_the_first_period_names_it(self):
+        now = "2026-11-18T22:00:00+00:00"
+        months = ["2026-09", "2026-10", "2026-11"]
+        win = "SELECT m, n FROM t WHERE d >= now() - interval '{}' GROUP BY 1"
+        self.assertEqual(ch.first_period(months, now, win.format("60 days")), "2026-09")
+        self.assertEqual(ch.first_period(months, now, win.format("9 weeks")), "2026-09")
+        self.assertIsNone(ch.first_period(months, now, win.format("48 days")))  # 1 Oct: whole
+        self.assertIsNone(ch.first_period(months, now, win.format("200 days")))  # before Sep
+        self.assertIsNone(ch.first_period(months, now, None))
+        self.assertIsNone(ch.first_period(months, now, "SELECT m, n FROM t"))
+        two = win.format("60 days") + " AND e > now() - interval '30 days'"
+        self.assertIsNone(ch.first_period(months, now, two))                 # two bounds
+        weeks = ["2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16"]
+        self.assertEqual(ch.first_period(weeks, now, win.format("20 days")), "2026-10-26")
+        self.assertIsNone(ch.first_period(weeks, now, win.format("23 days")))  # 26 Oct whole
+        days = ["2026-11-16", "2026-11-17", "2026-11-18"]
+        self.assertIsNone(ch.first_period(days, now, win.format("2 days")))    # a day is whole
+        self.assertIsNone(ch.first_period(["2026-11-09", "2026-11"], now, win.format("9 days")))
+        self.assertIsNone(ch.first_period(months, now, win.format("3 months")))  # Aug not shown
+        aug = ["2026-08"] + months
+        self.assertEqual(ch.first_period(aug, now, win.format("3 months")), "2026-08")
+        year = [f"{y}-{m:02d}" for y, m in [(2025, 11), (2025, 12)] + [(2026, k) for k in range(1, 12)]]
+        self.assertEqual(ch.first_period(year, now, win.format("1 year")), "2025-11")
+        days = "SELECT m, n FROM t WHERE d >= current_date - 60 GROUP BY 1"
+        self.assertEqual(ch.first_period(months, now, days), "2026-09")
+        self.assertIsNone(ch.first_period(months, now, "SELECT m FROM t WHERE d >= current_date - 2 * 30"))
+        self.assertEqual(ch._months_back(__import__("datetime").date(2026, 3, 31), 1),
+                         __import__("datetime").date(2026, 2, 28))
+        c = ch.draw({"type": "bar", "x": "k", "y": ["n"]}, ("k", "n"),
+                    [[x, "1"] for x in months], sql=win.format("60 days"), as_of=now)
+        self.assertEqual(c.get("first_period"), "2026-09")
+
     def test_the_period_not_over_is_named_and_a_closed_or_mixed_axis_is_not(self):
         cases = [(["2026-10", "2026-11"], "2026-11"),               # as of 2026-11-18
                  (["2026-09", "2026-10"], None),
@@ -279,6 +360,8 @@ class OpenPeriodTest(unittest.TestCase):
         _, (values, change), _ = chart_docs._grid(c)
         self.assertEqual(values, ["197"])
         self.assertEqual(change, ["-103 (-34%), 2026-11 so far vs 2026-09"])   # null skipped
+        _, (_, change), _ = chart_docs._grid(dict(c, first_period="2026-09"))
+        self.assertEqual(change, ["-103 (-34%), 2026-11 so far vs 2026-09 (part)"])  # both partial
 
 
 class CardinalityTest(unittest.TestCase):

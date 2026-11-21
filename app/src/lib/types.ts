@@ -273,3 +273,8 @@ export type TemplateFilled = S["TemplateFilled"];
 export type TemplateFillField = S["TemplateFillField"];
 export type TemplateSuggestions = S["TemplateSuggestions"];
 export type TemplateSuggestion = S["TemplateSuggestion"];
+
+export type RecurringInstruction = S["RecurringInstruction"];
+export type RecurringInstructions = S["RecurringInstructions"];
+export type RecurringKeep = S["RecurringKeep"];
+export type RecurringChange = S["RecurringChange"];

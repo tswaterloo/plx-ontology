@@ -506,6 +506,56 @@ class TeamsAndEdits(unittest.TestCase):
         self.assertEqual(ap.learned_style(lessons, "someone-else", {"side": "internal"}), [])
 
 
+class AssistLearnsAndRemembers(unittest.TestCase):
+    """An Assist draft its person answered
+    teaches like an autopilot draft does, and the assistant's session reads the person's
+    memory and learned style (never in a replay of a past moment)."""
+
+    def test_an_answered_assist_draft_is_a_draft_sent_signal_of_features_only(self):
+        from operating import reply_drafts as rd
+        with tempfile.TemporaryDirectory() as tmp:
+            kept = rd.Kept(Path(tmp) / "k.sqlite")
+            kept.mark(ANA, "Email:m1", "ready", kind="reply", body=DRAFT)
+            kept.mark(ANA, "Email:m2", "ready", kind="reply", body="Yes.")    # not answered
+            kept.mark(ANA, "Email:m3", "none", why="nothing_to_do")
+            kept.mark(ANA, "Teams:x", "ready", kind="reply", body="Yes.")     # mail only
+            rows = {"Email:m1": {"conversation_id": "c1", "sent_at": "2026-10-09T00:00:00Z",
+                                 "sender": "sam@s.example", "subject": "Order status"},
+                    "Email:m2": {"conversation_id": "c2", "sent_at": "2026-10-09T00:00:00Z",
+                                 "sender": "sam@s.example", "subject": "Other"}}
+            people = mock.Mock(directory={"ana@plx.example": ANA}, internal=())
+            with mock.patch("operating.autopilot_records._read",
+                            lambda st, ids, props: {i: rows[i] for i in ids if i in rows}), \
+                    mock.patch("operating.autopilot_records._v", lambda r, p: r.get(p)), \
+                    mock.patch.object(ls, "replies_in_threads", lambda st, wants: {
+                        w: (("Email:r1", "2026-10-09T12:00:00Z",
+                             "Sam,\n\nOrder SO-1 shipped Fri 16 Oct.\n\nV") if w[0] == "c1"
+                            else None) for w in wants}):
+                got = ls.from_reply_drafts(kept.path, None, people)
+        self.assertEqual([(s.kind, s.person, s.data["reply"], s.data["message"]) for s in got],
+                         [("draft_sent", ANA, "Email:r1", "Email:m1")])
+        self.assertEqual(got[0].people, ("sam@s.example",))
+        self.assertNotIn("SO-1", json.dumps(got[0].data))           # features only
+        self.assertEqual(got[0].data["greeting"], "name_only")
+
+    def test_the_session_reads_the_persons_memory_never_in_a_replay(self):
+        lesson = L.Lesson(lesson_id="greeting", scope="person", who=ANA, kind="style",
+                          key="greeting", value="v", confidence=0.9, weight=1, total=1, seen=5,
+                          first_at="2026-10-01T00:00:00Z", last_at="2026-10-02T00:00:00Z",
+                          evidence=[], text="Starts replies without a greeting")
+        with tempfile.TemporaryDirectory() as tmp:
+            held = {"learned": L.Lessons([lesson]), "provider": None, "made": time.monotonic()}
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PLX_READ_CEILING", None)
+                got = ap.person_memory(Path(tmp), held, ANA, (), {"side": "customer"})
+            self.assertIn("- Learned from their replies: Starts replies without a greeting",
+                          got)
+            self.assertEqual(ap.person_memory(Path(tmp), held, "someone-else", (), {}), "")
+            with mock.patch.dict(os.environ, {"PLX_READ_CEILING": "2026-10-01T00:00:00Z"}):
+                self.assertEqual(ap.person_memory(Path(tmp), held, ANA, (), {}), "")
+            self.assertEqual(ap.person_memory(None, held, ANA, (), {}), "")
+
+
 class AutopilotUsesLessons(Fixture):
     """The live queue's shape (``<state>/autopilot/autopilot.sqlite``): a replay's queue
     never takes lessons."""

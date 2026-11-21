@@ -34,7 +34,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from ontology import tmp_root
-from operating import handle_aliases, host_peers, tool_results
+from operating import handle_aliases, host_peers, open_refs, tool_results
 from operating.handle_aliases import Aliases
 from operating.agent_environment import agent_environment
 from operating.answer_contract import (ACTION_TOOL, ANSWER_FORMAT, ANSWERABILITY, _JSON_FENCE,
@@ -366,6 +366,7 @@ def over_rss_cap(pid: int, cap_mb: float | None,
     held = rss(pid)
     return held if held is not None and held > cap_mb else None
 _SET_HANDLE = re.compile(r"set:[A-Za-z0-9_-]{16,}")
+OPEN_TOOL = "plx.open"   # its ``citation`` may be a short ref (``open_refs``)
 HELPER_INIT_ID = "plx-helper-init"
 PEER_GONE = "tool_host_stopped"
 # The session's read cache (``serve_gate``): a call of a read tool repeating one this
@@ -604,6 +605,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     keeping: dict[str, str] = {}       # forwarded call -> its read cache key
     from_cache: set[str] = set()       # calls answered from the read cache
     began_at: dict[str, float] = {}    # forwarded budgeted call -> its start (``clock``)
+    refs: dict[str, str] = {}          # a short ref the results showed -> its handle
 
     def note(entry: Mapping[str, Any]) -> None:
         if timing is None:
@@ -679,6 +681,11 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 and key not in from_cache:
             for handle in _SET_HANDLE.findall(json.dumps(result)):
                 owners[handle] = peer
+        if key in calls and isinstance(result, dict):
+            # the short refs a result shows (``open_refs``): a plx.open of one goes to any
+            # host as its full handle (a helper host's refs are its own)
+            with lock:
+                open_refs.learn(json.dumps(result), refs)
         if key in abandoned and "method" not in message:
             abandoned.discard(key)
             return   # answered timed out by the gate already
@@ -903,6 +910,13 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             params = {**params, "arguments": aliases.expand(params["arguments"],
                                                             unknown_aliases)}
             message = {**message, "params": params}
+        if message.get("method") == "tools/call" and params.get("name") == OPEN_TOOL \
+                and "arguments" in params:
+            with lock:
+                expanded = open_refs.expand(params["arguments"], refs)
+            if expanded is not params["arguments"]:
+                params = {**params, "arguments": expanded}
+                message = {**message, "params": params}
         if question is not None and message.get("method") == "tools/call" \
                 and params.get("name") == ANSWER_GATE_TOOL \
                 and isinstance(params.get("arguments"), Mapping) \

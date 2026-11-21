@@ -49,7 +49,7 @@ MAX_PANELS = 12
 MAX_BINS = 40
 # kinds whose meaning is a whole: never of a result cut short
 WHOLE = frozenset({"pie", "donut", "waterfall", "histogram"})
-FACETED = frozenset({"bar", "line", "area"})
+FACETED = frozenset({"bar", "line", "area", "waterfall", "kpi", "pie", "donut"})
 _CURRENCY_COL = re.compile(r"(^|_)(currency|currency_code|ccy)$", re.I)
 _CODE = re.compile(r"^[A-Z]{3}$")
 _NUMBER = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?$")
@@ -116,7 +116,7 @@ def _parse(raw: Any) -> dict[str, Any]:
     if kind == "combo" and not spec["y2"]:
         spec["kind"] = kind = "bar"
     if spec["facet"] and kind not in FACETED:
-        raise NotDrawn("Small multiples are of bar, line or area charts.")
+        raise NotDrawn("Small multiples are of bar, line, area, waterfall, pie or donut charts or KPI tiles.")
     if spec["split"] and (len(spec["y"]) != 1 or kind not in ("bar", "line", "area",
                                                               "heatmap", "table")):
         raise NotDrawn("A split draws one value column as one series per value.")
@@ -233,7 +233,8 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
     else:
         _wide(out, spec, rows, cell)
     if kind in ("pie", "donut"):
-        _slices(out, truncated)
+        for whole in out.get("panels") or [out]:
+            _slices(whole, truncated)
     if kind == "waterfall" and out["shown"] < len(rows):
         raise NotDrawn("A waterfall adds every row; the result has more than "
                        f"{MAX_CHART_POINTS}.")
@@ -246,6 +247,7 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
     if kind in PERIODIC:
         labels = out["labels"] or [x for p in out.get("panels") or () for x in p["labels"]]
         out["open_period"] = open_period(labels, out["as_of"])
+        out["first_period"] = first_period(labels, out["as_of"], sql)
     return out
 
 
@@ -304,6 +306,54 @@ def open_period(labels: Sequence[Any], as_of: Any) -> Optional[str]:
     return label if start <= today < end else None
 
 
+# a statement's window: a lower bound ``>= now() - interval 'N days'`` (or current_date,
+# or ``> ...``); one such bound only, else nothing is claimed
+_WINDOW = re.compile(r"(?:>=?)\s*(?:now\(\)|current_date|current_timestamp)\s*-\s*"
+                     r"(?:interval\s*'(\d+)\s*(days?|weeks?|months?|years?)'|(\d+)\b(?!\s*\*))",
+                     re.I)
+
+
+def _months_back(day: Any, months: int) -> Any:
+    """``day`` ``months`` calendar months earlier, on the same day or the month's last."""
+    import calendar
+    y, m = divmod(day.year * 12 + day.month - 1 - months, 12)
+    return day.replace(year=y, month=m + 1, day=min(day.day, calendar.monthrange(y, m + 1)[1]))
+
+
+def first_period(labels: Sequence[Any], as_of: Any, sql: Optional[str]) -> Optional[str]:
+    """The label of the earliest calendar period when the statement's one window bound
+    (``now() - interval 'N days'``) starts inside it: its values are of part of it, so it
+    reads lower than a whole one. None when the bound is not one plain interval, the labels
+    are not periods, or the window starts on the period's first day."""
+    from datetime import date, timedelta
+    from operating.ontology_tools_results import _business_day
+    bounds = {(int(n), u.lower().rstrip("s")) if n else (int(d), "day")   # current_date - N
+              for n, u, d in _WINDOW.findall(sql or "")}
+    if len(bounds) != 1:
+        return None
+    (n, unit), = bounds
+    try:
+        today = date.fromisoformat(_business_day(_text(as_of) or "")[:10])
+    except ValueError:
+        return None
+    start = (_months_back(today, n * (12 if unit == "year" else 1)) if unit in ("month", "year")
+             else today - timedelta(days=n * (7 if unit == "week" else 1)))
+    got = [(str(x), _period(x)) for x in labels if str(x).strip()]
+    if not got or any(p is None for _, p in got):
+        return None
+    dated = [p for _, p in got if p[1] is None]
+    if dated and len(dated) != len(got):
+        return None
+    if dated:   # dates: weeks (the step between them) hold part of a window; days never do
+        days = sorted({p[0] for _, p in got})
+        steps = {(b - a).days for a, b in zip(days, days[1:])}
+        if len(days) < 2 or min(steps) != 7 or any(s % 7 for s in steps):
+            return None
+        got = [(x, (p[0], p[0] + timedelta(days=7))) for x, p in got]
+    label, (begin, end) = min(got, key=lambda g: g[1][0])
+    return label if begin < start < end else None
+
+
 def _currency(spec: Mapping[str, Any], columns: Sequence[str],
               rows: Sequence[Sequence[Any]]) -> Optional[str]:
     """The one currency the rows are in (a ``currency`` column's single code), None when
@@ -322,6 +372,8 @@ def _currency(spec: Mapping[str, Any], columns: Sequence[str],
             if col in (spec.get("x"), spec.get("split"), spec.get("facet"), spec.get("label")) \
                     and spec["kind"] not in ("pie", "donut", "waterfall", "kpi") and not stacks:
                 return None
+            if spec["kind"] in ("waterfall", "kpi", "pie", "donut") and col == spec.get("facet"):
+                return None   # one waterfall / set of KPI tiles per currency: each its own
             if spec["kind"] == "table":
                 return None
             raise NotDrawn("The rows are in more than one currency (" + ", ".join(
@@ -428,6 +480,10 @@ def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,
     for name, members in list(groups.items())[:MAX_PANELS]:
         alone = dict(spec, facet=None)
         split = alone.get("split") or _repeat_split(alone, columns, members, cell)
+        if split and spec["kind"] in ("waterfall", "pie", "donut"):
+            raise NotDrawn(("A waterfall adds" if spec["kind"] == "waterfall" else "A share chart shares")
+                           + " one value column: its rows repeat a label ("
+                           + split + " tells them apart); total them in the statement.")
         if split:
             drawn: dict[str, Any] = {}
             _pivot(drawn, dict(alone, split=split), members, cell)
@@ -435,7 +491,7 @@ def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,
             panels.append({"title": name, "labels": drawn["labels"],
                            "series": drawn["series"]})
             continue
-        part = members[:MAX_CHART_POINTS]
+        part = members if spec["kind"] in ("pie", "donut") else members[:MAX_CHART_POINTS]
         shown += len(part)
         panels.append({"title": name, "labels": [_text(cell(r, spec["x"])) or "" for r in part],
                        "series": [{"name": col, "values": [_float(number(cell(r, col)))
@@ -665,7 +721,8 @@ def _each(text: str, events: Sequence[Mapping[str, Any]], raw: bool = False) -> 
 
 # the line the Ask's prompt carries about charts (simple_ask)
 PROMPT_LINE = (
-    '- A trend, a ranking, a mix or a comparison reads best as a chart: after the answer add '
+    '- A trend, a ranking, a mix, a comparison, shares of a whole, a few headline numbers, '
+    'counts through steps or a spread of values reads best as a chart: after the answer add '
     'one fenced block ```chart {"type": "<kind>", "title": "...", "result": "<the plx.sql '
     'result id>", "x": "<label column>", "y": ["<numeric column>", ...]} ``` and the app '
     'draws it from that result\'s rows (no text bars). Kinds: bar (options "stacked": true, '
@@ -676,5 +733,12 @@ PROMPT_LINE = (
     'and "y2": [<column>] a line on a right axis), kpi (a few headline columns; rows in '
     'time order, the last is now), table (values coloured by size). "split": <column> '
     'turns long rows (x, group, value) into one series per group; "facet": <column> draws '
-    'small multiples of a bar, line or area chart. Never put two currencies on one axis: '
-    'split or facet by the currency column.')
+    'small multiples of a bar, line, area, pie or donut chart or of KPI tiles. Never put two currencies on one axis: '
+    'split or facet by the currency column. A change split into its parts (a measure\'s '
+    '"compare" rows: one change per part, the rest one "All others" row) reads best as a '
+    'waterfall of the change column, the parts adding up to the whole change; "facet" by '
+    'the currency or unit column when the rows hold more than one. Pick the kind from what '
+    'the question asks for, not bar by habit: shares of a whole -> pie or donut; a few '
+    'headline numbers (now against before) -> kpi; counts through ordered steps, even two '
+    '-> funnel; a list of named rows -> table; how values spread -> histogram; and in two '
+    'currencies "facet" any of these by the currency column.')

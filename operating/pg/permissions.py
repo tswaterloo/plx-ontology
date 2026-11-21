@@ -310,8 +310,15 @@ def policy_parts(policy: ReadPolicy, actor: Actor) -> tuple[tuple[str, str], ...
         hit = _PARTS.get(key)
     if hit is not None and hit[0] is policy:
         return hit[1]
+    body = _body(policy, actor)
+    # two finer views of ``audiences`` (each changes only when it does, so a state holding
+    # them refuses nothing more): the patterns this actor holds, and every pattern's name;
+    # a refusal then says whether the reader's own slice moved or only someone else's
+    held = set(actor.principals)
+    body["audiences_held"] = sorted(p for p, v in body["audiences"].items() if held & set(v))
+    body["audiences_keys"] = sorted(body["audiences"])
     out = tuple((name, hashlib.sha256(json.dumps(part, sort_keys=True).encode()).hexdigest())
-                for name, part in sorted(_body(policy, actor).items()))
+                for name, part in sorted(body.items()))
     with _FINGERPRINTS_LOCK:
         _PARTS[key] = (policy, out)
         while len(_PARTS) > 64:

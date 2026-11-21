@@ -597,10 +597,10 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     studio_demo: Any = None
 
     def _ap_visible(self, reader: Reader, everyone: bool = False,
-                    states: tuple[str, ...] = ("open",)) -> Any:
+                    states: tuple[str, ...] = ("open",), also: tuple[str, ...] = ()) -> Any:
         if self.studio_demo is not None:
             return self.studio_demo.visible(reader) if states == ("open",) else []
-        return super()._ap_visible(reader, everyone, states)
+        return super()._ap_visible(reader, everyone, states, also)
 
     def _studio_modes(self, passed: bool) -> list[str]:
         if self.studio_demo is None:
@@ -1155,7 +1155,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
             raise UserFacing("not_found", "That record is not one you can open.", 404)
         return brief_model(raw)
 
-    def weekly_review(self, reader: Reader, week: Any) -> m.Brief:
+    def weekly_review(self, reader: Reader, week: Any, **_ahead: Any) -> m.Brief:
         """A synthetic finished week (``mock_meetings.weekly``) in the builder's own shape."""
         from . import mock_meetings
         from .briefs import brief_model

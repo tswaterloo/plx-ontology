@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from integrations import capture_mail, graph_read
 from integrations import capture_mail_extract
+from integrations import capture_mail_priority
 from integrations.capture_mail import MailCapture
 from integrations.capture_mail_scope import CaptureScope
 from integrations.graph_read import GraphMailReader
@@ -1136,7 +1137,7 @@ class LanesAndPriorityTests(ThroughputCase):
                            received=f"2026-0{1 + m}-02T09:00:00Z")
         only_c = lane_scope([upn_c], history="all", priority={})
         before = len(self.stored())
-        with mock.patch.object(capture_mail, "BULK_SAMPLE", 2):
+        with mock.patch.object(capture_mail_priority, "BULK_SAMPLE", 2):
             first = self.lane_capture([upn_c], pages_per_turn=1, page_size=1,
                                       page_budget=4).run(only_c)   # samples both folders
             self.assertFalse(first["complete"])
@@ -1160,7 +1161,7 @@ class LanesAndPriorityTests(ThroughputCase):
                            received=f"2026-0{1 + m}-01T09:00:00Z")
             self.graph.put(c, f"R-{m}", "CK-1", sender=f"person{m}@outside.example",
                            received=f"2026-0{1 + m}-02T09:00:00Z")
-        with mock.patch.object(capture_mail, "BULK_SAMPLE", 2):
+        with mock.patch.object(capture_mail_priority, "BULK_SAMPLE", 2):
             first = self.lane_capture([upn_c], lanes=1, pages_per_turn=1, page_size=1).run(
                 lane_scope([upn_c], history="all", priority={}))
             self.assertTrue(first["complete"], first["incomplete_reasons"])

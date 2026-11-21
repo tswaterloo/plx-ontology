@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 import contextvars
 import hashlib
 import json
 from typing import Any, Iterable, Optional
 
 from . import models as m
+
+
+_STAMP_SEEN: dict[str, str] = {}
+
+
+def _note_stamp(part: str, value: str) -> None:
+    """Say when a part of every reader's marks stamp moves in this process (each move
+    refuses the pages kept before it): the part and a digest prefix, never an id."""
+    last = _STAMP_SEEN.get(part)
+    if last != value:
+        _STAMP_SEEN[part] = value
+        # the first value too: a page another process kept is refused when its differs
+        logging.getLogger("operator_api.kept").info(
+            "marks stamp part %s %s", part,
+            f"is {value}" if last is None else f"moved: {last} -> {value}")
 
 
 def _marks_stamp(view: Any) -> Optional[str]:
@@ -22,11 +38,13 @@ def _marks_stamp(view: Any) -> Optional[str]:
     except Exception:  # noqa: BLE001 - undecidable: nothing held (fail closed)
         held = frozenset()
     got = document_marks.withheld_set(held)
+    _note_stamp("marks", "unreadable" if got is None else "read")
     if got is None:
         return "unreadable"
     # the PLX-issued documents every reader is kept from (``operating.pg.own_issued``):
     # a page kept before they were known (or before a refresh added one) is rebuilt
     own = _own_stamp(document_marks._own_issued())
+    _note_stamp("own", own[:12] or "none")
     if not got[0] and not got[1] and not own:
         return None
     # one digest per (withheld set, PLX-issued stamp): the withheld set is the same object

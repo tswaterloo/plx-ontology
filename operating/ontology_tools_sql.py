@@ -50,9 +50,13 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from operating.ontology_tools_identity import ToolError
+from operating import insight_statements as ins
 from operating import read_ceiling
 from operating.pg import business_views as bv
 from operating.pg import sql_views
+from operating.ontology_tools_sql_check import (  # noqa: F401  (re-exported)
+    FUNCTIONS, MAX_SQL, STATEMENT_WORDS, SYNTAX, _LOCKING, _WORD, _bad, _column_list,
+    _tokens, check)
 
 TOOL_NAME = "plx.sql"
 TOOL_NAMES = (TOOL_NAME,)
@@ -61,7 +65,6 @@ COMMS_SEARCH = "plx.sql_comms_search"
 COMMS_OPEN = "plx.sql_comms_open"
 RECORDS_SEARCH = "plx.sql_records_search"   # plx.search's records leg (ontology_tools_search)
 MAX_ROWS = 200
-MAX_SQL = 8000
 # the rows' text, measured as plx.sql writes it; the host sends a result twice (text and
 # structured content, ``mcp_server._envelope_bytes``) within MAX_RESULT_BYTES (48,000):
 # past ~23,000 here a whole result was refused (result_too_large), none of it shown
@@ -74,6 +77,13 @@ WIDEN_BELOW = 3
 # that the word match did not list ("mouth rinse": 30 label files hold both words, the
 # "Oral Rinse" mail is close in meaning)
 MEANING_EXTRA = 5
+# a full reader's first page with query words also shows up to this many mails whose
+# attachment's own text holds every word that the word match did not list
+# (``_comms_attached``: "QuikPAK orders appearing" was only in a PDF's text)
+ATTACH_EXTRA = 5
+# the attachment pass's own statement budget: past it, no attachment rows (the word page
+# answers alone); a common word's walk ran ~24 s live 11-19 under load
+ATTACH_MS = 2_500
 # the meaning ranking's best objects read for it
 MEANING_K = 40
 # the longest the search waits, past its word match, for the meaning ranking it started
@@ -96,6 +106,9 @@ SEARCH_FULL_MS = 25_000
 # a word the index finds: ~0.2 s live over 17M records). Past it, every label is read
 # through the door as before.
 CANDIDATE_MS = 3_000
+# the comms stem pass's own statement budget: past it, no stem rows (the any-word and
+# meaning widening still answer); its prefix stems took ~11 s live 11-19 under load
+STEM_MS = 3_000
 # A third waits up to FULL_COSTLY_WAIT_SECONDS for a slot (holding no connection), then is
 # told to narrow it
 FULL_COSTLY_SLOTS = 2
@@ -117,41 +130,6 @@ INPUT_SCHEMA: dict[str, Any] = _CONTRACT["input"]
 TOOL: dict[str, Any] = {"name": TOOL_NAME, "description": DESCRIPTION,
                         "inputSchema": INPUT_SCHEMA, "annotations": {"readOnlyHint": True}}
 
-FUNCTIONS = frozenset("""
-count sum avg min max stddev stddev_samp stddev_pop variance var_samp var_pop
-percentile_cont percentile_disc mode string_agg array_agg bool_and bool_or every
-round trunc ceil ceiling floor abs sign mod power sqrt exp ln log div width_bucket
-greatest least coalesce nullif date_trunc date_part extract age make_date make_interval
-justify_days justify_interval isfinite to_char to_date to_number to_timestamp now
-lower upper initcap length char_length trim btrim ltrim rtrim substring substr left right
-position strpos replace split_part concat concat_ws reverse format translate
-regexp_replace regexp_match regexp_matches regexp_count regexp_substr starts_with
-cardinality array_length array_position array_remove array_to_string string_to_array
-unnest generate_series row_number rank dense_rank percent_rank cume_dist ntile lag lead
-first_value last_value nth_value to_tsvector to_tsquery plainto_tsquery phraseto_tsquery
-websearch_to_tsquery ts_rank ts_rank_cd ts_headline
-jsonb_each_text jsonb_object_keys jsonb_array_elements_text jsonb_typeof jsonb_array_length
-jsonb_extract_path_text
-corr covar_pop covar_samp regr_slope regr_intercept regr_r2 regr_count regr_avgx regr_avgy
-""".split())
-# words a "(" may follow that are SQL syntax, never a call
-SYNTAX = frozenset("""
-in exists any all some over filter within as on and or not from join using by where
-select then else when case lateral row array values is between like ilike similar
-distinct group with union intersect except having limit offset order partition rows
-range groups nulls asc desc end inner left right full outer cross natural escape to at
-zone recursive materialized only fetch first next ties cast interval
-""".split())
-STATEMENT_WORDS = frozenset("""
-insert update delete merge create alter drop truncate grant revoke copy call do execute
-prepare deallocate listen notify unlisten lock vacuum analyze analyse cluster reindex
-refresh set reset show begin commit rollback savepoint release discard load import into
-returning checkpoint security reassign abort start transaction
-""".split())
-_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_LOCKING = re.compile(r"\bfor\s+(update|share|no\s+key|key\s+share)\b")
-
-
 def _ceiling() -> "dt.datetime | None":
     """The replay's read ceiling (``read_ceiling``); unreadable: every read refused."""
     try:
@@ -167,146 +145,6 @@ class Busy(ToolError):
     def __init__(self, message: str) -> None:
         super().__init__("not_ready", message, "the tables were being swapped; send the "
                          "query again once, then answer from what you have")
-
-
-def _bad(message: str, hint: str | None = None) -> ToolError:
-    return ToolError("invalid_sql", message, hint)
-
-
-def _tokens(sql: str) -> list[tuple[str, str]]:
-    """(kind, text) tokens: word, qident (quoted identifier, its text), string, punct."""
-    out, i, n = [], 0, len(sql)
-    while i < n:
-        ch = sql[i]
-        if ch.isspace():
-            i += 1
-        elif sql.startswith("--", i) or sql.startswith("/*", i):
-            raise _bad("comments are not allowed", "send the query alone")
-        elif ch == "$":
-            raise _bad("$ (parameters, dollar-quoted strings) is not allowed")
-        elif ch == "\\":
-            raise _bad("backslash is not allowed")
-        elif ch == "'":
-            if out and out[-1][0] == "word" and out[-1][1].lower() in ("e", "u&", "u") \
-                    and sql[i - 1] not in " \t\r\n(":
-                raise _bad("escape strings (E'...', U&'...') are not allowed")
-            j = i + 1
-            while True:
-                j = sql.find("'", j)
-                if j < 0:
-                    raise _bad("unterminated string")
-                if sql.startswith("''", j):
-                    j += 2
-                    continue
-                break
-            out.append(("string", sql[i + 1:j].replace("''", "'")))
-            i = j + 1
-        elif ch == '"':
-            j = sql.find('"', i + 1)
-            if j < 0:
-                raise _bad("unterminated quoted name")
-            name = sql[i + 1:j]
-            if '"' in name or not name:
-                raise _bad("quoted names may not hold quotes")
-            out.append(("qident", name))
-            i = j + 1
-        elif ch == "&" and out and out[-1] == ("word", "U") or ch == "&" and out \
-                and out[-1] == ("word", "u"):
-            raise _bad("U& escapes are not allowed")
-        elif _WORD.match(sql, i):
-            m = _WORD.match(sql, i)
-            out.append(("word", m.group(0)))
-            i = m.end()
-        elif sql.startswith("::", i):
-            out.append(("punct", "::"))
-            i += 2
-        else:
-            out.append(("punct", ch))
-            i += 1
-    return out
-
-
-def _column_list(tokens: list[tuple[str, str]], idx: int) -> bool:
-    """Whether ``name (`` at ``idx`` is a column list, never a call: a CTE's
-    (``WITH r(n) AS (``, after WITH, RECURSIVE or a comma) or a FROM item's alias without
-    AS (``unnest(x) f(a)``, ``customers c(a, b)``). The parentheses must hold bare names
-    separated by commas; in either place a call is not valid SQL, so nothing runs there."""
-    j, names = idx + 2, 0
-    while j < len(tokens):
-        kind, tok = tokens[j]
-        if kind not in ("word", "qident"):
-            return False
-        names += 1
-        j += 1
-        if j < len(tokens) and tokens[j] == ("punct", ","):
-            j += 1
-            continue
-        break
-    if not names or j >= len(tokens) or tokens[j] != ("punct", ")"):
-        return False
-    after = tokens[j + 1:j + 4]
-    prev = tokens[idx - 1] if idx else ("", "")
-    low = [(k, t.lower()) for k, t in after]
-    if prev in (("punct", ","),) or (prev[0] == "word" and prev[1].lower() in (
-            "with", "recursive")):
-        # AS [NOT] [MATERIALIZED] ( : only a CTE reads like that
-        rest = [t for k, t in low if k == "word"]
-        if low[:1] == [("word", "as")] and (
-                low[1:2] == [("punct", "(")] or low[1:3] == [("word", "materialized"),
-                                                              ("punct", "(")]
-                or rest[1:3] == ["not", "materialized"]):
-            return True
-        return False
-    return prev == ("punct", ")") or (prev[0] in ("word", "qident")
-                                      and prev[1].lower() in bv.VIEWS)
-
-
-def check(sql: Any, *, schemas: frozenset[str] = frozenset(), allowed_schema: str = ""
-          ) -> str:
-    """The statement as it will run (one trailing ``;`` dropped), or ``invalid_sql``."""
-    if not isinstance(sql, str) or not sql.strip():
-        raise _bad("sql is one SELECT statement as text")
-    if len(sql) > MAX_SQL:
-        raise _bad(f"the statement is longer than {MAX_SQL} characters")
-    if "\x00" in sql:
-        raise _bad("the statement holds a NUL character")
-    text = sql.strip()
-    if text.endswith(";"):
-        text = text[:-1].rstrip()
-    tokens = _tokens(text)
-    if not tokens or tokens[0][0] != "word" or tokens[0][1].lower() not in ("select", "with"):
-        raise _bad("only a SELECT (or WITH ... SELECT) is allowed")
-    flat = " ".join(t.lower() for k, t in tokens if k == "word")
-    if _LOCKING.search(flat):
-        raise _bad("locking clauses (FOR UPDATE / SHARE) are not allowed")
-    for idx, (kind, tok) in enumerate(tokens):
-        if kind == "punct" and tok == ";":
-            raise _bad("one statement per call: ';' is not allowed")
-        if kind not in ("word", "qident"):
-            continue
-        low = tok.lower()
-        if kind == "word" and low in STATEMENT_WORDS:
-            raise _bad(f"'{tok}' is not allowed: plx.sql reads with one SELECT")
-        if low.startswith("pg_") or low == "information_schema" or low.startswith("reg") \
-                and low in ("regclass", "regproc", "regprocedure", "regoper", "regoperator",
-                            "regnamespace", "regrole", "regtype", "regconfig",
-                            "regdictionary", "regcollation"):
-            raise _bad(f"system catalog names ('{tok}') are not allowed")
-        nxt = tokens[idx + 1] if idx + 1 < len(tokens) else ("", "")
-        prev = tokens[idx - 1] if idx else ("", "")
-        if nxt == ("punct", ".") and low in schemas and low != allowed_schema:
-            raise _bad(f"schema '{tok}' is not readable: read the views by their bare names",
-                       "plx.sql {\"describe\": true} lists them")
-        if nxt == ("punct", "(") and prev != ("punct", "::") and \
-                not (prev[0] == "word" and prev[1].lower() == "as") and \
-                not _column_list(tokens, idx):
-            if kind == "word" and low in SYNTAX:
-                continue
-            if low not in FUNCTIONS:
-                raise _bad(f"function '{tok}' is not allowed",
-                           "allowed: plain aggregate, arithmetic, text, date, window and "
-                           "full-text functions")
-    return text
 
 
 class _Results:
@@ -640,7 +478,7 @@ class SqlTool:
         k = (2 * limit + 1 if files else limit + 1) + skip
         own = limit + 1 + skip   # mail and Teams rows: never refused (``search_sql``)
 
-        def work(pg: Any) -> Any:
+        def search_rows(pg: Any, q: Any, cur: Any) -> Any:
             views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
                      and (files or v not in cs.SEARCH_ONLY)]
             who = cs.party(args["participant"], pg, biz) if args.get("participant") else None
@@ -655,6 +493,9 @@ class SqlTool:
                 "q": q, "party": who.value if who else None, "since": since, "until": until,
                 "c_at": cur[1] if cur else None, "c_h": cur[2] if cur else None,
                 "k": k, "k_own": own, "walk": cs.walk_rows(pg, q)}).fetchall()
+
+        def work(pg: Any, *_: Any) -> Any:
+            return search_rows(pg, q, cur)
         # a first page's meaning ranking runs beside the word search (``_comms_widened``)
         ranking = (self._meaning_started(args["query"], actor, wanted)
                    if words and cur is None else None)
@@ -669,6 +510,35 @@ class SqlTool:
         documents = cs.hits(rows, words=words, party_=who)
         searched = cs.searched(views, args, words)
         few = not more and len(rows) < min(limit, WIDEN_BELOW)
+        if few and words and cur is None:
+            # few rows hold every word as typed: the rows holding every word by its stem
+            # ("renovating" for "Renovation"), through the same views and item gate
+            def stemmed(pg: Any, *_: Any) -> Any:
+                (stems,) = pg.execute("SELECT plainto_tsquery('english'::regconfig, %s)"
+                                      "::text", (args["query"],)).fetchone()
+                sq = cs.stem_tsquery(stems)
+                if not sq or sq == q:
+                    return views, who, []
+                (budget,) = pg.execute("SELECT current_setting('statement_timeout')").fetchone()
+                pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(STEM_MS),))
+                got = search_rows(pg, sq, None)
+                pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
+                return got
+            try:
+                _, _, srows = self._comms_scoped(conn, settings, stemmed, actor)
+                srows, _ = self._gated_files(srows, actor, limit - len(rows), k, None)
+            except (ToolError, cs.SearchInputError):
+                srows = []
+            held = {r[1] for r in rows}
+            srows = [r for r in srows if r[1] not in held][:limit - len(rows)]
+            for hit in cs.hits(srows, words=words, party_=who):
+                hit["match"] = "every word, by its stem"
+                documents.append(hit)
+            if srows:
+                searched["widened"] = "fewer items held every word as typed: also items " \
+                    "holding every word by its stem"
+            rows = rows + srows
+            few = len(rows) < min(limit, WIDEN_BELOW)
         room = min(max(limit - len(rows) if few else 0,
                        MEANING_EXTRA if ranking is not None else 0), HITS_MAX - len(rows))
         if words and cur is None and room > 0:
@@ -686,11 +556,23 @@ class SqlTool:
                     # ``match``)
                     hit["meaning_rank"] = near
             if how:
-                searched["widened"] = (
+                searched["widened"] = "; ".join(filter(None, (searched.get("widened"), (
                     f"fewer than {WIDEN_BELOW} items held every word: also items holding "
                     "some of the words or close in meaning, each with its match" if few else
                     f"also up to {MEANING_EXTRA} items close in meaning that the word "
-                    "match did not list, each with its match")
+                    "match did not list, each with its match"))))
+        if words and cur is None and "emails" in views and self._files_reader(actor):
+            attached = self._comms_attached(
+                conn, settings, guarded, actor, q, who, since, until,
+                min(ATTACH_EXTRA, HITS_MAX - len(documents)),
+                {h["citation"] for h in documents})
+            for hit in cs.hits(attached, words=words, party_=who):
+                hit["match"] = "every word, in an attachment's text"
+                documents.append(hit)
+            if attached:
+                searched["widened"] = "; ".join(filter(None, (
+                    searched.get("widened"), f"also up to {ATTACH_EXTRA} mails whose "
+                    "attachment's text holds every word, each with its match")))
         out = {"documents": documents,
                "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more, "returned": len(rows),
@@ -699,6 +581,63 @@ class SqlTool:
             # a run of refused files longer than a cursor skips: stopped, said, no cursor
             out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
         return out
+
+    def _comms_attached(self, conn: Any, settings: Any, guarded: str, actor: Any, q: str,
+                        who: Any, since: Any, until: Any, room: int, seen: set
+                        ) -> list[Any]:
+        """Up to ``room`` rows of the reader's mail (``comms_search.attachment_sql``, the
+        same guarded view as the word search) whose attachment's text holds every word of
+        ``q``, newest first: none in ``seen`` or that a word page lists (``listed_sql``),
+        none whose attachment the reader is kept from (``attachment_blocked_sql``),
+        and each only once its attachment's whole text names no Freightcom
+        (``attachment_clear``: unreadable or unchecked is left out). The read failing or
+        late: none (the word search answers alone)."""
+        from operating.pg import comms_search as cs
+        if room <= 0:
+            return []
+
+        def work(pg: Any) -> tuple[list[Any], list[Any]]:
+            (budget,) = pg.execute("SELECT current_setting('statement_timeout')").fetchone()
+            # ATTACH_MS bounds the whole pass: each statement gets what is left of it
+            deadline = time.monotonic() + ATTACH_MS / 1000
+
+            def left() -> None:
+                ms = int((deadline - time.monotonic()) * 1000)
+                if ms < 50:
+                    raise ToolError("timeout", "the attachment pass ran out of time")
+                pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(ms),))
+            left()
+            common = cs.walk_rows(pg, q) > 1
+            left()
+            mails = None if common else [r[0] for r in pg.execute(
+                cs.attachment_mails_sql(), {"q": q, "mails": cs.ATTACH_MAILS})]
+            if mails == []:
+                return [], []
+            left()
+            sql = cs.attachment_sql(guarded=guarded, party_kind=who.kind if who else None,
+                                    since=since is not None, until=until is not None,
+                                    common=common)
+            rows = [r for r in pg.execute(sql, {
+                "q": q, "party": who.value if who else None, "since": since,
+                "until": until, "k": 2 * room + len(seen), "walk": cs.ATTACH_WALK,
+                "mails": mails}) if r[1] not in seen]
+            pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
+            if not rows:
+                return [], []
+            listed = {r[0] for r in pg.execute(cs.listed_sql(bv.SCHEMA), {
+                "handles": [r[1] for r in rows], "q": q})}
+            blocked = {r[0] for r in pg.execute(cs.attachment_blocked_sql(), {
+                "ids": [r[-1] for r in rows]})}
+            rows = [r for r in rows if r[1] not in listed and r[-1] not in blocked]
+            pieces = pg.execute(cs.attachment_check_sql(), {
+                "ids": [r[-1] for r in rows], "handles": [r[-2] for r in rows]}
+                ).fetchall() if rows else []
+            return rows, pieces
+        try:
+            rows, pieces = self._comms_scoped(conn, settings, work, actor)
+        except ToolError:
+            return []
+        return cs.attachment_clear(rows, pieces)[0][:room]
 
     def _meaning_started(self, query: str, actor: Any, wanted: set) -> Any:
         """The hybrid ranking (``operating/search``) of ``query`` over the mail, Teams
@@ -962,15 +901,58 @@ class SqlTool:
         rows = rows[:limit]
         documents, searched = rs.hits(rows), rs.searched(args, words)
         if not off and not more and len(rows) < min(limit, WIDEN_BELOW):
-            # few labels hold every word: the labels spelled close to the query ("Coop"
-            # for "Co-operatives"), read through the same door
-            near = self._records_close(conn, bound, dated, {r[0] for r in rows},
-                                       min(MEANING_EXTRA, limit - len(rows)), read)
+            # few labels hold every word: the labels holding every word by its stem
+            # ("calibrating" for "calibration"), then those spelled close to the query
+            # ("Coop" for "Co-operatives"), read through the same door
+            room = min(MEANING_EXTRA, limit - len(rows))
+            stemmed = self._records_stemmed(conn, bound, dated, {r[0] for r in rows},
+                                            room, read)
+            for hit in rs.hits(stemmed):
+                hit["match"] = "every word, by its stem"
+                documents.append(hit)
+            # a word naming a record by number ("purchase order 5626" for "PO#5626"): the
+            # labels holding every such word, through the same door
+            seen = {r[0] for r in rows} | {r[0] for r in stemmed}
+            idents = rs.numbers(words)
+            numbered = []
+            if idents and len(idents) < len(words) and room > len(stemmed):
+                nb = rs.params(idents, str(args.get("query")), since=since, until=until,
+                               k=rs.CLOSE_CAP, off=0)
+                nb.update({f"r{i}": rs.whole(w) for i, w in enumerate(idents)})
+                hs = self._label_candidates(conn, idents, nb, rs.CLOSE_CAP, dated,
+                                            whole=True)
+                if hs:
+                    numbered = rs.by_number(
+                        [r for r in read(rs.search_sql(len(idents), among=True, **dated),
+                                         {**nb, "hs": hs}) if r[0] not in seen],
+                        idents, words)[:room - len(stemmed)]
+            for hit in rs.hits(numbered):
+                hit["match"] = "every number in the query"
+                documents.append(hit)
+            seen |= {r[0] for r in numbered}
+            # words naming a record type ("assembly orders for tubes"): that type's
+            # records whose label holds the other words by their stem, same door
+            typed = self._records_typed(conn, bound, dated, words, seen,
+                                        room - len(stemmed) - len(numbered), read)
+            for hit in rs.hits(typed):
+                hit["match"] = "every other word, in a record of the type the query names"
+                documents.append(hit)
+            seen |= {r[0] for r in typed}
+            near = self._records_close(conn, bound, dated, seen,
+                                       room - len(stemmed) - len(numbered) - len(typed),
+                                       read)
             for hit in rs.hits(near):
                 hit["match"] = "close in spelling"
                 documents.append(hit)
-            if near:
-                searched["widened"] = "also records whose name is spelled close to the query"
+            widened = (["also records whose name holds every word by its stem"]
+                       if stemmed else []) + (
+                ["also records whose name holds every number in the query"]
+                if numbered else []) + (
+                ["also records of the type the query names whose name holds its other "
+                 "words"] if typed else []) + (
+                ["also records whose name is spelled close to the query"] if near else [])
+            if widened:
+                searched["widened"] = "; ".join(widened)
         out = {"documents": documents, "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more,
                                 "returned": len(rows),
@@ -979,6 +961,96 @@ class SqlTool:
         if more:
             out["completeness"]["reason"] = "page_cap"
         return out
+
+    def _records_stemmed(self, conn: Any, bound: Mapping[str, Any],
+                         dated: Mapping[str, bool], seen: set, room: int, read: Any
+                         ) -> list[Any]:
+        """Up to ``room`` rows of the reader's guarded ``records`` (``read``: the door's
+        own statement) whose label holds every word of the query by its English stem,
+        none in ``seen``: the store names the candidates (``rs.stem_candidates_sql``, a
+        read-only transaction of its own, at most ``CANDIDATE_MS``), the door reads the
+        rows. None when no stem is long enough for the label index or the candidate read
+        failed or ran out of time."""
+        import psycopg
+        from operating.pg import records_search as rs
+        query = str(bound.get("q") or "")
+        if room <= 0 or not query:
+            return []
+        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        try:
+            with _lent(conn) as pg:
+                kept = (pg.isolation_level, pg.read_only)
+                try:
+                    pg.read_only = True
+                    with pg.transaction():
+                        pg.execute("SELECT set_config('statement_timeout', %s, true), "
+                                   "set_config('search_path', 'pg_catalog', true)", (str(ms),))
+                        stq = pg.execute("SELECT plainto_tsquery('english'::regconfig, %s)"
+                                         "::text", (query,)).fetchone()[0]
+                        pats = rs.stems(stq)
+                        handles = [r[0] for r in pg.execute(rs.stem_candidates_sql(
+                            len(pats), biz=bv.SCHEMA, **dated), {
+                                **bound, "stq": stq, "cap": rs.CLOSE_CAP,
+                                **{f"s{i}": x for i, x in enumerate(pats)}})] if pats else []
+                finally:
+                    if not pg.closed and pg.info.transaction_status == 0:
+                        pg.isolation_level, pg.read_only = kept
+        except (psycopg.Error, ToolError, rs.SearchInputError):
+            return []
+        handles = [h for h in handles if h not in seen]
+        if not handles:
+            return []
+        rows = read(rs.among_sql(**dated), {**bound, "hs": handles, "k": room})
+        return [r for r in rows if r[0] not in seen][:room]
+
+    def _records_typed(self, conn: Any, bound: Mapping[str, Any], dated: Mapping[str, bool],
+                       words: Sequence[str], seen: set, room: int, read: Any) -> list[Any]:
+        """Up to ``room`` rows of the reader's guarded ``records`` (``read``: the door's
+        own statement) of a type the query names by its plain name's stems
+        (``record_types.name``, ``rs.named_types``) whose label holds the query's other
+        words by their stem, none in ``seen``: the store names the candidates (a read-only
+        transaction of its own, at most ``CANDIDATE_MS``), the door reads the rows."""
+        import psycopg
+        from operating.pg import records_search as rs
+        if room <= 0 or not words:
+            return []
+        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        handles: list[str] = []
+        try:
+            with _lent(conn) as pg:
+                kept = (pg.isolation_level, pg.read_only)
+                try:
+                    pg.read_only = True
+                    with pg.transaction():
+                        pg.execute("SELECT set_config('statement_timeout', %s, true), "
+                                   "set_config('search_path', 'pg_catalog', true)", (str(ms),))
+                        word_stems = {w: rs.lexemes(t) for w, t in pg.execute(
+                            "SELECT w, plainto_tsquery('english'::regconfig, w)::text "
+                            "FROM unnest(%s::text[]) w", (list(dict.fromkeys(words)),))}
+                        type_stems = [(t, rs.lexemes(n)) for t, n in pg.execute(
+                            "SELECT type, plainto_tsquery('english'::regconfig, "
+                            f"coalesce(name, ''))::text FROM {bv.SCHEMA}.record_types")]
+                        for types, rest in rs.named_types(type_stems, word_stems):
+                            stq = pg.execute("SELECT plainto_tsquery('english'::regconfig, "
+                                             "%s)::text", (" ".join(rest),)).fetchone()[0]
+                            pats = rs.stems(stq)
+                            if not pats:
+                                continue
+                            handles += [r[0] for r in pg.execute(rs.stem_candidates_sql(
+                                len(pats), biz=bv.SCHEMA, typed=True, **dated), {
+                                    **bound, "stq": stq, "cap": rs.CLOSE_CAP,
+                                    "types": types,
+                                    **{f"s{i}": x for i, x in enumerate(pats)}})]
+                finally:
+                    if not pg.closed and pg.info.transaction_status == 0:
+                        pg.isolation_level, pg.read_only = kept
+        except (psycopg.Error, ToolError, rs.SearchInputError):
+            return []
+        handles = [h for h in dict.fromkeys(handles) if h not in seen]
+        if not handles:
+            return []
+        rows = read(rs.among_sql(**dated), {**bound, "hs": handles, "k": room})
+        return [r for r in rows if r[0] not in seen][:room]
 
     def _records_close(self, conn: Any, bound: Mapping[str, Any], dated: Mapping[str, bool],
                        seen: set, room: int, read: Any) -> list[Any]:
@@ -1021,7 +1093,8 @@ class SqlTool:
         return [r for r in rows if r[0] not in seen][:room]
 
     def _label_candidates(self, conn: Any, words: Sequence[str], bound: Mapping[str, Any],
-                          cap: int, dated: Mapping[str, bool]) -> "list[str] | None":
+                          cap: int, dated: Mapping[str, bool], whole: bool = False
+                          ) -> "list[str] | None":
         """``records_search``'s candidates (``rs.candidates_sql``): the store's own read of
         its records table (as the comms search reads its text index), in a read-only
         transaction of its own, at most ``CANDIDATE_MS``; never returned to the caller.
@@ -1032,7 +1105,7 @@ class SqlTool:
         positions = rs.indexed(words)
         if not positions:
             return None
-        sql = rs.candidates_sql(positions, biz=bv.SCHEMA, **dated)
+        sql = rs.candidates_sql(positions, biz=bv.SCHEMA, whole=whole, **dated)
         ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
         try:
             with _lent(conn) as pg:
@@ -1174,17 +1247,21 @@ class SqlTool:
     def _described_only(self, what: Any) -> dict[str, Any]:
         """``describe`` under a read ceiling: the views' meanings, never a sample row or
         commonest value (they are today's)."""
+        if isinstance(what, str) and what.startswith(ins.INSIGHT):
+            return ins.described(what)
         doc = {"rules": RULES, "views": _dictionary()}
         if what is True:
             return {"rules": RULES, "views": {
                 name: f"{entry['about']} Columns: {', '.join(entry['columns'])}"
-                for name, entry in doc["views"].items()}}
+                for name, entry in doc["views"].items()}, **ins.listed()}
         if isinstance(what, str) and what in doc["views"]:
             return {**doc, "views": {what: doc["views"][what]}}
         return {**doc, "views": {"records": doc["views"]["records"]},
                 "note": "SELECT type, name FROM record_types lists the record types"}
 
     def _describe(self, what: Any, actor: Any) -> dict[str, Any]:
+        if isinstance(what, str) and what.startswith(ins.INSIGHT):
+            return ins.described(what)
         doc = {"rules": RULES, "views": _dictionary()}
         if what is True:
             # the list fits one result (each string is sent wrapped as untrusted text):
@@ -1194,7 +1271,7 @@ class SqlTool:
                 name: f"{entry['about']} Columns: {', '.join(entry['columns'])}"
                 for name, entry in doc["views"].items()},
                 "more": "plx.sql {\"describe\": \"<view>\"}: a view's column meanings, "
-                        "sample rows and commonest values"}
+                        "sample rows and commonest values", **ins.listed()}
         if isinstance(what, str) and (what in GENERIC or what in COMMS_DERIVED):
             return {**doc, "views": {what: doc["views"][what]}}
         if isinstance(what, str) and what not in bv.listed() and \
@@ -1754,193 +1831,10 @@ def _built(pg: Any, views: list[str]) -> str | None:
     return got[0] if got else None
 
 
-RULES = (
-    "One SELECT per call over these views (bare names), at most 200 rows back. Each row is "
-    "one real thing (its Portal, Sage, BC and FileMaker copies joined); records deleted at "
-    "the source are left out; money columns sit beside a <column>_currency column: never "
-    "add across currencies (GROUP BY the currency). Dates are business dates (America/"
-    "New_York). sales_invoices.pilot = true marks BC pilot invoices (Sage is the system of "
-    "record): leave them out unless asked. Text compares case-sensitively: use ILIKE "
-    "'%word%' for names. A column in a row's withheld list is one you may not read (NULL). "
-    "Each row has a handle: select it to cite the record. A result row's cells line up "
-    "with its columns.")
-# the generic views' rule (``records``), said only while they are served (``served_views``)
-RULES_GENERIC = (
-    " EVERY other captured record of every system (Mission Control, "
-    "SharePoint lists, FileMaker, Portal, BC and Sage tables, Planner, records read out of "
-    "mail ...) is in the generic views: record_types (the catalog of types: plain name, "
-    "systems, fields with kind and meaning, label and date fields, links out/in), records "
-    "(one row per record) and record_links (one row per link between two records). Filter "
-    "records on type = '<Type>' and read a field as fields->>'name' (numbers: "
-    "(fields->>'name')::numeric; money beside fields->>'name_currency', quantities beside "
-    "fields->>'name_unit'). The same thing held by two systems is two records joined by an "
-    "identity link (record_types.identity_links, in record_links). {describe: '<Type>'} "
-    "shows a type's fields, sample records and commonest values.")
-RULES_TAIL = " Mail text, chats and documents: plx.search."
-RULES_BASE = RULES
-RULES = RULES_BASE + RULES_GENERIC + RULES_TAIL
-
-GENERIC_ABOUT = {
-    "record_types": ("the catalog of every record type the store holds (generated from "
-                     "the ontology: new sources and fields appear by themselves)", {
-                         "type": "text: the type's id (records.type)",
-                         "name": "text: its plain name", "description": "text",
-                         "systems": "text[]: the systems holding records of it",
-                         "sources": "text[]: the source tables (records.source)",
-                         "label_fields": "text[]: fields that name a record",
-                         "date_fields": "text[]: fields that date a record",
-                         "identity_links": "text[]: link types joining copies of one thing",
-                         "fields": "jsonb: [{name, kind, description}]",
-                         "links_out": "jsonb: [{link_type, to}]",
-                         "links_in": "jsonb: [{link_type, from}]",
-                         "tables": "text[]: the views holding its records (a curated view, "
-                                   "a mail/Teams view, or records)"}),
-    "records": ("one row per current record of a type no curated view lists, as this "
-                "reader may read it (count a type here)", {
-        "record_id": "text: the record's id (record_links.from_id / to_id)",
-        "type": "text: the record type (filter on it)", "system": "text",
-        "source": "text: the source table", "label": "text: its display name or number",
-        "record_date": "text YYYY-MM-DD: its key date (record_types.date_fields)",
-        "first_seen": "text: when it was first captured", "changed_at": "text",
-        "fields": "jsonb: field -> value (the authority-first value of each field)"}),
-    "record_links": ("one row per live link between two records this reader may read", {
-        "from_id": "text: records.record_id", "from_type": "text", "from_handle": "text",
-        "link_type": "text", "to_id": "text: records.record_id", "to_type": "text",
-        "to_handle": "text", "tier": "text: verified/reviewed/corroborated (solid), "
-        "stored_by_text_join, lead (a guess)"}),
-}
-GENERIC = tuple(GENERIC_ABOUT)
-# views over the communications views (``operating.pg.comms_findings``): a statement naming
-# one reads with the communications settings (its rows are those of messages the reader's
-# own mail and Teams views show; unset, it shows nothing)
-COMMS_DERIVED_ABOUT = {
-    "comms_findings": (
-        "decisions, requests, complaints and praise read out of mail and Teams messages "
-        "(one row per item a message states; a message this reader cannot read shows none; "
-        "the summary is a model's one-line reading: open the handle with plx.open to quote "
-        "the message). Customer feedback = kind complaint or praise; GROUP BY topic or "
-        "customers for themes", {
-            "kind": "text: decision, request, complaint or praise",
-            "topic": "text: delivery, pricing, quality, documents, order, payment, product, "
-                     "samples, packaging, schedule, stock, service or other",
-            "summary": "text: one plain sentence saying what was decided, asked or "
-                       "reported",
-            "who": "text: who decided, asked or complained, as the message names them "
-                   "('' not named)",
-            "from_side": "text: who sent the message: us (our staff), customer, outside "
-                         "(another party: supplier, carrier, vendor) or '' (unknown: a Teams "
-                         "sender not matched to staff)",
-            "said_at": "timestamptz: when the message was sent",
-            "said_date": "date: its business date",
-            "source": "text: email or teams",
-            "sender": "text: the message's sender (an address for mail, a name in Teams)",
-            "subject": "text: the mail subject or Teams chat topic",
-            "thread": "text: the mail thread (emails.thread) or Teams chat id",
-            "customers": "text[]: handles of customers rows the message is about (join "
-                         "customers ON handle = ANY(customers))",
-            "suppliers": "text[]: handles of suppliers rows it is about"}),
-}
-COMMS_DERIVED = tuple(COMMS_DERIVED_ABOUT)
-GENERIC_TABLES = ("records", "record_links")
-TYPE_SAMPLE = 500
-
-
-_CATALOG: dict[str, Any] = {}
-
-
-def catalog_lines(pg: Any = None) -> list[str]:
-    """The record types the door holds as prompt lines, one per system: each type with its
-    plain name, the fields that label and date it and, when a curated or communications
-    view holds it instead of ``records``, that view; generated from the served
-    catalog (``<biz>.record_types``, read by the store's role: no row of any record, no
-    count). Kept per process until the catalog is built again; none when it cannot be read
-    (the prompt then lists the views alone)."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    try:
-        if pg is None:
-            from operating.pg import pool
-            with pool.connect(connect_timeout=3, options="-c statement_timeout=2000") as c:
-                return catalog_lines(c)
-        if pg.execute("SELECT to_regclass(%s)", (f"{bv.SCHEMA}.record_types",)
-                      ).fetchone()[0] is None:
-            return []
-        # the catalog's build and where each type is held (``generic_views.mark_tables``
-        # moves ``tables`` without a new catalog build)
-        (built,) = pg.execute(f"SELECT max(built_at) || md5(string_agg(type || ':' || "
-                              "array_to_string(tables, ','), ';' ORDER BY type)) FROM "
-                              f"{bv.SCHEMA}.record_types").fetchone()
-        if _CATALOG.get("built") == built and built is not None:
-            return list(_CATALOG["lines"])
-        # the guarded view's own Freightcom rule (``generic_views.listed_sql``)
-        from operating.pg import generic_views
-        rows = pg.execute(
-            f"SELECT t.type, t.name, t.systems, t.label_fields, t.date_fields, t.tables FROM "
-            f"{bv.SCHEMA}.record_types t WHERE cardinality(t.tables) > 0 AND "
-            f"{generic_views.listed_sql('t')} ORDER BY t.type").fetchall()
-    except Exception:  # noqa: BLE001 - no catalog: the views alone
-        return []
-    by_system: dict[str, list[str]] = {}
-    for tid, name, systems, labels, dates, tables in rows:
-        if FREIGHTCOM.search(" ".join(map(str, (tid, name)))):
-            continue   # the plain name too (made from the type: the same words)
-        # a type held by a curated or comms view is named with it (records lacks it)
-        bits = [f"label {'/'.join(labels[:2])}" if labels else "",
-                f"date {'/'.join(dates[:2])}" if dates else "",
-                "in " + "/".join(tables) if list(tables) != ["records"] else ""]
-        shown = f"{tid} ({name}" + "".join(f"; {b}" for b in bits if b) + ")"
-        for system in (systems or ["unknown"]):
-            by_system.setdefault(str(system), []).append(shown)
-    lines = [f"- {system}: " + ", ".join(sorted(types))
-             for system, types in sorted(by_system.items())]
-    _CATALOG.update(built=built, lines=lines)
-    return list(lines)
-
-
-_SERVED: dict[str, Any] = {}
-SERVED_RECHECK_SECONDS = 60.0
-
-
-def served_views(names: Sequence[str] | None = None, pg: Any = None) -> frozenset[str] | None:
-    """Which of the views ``names`` (default: every view of ``_dictionary``) the served
-    schema holds now (a business table built, the mail and Teams tables once their build
-    is served, ``records`` once the generic build is): what the Ask's prompt lists, so the
-    model is never sent to a table it would be refused (11-18: emails/teams_messages and
-    records listed while not built, every mail question spent its calls on
-    'unknown view'). Read by the store's role (no row of any table), kept per process
-    ``SERVED_RECHECK_SECONDS``; None when it cannot be read (the prompt lists them all)."""
-    wanted = tuple(names if names is not None else _dictionary())
-    held = _SERVED.get(wanted)
-    if held is not None and time.monotonic() - held[0] < SERVED_RECHECK_SECONDS:
-        return held[1]
-    try:
-        if pg is None:
-            from operating.pg import pool
-            with pool.connect(connect_timeout=3, options="-c statement_timeout=2000") as c:
-                return served_views(wanted, c)
-        rows = pg.execute("SELECT name FROM unnest(%s::text[]) name WHERE "
-                          "to_regclass(%s || '.' || name) IS NOT NULL",
-                          (list(wanted), bv.SCHEMA)).fetchall()
-    except Exception:  # noqa: BLE001 - not known: every view listed, as before
-        return None
-    got = frozenset(r[0] for r in rows)
-    _SERVED[wanted] = (time.monotonic(), got)
-    return got
-
-
-def _dictionary() -> dict[str, Any]:
-    out = {}
-    for name, entry in bv.dictionary().items():
-        cols = dict(entry["columns"])
-        for cname, kind, cdoc in sql_views.SHOWN_COMMON:
-            cols[cname] = f"{kind}: {cdoc}"
-        out[name] = {"about": entry["about"], "columns": cols}
-    for name, (about, cols) in {**GENERIC_ABOUT, **COMMS_DERIVED_ABOUT}.items():
-        cols = dict(cols)
-        if name != "record_types":
-            for cname, kind, cdoc in sql_views.SHOWN_COMMON:
-                cols[cname] = f"{kind}: {cdoc}"
-        out[name] = {"about": about, "columns": cols}
-    return out
+from operating.ontology_tools_sql_catalog import (  # noqa: F401  (re-exported)
+    RULES, RULES_GENERIC, RULES_TAIL, RULES_BASE, GENERIC_ABOUT, GENERIC, COMMS_DERIVED_ABOUT,
+    COMMS_DERIVED, GENERIC_TABLES, TYPE_SAMPLE, _CATALOG, CATALOG_KEYS, catalog_keys,
+    catalog_lines, _SERVED, SERVED_RECHECK_SECONDS, served_views, _dictionary)
 
 
 def register(table: dict[str, dict[str, Any]], base: Any) -> SqlTool:

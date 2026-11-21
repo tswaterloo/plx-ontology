@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { PreparedChange } from "@/components/prepared-change";
 import { TodoSteps } from "@/components/autopilot/todo";
-import { prepareAutopilotJob, type PreparedItem, type ProposedJob } from "@/lib/api";
+import { decideAutopilotItem, prepareAutopilotJob, setNeverSender, type PreparedItem, type ProposedJob } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 
@@ -26,6 +26,53 @@ function fields(change: Record<string, unknown>): string {
   return Object.entries(change)
     .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(", ");
+}
+
+/** 8 AM tomorrow, the person's own time: when a "Later" item comes back. */
+export function tomorrowMorning(now: Date = new Date()): Date {
+  const d = new Date(now);
+  d.setDate(d.getDate() + 1);
+  d.setHours(8, 0, 0, 0);
+  return d;
+}
+
+/** Later (snoozed to tomorrow 8 AM) or Not needed (rejected): either takes the item off the list.
+ * Never from this sender (given a sender and onNever): nothing more from them until undone. */
+export function SetAside({ itemId, disabled, onGone, sender, onNever }: { itemId: string; disabled?: boolean; onGone: (id: string) => void; sender?: string; onNever?: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (act: () => Promise<unknown>, then: () => void) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await act();
+      then();
+    } catch (e) {
+      setError(plainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const drop = (decision: "reject" | "snooze") =>
+    run(() => decideAutopilotItem(itemId, decision === "snooze" ? { decision, until: tomorrowMorning().toISOString() } : { decision }), () => onGone(itemId));
+  return (
+    <>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" disabled={busy || disabled} onClick={() => void drop("snooze")}>
+          Later: tomorrow 8 AM
+        </Button>
+        <Button size="sm" variant="outline" disabled={busy || disabled} onClick={() => void drop("reject")}>
+          Not needed
+        </Button>
+        {sender && onNever && (
+          <Button size="sm" variant="outline" disabled={busy || disabled} onClick={() => void run(() => setNeverSender(sender, true), onNever)}>
+            Never from this sender
+          </Button>
+        )}
+      </div>
+      {error && <ErrorNotice message={error} />}
+    </>
+  );
 }
 
 function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
@@ -63,7 +110,7 @@ function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
   );
 }
 
-export function JobCard({ item, linked }: { item: PreparedItem; linked?: boolean }) {
+export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
   return (
     <li id={`prepared-${item.item_id}`} className={linked ? "space-y-2 border-l-2 border-accent py-4 pl-3" : "space-y-2 py-4"} data-testid="prepared-job">
       <div className="flex flex-wrap items-baseline gap-x-3">
@@ -79,6 +126,7 @@ export function JobCard({ item, linked }: { item: PreparedItem; linked?: boolean
         ))}
       </ul>
       <TodoSteps todos={item.todos ?? []} />
+      <SetAside itemId={item.item_id} onGone={onGone} />
     </li>
   );
 }

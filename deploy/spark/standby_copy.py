@@ -25,6 +25,7 @@ import argparse
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -78,6 +79,52 @@ class Session:
         self.p.wait(timeout=60)
 
 
+def stream_bytes(pid: int) -> int | None:
+    """Bytes the stream's compressor has read (its zstd runs as the caller, so its /proc io
+    is readable without sudo); None when the stream's processes are gone."""
+    try:
+        kids = open(f"/proc/{pid}/task/{pid}/children").read().split()
+    except OSError:
+        return None
+    total = 0
+    for kid in kids:
+        try:
+            if open(f"/proc/{kid}/comm").read().strip() != "zstd":
+                continue
+            for line in open(f"/proc/{kid}/io"):
+                if line.startswith("rchar:"):
+                    total += int(line.split()[1])
+        except OSError:
+            continue
+    return total
+
+
+def watch(procs: list, stall_s: float, *, bytes_of=stream_bytes, now=time.monotonic,
+          sleep=time.sleep, every: float = 30.0) -> list[int]:
+    """Each stream's exit code; a stream that moves no bytes for ``stall_s`` is stopped (its
+    process group: 11-20 two of 12 streams hung on a dead remote extract while the slot held
+    WAL), so it fails instead of holding the copy open."""
+    seen = {i: (None, now()) for i in range(len(procs))}
+    while any(p.poll() is None for p in procs):
+        t = now()
+        for i, p in enumerate(procs):
+            if p.poll() is not None:
+                continue
+            got = bytes_of(p.pid)
+            if got is None or got != seen[i][0]:
+                seen[i] = (got, t)
+            elif t - seen[i][1] >= stall_s:
+                print(f"stream {i}: no bytes for {stall_s:.0f} s, stopping it", file=sys.stderr,
+                      flush=True)
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except OSError:
+                    p.terminate()
+                seen[i] = (got, t)
+        sleep(every)
+    return [p.wait() for p in procs]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--host", required=True)
@@ -89,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--as-user", default="postgres", help="'' = read the files as the caller")
     ap.add_argument("--ssh-config", default=SSH_CONFIG)
     ap.add_argument("--zstd-level", type=int, default=3)
+    ap.add_argument("--stall-minutes", type=float, default=10,
+                    help="stop a stream that moves no bytes this long (it then fails)")
     ap.add_argument("--go", action="store_true", help="copy (without it: plan only)")
     a = ap.parse_args(argv)
     sudo = ["sudo", "-n", "-u", a.as_user] if a.as_user else []
@@ -127,8 +176,9 @@ def main(argv: list[str] | None = None) -> int:
                              "--warning=no-file-changed", "--warning=no-file-removed", "-cf", "-"]
         pipe = (" ".join(map(shlex.quote, tar)) + f" | zstd -q -{a.zstd_level} -T2 | "
                 + " ".join(map(shlex.quote, ssh)) + " " + shlex.quote(f"zstd -dq | tar -C {dest} -xf -"))
-        procs.append(subprocess.Popen(["bash", "-o", "pipefail", "-c", pipe]))
-    codes = [p.wait() for p in procs]
+        procs.append(subprocess.Popen(["bash", "-o", "pipefail", "-c", pipe],
+                                      start_new_session=True))
+    codes = watch(procs, a.stall_minutes * 60)
     shutil.rmtree(work, ignore_errors=True)
     # GNU tar exits 1 for a file changed or removed while read: the WAL replay mends it
     failed = [i for i, c in enumerate(codes) if c not in (0, 1)]
@@ -139,6 +189,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"streams done in {time.monotonic() - started:.0f} s, exit codes {codes}", flush=True)
     if failed:
         print(f"FAILED streams {failed}: remove {a.host}:~/{a.dest} before a new copy", file=sys.stderr)
+        if a.slot:   # a failed copy is never resumed: its slot would only hold WAL
+            drop = Session(shlex.split(a.psql))
+            drop.one(f"SELECT count(pg_drop_replication_slot(slot_name)) FROM pg_replication_slots "
+                     f"WHERE slot_name = '{a.slot}' AND NOT active")
+            drop.close()
         return 1
     lsn, label, spcmap = (row.split(" ") + ["", ""])[:3]
     write = (f"cd {dest} && base64 -d > backup_label <<< {shlex.quote(label)} && "

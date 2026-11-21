@@ -790,8 +790,8 @@ class LiveAlignmentTests(unittest.TestCase):
                      "/users/{}/messages/{}", "/users/{}/messages",
                      # Read through other forms: a delta, a pre-authenticated download.
                      "/users/{}/mailFolders/{}/messages", "/drives/{}/items/{}/content",
-                     # The relation it binds is captured, but no Workbench reader requests it
-                     # (the Portal stopped calling the workbook templates at c09de5d).
+                     # Requested by graph.list_item_fields: an item's listItem fields by id
+                     # resolve to the same resource as by path (aligned_operations).
                      "/drives/{}/root:/{}:/listItem/fields"]
         ids = [f"microsoft-graph.endpoint:{t}" for t in templates]
         mail = ["graph.folder_messages_delta", "graph.mail_folder", "graph.message",
@@ -806,8 +806,7 @@ class LiveAlignmentTests(unittest.TestCase):
                     "upstream": {PORTAL: {"commit": "0" * 40}}}
         waits = {r["name"]: r.get("waits_for") for r in sr.gaps(registry, [
             {"_from": "hourly", "checks": []}], self.facts)["uncovered"]}
-        self.assertEqual(waits, dict(dict.fromkeys(templates[:7], "operations_read"),
-                                     **{templates[7]: "reader_operation"}))
+        self.assertEqual(waits, dict.fromkeys(templates, "operations_read"))
 
         def run(mail_result, probe_result="pass", probe_ops=probe):
             return self.coverage(ids, [

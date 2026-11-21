@@ -847,7 +847,11 @@ def render_app() -> dict[str, str]:
 # --------------------------------------------------------------------------- throwaway cluster
 
 def _pg_bindir() -> Path:
-    """The newest installed server whose share directory holds pgvector."""
+    """``PLX_PG_BINDIR`` (a server built with pgvector, e.g. a Spark's ~/plx-tests/pg/bin),
+    else the newest installed server whose share directory holds pgvector."""
+    named = os.environ.get("PLX_PG_BINDIR")
+    if named and (Path(named) / "initdb").exists():
+        return Path(named)
     for directory in sorted(Path("/usr/lib/postgresql").glob("*/bin"),
                             key=lambda p: int(p.parent.name), reverse=True):
         share = Path("/usr/share/postgresql") / directory.parent.name / "extension"

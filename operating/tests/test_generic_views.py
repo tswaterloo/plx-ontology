@@ -426,6 +426,17 @@ class GenericViews(Fixture, unittest.TestCase):
         self.assertIn("- mission_control: MCTask (", text)
         self.assertNotIn("Email", text)             # held by no table: not offered
         self.assertNotIn("71", text)                # no count in the prompt
+        with psycopg.connect(self.dsn) as c:
+            keyed = {t: ts.catalog_keys(f) for t, f in c.execute(
+                "SELECT type, fields FROM biz.record_types WHERE cardinality(tables) > 0")}
+        for line in lines:   # a type's kind fields named in its own entry, names only
+            for rtype, keys in keyed.items():
+                at = line.find(f" {rtype} (")
+                if at >= 0 and keys:
+                    self.assertIn("kinds by " + "/".join(keys), line[at:].split(")")[0])
+        self.assertEqual(ts.catalog_keys('[{"name": "status"}, {"name": "kind"}, '
+                                         '{"name": "x"}]'), ["kind", "status"])
+        self.assertEqual(ts.catalog_keys("not json"), [])
 
 
 def decide(dsn, covered):
@@ -742,6 +753,91 @@ class RecordsSearch(Fixture, unittest.TestCase):
         self.assertNotIn("match", held["documents"][0])
         self.assertNotIn("widened", held["searched"])
 
+    def test_a_name_holding_every_word_by_its_stem_is_found_through_the_same_door(self):
+        """Few labels hold every word as typed: the labels holding every word by its
+        English stem (small words dropped) are added first, each saying so, read through
+        the reader's own door (never a record its word search could not show)."""
+        decide(self.dsn, None)
+        self.addCleanup(decide, self.dsn, 0)
+
+        def find(query, actor=FULL):
+            return self.search({"query": query, "sources": ["records"]}, actor)
+        out = find("the Acme")
+        self.assertIn("Acme Ltd", self.titles(out))
+        self.assertTrue(all(d["match"] == "every word, by its stem"
+                            for d in out["documents"]))
+        self.assertIn("by its stem", out["searched"]["widened"])
+        for actor in (FULL, OPS, NOBODY):   # the rows its own word search shows, no other
+            self.assertEqual(
+                [t for t in self.titles(find("the Acme", actor))
+                 if t.lower().startswith("acme")],
+                [t for t in self.titles(find("Acme", actor))], actor)
+        self.assertIn("Hidden Co", self.titles(find("the Hidden", FULL)))
+        for actor in (OPS, NOBODY):
+            self.assertEqual(self.titles(find("the Hidden", actor)), [], actor)
+        for actor in (FULL, OPS, NOBODY):
+            self.assertEqual(self.titles(find("the excluded tasks", actor)), [], actor)
+            self.assertEqual(self.titles(find("all Freightcoms", actor)), [], actor)
+        held = find("Acme Ltd")   # every word held: nothing added
+        self.assertNotIn("match", held["documents"][0])
+        self.assertNotIn("widened", held["searched"])
+
+    def test_a_record_of_the_type_the_query_names_is_found_through_the_same_door(self):
+        """Few labels hold every word: the records of a type the query names by its plain
+        name's stems ("customers") whose label holds the other words by their stem are
+        added, each saying so, through the reader's door (never a record its own word
+        search could not show); a query naming no type adds none."""
+        decide(self.dsn, None)
+        self.addCleanup(decide, self.dsn, 0)
+        how = "every other word, in a record of the type the query names"
+
+        def typed(query, actor=FULL):
+            out = self.search({"query": query, "sources": ["records"]}, actor)
+            return [d["title"]["untrusted_text"] for d in out["documents"]
+                    if d.get("match") == how], out
+        got, out = typed("Acme customers")
+        self.assertTrue(got and all(t.lower().startswith("acme") for t in got), got)
+        self.assertIn("type the query names", out["searched"]["widened"])
+        for actor in (FULL, OPS, NOBODY):
+            got, _ = typed("Acme customers", actor)
+            self.assertEqual(sorted(got), sorted(
+                t for t in self.titles(self.search(
+                    {"query": "Acme", "sources": ["records"]}, actor))
+                if t.lower().startswith("acme")), actor)
+        self.assertIn("Hidden Co", typed("the Hidden customer")[0])
+        for actor in (OPS, NOBODY):
+            self.assertEqual(typed("the Hidden customer", actor)[0], [], actor)
+        self.assertEqual(typed("Acme widgets")[0], [])
+
+    def test_a_record_named_by_a_number_in_the_query_is_found_through_the_same_door(self):
+        """Few labels hold every word: the labels holding every word of the query that
+        names a record by number (whole) are added, each saying so, through the reader's
+        door (the fixture's numbers are short: two digits name a record here)."""
+        from operating.pg import records_search as rs
+        decide(self.dsn, None)
+        self.addCleanup(decide, self.dsn, 0)
+
+        def numbered(query, actor=FULL):
+            out = self.search({"query": query, "sources": ["records"]}, actor)
+            return [d["title"]["untrusted_text"] for d in out["documents"]
+                    if d.get("match") == "every number in the query"], out
+        with mock.patch.object(rs, "IDENT_MIN_DIGITS", 2), \
+                mock.patch.object(rs, "INDEXED_LETTERS", 2):
+            got, out = numbered("the task numbered 60-12")
+            self.assertEqual(got, ["Task 60-12"])
+            self.assertEqual(out["documents"][0]["match"], "every number in the query")
+            self.assertIn("every number", out["searched"]["widened"])
+            for actor in (FULL, OPS, NOBODY):   # the rows its word search shows, no other
+                shown = self.titles(self.search({"query": "Task 60 12",
+                                                 "sources": ["records"]}, actor))
+                self.assertEqual(numbered("the task numbered 60-12", actor)[0],
+                                 [t for t in shown if t == "Task 60-12"], actor)
+            self.assertEqual(numbered("the task numbered 60-12", NOBODY)[0], [])
+            self.assertEqual(numbered("the task numbered 601")[0], [])   # not whole
+            self.assertNotIn("every number", numbered("Task 60-12")[1]["searched"].get(
+                "widened", ""))   # every word held
+        self.assertEqual(numbered("the task numbered 60-12")[0], [])   # too few digits
+
     def test_cardinality_1_10_60_paged_without_loss_and_bad_input_fails_closed(self):
         for group, n in (("Task 1-0", 1), ("Task 10-", 10), ("Task 60-", 60)):
             seen, cursor = [], None
@@ -916,6 +1012,32 @@ class RefreshMovedRows(Fixture, unittest.TestCase):
             self.assertEqual([c.execute(q).fetchall() for q in dump], refreshed)
 
 
+class LinkProbePlan(Fixture, unittest.TestCase):
+    def test_dead_link_ids_are_read_by_index_probes_not_a_hash_or_merge_join(self):
+        """11-20 live: from 12:54 PM ET every refresh failed past temp_file_limit (10 GB) at
+        the statement reading the link ids of the changed records: temp tables made a moment
+        before had no statistics, so the planner sorted all 45M live link rows against them
+        (a hash join over every partition spilled the same way once they were analysed).
+        The refresh now analyses them and turns hash and merge joins off for that
+        statement only; both are back on for the inserts after it."""
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("CREATE TEMP TABLE gr_t (x text)")
+            c.execute("INSERT INTO gr_t SELECT 'a' || g FROM generate_series(1, 500) g")
+            seen = lambda: [c.execute(f"SHOW enable_{j}join").fetchone()[0]  # noqa: E731
+                            for j in ("hash", "merge")]
+            with c.transaction():
+                gr._probe_plan(c, "gr_t")
+                self.assertEqual(seen(), ["off", "off"])
+                self.assertTrue(c.execute(
+                    "SELECT 1 FROM pg_stats WHERE tablename = 'gr_t'").fetchone())
+                gr._probe_plan(c, None)
+                self.assertEqual(seen(), ["on", "on"])
+            self.assertEqual(seen(), ["on", "on"])
+        out = gr.refresh(self.dsn)     # the whole refresh still runs with it
+        self.assertIn("links_read", out)
+
+
 class BuildDuringRewrite(Fixture, unittest.TestCase):
     def test_a_record_read_twice_by_a_build_keeps_its_newest_row(self):
         """11-18 live: Person records the delta rewrites every cycle moved to a new store
@@ -1042,6 +1164,47 @@ class TypeChoice(unittest.TestCase):
             self.assertIn(kept, covered)
             self.assertNotIn(kept, business["skip_types"])
         self.assertIn("NOT LIKE 'RelSage%'", gr.types_sql(business))
+
+    def test_a_rebuild_that_leaves_out_served_types_is_named(self):
+        """11-19 live: a rebuild with --uncovered and without --business left every
+        customer, product, order, invoice, supplier, PO and batch out of records."""
+        full = gr.type_choice(False, False)
+        business = gr.type_choice(True, True, business=True)
+        uncovered = gr.type_choice(True, True)
+        lost = gr.narrowed(business, uncovered)
+        for gone in ("Customer", "Product", "SalesOrder", "SalesInvoice", "Supplier",
+                     "PurchaseOrder", "Batch"):
+            self.assertIn(gone, lost)
+        self.assertNotIn("Email", lost)   # the business build left the comms types out too
+        self.assertEqual(gr.narrowed(uncovered, business), [])   # widening loses nothing
+        self.assertEqual(gr.narrowed(business, business), [])
+        self.assertIn("Rel*", gr.narrowed(full, gr.type_choice(True, False)))
+        self.assertEqual(gr.narrowed(full, gr.type_choice(False, False, ["RelSage"])),
+                         ["RelSage*"])
+        # a prefix the served build already left out (all mirrors, or a shorter prefix)
+        self.assertEqual(gr.narrowed(gr.type_choice(True, False),
+                                     gr.type_choice(True, False, ["RelSage"])), [])
+        self.assertEqual(gr.narrowed({"skip_prefixes": ["Rel"]}, {"skip_prefixes": ["RelSage"],
+                                                                   "skip_types": ["RelSageX"]}),
+                         [])
+
+
+class NarrowBuild(Fixture, unittest.TestCase):
+    def test_a_build_narrower_than_the_served_one_is_refused_before_it_writes(self):
+        import psycopg
+        q = "SELECT count(*), max(built_at) FROM biz.records, biz.state WHERE view = 'records'"
+        with psycopg.connect(self.dsn) as c:
+            before = c.execute(q).fetchone()
+        with self.assertRaisesRegex(ValueError, "Customer.*--narrow"):
+            gr.build(self.dsn, workers=1, uncovered=True)
+        with psycopg.connect(self.dsn) as c:
+            self.assertEqual(c.execute(q).fetchone(), before)
+            self.assertIsNone(c.execute("SELECT to_regclass('biz.records_new')").fetchone()[0])
+        gr.build(self.dsn, workers=1, uncovered=True, narrow=True)   # on purpose
+        with psycopg.connect(self.dsn) as c:
+            notes = gr.served_notes(c, "biz")
+        self.assertIn("Customer", notes["skip_types"])
+        gr.build(self.dsn, workers=1, uncovered=True, mirrors=True, business=True)  # wider
 
 
 class Coverage(Fixture, unittest.TestCase):

@@ -85,7 +85,8 @@ def _grid(chart: Mapping[str, Any]) -> tuple[list[str], list[list[str]],
                 pct = f" ({d / before:+.0%})" if before else ""
                 now_at = labels[at[-1]] if at[-1] < len(labels) else None
                 so_far = " so far" if now_at == chart.get("open_period") else ""
-                said = (f"{now_at}{so_far} vs {labels[at[-2]]}" if now_at is not None
+                part = " (part)" if labels[at[-2]] == chart.get("first_period") else ""
+                said = (f"{now_at}{so_far} vs {labels[at[-2]]}{part}" if now_at is not None
                         else "on the row before")
                 change.append(f"{'+' if d >= 0 else ''}{ox.fmt(d)}{pct}, {said}")
             else:

@@ -954,7 +954,9 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
         "eo.event_id = e.event_id WHERE e.event_type IN ('PurchaseOrder.created', "
         "'PurchaseOrder.ordered', 'PurchaseOrder.sage_ordered') AND e.time >= ? AND e.time <= ?", (since, until))
         if r[0].startswith("PurchaseOrder:")})
-    rows = autopilot_records._read(st, ids, PO_HEAD)
+    rows = autopilot_records._read(st, ids, (*PO_HEAD, "purchaser_code"))
+    from .day_coverage import _Code
+    buyer_of = _Code(directory, domains)  # once a run: a purchaser code -> one person
     out = []
     seen_numbers: set[str] = set()
     for oid in ids:
@@ -995,6 +997,8 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
             boxes = sorted({autopilot_records._v(r, "mailbox").lower() for r in mrows.values()
                             if autopilot_records._v(r, "mailbox").lower() in addresses_of})
             owner = boxes[0] if len(boxes) == 1 else None
+        if owner is None:             # nor a mailbox: the buyer its purchaser code names, if one person
+            owner = buyer_of(autopilot_records._v(row, "purchaser_code"))
         seen_numbers.add(number.upper())
         out.append({"event_id": ap._digest("record.due", "po_followup", oid),
                     "event_type": "record.due", "object_id": oid,

@@ -93,6 +93,7 @@ from .document_conflicts import CONFLICT_REASON
 from .ontology_tools_policy import load_contracts
 from .ontology_tools_investigate import citation_rows
 from .ontology_tools_investigate_host import default_unit_contracts, gate_rows
+from .answer_gate_values import _same, _text_or_none, _verbatim
 
 CONTRACTS = load_contracts()
 HANDLE = re.compile(CONTRACTS["$defs"]["handle"]["pattern"])
@@ -2716,23 +2717,6 @@ def _stated_expression(value: Mapping[str, Any]) -> tuple[Any, ...] | None:
     return _expression_key(calculation.get("expression"), [
         (given.get("l1_handle"), given.get("field_path"), given.get("value"), given.get("unit"))
         for given in inputs if isinstance(given, Mapping)]) or ("unreadable",)
-
-
-def _text_or_none(value: Any) -> str | None:
-    """A string with its runs of white space as one space, or None (none, or empty)."""
-    return " ".join(value.split()) or None if isinstance(value, str) else None
-
-
-def _verbatim(value: Any) -> str | None:
-    """A quote as the gate checked it, characters kept (a reader checks it verbatim)."""
-    return value.strip() or None if isinstance(value, str) else None
-
-
-def _same(one: Any, other: Any) -> bool:
-    a, b = claim_checks.to_decimal(one), claim_checks.to_decimal(other)
-    if a is not None and b is not None:
-        return a == b
-    return " ".join(str(one).split()) == " ".join(str(other).split())
 
 
 def kept_value(value: Mapping[str, Any], passed: Sequence[Mapping[str, Any]]

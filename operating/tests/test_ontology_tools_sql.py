@@ -489,6 +489,7 @@ class SqlDoor(unittest.TestCase):
                 self.assertLessEqual(mcp_server._envelope_bytes(out), MAX_RESULT_BYTES)
             out = sqlt.SqlTool(self.base()).call("plx.sql", {"describe": True}, FULL)
             self.assertIn(" status, ", out["views"]["purchase_orders"])
+            self.assertIn("team_responsiveness", out["insights"])    # the tiles, ready to reuse
             self.assertLessEqual(mcp_server._envelope_bytes(out), MAX_RESULT_BYTES)
         finally:
             mcp_server._TOOL.reset(tool)

@@ -178,30 +178,58 @@ def statement(name: Any, by: Any = None, days: Any = None,
         # the source's first record (data_from) after the earlier period starts: that
         # period is not covered (a source captured only lately), so its value is unknown,
         # never 0, and there is no change to state
+        # (an EXISTS before the start, not the view's min: through a reader's door the min
+        # reads every row, ~20 s for mail; the first record is read only when it matters)
         start = f"now() - interval '{2 * n} days'"
-        covered = f"(SELECT min({m['date']}) FROM {view}) <= {start}"
+        covered = f"EXISTS (SELECT 1 FROM {view} WHERE {m['date']} <= {start})"
+        first = f"(SELECT min({m['date']}) FROM {view} WHERE {m['date']} > {start})"
         inner = (f"SELECT {', '.join(keys + [''])}"
                  f"{value} FILTER (WHERE {cur}) AS current, "
                  f"CASE WHEN {covered} THEN {value} FILTER (WHERE {prev}) END AS previous, "
                  f"count(*) FILTER (WHERE {cur}) AS current_rows, "
                  f"count(*) FILTER (WHERE {prev}) AS previous_rows, "
                  f"{unread} AS unread_cells, "
-                 f"(SELECT min({m['date']}) FROM {view})::date AS data_from, "
-                 f"coalesce({covered}, false) AS covered "
+                 f"(CASE WHEN NOT {covered} THEN {first} END)::date AS data_from, "
+                 f"{covered} AS covered "
                  f"FROM {view} WHERE {' AND '.join(where)}"
                  + (f" GROUP BY {', '.join(names)}" if names else ""))
         change = ("CASE WHEN NOT covered OR (current IS NULL AND current_rows > 0) OR "
                   "(previous IS NULL AND previous_rows > 0) THEN NULL "
                   "ELSE coalesce(current, 0) - coalesce(previous, 0) END")
         part = f" OVER (PARTITION BY {per})" if per else " OVER ()"
-        sql = (f"WITH p AS ({inner}) SELECT p.*, {change} AS change, "
-               f"round(100.0 * ({change}) / nullif(sum({change}){part}, 0), 1) "
-               f"AS share_of_change_pct, unread_cells > 0 OR NOT covered AS incomplete "
-               f"FROM p ORDER BY abs({change}) DESC NULLS FIRST"
-               + (f" LIMIT {TOP}" if by else ""))
-        period = (f"last {n} days against the {n} days before, by {m['date']}; a row whose "
-                  f"data_from (the source's first record) is after the earlier period starts "
-                  f"has that period not covered: previous and change are unknown (NULL), "
+        shown = (f"SELECT p.*, {change} AS change, "
+                 f"round(100.0 * ({change}) / nullif(sum({change}){part}, 0), 1) "
+                 f"AS share_of_change_pct, unread_cells > 0 OR NOT covered AS incomplete")
+        if by:
+            # past the TOP largest changes the parts are one "All others (n)" row per
+            # currency or unit, so the rows always add up to the whole change (a waterfall's
+            # total, a bar chart of the parts); one unknown change among them leaves its
+            # sum unknown, never read as 0
+            cols = [by, *([per] if per else []), "current", "previous", "current_rows",
+                    "previous_rows", "unread_cells", "data_from", "covered", "change",
+                    "share_of_change_pct", "incomplete"]
+            rest = ("CASE WHEN count(change) < count(*) THEN NULL ELSE sum(change) END")
+            sql = (f"WITH p AS ({inner}), c AS ({shown}, sum({change}){part} AS whole, "
+                   f"row_number() OVER (ORDER BY abs({change}) DESC NULLS FIRST, {by}) AS rank "
+                   f"FROM p) SELECT {', '.join(cols)} FROM ("
+                   f"SELECT {by}::text AS {by}, "
+                   + ", ".join(cols[1:]) + ", rank FROM c WHERE rank <= " + str(TOP)
+                   + f" UNION ALL SELECT 'All others (' || count(*) || ')', "
+                   + (f"{per}, " if per else "")
+                   + "sum(current), sum(previous), sum(current_rows), sum(previous_rows), "
+                   "sum(unread_cells), min(data_from), bool_and(covered), " + rest + ", "
+                   "round(100.0 * (" + rest + ") / nullif(max(whole), 0), 1), "
+                   "bool_or(incomplete), " + str(TOP + 1) + " FROM c WHERE rank > " + str(TOP)
+                   + (f" GROUP BY {per}" if per else " HAVING count(*) > 0")
+                   + ") u ORDER BY rank, abs(change) DESC NULLS FIRST")
+        else:
+            sql = f"WITH p AS ({inner}) {shown} FROM p"
+        period = (f"last {n} days against the {n} days before, by {m['date']}; "
+                  + (f"the {TOP} largest changes, the rest one 'All others (n)' row"
+                     + (f" per {per}" if per else "") + " (the rows add up to the whole "
+                     "change); " if by else "") + f"a row whose "
+                  f"data_from (the source's first record, shown when it is after the earlier period "
+                  f"starts) has that period not covered: previous and change are unknown (NULL), "
                   f"never 0, and the row is incomplete")
     else:
         if dated:

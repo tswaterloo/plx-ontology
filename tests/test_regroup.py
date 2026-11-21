@@ -50,6 +50,8 @@ def corpus(n: int) -> list[tuple[str, str]]:
 class RegroupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        from operating.pg import scratch_db
+        scratch_db.use_test_cluster()
         cls.db = f"plx_test_regroup_{os.getpid()}"
         if subprocess.run(["createdb", cls.db], capture_output=True).returncode != 0:
             raise unittest.SkipTest("createdb failed")

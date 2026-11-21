@@ -29,7 +29,9 @@ function save(blob: Blob, name: string) {
 
 /** What a PNG carries besides the drawing: the legend (or axis caption) above it and the
  * notes (what it is drawn from, what it leaves out) under it, as on screen. */
-export type PngWords = { items: { name: string; colour: string }[]; caption: string; notes: string[]; muted: string };
+export type PngWords = { items: { name: string; colour: string }[]; caption: string; notes: string[]; muted: string;
+  /** Small multiples: each panel's title, in the order of the drawings. */
+  panels?: string[] };
 
 const FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif";
 
@@ -48,10 +50,48 @@ export function wrap(text: string, width: number, measure: (s: string) => number
   return out;
 }
 
-/** The chart's SVG as a PNG on its theme's ground: its title and legend above, its notes
- * under it. */
-export async function savePng(svg: SVGSVGElement, title: string, ground: string, ink: string, words?: PngWords): Promise<void> {
+export interface PanelCell { x: number; y: number; width: number; height: number }
+
+/** Pure: where each drawing goes in a PNG: one alone, or small multiples two across as on
+ * screen, each panel's title (``titleH`` high) above it. */
+export function panelGrid(sizes: { width: number; height: number }[], titleH = 0, gap = 16): { width: number; height: number; cells: PanelCell[] } {
+  const cols = sizes.length > 1 ? 2 : 1;
+  const colW = Math.max(0, ...sizes.map((s) => s.width));
+  const cells: PanelCell[] = [];
+  let y = 0;
+  for (let i = 0; i < sizes.length; i += cols) {
+    const row = sizes.slice(i, i + cols);
+    row.forEach((s, k) => cells.push({ x: k * (colW + gap), y: y + titleH, width: s.width, height: s.height }));
+    y += titleH + Math.max(...row.map((s) => s.height)) + gap;
+  }
+  return { width: cols * colW + (cols - 1) * gap, height: Math.max(0, y - gap), cells };
+}
+
+function svgImage(svg: SVGSVGElement): Promise<HTMLImageElement> {
   const box = svg.viewBox.baseVal;
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(box.width));
+  clone.setAttribute("height", String(box.height));
+  clone.querySelectorAll("[data-hover]").forEach((n) => n.remove());
+  const data = new XMLSerializer().serializeToString(clone);
+  const img = new Image();
+  // a data: URL: the app's CSP lets images load from 'self' and data: only (no blob:)
+  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(data)}`;
+  return new Promise<HTMLImageElement>((ok, fail) => {
+    img.onload = () => ok(img);
+    img.onerror = () => fail(new Error("chart image"));
+    img.src = url;
+  });
+}
+
+/** The chart's SVG (or its small multiples' SVGs, each under its panel title) as a PNG on its
+ * theme's ground: its title and legend above, its notes under it. */
+export async function savePng(svg: SVGSVGElement | SVGSVGElement[], title: string, ground: string, ink: string, words?: PngWords): Promise<void> {
+  const svgs = Array.isArray(svg) ? svg : [svg];
+  const titles = words?.panels ?? [];
+  const layout = panelGrid(svgs.map((s) => ({ width: s.viewBox.baseVal.width, height: s.viewBox.baseVal.height })), titles.length ? 18 : 0);
+  const box = { width: layout.width, height: layout.height };
   const scale = 2;
   const measureCtx = document.createElement("canvas").getContext("2d");
   const measure = (font: string) => (t: string) => {
@@ -66,20 +106,7 @@ export async function savePng(svg: SVGSVGElement, title: string, ground: string,
   const keyH = key.length || legend.length ? 20 : 0;
   const head = (title ? 30 : 0) + keyH;
   const foot = notes.length * 16;
-  const clone = svg.cloneNode(true) as SVGSVGElement;
-  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  clone.setAttribute("width", String(box.width));
-  clone.setAttribute("height", String(box.height));
-  clone.querySelectorAll("[data-hover]").forEach((n) => n.remove());
-  const data = new XMLSerializer().serializeToString(clone);
-  const img = new Image();
-  // a data: URL: the app's CSP lets images load from 'self' and data: only (no blob:)
-  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(data)}`;
-  await new Promise<void>((ok, fail) => {
-    img.onload = () => ok();
-    img.onerror = () => fail(new Error("chart image"));
-    img.src = url;
-  });
+  const images = await Promise.all(svgs.map(svgImage));
   const canvas = document.createElement("canvas");
   canvas.width = (box.width + 32) * scale;
   canvas.height = (box.height + head + foot + 24) * scale;
@@ -107,7 +134,16 @@ export async function savePng(svg: SVGSVGElement, title: string, ground: string,
     ctx.fillText(item.name, x + 15, keyY);
     x += 15 + measure(small)(item.name) + 16;
   }
-  ctx.drawImage(img, 16, head + 12, box.width, box.height);
+  images.forEach((img, i) => {
+    const c = layout.cells[i];
+    if (titles[i]) {
+      ctx.fillStyle = ink;
+      ctx.font = `500 12px ${FONT}`;
+      ctx.fillText(titles[i], 16 + c.x, head + 12 + c.y - 5);
+    }
+    ctx.drawImage(img, 16 + c.x, head + 12 + c.y, c.width, c.height);
+  });
+  ctx.font = small;
   ctx.fillStyle = words?.muted ?? ink;
   notes.forEach((line, i) => ctx.fillText(line, 16, head + 12 + box.height + 16 + i * 16));
   const blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/png"));

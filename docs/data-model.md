@@ -145,6 +145,8 @@ The three reasons:
 | `history.as_of` | plx.object | as-known-at |
 | `history.history` | plx.object | as-known-at |
 | `page_parts.customer_summary` | plx.around | generic (`<Type>.same_record_as`, verified tier) |
+| `page_parts._contacts` | plx.around | generic (the people who wrote from the customer mail, corroborated tier, along its own record and its confirmed copies) |
+| `page_parts._order_worth` | plx.object | label (`total_amount` only, with its derived `order_value`) |
 | `page_parts.label_timeline` | plx.object | label (`status` only) |
 | `page_parts.order_state` | plx.around | generic (order copies, fulfilment existence) |
 | `page_parts.order_state` | plx.object | label (`sales_order_status.READ_PROPS` only) |

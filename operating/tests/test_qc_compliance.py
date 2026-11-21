@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import datetime as dt
 
 from operating import briefs as br
+from operating import briefs_qc as bq
 from operating import qc_compliance as qc
 from operating.tests.test_proactive_commitments import RecentWorld
 from operating.tests import test_proactive_engine as engine_tests
@@ -269,7 +270,7 @@ class QcCompliance(engine_tests.Engine):
         self.assertEqual(got["idle_plans"]["plans"], 1)
         self.assertEqual(got["idle_plans"]["titles"], ["Old QC schedule"])
         self.assertEqual(got["idle_plans"]["last_activity"], (AS_OF - timedelta(days=286)).isoformat())   # the newest task added
-        daily = br.qc_daily_pack(mode_call(book, QC), QC, {"status": "read", "gaps": []}, today=AS_OF)
+        daily = bq.qc_daily_pack(mode_call(book, QC), QC, {"status": "read", "gaps": []}, today=AS_OF)
         open_checks = next(s for s in daily["sections"] if s["key"] == "open_checks")
         self.assertEqual({f["label"]: f["value"] for f in open_checks["figures"]}["Missed, still open"], "1")
         # flagged once, plainly, as a compliance question; never hidden
@@ -301,7 +302,7 @@ class QcCompliance(engine_tests.Engine):
              "groups": [[["api://ao/9", "AssemblyOrder:fx:9"]]]},
             {"kind": "late_order", "id": "g8", "summary": "Late", "object_id": "SalesOrder:fx:8",
              "groups": [[["api://so/8", "SalesOrder:fx:8"]]]}]}
-        daily = br.qc_daily_pack(mode_call(book, QC), QC, alerts, today=AS_OF)
+        daily = bq.qc_daily_pack(mode_call(book, QC), QC, alerts, today=AS_OF)
         sections = {s["key"]: s for s in daily["sections"]}
         self.assertEqual([r["object_id"] for r in sections["open_checks"]["rows"]],
                          [ids["missed_open"], ids["overdue"], ids["upcoming"]])
@@ -319,7 +320,7 @@ class QcCompliance(engine_tests.Engine):
         held_figure = sections["holds"]["figures"][0]
         self.assertEqual(held_figure["value"], "1")
         self.assertIn("No hold date is stored", held_figure["note"])
-        audit = br.qc_audit_pack(mode_call(book, QC), QC, today=AS_OF)
+        audit = bq.qc_audit_pack(mode_call(book, QC), QC, today=AS_OF)
         a_sections = {s["key"]: s for s in audit["sections"]}
         self.assertEqual(a_sections["by_area"]["figures"][0]["unit"], "percent")
         for pack in (daily, audit):
@@ -327,31 +328,31 @@ class QcCompliance(engine_tests.Engine):
                 for row in s["rows"]:
                     if row.get("object_id"):   # a line about a record cites it
                         self.assertTrue(row["sources"], (s["key"], row))
-        text = br.pack_text(audit)
+        text = bq.pack_text(audit)
         self.assertIn("Synthetic pH meter calibration", text)
         self.assertIn("api://", text)
         # an item the reader may not open is neither shown nor counted
         hidden = {r["sources"][0]["handle"] for r in sections["open_checks"]["rows"][:1]}
-        decided = br.qc_daily_pack(mode_call(book, QC), QC, alerts, today=AS_OF,
+        decided = bq.qc_daily_pack(mode_call(book, QC), QC, alerts, today=AS_OF,
                                    decide=lambda hs: {h: ({"reason": "no"} if h in hidden
                                                           else None) for h in hs})
         open_rows = {s["key"]: s for s in decided["sections"]}["open_checks"]["rows"]
         self.assertNotIn(ids["missed_open"], [r["object_id"] for r in open_rows])
         # a held batch the reader may not open is not in the queue, nor counted as more
-        queue = {s["key"]: s for s in br.qc_daily_pack(
+        queue = {s["key"]: s for s in bq.qc_daily_pack(
             mode_call(book, QC), QC, alerts, today=AS_OF,
             decide=lambda hs: {h: ({"reason": "no"} if h == "api://batch/2" else None)
                                for h in hs})["sections"]}["hold_release"]
         self.assertEqual(([r["object_id"] for r in queue["rows"]], queue["more"]),
                          (["Batch:fx:3", "Batch:fx:1"], 0))
         # the alert list unread: the queue says so and lists nothing
-        unread = {s["key"]: s for s in br.qc_daily_pack(
+        unread = {s["key"]: s for s in bq.qc_daily_pack(
             mode_call(book, QC), QC, {"status": "failed"}, today=AS_OF)["sections"]}
         self.assertEqual((unread["hold_release"]["state"], unread["hold_release"]["rows"]),
                          ("unread", []))
         # a reader without quality_controlled: every section says so, nothing is read
         calls = []
-        outside = br.qc_daily_pack(lambda n, a: calls.append(n) or {}, frozenset(), alerts,
+        outside = bq.qc_daily_pack(lambda n, a: calls.append(n) or {}, frozenset(), alerts,
                                    today=AS_OF)
         self.assertEqual(calls, [])
         self.assertEqual({s["state"] for s in outside["sections"]}, {"quality_marked"})

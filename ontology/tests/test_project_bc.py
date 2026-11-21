@@ -1259,5 +1259,29 @@ class ProbeTests(unittest.TestCase):
             "unexplained": 2, "explained": False})
 
 
+class PassStartsReadOnUse(unittest.TestCase):
+    def test_describe_reads_no_pass_starts_and_records_still_carry_them(self):
+        """Opening a capture and describing it (a store status) never scans the runs for
+        pass starts; the records read afterwards carry them."""
+        from unittest import mock
+        from ontology import project_bc
+        h = tb.Harness(self, purchase_world())
+        h.run(entity_sets=("purchaseOrders",))
+        scans = []
+        original = project_bc.BcCaptures._pass_starts
+
+        def counted(capture):
+            scans.append(1)
+            return original(capture)
+        with mock.patch.object(project_bc.BcCaptures, "_pass_starts", counted):
+            with BcCaptures(h.db) as source:
+                self.assertTrue(source.describe()["relations"])
+                self.assertEqual(scans, [])
+                versions = list(source.records(["purchaseOrders"])["purchaseOrders"])
+                self.assertTrue(versions)
+                self.assertTrue(all(v.pass_started_at for v in versions))
+                self.assertEqual(scans, [1])
+
+
 if __name__ == "__main__":
     unittest.main()

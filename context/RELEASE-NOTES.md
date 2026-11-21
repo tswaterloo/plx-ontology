@@ -58,6 +58,16 @@ Changed:
 - Insights reads run on the page read workers, not the access workers, so opening Insights no longer stalls every page
 - People exclusion: an update waits out a long delta (tries the lock again after a pause) instead of failing
 
+## Update 2026-11-21
+Changed:
+- Assist drafts for every staff member: each gets their own session (never an excluded person)
+- a reply line left undrafted for want of a session is tried again in 30 minutes
+- Assist drafts for every staff member: each gets their own session as the Portal's staff role (never an excluded person)
+- a reply line left undrafted for want of a session is tried again in 30 minutes
+- Ask tools faster: mail and Teams day columns indexed at every build, the findings view checks a Teams finding by its one handle (24 s to under 1 s), and plx.open takes a short ref for a long mail, Teams, meeting or file handle (the full handle opens through the same gates)
+- One switch per kind of work on the Autopilot page: off, prepare and confirm each with one click, or Auto, which opens only where replaying past days scored high enough for the person
+- the score shows beside it
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

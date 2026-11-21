@@ -1744,7 +1744,8 @@ class CaseHostToolsTests(Base):
                                            "plx.around", "plx.timeline", "plx.process",
                                            "plx.investigate", "plx.agenda", "plx.changes",
                                            "plx.query", "plx.table", "plx.business", "plx.sql",
-                                           "plx.page"})
+                                           "plx.page", "plx.sql_comms_search",
+                                           "plx.sql_comms_open", "plx.sql_records_search"})
         from operating.ontology_host import table_tool_names
         self.assertEqual(set(host.table), table_tool_names())
         result = host.call("plx.investigate", {"family": "F3", "root": self.root_of(item),

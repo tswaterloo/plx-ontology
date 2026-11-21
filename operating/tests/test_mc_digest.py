@@ -37,6 +37,13 @@ REASONS = {          # class -> a synthetic reason stating it
 
 
 class Digest(World):
+    def setUp(self) -> None:
+        super().setUp()
+        from operating.tests.test_autopilot_fast import with_mc_approvals
+        switched_on = mock.patch.object(ap, "load_registry", with_mc_approvals(ap.load_registry))
+        switched_on.start()
+        self.addCleanup(switched_on.stop)
+
     def gate(self, i: int, reason: str, *, audience: str = OURS_P, hour: int = 10,
              task: str | None = None, task_id: str | None = None) -> str:
         oid = self.w.obj("MCApproval", {

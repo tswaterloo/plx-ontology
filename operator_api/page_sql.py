@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from contextlib import nullcontext
 from urllib.parse import quote
 from datetime import date, datetime
 from decimal import Decimal
@@ -356,8 +357,12 @@ def _reader_scope(backend: Any, reader: Any) -> ReaderScope:
         except Exception:  # noqa: BLE001 - unresolved: unavailable, not routed nothing
             return None  # type: ignore[return-value]
         seen: list = []
+        # one request: the reader's policy kept for the session (``HostAccess.request``),
+        # not decided again outside one at each visit
+        request = getattr(getattr(view, "access", None), "request", None)
         try:
-            enabled = _rule_types(view, seen)
+            with request() if callable(request) else nullcontext():
+                enabled = _rule_types(view, seen)
         except Exception:  # noqa: BLE001 - rules unreadable: only the default-on types
             enabled = []
         return ReaderScope(visit if isinstance(visit, str) else None, routing, enabled,

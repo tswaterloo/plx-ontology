@@ -10,7 +10,7 @@ from ontology.core import Actor
 from . import (
     action_tools, agent_definitions, answer_gate, capability_guards, case_context_tools,
     host_peers, kind_confirmation, mcp_portfolio, ontology_tools, ontology_tools_search,
-    session_identity, tool_results
+    open_refs, session_identity, tool_results
 )
 from .case_tools_host import PagedRead
 from .session_identity import SessionIdentity, SessionIdentityRefused
@@ -27,6 +27,26 @@ from .mcp_server_evidence import (
 )
 from .mcp_server_results import _FRESHNESS_UNIT_FIELDS, InputError
 
+SQL_TOOL = "plx.sql"
+
+
+def _with_refs(result: dict[str, Any]) -> dict[str, Any]:
+    """``result`` as it is served: each hit with the ref ``open_refs.Refs.search`` writes
+    beside a long citation (``open_refs.short``, none kept: the hits a fit leaves out get
+    no ref). Live 11-20: 35 hits fit without them and were refused whole with them."""
+    from operating import open_refs
+    docs = result.get("documents") if isinstance(result, dict) else None
+    if not isinstance(docs, list):
+        return result
+    shaped = []
+    for hit in docs:
+        cited = hit.get("citation") if isinstance(hit, dict) else None
+        if (isinstance(cited, str) and len(cited) >= open_refs.MIN_CHARS and "://" in cited
+                and cited.split("://", 1)[0] in open_refs.SCHEMES):
+            hit = {**hit, "ref": open_refs.short(cited)}
+        shaped.append(hit)
+    return {**result, "documents": shaped}
+
 
 def search_fits(result: dict[str, Any]) -> bool:
     """Whether a ``plx.search`` result fits one response as ``MCPServer.handle`` sends it
@@ -34,7 +54,7 @@ def search_fits(result: dict[str, Any]) -> bool:
     client sees it (``_firewall``), with room for the freshness summary, the agent stamp
     (``META_RESERVE_BYTES``) and an unkept evidence note."""
     from .mcp_server_results import _envelope_size, _firewall, META_RESERVE_BYTES
-    text = json.dumps(_firewall(result, ontology_tools_search.TOOL_NAME),
+    text = json.dumps(_firewall(_with_refs(result), ontology_tools_search.TOOL_NAME),
                       ensure_ascii=False, separators=(",", ":"))
     payload = {"content": [{"type": "text", "text": text}], "isError": False,
                "_meta": {tool_results.TEXT_ONLY_KEY: tool_results.TEXT_ONLY_STUB}}
@@ -333,23 +353,33 @@ class CallsMixin:
     def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == ontology_tools_search.TOOL_NAME:
             # plx.documents itself, as this session's reader, its hits cut short; as many
-            # as fit one response (``search_fits``)
-            return ontology_tools_search.fitted(ontology_tools_search.run(
+            # as fit one response (``search_fits``); a long citation gets its short ref
+            return self._refs().search(ontology_tools_search.fitted(ontology_tools_search.run(
                 lambda wanted: self._generic_call(ontology_tools_search.DOCUMENTS, wanted),
                 arguments,
                 call_read=lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
                 call_comms=lambda wanted: self._generic_call(ontology_tools_search.COMMS_SEARCH,
                                                              wanted),
                 call_records=lambda wanted: self._generic_call(
-                    ontology_tools_search.RECORDS_SEARCH, wanted)), search_fits)
+                    ontology_tools_search.RECORDS_SEARCH, wanted)), search_fits))
         if name == ontology_tools_search.OPEN_NAME:
-            # plx.read itself, as this session's reader; Freightcom never shown
+            # plx.read itself, as this session's reader; Freightcom never shown. A ref
+            # (``open_refs``) opens the full handle this session's results showed for it,
+            # through the same gates; one they did not show opens nothing.
+            if isinstance(arguments, Mapping) and open_refs.is_ref(arguments.get("citation")):
+                full = self._refs().resolve(arguments["citation"])
+                if full is None:
+                    return {"error": {"code": "not_found", "message": (
+                        "no plx.search hit or plx.sql row of this session showed that ref: "
+                        "send the ref or citation a result showed")}}
+                arguments = {**arguments, "citation": full}
             return ontology_tools_search.open_one(
                 lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
                 arguments,
                 lambda wanted: self._generic_call(ontology_tools_search.COMMS_OPEN, wanted))
         if name in GENERIC_TOOLS or name in AGENDA_TOOLS:
-            return self._generic_call(name, arguments)
+            result = self._generic_call(name, arguments)
+            return self._refs().sql(result) if name == SQL_TOOL else result
         known = (_HOST_READ_ARGUMENTS if name in HOST_READS else
                  next(tool["inputSchema"] for tool in self.tools
                       if tool["name"] == name)["properties"])
@@ -381,6 +411,13 @@ class CallsMixin:
             name, arguments, actor, runtime=self.case_runtime, reads=self._evaluator_reads,
             evaluation_options=options, client_capabilities=self.client_capabilities,
             send_request=self.outbound.append, client_info=self.client_info)
+
+    def _refs(self) -> open_refs.Refs:
+        """This session's short refs (``open_refs``)."""
+        refs = getattr(self, "_open_refs", None)
+        if refs is None:
+            refs = self._open_refs = open_refs.Refs()
+        return refs
 
     def _generic_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """One generic ontology tool. The employee gate applies before any read, as for

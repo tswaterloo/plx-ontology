@@ -36,9 +36,10 @@ ROOT = Path(__file__).resolve().parents[1]
 AUDIENCE = ROOT / "examples" / "source_mirror_audience.example.json"
 CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_text("utf-8"))
 
-# Every platform tool the retired host listed at 93ba386 (69 names); none may return.
+# Every platform tool the retired host listed at 93ba386 (69 names); none may return
+# (plx.search is the name of today's Ask text search, operating/ontology_tools_search.py).
 RETIRED_PLATFORM_TOOLS = frozenset({
-    "plx.repositories", "plx.search", "plx.context", "plx.episode", "plx.findings",
+    "plx.repositories", "plx.context", "plx.episode", "plx.findings",
     "plx.impact", "plx.mc_task_context", "plx.vmc_context", "plx.vmc_knowledge_search",
     "plx.business_objectives", "plx.campaigns", "plx.work_inbox", "plx.campaign",
     "plx.campaign_work_report", "plx.campaign_casebook",

@@ -122,6 +122,19 @@ class MeasureDoor(unittest.TestCase):
         first = dt.date.fromisoformat(str(self.rows(out)[0][0])[:10])
         return max(1, (dt.date.today() - first).days // 2 - 1)
 
+    def test_a_comparison_never_reads_the_whole_source_for_its_first_record(self):
+        """Through a reader's door a view's unbounded min reads every row (~20 s for mail,
+        three times per comparison): coverage is an EXISTS before the earlier period, and
+        the first record is read only after the start, only when it is not covered."""
+        for m in measures.measures().values():
+            if not m["date"]:
+                continue
+            for by in [None] + m["dimensions"][:1]:
+                sql, _ = measures.statement(m["id"], by, 20, True)
+                self.assertNotIn(f"(SELECT min({m['date']}) FROM {m['view']})", sql, m["id"])
+                self.assertEqual(sql.count(f"(SELECT min({m['date']}) FROM {m['view']} WHERE "
+                                           f"{m['date']} > now() - interval '40 days')"), 1)
+
     def test_a_comparison_before_the_source_begins_is_unknown_not_zero(self):
         """An earlier period starting before the source's first record (a source captured
         only lately) is not read as 0: previous and change are NULL, the row says covered
@@ -136,6 +149,8 @@ class MeasureDoor(unittest.TestCase):
             for r in self.rows(out):
                 row = dict(zip(out["columns"], r))
                 self.assertFalse(_true(row["covered"]), (m["id"], row))
+                if int(row["current_rows"]) + int(row["previous_rows"]):
+                    self.assertIsNotNone(row["data_from"], (m["id"], row))
                 self.assertTrue(_true(row["incomplete"]), (m["id"], row))
                 self.assertIsNone(row["previous"], (m["id"], row))
                 self.assertIsNone(row["change"], (m["id"], row))
@@ -146,6 +161,7 @@ class MeasureDoor(unittest.TestCase):
         self.assertTrue(rows)
         for row in rows:
             self.assertTrue(_true(row["covered"]), row)
+            self.assertIsNone(row["data_from"], row)
             if int(row["previous_rows"]) > 0:
                 self.assertIsNotNone(row["previous"], row)
                 self.assertIsNotNone(row["change"], row)
@@ -199,6 +215,29 @@ class MeasureDoor(unittest.TestCase):
         self.assertTrue(shares)
         if sum(changes):
             self.assertAlmostEqual(float(sum(shares)), 100.0, delta=0.1 * len(shares))
+
+    def test_the_parts_of_a_change_add_up_to_the_whole_change_past_the_top(self):
+        """Past the largest changes the rest is one "All others (n)" row per currency, so a
+        waterfall of the parts ends on the whole change; break the remainder and this fails."""
+        days = self.covered_days("invoices_issued", FULL)
+        whole = self.call({"measure": "invoices_issued", "compare": True, "days": days}, FULL)
+        total = sum(Decimal(str(dict(zip(whole["columns"], r))["change"]))
+                    for r in self.rows(whole))
+        old = measures.TOP
+        try:
+            measures.TOP = 1
+            out = self.call({"measure": "invoices_issued", "by": "customer", "compare": True,
+                             "days": days}, FULL)
+        finally:
+            measures.TOP = old
+        rows = [dict(zip(out["columns"], r)) for r in self.rows(out)]
+        self.assertGreater(len(rows), 1)
+        self.assertEqual(sum(1 for r in rows if not str(r["customer"]).startswith("All others (")),
+                         1)
+        self.assertEqual(sum(Decimal(str(r["change"])) for r in rows), total)
+        if total:   # the remainder carries its share too: the shares still add up to 100
+            self.assertAlmostEqual(float(sum(Decimal(str(r["share_of_change_pct"]))
+                                             for r in rows)), 100.0, delta=0.1 * len(rows))
 
     def test_a_report_for_full_readers_runs_only_for_a_full_reader(self):
         """A report Insights lists only for the readers who see everyone (scope "full") is

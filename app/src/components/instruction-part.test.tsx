@@ -97,12 +97,28 @@ describe("InstructionPart", () => {
     expect(onInstruct).toHaveBeenLastCalledWith("reply to this", { source: "graph-mail://me/m1@1", mode: "do" });
   });
 
-  it("shows a proposed workflow in Draft mode with no keep button the studio would refuse", () => {
+  it("keeps a proposed repeating instruction only when asked", async () => {
     const workflow = { label: "Monday supplier chase", trigger: { kind: "schedule.weekly", words: "Every Monday", params: { weekday: "monday" } }, conditions: [], actions: [{ kind: "instruction", words: "Draft a chase for each late PO line", params: {} }], mode: "draft" as const };
-    render(<InstructionPart part={{ ...DRAFTED, status: "workflow", writes: [], documents: [], workflow }} answerId="w1" onInstruct={vi.fn()} />);
-    expect(screen.getByTestId("instruct-workflow").textContent).toContain("cannot keep workflows on this server yet");
-    expect(screen.queryByRole("button", { name: /Keep as draft/ })).toBeNull();
+    replies.push({ id: "r1", text: "every Monday chase the late POs", label: "Every Monday", kind: "schedule.weekly", params: { weekday: "monday" }, words: "Every Monday", hour: 8, state: "active", created: 1 });
+    render(<InstructionPart part={{ ...DRAFTED, text: "every Monday chase the late POs", status: "workflow", writes: [], documents: [], workflow }} answerId="w1" onInstruct={vi.fn()} />);
+    expect(calls("/api/instructions/recurring")).toEqual([]);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Keep it repeating" })); });
+    expect(calls("/api/instructions/recurring")).toHaveLength(1);
+    expect(JSON.parse(String(calls("/api/instructions/recurring")[0][1].body))).toEqual({ text: "every Monday chase the late POs" });
+    expect(screen.getByTestId("recurring-kept").textContent).toContain("every monday at 8 AM");
     expect(calls("/api/autopilot/workflows")).toEqual([]);
+  });
+
+  it("keeps a whenever instruction only with the sender or subject words the person set", async () => {
+    const workflow = { label: "On a confirmation", trigger: { kind: "message.received", words: "When a matching message arrives", params: {} }, conditions: [], actions: [], mode: "draft" as const };
+    replies.push({ id: "r2", text: "whenever acme writes, draft a reply", label: "w", kind: "message.received", params: {}, words: "When a matching message arrives", hour: 8, state: "active", created: 1 });
+    render(<InstructionPart part={{ ...DRAFTED, text: "whenever acme writes, draft a reply", status: "workflow", writes: [], documents: [], workflow }} answerId="w2" onInstruct={vi.fn()} />);
+    const keep = screen.getByRole("button", { name: "Keep it repeating" });
+    expect(keep).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Mail from (address or domain)"), { target: { value: "acme.com" } });
+    await act(async () => { fireEvent.click(keep); });
+    expect(JSON.parse(String(calls("/api/instructions/recurring")[0][1].body))).toEqual({ text: "whenever acme writes, draft a reply", sender: "acme.com", subject: null });
+    expect(screen.getByTestId("recurring-kept").textContent).toContain("when a matching mail reaches you");
   });
 
   it("shows before and after, and approves an upload only on a second Confirm click", async () => {

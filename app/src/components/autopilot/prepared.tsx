@@ -5,8 +5,11 @@ import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
-import { JobCard } from "@/components/autopilot/job";
+import { JobCard, SetAside } from "@/components/autopilot/job";
+
+export { tomorrowMorning } from "@/components/autopilot/job";
 import { TodoCard, TodoSteps } from "@/components/autopilot/todo";
+import { AlertCard } from "@/components/autopilot/alert";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
@@ -112,6 +115,17 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
       {haveReply && (
         <>
           {editing ? <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full max-w-[46rem] rounded-lg border border-border bg-bg p-2 text-[13px] text-fg" /> : <p className="max-w-[46rem] whitespace-pre-wrap rounded-lg bg-hover p-3 text-[13px]">{text}</p>}
+          {item.redo && (
+            <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
+              <label className="block min-w-[16rem] flex-1 text-[12px] text-muted">
+                Rewrite it: what do you want to say?
+                <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-lg border border-border bg-bg px-2 text-[13px] text-fg" />
+              </label>
+              <Button size="sm" variant="outline" disabled={busy || !line.trim()} onClick={() => void write()}>
+                Rewrite
+              </Button>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy} onClick={() => void confirm()}>
               {token ? "Confirm again to send" : "Confirm"}
@@ -132,6 +146,13 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
       )}
       <TodoSteps todos={item.todos ?? []} />
       <DraftUse use={draftUseOf(item)} />
+      {item.auto_would && (
+        <p className="max-w-[46rem] text-[12px] text-muted" data-testid="auto-would">
+          {item.auto_would === "send"
+            ? "Dry run: with Auto on, this would go by itself."
+            : `Dry run: with Auto on, this would still wait for you (${item.auto_would.replace(/^keep: /, "")}).`}
+        </p>
+      )}
       {(item.learned ?? []).length > 0 && (
         <p className="max-w-[46rem] text-[12px] text-muted" data-testid="draft-learned">
           Learned from your edit: {(item.learned ?? []).join("; ")}
@@ -146,6 +167,7 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
           Save
         </Button>
       </div>
+      <SetAside itemId={item.item_id} disabled={busy} onGone={onGone} sender={item.sender} onNever={onChanged} />
       {note && <p className="text-[12px] text-muted">{note}</p>}
       {error && <ErrorNotice message={error} />}
     </li>
@@ -165,9 +187,11 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
     <ul className="divide-y divide-border" aria-label="Prepared for me">
       {items.map((i) =>
         i.kind === "job" ? (
-          <JobCard key={i.item_id} item={i} linked={i.item_id === linked} />
+          <JobCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
         ) : i.kind === "todo" ? (
           <TodoCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
+        ) : i.kind === "alert" ? (
+          <AlertCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
         ) : (
           <Card key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
         ),
@@ -180,8 +204,28 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
 export function EveryoneView({ area }: { area: Area }) {
   const who = area.drafts_switched_on ?? [];
   const by = Object.entries(area.outcomes?.by_autopilot ?? {}).filter(([, c]) => c.accepted + c.edited + c.rejected > 0);
+  const waiting = new Map<string, number>();
+  for (const i of area.items ?? []) if (i.state === "waiting" || i.state === "edited") waiting.set(i.owner, (waiting.get(i.owner) ?? 0) + 1);
+  const queue = [...waiting].sort((a, b) => b[1] - a[1]);
   return (
     <div className="space-y-6">
+      <section aria-labelledby="ap-waiting" className="space-y-2">
+        <h2 id="ap-waiting" className="text-[13px] font-semibold">
+          Waiting now, per person
+        </h2>
+        {queue.length === 0 ? (
+          <p className="text-[13px] text-muted">Nothing is waiting on anyone.</p>
+        ) : (
+          <ul className="divide-y divide-border" data-testid="ap-waiting">
+            {queue.map(([p, n]) => (
+              <li key={p} className="flex gap-3 py-1.5 text-[13px]">
+                <span>{personName(area, p)}</span>
+                <span className="text-muted">{n} waiting</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <section aria-labelledby="ap-who" className="space-y-2">
         <h2 id="ap-who" className="text-[13px] font-semibold">
           Who switched what on

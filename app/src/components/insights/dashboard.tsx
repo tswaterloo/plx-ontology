@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnswerCharts } from "@/components/answer-chart";
 import { LoadProblem } from "@/components/ui/notice";
@@ -21,6 +22,10 @@ export function grouped(items: InsightInfo[]): [string, InsightInfo[]][] {
   return [...out.entries()];
 }
 
+// columns that hold a person's name: it opens that person on Team, by the row's Team key when it
+// has one, else by the name (Team decides what you may see)
+const PEOPLE = new Set(["person", "who", "busiest_person"]);
+
 /** The rows behind an insight, as read now (cells as text). */
 function Rows({ data }: { data: InsightResult }) {
   if (data.rows.length === 0) return <p className="text-[13px] text-muted">No rows you can see right now.</p>;
@@ -33,7 +38,11 @@ function Rows({ data }: { data: InsightResult }) {
         <tbody>
           {data.rows.map((r, i) => (
             <tr key={i} className="border-t border-border">
-              {r.map((c, j) => <td key={j} className="px-2 py-1 tabular-nums">{c ?? ""}</td>)}
+              {r.map((c, j) => (
+                <td key={j} className="px-2 py-1 tabular-nums">
+                  {PEOPLE.has(data.columns[j]) && c ? <Link href={`/team?person=${encodeURIComponent(data.people?.[i] || c)}`} className="hover:underline">{c}</Link> : (c ?? "")}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>

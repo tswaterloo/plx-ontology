@@ -673,7 +673,7 @@ export function AnswerCard(props: CardProps) {
     <>
       <SimpleAnswer answer={turn.answer} streamed={turn.streamed} busy={busy} status={turn.status} progress={busy ? <Progress turn={turn} /> : undefined} />
       {turn.phase === "error" && <ErrorNotice message={turn.error ?? "This answer didn't finish. Try again."} tone={turn.notice ? "notice" : "error"} onRetry={turn.notice === "off" ? undefined : onRetry} />}
-      {turn.phase === "done" && onDeeper && !turn.request?.extra?.deep && (
+      {turn.phase === "done" && onDeeper && !turn.request?.extra?.deep && !turn.answer?.assistant_unavailable && (
         <button
           type="button"
           onClick={onDeeper}

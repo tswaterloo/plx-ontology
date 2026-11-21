@@ -111,6 +111,21 @@ class EveryKindTest(unittest.TestCase):
         self.assertTrue(any("not that one causes the other" in line
                             for line in ox.provenance(chart)))
 
+    def test_a_file_says_how_to_read_it_as_the_app_does(self):
+        # the app's chart notes (chart-view.tsx) travel with the file
+        said = {}
+        for spec in SPECS:
+            chart = drawn(spec)
+            said[chart["kind"]] = " ".join(ox.provenance(chart))
+        self.assertIn("the last bar is the total", said["waterfall"])
+        self.assertIn("Each percentage is of the step before.", said["funnel"])
+        self.assertNotIn("of the step before", said["bar"])
+        chart = drawn(SPECS[0])
+        self.assertIn("2 rows have no value and are not counted.",
+                      ox.provenance(dict(chart, skipped=2)))
+        self.assertIn("1 row has no value and is not counted.",
+                      ox.provenance(dict(chart, skipped=1)))
+
     def test_heatmap_cells_carry_a_colour_scale(self):
         sheet = package(ox.xlsx(drawn(SPECS[9])))["xl/worksheets/sheet1.xml"].decode()
         self.assertIn('<cfRule type="colorScale"', sheet)

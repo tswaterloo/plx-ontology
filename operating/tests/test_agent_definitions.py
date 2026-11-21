@@ -34,13 +34,16 @@ class AgentDefinitionLoaderTests(ActionToolsTestCase):
     def test_definitions_validate_and_fail_closed(self):
         shipped = ad.load()
         self.assertEqual(set(shipped.agents), {"plx.agent.investigate", "plx.agent.act",
-                                               "plx.agent.playbook"})
+                                               "plx.agent.playbook", "plx.agent.ask"})
         self.assertNotIn(ACT, shipped.get("plx.agent.investigate").tools)
         # The playbook agent runs only the adoption path's tools (and the case read they
         # evaluate with); it neither investigates nor acts.
         self.assertEqual(shipped.get("plx.agent.playbook").tools, {
             "plx.case_get", "plx.playbook_propose", "plx.playbook_evaluate",
             "plx.playbook_adopt"})
+
+        def act(document):
+            return next(a for a in document["agents"] if a["id"] == "plx.agent.act")
 
         def refused(mutate):
             document = ad.document()
@@ -51,10 +54,10 @@ class AgentDefinitionLoaderTests(ActionToolsTestCase):
         refused(lambda d: d.update(agents_extra=[]))                       # unknown field
         refused(lambda d: d["agents"][0].update(may_self_approve=True))    # unknown field
         refused(lambda d: d["agents"][0]["limits"].update(max_minutes=5))  # unknown limit
-        refused(lambda d: d["agents"][1]["forbidden"].remove("approve"))   # NEVER not forbidden
-        refused(lambda d: d["agents"][1]["action_types"].append("portal.order.delete"))
-        refused(lambda d: d["agents"][1]["escalation"].pop("mc_gate"))     # unmapped approval
-        refused(lambda d: d["agents"][1]["escalation"].update(mc_gate="plx.agent.act"))
+        refused(lambda d: act(d)["forbidden"].remove("approve"))   # NEVER not forbidden
+        refused(lambda d: act(d)["action_types"].append("portal.order.delete"))
+        refused(lambda d: act(d)["escalation"].pop("mc_gate"))     # unmapped approval
+        refused(lambda d: act(d)["escalation"].update(mc_gate="plx.agent.act"))
         # Every shipped agent can be served by this host (tools served, plan tools allowed).
         for definition in shipped.agents.values():
             self.server_for(definition)

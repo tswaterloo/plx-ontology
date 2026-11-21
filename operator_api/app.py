@@ -1131,6 +1131,31 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Your open prepared replies and "your call" cards, newest first."""
         return backend.autopilot_prepared_list(who)
 
+    @app.post("/api/autopilot/never", response_model=m.AutopilotDrafts, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                         409: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def autopilot_never(body: m.AutopilotNeverRequest,
+                        who: Reader = Depends(reader)) -> m.AutopilotDrafts:
+        """Never (or again) prepare anything for you from one sender: your list, back."""
+        return backend.autopilot_never(who, body)
+
+    @app.get("/api/autopilot/colleagues", response_model=m.AutopilotColleagues,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse}})
+    def autopilot_colleagues(who: Reader = Depends(reader)) -> m.AutopilotColleagues:
+        """Whom an alert on your list can be passed to: a key and a name each."""
+        return backend.autopilot_colleagues(who)
+
+    @app.post("/api/autopilot/items/{item_id}/hand", response_model=m.AutopilotDrafts,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def autopilot_hand(item_id: str, body: m.AutopilotHandRequest,
+                       who: Reader = Depends(reader)) -> m.AutopilotDrafts:
+        """Pass an alert on your list to a colleague: on their list too, under their own
+        access, only to set aside there; nothing is decided, sent or written."""
+        return backend.autopilot_hand(who, item_id, body)
+
     @app.post("/api/autopilot/items/{item_id}/decision", response_model=m.AutopilotItem,
               tags=["actions"], responses={401: {"model": m.ErrorResponse},
                                            404: {"model": m.ErrorResponse},
@@ -1257,6 +1282,39 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Approve the upload you previewed (your confirm, for that preview). Recorded as
         would upload: this build has no SharePoint upload path."""
         return backend.upload_approve(who, upload_id, body)
+
+    @app.get("/api/instructions/recurring", response_model=m.RecurringInstructions,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse}})
+    def recurring_list(who: Reader = Depends(reader)) -> m.RecurringInstructions:
+        """Your recurring instructions (only yours)."""
+        return m.RecurringInstructions(instructions=backend.recurring_list(who))
+
+    @app.post("/api/instructions/recurring", response_model=m.RecurringInstruction,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def recurring_keep(body: m.RecurringKeep,
+                       who: Reader = Depends(reader)) -> m.RecurringInstruction:
+        """Keep a recurring instruction ("every Monday ..."): when it runs is read from the
+        line. Each run prepares its work for you to confirm; nothing is sent on its own."""
+        return m.RecurringInstruction(**backend.recurring_keep(
+            who, body.text, body.label, body.hour, body.sender, body.subject))
+
+    @app.patch("/api/instructions/recurring/{rid}", response_model=m.RecurringInstruction,
+               tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                            404: {"model": m.ErrorResponse},
+                                            422: {"model": m.ErrorResponse}})
+    def recurring_change(rid: str, body: m.RecurringChange,
+                         who: Reader = Depends(reader)) -> m.RecurringInstruction:
+        """Change one of yours: its hour, weekday or name, or pause and resume it."""
+        return m.RecurringInstruction(**backend.recurring_change(
+            who, rid, **body.model_dump(exclude_none=True)))
+
+    @app.delete("/api/instructions/recurring/{rid}", status_code=204, tags=["actions"],
+                responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def recurring_stop(rid: str, who: Reader = Depends(reader)) -> Response:
+        """Stop one of yours: it is deleted and never runs again."""
+        backend.recurring_stop(who, rid)
+        return Response(status_code=204)
 
     @app.get("/api/instruct/files/{file_id}", tags=["actions"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
@@ -1479,6 +1537,17 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         drafts and prepared actions wait in My work for your confirm; nothing is sent or
         written by itself. Always your own; recorded on the audit log."""
         return backend.autopilot_drafts(who, body)
+
+    @app.post("/api/autopilot/mode", response_model=m.AutopilotArea, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def autopilot_mode(body: m.AutopilotChoiceModeRequest,
+                       who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Set one category of your own work to off, confirm (prepared in full, one click
+        of yours performs it) or auto (performed by itself only where your replay score
+        earned it: 409 otherwise). Always your own; recorded on the audit log."""
+        return backend.autopilot_mode(who, body)
 
     @app.post("/api/autopilot/pause", response_model=m.AutopilotArea, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},

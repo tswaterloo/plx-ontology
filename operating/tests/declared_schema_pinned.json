@@ -1261,6 +1261,22 @@
     "CREATE TABLE objects (binding TEXT, object_id TEXT, print BLOB,\n                part TEXT, PRIMARY KEY (binding, object_id)) WITHOUT ROWID"
    ]
   ],
+  "recurring_fires": [
+   [
+    "table",
+    "fires",
+    "fires",
+    "CREATE TABLE fires (rid TEXT NOT NULL, owner TEXT NOT NULL, object_id TEXT NOT NULL, at REAL NOT NULL, taken INTEGER NOT NULL DEFAULT 0, UNIQUE (rid, object_id))"
+   ]
+  ],
+  "recurring_instructions": [
+   [
+    "table",
+    "recurring",
+    "recurring",
+    "CREATE TABLE recurring (id TEXT PRIMARY KEY, owner TEXT NOT NULL, text TEXT NOT NULL, label TEXT NOT NULL, kind TEXT NOT NULL, params TEXT NOT NULL, words TEXT NOT NULL, hour INTEGER NOT NULL, state TEXT NOT NULL, created REAL NOT NULL, last_run REAL, next_run REAL, last_result TEXT)"
+   ]
+  ],
   "session_journal": [
    [
     "table",

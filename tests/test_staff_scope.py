@@ -555,5 +555,156 @@ class LoadUnitsKept(unittest.TestCase):
         self.assertIsNot(changed, first)
         self.assertEqual(changed["mail:a"].sharing, "restricted")
 
+
+class RequestGeneration(unittest.TestCase):
+    """A request's Postgres check reads the search write generation with it
+    (``PgStoreReader.whole_stamp``), and the staff scope keeps its units by that one: no
+    second round trip per policy question inside the request, its own read outside one."""
+
+    def _reader(self, state):
+        import threading
+
+        class _Pg:
+            def execute(self, sql, *args):
+                state["sql"].append(sql)
+                if "write_generation" in sql:
+                    return SimpleNamespace(fetchone=lambda: (state["generation"], True))
+                return SimpleNamespace(fetchall=lambda: list(state["rows"]))
+
+            def rollback(self):
+                pass
+        reader = SimpleNamespace(lock=threading.Lock(), conn=SimpleNamespace(
+            _lock=threading.Lock(), _pg=_Pg()))
+        self.addCleanup(staff_scope._UNITS.pop, id(reader), None)
+        return reader
+
+    def test_a_generation_given_is_not_read_again_and_a_new_one_reads_the_units(self):
+        state = {"generation": 1, "sql": [],
+                 "rows": [("mail:a", "shared", ["x@plx.example"])]}
+        reader = self._reader(state)
+        first = staff_scope.load_units(reader, generation=7)
+        self.assertFalse([s for s in state["sql"] if "write_generation" in s])
+        state["sql"].clear()
+        self.assertIs(staff_scope.load_units(reader, generation=7), first)
+        self.assertEqual(state["sql"], [])   # the same generation: nothing read
+        state["rows"] = [("mail:a", "restricted", ["x@plx.example"])]
+        changed = staff_scope.load_units(reader, generation=8)
+        self.assertEqual(changed["mail:a"].sharing, "restricted")   # a write: read again
+        state["sql"].clear()
+        staff_scope.load_units(reader)   # none given: its own read, as before
+        self.assertTrue([s for s in state["sql"] if "write_generation" in s])
+
+    def test_the_host_passes_the_requests_generation_only_inside_the_request(self):
+        from operating.ontology_host import CaseHostTools
+        host = object.__new__(CaseHostTools)
+        host._reader, host._depth, host._search_generation = object(), 0, None
+        seen = []
+        with mock.patch.object(staff_scope, "load_units",
+                               lambda reader, generation=None: seen.append(generation)), \
+                mock.patch.dict(os.environ, {"PLX_STAFF_SCOPE": ""}):
+            host._search_generation = 5
+            host._staff_units()            # outside a request: never a held generation
+            host._depth = 1
+            host._staff_units()
+            host._search_generation = None
+            host._staff_units()            # the check read none: read its own
+        self.assertEqual(seen, [None, 5, None])
+
+    def _whole_reader(self, rows, fail_first=False):
+        import threading
+        from operating.pg import ontology_reader as orr
+        calls = []
+
+        class _Pg:
+            def execute(self, sql, *args):
+                calls.append(sql)
+                if fail_first and "pg_sequence_last_value" in sql:
+                    raise RuntimeError("permission denied")
+                row = rows["with"] if "pg_sequence_last_value" in sql else rows["plain"]
+                return SimpleNamespace(fetchone=lambda: row)
+
+            def rollback(self):
+                calls.append("ROLLBACK")
+        reader = object.__new__(orr.PgStoreReader)
+        reader.lock = threading.Lock()
+        reader.conn = SimpleNamespace(_lock=threading.Lock(), _pg=_Pg())
+        self.enterContext(mock.patch.object(orr, "whole_problem", lambda row: None))
+        return reader, calls
+
+    def test_whole_stamp_reads_the_generation_in_the_same_statement(self):
+        rows = {"with": ([], "{}", True, 41, True, 9), "plain": ([], "{}", True, 41)}
+        reader, calls = self._whole_reader(rows)
+        self.assertEqual(reader.whole_stamp(), ("postgres", 41))
+        self.assertEqual(reader.search_generation, 9)
+        self.assertEqual(len(calls), 1)
+        rows["with"] = ([], "{}", True, 42, True, None)   # never written: 0, as before
+        reader.whole_stamp()
+        self.assertEqual(reader.search_generation, 0)
+        rows["with"] = ([], "{}", True, 42, False, None)  # no search tables: none held
+        reader.whole_stamp()
+        self.assertIsNone(reader.search_generation)
+
+    def test_whole_stamp_unable_to_read_the_generation_asks_without_it(self):
+        rows = {"with": None, "plain": ([], "{}", True, 41)}
+        reader, calls = self._whole_reader(rows, fail_first=True)
+        self.assertEqual(reader.whole_stamp(), ("postgres", 41))
+        self.assertIsNone(reader.search_generation)
+        self.assertEqual(calls[1], "ROLLBACK")
+        calls.clear()
+        self.assertEqual(reader.whole_stamp(), ("postgres", 41))
+        self.assertEqual(len(calls), 1)   # from now on only the statement without it
+        self.assertNotIn("pg_sequence_last_value", calls[0])
+
+    def test_on_postgres_the_generation_read_is_write_generations(self):
+        try:
+            import psycopg
+            from operating.tests import pg_testdb
+            name, dsn = pg_testdb.create_db()
+        except (ImportError, unittest.SkipTest) as exc:
+            self.skipTest(f"no Postgres: {exc}")
+        self.addCleanup(pg_testdb.drop_db, name)
+        from operating.pg.ontology_reader import _GENERATION_SQL
+        from operating.pg.permissions import write_generation
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            ask = "SELECT 1" + _GENERATION_SQL
+            self.assertEqual(pg.execute(ask).fetchone()[1:], (False, None))  # no table
+            pg.execute("CREATE SCHEMA search")
+            pg.execute("CREATE SEQUENCE search.write_generation")
+            self.assertEqual(pg.execute(ask).fetchone()[1:], (True, None))
+            self.assertEqual(write_generation(pg), 0)
+            for _ in range(3):
+                pg.execute("SELECT nextval('search.write_generation')")
+                self.assertEqual(pg.execute(ask).fetchone()[2], write_generation(pg))
+
+
+class ReaderScopeRulesInOneRequest(unittest.TestCase):
+    def test_the_watch_rules_are_read_inside_one_request(self):
+        """A visit's watch-rule types are read under the session's request
+        (``HostAccess.request``: its kept policy), not a policy decided outside one."""
+        from contextlib import contextmanager
+        from operator_api import page_parts, page_sql
+        inside = []
+
+        class _Access:
+            depth = 0
+
+            @contextmanager
+            def request(self):
+                self.depth += 1
+                try:
+                    yield self
+                finally:
+                    self.depth -= 1
+        view = SimpleNamespace(access=_Access(), routing=lambda: {"routed": True})
+        worker = SimpleNamespace(run=lambda reader, job, **kw: job(view))
+        backend = SimpleNamespace(access_worker=worker)
+        with mock.patch.object(page_parts, "last_visit_of", lambda v: (None, None)), \
+                mock.patch.object(page_sql, "_rule_types",
+                                  lambda v, seen=None: inside.append(v.access.depth) or []):
+            got = page_sql._reader_scope(backend, SimpleNamespace())
+        self.assertEqual(inside, [1])
+        self.assertEqual(got.routing, {"routed": True})
+
+
 if __name__ == "__main__":
     unittest.main()

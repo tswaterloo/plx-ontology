@@ -437,6 +437,7 @@ SNAPSHOT_REFRESH = os.environ.get("PLX_SNAPSHOT_REFRESH", "") == "1"
 # A screen's own files (``files_stamp``): a directory of more files than this is never
 # current (each visit serves its kept page stale and reads it again).
 FILES_STAMP_MOST = 2000
+SLOW_CHECK_JOB_SECONDS = 5.0   # a check worker's job this long is logged by name
 ACCESS_WAIT_SECONDS = 3       # reading the reader's access state to keep or serve a page
 REWARM_SECONDS = 900
 READER_CACHE_KEPT = 512
@@ -1011,14 +1012,27 @@ class Worker:
             return
         self.running += 1
         try:
+            entered = time.monotonic()
             with self.scope():
                 built = time.monotonic()
+                entered = built - entered
                 view = self._workspace(reader.session)
                 built = time.monotonic() - built
-                if built >= 0.5 and stage_timing():
-                    STAGE_LOG.info("job %s: the reader's workspace took %.2f s on %s",
-                                   _job_name(job), built, threading.current_thread().name)
+                if (built >= 0.5 or entered >= 0.5) and (
+                        stage_timing() or threading.current_thread().name.startswith(
+                            ("app-read-check", "app-read-state"))):
+                    # a kept page's access check waits for this before it runs
+                    STAGE_LOG.info("job %s: its scope took %.2f s, the reader's workspace "
+                                   "%.2f s on %s", _job_name(job), entered, built,
+                                   threading.current_thread().name)
+                ran = time.monotonic()
                 future.set_result(_profiled(job, view, future))
+                ran = time.monotonic() - ran
+                if ran >= SLOW_CHECK_JOB_SECONDS and threading.current_thread().name.startswith(
+                        ("app-read-check", "app-read-state")):
+                    # every check queued behind it waits this long (only access checks log)
+                    STAGE_LOG.info("job %s ran %.2f s on %s", _job_name(job), ran,
+                                   threading.current_thread().name)
             self.served.add(",".join(sorted(reader.session.principals)))
         except BaseException as error:  # noqa: BLE001 - handed to the route
             future.set_exception(error)

@@ -2,7 +2,7 @@
 // Source: the production structure (a structure-only dump restored into a
 // throwaway cluster), which equals operating/pg/migrations plus
 // PRODUCTION_ONLY_INDEXES in tools/gen_prisma.py.
-// Migrations: sha256 9a1291ce6e44e440ab0a9063cf12404e31bfcf61e4d166ab4ecba05085093fbf (operating/pg/migrations).
+// Migrations: sha256 bf36c9e6bb0ff9c5f8057746d3f8ff5304dc493d0051c58cda6c30697dabad3a (operating/pg/migrations).
 // The Workbench does not use Prisma Client: this file describes the database for
 // readers who know Prisma. Reads go through operating/ (docs/data-model.md).
 //
@@ -21,10 +21,13 @@
 //   ontology.link_value_keys(p_value text) -> text[]
 //   ontology.links_bare() -> TABLE(link_id text, link_type text, from_object text, to_object text, tier text, binding_kind text, link_contract text, reason text, why_not text, evidence_handles text, reviewed_by text, reviewed_at text, review_action_id text, markings text, recorded_at text, superseded_at text)
 //   ontology.links_seen() -> TABLE(link_id text, link_type text, from_object text, to_object text, tier text, binding_kind text, link_contract text, reason text, why_not text, evidence_handles text, reviewed_by text, reviewed_at text, review_action_id text, markings text, recorded_at text, superseded_at text)
+//   ontology.reader_key_set_put(raw text) -> text
 //   ontology.sq_call(fn text, arg text) -> boolean
+//   ontology.sq_call_s(fn text, arg text) -> boolean
 //   ontology.sq_data_version() -> bigint
 //   ontology.sq_glob_re(pattern text) -> text
 //   ontology.sq_item_gate(fn text, arg text) -> boolean
+//   ontology.sq_item_gate_s(fn text, arg text) -> boolean
 //   ontology.sq_json_array(t text) -> text[]
 //   ontology.sq_json_array_int(t text) -> bigint[]
 //   ontology.sq_json_array_length(t text) -> integer
@@ -499,6 +502,48 @@ model packed_sources {
   src          BigInt        @id
   value_source value_sources @relation("packed_sources_value_source", fields: [src], references: [src])
 
+  @@schema("ontology")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// check people_excluded_objects_reason_check: CHECK ((reason = ANY (ARRAY['own_unit'::text, 'participant'::text, 'uncaptured'::text])))
+model people_excluded_objects {
+  l1_handle String
+  object_id String
+  reason    String
+
+  @@id([l1_handle, object_id])
+  @@index([object_id], map: "people_excluded_objects_by_object", type: Hash)
+  @@schema("ontology")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// check people_excluded_state_one_check: CHECK (one)
+model people_excluded_state {
+  one         Boolean @id @default(true)
+  exclusion   String
+  built_at    String
+  objects     BigInt
+  handles     BigInt
+  covered_ver BigInt
+  updated_at  String?
+
+  @@schema("ontology")
+}
+
+model reader_key_set_heads {
+  digest  String   @id
+  n       Int
+  used_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("ontology")
+}
+
+model reader_key_sets {
+  digest String
+  key    String
+
+  @@id([digest, key])
   @@schema("ontology")
 }
 

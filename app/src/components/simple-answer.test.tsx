@@ -25,6 +25,16 @@ const simple: Answer = {
   ],
 };
 
+describe("answer tables", () => {
+  it("keep a code, number or date on one line and let longer words wrap", () => {
+    render(<AnswerText text={"| PO | Note |\n|---|---|\n| PO100415 | waiting on the carrier for two weeks |"} />);
+    const code = screen.getByText("PO100415").closest("td");
+    const note = screen.getByText("waiting on the carrier for two weeks").closest("td");
+    expect(code?.className).toContain("whitespace-nowrap");
+    expect(note?.className).not.toContain("whitespace-nowrap");
+  });
+});
+
 describe("splitTables", () => {
   it("takes Markdown tables out of the prose, keeps the rest in order", () => {
     const parts = splitTables(simple.direct_answer);
@@ -53,6 +63,18 @@ describe("simple Ask answer", () => {
     expect(sources).toHaveAttribute("open");
     expect(sources).toHaveTextContent("Statement attached");
     expect(sourceCount(simple.cited)).toBe(3);
+  });
+
+  it("a run that failed shows no Correct/Wrong and no Think it through", () => {
+    const ok: Turn = { id: "t", question: "q", phase: "done", streamed: "", answer: simple };
+    const { unmount } = render(<AnswerCard turn={ok} onDeeper={() => {}} />);
+    expect(screen.queryByRole("button", { name: /this answer was right/i })).not.toBeNull();
+    expect(screen.queryByText("Think it through")).not.toBeNull();
+    unmount();
+    const failed: Turn = { ...ok, answer: { ...simple, assistant_unavailable: "usage_limit" } };
+    render(<AnswerCard turn={failed} onDeeper={() => {}} />);
+    expect(screen.queryByRole("button", { name: /this answer was right/i })).toBeNull();
+    expect(screen.queryByText("Think it through")).toBeNull();
   });
 
   it("links each file the answer made for download under its own name", () => {

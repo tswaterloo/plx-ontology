@@ -382,6 +382,10 @@ function Heatmap({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip
               onMouseMove={(e) => onTip.show(e, `${s.name} · ${chart.labels[c]}`, [{ name: human(chart.spec?.y?.[0] ?? "value"), value: full(v, chart.currency) }])}
               onMouseLeave={onTip.hide} />
           ))}
+          {cw >= 30 && ch >= 14 && s.values.map((v, c) => (v === null || v === undefined ? null : (
+            <text key={`n${c}`} x={padL + cw * c + (cw - 1) / 2} y={8 + ch * r + ch / 2 + 3.5} textAnchor="middle"
+              fontSize={10} pointerEvents="none" fill={inkOn(v, lo, hi, theme)}>{short(v)}</text>
+          )))}
         </g>
       ))}
       {chart.labels.map((l, c) => (c % every ? null : (
@@ -464,7 +468,7 @@ function Kpis({ chart, theme }: { chart: AskChart; theme: Theme }) {
                 {`${change >= 0 ? "▲" : "▼"} ${full(Math.abs(change))}`}
                 {before ? ` (${change >= 0 ? "+" : "−"}${Math.abs(Math.round((change / before) * 1000) / 10)}%)` : ""}
                 {nowLabel !== undefined && beforeLabel !== undefined
-                  ? `, ${nowLabel}${nowLabel === chart.open_period ? " so far" : ""} vs ${beforeLabel}`
+                  ? `, ${nowLabel}${nowLabel === chart.open_period ? " so far" : ""} vs ${beforeLabel}${beforeLabel === chart.first_period ? " (part)" : ""}`
                   : " vs the row before"}
               </div>
             )}
@@ -533,22 +537,55 @@ export function chartNotes(chart: AskChart): string[] {
   if (rows !== null && chart.shown !== null && chart.shown !== undefined && chart.shown < rows) out.push(`Shows ${chart.shown} of ${rows} rows.`);
   if (chart.partial) out.push("The query returned only its first rows: this is of those rows.");
   if (chart.omitted) out.push(`${chart.omitted} smaller ${chart.omitted === 1 ? "series is" : "series are"} not drawn.`);
-  if (chart.skipped) out.push(`${chart.skipped} ${chart.skipped === 1 ? "row has" : "rows have"} no value and are not counted.`);
+  if (chart.skipped) out.push(`${chart.skipped} ${chart.skipped === 1 ? "row has no value and is" : "rows have no value and are"} not counted.`);
   if (chart.trend) {
     const r = chart.trend.r;
     const strength = Math.abs(r) >= 0.7 ? "strongly" : Math.abs(r) >= 0.4 ? "moderately" : "weakly";
     out.push(`Fitted line: r = ${r.toFixed(2)} over ${chart.trend.n} points (${strength} ${r >= 0 ? "rising" : "falling"} together). That alone does not show one causes the other.`);
   }
   if (chart.open_period) out.push(`${chart.open_period} is not over yet: its figures are of part of it.`);
+  if (chart.first_period) out.push(`${chart.first_period} is only partly inside the window: its figures are of part of it.`);
   if (chart.kind === "waterfall") out.push("Each bar starts where the one before ended; the last bar is the total.");
   if (chart.kind === "funnel") out.push("Each percentage is of the step before.");
   if (chart.currency && !["kpi", "pie", "donut"].includes(chart.kind)) out.push(`Amounts in ${chart.currency}.`);
   return out;
 }
 
+// a panel of a facet by the currency column (as charts._CURRENCY_COL names it) is in the
+// currency its title codes; any other facet (a site or country code) keeps the chart's own
+const CURRENCY_COL = /(^|_)(currency|currency_code|ccy)$/i;
+function panelCurrency(chart: AskChart, title: string) {
+  return CURRENCY_COL.test(chart.spec?.facet ?? "") && /^[A-Z]{3}$/.test(title) ? title : chart.currency;
+}
+
 function Multiples({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip: ReturnType<typeof useTip> }) {
   const panels = chart.panels ?? [];
-  const range = extent(panels.flatMap((p) => p.series));
+  // KPI tiles per facet value; a panel named by a currency code shows its amounts in it
+  if (chart.kind === "kpi") return (
+    <div className="space-y-4">
+      {panels.map((p) => (
+        <div key={p.title}>
+          <div className="text-[12px] font-medium">{p.title}</div>
+          <Kpis chart={{ ...chart, labels: p.labels, series: p.series, panels: undefined, currency: panelCurrency(chart, p.title) }} theme={theme} />
+        </div>
+      ))}
+    </div>
+  );
+  if (chart.kind === "pie" || chart.kind === "donut") return (
+    <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+      {panels.map((p) => (
+        <div key={p.title}>
+          <div className="text-[12px] font-medium">{p.title}</div>
+          <Pie chart={{ ...chart, labels: p.labels, series: p.series, panels: undefined, currency: panelCurrency(chart, p.title) }} theme={theme} onTip={onTip} />
+        </div>
+      ))}
+    </div>
+  );
+  // one shared scale: a waterfall's is of its running totals, not of its steps
+  const range: [number, number] = chart.kind === "waterfall"
+    ? panels.flatMap((p) => waterfall(p.series[0]?.values ?? [])).reduce<[number, number]>(
+        ([lo, hi], s) => [Math.min(lo, s.from, s.to), Math.max(hi, s.from, s.to)], [0, 0])
+    : extent(panels.flatMap((p) => p.series));
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
       {panels.map((p) => (

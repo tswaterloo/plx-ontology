@@ -602,6 +602,12 @@ class LiveCycle(ta.Fixture):
         self.assertIn("status of SO-1", body["message"]["text"])
         self.assertNotIn("material", body)
         self.assertEqual(len(model.prompts), 1)
+        # what "Rewrite" writes the reply again from: the message, never the tools' reads
+        # or the examples, and only the screens' event fields
+        self.assertIn("status of SO-1", body["redo"]["material"]["text"])
+        self.assertFalse({"style", "looked_up", "examples"} & set(body["redo"]["material"]))
+        self.assertLessEqual(set(body["redo"]["event"]), set(ap.CARD_EVENT))
+        self.assertTrue(body["redo"]["event"].get("cleared"))
 
     def test_no_useful_reply_or_no_model_makes_no_item(self):
         msg = self.message(61, "Could you send me the status of SO-1? Thanks")

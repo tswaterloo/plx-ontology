@@ -599,17 +599,36 @@ def disk_guard(root: Path) -> dict[str, Any] | None:
     return None
 
 
-def restore_disk_guard(dump: Path, pg_dir: Path | str | None = None) -> dict[str, Any] | None:
+def restored_bytes_estimate(dsn: str | None = None) -> int | None:
+    """On-disk bytes a throwaway restore writes: the live tables (with their indexes) of every
+    schema the dump carries data for. None when the live database cannot be read."""
+    try:
+        with psycopg.connect(dsn or _env("PLX_PG_DSN", "postgresql:///plx")) as conn:
+            row = conn.execute(
+                "SELECT coalesce(sum(pg_total_relation_size(c.oid)), 0) FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'm') "
+                "AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') "
+                "AND n.nspname NOT LIKE 'pg\\_temp%%' AND NOT (n.nspname = ANY(%s))",
+                (_schema_only(),)).fetchone()
+        return int(row[0])
+    except Exception:
+        return None
+
+
+def restore_disk_guard(dump: Path, pg_dir: Path | str | None = None,
+                       live_bytes: int | None = None) -> dict[str, Any] | None:
     """None when the throwaway restore may run; else why not. The restored database is far
-    larger than its compressed dump (it once took /data from 51 to 13 GB), so the volume
-    holding the Postgres data needs the dump's size plus ``PLX_RESTORE_MIN_FREE_GB``
+    larger than its compressed dump (it once took /data from 51 to 13 GB; 11-20 a 4 GB dump
+    restored ~87 GB and took /data from 81 to 48 GB before it was stopped), so the volume
+    holding the Postgres data needs the larger of the dump's size and ``live_bytes`` (what
+    the restore writes, ``restored_bytes_estimate``) plus ``PLX_RESTORE_MIN_FREE_GB``
     (default 40) free."""
     floor = int(float(_env("PLX_RESTORE_MIN_FREE_GB", "40")) * 1e9)
     where = Path(pg_dir or _env("PLX_RESTORE_DISK_PATH", "/data"))
     if not where.exists():
         where = dump.parent
     free = shutil.disk_usage(where).free
-    need = dump.stat().st_size + floor
+    need = max(dump.stat().st_size, live_bytes or 0) + floor
     if free < need:
         return {"error": "disk_guard", "free_bytes": free, "min_free_bytes": need}
     return None
@@ -779,6 +798,8 @@ def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
         with psycopg.connect(base, autocommit=True) as admin:
             drop_stale_restores(admin)   # before the disk guard: a leftover holds its space
     skipped = restore_disk_guard(dump) if dump.is_file() else None
+    if dump.is_file() and skipped is None:   # the live read only when the dump alone fits
+        skipped = restore_disk_guard(dump, live_bytes=restored_bytes_estimate())
     if skipped:
         # an alarm, not a pass: the throwaway restore is skipped, never run into a full disk
         problems.append("restore_skipped:disk_guard:"

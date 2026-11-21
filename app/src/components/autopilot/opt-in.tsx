@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
-import { setAutopilotDrafts, setAutopilotOptIn, setAutopilotPaused } from "@/lib/api";
+import { setAutopilotOptIn, setAutopilotPaused, setMyWorkMode } from "@/lib/api";
 import { optInScore, personName, suspendedWords, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
@@ -44,18 +44,38 @@ function Row({ o, busy, onSet }: { o: AutopilotOptIn; busy: boolean; onSet: (on:
   );
 }
 
-function DraftRow({ c, busy, onSet }: { c: AutopilotDraftChoice; busy: boolean; onSet: (on: boolean) => void }) {
+type Mode = "off" | "confirm" | "auto";
+
+function DraftRow({ c, busy, onSet }: { c: AutopilotDraftChoice; busy: boolean; onSet: (mode: Mode) => void }) {
   const on = c.partly ? "Partly on" : "On";
   const state = !c.on ? "Off" : c.by_owner ? `${on}, set by the owner` : c.since && !c.partly ? `On since ${formatDateTime(c.since)}` : on;
+  const auto = c.mode === "auto";
   return (
-    <li className="flex items-center justify-between gap-6 py-2" data-testid="draft-choice">
+    <li className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-2" data-testid="draft-choice">
       <div className="min-w-0 space-y-0.5">
         <p className="text-[13px]">{c.label}</p>
         <p className={cn("text-[12px]", c.on ? "text-ok" : "text-muted")} data-testid="draft-choice-state">
           {state}
         </p>
+        {c.on && (
+          <div className="flex flex-wrap items-center gap-3 pt-1 text-[12px]" role="radiogroup" aria-label={`${c.label}: how it goes out`} data-testid="draft-choice-mode">
+            <label className="flex items-center gap-1">
+              <input type="radio" name={`mode-${c.choice}`} checked={!auto} disabled={busy} onChange={() => onSet("confirm")} />
+              I confirm each one
+            </label>
+            <label className={cn("flex items-center gap-1", !c.auto_ok && !auto && "text-muted")} title={c.auto_ok ? undefined : "Auto opens once past days replayed score high enough for you."}>
+              <input type="radio" name={`mode-${c.choice}`} checked={auto} disabled={busy || (!c.auto_ok && !auto)} onChange={() => onSet("auto")} />
+              Auto
+            </label>
+          </div>
+        )}
+        {c.score && (
+          <p className="num text-[12px] text-muted" data-testid="draft-choice-score">
+            {optInScore({ eligible: !!c.auto_ok, score: c.score })}
+          </p>
+        )}
       </div>
-      <Button size="sm" variant="outline" role="switch" aria-checked={c.on} aria-label={`${c.label}: ${c.on ? "on" : "off"}`} disabled={busy} onClick={() => onSet(!c.on)}>
+      <Button size="sm" variant="outline" role="switch" aria-checked={c.on} aria-label={`${c.label}: ${c.on ? "on" : "off"}`} disabled={busy} onClick={() => onSet(c.on ? "off" : "confirm")}>
         {c.on ? "Turn off" : "Turn on"}
       </Button>
     </li>
@@ -69,11 +89,11 @@ export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) =>
   const [error, setError] = useState<string | null>(null);
   const choices = area.my_drafts ?? [];
   if (choices.length === 0) return null;
-  const set = async (choice: string, on: boolean) => {
+  const set = async (choice: string, mode: Mode) => {
     setBusy(true);
     setError(null);
     try {
-      onArea(await setAutopilotDrafts(choice, on));
+      onArea(await setMyWorkMode(choice, mode));
     } catch (e) {
       setError(plainError(e));
     } finally {
@@ -86,12 +106,12 @@ export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) =>
         What to prepare for me
       </h2>
       <p className="max-w-[46rem] text-[12px] text-muted">
-        Switched on, a reply or an action is drafted for you and waits on Home. Nothing is sent or changed until you confirm it there, and you can edit it first. What the owner turned on for you, you can turn off; your choice wins.
+        Switched on, a reply or an action is drafted for you and waits on Home. Nothing is sent or changed until you confirm it there, and you can edit it first. Auto sends or enters it without your click, and only opens for work where replaying past days matched what you did often enough. Money and anything unclear still wait for you. What the owner turned on for you, you can turn off; your choice wins.
       </p>
       {error && <ErrorNotice message={error} />}
       <ul className="divide-y divide-border" aria-label="What to prepare for me">
         {choices.map((c) => (
-          <DraftRow key={c.choice} c={c} busy={busy} onSet={(on) => void set(c.choice, on)} />
+          <DraftRow key={c.choice} c={c} busy={busy} onSet={(mode) => void set(c.choice, mode)} />
         ))}
       </ul>
     </section>

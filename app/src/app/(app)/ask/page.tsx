@@ -233,7 +233,7 @@ function Ask() {
                 ))}
                 {turns[turns.length - 1]?.phase === "done" && (
                   <p className="sr-only" role="status">
-                    Answer ready.
+                    {turns[turns.length - 1]?.answer?.assistant_unavailable ? "The assistant could not answer." : "Answer ready."}
                   </p>
                 )}
               </div>

@@ -28,7 +28,8 @@ import json
 import os
 import secrets
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
+from urllib.parse import quote
 
 from operating import autopilot as ap
 from operating import autopilot_engine
@@ -45,6 +46,10 @@ from .auth import Reader
 from .errors import UserFacing
 
 DECISIONS_FILE = "autopilot-writes/decisions.jsonl"
+# an alert passed to a colleague (item, to, by, when): the last row of an item holds
+HAND_FILE = "autopilot-writes/handed.jsonl"
+# "never for this sender": a person's own rows, the last for a sender wins
+NEVER_FILE = "autopilot-writes/never-senders.jsonl"
 # a confirmed job change that went nowhere: offered for review again (``_apa_job_stage``)
 JOB_AGAIN = frozenset({"failed", "refused"})
 # each reply-from-line attempt (who, when; never the line): the hourly limit counts these
@@ -96,6 +101,72 @@ def todos_of(prepared: Mapping[str, Any]) -> list[m.AutopilotTodo]:
     return out[:20]
 
 
+def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
+             ) -> Optional[m.AutopilotPrepared]:
+    """An item with no reply, question or change to prepare (an approval asked of the
+    person, a QC hold, a Mission Control question) as an Assist card: what happened, why,
+    where it is decided and links to the records. Only Later and Not needed act on it here;
+    its decision is taken in its own system (no accept: the write path never runs)."""
+    body = shown.get("body") or {}
+    prepared = body.get("prepared") or {}
+    happened = body.get("happened") or {}
+    summary = str(prepared.get("summary") or "").strip()
+    if not summary or prepared.get("kind") or prepared.get("jobs") or prepared.get("todos") \
+            or prepared.get("teams_draft") or prepared.get("your_call") \
+            or ((prepared.get("draft") or {}).get("body") if isinstance(
+                prepared.get("draft"), Mapping) else prepared.get("draft")):
+        return None
+    if not any(prepared.get(k) for k in ALERT_BASIS):
+        return None   # a summary alone ("nothing to act on") is not a card
+    facts = [str(r) for r in prepared.get("reasons") or () if isinstance(r, str)]
+    for a in prepared.get("affected") or ():
+        if isinstance(a, Mapping):
+            facts.append(", ".join(str(a[k]) for k in ("order_number", "customer")
+                                   if a.get(k)) or "an open order")
+    options = [str(o) for o in prepared.get("options") or () if isinstance(o, str)]
+    if options:
+        facts.append("Choices asked: " + "; ".join(options))
+    links: list[m.AutopilotLink] = []
+    for link in prepared.get("links") or ():
+        if isinstance(link, Mapping) and str(link.get("href") or "").startswith("/object/"):
+            links.append(m.AutopilotLink(label=str(link.get("label") or "Open")[:80],
+                                         href=str(link["href"])[:600]))
+    if not links:
+        oids = [str(e.get("object_id")) for e in [
+            *(prepared.get("evidence") or ()), *(prepared.get("affected") or ()),
+            prepared.get("task")] if isinstance(e, Mapping) and e.get("object_id")]
+        oids = oids or ([str(happened["object_id"])] if happened.get("object_id") else [])
+        for oid in dict.fromkeys(oids):
+            label = {"MCTask": "Open the task", "SalesOrder": "Open the order",
+                     "Batch": "Open the lot"}.get(oid.split(":", 1)[0], "Open the record")
+            links.append(m.AutopilotLink(label=label, href="/object/" + quote(oid, safe=":")))
+    action = prepared.get("action") if isinstance(prepared.get("action"), Mapping) else {}
+    note = str(prepared.get("note") or action.get("note") or "").strip()
+    return m.AutopilotPrepared(
+        item_id=item["item_id"], sender=str(happened.get("sender") or ""), channel="system",
+        subject=str(shown.get("title") or "")[:300], kind="alert", summary=summary[:600],
+        message=shown_message(prepared.get("context") or happened.get("snippet")),
+        facts=facts[:ALERT_FACTS], note=note[:300], links=links[:4],
+        created_at=str(item["created_at"]))
+
+
+ALERT_FACTS = 8
+# what makes an item with nothing to prepare worth the person's look: why, what it holds up,
+# what is asked, or the records and where it is decided
+ALERT_BASIS = ("reasons", "affected", "options", "links", "evidence", "task", "action", "note")
+
+
+def passed(alert: m.AutopilotPrepared, hands: Mapping[str, Mapping[str, Any]],
+           me: set[str]) -> m.AutopilotPrepared:
+    """An alert with who passed it to whom (its last ``HAND_FILE`` row)."""
+    row = hands.get(alert.item_id)
+    if not row:
+        return alert
+    if row.get("to") in me:
+        return alert.model_copy(update={"handed_from": str(row.get("by_name") or "A colleague")})
+    return alert.model_copy(update={"handed_to": str(row.get("to_name") or "a colleague")})
+
+
 def todo_only(prepared: Mapping[str, Any]) -> bool:
     """Whether the item holds only things to do by hand: no reply, question, brief or
     proposed change (its accept is the person's "done", never a write)."""
@@ -104,6 +175,12 @@ def todo_only(prepared: Mapping[str, Any]) -> bool:
         prepared.get("draft") or prepared.get("teams_draft") or prepared.get("your_call")
         or prepared.get("brief") or aj.kept(prepared.get("jobs") or ())
         or prepared.get("also_jobs"))
+
+
+def sender_of(item: Mapping[str, Any]) -> str:
+    """The address an item came from, as "never for this sender" keeps it."""
+    happened = (item.get("body") or {}).get("happened") or {}
+    return str(happened.get("sender") or "").strip().lower()
 
 
 def decision_sent(dec: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
@@ -282,6 +359,121 @@ class AutopilotAreaMixin:
         for row in Journal(state / DECISIONS_FILE).rows():
             last[str(row.get("item_id"))] = row
         return last
+
+    @staticmethod
+    def _apa_never(state: Optional[Path], me: set[str]) -> list[str]:
+        """The senders a person said never to prepare anything for (their own rows)."""
+        if state is None or not (state / NEVER_FILE).exists():
+            return []
+        last: dict[str, bool] = {}
+        for row in Journal(state / NEVER_FILE).rows():
+            if (row.get("by") in me or me & set(row.get("ids") or ())) \
+                    and isinstance(row.get("sender"), str):
+                last[row["sender"]] = bool(row.get("never"))
+        return sorted(s for s, on in last.items() if on)
+
+    def autopilot_never(self, reader: Reader, body: m.AutopilotNeverRequest
+                        ) -> m.AutopilotDrafts:
+        """The reader says never (or again) to prepare anything for them from one sender:
+        their items from that sender leave their list. Only ever their own; never needs
+        the sender of an item on their list. Nothing is sent or written anywhere else."""
+        state = self._apa_state()
+        if state is None:
+            raise UserFacing("action_refused", "The autopilot's state directory is not "
+                             "configured on this server.", 409)
+        sender = body.sender.strip().lower()
+        if body.never and not any(
+                item["mine"] and sender_of(item) == sender
+                for item in self._ap_visible(reader) or ()):  # type: ignore[attr-defined]
+            raise UserFacing("not_found", "No item from that sender is on your list.", 404)
+        (state / NEVER_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with Journal(state / NEVER_FILE).locked() as held:
+            held.append({"event": "never_sender", "sender": sender, "never": body.never,
+                         "at": _iso(datetime.now(timezone.utc)),
+                         "by": sorted(self._apa_me(reader))[0],
+                         "ids": sorted(self._apa_me(reader))})
+        return self.autopilot_prepared_list(reader)
+
+    @staticmethod
+    def _apa_auto_would(state: Optional[Path], me: set[str]) -> Callable[[Mapping[str, Any]], str]:
+        """item -> a dry run of Auto on it, read only: "" unless the reader's replay score
+        earned its workflow (``aw.eligible``), else "send" when every action of it is
+        routine (``aw.routine``, without the conversation's domains: never laxer than the
+        executor) or "keep: <reasons>" when Auto would still wait for the click."""
+        try:
+            rules = aw.load_rules()
+        except aw.RulesInvalid:
+            rules = None
+        if state is None or rules is None:
+            return lambda item: ""
+        from operating import workflows as wf
+        gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, rules)
+
+        def would(item: Mapping[str, Any]) -> str:
+            try:
+                flow = wf.of_item(str(item.get("autopilot")),
+                                  (item.get("body") or {}).get("happened") or {})
+                if not any(aw.eligible(gate, p, flow) for p in me):
+                    return ""
+                actions = aw.actions_of(item)
+                why = [r for a in actions for r in aw.routine(rules, item, a, flow)] \
+                    if actions else ["no_action"]
+            except Exception:  # noqa: BLE001 - a dry run never stops the list
+                return ""
+            return "send" if not why else ("keep: " + ", ".join(dict.fromkeys(why)))[:200]
+        return would
+
+    def _apa_handed(self, state: Optional[Path]) -> dict[str, dict[str, Any]]:
+        """item -> the last row passing it on (``HAND_FILE``)."""
+        if state is None or not (state / HAND_FILE).exists():
+            return {}
+        return {str(row.get("item_id")): row for row in Journal(state / HAND_FILE).rows()}
+
+    @staticmethod
+    def _apa_to_me(hands: Mapping[str, Mapping[str, Any]], me: set[str]) -> tuple[str, ...]:
+        return tuple(i for i, row in hands.items() if row.get("to") in me)
+
+    def autopilot_colleagues(self, reader: Reader) -> m.AutopilotColleagues:
+        """Whom an alert can be passed to: every active staff member the people exclusion
+        clears now, never the reader (``view_as.ViewAs.people``): a key and a name each;
+        nobody without the list or the exclusion (fail closed)."""
+        viewing = getattr(self, "view_as", None)
+        if viewing is None or not viewing.available:
+            return m.AutopilotColleagues(people=[])
+        return m.AutopilotColleagues(people=[
+            m.ViewAsPerson(**p) for p in viewing.people(self._apa_me(reader))])
+
+    def autopilot_hand(self, reader: Reader, item_id: str, body: m.AutopilotHandRequest
+                       ) -> m.AutopilotDrafts:
+        """Pass an alert on the reader's list (their own, or one passed to them) to a
+        colleague: it shows on the colleague's list too, under the colleague's own access
+        (an item they may not read is not shown to them), only to set aside there, and stays
+        on the reader's list marked passed. Only an alert; nothing is decided, sent or
+        written anywhere else."""
+        state = self._apa_state()
+        if state is None:
+            raise UserFacing("action_refused", "The autopilot's state directory is not "
+                             "configured on this server.", 409)
+        me, hands = self._apa_me(reader), self._apa_handed(state)
+        found = next((i for i in self._ap_visible(  # type: ignore[attr-defined]
+            reader, also=self._apa_to_me(hands, me)) or ()
+            if i["item_id"] == item_id and (i["mine"] or i.get("handed"))), None)
+        if found is None:
+            raise UserFacing("not_found", "That item is not on your list.", 404)
+        if alert_of(found, autopilot_engine.shown_item(found)) is None:
+            raise UserFacing("bad_request", "Only an alert can be passed on here.", 422)
+        viewing = getattr(self, "view_as", None)
+        to = viewing.named(body.to, me) if viewing is not None and viewing.available else None
+        if to is None:
+            raise UserFacing("not_found", "That person cannot be given items.", 404)
+        (state / HAND_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with Journal(state / HAND_FILE).locked() as held:
+            held.append({"event": "item_hand", "item_id": item_id, "to": to[0],
+                         "to_name": to[1], "by": sorted(me)[0],
+                         "by_name": viewing.name_among(me),
+                         "at": _iso(datetime.now(timezone.utc)),
+                         "note": (body.note or "").strip()[:500] or None})
+        return self.autopilot_prepared_list(reader)
 
     def _apa_roles(self) -> dict[str, list[str]]:
         """The roles file's members (``autopilot._roles``) beside the queue."""
@@ -614,7 +806,8 @@ class AutopilotAreaMixin:
             for flow, how in (prep.get(oid) or {}).items():
                 if flow not in mine or mine[flow][0] == aw.BY_OWNER:
                     mine[flow] = how
-        my_drafts = [_choice_row(cid, label, flows, mine) for cid, label, flows in aw.DRAFT_CHOICES]
+        my_drafts = [_with_mode(_choice_row(cid, label, flows, mine), flows, mine, chosen, me,
+                                gate) for cid, label, flows in aw.DRAFT_CHOICES]
         drafts_who = None
         if sees_all:
             drafts_who = [m.AutopilotDraftsPerson(person=p, choice=c.choice, label=c.label,
@@ -655,11 +848,15 @@ class AutopilotAreaMixin:
         env = self._ap_env()  # type: ignore[attr-defined]
         state = self._apa_state()
         found = None
-        for item in self._ap_visible(reader) or ():  # type: ignore[attr-defined]
-            if item["item_id"] == item_id and item["mine"]:
+        to_me = self._apa_to_me(self._apa_handed(state), self._apa_me(reader))
+        for item in self._ap_visible(reader, also=to_me) or ():  # type: ignore[attr-defined]
+            if item["item_id"] == item_id and (item["mine"] or item.get("handed")):
                 found = item
         if found is None:
             raise UserFacing("not_found", "That item is not on your list.", 404)
+        if not found["mine"] and body.decision not in ("reject", "snooze"):
+            raise UserFacing("action_refused", "An alert passed to you is decided in its own "
+                             "system; here it is only set aside.", 409)
         if state is None:
             raise UserFacing("action_refused", "The autopilot's state directory is not "
                              "configured on this server.", 409)
@@ -744,6 +941,17 @@ class AutopilotAreaMixin:
             journal = Journal(state / DECISIONS_FILE)
             with journal.locked() as held:
                 held.append(row)
+        if not found["mine"]:        # passed to the reader: set aside, and nothing else
+            shown = autopilot_engine.shown_item(found)
+            return m.AutopilotItem(
+                item_id=item_id, autopilot=found["autopilot"],
+                label=found["body"].get("label") or found["autopilot"], title=shown["title"],
+                workflow=found["autopilot"], system=system_of(found), owner="", mine=False,
+                happened=shown["body"].get("happened") or {}, due_at=found["due_at"],
+                created_at=found["created_at"], today=False,
+                state="rejected" if body.decision == "reject" else "snoozed",
+                decision=m.AutopilotDecision(decision=body.decision, at=row["at"], by_you=True,
+                                             until=row.get("until"), note=row.get("note")))
         for it in self._area_read(reader).items:
             if it.item_id == item_id:
                 it.confirm_token = offer
@@ -755,14 +963,19 @@ class AutopilotAreaMixin:
         first. One display copy each (``shown_item``: no thread text or kept event); an item
         the person already answered (their own later mail in the conversation, or a decision
         taken) is not here."""
-        items = [i for i in self._ap_visible(reader) or () if i["mine"]]  # type: ignore[attr-defined]
         state = self._apa_state()
+        hands, mine_ids = self._apa_handed(state), self._apa_me(reader)
+        items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
+            reader, also=self._apa_to_me(hands, mine_ids)) or ()
+            if i["mine"] or i.get("handed")]
         decisions = self._apa_decisions(state)
+        never = self._apa_never(state, self._apa_me(reader))
         path = self._ap_queue_path()  # type: ignore[attr-defined]
         queue = ap.Queue(path) if path is not None and Path(path).exists() else None
         now = datetime.now(timezone.utc)
         used_cache: dict[str, Any] = {}
         jobs_cache: dict[str, Any] = {}
+        auto_would = self._apa_auto_would(state, mine_ids)
         out: list[m.AutopilotPrepared] = []
         try:
             for item in items:
@@ -774,8 +987,16 @@ class AutopilotAreaMixin:
                     until = _instant(dec.get("until"))
                     if not (dec["decision"] == "snooze" and until is not None and until <= now):
                         continue
+                if never and sender_of(item) in never:
+                    continue
+                kept = (item.get("body") or {}).get("prepared") or {}
                 shown = autopilot_engine.shown_item(item)
                 prepared = shown["body"].get("prepared") or {}
+                if not item["mine"]:     # passed to this reader: only ever as its alert
+                    alert = alert_of(item, shown)
+                    if alert is not None:
+                        out.append(passed(alert, hands, mine_ids))
+                    continue
                 if prepared.get("kind") == "job":
                     job = self._apa_job_shown(reader, item, shown, jobs_cache)
                     if job is not None:
@@ -787,6 +1008,9 @@ class AutopilotAreaMixin:
                 if again and dec.get("text"):
                     body = str(dec["text"])
                 if not body and not isinstance(card, Mapping):
+                    alert = alert_of(item, shown)
+                    if alert is not None:
+                        out.append(passed(alert, hands, mine_ids))
                     continue
                 if queue is not None and queue.answered_since(item):
                     continue
@@ -799,6 +1023,7 @@ class AutopilotAreaMixin:
                     message=shown_message((prepared.get("message") or {}).get("text")
                                           or happened.get("snippet")),
                     kind="your_call" if isinstance(card, Mapping) and not body else "reply",
+                    redo=bool(body) and isinstance(kept.get("redo"), Mapping),
                     to=[str(t.get("address") if isinstance(t, Mapping) else t)
                         for t in envelope.get("to") or ()],
                     cc=[str(t.get("address") if isinstance(t, Mapping) else t)
@@ -815,12 +1040,13 @@ class AutopilotAreaMixin:
                     used_for_draft=self._apa_used(reader, item, used_cache),
                     learned=learning.describe_edit(str(envelope.get("body") or ""), body)
                     if again and dec.get("text") else [],
+                    auto_would=auto_would(item),
                     todos=todos_of(prepared), created_at=str(item["created_at"])))
         finally:
             if queue is not None:
                 queue.close()
         out.sort(key=lambda d: d.created_at, reverse=True)
-        return m.AutopilotDrafts(items=out)
+        return m.AutopilotDrafts(items=out, never_senders=never)
 
     # ------------------------------------------------------------ jobs
 
@@ -1046,9 +1272,14 @@ class AutopilotAreaMixin:
             raise UserFacing("action_refused", "The autopilot's state directory is not "
                              "configured on this server.", 409)
         prepared = found["body"].get("prepared") or {}
+        # a "your call" card, or a model's reply kept with its material (``redo``): written
+        # again from the line, the reply it had is replaced by the person's edit
         card = prepared.get("your_call")
         if not isinstance(card, Mapping):
-            raise UserFacing("bad_request", "This item already has a draft to edit.", 422)
+            card = prepared.get("redo")
+        if not isinstance(card, Mapping):
+            raise UserFacing("bad_request", "This draft cannot be rewritten from a line; "
+                             "edit it yourself.", 422)
         line = (body.line or "").strip()
         if not line:
             raise UserFacing("bad_request", "Say what you want to reply first.", 422)
@@ -1361,6 +1592,27 @@ class AutopilotAreaMixin:
                 aw.set_drafts(journal, oid, flow, body.on, oid, now)
         return self._area_read(reader)
 
+    def autopilot_mode(self, reader: Reader, body: m.AutopilotChoiceModeRequest
+                       ) -> m.AutopilotArea:
+        """The reader sets one category of their own work to off, confirm (prepared, one
+        click performs it) or auto (performed by itself, only for the workflows their
+        replay score earned: 409 when none is). Only ever their own; recorded on the
+        audit log (``operating.assist_modes``)."""
+        from operating import assist_modes as am
+        ids = self._apa_own_ids(reader)
+        try:
+            _label, flows = am.category(body.choice)
+        except ValueError:
+            raise UserFacing("not_found", "No such choice.", 404) from None
+        _state, gate, journal = self._apa_opt_in_state()
+        try:
+            opted = aw.opt_ins(journal.rows())
+            am.apply(journal, gate, ids, flows, body.mode, datetime.now(timezone.utc),
+                     opted=opted)
+        except ValueError:
+            raise UserFacing("action_refused", NOT_ELIGIBLE, 409) from None
+        return self._area_read(reader)
+
     def autopilot_pause(self, reader: Reader, body: m.AutopilotPauseRequest
                         ) -> m.AutopilotArea:
         """The reader pauses (or resumes) everything they switched on, at once."""
@@ -1549,6 +1801,19 @@ def _choice_row(cid: str, label: str, flows: tuple[str, ...],
     return m.AutopilotDraftChoice(choice=cid, label=label, on=is_on,
                                   partly=is_on and len(live) < len(counted),
                                   by_owner=by_owner, since=since or None)
+
+
+def _with_mode(row: m.AutopilotDraftChoice, flows: tuple[str, ...],
+               mine: Mapping[str, Any], chosen: Mapping[tuple[str, str], Any], me: Any,
+               gate: Optional[aw.WriteGate]) -> m.AutopilotDraftChoice:
+    """The reader's own choice row with its mode (``operating.assist_modes``), whether
+    auto is earned for any of it and its replay score against the bar."""
+    from operating import assist_modes as am
+    counts = am.score(gate, me, flows)
+    return row.model_copy(update={
+        "mode": am.mode_of(flows, mine, chosen, me),
+        "auto_ok": bool(am.earned(gate, me, flows)),
+        "score": _bar(counts, gate) if counts and gate is not None else None})
 
 
 class _Cleared:

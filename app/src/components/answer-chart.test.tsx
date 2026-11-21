@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AnswerCharts, withoutChartBlocks, type AskChart } from "./answer-chart";
 import { chartNotes } from "./charts/chart-view";
 import { PALETTE, conversion, extent, ramp, short, ticks, waterfall } from "./charts/scale";
-import { wrap } from "./charts/export";
+import { panelGrid, wrap } from "./charts/export";
 
 const bars: AskChart = {
   kind: "bar",
@@ -87,6 +87,8 @@ describe("answer charts", () => {
     const heat = drawn({ x: "week", labels: ["w1", "w2"], title: "H", kind: "heatmap", series: [{ name: "Ops", values: [1, 9] }, { name: "QA", values: [5, null] }] });
     const fills = marks(heat, "rect").map((r) => r.getAttribute("fill"));
     expect(new Set(fills).size).toBeGreaterThan(2);
+    // cells wide enough carry their number on the cell, not only on hover
+    expect(marks(heat, "text").map((t) => t.textContent)).toEqual(expect.arrayContaining(["1", "9", "5"]));
     render(<AnswerCharts charts={[{ ...people, title: "T", kind: "table", series: [{ name: "v", values: [1, 5, 9] }] }]} />);
     const cell = Array.from(screen.getByRole("table").querySelectorAll("td")).find((td) => td.textContent === "9");
     expect(cell?.getAttribute("style")).toContain("background");
@@ -100,12 +102,57 @@ describe("answer charts", () => {
     expect(chartNotes({ ...people, title: "F", kind: "funnel", series: [{ name: "n", values: [10, 5, 2] }] })).toContain("Each percentage is of the step before.");
   });
 
+  it("says how many rows had no value, one or many", () => {
+    const chart: AskChart = { ...people, title: "S", kind: "bar", series: [{ name: "n", values: [1, 2, 3] }] };
+    expect(chartNotes({ ...chart, skipped: 1 })).toContain("1 row has no value and is not counted.");
+    expect(chartNotes({ ...chart, skipped: 3 })).toContain("3 rows have no value and are not counted.");
+  });
+
   it("a chart with one series says what its axes are", () => {
     render(<AnswerCharts charts={[{ ...bars, series: [{ name: "invoiced_cad", values: [1, 2] }] }]} />);
     expect(screen.getByTestId("axis-caption").textContent).toBe("Invoiced cad by currency");
     cleanup();
     render(<AnswerCharts charts={[{ ...people, title: "S", kind: "scatter", xs: [1, 2, 3], series: [{ name: "invoiced_cad", values: [5, 6, 7] }] }]} />);
     expect(screen.getByTestId("axis-caption").textContent).toBe("Up: Invoiced cad. Across: person.");
+  });
+
+  it("a donut faceted by currency draws one donut per currency", () => {
+    const { container } = render(<AnswerCharts charts={[{ x: "t", labels: [], title: "DC", kind: "donut", series: [], spec: { kind: "donut", x: "t", y: ["revenue"], facet: "currency" },
+      panels: [{ title: "CAD", labels: ["Item", "Misc"], series: [{ name: "revenue", values: [90, 10] }] },
+        { title: "USD", labels: ["Item", "Misc"], series: [{ name: "revenue", values: [19, 1] }] }] } as AskChart]} />);
+    expect(container.querySelectorAll('path[stroke-width="1.5"]')).toHaveLength(4);
+    expect(screen.getByText("CAD")).toBeTruthy();
+    expect(screen.getByText("USD")).toBeTruthy();
+  });
+
+  it("KPI tiles faceted by a 3-letter site code keep the chart's currency", () => {
+    render(<AnswerCharts charts={[{ x: "month", labels: [], title: "KS", kind: "kpi", series: [], currency: "CAD", spec: { kind: "kpi", x: "month", y: ["revenue"], facet: "site" },
+      panels: [{ title: "CAN", labels: ["Oct", "Nov"], series: [{ name: "revenue", values: [10, 12] }] },
+        { title: "USA", labels: ["Oct", "Nov"], series: [{ name: "revenue", values: [7, 5] }] }] } as AskChart]} />);
+    const tiles = screen.getAllByTestId("kpi-tile");
+    expect(tiles[0].textContent).toContain("CAD");
+    expect(tiles[0].textContent).not.toContain("CAN");
+    expect(tiles[1].textContent).not.toContain("USA");
+  });
+
+  it("KPI tiles faceted by currency: one set per currency, each in its own code", () => {
+    render(<AnswerCharts charts={[{ x: "month", labels: [], title: "KC", kind: "kpi", series: [], spec: { kind: "kpi", x: "month", y: ["revenue"], facet: "currency" },
+      panels: [{ title: "CAD", labels: ["Oct", "Nov"], series: [{ name: "revenue", values: [10, 12] }] },
+        { title: "USD", labels: ["Oct", "Nov"], series: [{ name: "revenue", values: [7, 5] }] }] } as AskChart]} />);
+    const tiles = screen.getAllByTestId("kpi-tile");
+    expect(tiles).toHaveLength(2);
+    expect(tiles[0].textContent).toContain("12");
+    expect(tiles[0].textContent).toContain("CAD");
+    expect(tiles[1].textContent).toContain("USD");
+  });
+
+  it("small multiples save as one PNG: two panels across, each under its title", () => {
+    const one = panelGrid([{ width: 640, height: 300 }]);
+    expect(one).toEqual({ width: 640, height: 300, cells: [{ x: 0, y: 0, width: 640, height: 300 }] });
+    const three = panelGrid([{ width: 320, height: 170 }, { width: 320, height: 170 }, { width: 320, height: 170 }], 18);
+    expect(three.width).toBe(656);
+    expect(three.height).toBe(392);
+    expect(three.cells.map((c) => [c.x, c.y])).toEqual([[0, 18], [336, 18], [0, 222]]);
   });
 
   it("a PNG's notes wrap at the drawing's width and keep every word", () => {
@@ -119,6 +166,15 @@ describe("answer charts", () => {
     render(<AnswerCharts charts={[{ x: "month", labels: ["2026-09", "2026-10", "2026-11"], title: "K", kind: "kpi", as_of: "2026-11-18T22:00:00+00:00", open_period: "2026-11", series: [{ name: "orders", values: [197, null, 197] }] }]} />);
     expect(screen.getByTestId("kpi-tile").textContent).toContain("▲ 0 (+0%), 2026-11 so far vs 2026-09");
     expect(screen.getByText("2026-11 is not over yet: its figures are of part of it.")).toBeTruthy();
+  });
+
+  it("draws a waterfall per panel on one scale of running totals", () => {
+    const chart: AskChart = { ...people, title: "WF", kind: "waterfall", labels: [], series: [], rows: 4, shown: 4,
+      panels: [{ title: "CAD", labels: ["a", "b"], series: [{ name: "change", values: [10, -4] }] }, { title: "USD", labels: ["c"], series: [{ name: "change", values: [-7] }] }] };
+    const { container } = render(<AnswerCharts charts={[chart]} />);
+    expect(screen.getAllByRole("img", { name: "WF" })).toHaveLength(2);
+    expect(container.textContent).toContain("Total");
+    expect(container.querySelectorAll("rect").length).toBeGreaterThanOrEqual(5);
   });
 
   it("draws small multiples on one scale and says what it leaves out", () => {

@@ -23,7 +23,9 @@ other state stores:
   (the reply card's body then is the model's) or the state (``drafting``, ``queued``),
   and the holding sentence stays until a draft is ready.
 
-Drafts only: nothing here sends, confirms or writes to a business system.
+Drafts only: nothing here sends, confirms or writes to a business system. A change the
+Assistant proposes in a business system becomes a job item on the person's autopilot queue
+(``keep_jobs``), prepared and confirmed there by that person only.
 Evidence: isolated-fixture (``operating/tests/test_reply_drafts.py``); live-unverified.
 """
 from __future__ import annotations
@@ -47,6 +49,11 @@ PER_RUN_ENV = "PLX_REPLY_DRAFTS_PER_RUN"
 PER_RUN = 24
 STALE_MINUTES = 30
 RETRY_HOURS = 12
+# a line left without a draft only because its person had no session yet, or the host
+# refused or did not start it (not a judgment on the line): tried again soon, so a person
+# given a session gets drafts in the next runs
+SETUP_GAPS = ("agent_no_session", "draft_failed:HostListRefused")
+SETUP_RETRY_MINUTES = 30
 FORCE = "reply_prep"  # the drafting autopilot for a line no live rule matched
 KINDS = ("reply_owed", "needs_my_reply")   # ``inbox_triage.TRIAGE_KINDS``
 STATES = ("drafting", "ready", "none")
@@ -65,6 +72,25 @@ def _now() -> datetime:
 
 def path_of(state_dir: Path | str) -> Path:
     return Path(state_dir) / DIR / FILE
+
+
+# "never for this sender" (``operator_api.autopilot_area.NEVER_FILE``, under the state dir)
+NEVER_FILE = Path("autopilot-write") / "autopilot-writes" / "never-senders.jsonl"
+
+
+def never_senders(state_dir: Optional[Path | str], owner: Any) -> set[str]:
+    """The senders this person said never to prepare anything for them from: their own
+    rows (any of their ids), the last row for a sender wins."""
+    if state_dir is None or not (Path(state_dir) / NEVER_FILE).exists():
+        return set()
+    from .card_actions import Journal
+    me = bare(owner)
+    last: dict[str, bool] = {}
+    for row in Journal(Path(state_dir) / NEVER_FILE).rows():
+        ids = {bare(i) for i in (row.get("ids") or [row.get("by")])}
+        if me in ids and isinstance(row.get("sender"), str):
+            last[row["sender"]] = bool(row.get("never"))
+    return {s for s, on in last.items() if on}
 
 
 def bare(owner: Any) -> str:
@@ -150,6 +176,8 @@ def due(row: Optional[Mapping[str, Any]], now: datetime) -> bool:
     if row.get("state") == "drafting":
         return now - at > timedelta(minutes=STALE_MINUTES)
     if row.get("state") == "none":
+        if str(row.get("why") or "") in SETUP_GAPS:
+            return now - at > timedelta(minutes=SETUP_RETRY_MINUTES)
         return now - at > timedelta(hours=RETRY_HOURS)
     return False
 
@@ -297,16 +325,62 @@ def _int_env(name: str, default: int) -> int:
 ASSISTANT = "assistant"   # the registry entry whose prepare step gives a message's material
 
 
+def keep_jobs(queue: Any, registry: Mapping[str, Any], spec: Mapping[str, Any],
+              event: Mapping[str, Any], owner: str, summary: str,
+              proposals: Sequence[Mapping[str, Any]], prepared: Mapping[str, Any],
+              now: datetime, todos: Sequence[Mapping[str, Any]] = ()) -> Optional[str]:
+    """The Assistant's proposed changes for one line as a job item on the person's own
+    autopilot queue (the same item, id and shape ``autopilot.run_cycle`` gives its
+    ``also_jobs``): each change is prepared through the prepared-writes desk and runs only
+    on that person's confirm, under every guard of the write path. ``todos`` (a system with
+    no write path, an invitation to answer: things to do by hand) ride on the same item.
+    The item id or None: no queue, the kill switch, nothing kept, or the hourly cap spent."""
+    from . import autopilot as apm
+    from .autopilot_jobs import kept
+    from .autopilot_records import _digest, _iso
+    jobs = kept(proposals)
+    todos = [dict(t) for t in todos if isinstance(t, Mapping) and str(t.get("what") or "").strip()]
+    if queue is None or not (jobs or todos) or apm.killed(queue, os.environ):
+        return None
+    cap = int((registry.get("limits") or {}).get("per_owner_per_hour") or 30)
+    item_id = "ap_" + _digest(str(spec["id"]) + ":job", event["event_id"], owner)[:24]
+    label = str(spec.get("label") or spec["id"])
+    due = now + timedelta(minutes=int(spec.get("due_minutes") or 480))
+    with queue.conn:
+        if queue.item(item_id) is not None:
+            return item_id
+        if not queue.rate_take(f"job:{owner}", now.strftime("%Y-%m-%dT%H"), cap):
+            return None
+        queue.add_item({
+            "item_id": item_id, "event_id": event["event_id"], "autopilot": spec["id"],
+            "owner": owner, "title": f"{label}: " + summary[:apm.SUMMARY_CHARS],
+            "body": {"happened": apm._happened(event),
+                     "prepared": {"kind": "job", "summary": summary, "jobs": jobs,
+                                  "drafted_by": "model", **({"todos": todos} if todos else {})},
+                     "done_when": spec.get("done_when") or "person_decided", "label": label},
+            "audiences": set(prepared.get("audiences") or ()),
+            "markings": sorted(set(spec.get("markings") or ())
+                               | set(prepared.get("markings") or ())),
+            "citations": list(prepared.get("citations") or ()),
+            "due_at": _iso(due), "created_at": _iso(now), "prepare_ms": prepared.get("ms")})
+    return item_id
+
+
 def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence[Any],
                assistant: Any, owner: str, oid: str, *,
-               now: Optional[datetime] = None) -> list[dict[str, Any]]:
+               now: Optional[datetime] = None, state_dir: Optional[Path] = None,
+               held: Optional[dict[str, Any]] = None, queue: Any = None
+               ) -> list[dict[str, Any]]:
     """One open line's draft by the Assistant (``operating.autopilot_agent``), the same
     session Autopilot runs: the line's message event, the screens a draft keeps (participants
     cleared, nothing about pay or HR), the prepare step for its material, the session reading
     as the person, then ``agent_output`` in review (a reply the checks flag is kept with its
     warning, never swapped for a card). Rows as ``result_of`` reads them:
     ``[{"draft", "note", "warning"}]``, a question card ``[{"kind": "your_call", ...}]`` or
-    ``[{"why"}]``."""
+    ``[{"why"}]``. Changes the Assistant proposed in a business system (BC, Planner, Portal,
+    MC, calendar...) and its things to do by hand become a job item on ``queue`` for the
+    person (``keep_jobs``; its id as the row's ``jobs``), confirmed there one by one;
+    nothing is written here."""
     from . import autopilot as apm, autopilot_engine as eng, autopilot_agent_io as io
     from .autopilot_handlers import Ctx
     import time
@@ -319,6 +393,8 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
         return [{"why": "participants_not_cleared"}]
     if eng.pay_or_hr(event):
         return [{"why": "pay_or_hr"}]
+    if str(event.get("sender") or "").strip().lower() in never_senders(state_dir, owner):
+        return [{"why": "never_sender"}]
     spec = next((x for x in registry.get("autopilots") or () if x.get("id") == ASSISTANT), None)
     if spec is None:
         return [{"why": "no_assistant"}]
@@ -335,6 +411,9 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
     person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
     described, _inside = io.agent_input(event, text, material, addresses_of)
+    # the person's memory and past corrections (``autopilot.person_memory``)
+    described += apm.person_memory(state_dir, held if held is not None else {}, owner, mine,
+                                   event, prepared.get("work") or {})
     got, why = assistant.run(event, owner, described, str(person), people, reads=True)
     if got is None:
         got = io.invitation_only(event, material, why)
@@ -343,14 +422,24 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     got, _held, why = io.agent_output(
         got, event, owner, text, material, addresses_of,
         lambda: Ctx(st, day, time.monotonic() + seconds, domains), str(person), review=True)
+    jobs = None
+    if got.proposals or got.todos:
+        try:
+            jobs = keep_jobs(queue, registry, spec, event, owner, str(got.summary or ""),
+                             got.proposals, prepared, now or _now(), todos=got.todos)
+        except sqlite3.Error:   # a busy queue costs the changes, never the line's draft
+            jobs = None
+    extra = {"jobs": jobs} if jobs else {}
     if got.reply:
-        row = {"draft": got.reply, "note": got.note or ""}
+        row = {"draft": got.reply, "note": got.note or "", **extra}
         if got.warning:
             row["warning"] = got.warning
         return [row]
     if got.ask and got.ask.get("question"):
         return [{"kind": "your_call", "ask": got.ask["question"],
-                 "options": list(got.ask.get("options") or ())}]
+                 "options": list(got.ask.get("options") or ()), **extra}]
+    if jobs:
+        return [{"why": "changes_prepared", **extra}]
     return [{"why": why or "no_draft"}]
 
 
@@ -375,12 +464,21 @@ def cli(a: Any, registry: Mapping[str, Any]) -> int:
     from . import autopilot_agent as ag
     maps = apm._people_maps(people)
     assistant = ag.from_environ(os.environ)
+    held: dict[str, Any] = {}
+    apm.prime_memory(state, held)
 
     def draft(owner: str, oid: str) -> Sequence[Mapping[str, Any]]:
         if getattr(local, "st", None) is None:
             local.st = apm._with_captures(apm._store(a.store), a)
             stores.append(local.st)
-        return line_draft(local.st, registry, people, maps, assistant, owner, oid)
+            # the person's queue, where the Assistant's proposed changes wait for a confirm
+            try:
+                local.queue = apm.Queue(state / "autopilot" / apm.QUEUE_FILE)
+                stores.append(local.queue)
+            except (OSError, sqlite3.Error):
+                local.queue = None
+        return line_draft(local.st, registry, people, maps, assistant, owner, oid,
+                          state_dir=state, held=held, queue=local.queue)
 
     try:
         counts = run(pairs, kept, draft, parallel=_int_env(PARALLEL_ENV, PARALLEL))

@@ -663,6 +663,7 @@ def shown_item(item: Mapping[str, Any]) -> dict[str, Any]:
         # written for each choice
         prepared["your_call"] = {k: v for k, v in prepared["your_call"].items()
                                  if k in ("ask", "facts", "options")}
+    prepared.pop("redo", None)   # a reply's kept material, the server's (``redo``)
     if "prepared" in body:
         body["prepared"] = prepared
     return {**item, "title": title, "body": body}

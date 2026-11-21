@@ -72,6 +72,12 @@ describe("insights dashboard", () => {
     expect(changed).toHaveBeenCalled();
   });
 
+  it("a person's name in the rows opens them on Team by the row's Team key", async () => {
+    render(<InsightsDashboard list={list} onChanged={vi.fn()} />);
+    const link = await screen.findByRole("link", { name: "A. Person" });   // s7 has no chart: its rows show
+    expect(link.getAttribute("href")).toBe("/team?person=k1");
+  });
+
   it("pins an answer's chart with its own statement and columns, and only a chart that has one", async () => {
     const chart = { kind: "bar" as const, title: "Top customers", x: "customer", labels: ["A"], series: [{ name: "total", values: [3] }], as_of: null, sql: "SELECT customer, total FROM t" };
     render(<AnswerCharts charts={[chart, { ...chart, title: "No statement", sql: null }]} question="top customers this year" />);

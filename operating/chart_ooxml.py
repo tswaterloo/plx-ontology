@@ -163,6 +163,16 @@ def provenance(chart: Mapping[str, Any]) -> list[str]:
         lines.append(f"Amounts in {chart['currency']}.")
     if chart.get("open_period"):
         lines.append(f"{chart['open_period']} is not over yet: its figures are of part of it.")
+    if chart.get("first_period"):
+        lines.append(f"{chart['first_period']} is only partly inside the window: its figures are "
+                     "of part of it.")
+    if chart.get("skipped"):
+        lines.append(f"{chart['skipped']} " + ("row has no value and is not counted."
+                     if chart["skipped"] == 1 else "rows have no value and are not counted."))
+    if chart.get("kind") == "waterfall":
+        lines.append("Each bar starts where the one before ended; the last bar is the total.")
+    if chart.get("kind") == "funnel":
+        lines.append("Each percentage is of the step before.")
     trend = chart.get("trend")
     if trend:
         lines.append(f"Fitted line y = {trend['slope']:.4g} x + {trend['intercept']:.4g}; "

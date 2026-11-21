@@ -7,7 +7,8 @@ import { DraftsPanel } from "@/components/autopilot/opt-in";
 import { TeamsConnect } from "@/components/autopilot/teams-connect";
 import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { getAutopilotDrafts, type PreparedItem } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { getAutopilotDrafts, setNeverSender, type PreparedItem } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AutopilotArea as Area } from "@/lib/types";
@@ -23,6 +24,7 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
   useEffect(() => setArea(initial), [initial]);
   const [tab, setTab] = useState<Tab>("prepared");
   const [items, setItems] = useState<PreparedItem[] | null>(null);
+  const [never, setNever] = useState<string[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [round, setRound] = useState(0);
   const reload = useCallback(() => setRound((n) => n + 1), []);
@@ -43,6 +45,7 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
     getAutopilotDrafts(ctl.signal).then(
       (r) => {
         setItems(r.items);
+        setNever(r.never_senders ?? []);
         setError(null);
       },
       (e) => !ctl.signal.aborted && setError(e),
@@ -80,12 +83,38 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
         ) : items ? (
           <>
             {linked && !items.some((i) => i.item_id === linked) && <p className="py-2 text-[13px] text-muted">That item is no longer waiting for you: it was answered, decided or set aside.</p>}
+            <AutoDigest items={items} />
             <PreparedView items={items} empty={emptyWords(area)} linked={linked} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />
+            {never.length > 0 && (
+              <ul className="space-y-1 pt-3 text-[12px] text-muted" aria-label="Never prepared from">
+                {never.map((s) => (
+                  <li key={s} className="flex items-center gap-2">
+                    Nothing is prepared for you from {s}.
+                    <Button size="sm" variant="outline" onClick={() => void setNeverSender(s, false).then(reload, (e) => setError(e))}>
+                      Prepare again
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </>
         ) : (
           <Pending label="Reading what was prepared" />
         )}
       </div>
     </div>
+  );
+}
+
+// Daily digest of Auto as a dry run: how many of today's cards Auto would send by itself
+// and how many would still wait (``auto_would``); each one is still confirmed on its card.
+function AutoDigest({ items }: { items: PreparedItem[] }) {
+  const send = items.filter((i) => i.auto_would === "send").length;
+  const wait = items.filter((i) => (i.auto_would ?? "").startsWith("keep")).length;
+  if (send + wait === 0) return null;
+  return (
+    <p className="pb-2 text-[12px] text-muted" data-testid="auto-digest">
+      Dry run of Auto today: {send} would go by itself, {wait} would wait for you. Nothing is sent from here.
+    </p>
   );
 }

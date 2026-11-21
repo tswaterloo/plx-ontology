@@ -78,8 +78,8 @@ class ProactiveIncremental(unittest.TestCase):
         self.target = [self.dsn]
         for patch in (mock.patch.object(pe._Store, "meta", stamped),
                       mock.patch.object(pi, "_applied", lambda _s: set(self.applied)),
-                      mock.patch.object(pi, "_pg_neighbors", lambda ids, out:
-                                        pi._file_neighbors(store, ids, out)),
+                      mock.patch.object(pi, "_pg_neighbors", lambda ids, out, target=None, types=None:
+                                        pi._file_neighbors(store, ids, out, types=types)),
                       mock.patch.object(ontology_reader, "dsn", lambda: self.target[0])):
             patch.start()
             self.addCleanup(patch.stop)

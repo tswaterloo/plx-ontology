@@ -1242,6 +1242,11 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         write.execute(f"CREATE INDEX ON {t} (thread, mailbox)")
     write.execute(f"CREATE INDEX ON {t} ({spec.when} DESC)")
     write.execute(f"CREATE INDEX ON {t} (unit, {spec.when} DESC)")
+    # the day columns (received_date, created_date ...): a filter on the day reads its index
+    # (a full reader's mail by received_date was a scan of every row: 10-22 s vs 1 s)
+    for c in bv.VIEWS[spec.view].cols:
+        if c.kind == "date":
+            write.execute(f'CREATE INDEX ON {t} ("{c.name}")')
     for col in ("addresses", "domains", "customers", "suppliers", "records"):
         if any(c.name == col for c in bv.VIEWS[spec.view].cols):
             write.execute(f"CREATE INDEX ON {t} USING gin ({col})")
@@ -1684,7 +1689,10 @@ def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
              f"t.ver <= {covered}", f"(coalesce({current}, false) OR NOT EXISTS (SELECT 1 FROM "
              "ontology.people_excluded_objects peo WHERE peo.object_id = t.object_ids[1]))",
              "t.handle IS NOT NULL", hidden,
-             *(f"current_setting('{n}', true) IS NOT NULL" for n in SETTINGS)]
+             # each setting checked once per statement (an InitPlan): bare, the check ran on
+             # every rescan of the view, copying the setting each time (the hidden ids are
+             # megabytes for a full reader: ~3 ms per row of a lateral lookup)
+             *(f"(SELECT current_setting('{n}', true) IS NOT NULL)" for n in SETTINGS)]
     join = ""
     if spec is None or spec.scope not in ("audience", "teams", "participants", "files"):
         where.append("false")   # an unknown rule: nothing (fail closed)
