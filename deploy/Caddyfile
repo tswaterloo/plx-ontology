@@ -54,6 +54,14 @@
 		# a deploy's readiness probe (/api/ready) is for loopback only, never served here
 		@ready path /api/ready
 		respond @ready 404
+		# JSON answers compressed (11-21: Home ~260 KB of JSON, Team's labour 355 KB; 6-18x
+		# smaller) for a reader on the tailnet; only JSON, so the Ask's event stream is
+		# never held back in a compressor's buffer
+		encode zstd gzip {
+			match {
+				header Content-Type application/json*
+			}
+		}
 		# Which API serves (ARCH-T6, deploy/release/plx-release): 127.0.0.1:8780
 		# (plx-api.service), and when it takes no connection the deploy's standby
 		# (plx-api@standby), which serves only on its unix socket in a directory nobody but

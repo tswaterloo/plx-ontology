@@ -232,19 +232,22 @@ def ranked(policy: Any, actor: Any, item_gate: Any, query: str, *,
     (at most ``RANK_WAIT_S``; a call's own time budget), past it ``search_timeout``."""
     if not enabled():
         return Ranked()
+    from operating.call_phases import phase
     state = _CALL.get()
     found = state["prefetched"].get(query) if state is not None else None
-    if found is None:
-        result = _rank(policy, actor, query)
-    else:
-        try:
-            result = found.result(timeout=RANK_WAIT_S if wait is None
-                                  else max(0.0, min(RANK_WAIT_S, wait)))
-        except cf.TimeoutError:
-            result = Ranked(problem="search_timeout")
-        except Exception as exc:  # noqa: BLE001 - the word index answers, and says so
-            result = Ranked(problem="search_unavailable:" + type(exc).__name__)
-    result = _gated(result, policy, actor, item_gate)
+    with phase("documents.ranking"):
+        if found is None:
+            result = _rank(policy, actor, query)
+        else:
+            try:
+                result = found.result(timeout=RANK_WAIT_S if wait is None
+                                      else max(0.0, min(RANK_WAIT_S, wait)))
+            except cf.TimeoutError:
+                result = Ranked(problem="search_timeout")
+            except Exception as exc:  # noqa: BLE001 - the word index answers, and says so
+                result = Ranked(problem="search_unavailable:" + type(exc).__name__)
+    with phase("documents.gate"):
+        result = _gated(result, policy, actor, item_gate)
     if state is not None:
         state["mode"], state["problem"] = result.mode, result.problem
         state["failed"] = result.failed

@@ -29,6 +29,7 @@ websearch_to_tsquery ts_rank ts_rank_cd ts_headline
 jsonb_each_text jsonb_object_keys jsonb_array_elements_text jsonb_typeof jsonb_array_length
 jsonb_extract_path_text
 corr covar_pop covar_samp regr_slope regr_intercept regr_r2 regr_count regr_avgx regr_avgy
+grouping
 """.split())
 # words a "(" may follow that are SQL syntax, never a call
 SYNTAX = frozenset("""
@@ -181,6 +182,9 @@ def check(sql: Any, *, schemas: frozenset[str] = frozenset(), allowed_schema: st
                 not _column_list(tokens, idx):
             if kind == "word" and low in SYNTAX:
                 continue
+            if kind == "word" and low == "sets" and prev[0] == "word" \
+                    and prev[1].lower() == "grouping":
+                continue   # GROUP BY GROUPING SETS (...), never a call named sets
             if low not in FUNCTIONS:
                 raise _bad(f"function '{tok}' is not allowed",
                            "allowed: plain aggregate, arithmetic, text, date, window and "

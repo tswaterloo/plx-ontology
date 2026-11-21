@@ -171,6 +171,10 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
         wanted = arguments_for_documents(arguments)
     except ValueError as exc:
         return _error("invalid_input", str(exc))
+    # each leg's time on the call's record (``call_phases``: the result's _meta only)
+    call_documents, call_read, call_comms, call_records = (
+        _timed("documents", call_documents), _timed("read", call_read),
+        _timed("comms", call_comms), _timed("records", call_records))
     try:
         moment = read_ceiling.ceiling()
     except read_ceiling.CeilingInvalid as exc:
@@ -238,6 +242,17 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
             return one
         got.append(one)
     return _merged(got)
+
+
+def _timed(name: str, call: Any) -> Any:
+    if call is None:
+        return None
+    from operating.call_phases import phase
+
+    def timed(arguments: dict[str, Any]) -> Any:
+        with phase(name):
+            return call(arguments)
+    return timed
 
 
 # the comms leg errors that are the search's own (the query itself is wrong): the whole

@@ -46,7 +46,7 @@ from . import ontology_tools_aggregate, ontology_tools_evidence, ontology_tools_
 from . import meeting_agenda, ontology_query, ontology_tools_changes, ontology_tools_investigate
 from . import ontology_tools_investigate_follow_ups
 from . import ontology_tools_traverse
-from . import action_tools, agent_definitions, answer_gate, call_limits
+from . import action_tools, agent_definitions, answer_gate, call_limits, call_phases
 from . import ontology_tools_search, tool_results
 from .agent_definitions import AgentDefinition, AgentRun
 from . import case_tools_host
@@ -1153,7 +1153,8 @@ class MCPServer(CallsMixin, CaseMixin):
                 # its partial chain, any other call is interrupted at it.
                 limit = None if host_code else call_limits.limit_for(name)
                 arguments = call_limits.clamp_arguments(name, arguments, limit)
-                with writing_as(self._claim_holder), call_limits.bounded(limit):
+                with writing_as(self._claim_holder), call_limits.bounded(limit), \
+                        (call_phases.record() if not host_code else nullcontext()) as phases:
                     built = self._call(name, arguments)
                 if name == "plx.find" and not host_code:
                     self._kept_find(arguments, built)
@@ -1222,6 +1223,8 @@ class MCPServer(CallsMixin, CaseMixin):
                             exported = self._peer_export(name, arguments, built, value)
                             if exported is not None:
                                 payload["_meta"][host_peers.EXPORT_KEY] = exported
+                        if phases:   # where the call's time went (never the model's text)
+                            payload["_meta"][call_phases.META_KEY] = phases
                         return _result(request_id, payload)
                 return _result(request_id, _tool_error(
                     self._cleared_note(name, arguments)

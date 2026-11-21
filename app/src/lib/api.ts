@@ -180,6 +180,7 @@ async function call(path: string, init: RequestInit & { json?: unknown } = {}): 
   if (method !== "GET") {
     autopilotLast = null;
     writesSent += 1;
+    paneKept.clear();
   }
   const as = viewAsHeader(path, method);
   const limited = readSignal(method, rest.signal);
@@ -215,6 +216,37 @@ async function call(path: string, init: RequestInit & { json?: unknown } = {}): 
 function getShared<T>(path: string, signal?: AbortSignal): Promise<T> {
   // its own key: a Today list read by `getRead` polls until it is read, this answers at once
   return shared(`json ${readKey(path)}`, (s) => getJson<T>(path, s), signal);
+}
+
+// A record pane's reads (the door page, the evidence trail; ``reuse``): Home's pane is mounted again
+// as the lists fill in (the first row picked from the first list that came, then the same
+// row from the briefing), and a person clicks back and forth between rows; an answer read
+// this recently is reused, the same as the autopilot area's (any write and a sign-out drop
+// them, and a second ask while one is under way shares it).
+export const PANE_REUSE_MS = 15_000;
+const PANE_KEPT_MOST = 24;
+const paneKept = new Map<string, { at: number; got: unknown }>();
+onSessionReset(() => paneKept.clear());
+
+function getPaneRead<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const key = `pane ${readKey(path)}`;
+  const hit = paneKept.get(key);
+  if (hit && Date.now() - hit.at < PANE_REUSE_MS) return Promise.resolve(hit.got as T);
+  const before = writesSent;
+  const read = shared(key, (s) => getJson<T>(path, s), signal);
+  read.then(
+    (got) => {
+      if (writesSent !== before) return;   // read across a write: never kept
+      // a stale or still-reading answer is asked for again soon: never reused
+      const flags = got as { stale_since?: string | null; reading?: boolean | null };
+      if (flags?.stale_since || flags?.reading) return;
+      paneKept.delete(key);
+      paneKept.set(key, { at: Date.now(), got });
+      while (paneKept.size > PANE_KEPT_MOST) paneKept.delete(paneKept.keys().next().value as string);
+    },
+    () => undefined,
+  );
+  return read;
 }
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -959,13 +991,14 @@ export function suggest(q: string, signal?: AbortSignal, limit = 8): Promise<Sug
 }
 
 /** A business record page (customer, chain, supplier account; PO or customer order). */
-export function bizPage(kind: BizKind, key: { h?: string; chain?: string; record?: string }, signal?: AbortSignal): Promise<BizPage> {
+export function bizPage(kind: BizKind, key: { h?: string; chain?: string; record?: string }, signal?: AbortSignal, reuse = false): Promise<BizPage> {
   const q = new URLSearchParams({ kind });
   if (key.h) q.set("h", key.h.slice(0, 600));
   if (key.chain) q.set("chain", key.chain.slice(0, 200));
   // a record id: the page of the row it was read into (404 when the door has none)
   if (key.record && !key.h) q.set("record", key.record.slice(0, 700));
-  return getJson<BizPage>(`/api/biz/page?${q.toString()}`, signal);
+  const path = `/api/biz/page?${q.toString()}`;
+  return reuse ? getPaneRead<BizPage>(path, signal) : getJson<BizPage>(path, signal);
 }
 
 /** Projection type names (PurchaseOrder, SalesOrder, ...). Anything else fails closed. */
@@ -1017,10 +1050,12 @@ export const PAGE_SECTIONS: readonly SectionName[] = ["late", "people", "landed_
 /** The record types whose page has the documents section (`operator_api.record_documents.LISTS`). */
 export const DOCUMENT_LIST_TYPES: readonly string[] = ["Customer", "Supplier", "Product", "FgItem"];
 
-export function getObjectSection(section: SectionName, type: string, id: string, signal?: AbortSignal): Promise<ObjectSection> {
+export function getObjectSection(section: SectionName, type: string, id: string, signal?: AbortSignal, reuse = false): Promise<ObjectSection> {
   if (!PAGE_SECTIONS.includes(section) || !isObjectType(type) || !id || id.length > 700)
     return Promise.reject(new ApiError(404, "not_found"));
-  return getJson<ObjectSection>(`/api/object-section/${section}/${type}/${encodeURIComponent(id)}`, signal);
+  const path = `/api/object-section/${section}/${type}/${encodeURIComponent(id)}`;
+  // reuse: a pane's read (Home's detail), kept a few seconds (``getPaneRead``)
+  return reuse ? getPaneRead<ObjectSection>(path, signal) : getJson<ObjectSection>(path, signal);
 }
 
 export type ImpactChange = { kind: "delay"; days: number } | { kind: "out_of_stock" } | { kind: "customer_lost" } | { kind: "price_change"; percent: string };

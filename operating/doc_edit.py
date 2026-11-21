@@ -14,6 +14,20 @@ document edit Ask prepares (``plx.edit_document``) over a SharePoint or OneDrive
   existing cell's value (a number stays a number, text is written inline; a formula cell
   is refused, so is a cell the sheet does not hold).
 
+* ``{"changes": [<change>, ...]}``: up to ``MAX_CHANGES`` of the changes above made in
+  order on the one copy (every one must apply, or none is made), so a price and the totals
+  it moves change together;
+* ``{"fields": {<label>: <value>, ...}}`` in a Word form (``.docx``): each blank the label
+  names filled, a blank being a ``Label: ____`` line, a content control, an empty table cell
+  beside its label or, in a grid with a header row, the empty cell in a row under a column
+  (labelled "<row> / <column>", like "pH / Result"); a label the form does not hold, or
+  one naming a field that already holds a value, is refused with the form's blanks listed;
+* ``redline(old, new)``: the newer Word document with every difference from the older one
+  as Word tracked changes (deleted and inserted words), its own formatting kept.
+
+An Excel cell the sheet does not hold yet is added (in its row, in column order); an ISO
+date written into a cell formatted as a date is written as that date.
+
 The text to find must occur exactly once (none or several: refused, never guessed). It
 returns the new bytes and the diff the person confirms (``field``, ``before``, ``after``:
 the paragraph or cell as it is and as it would be). Every other part of the file is copied
@@ -21,6 +35,7 @@ byte for byte. ``Refused`` says why in plain words. Nothing here reads or writes
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from html import escape, unescape
 import io
 import re
@@ -32,6 +47,8 @@ DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 MAX_TEXT = 4000
+MAX_CHANGES = 50
+MAX_FIELDS_LISTED = 60
 
 
 class Refused(ValueError):
@@ -59,8 +76,41 @@ def _words(value: Any, what: str, empty: bool = False) -> str:
     return value
 
 
+def _no_doubt(value: Any) -> Any:
+    """A value written into a file without the chat answer's "(unverified)" mark."""
+    from operating.doc_render import without_doubt_marks
+    return without_doubt_marks(value) if isinstance(value, str) else value
+
+
 def edit(name: str, data: bytes, change: Mapping[str, Any]) -> tuple[bytes, list[dict[str, Any]]]:
     ext, _kind = kind_of(name)
+    change = {k: (_no_doubt(v) if k in ("replace", "value") else
+                  {f: _no_doubt(x) for f, x in v.items()} if k == "fields"
+                  and isinstance(v, Mapping) else v) for k, v in change.items()}
+    if "changes" in change:
+        many = change.get("changes")
+        if set(change) != {"changes"} or not isinstance(many, list) or not many \
+                or len(many) > MAX_CHANGES:
+            raise Refused(f"changes is a list of 1 to {MAX_CHANGES} edits (each find and "
+                          "replace, or sheet, cell and value), given alone.")
+        diff: list[dict[str, Any]] = []
+        for n, one in enumerate(many, 1):
+            if not isinstance(one, Mapping) or {"changes", "fields"} & set(one):
+                raise Refused(f"Change {n} is not one edit.")
+            try:
+                data, more = edit(name, data, one)
+            except Refused as why:
+                raise Refused(f"Change {n} of {len(many)}: {why} Nothing was changed.") \
+                    from None
+            diff += more
+        return data, diff
+    if "fields" in change:
+        if set(change) != {"fields"} or not isinstance(change.get("fields"), Mapping):
+            raise Refused("fields maps each blank's label to its value, given alone.")
+        if ext != ".docx":
+            raise Refused("Blanks are filled by label in a Word form; in Excel name the cell "
+                          "(sheet, cell, value), elsewhere quote the text to replace.")
+        return _fill(data, change["fields"])
     if ext == ".xlsx":
         if set(change) != {"sheet", "cell", "value"}:
             raise Refused("An Excel edit names the sheet, the cell and its new value.")
@@ -339,9 +389,16 @@ def _xlsx(data: bytes, change: Mapping[str, Any]) -> tuple[bytes, list[dict[str,
             shared = ["".join(unescape(t) for t in re.findall(r"<t(?:\s[^>]*)?>(.*?)</t>", si, re.S))
                       for si in re.findall(r"<si>(.*?)</si>", sst, re.S)]
     found = list(re.finditer(rf'<c\s[^>]*\br="{cell}"[^>]*?(?:/>|>.*?</c>)', xml, re.S))
+    if not found and re.search(r"<sheetData", xml):
+        # a cell the sheet does not hold yet: added in its row, in column order
+        from operating import doc_fill
+        try:
+            xml = doc_fill._put_cell(xml.encode("utf-8"), cell, "").decode("utf-8")
+        except doc_fill.FillRefused:
+            raise Refused(f"The sheet has no place for cell {cell}.") from None
+        found = list(re.finditer(rf'<c\s[^>]*\br="{cell}"[^>]*?(?:/>|>.*?</c>)', xml, re.S))
     if len(found) != 1:
-        raise Refused(f"The sheet holds no cell {cell} to change (only existing cells are "
-                      "edited).")
+        raise Refused(f"The sheet holds no cell {cell} to change.")
     old = found[0].group(0)
     if "<f>" in old or "<f " in old:
         raise Refused(f"{cell} holds a formula: change the cells it reads instead.")
@@ -356,6 +413,19 @@ def _xlsx(data: bytes, change: Mapping[str, Any]) -> tuple[bytes, list[dict[str,
         before = unescape(v.group(1)) if v else None
     keep = re.sub(r'\s+t="[^"]*"', "", attrs)
     text = str(value)
+    style = re.search(r'\bs="(\d+)"', attrs)
+    day = _ISO_DAY.fullmatch(text.strip()) if isinstance(value, str) else None
+    if day and style and _date_style(data, int(style.group(1))):
+        try:
+            serial = (date(int(day.group(1)), int(day.group(2)), int(day.group(3)))
+                      - date(1899, 12, 30)).days
+        except ValueError:
+            raise Refused(f"{text} is not a date.") from None
+        new = f"<c{keep}><v>{serial}</v></c>"
+        xml_new = xml[:found[0].start()] + new + xml[found[0].end():]
+        return _rezip(data, {part: xml_new.encode("utf-8")}), [
+            {"field": f"{sheet}!{cell}", "before": _shown_date(data, before, style),
+             "after": text.strip()}]
     if isinstance(value, (int, float)) or _NUMBER.fullmatch(text):
         if not _NUMBER.fullmatch(text):
             raise Refused("That number cannot be written exactly.")
@@ -367,3 +437,237 @@ def _xlsx(data: bytes, change: Mapping[str, Any]) -> tuple[bytes, list[dict[str,
     xml_new = xml[:found[0].start()] + new + xml[found[0].end():]
     return _rezip(data, {part: xml_new.encode("utf-8")}), [
         {"field": f"{sheet}!{cell}", "before": before, "after": value}]
+
+
+_ISO_DAY = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+_DATE_IDS = set(range(14, 23)) | set(range(45, 48))
+
+
+def _date_style(data: bytes, index: int) -> bool:
+    """Whether cell format ``index`` of the workbook shows a date (a built-in date format,
+    or a custom code of day, month or year parts)."""
+    with _open(data) as z:
+        if "xl/styles.xml" not in z.namelist():
+            return False
+        styles = z.read("xl/styles.xml").decode("utf-8", "replace")
+    codes = {m.group(1): unescape(m.group(2)) for m in re.finditer(
+        r'<numFmt\s[^>]*numFmtId="(\d+)"[^>]*formatCode="([^"]*)"', styles)}
+    xfs = re.search(r"<cellXfs[^>]*>(.*?)</cellXfs>", styles, re.S)
+    if xfs is None:
+        return False
+    found = re.findall(r"<xf\b[^>]*?(?:/>|>.*?</xf>)", xfs.group(1), re.S)
+    if index >= len(found):
+        return False
+    fmt = re.search(r'numFmtId="(\d+)"', found[index])
+    if fmt is None:
+        return False
+    if int(fmt.group(1)) in _DATE_IDS:
+        return True
+    code = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', "", codes.get(fmt.group(1), "")).lower()
+    return bool(code) and bool(re.search(r"[dy]", code) or re.search(r"m{3,}", code)) \
+        and not re.search(r"[0#]", code)
+
+
+def _shown_date(data: bytes, before: Any, style: Any) -> Any:
+    try:
+        return (date(1899, 12, 30) + timedelta(days=int(float(before)))).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return before
+
+
+# -- a Word form's blanks, by label
+
+def _form(data: bytes) -> tuple[Any, list[tuple[str, str, str]]]:
+    """The Word form's writer and its blanks: (field id, label, current value). The blanks
+    ``doc_fill`` finds outside tables (``Label: ____`` lines, content controls, legacy
+    fields), and every empty table cell with a label beside it, above it or, in a grid
+    whose first row is a header, its row's first cell and its column's header."""
+    from operating import doc_fill as df
+    try:
+        terms = df.load_terms()
+        doc = df.open_document(data, terms)
+    except df.FillRefused as why:
+        raise Refused("The form's blanks could not be read (" + why.code + ").") from None
+    if doc.kind != "docx":
+        raise Refused("Only a Word form's blanks are filled by label.")
+    found = [(f.field_id, f.label, f.current) for f in doc.fields()
+             if not f.field_id.startswith("docx:t")]
+    W = df._W
+    in_controls = {id(p) for sdt in doc.root.iter(W + "sdt") for p in sdt.iter(W + "p")}
+    for t_n, table in enumerate(doc.root.iter(W + "tbl")):
+        rows = [tr.findall(W + "tc") for tr in table.findall(W + "tr")]
+        texts = [[" ".join(df._text(c).split()) for c in row] for row in rows]
+        full = [all(t and not df._blank(t) for t in row) for row in texts]
+        for r, row in enumerate(rows):
+            # a grid (3 columns or more): its header is the nearest full row above
+            head = next((h for h in range(r - 1, -1, -1) if full[h]
+                         and len(texts[h]) == len(row)), None) if len(row) >= 3 else None
+            for c, cell in enumerate(row):
+                if not df._blank(texts[r][c]) or any(id(p) in in_controls
+                                                     for p in cell.iter(W + "p")):
+                    continue
+                if head is not None and c > 0 and not df._blank(texts[r][0]):
+                    label = f"{texts[r][0]} / {texts[head][c]}"
+                elif c > 0 and not df._blank(texts[r][c - 1]):
+                    label = texts[r][c - 1]
+                elif r > 0 and c < len(texts[r - 1]) and not df._blank(texts[r - 1][c]):
+                    label = texts[r - 1][c]
+                else:
+                    continue
+                fid = f"docx:t{t_n}:r{r}:c{c}"
+                doc.setters[fid] = lambda v, cell=cell: df._set_text(cell, v)
+                found.append((fid, label.rstrip(": ")[:df.MAX_LABEL], ""))
+    return doc, found
+
+
+def form_blanks(data: bytes) -> list[dict[str, str]]:
+    """A Word form's blanks as the model sees them: label, and the value it already holds."""
+    return [{"label": label, **({"holds": current} if current else {})}
+            for _fid, label, current in _form(data)[1]]
+
+
+def _fill(data: bytes, wanted: Mapping[str, Any]) -> tuple[bytes, list[dict[str, Any]]]:
+    from operating import doc_fill as df
+    doc, found = _form(data)
+    listed = "; ".join(label + (f" (holds {current[:40]})" if current else "")
+                       for _f, label, current in found[:MAX_FIELDS_LISTED]) or "none"
+    if not wanted:
+        raise Refused(f"Name the blanks to fill. The form's blanks: {listed}.")
+    values: dict[str, str] = {}
+    diff: list[dict[str, Any]] = []
+    for label, value in wanted.items():
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise Refused(f"The value for \"{str(label)[:60]}\" is text or a number.")
+        text = _words(str(value), "value", empty=False)
+        key = df.normalize(label)
+        hits = [f for f in found if df.normalize(f[1]) == key or f[0] == label]
+        if len(hits) != 1:
+            why = ("is not a blank of this form (a field that holds a value already is "
+                   "changed with find and replace)") if not hits else \
+                f"names {len(hits)} blanks"
+            raise Refused(f"\"{str(label)[:60]}\" {why}. The form's blanks: {listed}.")
+        fid, name, current = hits[0]
+        if current:
+            raise Refused(f"\"{name}\" already holds \"{current[:60]}\": to change it, find "
+                          "and replace that text.")
+        if fid in values:
+            raise Refused(f"\"{name}\" is named twice.")
+        values[fid] = text
+        diff.append({"field": name, "before": "", "after": text})
+    return doc.write(values), diff
+
+
+# -- a redline of two Word documents
+
+_TOKEN = re.compile(r"\s+|\d+(?:[.,]\d+)*|\w+|[^\w\s]")
+_RPR = re.compile(r"<w:rPr>.*?</w:rPr>|<w:rPr/>", re.S)
+_PPR = re.compile(r"<w:pPr>.*?</w:pPr>|<w:pPr/>", re.S)
+MAX_REDLINE_LISTED = 40
+
+
+def _main_part(z: zipfile.ZipFile) -> str:
+    return next(p for p, k in _word_parts(z).items() if k == "main")
+
+
+def _paragraphs(xml: str) -> list[tuple[re.Match[str], str]]:
+    return [(p, "".join(unescape(r.group(2)) for r in _RUN_TEXT.finditer(p.group(0))))
+            for p in _PARA.finditer(xml)]
+
+
+class _Marks:
+    def __init__(self) -> None:
+        self.n = 7000
+
+    def ins(self, runs: str) -> str:
+        self.n += 1
+        return f'<w:ins w:id="{self.n}" w:author="Workbench">{runs}</w:ins>'
+
+    def dele(self, runs: str) -> str:
+        self.n += 1
+        runs = re.sub(r"<w:t(\s[^>]*)?>", lambda m: "<w:delText" + (m.group(1) or "") + ">",
+                      runs).replace("</w:t>", "</w:delText>")
+        return f'<w:del w:id="{self.n}" w:author="Workbench">{runs}</w:del>'
+
+
+def _run(text: str, rpr: str) -> str:
+    return f'<w:r>{rpr}<w:t xml:space="preserve">{escape(text, quote=False)}</w:t></w:r>'
+
+
+def _rewritten(para: str, before: str, after: str, marks: _Marks) -> str:
+    """The newer paragraph's XML with its words diffed against the older text: the words
+    kept, deleted and inserted as runs in its own first run's formatting."""
+    head = re.match(r"<w:p(\s[^>]*)?>", para)
+    if head is None:
+        return para
+    ppr = _PPR.search(para)
+    first = re.search(r"<w:r[ >].*?</w:r>", para, re.S)
+    rpr = _RPR.search(first.group(0)).group(0) if first and _RPR.search(first.group(0)) else ""
+    a, b = _TOKEN.findall(before), _TOKEN.findall(after)
+    out = []
+    import difflib
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op in ("replace", "delete"):
+            out.append(marks.dele(_run("".join(a[i1:i2]), rpr)))
+        if op in ("replace", "insert"):
+            out.append(marks.ins(_run("".join(b[j1:j2]), rpr)))
+        if op == "equal":
+            out.append(_run("".join(b[j1:j2]), rpr))
+    return f"{head.group(0)}{ppr.group(0) if ppr else ''}{''.join(out)}</w:p>"
+
+
+def _all_runs(para: str, wrap: Any) -> str:
+    """The paragraph with every run wrapped (inserted or deleted as a whole)."""
+    return re.sub(r"<w:r[ >].*?</w:r>", lambda m: wrap(m.group(0)), para, flags=re.S)
+
+
+def redline(old_name: str, old: bytes, new_name: str, new: bytes
+            ) -> tuple[bytes, list[dict[str, Any]]]:
+    """The newer Word document with its differences from the older one as tracked changes
+    (module doc), and the list of what changed (``field`` paragraph n of the newer
+    document, or "removed"; ``before``, ``after``)."""
+    import difflib
+    for name in (old_name, new_name):
+        if kind_of(name)[0] != ".docx":
+            raise Refused("A redline compares two Word documents (.docx).")
+    with _open(old) as z:
+        old_xml = z.read(_main_part(z)).decode("utf-8")
+    with _open(new) as z:
+        part = _main_part(z)
+        new_xml = z.read(part).decode("utf-8")
+    a, b = _paragraphs(old_xml), _paragraphs(new_xml)
+    marks = _Marks()
+    swap: dict[int, str] = {}          # newer paragraph index -> its XML
+    before_at: dict[int, list[str]] = {}   # removed paragraphs, put before index n
+    changed: list[dict[str, Any]] = []
+    matcher = difflib.SequenceMatcher(None, [t.strip() for _, t in a],
+                                      [t.strip() for _, t in b], autojunk=False)
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            continue
+        pairs = min(i2 - i1, j2 - j1) if op == "replace" else 0
+        for k in range(pairs):
+            swap[j1 + k] = _rewritten(b[j1 + k][0].group(0), a[i1 + k][1], b[j1 + k][1], marks)
+            changed.append({"field": f"paragraph {j1 + k + 1}", "before": a[i1 + k][1],
+                            "after": b[j1 + k][1]})
+        for k in range(i1 + pairs, i2):
+            gone = _all_runs(a[k][0].group(0), marks.dele)
+            before_at.setdefault(j1 + pairs, []).append(gone)
+            changed.append({"field": "removed", "before": a[k][1], "after": ""})
+        for k in range(j1 + pairs, j2):
+            swap[k] = _all_runs(b[k][0].group(0), marks.ins)
+            changed.append({"field": f"paragraph {k + 1}", "before": "", "after": b[k][1]})
+    if not changed:
+        raise Refused("The two documents hold the same text: nothing to mark.")
+    out, pos = [], 0
+    for n, (para, _text) in enumerate(b):
+        out.append(new_xml[pos:para.start()])
+        out += before_at.get(n, [])
+        out.append(swap.get(n, para.group(0)))
+        pos = para.end()
+    tail = new_xml[pos:]
+    if before_at.get(len(b)):
+        cut = tail.find("<w:sectPr")
+        cut = cut if cut >= 0 else tail.find("</w:body>")
+        tail = tail[:cut] + "".join(before_at[len(b)]) + tail[cut:]
+    out.append(tail)
+    return _rezip(new, {part: "".join(out).encode("utf-8")}), changed[:MAX_REDLINE_LISTED]

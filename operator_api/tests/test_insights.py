@@ -211,6 +211,173 @@ class OwnerReports(unittest.TestCase):
             self.assertIsNone(r["median_days_before"])
 
 
+class StockAndChaseTiles(unittest.TestCase):
+    """The stock-against-open-orders, receivables-to-chase and customers-gone-quiet tiles
+    on raw rows: every open line lands on one finished product in pieces or in one
+    '(not mapped) <reason>' row, never both and never twice (live 11-21: 78 of 78 mapped
+    Sage item and unit pairs named the same product as their FileMaker finished product,
+    5 of them by eye)."""
+
+    def test_open_lines_map_to_pieces_or_are_counted_unmapped(self):
+        from decimal import Decimal
+
+        import psycopg
+        db, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, db)
+        sql = {s.id: s for s in ins.builtin()}["stock_vs_open_orders"].sql
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("CREATE TABLE records (handle text, type text, fields jsonb)")
+            pg.execute("CREATE TABLE stock (item_code text, name text, on_hand numeric, "
+                       "on_hand_unit text, as_of date, source_systems text DEFAULT 'filemaker')")
+            pg.execute("CREATE TABLE sales_order_lines (handle text, order_number text, "
+                       "item_code text, outstanding_quantity numeric, order_status text, "
+                       "of_record boolean, order_handle text)")
+            pg.execute("CREATE TABLE sales_orders (handle text, order_date date, "
+                       "required_date date)")
+
+            def rec(kind, **fields):
+                pg.execute("INSERT INTO records VALUES (NULL, %s, %s)", (kind, json.dumps(fields)))
+
+            def fp(erp, code, per_box, lead="24"):
+                rec("RelSilverFinishedProducts", erp_code=erp, code=code,
+                    units_per_box=per_box, lead_time=lead)
+
+            def uom(item, unit, conv):
+                rec("ItemUnitOfMeasure", item_number=item, unit=unit, conversion=conv)
+
+            n = [0]
+
+            def line(item, qty, unit, status="open", of_record=True):
+                n[0] += 1
+                h = f"l{n[0]}"
+                pg.execute("INSERT INTO records VALUES (%s, 'SalesOrderLine', %s)",
+                           (h, json.dumps({"ordered_quantity_unit": unit})))
+                pg.execute("INSERT INTO sales_order_lines VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                           (h, f"O{n[0]}", item, qty, status, of_record, f"o{n[0]}"))
+                pg.execute("INSERT INTO sales_orders VALUES (%s, '2026-10-01', NULL)",
+                           (f"o{n[0]}",))
+
+            # stocking unit the case, an each a sixth rounded by Sage: 6 a case
+            fp("CASE6", "FG-CASE6", "6"); uom("CASE6", "CSE", "1"); uom("CASE6", "EA", "0.166600")
+            pg.execute("INSERT INTO stock VALUES ('FG-CASE6', 'Six pack', 100, 'PCS', '2026-11-21')")
+            line("CASE6", 27, "CSE")     # 162 pieces
+            line("case6 ", 10, "EA")     # 10 pieces (codes read trimmed, any case)
+            line("CASE6", 5, "CSE", status="closed")       # not open: not counted
+            line("CASE6", 5, "CSE", of_record=False)      # not of record: not counted
+            # each only: no case to check
+            fp("EACH1", "FG-EACH1", "1"); uom("EACH1", "EA", "1")
+            pg.execute("INSERT INTO stock VALUES ('FG-EACH1', 'Single', 0, 'PCS', '2026-11-21')")
+            line("EACH1", 2500, "EA")
+            # Sage says a case is 1, FileMaker 4 a box: not mapped
+            fp("BAD", "FG-BAD", "4"); uom("BAD", "CSE", "1"); uom("BAD", "EA", "1")
+            pg.execute("INSERT INTO stock VALUES ('FG-BAD', 'Bad', 0, 'PCS', '2026-11-21')")
+            line("BAD", 3, "CSE")
+            # two finished products carry one code: not mapped
+            fp("TWO", "FG-TWO-A", "1"); fp("TWO", "FG-TWO-B", "1"); uom("TWO", "EA", "1")
+            line("TWO", 1, "EA")
+            # no finished product, and a unit Sage holds no conversion for
+            line("MISC", 1, "EA")
+            fp("NOUNIT", "FG-NOUNIT", "1"); uom("NOUNIT", "EA", "1")
+            pg.execute("INSERT INTO stock VALUES ('FG-NOUNIT', 'No unit', 5, 'PCS', '2026-11-21')")
+            line("NOUNIT", 1, "PL")
+            # two stock rows of one product: one figure when they agree (never added), a
+            # reason when they differ; a BC pilot row is never stock
+            fp("TWIN", "FG-TWIN", "1"); uom("TWIN", "EA", "1")
+            pg.execute("INSERT INTO stock (item_code, name, on_hand, on_hand_unit, as_of) VALUES "
+                       "('FG-TWIN', 'Twin', 40, 'PCS', '2026-11-21'), "
+                       "('FG-TWIN', 'Twin', 40, 'PCS', '2026-11-21')")
+            pg.execute("INSERT INTO stock VALUES ('FG-TWIN', 'Twin', 999, 'PCS', '2026-11-21', 'bc')")
+            line("TWIN", 100, "EA")
+            fp("SPLIT", "FG-SPLIT", "1"); uom("SPLIT", "EA", "1")
+            pg.execute("INSERT INTO stock (item_code, name, on_hand, on_hand_unit, as_of) VALUES "
+                       "('FG-SPLIT', 'Split', 10, 'PCS', '2026-11-21'), "
+                       "('FG-SPLIT', 'Split', 30, 'PCS', '2026-11-21')")
+            line("SPLIT", 5, "EA")
+            cur = pg.execute(sql)
+            cols = [c.name for c in cur.description]
+            rows = {r[0]: dict(zip(cols, r)) for r in cur.fetchall()}
+        self.assertEqual(rows["FG-CASE6"]["open_order_pieces"], Decimal("172.00"))
+        self.assertEqual(rows["FG-CASE6"]["short_by"], Decimal("72.00"))
+        self.assertEqual(rows["FG-CASE6"]["open_lines"], 2)
+        self.assertTrue(rows["FG-CASE6"]["unit_basis"].startswith("case size checked"))
+        self.assertEqual(rows["FG-EACH1"]["short_by"], Decimal("2500.00"))
+        self.assertTrue(rows["FG-EACH1"]["unit_basis"].startswith("each only"))
+        unmapped = {k: v["open_lines"] for k, v in rows.items() if k.startswith("(not mapped)")}
+        self.assertEqual(unmapped, {
+            "(not mapped) case size differs between Sage and FileMaker": 1,
+            "(not mapped) several FileMaker finished products carry the item code": 1,
+            "(not mapped) no FileMaker finished product carries the item code": 1,
+            "(not mapped) Sage states no conversion of the order unit to each": 1,
+            "(not mapped) stock records for the finished product disagree": 1})
+        self.assertEqual((rows["FG-TWIN"]["on_hand"], rows["FG-TWIN"]["short_by"]),
+                         (Decimal("40"), Decimal("60.00")))
+        for gone in ("FG-BAD", "FG-TWO-A", "FG-TWO-B", "FG-NOUNIT", "FG-SPLIT"):
+            self.assertNotIn(gone, rows)
+        # every open line of record counted once: 4 mapped + 5 unmapped
+        self.assertEqual(sum(v["open_lines"] for v in rows.values()), 9)
+
+    def test_chase_nets_credits_and_quiet_customers_are_the_ones_gone_90_days(self):
+        import datetime as dt
+        from decimal import Decimal
+
+        import psycopg
+        db, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, db)
+        by_id = {s.id: s for s in ins.builtin()}
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            today = pg.execute("SELECT (now() AT TIME ZONE 'America/New_York')::date"
+                               ).fetchone()[0]
+            pg.execute("CREATE TABLE customer_balances (customer text, customer_code text, "
+                       "amount_due_currency text, amount_due numeric, days_overdue int, "
+                       "document_type text, due_date date)")
+            pg.execute("CREATE TABLE customers (customer_code text, contact_person text, "
+                       "email text, phone text, salesperson text)")
+            for row in (("A", "a", "CAD", 1000, 75), ("A", "a", "CAD", -200, 10),
+                        ("A", "a", "CAD", 500, 0), ("B", "b", "CAD", 300, 5),
+                        ("B", "b", "USD", 50, 0), ("C", "c", "CAD", 900, 0)):
+                pg.execute("INSERT INTO customer_balances VALUES (%s, %s, %s, %s, %s, 'inv', "
+                           "%s)", (*row, today - dt.timedelta(days=row[4])))
+            pg.execute("ALTER TABLE customers ADD COLUMN name text, ADD COLUMN handle text")
+            # one code on three customer rows (live 11-21: PETSUP10): one row per balance,
+            # the contact of the row with the balance's own name, never another's
+            pg.execute("INSERT INTO customers VALUES "
+                       "('a', 'Other', 'other@x.example', '2', 'S2', 'Other Co', 'h1'), "
+                       "('a', 'Ann', 'ann@a.example', '1', 'S1', 'A', 'h2'), "
+                       "('a', 'Third', 'third@x.example', '3', 'S3', 'Third Co', 'h3'), "
+                       "('b', 'Bo', 'bo@x.example', '4', 'S4', 'Not B', 'h4'), "
+                       "('b', 'Bea', 'bea@x.example', '5', 'S5', 'Also not B', 'h5')")
+            cur = pg.execute(by_id["receivables_to_chase"].sql)
+            cols = [c.name for c in cur.description]
+            chase = [dict(zip(cols, r)) for r in cur.fetchall()]
+            self.assertEqual([(r["customer"], r["currency"], r["overdue"]) for r in chase],
+                             [("A", "CAD", Decimal("800.00")), ("B", "CAD", Decimal("300.00"))])
+            self.assertEqual((chase[0]["overdue_over_60"], chase[0]["oldest_days_overdue"],
+                              chase[0]["overdue_documents"], chase[0]["owed_in_total"],
+                              chase[0]["email"]),
+                             (Decimal("1000.00"), 75, 1, Decimal("1300.00"), "ann@a.example"))
+            # a shared code with no row of the balance's name: no contact at all
+            self.assertIsNone(chase[1]["email"])
+
+            pg.execute("CREATE TABLE sales_invoice_lines (customer text, customer_chain text, "
+                       "revenue_currency text, invoice_date date, revenue numeric, "
+                       "pilot boolean)")
+            for row in (("Quiet", "Ch", "CAD", 120, 100), ("Quiet", "Ch", "CAD", 200, 50),
+                        ("Quiet", "Ch", "USD", 300, 7), ("Busy", "Ch", "CAD", 10, 5),
+                        ("Busy", "Ch", "CAD", 200, 5), ("Gone", None, "CAD", 500, 99),
+                        ("Pilot", None, "CAD", 120, 1)):
+                pg.execute("INSERT INTO sales_invoice_lines VALUES (%s, %s, %s, %s, %s, %s)",
+                           (row[0], row[1], row[2], today - dt.timedelta(days=row[3]), row[4],
+                            row[0] == "Pilot"))
+            cur = pg.execute(by_id["customers_lost"].sql)
+            cols = [c.name for c in cur.description]
+            lost = [dict(zip(cols, r)) for r in cur.fetchall()]
+        self.assertEqual([(r["customer"], r["currency"], r["revenue_in_the_year_before"],
+                           r["days_since_last_invoice"], r["chain_still_invoiced"])
+                          for r in lost],
+                         [("Quiet", "CAD", Decimal("150.00"), 120, True),
+                          ("Quiet", "USD", Decimal("7.00"), 120, True)])
+
+
 class OutlookClock(unittest.TestCase):
     def test_the_outlook_reads_the_month_in_the_company_time_zone_in_the_evening(self):
         """At 9 PM in Toronto on 30 Nov the UTC date is already 1 Dec: the tile still reads
@@ -320,6 +487,10 @@ class Mixin(unittest.TestCase):
         b = Backend(sql_out(self.rows, OUTPUT), everyone=False, me=frozenset({ME}))
         listed = b.insights_list(reader("ana"))
         self.assertEqual(listed.scope, "self")
+        # the agreed measures' definitions are the same for every reader: no figure in them
+        from operating import measures
+        self.assertEqual({x.id for x in listed.measures}, set(measures.measures()))
+        self.assertTrue(all(x.definition and x.owner and x.ask for x in listed.measures))
         full = [s.id for s in ins.builtin() if s.scope == "full"]
         self.assertTrue(full)
         self.assertFalse({i.id for i in listed.items} & set(full))
@@ -846,6 +1017,46 @@ class AskChartKeepsItsStatement(unittest.TestCase):
         self.assertEqual(drawn[0]["series"], [{"name": "total", "values": [3.0]}])
         m.AskChart(**drawn[0])
 
+    def test_a_measure_chart_keeps_its_statement_and_definition_and_a_forecast_keeps_none(self):
+        """A chart of a plx.sql measure result pins (its statement reads again as whoever
+        opens it) and says what its numbers mean; a forecast's rows are more than its
+        statement reads, so it is not pinned as if they were."""
+        from operator_api.simple_ask import charts
+        from operating import measures
+        sql, entry = measures.statement("revenue", "customer")
+        out = sql_out([["A", "CAD", 3, 1, 0, 100]], ("customer", "revenue_currency", "value",
+                                                       "row_count", "unread_cells",
+                                                       "share_pct"))
+        text = ('Top.\n```chart\n{"type": "bar", "title": "T", "result": "sql://r", '
+                '"x": "customer", "y": ["value"]}\n```\n')
+
+        def drawn(args, entry):
+            # the session's result carries the entry's text as source text (envelopes), as
+            # the live host sends it: the chart reads none of it
+            wrapped = {k: ({"untrusted_text": v} if isinstance(v, str) else v)
+                       for k, v in entry.items()}
+            events = [{"type": "tool_call", "name": "plx.sql", "is_error": False,
+                       "arguments": args, "result": json.dumps({**out, "measure": wrapped})}]
+            return charts(text, events)[1][0]
+
+        got = drawn({"measure": "revenue", "by": "customer"}, entry)
+        self.assertEqual(got["sql"], sql)
+        self.assertEqual((got["measure"]["id"], got["measure"]["definition"]),
+                         ("revenue", entry["definition"]))
+        m.AskChart(**got)
+        got = drawn({"measure": "revenue", "forecast": 3}, {**entry, "forecast": {}})
+        self.assertIsNone(got["sql"])
+        self.assertEqual(got["measure"]["id"], "revenue")
+        m.AskChart(**got)
+        # a {"sql"} call's chart keeps its own statement, whatever its result says
+        events = [{"type": "tool_call", "name": "plx.sql", "is_error": False,
+                   "arguments": {"sql": "SELECT 1"},
+                   "result": json.dumps({**out, "measure": {"id": "x", "definition": "y",
+                                                            "sql": "SELECT 2"}})}]
+        got = charts(text, events)[1][0]
+        self.assertEqual(got["sql"], "SELECT 1")
+        self.assertIsNone(got.get("measure"))
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1213,6 +1424,24 @@ class UnusualStatement(unittest.TestCase):
             cur = conn.execute(ins.unusual_sql(entry, 7) + " ORDER BY part")
             cols = [d.name for d in cur.description]
             return {r[0]: dict(zip(cols, r)) for r in cur.fetchall()}
+
+    def test_a_rate_measure_is_watched_on_its_rate_not_on_what_it_is_a_rate_of(self):
+        """A rate (``rate_where``: the share of its rows meeting it): each period's value is
+        the percentage, never the row count it divides by."""
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute("DROP TABLE IF EXISTS r")
+            conn.execute("CREATE TABLE r (at timestamptz, part text, bad boolean)")
+            for ago, (n, bad) in enumerate([(10, 5), (10, 1), (20, 2), (10, 1), (30, 3)]):
+                for i in range(n):
+                    conn.execute("INSERT INTO r VALUES (now() - make_interval(days => %s), "
+                                 "'x', %s)", (1 + 7 * ago, i < bad))
+            entry = {"per": "", "date": "at", "where": "", "view": "r",
+                     "value": "count(*)", "rate_where": "bad"}
+            cur = conn.execute(ins.unusual_sql(entry, 7))
+            row = dict(zip([d.name for d in cur.description], cur.fetchone()))
+        self.assertEqual(float(row["current"]), 50.0)
+        self.assertEqual(float(row["usual"]), 10.0)
+        self.assertEqual(int(row["periods_before"]), 4)
 
     def test_the_latest_period_is_judged_against_the_spread_of_the_earlier_ones(self):
         got = self.rows({"a": [10, 5, 6, 5, 4, 6], "b": [5, 5, 6, 5, 4, 6]})

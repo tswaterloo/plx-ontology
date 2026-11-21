@@ -105,10 +105,74 @@ function PinChart({ chart, question }: { chart: AskChart; question: string }) {
   );
 }
 
+/** Pin every chart of an answer at once: the answer becomes a set of live charts on Insights. */
+function PinAll({ charts, question }: { charts: AskChart[]; question: string }) {
+  const [state, setState] = useState<"idle" | "saving" | "pinned" | "failed">("idle");
+  const [problem, setProblem] = useState("");
+  const pinnable = charts.filter((c) => c.sql);
+  if (pinnable.length < 2) return null;
+  const pin = async () => {
+    setState("saving");
+    try {
+      for (const chart of pinnable) {
+        await saveInsight({
+          title: (chart.title || question).slice(0, 160) || "Pinned chart",
+          question: question.slice(0, 2000),
+          sql: chart.sql ?? "",
+          chart: chart.spec ?? { kind: chart.kind, x: chart.x, y: chart.series.map((s) => s.name) },
+          schedule: "",
+          notify: "never",
+        });
+      }
+      setState("pinned");
+    } catch (err) {
+      setProblem(plainError(err));
+      setState("failed");
+    }
+  };
+  return (
+    <div className="text-[12px]">
+      {state === "pinned" ? (
+        <Link href="/insights" className="text-accent hover:underline">All {pinnable.length} charts pinned to your charts</Link>
+      ) : (
+        <button type="button" onClick={pin} disabled={state === "saving"} className="h-7 rounded-md border border-border px-2 font-medium hover:bg-hover cursor-pointer disabled:opacity-50">
+          {state === "saving" ? "Pinning" : `Pin all ${pinnable.length} charts`}
+        </button>
+      )}
+      {state === "failed" && <span className="ml-2 text-muted">{problem}</span>}
+    </div>
+  );
+}
+
+/** What a chart's numbers mean and how they were read: the agreed measure's definition, then
+ * the period and the statement itself, a click away. */
+function HowComputed({ chart }: { chart: AskChart }) {
+  const m = chart.measure;
+  if (!m && !chart.sql) return null;
+  return (
+    <div className="space-y-1 text-[12px] text-muted" data-testid="chart-definition">
+      {m && (
+        <p>
+          <span className="font-medium text-fg">{m.name}</span>
+          {m.owner ? <span> ({m.owner})</span> : null}: {m.definition}
+        </p>
+      )}
+      {chart.sql && (
+        <details>
+          <summary className="cursor-pointer underline-offset-2 hover:underline">How this was worked out</summary>
+          {m?.period && <p className="mt-1">Period: {m.period}</p>}
+          <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border p-2 font-mono text-[11px] text-fg">{chart.sql}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export function AnswerCharts({ charts, question, caption = true }: { charts: AskChart[]; question?: string; caption?: boolean }) {
   if (charts.length === 0) return null;
   return (
     <div className="space-y-6" data-testid="answer-charts">
+      {question !== undefined && <PinAll charts={charts} question={question} />}
       {charts.map((c, i) => <OneChart key={i} chart={c} question={question} caption={caption} />)}
     </div>
   );
@@ -125,6 +189,7 @@ function OneChart({ chart, question, caption }: { chart: AskChart; question?: st
         <ChartSaves chart={chart} figure={figure} />
         {question !== undefined && <PinChart chart={chart} question={question} />}
       </div>
+      {question !== undefined && <HowComputed chart={chart} />}
     </figure>
   );
 }

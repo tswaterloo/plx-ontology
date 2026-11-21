@@ -39,6 +39,16 @@ def _variants():
             yield m["id"], {"by": "month", "period": "2026-Q3"}
             yield m["id"], {"compare": True, "by": m["dimensions"][0], "period": "2026-09"}
             yield m["id"], {"period": "2026-08-04..2026-08-17", "against": "2025"}
+            yield m["id"], {"unusual": True}
+            yield m["id"], {"by": "*", "compare": True}
+            yield m["id"], {"by": "*", "compare": True, "period": "2026-09",
+                            "filter": {m["dimensions"][0]: "x"}}
+            yield m["id"], {"unusual": True, "by": m["dimensions"][0], "days": 30}
+            yield m["id"], {"compare": True, "by": m["dimensions"][0], "period": "2026-09",
+                            "filter": {m["dimensions"][-1]: ["O'Neil & Co", "x"]}}
+        yield m["id"], {"by": m["dimensions"][0], "filter": {m["dimensions"][0]: "x"}}
+    yield measures.SCAN, {"unusual": True}
+    yield measures.SCAN, {"unusual": True, "days": 30}
     for r in measures.reports():
         yield r, {}
 
@@ -49,7 +59,8 @@ class Catalogue(unittest.TestCase):
         for m in measures.measures().values():
             cols = set(views[m["view"]]["columns"])
             named = set(m["dimensions"]) | {c for c in (m["per"], m["date"]) if c}
-            named |= set(re.findall(r"\((?:DISTINCT )?([a-z_]+)\)", m["value"])) - {"distinct"}
+            for agg in (m["value"], m.get("rate_value") or ""):
+                named |= set(re.findall(r"\((?:DISTINCT )?([a-z_]+)\)", agg)) - {"distinct"}
             self.assertLessEqual(named, cols, m["id"])
             for field in ("id", "name", "definition", "owner", "unit"):
                 self.assertTrue(m[field], (m["id"], field))
@@ -107,6 +118,7 @@ class Catalogue(unittest.TestCase):
     def test_what_the_catalogue_does_not_hold_is_refused(self):
         snapshot = next(m["id"] for m in measures.measures().values() if not m["date"])
         dated = next(m["id"] for m in measures.measures().values() if m["date"])
+        DIM = measures.measures()[dated]["dimensions"][0]
         report = next(iter(measures.reports()))
         bad = [("no_such_measure", {}), (True, {}), (None, {}), (dated, {"by": "handle"}),
                (dated, {"by": "customer; DROP TABLE x"}), (dated, {"by": 3}),
@@ -123,11 +135,95 @@ class Catalogue(unittest.TestCase):
                (dated, {"period": "2026-09", "days": 30}), (dated, {"against": "2026-08"}),
                (dated, {"period": "2026-09", "against": "2026-09-15..2026-10-15"}),
                (dated, {"period": "2026-09", "by": "month", "compare": True}),
-               (snapshot, {"period": "2026-09"}), (report, {"period": "2026-09"})]
+               (snapshot, {"period": "2026-09"}), (report, {"period": "2026-09"}),
+               # a filter: only the measure's own dimensions and plain text values
+               (dated, {"filter": {"handle": "x"}}), (dated, {"filter": {"month": "x"}}),
+               (dated, {"filter": "customer = 'x'"}), (dated, {"filter": {}}),
+               (dated, {"filter": {DIM: 3}}), (dated, {"filter": {DIM: ""}}),
+               (dated, {"filter": {DIM: "a\\' OR true --"}}), (dated, {"filter": {DIM: "a\nb"}}),
+               (dated, {"filter": {DIM: ["x"] * 21}}), (dated, {"filter": {DIM: [None]}}),
+               (report, {"filter": {DIM: "x"}}),
+               # unusual: a dated measure's own periods, never with compare or a period
+               (dated, {"unusual": "yes"}), (dated, {"unusual": True, "compare": True}),
+               (dated, {"unusual": True, "period": "2026-09"}),
+               (dated, {"unusual": True, "by": "month"}), (snapshot, {"unusual": True}),
+               (report, {"unusual": True}), (measures.SCAN, {}),
+               (measures.SCAN, {"unusual": True, "by": DIM}),
+               (measures.SCAN, {"unusual": True, "filter": {DIM: "x"}}),
+               (dated, {"by": "*"}), (dated, {"by": "*", "unusual": True}),
+               (snapshot, {"by": "*", "compare": True})]
         for name, opts in bad:
             with self.assertRaises(ToolError, msg=(name, opts)) as caught:
                 measures.statement(name, **opts)
             self.assertEqual(caught.exception.code, "invalid_request")
+        # a forecast: the next 1..12 months (1..26 weeks) of a dated measure only
+        for name, horizon, opts in ((dated, 0, {}), (dated, 13, {}), (dated, "3", {}),
+                                    (dated, True, {}), (dated, 27, {"by": "week"}),
+                                    (dated, 3, {"by": DIM}), (snapshot, 3, {}),
+                                    (report, 3, {}), ("nope", 3, {}),
+                                    (dated, 3, {"filter": {"handle": "x"}})):
+            with self.assertRaises(ToolError, msg=(name, horizon, opts)):
+                measures.forecast_statement(name, horizon, **opts)
+        tool = sqlt.SqlTool(base=None)
+        for args in ({"measure": dated, "forecast": 3, "days": 30},
+                     {"measure": dated, "forecast": 3, "compare": True},
+                     {"measure": dated, "forecast": 3, "period": "2026-09"},
+                     {"measure": dated, "forecast": 3, "unusual": True},
+                     {"sql": "SELECT 1", "filter": {DIM: "x"}}, {"unusual": True},
+                     {"describe": True, "forecast": 3}):
+            self.assertEqual(tool.call("plx.sql", args, FULL)["error"]["code"],
+                             "invalid_request", args)
+
+    def test_the_scan_of_every_measure_is_one_checked_statement(self):
+        """Every dated measure in one statement under plx.sql's 8,000-character limit
+        (21 one-measure statements were 21,140 characters): one row per measure and
+        currency, the snapshots named as not judged."""
+        sql, entry = measures.statement(measures.SCAN, unusual=True)
+        sqlt.check(sql, allowed_schema="")
+        # SETS is a keyword only right after GROUPING: never a way past the function list
+        sqlt.check("SELECT a, count(*) FROM t GROUP BY GROUPING SETS ((a), ())",
+                   allowed_schema="")
+        for bad in ("SELECT sets(1)", "SELECT x FROM t GROUP BY sets (a)"):
+            with self.assertRaises(ToolError, msg=bad):
+                sqlt.check(bad, allowed_schema="")
+        for m in measures.measures().values():
+            self.assertEqual(f"'{m['id']}'," in sql, bool(m["date"]), m["id"])
+            if not m["date"]:
+                self.assertIn(m["id"], entry["definition"])
+
+    def test_a_forecast_states_its_method_band_and_holdout_and_refuses_what_it_cannot(self):
+        """From the history rows alone (demand_forecast's method): the forecast runs from
+        the current month on, each with its 80% band, and the holdout scores the same rule
+        on the last months; a series below zero or with a withheld cell is not forecast
+        (said), never guessed."""
+        today = dt.date(2026, 11, 21)
+        sql, entry = measures.forecast_statement("revenue", 3, today=today)
+        self.assertIn("'2023-11-01 00:00 America/New_York'", sql)   # 36 full months
+        self.assertIn("'2026-11-01 00:00 America/New_York'", sql)   # this month left out
+        rows, month = [], dt.date(2023, 11, 1)
+        while month < dt.date(2026, 11, 1):
+            for cur, base in (("CAD", 1000), ("USD", -5), ("EUR", 50)):
+                rows.append([month, cur, Decimal(base + 10 * (month.month % 4)), 3,
+                             1 if cur == "EUR" and month.month == 5 else 0])
+            month = measures._months_on(month, 1)
+        cols = ["month", "revenue_currency", "value", "row_count", "unread_cells"]
+        got_cols, got, cite = measures.forecasted(cols, rows, entry, today=today)
+        self.assertEqual(got_cols, ["month", "revenue_currency", "value", "kind", "low_80",
+                                    "high_80"])
+        ahead = [r for r in got if r[3] == "forecast"]
+        self.assertEqual([(r[0], r[1]) for r in ahead],
+                         [("2026-11-01", "CAD"), ("2026-12-01", "CAD"), ("2027-01-01", "CAD")])
+        for r in ahead:
+            self.assertLessEqual(Decimal(r[4]), Decimal(r[2]))
+            self.assertLessEqual(Decimal(r[2]), Decimal(r[5]))
+        self.assertEqual(len([r for r in got if r[3] == "actual"]), len(rows))   # none lost
+        said = {s["revenue_currency"]: s for s in cite["series"]}
+        self.assertEqual(said["CAD"]["history"]["periods"], 36)
+        self.assertEqual(said["CAD"]["holdout"]["periods"], 3)
+        self.assertIn("naive_mae", said["CAD"]["holdout"])
+        self.assertIn("below zero", said["USD"]["not_forecast"])
+        self.assertIn("may not read", said["EUR"]["not_forecast"])
+        self.assertIn("holdout", cite["method"])
 
     def test_plx_sql_takes_one_mode_and_the_measure_arguments_only_with_measure(self):
         tool = sqlt.SqlTool(base=None)
@@ -500,6 +596,168 @@ class MeasureDoor(unittest.TestCase):
                                          or not _true(row["covered"]), (m["id"], days, row))
                         unread += int(row["unread_cells"])
         self.assertGreater(unread, 0)   # the fixture's finance marks reach a comparison
+
+
+    def raw(self, sql, actor=FULL):
+        out = self.call({"sql": sql}, actor)
+        return [dict(zip(out["columns"], r)) for r in self.rows(out)]
+
+    def test_a_filter_keeps_the_parts_it_names_and_each_reader_sees_what_sql_gives(self):
+        """A follow-up's slice ("just that customer") is the earlier breakdown's own part,
+        however the name is cased or padded; a name matching nothing is no rows (never a
+        0); a quote in a name is a name, not SQL; each reader gets what the same statement
+        sent as SQL gives them."""
+        span = "2000-01-01..2099-12-31"
+        whole = self.call({"measure": "revenue", "by": "customer", "period": span}, FULL)
+        parts = [dict(zip(whole["columns"], r)) for r in self.rows(whole)]
+        named = next(p["customer"] for p in parts if p["customer"] and p["value"] is not None)
+        name = named if isinstance(named, str) else named["untrusted_text"]
+        want = {p["revenue_currency"]: p["value"] for p in parts if p["customer"] == named}
+        for typed in (name, f"  {name.upper()} "):
+            out = self.call({"measure": "revenue", "period": span,
+                             "filter": {"customer": typed}}, FULL)
+            got = {r["revenue_currency"]: r["value"]
+                   for r in (dict(zip(out["columns"], x)) for x in self.rows(out))}
+            self.assertEqual(got, want, typed)
+            self.assertEqual(out["measure"]["filter"], {"customer": typed})
+        for typed in ("no such customer", "O'Neil'; DROP TABLE x; --"):
+            out = self.call({"measure": "revenue", "period": span,
+                             "filter": {"customer": typed}}, FULL)
+            self.assertEqual(self.rows(out), [], typed)
+        for actor in (FULL, OPS, NOBODY):
+            args = {"measure": "revenue", "period": span, "by": "item_code",
+                    "filter": {"customer": [name, "x"]}}
+            sql, _ = measures.statement("revenue", "item_code", None, False, span, None,
+                                        {"customer": [name, "x"]})
+            self.assertEqual(self.rows(self.call(args, actor)),
+                             self.rows(self.call({"sql": sql}, actor)), actor)
+
+    def test_a_rate_is_its_numerator_over_its_denominator_from_the_raw_rows(self):
+        """The share of open orders that are late and of receivables overdue (per currency),
+        computed again here from the raw rows: never summed across currencies, the
+        numerator and denominator beside the rate."""
+        orders = self.raw("SELECT order_number, status, order_type, of_record, days_late "
+                          "FROM sales_orders")
+        kept = {o["order_number"] for o in orders if o["status"] == "open"
+                and o["order_type"] != "quote" and _true(o["of_record"])}
+        late = {o["order_number"] for o in orders if o["order_number"] in kept
+                and o["days_late"] is not None and int(o["days_late"]) > 0}
+        self.assertTrue(kept)
+        out = self.call({"measure": "late_order_share"}, FULL)
+        row = dict(zip(out["columns"], self.rows(out)[0]))
+        self.assertEqual((int(row["numerator"]), int(row["denominator"])), (len(late), len(kept)))
+        self.assertEqual(Decimal(str(row["value"])),
+                         (Decimal(100 * len(late)) / len(kept)).quantize(Decimal("0.01")))
+        docs = self.raw("SELECT amount_due, amount_due_currency, days_overdue "
+                        "FROM customer_balances")
+        want = {}
+        for d in docs:
+            if d["amount_due"] is None:
+                continue
+            num, den = want.get(d["amount_due_currency"], (Decimal(0), Decimal(0)))
+            amt = Decimal(str(d["amount_due"]))
+            over = d["days_overdue"] is not None and int(d["days_overdue"]) > 0
+            want[d["amount_due_currency"]] = (num + (amt if over else 0), den + amt)
+        out = self.call({"measure": "receivables_overdue_share"}, FULL)
+        got = {r["amount_due_currency"]: r for r in (dict(zip(out["columns"], x))
+                                                     for x in self.rows(out))}
+        self.assertEqual(set(got), set(want))
+        for cur, (num, den) in want.items():
+            self.assertEqual(Decimal(str(got[cur]["numerator"])), num, cur)
+            self.assertEqual(Decimal(str(got[cur]["denominator"])), den, cur)
+            if den:
+                self.assertEqual(Decimal(str(got[cur]["value"])),
+                                 (100 * num / den).quantize(Decimal("0.01")), cur)
+
+    def test_unusual_is_the_raw_periods_arithmetic_and_the_scan_agrees(self):
+        """The latest period against the earlier ones from the raw rows (each invoice's age
+        read once, bucketed, empty periods inside the source's reach 0); the scan of every
+        measure gives the same figures for this one."""
+        import statistics
+        days = 400
+        ages = self.raw("SELECT invoice_number, extract(epoch FROM now() - invoice_date) AS s "
+                        "FROM sales_invoices WHERE NOT pilot AND invoice_date <= now() AND "
+                        f"invoice_date > now() - interval '{days * 13} days'")
+        buckets: dict = {}
+        for a in ages:
+            buckets.setdefault(int(float(a["s"]) // (days * 86400)), set()).add(a["invoice_number"])
+        self.assertTrue(buckets)
+        reach = max(buckets)
+        values = [len(buckets.get(i, ())) for i in range(reach + 1)]
+        out = self.call({"measure": "invoices_issued", "unusual": True, "days": days}, FULL)
+        row = dict(zip(out["columns"], self.rows(out)[0]))
+        self.assertEqual(int(row["current"]), values[0])
+        self.assertEqual(int(row["periods_before"]), reach)
+        if reach >= 1:
+            self.assertEqual(Decimal(str(row["usual"])),
+                             Decimal(statistics.mean(values[1:])).quantize(Decimal("0.01")))
+        if reach >= 2:
+            self.assertAlmostEqual(float(row["spread"]), statistics.stdev(values[1:]), delta=0.01)
+        scan = self.call({"measure": measures.SCAN, "unusual": True, "days": days}, FULL)
+        mine = [dict(zip(scan["columns"], r)) for r in self.rows(scan)
+                if r[0] == "invoices_issued"]
+        self.assertEqual(len(mine), 1)
+        for k in ("current", "usual", "spread", "periods_before", "unusual"):
+            self.assertEqual(mine[0][k], row[k], k)
+        # a view this store does not serve (the fixture builds no comms_findings) leaves
+        # its measures out, named, never the whole scan
+        self.assertIn("comms_findings", scan["measure"]["not_read"])
+        self.assertIn("complaints_count", scan["measure"]["not_read"])
+        sql = scan["measure"]["sql"]
+        self.assertNotIn("comms_findings", sql)
+        for actor in (OPS, NOBODY):   # each reader: what the same statement gives them
+            self.assertEqual(self.rows(self.call({"measure": measures.SCAN, "unusual": True,
+                                                  "days": days}, actor)),
+                             self.rows(self.call({"sql": sql}, actor)), actor)
+
+    def test_a_forecast_carries_its_history_rows_unchanged_and_a_reader_with_nothing_none(self):
+        out = self.call({"measure": "invoices_issued", "forecast": 2}, FULL)
+        self.assertNotIn("error", out, out)
+        self.assertEqual(out["columns"], ["month", "value", "kind", "low_80", "high_80"])
+        plan = out["measure"]["forecast"]
+        hist = self.call({"measure": "invoices_issued", "by": "month",
+                          "period": f"{plan['history_from']}..{plan['history_to']}"}, FULL)
+        want = [(str(r[0])[:10], r[1]) for r in self.rows(hist)]
+        got = [(str(r[0])[:10], r[1]) for r in self.rows(out) if r[2] == "actual"]
+        self.assertEqual(got, want)
+        for s in plan["series"]:
+            self.assertTrue("not_forecast" in s or "holdout" in s, s)
+        empty = self.call({"measure": "invoices_issued", "forecast": 2}, NOBODY)
+        self.assertTrue(all(r[1] in (None, "0", 0) for r in self.rows(empty)), self.rows(empty))
+        self.assertFalse([r for r in self.rows(empty) if r[2] == "forecast"])
+
+    def test_every_dimension_at_once_is_each_one_dimension_breakdown(self):
+        """by "*": for each dimension the same largest parts as that dimension's own
+        breakdown and an "All others" row, so each dimension's rows add up to the whole
+        change per currency (one call where a why answer made one per dimension)."""
+        days = self.covered_days("revenue", FULL)
+        whole = self.call({"measure": "revenue", "compare": True, "days": days}, FULL)
+        total = {dict(zip(whole["columns"], r))["revenue_currency"]:
+                 dict(zip(whole["columns"], r))["change"] for r in self.rows(whole)}
+        out = self.call({"measure": "revenue", "by": "*", "compare": True, "days": days}, FULL)
+        rows = [dict(zip(out["columns"], r)) for r in self.rows(out)]
+        dims = measures.measures()["revenue"]["dimensions"]
+        self.assertEqual({r["dimension"] for r in rows}, set(dims))
+        for dim in dims:
+            for cur, want in total.items():
+                mine = [r for r in rows if r["dimension"] == dim and r["revenue_currency"] == cur]
+                if want is None:
+                    continue
+                self.assertEqual(sum(Decimal(str(r["change"])) for r in mine),
+                                 Decimal(str(want)), (dim, cur))
+            one = self.call({"measure": "revenue", "by": dim, "compare": True, "days": days},
+                            FULL)
+            parts = {(str(r[0]), r[1]): r for r in self.rows(one)
+                     if not str(r[0]).startswith("All others")}
+            for r in rows:
+                if r["dimension"] == dim and not str(r["part"]).startswith("All others"):
+                    got = parts[(str(r["part"]), r["revenue_currency"])]
+                    self.assertEqual(dict(zip(one["columns"], got))["change"], r["change"])
+        for actor in (OPS, NOBODY):
+            sql, _ = measures.statement("revenue", "*", days, True)
+            self.assertEqual(self.rows(self.call({"measure": "revenue", "by": "*",
+                                                  "compare": True, "days": days}, actor)),
+                             self.rows(self.call({"sql": sql}, actor)), actor)
 
 
 if __name__ == "__main__":

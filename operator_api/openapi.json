@@ -1885,6 +1885,17 @@
             "title": "Labels",
             "type": "array"
           },
+          "measure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskChartMeasure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agreed measure or report its rows are, with its definition."
+          },
           "omitted": {
             "description": "Series (split values, panels) not drawn.",
             "title": "Omitted",
@@ -2037,6 +2048,41 @@
           "series"
         ],
         "title": "AskChart",
+        "type": "object"
+      },
+      "AskChartMeasure": {
+        "additionalProperties": false,
+        "description": "The catalogue entry a chart's result answers (``operating.measures``).",
+        "properties": {
+          "definition": {
+            "title": "Definition",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "default": "",
+            "title": "Owner",
+            "type": "string"
+          },
+          "period": {
+            "default": "",
+            "title": "Period",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "definition"
+        ],
+        "title": "AskChartMeasure",
         "type": "object"
       },
       "AskChartPanel": {
@@ -2252,8 +2298,16 @@
       },
       "AskDocument": {
         "additionalProperties": false,
-        "description": "A file the Ask made for you: its name, kind, size and download link.",
+        "description": "A file the Ask made for you: its name, kind, size and download link; for an edited\ncopy or a redline, every change in it (before and after) to review before using it.",
         "properties": {
+          "changes": {
+            "description": "An edited copy's or a redline's changes, in order (empty for a new file).",
+            "items": {
+              "$ref": "#/components/schemas/AskDocumentChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
           "download_url": {
             "title": "Download Url",
             "type": "string"
@@ -2285,6 +2339,31 @@
           "download_url"
         ],
         "title": "AskDocument",
+        "type": "object"
+      },
+      "AskDocumentChange": {
+        "additionalProperties": false,
+        "description": "One change in an edited copy: where (a paragraph, slide, cell or form blank), the\ntext as it was and as it is in the copy.",
+        "properties": {
+          "after": {
+            "default": "",
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "default": "",
+            "title": "Before",
+            "type": "string"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "AskDocumentChange",
         "type": "object"
       },
       "AskDraft": {
@@ -11943,6 +12022,14 @@
             "title": "Items",
             "type": "array"
           },
+          "measures": {
+            "description": "The agreed measures Ask and the charts use, with their definitions.",
+            "items": {
+              "$ref": "#/components/schemas/MeasureInfo"
+            },
+            "title": "Measures",
+            "type": "array"
+          },
           "saving": {
             "description": "Whether you can pin and save insights here.",
             "title": "Saving",
@@ -14744,6 +14831,76 @@
           "data_label"
         ],
         "title": "Me",
+        "type": "object"
+      },
+      "MeasureInfo": {
+        "additionalProperties": false,
+        "description": "One agreed business measure (``operating/measures.json``): its definition only, no\nfigure. The same for every reader: what it reads is decided when it runs.",
+        "properties": {
+          "ask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A question it answers, to try in Ask.",
+            "title": "Ask"
+          },
+          "definition": {
+            "title": "Definition",
+            "type": "string"
+          },
+          "dimensions": {
+            "description": "What it can be broken down by.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Who agrees the definition (Finance, Quality, ...).",
+            "title": "Owner",
+            "type": "string"
+          },
+          "period": {
+            "description": "The period it reads when none is named.",
+            "title": "Period",
+            "type": "string"
+          },
+          "source": {
+            "description": "The business view it is read from.",
+            "title": "Source",
+            "type": "string"
+          },
+          "unit": {
+            "description": "money, count, quantity or percent.",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "definition",
+          "owner",
+          "unit",
+          "source",
+          "dimensions",
+          "period"
+        ],
+        "title": "MeasureInfo",
         "type": "object"
       },
       "MeetingFollowUp": {

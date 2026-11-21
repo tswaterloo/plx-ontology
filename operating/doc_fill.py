@@ -726,6 +726,13 @@ class _Xlsx(_Doc):
         for name, part in self.sheets:
             self._read(name, part, shared)
 
+    def _is_date(self, style: int) -> bool:
+        from operating.doc_edit import _date_style
+        known = self.__dict__.setdefault("_dates", {})
+        if style not in known:
+            known[style] = _date_style(self.blob, style)
+        return known[style]
+
     @staticmethod
     def _shared(raw: bytes) -> list[str]:
         root = ET.fromstring(raw)
@@ -763,6 +770,8 @@ class _Xlsx(_Doc):
                 text = "".join(t.text or "" for t in c.iter(_S + "t"))
             else:
                 text = v.text if v is not None and v.text else ""
+                if text and c.get("s") and self._is_date(int(c.get("s") or 0)):
+                    text = _excel_day(text)   # a date cell reads as its date, never a serial
             if not text and c.find(_S + "f") is not None:
                 text = "="              # a formula with no cached value is not a blank
             cells[(int(m.group(2)), column_number(m.group(1)))] = text
@@ -814,6 +823,13 @@ class _Xlsx(_Doc):
             part, ref = self.where[fid]
             parts[part] = _put_cell(parts[part], ref, value)
         return _rezip(self.blob, {p: parts[p] for p in parts if parts[p] is not self.parts[p]})
+
+
+def _excel_day(serial: str) -> str:
+    try:
+        return (dt.date(1899, 12, 30) + dt.timedelta(days=int(float(serial)))).isoformat()
+    except (ValueError, OverflowError):
+        return serial
 
 
 def _put_cell(xml: bytes, ref: str, value: str) -> bytes:

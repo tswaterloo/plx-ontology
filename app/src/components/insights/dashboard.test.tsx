@@ -105,6 +105,37 @@ describe("insights dashboard", () => {
     expect(saveInsight).toHaveBeenCalledWith({ title: "Top customers", question: "top customers this year", sql: "SELECT customer, total FROM t", chart: { kind: "bar", x: "customer", y: ["total"] }, schedule: "", notify: "never" });
   });
 
+  it("pins every chart of an answer at once, each with its own statement, and shows what a measure's numbers mean", async () => {
+    const chart = { kind: "bar" as const, title: "Revenue by customer", x: "customer", labels: ["A"], series: [{ name: "value", values: [3] }], as_of: null, sql: "SELECT customer, value FROM t",
+      measure: { id: "revenue", name: "Revenue invoiced", definition: "Net line revenue on posted sales invoices.", owner: "Finance", period: "2026-10 by invoice_date" } };
+    const second = { ...chart, title: "Revenue by month", sql: "SELECT month, value FROM t", measure: null };
+    render(<AnswerCharts charts={[chart, second, { ...chart, title: "Not pinnable", sql: null }]} question="revenue in october" />);
+    expect(screen.getAllByText("Revenue invoiced")).toHaveLength(2);   // the second has no measure
+    expect(screen.getAllByText(/Net line revenue on posted sales invoices/)).toHaveLength(2);
+    expect(screen.getAllByText("How this was worked out")).toHaveLength(2);
+    expect(screen.getByText("SELECT customer, value FROM t")).toBeTruthy();
+    fireEvent.click(screen.getByText("Pin all 2 charts"));
+    await waitFor(() => expect(screen.getByText("All 2 charts pinned to your charts")).toBeTruthy());
+    expect(saveInsight).toHaveBeenCalledTimes(2);
+    expect(saveInsight.mock.calls.map((c) => (c[0] as { sql: string }).sql)).toEqual(["SELECT customer, value FROM t", "SELECT month, value FROM t"]);
+  });
+
+  it("a single pinnable chart has no pin-all", () => {
+    const chart = { kind: "bar" as const, title: "One", x: "x", labels: ["A"], series: [{ name: "v", values: [1] }], as_of: null, sql: "SELECT 1" };
+    render(<AnswerCharts charts={[chart, { ...chart, sql: null }]} question="q" />);
+    expect(screen.queryByText(/Pin all/)).toBeNull();
+  });
+
+  it("lists the agreed measures with their definitions and a question to try each in Ask", () => {
+    const measures = [{ id: "revenue", name: "Revenue invoiced", definition: "Net line revenue on posted sales invoices.", owner: "Finance", unit: "money", source: "sales_invoice_lines",
+      dimensions: ["customer", "month"], period: "last 30 days by invoice_date", ask: "Why did revenue change last month?" }];
+    render(<InsightsDashboard list={{ ...list, measures }} onChanged={() => {}} />);
+    fireEvent.click(screen.getByText("Show all 1"));
+    expect(screen.getByText("Net line revenue on posted sales invoices.")).toBeTruthy();
+    const link = screen.getByText("Why did revenue change last month?").closest("a");
+    expect(link?.getAttribute("href")).toBe(`/ask?q=${encodeURIComponent("Why did revenue change last month?")}`);
+  });
+
   it("a tile that cannot be read says what is missing, never asks the reader to rephrase it", async () => {
     const said = "This view needs staff.person_id (their directory id), which the business tables on this server don't have yet. It shows once they are next rebuilt.";
     const failed = await apiErrorFrom(new Response(JSON.stringify({ error: { code: "insight_not_built", message: said } }), { status: 503 }));

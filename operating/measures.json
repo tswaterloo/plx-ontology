@@ -19,7 +19,8 @@
     "item_name",
     "line_type"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Why did revenue change last month? Which customers drove it?"
   },
   {
    "id": "gross_margin",
@@ -38,7 +39,8 @@
     "item_code",
     "item_name"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "What was our gross margin percent each month this year, per currency?"
   },
   {
    "id": "units_sold",
@@ -57,7 +59,8 @@
     "item_code",
     "item_name"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Which products sold the most units in the last 90 days?"
   },
   {
    "id": "invoices_issued",
@@ -75,7 +78,8 @@
     "customer_chain",
     "status"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "How many invoices did we issue each week this quarter?"
   },
   {
    "id": "orders_booked",
@@ -95,7 +99,8 @@
     "order_type",
     "status"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "How many orders did each salesperson book last month against the month before?"
   },
   {
    "id": "order_value_booked",
@@ -114,7 +119,8 @@
     "salesperson",
     "status"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "What will order value booked look like over the next 3 months?"
   },
   {
    "id": "open_orders",
@@ -132,7 +138,8 @@
     "customer_chain",
     "salesperson",
     "order_type"
-   ]
+   ],
+   "ask": "How many open orders does each customer have right now?"
   },
   {
    "id": "late_orders",
@@ -150,7 +157,8 @@
     "customer_chain",
     "salesperson",
     "order_type"
-   ]
+   ],
+   "ask": "Which customers have the most late orders right now?"
   },
   {
    "id": "receivables_open",
@@ -168,7 +176,8 @@
     "customer_chain",
     "aging_bucket",
     "document_type"
-   ]
+   ],
+   "ask": "How much do customers owe us in each currency, by aging bucket?"
   },
   {
    "id": "receivables_overdue",
@@ -186,7 +195,8 @@
     "customer_chain",
     "aging_bucket",
     "document_type"
-   ]
+   ],
+   "ask": "Who should we chase first for overdue payments?"
   },
   {
    "id": "payables_open",
@@ -203,7 +213,8 @@
     "supplier",
     "aging_bucket",
     "document_type"
-   ]
+   ],
+   "ask": "What do we owe suppliers right now, by aging bucket?"
   },
   {
    "id": "purchases_ordered",
@@ -222,7 +233,8 @@
     "status",
     "verdict"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Why did purchase order spend change last month? Which suppliers drove it?"
   },
   {
    "id": "purchase_orders_placed",
@@ -241,7 +253,8 @@
     "status",
     "verdict"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "How many POs did each buyer place this quarter?"
   },
   {
    "id": "batches_produced",
@@ -260,7 +273,8 @@
     "production_line",
     "quality_status"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "How many batches did each production line make per month this year?"
   },
   {
    "id": "batches_on_hold",
@@ -278,7 +292,8 @@
     "item_code",
     "production_line",
     "status"
-   ]
+   ],
+   "ask": "Which products have batches on quality hold right now?"
   },
   {
    "id": "stock_on_hand",
@@ -296,7 +311,8 @@
     "item_code",
     "item_type",
     "category"
-   ]
+   ],
+   "ask": "Which finished goods are short against open orders?"
   },
   {
    "id": "mail_received",
@@ -313,7 +329,8 @@
     "sender_domain",
     "owner_role"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Is incoming mail unusual this week against the usual week?"
   },
   {
    "id": "complaints_count",
@@ -332,7 +349,8 @@
     "sender",
     "source"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "What are customers complaining about most in the last 30 days?"
   },
   {
    "id": "requests_count",
@@ -351,7 +369,8 @@
     "sender",
     "source"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "What are customers asking us for most this month?"
   },
   {
    "id": "decisions_count",
@@ -370,7 +389,8 @@
     "sender",
     "source"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "How many decisions were made per week lately, and by whom?"
   },
   {
    "id": "loss_below_cost",
@@ -389,7 +409,8 @@
     "item_code",
     "item_name"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Which customers did we sell to below cost last month?"
   },
   {
    "id": "cost_looks_wrong",
@@ -407,7 +428,8 @@
     "item_code",
     "item_name"
    ],
-   "days": 365
+   "days": 365,
+   "ask": "Which invoice lines have a cost that looks wrong?"
   },
   {
    "id": "customers_invoiced",
@@ -424,7 +446,8 @@
     "customer_chain",
     "status"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Which customers have gone quiet in the last 90 days?"
   },
   {
    "id": "batches_rejected",
@@ -442,7 +465,8 @@
     "item_code",
     "production_line"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "How many batches were rejected this year, by product?"
   },
   {
    "id": "mail_sent",
@@ -458,7 +482,107 @@
    "dimensions": [
     "sender"
    ],
-   "days": 30
+   "days": 30,
+   "ask": "Who sent the most mail last month against the month before?"
+  },
+  {
+   "id": "batch_reject_rate",
+   "name": "Batch reject rate",
+   "owner": "Quality",
+   "unit": "percent",
+   "definition": "Of the batches made (status Realized), by the day they were made, the percent whose quality status is Rejected (numerator: rejected batches; denominator: batches made). Unmade batches carry On-Hold by default and are left out.",
+   "view": "batches",
+   "value": "count(DISTINCT batch_code)",
+   "per": "",
+   "date": "realized_date",
+   "where": "status = 'Realized'",
+   "rate_where": "quality_status = 'Rejected'",
+   "dimensions": [
+    "product",
+    "item_code",
+    "production_line"
+   ],
+   "days": 90,
+   "ask": "What is our batch reject rate this year by production line?"
+  },
+  {
+   "id": "batch_hold_rate",
+   "name": "Batch QC hold rate",
+   "owner": "Quality",
+   "unit": "percent",
+   "definition": "Of the batches made (status Realized), by the day they were made, the percent still on quality hold (quality status On-Hold). Unmade batches carry On-Hold by default and are left out.",
+   "view": "batches",
+   "value": "count(DISTINCT batch_code)",
+   "per": "",
+   "date": "realized_date",
+   "where": "status = 'Realized'",
+   "rate_where": "quality_status = 'On-Hold'",
+   "dimensions": [
+    "product",
+    "item_code",
+    "production_line"
+   ],
+   "days": 90,
+   "ask": "What share of batches made this quarter is still on hold?"
+  },
+  {
+   "id": "batch_yield",
+   "name": "Batch yield",
+   "owner": "Production",
+   "unit": "percent",
+   "definition": "Produced quantity over planned quantity, in percent, of the batches made (status Realized) that state both (planned above 0), by the day they were made: over 100 means more was made than planned.",
+   "view": "batches",
+   "value": "sum(planned_quantity)",
+   "per": "",
+   "date": "realized_date",
+   "where": "status = 'Realized' AND planned_quantity > 0 AND produced_quantity IS NOT NULL",
+   "rate_value": "sum(produced_quantity)",
+   "dimensions": [
+    "product",
+    "item_code",
+    "production_line"
+   ],
+   "days": 90,
+   "ask": "What is our batch yield by production line this quarter?"
+  },
+  {
+   "id": "late_order_share",
+   "name": "Share of open orders that are late",
+   "owner": "Operations",
+   "unit": "percent",
+   "definition": "Of the open customer orders of record (quotes left out), the percent past their required date (days_late above 0), as they stand now.",
+   "view": "sales_orders",
+   "value": "count(DISTINCT order_number)",
+   "per": "",
+   "date": "",
+   "where": "status = 'open' AND order_type IS DISTINCT FROM 'quote' AND of_record",
+   "rate_where": "days_late > 0",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "salesperson",
+    "order_type"
+   ],
+   "ask": "What share of open orders is late right now, per salesperson?"
+  },
+  {
+   "id": "receivables_overdue_share",
+   "name": "Share of receivables overdue",
+   "owner": "Finance",
+   "unit": "percent",
+   "definition": "Of what customers owe (open receivable documents, net of credits), the percent past due (days_overdue above 0), per currency, as it stands now.",
+   "view": "customer_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "",
+   "rate_where": "days_overdue > 0",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "document_type"
+   ],
+   "ask": "What share of our receivables is overdue in each currency?"
   }
  ]
 }

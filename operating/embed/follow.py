@@ -517,9 +517,8 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
             # a bge-m3 copy per child: ~1.9 GB less for the same budgeted batches
             threads = values.get("PLX_EMBED_THREADS") or str(
                 max(1, (os.cpu_count() or 8) // 2))
-            report["embed"] = embed(conn, dict(values, PLX_EMBED_THREADS=threads),
-                                    kinds=None, limit=None, order="recent", workers=1,
-                                    bulk=False, budget_seconds=args.embed_seconds)
+            report["embed"] = _embed_spark_first(
+                args, state, conn, dict(values, PLX_EMBED_THREADS=threads), embed)
             if "pending_after" in report["embed"]:
                 cursor["pending_after"] = report["embed"]["pending_after"]
                 save_cursor(cursor_path, cursor)
@@ -528,6 +527,48 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
                 "SELECT kind, max(occurred_at) FROM search.chunks WHERE occurred_at <= now() "
                 "+ interval '1 hour' GROUP BY kind ORDER BY kind").fetchall()}
         conn.close()
+
+
+def _embed_spark_first(args: argparse.Namespace, state: Path, conn: Any,
+                       values: dict[str, str], embed: Callable[..., dict[str, Any]]
+                       ) -> dict[str, Any]:
+    """Step 3 on a fit Spark GPU (``spark_embed``) unless ``--embed-here``; no fit host, none
+    that starts, or one failing part way: here, on the box's CPU, for the budget left."""
+    from . import spark_embed
+    budget = float(args.embed_seconds)
+    started = _clock()
+    kw = dict(kinds=None, limit=None, order="recent", workers=1, bulk=False)
+    events: list[dict] = []
+    hosts = [] if getattr(args, "embed_here", False) else spark_embed.fit_hosts(state)
+    model = values.get("PLX_EMBED_MODEL") or config.DEFAULT_MODEL
+    dim = st.column_dim(conn)
+    on = "box"
+    if hosts and dim is not None:
+        try:
+            with spark_embed.embedder(state, model, dim, hosts, conn=conn,
+                                      log=events.append) as remote:
+                if remote is not None:
+                    on = "spark"
+                    got = embed(conn, values, embedder=remote, budget_seconds=budget, **kw)
+                    got["on"] = on
+                    return got
+        except Exception as error:  # noqa: BLE001 - a host failing: the box goes on
+            if not spark_embed.failed_on_host(error):
+                raise
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001 - a closed connection fails below as before
+                pass
+            events.append({"spark_embed": "failed_part_way"})
+            on = "box_after_spark"
+        left = budget - (_clock() - started)
+        if left <= 0:
+            return {"on": on, "spark": events, "skipped": "budget_spent"}
+    got = embed(conn, values, budget_seconds=budget - (_clock() - started), **kw)
+    got["on"] = on
+    if events or hosts:
+        got["spark"] = events or [{"spark_embed": "no_host_started"}]
+    return got
 
 
 EMBEDDED_MIN_SHARE = 0.95   # of any kind's chunks that must have a vector (audit B #2)
@@ -644,6 +685,8 @@ def parser() -> argparse.ArgumentParser:
                         "runs one model in the follower's own process)")
     p.add_argument("--embed-seconds", type=float, default=900.0,
                    help="embed for at most this long per run (0: do not embed)")
+    p.add_argument("--embed-here", action="store_true",
+                   help="embed on this machine's CPU even when a Spark GPU is fit")
     p.add_argument("--wait-seconds", type=float, default=0.0,
                    help="wait this long for a run holding the lock (a backfill slice)")
     p.add_argument("--min-free-gb", type=float, default=0.0,

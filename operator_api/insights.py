@@ -519,13 +519,14 @@ def unusual_sql(entry: Mapping[str, Any], days: int) -> str:
     ``unusual``: how many spreads the latest is from the usual level. A period with no record
     is not one of them (a source captured only lately is judged on what it holds); fewer
     than ``UNUSUAL_LEAST`` earlier periods, or no spread, judges nothing (NULL)."""
+    from operating.measures import value_sql
     per, date, n = entry["per"], entry["date"], int(days)
     keys = f"{per}, " if per else ""
     where = f"({entry['where']}) AND " if entry["where"] else ""
     group = f" GROUP BY {per}" if per else ""
     return (
         f"WITH b AS (SELECT {keys}floor(extract(epoch FROM now() - {date}) / {n * 86400})"
-        f"::int AS ago, {entry['value']} AS value FROM {entry['view']} WHERE {where}{date} "
+        f"::int AS ago, {value_sql(entry)} AS value FROM {entry['view']} WHERE {where}{date} "
         f"> now() - interval '{n * (UNUSUAL_PERIODS + 1)} days' AND {date} <= now() "
         f"GROUP BY {keys}ago), s AS (SELECT {keys}"
         "max(value) FILTER (WHERE ago = 0) AS current, "
@@ -537,6 +538,17 @@ def unusual_sql(entry: Mapping[str, Any], days: int) -> str:
         "SELECT s.*, CASE WHEN periods_before >= "
         f"{UNUSUAL_LEAST} THEN round(abs(coalesce(current, 0) - usual) / nullif(spread, 0), 1) "
         f"END AS {UNUSUAL_COLUMN} FROM s")
+
+
+def measure_list() -> list[m.MeasureInfo]:
+    """The agreed measures' definitions (``operating.measures.listing``): no data read,
+    the same for every reader; none when the catalogue cannot be read."""
+    from operating import measures as ms
+    try:
+        listed = ms.listing()["measures"]
+    except (OSError, ValueError, KeyError):
+        return []
+    return [m.MeasureInfo(**e) for e in listed]
 
 
 def info(spec: Spec) -> m.InsightInfo:
@@ -662,7 +674,8 @@ class InsightsMixin:
         # its tiles are asked for next: their reads start now (``insights_cache``)
         self._insight_keeper().ahead(reader, [ref(s) for s in specs])
         return m.InsightList(scope="everyone" if everyone else "self",
-                             items=[info(s) for s in specs], saving=store is not None)
+                             items=[info(s) for s in specs], saving=store is not None,
+                             measures=measure_list())
 
     def insight_result(self, reader: Any, iid: str, again: bool = False) -> m.InsightResult:
         """One insight as ``reader`` reads it: kept from a read of the last few minutes

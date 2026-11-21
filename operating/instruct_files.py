@@ -57,8 +57,10 @@ MAX_CONTENT = 60_000
 MAX_ROWS, MAX_COLS = 2000, 40
 # a table read from a statement (``make`` ``tables``): its rows per file kind, past which
 # the file is refused (a deck holds a short table only; Excel and CSV hold the long ones)
+SLIDE_TABLE_ROWS = 15   # rows of a table on one slide (more go on continued slides)
 MAX_TABLE_ROWS = {"xlsx": 50_000, "csv": 50_000, "docx": 5_000, "pdf": 5_000, "pptx": 30}
 _TABLE_AT = re.compile(r"^\s*\[table\s+([1-9][0-9]?)\]\s*$", re.I)
+_HEADING_LINE = re.compile(r"^\s*#{1,3}\s+\S")
 # SharePoint grant roles that let a person add a file to a folder
 WRITE_ROLES = frozenset({"write", "owner"})
 NO_WRITE = "Your SharePoint access to that folder does not include adding files."
@@ -106,248 +108,95 @@ _RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
          'relationships/officeDocument" Target="{target}"/></Relationships>')
 
 
-# the Markdown a drafted document is written in, as Word shows it: "#" headings, "-"/"*"
-# bullets, "**bold**", and a run of "|" lines a table (its "|---|" rule line dropped)
-_HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
-_BULLET = re.compile(r"^\s*[-*]\s+(.*)$")
-_RULE_ROW = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
-_HEADING_SIZE = {1: 32, 2: 28, 3: 24}   # half-points
-
-
-def _runs(text: str, bold: bool = False, size: int = 0) -> str:
-    """``text`` as Word runs, each ``**...**`` part bold."""
-    out = []
-    for n, part in enumerate(re.split(r"\*\*", text)):
-        if not part:
-            continue
-        props = ("<w:b/>" if bold or n % 2 else "") + (f'<w:sz w:val="{size}"/>' if size else "")
-        out.append(f"<w:r>{f'<w:rPr>{props}</w:rPr>' if props else ''}"
-                   f'<w:t xml:space="preserve">{escape(part)}</w:t></w:r>')
-    return "".join(out)
-
-
-def _cells(line: str) -> list[str]:
-    return [c.strip() for c in line.strip().strip("|").split("|")]
-
-
-def _table(rows: list[list[str]]) -> str:
-    width = max(len(r) for r in rows)
-    edge = "".join(f'<w:{side} w:val="single" w:sz="4" w:space="0" w:color="999999"/>'
-                   for side in ("top", "left", "bottom", "right", "insideH", "insideV"))
-    body = "".join(
-        "<w:tr>" + "".join(f"<w:tc><w:p>{_runs(c, bold=i == 0)}</w:p></w:tc>"
-                           for c in r + [""] * (width - len(r))) + "</w:tr>"
-        for i, r in enumerate(rows))
-    return (f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>{edge}'
-            f"</w:tblBorders></w:tblPr>{body}</w:tbl>")
-
-
-def _table_rows(lines: Sequence[str]) -> set[int]:
-    """Which lines are rows of a Markdown table: a line starting with "|", or a run of
-    lines with a "|" between cells whose header is followed by its rule row ("--- | ---")."""
-    out = {i for i, line in enumerate(lines) if line.lstrip().startswith("|")}
-    for i in range(len(lines) - 1):
-        if "|" in lines[i] and _RULE_ROW.match(lines[i + 1].strip()) \
-                and "|" in lines[i + 1]:
-            j = i
-            while j < len(lines) and "|" in lines[j] and lines[j].strip():
-                out.add(j)
-                j += 1
-    return out
-
-
-def _placed(content: str, charts: Sequence[Mapping[str, Any]]
-            ) -> list[tuple[str, Optional[Mapping[str, Any]]]]:
-    """The content's lines in order with each chart where its "[chart N]" line stands (a
-    line naming no chart is dropped); the charts no line names follow at the end."""
-    out: list[tuple[str, Optional[Mapping[str, Any]]]] = []
-    used: set[int] = set()
-    for line in content.split("\n"):
-        at = _CHART_AT.match(line)
-        if at:
-            n = int(at.group(1)) - 1
-            if n < len(charts) and n not in used:
-                used.add(n)
-                out.append(("", charts[n]))
-            continue
-        out.append((line, None))
-    out += [("", c) for n, c in enumerate(charts) if n not in used]
-    return out
-
-
 def _docx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
-    from operating import chart_docs
+    """A Word document of the content's blocks (``doc_render``: real heading styles, a
+    styles part, letter pages, shaded header rows, numbers aligned, tracked changes for a
+    redline's marks) with each chart a native Word chart where it is placed."""
+    from operating import chart_docs, doc_render as dr
+    from operating import chart_ooxml as ox
     parts: list[str] = []
-    table: list[list[str]] = []
     extra: dict[str, Any] = {}
     relations: list[tuple[str, str, str]] = []
     overrides: dict[str, str] = {}
-    lines = _placed(content, charts) + [("", None)]
-    rows = _table_rows([line for line, _ in lines])
-    for at, (line, chart) in enumerate(lines):
-        if chart is not None:
-            if table:
-                parts.append(_table(table))
-                table = []
+    ids = dr._Ids()
+    for block in dr.blocks(content, charts):
+        if block[0] == "chart":
             body, chart_parts, chart_rels, chart_types = chart_docs.docx_chart(
-                chart, len(relations) + 1)
+                block[1], len(relations) + 1)
             parts.append(body)
             extra.update(chart_parts)
             relations += chart_rels
             overrides.update(chart_types)
             continue
-        if at in rows:
-            if not _RULE_ROW.match(line.strip()):
-                table.append(_cells(line))
-            continue
-        if table:
-            parts.append(_table(table))
-            table = []
-        heading, bullet = _HEADING.match(line), _BULLET.match(line)
-        if heading:
-            size = _HEADING_SIZE[len(heading.group(1))]
-            parts.append(f"<w:p>{_runs(heading.group(2), bold=True, size=size)}</w:p>")
-        elif bullet:
-            parts.append(f'<w:p><w:pPr><w:ind w:left="360" w:hanging="240"/></w:pPr>'
-                         f"{_runs(chr(8226) + ' ' + bullet.group(1))}</w:p>")
-        else:
-            parts.append(f"<w:p>{_runs(line)}</w:p>")
-    while parts and parts[-1] == "<w:p></w:p>":
+        parts.append(dr.docx_block(block, ids))
+    while parts and parts[-1] == "<w:p/>":
         parts.pop()
     body = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             f'<w:document {chart_docs.DOC_NS}><w:body>' + "".join(parts)
-            + "</w:body></w:document>")
-    if not relations:
-        types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                 '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                 '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
-                 'relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
-                 '<Override PartName="/word/document.xml" ContentType="application/vnd.'
-                 'openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
-        return _zip({"[Content_Types].xml": types,
-                     "_rels/.rels": _RELS.format(target="word/document.xml"),
-                     "word/document.xml": body})
-    from operating import chart_ooxml as ox
-    types = ox.content_types({**ox.BASE_TYPES, "xlsx": ox.CT_XLSX}, {
-        "/word/document.xml": "application/vnd.openxmlformats-officedocument."
-        "wordprocessingml.document.main+xml", **overrides})
+            + dr.DOCX_SECTION + "</w:body></w:document>")
+    main = "application/vnd.openxmlformats-officedocument.wordprocessingml."
+    defaults = {**ox.BASE_TYPES, "xlsx": ox.CT_XLSX} if relations else dict(ox.BASE_TYPES)
+    types = ox.content_types(defaults, {"/word/document.xml": main + "document.main+xml",
+                                        "/word/styles.xml": main + "styles+xml",
+                                        "/word/numbering.xml": main + "numbering+xml",
+                                        **overrides})
+    relations = relations + [("rIdStyles", "styles", "styles.xml"),
+                             ("rIdNumbering", "numbering", "numbering.xml")]
     return ox.zip_parts({"[Content_Types].xml": types,
                          "_rels/.rels": _RELS.format(target="word/document.xml"),
-                         "word/document.xml": body,
+                         "word/document.xml": body, "word/styles.xml": dr.DOCX_STYLES,
+                         "word/numbering.xml": dr.DOCX_NUMBERING,
                          "word/_rels/document.xml.rels": ox.rels(relations), **extra})
-
-
-def _column(n: int) -> str:
-    out = ""
-    while True:
-        n, r = divmod(n, 26)
-        out = chr(65 + r) + out
-        if n == 0:
-            return out
-        n -= 1
 
 
 def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_ROWS
           ) -> bytes:
-    rows = []
+    """One row per line, cells split on "|" (a Markdown table's outer pipes and rule row
+    dropped), typed and formatted as a person would (``doc_render.xlsx_sheet``); each chart
+    its rows and native chart on a sheet of its own."""
+    from operating import chart_ooxml as ox, doc_render as dr
     lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
              and not _RULE_ROW.match(ln)]
-    for r, line in enumerate(lines[:cap], 1):
+    rows = []
+    for line in lines[:cap]:
         row = line.strip()
         if row.startswith("|") and row.endswith("|") and len(row) > 1:
             row = row[1:-1]   # a Markdown table's row: no empty first and last cell
-        cells = [c.strip() for c in row.split("|")][:MAX_COLS]
-        xml = []
-        for c, value in enumerate(cells):
-            ref = f"{_column(c)}{r}"
-            if re.fullmatch(r"-?\d+(?:\.\d+)?", value):
-                xml.append(f'<c r="{ref}"><v>{value}</v></c>')
-            else:
-                xml.append(f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">'
-                           f"{escape(value)}</t></is></c>")
-        rows.append(f'<row r="{r}">' + "".join(xml) + "</row>")
-    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-    sheet = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet {ns}>'
-             "<sheetData>" + "".join(rows) + "</sheetData></worksheet>")
-    if charts:   # the text on the first sheet, each chart's rows and chart on its own
-        from operating import chart_ooxml as ox
-        sheets = [("Sheet1", {"xl/worksheets/sheet1.xml": sheet},
-                   {"/xl/worksheets/sheet1.xml": ox.SHEET_CT})]
-        first = 1
-        for n, chart in enumerate(charts, 2):
-            name = f"Chart {n - 1}"
-            parts, types, made = ox.sheet_parts(chart, n, first, name)
-            sheets.append((name, parts, types))
-            first += made
-        return ox.workbook(sheets)
-    book = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook {ns} '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
-    book_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships '
-                 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                 '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
-                 'officeDocument/2006/relationships/worksheet" Target="worksheets/'
-                 'sheet1.xml"/></Relationships>')
-    types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
-             'relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
-             '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.'
-             'openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-             '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.'
-             'openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
-    return _zip({"[Content_Types].xml": types, "_rels/.rels": _RELS.format(
-        target="xl/workbook.xml"), "xl/workbook.xml": book,
-        "xl/_rels/workbook.xml.rels": book_rels, "xl/worksheets/sheet1.xml": sheet})
+        rows.append([c.strip() for c in row.split("|")])   # "Label:|" keeps its blank
+    sheet = dr.xlsx_sheet(rows, MAX_COLS)
+    sheets = [("Sheet1", {"xl/worksheets/sheet1.xml": sheet},
+               {"/xl/worksheets/sheet1.xml": ox.SHEET_CT})]
+    first = 1
+    for n, chart in enumerate(charts, 2):
+        name = f"Chart {n - 1}"
+        parts, types, made = ox.sheet_parts(chart, n, first, name)
+        sheets.append((name, parts, types))
+        first += made
+    return ox.workbook(sheets, styles=dr.XLSX_STYLES)
 
 
 def _pdf(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+    from operating import doc_render
     try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
+        return doc_render.pdf(content, charts)
     except ImportError:
         raise FileRefused("pdf_unavailable") from None
-    from operating import chart_pdf
-    out = io.BytesIO()
-    pdf = canvas.Canvas(out, pagesize=letter, invariant=1)
-    y = 750
-    for line, chart in _placed(content, charts):
-        if chart is not None:
-            # the chart and the start of its notes on one page (long notes go on over)
-            height = chart_pdf.HEIGHT + chart_pdf.NOTE_LEAD * min(
-                len(chart_pdf.notes(chart, 512)), 6) + 50
-            if y - height < 50:
-                pdf.showPage()
-                y = 750
-            y = chart_pdf.draw(pdf, chart, 50, y, 512)
-            continue
-        heading = _HEADING.match(line)
-        if heading:
-            line = heading.group(2)
-        pdf.setFont("Helvetica-Bold" if heading else "Helvetica",
-                    {1: 15, 2: 13, 3: 12}[len(heading.group(1))] if heading else 10)
-        pdf.setFillColor("#000000")
-        for start in range(0, max(len(line), 1), 95):
-            if y < 50:
-                pdf.showPage()
-                y = 750
-            pdf.drawString(50, y, line[start:start + 95].replace("**", ""))
-            y -= 18 if heading else 14
-    pdf.save()
-    return out.getvalue()
 
 
 def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
-    """A deck: a slide per "#" heading (its lines below it; the first lines before any
-    heading a slide of their own), and a slide per chart where it is placed."""
-    from operating import chart_docs
+    """A deck: a slide per heading (its lines below it; the first lines before any heading
+    a slide of their own), a slide per chart where it is placed (on its heading's slide
+    when that has a few lines only), and a Markdown table a native table on its slide."""
+    from operating import chart_docs, doc_render as dr
     slides: list[dict[str, Any]] = []
     current: Optional[dict[str, Any]] = None
-    for line, chart in _placed(content, charts):
-        if chart is not None:
+    for block in dr.blocks(content, charts):
+        kind = block[0]
+        if kind == "chart":
+            chart = block[1]
             if current is not None and current.get("chart") is None \
+                    and not current.get("table") \
                     and len(current["lines"]) <= chart_docs.CHART_SLIDE_LINES:
-                # placed under a heading with a few lines: the chart goes on that slide
                 current["chart"] = chart
                 current["title"] = current["title"] or str(chart.get("title") or "")
             else:
@@ -355,19 +204,39 @@ def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
                            "chart": chart}
                 slides.append(current)
             continue   # the lines after it (until a heading) are that slide's too
-        heading = _HEADING.match(line)
-        if heading or current is None:
-            if not heading and not line.strip():
-                continue
-            current = {"title": heading.group(2).replace("**", "") if heading else "",
-                       "lines": []}
+        if kind == "heading":
+            current = {"title": dr.plain(block[2]), "lines": []}
             slides.append(current)
-            if heading:
-                continue
-        bullet = _BULLET.match(line)
-        if line.strip() and not _RULE_ROW.match(line.strip()):
-            current["lines"].append(("- " + bullet.group(1) if bullet else line.strip())
-                                    .replace("**", ""))
+            continue
+        if kind == "divider":
+            continue
+        if current is None:
+            current = {"title": "", "lines": []}
+            slides.append(current)
+        if kind == "table":
+            rows, header = block[1], block[2] or len(block[1]) > 1
+            if current.get("chart") is not None or current.get("table"):
+                current = {"title": current["title"], "lines": []}
+                slides.append(current)
+            width = max(len(r) for r in rows)
+            rows = [[dr.plain(c) for c in r] + [""] * (width - len(r)) for r in rows]
+            kinds = dr.column_kinds(rows, header)
+            body = [[dr.shown(c, kinds[n]) for n, c in enumerate(r)]
+                    for r in (rows[1:] if header else rows)] or [[""] * width]
+            title = current["title"]
+            for start in range(0, len(body), SLIDE_TABLE_ROWS):
+                if start:   # every row kept: the rest on slides of their own, header again
+                    current = {"title": f"{title} (continued)".strip(), "lines": []}
+                    slides.append(current)
+                current["table"] = {
+                    "header": rows[0] if header else [""] * width,
+                    "rows": body[start:start + SLIDE_TABLE_ROWS],
+                    "right": [k is not None for k in kinds],
+                    "widths": [max(3, min(40, max(len(r[n]) for r in rows)))
+                               for n in range(width)]}
+            continue
+        text = dr.plain(block[2] if kind == "bullet" else block[1])
+        current["lines"].append(("- " + text) if kind == "bullet" else text)
     return chart_docs.pptx(slides)
 
 
@@ -400,6 +269,8 @@ def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
         raise FileRefused("table_size")
     content, cap = _with_tables(kind, content, tables)
     content = mask_served(content)   # an exported file never holds a card or a secret
+    from operating.doc_render import without_doubt_marks
+    content = without_doubt_marks(content)   # "(unverified)" is the chat's, not the file's
     charts = [_masked(c) for c in list(charts)[:MAX_DOC_CHARTS]]
     if kind in ("xlsx", "csv"):
         return {"xlsx": _xlsx, "csv": _csv}[kind](content, charts, cap)
@@ -428,8 +299,8 @@ def _with_tables(kind: str, content: str, tables: Sequence[Mapping[str, Any]]
         return content, MAX_ROWS
     own = [ln for ln in content.split("\n") if ln.strip() and not _TABLE_AT.match(ln)]
 
-    def block(t: Mapping[str, Any]) -> list[str]:
-        title = str(t.get("title") or "")
+    def block(t: Mapping[str, Any], titled: bool = True) -> list[str]:
+        title = str(t.get("title") or "") if titled else ""
         head = [] if not title or kind == "csv" or (kind == "xlsx" and not own and
                                                     len(tables) == 1) \
             else [title if kind == "xlsx" else f"## {title}"]
@@ -442,7 +313,9 @@ def _with_tables(kind: str, content: str, tables: Sequence[Mapping[str, Any]]
             n = int(at.group(1)) - 1
             if n < len(tables) and n not in used:
                 used.add(n)
-                out += block(tables[n])
+                said = [ln for ln in out if ln.strip()]
+                # placed right under a heading: that heading is its title (never two)
+                out += block(tables[n], not (said and _HEADING_LINE.match(said[-1])))
             continue
         out.append(line)
     for n, t in enumerate(tables):
@@ -484,10 +357,11 @@ def _csv(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_
 def _masked(chart: Mapping[str, Any]) -> dict[str, Any]:
     """A chart's words as a file holds them: no card or secret in its title, labels,
     series names or statement."""
+    from operating.doc_render import without_doubt_marks
     out = dict(chart)
     for key in ("title", "x", "sql"):
         if isinstance(out.get(key), str):
-            out[key] = mask_served(out[key])
+            out[key] = without_doubt_marks(mask_served(out[key]))
     out["labels"] = [mask_served(str(v)) for v in out.get("labels") or ()]
     out["series"] = [{**s, "name": mask_served(str(s.get("name") or ""))}
                      for s in out.get("series") or ()]

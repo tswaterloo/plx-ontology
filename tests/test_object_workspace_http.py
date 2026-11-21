@@ -703,6 +703,33 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         db.execute("DELETE FROM items")
         self.assertEqual(_drives_stamp(db), ("drives", ()))
 
+    def test_the_mailbox_stamp_moves_with_every_grant_column_and_a_new_column(self):
+        """The mail grant stamp (a kept policy's input), read as one row, moves with any
+        mailbox column but the identity check time, with a mailbox added, and with a
+        column the store gains later; the same rows give the same stamp."""
+        from integrations.capture_mail import MailCaptureStore
+        from operating.case_tools_host_calls import _mailbox_stamp
+
+        store = MailCaptureStore(self.tmp / "stamp-columns-mail")
+        self.addCleanup(store.db.close)
+        identity = {"object_id": "mbx-1", "upn": "ops@plx.example", "identities": ["mbx-1"],
+                    "resources": ["mail:mbx-1"], "source_acl": ["ops"]}
+        store.record_mailbox(identity)
+        first = _mailbox_stamp(store.db)
+        self.assertEqual(_mailbox_stamp(store.db), first)
+        store.db.execute("UPDATE mailboxes SET identity_checked_at = 'later'")
+        self.assertEqual(_mailbox_stamp(store.db), first)   # no grant reads it
+        store.record_mailbox({**identity, "source_acl": ["someone-else"]})
+        acl = _mailbox_stamp(store.db)
+        self.assertNotEqual(acl, first)
+        store.record_mailbox({**identity, "object_id": "mbx-2", "identities": ["mbx-2"]})
+        self.assertNotEqual(_mailbox_stamp(store.db), acl)
+        before = _mailbox_stamp(store.db)
+        store.db.execute("ALTER TABLE mailboxes ADD COLUMN held_by TEXT")
+        store.db.execute("UPDATE mailboxes SET held_by = 'x' WHERE mailbox_id = "
+                         "(SELECT MIN(mailbox_id) FROM mailboxes)")
+        self.assertNotEqual(_mailbox_stamp(store.db), before)   # the new column counts
+
     def test_the_mailbox_rows_are_read_again_only_after_a_commit(self):
         """The grant stamps' mailbox rows are read once per state of the store: requests
         with no commit between them reuse the last read (an access check opens a request

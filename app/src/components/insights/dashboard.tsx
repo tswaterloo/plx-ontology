@@ -250,6 +250,47 @@ function Monitors({ items }: { items: InsightInfo[] }) {
   );
 }
 
+type Measure = NonNullable<InsightList["measures"]>[number];
+
+/** The agreed measures Ask and the charts use: each one's definition, who owns it, what it
+ * reads and splits by, and a question to try it with. */
+export function Measures({ measures }: { measures: Measure[] }) {
+  const [open, setOpen] = useState(false);
+  if (measures.length === 0) return null;
+  return (
+    <section className="space-y-3" aria-label="Measures">
+      <div className="flex items-baseline gap-2">
+        <h2 className="flex-1 text-[15px] font-semibold">Measures</h2>
+        <button type="button" className={quiet} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? "Hide" : `Show all ${measures.length}`}
+        </button>
+      </div>
+      <p className="text-[13px] text-muted">The agreed definitions behind every figure Ask and these charts give.</p>
+      {open && (
+        <ul className="divide-y divide-border text-[13px]">
+          {measures.map((m) => (
+            <li key={m.id} className="space-y-1 py-2.5">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-medium">{m.name}</span>
+                <span className="text-[12px] text-muted">{m.owner} · {m.unit} · from {m.source}</span>
+              </div>
+              <p className="text-muted">{m.definition}</p>
+              <p className="text-[12px] text-muted">
+                Split by {m.dimensions.join(", ")}. Reads {m.period}.
+              </p>
+              {m.ask && (
+                <Link href={`/ask?q=${encodeURIComponent(m.ask)}`} className="text-[12px] text-accent hover:underline">
+                  {m.ask}
+                </Link>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function InsightsDashboard({ list, onChanged }: { list: InsightList; onChanged: () => void }) {
   return (
     <div className="space-y-8">
@@ -268,6 +309,7 @@ export function InsightsDashboard({ list, onChanged }: { list: InsightList; onCh
       {list.saving && !list.items.some((i) => i.saved) && (
         <p className="text-[13px] text-muted">Ask for a chart and pin it from the answer: it shows here and stays live.</p>
       )}
+      <Measures measures={list.measures ?? []} />
     </div>
   );
 }

@@ -64,9 +64,10 @@ def _clip(text: str, n: int) -> str:
 
 
 def draw(pdf: Any, chart: Mapping[str, Any], x: float, top: float, width: float, *,
-         page_top: float = 750, bottom: float = 50) -> float:
+         page_top: float = 750, bottom: float = 50, with_notes: bool = True) -> float:
     """``chart`` drawn below ``top`` (its title, the chart, its notes, which go on over a
-    new page starting at ``page_top`` when they reach ``bottom``); the y below it."""
+    new page starting at ``page_top`` when they reach ``bottom``; ``with_notes`` False:
+    the caller sets the notes itself); the y below it."""
     pdf.setFillColor(TEXT)
     pdf.setFont("Helvetica-Bold", 11)
     pdf.drawString(x, top - 12, _clip(str(chart.get("title") or ""), 90))
@@ -84,7 +85,7 @@ def draw(pdf: Any, chart: Mapping[str, Any], x: float, top: float, width: float,
         _cartesian(pdf, chart, chart.get("labels") or [], chart.get("series") or [],
                    x, area_top - HEIGHT, width, HEIGHT, legend=True)
     y = area_top - HEIGHT - 12
-    for line in notes(chart, width):
+    for line in notes(chart, width) if with_notes else ():
         if y < bottom:   # a long statement goes on over the next page
             pdf.showPage()
             y = page_top

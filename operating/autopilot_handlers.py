@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from .autopilot_records import object_href, _addresses, _decimal, _instant, _internal, _linked, _read, _v
 from .autopilot_queue import (
@@ -1285,6 +1285,27 @@ HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "task_prepare": h_task, "ledger_answer": h_ledger, "qc_impact": h_qc,
     "question_prepare": h_question,
     "meeting_followup": h_meeting, "job": h_job}
+
+
+def meeting_cleared(event: Mapping[str, Any], people: Any) -> Optional[str]:
+    """People first for a meeting, as a message's ``cleared``: None when it may be handled;
+    "participants_not_cleared" when the people exclusion does not clear its calendar's
+    person, its organizer or any attendee (an excluded person's calendar, a meeting they
+    wrote or attended, whose talk and notes may be theirs): the whole meeting is left alone,
+    so no item, draft or session ever names, addresses or quotes them. An undecidable check
+    is not clear (fail closed)."""
+    if event.get("event_type") != "meeting.ended":
+        return None
+
+    def clear(who: Any) -> bool:
+        try:
+            return bool(people.identity_clear(str(who or "")))
+        except Exception:  # noqa: BLE001 - undecidable: not clear
+            return False
+    named = [event.get("mailbox"), event.get("organizer"), *(event.get("attendees") or ())]
+    if people is None or not all(clear(n) for n in named):
+        return "participants_not_cleared"
+    return None
 
 
 def _meeting_extra(st: Any, event: dict[str, Any], domains: Sequence[str]) -> None:

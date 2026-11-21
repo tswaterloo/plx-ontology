@@ -43,7 +43,14 @@ CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
               "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in",
+              "triage_none",
               "to_me", "after_own_post", "cc_min", "usual_answerer", "known_party", "any_of")
+# conditions a triage reading of "reply" answers (``matches``): whether the text asks, is a
+# closer, and the history guesses standing in for that reading (an asking sender the reader
+# wrote to, a colleague they seldom answer by mail). Measured on fresh days 11-06..21: of the
+# uncovered mail replies answering an incoming message, ``quiet_sender`` alone dropped 501
+# and ``engaged_or_asks`` 274 (with both: 208)
+READ_BY_TRIAGE = frozenset(("asks", "closing", "quiet_sender", "engaged_or_asks"))
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
               "owner_mailed_attendees", "question_answered", "person_decided")
 MAX_RECORDS = 12          # business records one handler reads around its event
@@ -126,7 +133,22 @@ class HandlerTimeout(Exception):
 def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
     """Whether an event meets an autopilot's conditions (each a general field test)."""
     intents = set(event.get("intents") or ())
+    # the triage model read the message as owed a reply by a real person: its reading
+    # stands for the cheap phrase and history guesses (``READ_BY_TRIAGE``): it asks, is no
+    # closer, and the guesses standing in for that reading pass
+    owed = event.get("triage") == "reply"
+    if owed:
+        event = {**event, "asks": True, "closing": False}
     for key, want in when.items():
+        if owed and key in ("quiet_sender", "engaged_or_asks"):
+            # a reply reading still needs a sender who is no stranger (the desk rule's
+            # screen): a known customer, supplier or colleague, a known party, a thread the
+            # person is in or a correspondent; a model misread never makes an item for a
+            # cold sender
+            if key == "engaged_or_asks" and not want or key == "engaged_or_asks" and \
+                    not known_sender(event):
+                return False
+            continue
         if key == "any_of":
             # a list of condition sets, one of which must hold (each tested as a whole
             # ``when``); an empty or unreadable list: no
@@ -199,10 +221,24 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             if not isinstance(cc, list) or len(cc) < want:
                 return False
             continue
+        if key == "triage_none":
+            # the model's triage of the message (``chat_ask_model.KINDS``) is none of
+            # ``want``; a message it did not read (no model, a failed call) passes
+            if event.get("triage") in want:
+                return False
+            continue
         if key == "engaged_or_asks" and bool(event.get("engaged") or (
                 event.get("asks") and event.get("correspondent"))) != bool(want):
             return False
     return True
+
+
+def known_sender(event: Mapping[str, Any]) -> bool:
+    """Whether a message's sender is no stranger to its reader: a colleague, a known
+    customer or supplier, a known party, or someone they wrote to or in whose thread they
+    wrote (``engagement``)."""
+    return event.get("side") in ("internal", "customer", "supplier") or bool(
+        event.get("known_party") or event.get("engaged") or event.get("correspondent"))
 
 
 def names_reader(text: Any, names: Iterable[str]) -> bool:
@@ -578,6 +614,14 @@ class Queue:
         row = self.conn.execute("SELECT asks FROM chat_asks WHERE message_id = ? AND "
                                 "reader = ?", (message_id, reader)).fetchone()
         return None if row is None else bool(row[0])
+
+    def chat_triage(self, message_id: str, reader: str) -> tuple[bool, str, str] | None:
+        """The cached verdict with its triage reading: ``(asks, kind, work)``; kind and work
+        "" for a plain yes/no verdict (``chat_ask_model.triage_of``); None: not read yet."""
+        from .chat_ask_model import triage_of
+        row = self.conn.execute("SELECT asks, reason FROM chat_asks WHERE message_id = ? "
+                                "AND reader = ?", (message_id, reader)).fetchone()
+        return None if row is None else (bool(row[0]), *triage_of(row[1]))
 
     def note_chat_asks(self, notes: Iterable[Mapping[str, Any]]) -> int:
         """Keep model verdicts (``message_id``, ``reader``, ``asks``, ``reason``, ``model``,

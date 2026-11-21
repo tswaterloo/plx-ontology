@@ -72,7 +72,8 @@ class EveryKindTest(unittest.TestCase):
                     continue
                 parts = package(data)
                 text = b"".join(parts.values()).decode("utf-8", "replace")
-                self.assertIn("read as you", text, (spec, fmt))      # where it comes from
+                self.assertIn("Source: ", text, (spec, fmt))         # where it comes from
+                self.assertNotIn("read as you", text, (spec, fmt))   # in plain owner words
                 charts = [n for n in parts if re.search(r"charts/chart\d+\.xml$", n)]
                 native = spec["type"] not in ("heatmap", "kpi", "table")
                 self.assertEqual(bool(charts), native, (spec, fmt))
@@ -93,7 +94,7 @@ class EveryKindTest(unittest.TestCase):
         for row, value in zip(range(first, last + 1), chart["series"][0]["values"]):
             self.assertRegex(sheet, f'<c r="B{row}"( s="\\d")?><v>{re.escape(repr(value))}</v></c>')
         # where the numbers come from is above them, never under a chart
-        self.assertLess(sheet.index("read as you"), sheet.index(f'<c r="A{first}"'))
+        self.assertLess(sheet.index("Source: "), sheet.index(f'<c r="A{first}"'))
 
     def test_waterfall_bars_add_up_to_the_total(self):
         chart = drawn({"type": "waterfall", "x": "person", "y": ["mail"]})
@@ -226,8 +227,20 @@ class LayoutTest(unittest.TestCase):
                          " ".join(ox.provenance(chart)).split())
         pdf = files.make("pdf", "[chart 1]", [chart])
         self.assertTrue(pdf.startswith(b"%PDF"))
-        slide = package(chart_docs.pptx([{"title": "t", "lines": [], "chart": chart}]))
-        self.assertIn("name299", slide["ppt/slides/slide1.xml"].decode())
+        try:
+            from pypdf import PdfReader
+            text = "".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
+            self.assertIn("name299", text.replace("\n", ""))
+        except ImportError:
+            pass
+        # a deck: the slide says where its numbers come from; the statement, whole, is in
+        # that slide's speaker notes (never on the slide's face, never cut)
+        deck = package(chart_docs.pptx([{"title": "t", "lines": [], "chart": chart}]))
+        self.assertNotIn("SELECT", deck["ppt/slides/slide1.xml"].decode())
+        self.assertIn("Source: 4 records, as of 2026-11-18.",
+                      deck["ppt/slides/slide1.xml"].decode())
+        self.assertIn("notesSlide1.xml", deck["ppt/slides/_rels/slide1.xml.rels"].decode())
+        self.assertIn("name299", deck["ppt/notesSlides/notesSlide1.xml"].decode())
 
 
 class ShapeTest(unittest.TestCase):

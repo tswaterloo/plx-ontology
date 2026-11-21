@@ -196,23 +196,33 @@ def alive(conn: Any) -> bool:
         return False
 
 
+def search_default_statements(*, ef_search: int = DEFAULT_EF_SEARCH,
+                              max_scan_tuples: int = DEFAULT_MAX_SCAN_TUPLES,
+                              local: bool = False) -> list[str]:
+    """``search_defaults``' statements, in order (validated the same way)."""
+    for name, value in (("ef_search", ef_search), ("max_scan_tuples", max_scan_tuples)):
+        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 10**7:
+            raise ValueError(f"hnsw_{name}_invalid:{value!r}")
+    scope = "LOCAL " if local else ""
+    # The vector library registers the hnsw.* settings; using its type loads it (no
+    # superuser LOAD needed), so the SETs after it are validated now, not kept as
+    # placeholders (in one simple-query string each statement runs before the next).
+    return ["SELECT '[0]'::vector", f"SET {scope}hnsw.iterative_scan = {ITERATIVE_SCAN}",
+            f"SET {scope}hnsw.ef_search = {int(ef_search)}",
+            f"SET {scope}hnsw.max_scan_tuples = {int(max_scan_tuples)}"]
+
+
 def search_defaults(conn: psycopg.Connection, *, ef_search: int = DEFAULT_EF_SEARCH,
                     max_scan_tuples: int = DEFAULT_MAX_SCAN_TUPLES,
                     local: bool = False) -> None:
     """Set the pgvector session defaults on ``conn``: ``hnsw.iterative_scan =
     relaxed_order``, ``hnsw.ef_search`` and ``hnsw.max_scan_tuples``. ``local`` scopes them
     to the current transaction (``SET LOCAL``)."""
-    for name, value in (("ef_search", ef_search), ("max_scan_tuples", max_scan_tuples)):
-        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 10**7:
-            raise ValueError(f"hnsw_{name}_invalid:{value!r}")
-    scope = "LOCAL " if local else ""
+    statements = search_default_statements(ef_search=ef_search,
+                                           max_scan_tuples=max_scan_tuples, local=local)
     with conn.cursor() as cur:
-        # The vector library registers the hnsw.* settings; using its type loads it (no
-        # superuser LOAD needed), so the SETs are validated now, not kept as placeholders.
-        cur.execute("SELECT '[0]'::vector")
-        cur.execute(f"SET {scope}hnsw.iterative_scan = {ITERATIVE_SCAN}")
-        cur.execute(f"SET {scope}hnsw.ef_search = {int(ef_search)}")
-        cur.execute(f"SET {scope}hnsw.max_scan_tuples = {int(max_scan_tuples)}")
+        for statement in statements:
+            cur.execute(statement)
 
 
 # A new connection refused because the server or the role is at its connection limit
@@ -397,6 +407,8 @@ class Pool:
         self.max_size = max_size
         self.timeout = timeout
         self._configure = configure if configure is not None else self._default_configure
+        # the default configure's settings ride in the hand-back's one round trip
+        self._defaults_in_reset = configure is None
         self._idle: list[tuple[psycopg.Connection, float]] = []   # (connection, idle since)
         self._open = 0
         self._closed = False
@@ -425,11 +437,17 @@ class Pool:
         every ``RESET ALL`` (which would otherwise put the server's limit back, so the
         cap held on a connection's first borrow only)."""
         with conn.cursor() as cur:
-            if self.statement_timeout_ms is not None:
-                cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-            if self.idle_in_transaction_ms is not None:
-                cur.execute("SET idle_in_transaction_session_timeout = "
-                            f"{int(self.idle_in_transaction_ms)}")
+            for statement in self._limit_statements():
+                cur.execute(statement)
+
+    def _limit_statements(self) -> list[str]:
+        out = []
+        if self.statement_timeout_ms is not None:
+            out.append(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
+        if self.idle_in_transaction_ms is not None:
+            out.append("SET idle_in_transaction_session_timeout = "
+                       f"{int(self.idle_in_transaction_ms)}")
+        return out
 
     def _take(self) -> psycopg.Connection | None:
         """An idle connection, or None after reserving a slot for a new one."""
@@ -485,29 +503,39 @@ class Pool:
     def _reset(self, conn: psycopg.Connection) -> bool:
         """Hand-back after every borrow, ok or failed: roll back an open transaction,
         restore the connection attributes, ``RESET ALL`` session settings a borrower
-        changed and re-apply the defaults and the statement time limit. Any failure: the connection is discarded."""
+        changed and re-apply the statement time limits and the defaults. Any failure: the
+        connection is discarded.
+
+        The reset and the limits go in ONE round trip (one simple-query string run outside
+        a transaction), and so do the default search settings: the old sequence (BEGIN,
+        RESET ALL, each SET, COMMIT, the vector probe, three SETs, COMMIT) was ten round
+        trips per borrow, and on a busy API each one waits for the interpreter lock again
+        (11-21: a third of an Insights tile's time was hand-backs)."""
         if conn.closed or conn.broken:
             return False
         try:
             if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
                 conn.rollback()
-            conn.autocommit = False
+            conn.autocommit = True   # the reset string is its own statements, no BEGIN
             conn.read_only = None
             conn.isolation_level = None
-            conn.execute("RESET ALL")
-            self._limits(conn)
-            # committed before the defaults, as a new connection's (``_new``): a configure
-            # that turns autocommit on (plx.sql's and the pages' pools) cannot inside the
-            # transaction RESET ALL opened, which discarded the connection after every
-            # borrow (a new connection per plx.sql call, 2026-11-18)
-            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-                conn.commit()
-            self._configure(conn)
+            conn.execute(self._reset_sql())
+            conn.autocommit = False
+            if not self._defaults_in_reset:
+                self._configure(conn)
             if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
                 conn.commit()
         except psycopg.Error:
             return False
         return not conn.closed and not conn.broken
+
+    def _reset_sql(self) -> str:
+        """``RESET ALL``, then the pool's limits (``_limits``) and, for a pool on the
+        default configure, the search defaults (``search_defaults``), as one string."""
+        parts = ["RESET ALL", *self._limit_statements()]
+        if self._defaults_in_reset:
+            parts += search_default_statements()
+        return "; ".join(parts)
 
     def _reap(self, now: float) -> None:
         """Close the connections idle past ``idle_keep_seconds`` (their slots free)."""

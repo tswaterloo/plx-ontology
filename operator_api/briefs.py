@@ -681,7 +681,8 @@ class BriefsMixin:
         raw = self._brief_run(reader, lambda view: replies_of(view), priority=ENRICH_PRIORITY)
         if raw is None:
             raise alerts_not_read()
-        lines = raw["lines"]
+        lines = raw["lines"] = self._owed_lines(reader, raw["lines"])
+        raw["total"] = len(lines)
         self._with_drafts(reader, lines)
         for line in lines:
             card = reply_card(line)
@@ -689,6 +690,21 @@ class BriefsMixin:
                 line["card_id"] = card["id"]
                 line["offers"] = ca.offers(card)
         return m.ReplyTriage(**{k: v for k, v in raw.items() if k != "schema"})
+
+    def _owed_lines(self, reader: Reader, lines: list[dict[str, Any]]
+                    ) -> list[dict[str, Any]]:
+        """The lines whose message the triage model did not read as owed nothing (fyi,
+        automated, notice: ``operating.autopilot_triage``, kept for the reader's own
+        mailboxes in the autopilot queue); a message with no reading stays."""
+        from operating import autopilot_triage as at
+        state = getattr(self, "state_dir", None)
+        if not state or not lines:
+            return lines
+        kinds = at.readings(Path(state) / "autopilot" / "autopilot.sqlite",
+                            sorted(self._my_oids(reader)),
+                            [str(x.get("object_id") or "") for x in lines])
+        return [x for x in lines if kinds.get(str(x.get("object_id") or ""), "reply")
+                == "reply"]
 
     def _with_drafts(self, reader: Reader, lines: list[dict[str, Any]]) -> None:
         """The model's drafts the background job kept for these lines (``reply_drafts``), in

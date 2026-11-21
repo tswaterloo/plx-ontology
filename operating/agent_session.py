@@ -627,7 +627,11 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 waiting.discard(key)
         if "id" in message and key in calls:
             calls.discard(key)
-            note({"event": "end", "id": message.get("id")})
+            # where the call's time went, as the host said it (``call_phases``)
+            phases = ((message.get("result") or {}).get("_meta") or {}).get("phases") \
+                if isinstance(message.get("result"), Mapping) else None
+            note({"event": "end", "id": message.get("id"),
+                  **({"phases": phases} if isinstance(phases, Mapping) else {})})
 
     def answer_error(ident: Any, error: str, message_text: str) -> None:
         emit({"jsonrpc": "2.0", "id": ident, "result": {
@@ -2263,6 +2267,7 @@ def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str],
     it."""
     starts: list[dict[str, Any]] = []
     ends: dict[str, float] = {}
+    phases: dict[str, Any] = {}
     for line in lines:
         try:
             entry = json.loads(line)
@@ -2274,6 +2279,8 @@ def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str],
             starts.append(entry)
         elif entry.get("event") == "end":
             ends.setdefault(json.dumps(entry.get("id")), entry["at"])
+            if isinstance(entry.get("phases"), Mapping):
+                phases.setdefault(json.dumps(entry.get("id")), entry["phases"])
 
     def key(name: Any, arguments: Any) -> str:
         return json.dumps([name, arguments or {}], sort_keys=True, default=str)
@@ -2291,6 +2298,9 @@ def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str],
         event["ended_at"] = _wall(ended)
         event["elapsed_ms"] = None if ended is None else max(
             0, round((ended - start["at"]) * 1000))
+        took = phases.get(json.dumps(start.get("id")))
+        if took is not None:
+            event["phases"] = took   # {leg: [count, ms]} (``call_phases``)
         if origin is not None:
             event["start_ms"] = max(0, round((start["at"] - origin) * 1000))
 
@@ -2786,7 +2796,7 @@ class ClaudeCodeAgent:
                                # [tool, ms it took, ms after the session's start it
                                # began]: calls that overlap ran at once
                                "calls": [[e.get("name"), e.get("elapsed_ms"),
-                                          e.get("start_ms")]
+                                          e.get("start_ms"), e.get("phases")]
                                          for e in run.events if e.get("type") == "tool_call"
                                          and "elapsed_ms" in e]}
         if submission is not None and gate.served:

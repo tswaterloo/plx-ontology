@@ -38,6 +38,8 @@ from .teams_connect import TeamsConnectMixin
 
 # the spec is the desk's (an autopilot job proposes edits with the same one)
 DOC_TOOL = pw.DOC_TOOL_SPEC
+# what one edit names (``doc_edit.edit``)
+EDIT_KEYS = ("find", "replace", "sheet", "cell", "value", "changes", "fields")
 
 
 class DocumentEditMixin:
@@ -106,6 +108,8 @@ class DocumentEditMixin:
                     DOC_TOOL["inputSchema"]["properties"]):  # type: ignore[index]
                 return {"refused": ["Unknown fields."]}
             citation = str(arguments.get("citation") or "")
+            if "compare_with" in arguments:
+                return self._pw_redline(reader, desk, citation, arguments)
             if citation.startswith("file:"):
                 return self._pw_own_file_edit(reader, desk, citation, arguments)
             try:
@@ -119,8 +123,7 @@ class DocumentEditMixin:
                 return {"refused": ["That document is not one you can read here as that "
                                     "version (or it changed since): read it again."]}
             name, data, etag = read
-            change = {k: arguments[k] for k in ("find", "replace", "sheet", "cell", "value")
-                      if k in arguments}
+            change = {k: arguments[k] for k in EDIT_KEYS if k in arguments}
             try:
                 _ext, kind = doc_edit.kind_of(name)
                 # the whole text first, filtered as every read is, before any of it (the
@@ -183,8 +186,7 @@ class DocumentEditMixin:
             return {"refused": ["That file is not one of yours here: use the file: citation "
                                 "you were given."]}
         name, data = str(own["name"]), base64.b64decode(own["content_b64"])
-        change = {k: arguments[k] for k in ("find", "replace", "sheet", "cell", "value")
-                  if k in arguments}
+        change = {k: arguments[k] for k in EDIT_KEYS if k in arguments}
         try:
             _ext, kind = doc_edit.kind_of(name)
             text = doc_edit.text_of(name, data)
@@ -213,8 +215,66 @@ class DocumentEditMixin:
                         "download: say so, never its link. A further change: call again "
                         "with this result's citation."}
 
-    def _pw_edited_copy(self, reader: Reader, name: str, mime: str, data: bytes
-                        ) -> Optional[dict[str, Any]]:
+    def _pw_redline(self, reader: Reader, desk: pw.Desk, citation: str,
+                    arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """A redline of two versions of a Word document the reader may read (each a file
+        of theirs or a SharePoint version they open): the newer one with every difference
+        as Word tracked changes, kept as their own copy; nothing written anywhere and
+        nothing to confirm. Both documents' whole text is filtered as every document edit
+        is before any of it can reach the model."""
+        from operating import doc_edit
+        if set(arguments) - {"citation", "compare_with", "reason"}:
+            return {"refused": ["A redline names the older version (citation) and the newer "
+                                "one (compare_with) only."]}
+        try:   # the people exclusion the writes are cleared by
+            guard = desk.executor().guard
+        except Exception:  # noqa: BLE001 - undecidable: refused
+            guard = None
+        read = []
+        for cited in (citation, str(arguments.get("compare_with") or "")):
+            got = self._pw_read_doc(reader, cited)
+            if got is None:
+                return {"refused": [f"{cited[:80] or 'That'} is not a document you can read "
+                                    "here: use the citation you were given."]}
+            name, data = got
+            try:
+                text = doc_edit.text_of(name, data)
+            except doc_edit.Refused as refused:
+                return {"refused": [str(refused)]}
+            withheld = self._pw_withheld(f"{name} \n{text}", guard)
+            if withheld:
+                return {"refused": [withheld.replace(": edit it in SharePoint.", ".")]}
+            read.append(got)
+        try:
+            new, diff = doc_edit.redline(read[0][0], read[0][1], read[1][0], read[1][1])
+        except doc_edit.Refused as refused:
+            return {"refused": [str(refused)]}
+        copy = self._pw_edited_copy(reader, read[1][0], doc_edit.DOCX, new, "redline")
+        if not copy:
+            return {"refused": ["The redline could not be kept."]}
+        return {"diff": diff, "edited_copy": copy,
+                "citation": f"file:{copy['download_url'].rsplit('/', 1)[-1]}",
+                "note": "Redline made for the person only (the newer version with each "
+                        "change as a Word tracked change); nothing in any system changed. It "
+                        "is shown under your answer to download: say so, never its link. "
+                        "Report exactly the changes in diff, nothing else."}
+
+    def _pw_read_doc(self, reader: Reader, citation: str) -> Optional[tuple[str, bytes]]:
+        """(name, bytes) of a document the reader may read: a file of theirs (``file:``)
+        or the cited SharePoint version their host opens; None otherwise."""
+        import base64
+        if citation.startswith("file:"):
+            own = self._pw_file(reader, citation[len("file:"):])
+            return None if own is None else (str(own["name"]),
+                                              base64.b64decode(own["content_b64"]))
+        try:
+            got = self._pw_doc_bytes(reader, citation)
+        except ValueError:
+            return None
+        return None if got is None else (got[0], got[1])
+
+    def _pw_edited_copy(self, reader: Reader, name: str, mime: str, data: bytes,
+                        label: str = "edited") -> Optional[dict[str, Any]]:
         """The edited bytes kept as the reader's own file (the made documents' store,
         ``instruct_files.UploadDesk``: theirs only, the people it names cleared again before
         a download), so the edit can be downloaded at once while the write-back waits for
@@ -230,9 +290,9 @@ class DocumentEditMixin:
         try:
             text = doc_edit.text_of(name, data)
             stem = name.rsplit(".", 1)[0] if "." in name else name
-            stem = re.sub(r"(?:\s*\(edited\))+$", "", stem)   # a copy edited again
+            stem = re.sub(r"(?:\s*\((?:edited|redline)\))+$", "", stem)   # edited again
             row = uploads().prepare(
-                reader.key, name=file_name(f"{stem} (edited)", kind), kind=kind, data=data,
+                reader.key, name=file_name(f"{stem} ({label})", kind), kind=kind, data=data,
                 target=None, people=sorted({a.lower() for a in _ADDRESS.findall(text)}))
         except Exception:  # noqa: BLE001 - the prepared edit stands without its copy
             return None

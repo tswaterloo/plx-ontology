@@ -395,6 +395,59 @@ class TeamsChats(World):
                 self.assertTrue(all(m["reader"] == "Ops" for b in model.sent for m in b))
                 self.assertFalse(any("@" in json.dumps(m) for b in model.sent for m in b))
 
+    def test_cardinality_open_reply_items_made_unread_are_read_once_and_junk_closed(self):
+        """Live 11-21: 6 of the 10 open Teams reply items were closers or a bare address,
+        made before their message had a reading. A cycle with the model reads each open
+        item's message once (``recheck_open_replies``): one read as fyi is closed
+        (``triaged_fyi``), a real ask stays, nothing is read twice; a failed reading keeps
+        every item. N=1/10/60."""
+        from operating import chat_ask_model as cam
+        from operating.tests.test_autopilot_triage import StubTriage
+        registry = ap.load_registry()
+
+        def recheck(classify):
+            q, _items = self._items()
+            return q, ap.recheck_open_replies(q, registry, cam.Judge(classify, batch=25),
+                                              guard, {}, "2026-11-21T12:00:00Z")
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                _texts, guard = self.asks_world(n)
+                first = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+                made = first["prepared_by_autopilot"].get("teams_reply", 0)
+                notes = made - len(self.ASKS)
+                self.assertGreater(notes, 0)
+                # a mixed queue: one note's item the person already answered stays as it was
+                q, _items = self._items()
+                answered = next(i for i in q.items(None, ("open",))
+                                if i["autopilot"] == "teams_reply" and not any(
+                                    a in json.dumps(i) for a in self.ASKS))
+                with q.conn:
+                    q.settle_item(answered["item_id"], "done", "owner_replied",
+                                  "2026-11-21T11:00:00Z")
+                model = StubTriage({a: ("reply", "") for a in self.ASKS})
+                q, got = recheck(model)
+                self.assertEqual(got, {"read": made - 1, "closed": notes - 1})
+                kept = q.item(answered["item_id"])
+                self.assertEqual((kept["state"], kept["done_reason"]), ("done", "owner_replied"))
+                items = q.items(None, ("open", "done", "settled", "dismissed"))
+                reasons = Counter(i["done_reason"] for i in items
+                                  if i["autopilot"] == "teams_reply")
+                self.assertEqual(reasons["triaged_fyi"], notes - 1)
+                self.assertEqual(sum(1 for i in items if i["autopilot"] == "teams_reply"
+                                     and i["state"] == "open"), len(self.ASKS))
+                again = StubTriage({})
+                self.assertEqual(recheck(again)[1], {"read": 0, "closed": 0})
+                self.assertEqual(again.batches, [])     # read already: no second call
+        self.setUp()
+        _texts, guard = self.asks_world(3)
+        Replay.replay(self, role=f"person:{OURS}", guard=guard)
+        for fail in ("raise", "none"):
+            _q, got = recheck(StubAsks(fail=fail))
+            self.assertEqual(got["closed"], 0)
+        _q, items = self._items()
+        self.assertFalse([i for i in items if str(i["done_reason"]).startswith("triaged")])
+
     def test_any_model_failure_keeps_every_message_and_nothing_is_cached(self):
         """A timeout, an error, a reply that does not parse or skips a message: the
         message is kept (shown), never dropped, and asked again on a later cycle."""

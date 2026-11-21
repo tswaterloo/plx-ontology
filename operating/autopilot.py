@@ -86,6 +86,7 @@ from .autopilot_engine import (
 from .autopilot_reading import (
     _plain, _store, digest)
 from . import autopilot_agent_io, autopilot_engine, autopilot_handlers
+from .autopilot_triage import _ask_wanted, _judge_asks, recheck_open_replies  # noqa: F401
 from .autopilot_teams_names import (  # noqa: F401  (re-exported)
     OLD_LABELS, RETITLE_BATCH, TEAMS_NAME_BATCH, name_teams_items, retitle_old_labels)
 from .autopilot_memory import (  # noqa: F401  (re-exported)
@@ -137,6 +138,12 @@ def _check_when(when: Any, name: str, *, nested: bool = False) -> None:
             and isinstance(usual[1], (int, float)) and not isinstance(usual[1], bool)
             and 0 < usual[1] <= 1):
         raise RegistryInvalid(f"registry_condition:{name}")
+    kinds = when.get("triage_none")
+    if kinds is not None:
+        from .chat_ask_model import KINDS
+        if not (isinstance(kinds, list) and kinds and all(k in KINDS for k in kinds)
+                and "reply" not in kinds):
+            raise RegistryInvalid(f"registry_condition:{name}")
     cc_min = when.get("cc_min")
     if cc_min is not None and not (isinstance(cc_min, int) and not isinstance(cc_min, bool)
                                    and cc_min >= 1):
@@ -151,9 +158,12 @@ def _check_when(when: Any, name: str, *, nested: bool = False) -> None:
 
 
 def _needs_ask(when: Mapping[str, Any]) -> bool:
-    """Whether a ``when`` (or one of its ``any_of`` sets) needs the message to ask."""
-    return when.get("asks") is True or any(
-        isinstance(b, Mapping) and b.get("asks") is True for b in when.get("any_of") or ())
+    """Whether a ``when`` (or one of its ``any_of`` sets) reads the message's ask or its
+    triage (``asks``, ``engaged_or_asks``, ``triage_none``)."""
+    def reads(w: Mapping[str, Any]) -> bool:
+        return w.get("asks") is True or "engaged_or_asks" in w or "triage_none" in w
+    return reads(when) or any(isinstance(b, Mapping) and reads(b)
+                              for b in when.get("any_of") or ())
 
 
 def conditions_of(when: Mapping[str, Any]) -> set[str]:
@@ -448,10 +458,19 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
                 for a in event.get("answerers") or ()]
         return list(dict.fromkeys([owner, *(m for m in more if m)])), None
     if rule == "organizer":
+        # the organizer's own copy; a meeting someone outside the company organized is
+        # followed up by the person whose calendar holds it (measured 11-06..21 on the
+        # captured calendars: 19 of 20 meetings with an outside attendee were organized
+        # outside; the calendar's person mailed attendees within 48 h after 14 of them)
         owner = str(event.get("mailbox") or "")
-        if not owner or directory.get(str(event.get("organizer") or "")) != owner:
+        organizer = str(event.get("organizer") or "").lower()
+        if not owner or owner not in addresses_of:
             return [], "not_organizer_copy"
-        return [owner], None
+        ours = {str(a).rsplit("@", 1)[1].lower() for a in directory if "@" in str(a)}
+        if directory.get(organizer) == owner or ours and "@" in organizer and \
+                organizer.rsplit("@", 1)[1] not in ours:
+            return [owner], None
+        return [], "not_organizer_copy"
     if rule == "buyer":
         hint = str(event.get("owner_hint") or "")
         if hint and hint in addresses_of:
@@ -685,6 +704,11 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                              addresses_of=addresses_of)
     if named:
         summary["teams_items_named"] = named
+    if ask_judge is not None:
+        rechecked = recheck_open_replies(queue, registry, ask_judge, people, addresses_of,
+                                         stamp)
+        if rechecked["read"]:
+            summary["replies_rechecked"] = rechecked
     retitled = retitle_old_labels(queue, registry)
     if retitled:
         summary["items_retitled"] = retitled
@@ -855,65 +879,6 @@ def _reader_names(owner: str, addresses_of: Mapping[str, Any]) -> list[str]:
                                if "@" in str(a)))
 
 
-def _ask_wanted(queue: Queue, event: Mapping[str, Any], asking: Sequence[Mapping[str, Any]],
-                *, now: datetime, live: bool, addresses_of: Mapping[str, Any]
-                ) -> tuple[str, str, str] | None:
-    """``(key, reader, reader's first name)`` when the model must read whether ``event``
-    asks its reader something before it is handled: a chat message the cheap rules left
-    (``ask_check``), to its reader, that a rule needing an ask (``asking``) would otherwise
-    take, with no item for it yet and (live) not answered already. A verdict already cached
-    is put on the event (``asks``) and None returned: no call."""
-    # a chat message the cheap rules kept comes as asking (the model may say no); a mail
-    # they found no ask in comes as asking nothing (the model may say yes)
-    mail = event.get("channel") == "mail"
-    if event.get("ask_check") != "model" or not (event.get("asks") or mail) or \
-            not (event.get("to_me") or event.get("unaddressed")) or not event.get("cleared"):
-        return None
-    reader = str(event.get("mailbox") or "")
-    message = str(event.get("message_id") or event.get("object_id") or "")
-    # only a rule the verdict decides (it takes the event as asking, not as asking nothing)
-    rules = [a for a in asking if a.get("enabled") is not False and
-             a.get("on") == event.get("event_type")
-             and matches(a.get("when") or {}, {**event, "asks": True})
-             and not matches(a.get("when") or {}, {**event, "asks": False})]
-    if not reader or not message or not rules:
-        return None
-    cached = queue.chat_ask(message, reader)
-    if cached is not None:
-        event["asks"] = cached          # type: ignore[index]
-        return None
-    if all(queue.item("ap_" + _digest(a["id"], event["event_id"], reader)[:24]) is not None
-           for a in rules):
-        return None
-    names = _reader_names(reader, addresses_of)
-    if live and queue.answered_in_chat(reader, event, now, names):
-        return None                     # skipped as answered when handled: no call
-    return f"{message}|{reader}", reader, (names[0].capitalize() if names else "")
-
-
-def _judge_asks(judge: Any, queue: Queue, waiting: Sequence[tuple[dict[str, Any],
-                tuple[str, str, str]]], people: Any, stamp: str,
-                summary: dict[str, Any]) -> None:
-    """The model's verdicts on the waiting events, put on each (``asks``; any failure:
-    ``chat_ask_model.kept``: a chat message stays asking, a mail keeps the phrase rules'
-    answer); counts in ``summary["chat_ask"]``."""
-    from .chat_ask_model import kept as kept_answer
-    before = dict(judge.stats)
-    try:
-        got = judge.ask(queue, [(key, event, reader, name)
-                                for event, (key, reader, name) in waiting], people, stamp)
-    except Exception:  # noqa: BLE001 - any failure keeps every message (fail open)
-        got = {}
-        summary["skipped"]["chat_ask_judge_failed"] += len(waiting)
-    for event, (key, _reader, _name) in waiting:
-        event["asks"] = got.get(key, kept_answer(event))
-        if not event["asks"]:
-            summary["skipped"]["chat_ask_no"] += 1
-    counts = summary.setdefault("chat_ask", {})
-    for k, v in judge.stats.items():
-        counts[k] = round(counts.get(k, 0) + v - before.get(k, 0), 2)
-
-
 # workflow labels an item's title may still start with (the registry's earlier wording),
 # by autopilot id: the open items are re-titled to the registry's label now
 
@@ -928,7 +893,8 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
     from . import workflows as wf
     limits = registry["limits"]
     drafting = queue.__dict__.setdefault("_draft_context", {})
-    if event.get("event_type") == "message.received" and not event.get("cleared"):
+    if event.get("event_type") == "message.received" and not event.get("cleared") or \
+            autopilot_handlers.meeting_cleared(event, people):
         summary["skipped"]["participants_not_cleared"] += 1
         return "skipped", "participants_not_cleared"
     if pay_or_hr(event):

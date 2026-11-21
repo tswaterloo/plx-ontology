@@ -97,18 +97,27 @@ TEMPLATE_SPEC = {
 DOCUMENT_SPEC = {
     "name": DOCUMENT,
     "description": (
-        "Make a file the person can download: kind docx (Word: content is Markdown, one "
-        "paragraph per line: '# '/'## ' headings, '- ' bullets, **bold**, tables as '| a | "
-        "b |' rows with a '|---|---|' row under the header), xlsx (Excel: one row per line, "
-        "cells split by |), pptx (PowerPoint: a slide per '# ' heading, its lines below it; "
-        "a '[chart N]' line under a heading with up to 3 lines puts the chart on that "
-        "slide), csv (rows only, cells split by | as xlsx; no charts) or pdf. charts: up to 8 "
+        "Make a file the person can download, laid out and formatted for them (headings, "
+        "tables, numbers aligned, dates and amounts typed in Excel). content is Markdown, one "
+        "paragraph per line: '# '/'## ' headings, '- ' bullets, **bold**, *italic*, tables as "
+        "'| a | b |' rows with a '|---|---|' row under the header, '---' a divider, and for "
+        "a marked-up version {++added++} / {--removed--} (Word tracked changes). kind docx "
+        "(Word) or pdf (the same Markdown), xlsx (Excel: one row per line, cells split by "
+        "|; write dates as 2026-12-14 and amounts as numbers; **bold** a total), pptx "
+        "(PowerPoint: a slide per '# ' heading, its lines and one table below it; a "
+        "'[chart N]' line under a heading with up to 3 lines puts the chart on that slide), "
+        "csv (rows only, cells split by | as xlsx; no charts). A file for a customer or "
+        "supplier holds only what is on record or asked for: no terms, dates, conditions or "
+        "notes you made up, no internal ids, statuses or tool words, and never the "
+        "answer's '(unverified)' mark: a figure you could not check stays out of the file "
+        "or goes in a plain note, and you say so in the answer. charts: up to 8 "
         "charts, each {\"sql\": <a SELECT you ran with plx.sql>, \"type\", \"title\", "
         "\"x\", \"y\": [...], options as in a chart block}: the statement is read again as "
         "the person and the chart drawn from its rows (a native chart in Word, Excel and "
         "PowerPoint); a line '[chart N]' in content places chart N, the rest go at the end. "
         "tables: up to 8 tables, each {\"sql\": <a SELECT you ran with plx.sql>, "
-        "\"title\"}: EVERY row of the statement is read again as the person and put in the "
+        "\"title\"}: name each column as the reader should read it (AS \"PO number\"), "
+        "EVERY row of the statement is read again as the person and put in the "
         "file (up to 50,000 rows in xlsx/csv, 5,000 in docx/pdf, 30 in pptx), so a list "
         "of all orders, customers or lines is a table, never rows you type into content; "
         "a line '[table N]' in content places table N (the rest go at the end); a csv "
@@ -491,12 +500,17 @@ def documents(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 or name not in (DOCUMENT.replace(".", "_"), EDITED.replace(".", "_")):
             continue
         result = _parsed(event.get("result"))
+        changes: list[dict[str, str]] = []
         if name == EDITED.replace(".", "_"):
             source = result.get("edited_from") if isinstance(result, Mapping) else None
+            changes = _changes(result.get("diff") if isinstance(result, Mapping) else None)
             result = result.get("edited_copy") if isinstance(result, Mapping) else None
             if isinstance(source, str) and source.startswith("file:f_") \
                     and isinstance(result, Mapping):
                 older = f"/api/instruct/files/{source[len('file:'):]}"
+                # the copy edited again: its changes come first in the newer copy's
+                changes = [c for d in out if d["download_url"] == older
+                           for c in d["changes"]] + changes
                 out = [d for d in out if d["download_url"] != older]
         url = result.get("download_url") if isinstance(result, Mapping) else None
         if not isinstance(url, str) or not url.startswith("/api/instruct/files/f_") \
@@ -504,5 +518,19 @@ def documents(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             continue
         out.append({"name": str(result.get("name") or "Document")[:200],
                     "kind": result.get("kind") if result.get("kind") in KINDS else "docx",
-                    "size": int(result.get("size") or 0), "download_url": url})
+                    "size": int(result.get("size") or 0), "download_url": url,
+                    "changes": changes[:MOST_CHANGES]})
     return out
+
+
+MOST_CHANGES = 60
+
+
+def _changes(diff: Any) -> list[dict[str, str]]:
+    """An edit's diff (``doc_edit``: field, before, after) as the answer shows it."""
+    if not isinstance(diff, list):
+        return []
+    def text(v: Any) -> str:
+        return "" if v is None else str(v)[:600]
+    return [{"field": text(d.get("field"))[:120] or "change", "before": text(d.get("before")),
+             "after": text(d.get("after"))} for d in diff if isinstance(d, Mapping)]

@@ -160,6 +160,14 @@ COMMON_CHUNKS = 50000
 # but often enough to fill the page there ("purchase order" in Teams: 5 in its newest
 # 4,000 messages; the word index's whole match, every document's chunks, took 18 s)
 STAGES, DEEPER = 2, 16
+# a party's search with query words (``search_sql``) first reads that party's own rows in
+# the dates from its table (by the party's index, newest first, at most this many); when
+# they are fewer, the page is those of them the reader's view shows that hold the words,
+# each checked by its own header and text. A party has few rows: its 1,761 mails since
+# January were read in 50 ms, where walking the newest rows of every mail for it and then
+# the words' whole match ran 40-48 s and past the 25 s limit (5 of 555 calls, 11-21). A
+# party with more rows reads the walk as before.
+PARTY_ROWS = 2000
 # the tables whose text is short (about one text chunk a row: Teams, 215,475 chunks for
 # 253,554 messages) read a common word's rows past the walk from their own rows, each row
 # checked by its own text (live, all of Teams: 1.6 s), never from the word index's whole
@@ -254,6 +262,27 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         own_header = (f"(SELECT 1 FROM {biz}.{view} b WHERE b.handle = e.handle AND "
                       "b.words @@ %(q)s::tsquery LIMIT 1)")
         own_text = f"(SELECT 1 {text} AND b.handle = e.handle LIMIT 1)"
+        if party_kind is not None and not cursor:
+            # the party's own rows first (``PARTY_ROWS``): from its table by the party's
+            # index in the dates (handles only, never a row shown), then each through the
+            # reader's view by handle with the same conditions, by its own header (tier 1)
+            # or text (tier 0). Fewer than PARTY_ROWS: these parts answer and the walk below
+            # is never read; else the walk answers and these are never read (one-time
+            # filters). Same rows, same order: only the time differs.
+            mine_of = f"party_{at}"
+            on_b = [_PARTY[party_kind].replace("e.", "b.")] + (
+                [f"b.{when} >= %(since)s"] if since else []) + (
+                [f"b.{when} < %(until)s"] if until else []) + [f"b.{when} IS NOT NULL"]
+            ctes.append(f"{mine_of} AS MATERIALIZED (SELECT b.handle FROM {biz}.{view} b "
+                        "WHERE " + " AND ".join(on_b) + f" ORDER BY b.{when} DESC, b.handle "
+                        f"DESC LIMIT {PARTY_ROWS})")
+            held = f"(SELECT count(*) FROM {mine_of})"
+            by_party = [f"{held} < {PARTY_ROWS}", *conds,
+                        f"e.handle = ANY(ARRAY(SELECT handle FROM {mine_of}))"]
+            parts.append(part(1, by_party + [f"{own_header} IS NOT NULL"]))
+            parts.append(part(0, by_party + [f"{own_header} IS NULL",
+                                             f"{own_text} IS NOT NULL"]))
+            conds = [f"{held} >= {PARTY_ROWS}", *conds]
         # tier 1 (header rows) and tier 0 (text rows whose header lacks a word): a cursor
         # of tier 0 is past every header row; one of tier 1 has every text row still to come
         tiers = [] if cursor and cursor_tier == 0 else [

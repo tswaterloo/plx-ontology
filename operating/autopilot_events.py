@@ -408,18 +408,16 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
 
 
 def _mail_ask(it: Any, text: str, subject: str, *, to_me: bool) -> dict[str, Any]:
-    """A mail's ``asks``: True when the phrase rules find an ask (``inbox_triage``); else
-    False, and for a mail sent to the reader (in To) whose text the model may read (two
-    words or more, no notice that no reply is wanted) ``ask_check`` "model": the chat ask
-    model reads it (``autopilot._ask_wanted``) and its "yes" sets it True. With no model
-    configured it stays False (the phrase rules' answer)."""
+    """A mail's ``asks``: the phrase rules' answer (``inbox_triage``), what a cycle with no
+    model keeps; and for every mail with words (two or more) ``ask_check`` "model": the
+    triage model reads what it is to its reader (``chat_ask_model``: reply, fyi, automated,
+    notice) whatever the phrase rules found, for a mail sent to the reader (in To)
+    (``autopilot._ask_wanted``), so an automated or
+    FYI mail the rules read as asking makes no reply item, and a real ask they missed does."""
     from .chat_ask_model import certain_no
-    if it.reply_ask(text) or it.direct_question(text):
-        return {"asks": True}
-    if to_me and not certain_no(text, mentioned=True) and \
-            not it.NO_REPLY.search(text) and not it.NOTICE.search(text):
-        return {"asks": False, "ask_check": "model"}
-    return {"asks": False}
+    asks = bool(it.reply_ask(text) or it.direct_question(text))
+    return {"asks": asks, **({"ask_check": "model"} if to_me and
+                             not certain_no(text, mentioned=True) else {})}
 
 
 def reply_all(sender: str, to: Sequence[str], cc: Sequence[str], mine: Iterable[str]

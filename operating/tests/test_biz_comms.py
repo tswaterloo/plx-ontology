@@ -802,6 +802,15 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 self.assertFalse(any("match" in h for h in self.search(
                     tmp.OWNER, query="communicate", limit=1,
                     cursor=out["completeness"]["next_cursor"])["documents"]))
+        # read ahead for every ranked object, shown only for those the gate passed: when
+        # the gate passes none, no row comes back as close in meaning, though they were read
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", return_value=ranked), \
+                mock.patch.object(plug, "_gated",
+                                  side_effect=lambda r, *a: plug.Ranked([], "hybrid:x")):
+            docs = self.search(tmp.OWNER, query="zzqq yyxx", limit=50)["documents"]
+        self.assertFalse([h for h in docs if "meaning_rank" in h
+                          or "close in meaning" in str(h.get("match"))])
         # the ranking failed or late: a few-hit search still widens by the words held
         with mock.patch.object(plug, "enabled", return_value=True), \
                 mock.patch.object(plug, "_rank", side_effect=RuntimeError("down")):
@@ -913,7 +922,9 @@ class EmailsThroughTheDoor(unittest.TestCase):
         middle = sorted(at[h] for h in hits)[len(hits) // 2]
         asks = [{"query": w} for w in ("agreed", "note", "samples", "order", "booking")] + [
             {"query": "samples", "since": middle}, {"query": "samples", "until": middle},
-            {"query": "note", "participant": "@vendor.example"}]
+            {"query": "note", "participant": "@vendor.example"},
+            {"query": "samples", "participant": "@vendor.example", "since": middle},
+            {"query": "note", "participant": tmp.SUPPLIER}]
         import psycopg
         with psycopg.connect(self.dsn) as pg:   # the fixture's words are rare: no walk
             self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), 1)
@@ -935,6 +946,14 @@ class EmailsThroughTheDoor(unittest.TestCase):
                                 mock.patch.object(cs, "WALK_ROWS", rows), \
                                 mock.patch.object(cs, "COMMON_CHUNKS", 0):   # every word walks
                             self.assertEqual(pages(actor, limit, **dict(ask)), whole)
+                    if "participant" in ask:
+                        # a party's own rows read first (``PARTY_ROWS``) or, past them, the
+                        # walk: the same pages
+                        for most in (1, 3, 100000):
+                            with self.subTest(actor=sorted(actor.principals), ask=ask,
+                                              limit=limit, party_rows=most), \
+                                    mock.patch.object(cs, "PARTY_ROWS", most):
+                                self.assertEqual(pages(actor, limit, **dict(ask)), whole)
                     walked += sum(map(len, whole)) > 7
         self.assertTrue(walked, "no search held more rows than the walk: the index read "
                                 "past the walk never ran")
@@ -1028,6 +1047,30 @@ class EmailsThroughTheDoor(unittest.TestCase):
         held = got(tmp.OWNER, "zzrenovation zzideas")   # every word as typed
         self.assertIn(mine, held)
         self.assertIsNone(held[mine])
+        # the stem pass runs beside the word pass (its own pooled connection), not after
+        # it: it starts while the (slowed) word pass is still reading, and its rows still
+        # come only through the reader's own view
+        import threading
+        import time as _time
+        real = ts.SqlTool._comms_scoped
+        spans, lock = [], threading.Lock()
+
+        def timed(tool, conn, settings, work, actor):
+            began = _time.monotonic()
+            if getattr(work, "__name__", "") == "work":
+                _time.sleep(0.4)   # the word pass
+            try:
+                return real(tool, conn, settings, work, actor)
+            finally:
+                with lock:
+                    spans.append((getattr(work, "__name__", ""), began, _time.monotonic()))
+        with mock.patch.object(ts.SqlTool, "_comms_scoped", timed):
+            hits = got(tmp.NARROW, "zzrenovating zzidea")
+        self.assertNotIn(mine, hits)
+        self.assertEqual(hits.get(both), "every word, by its stem")
+        words_span = next(s for s in spans if s[0] == "work")
+        stem_span = next(s for s in spans if s[0] == "stemmed")
+        self.assertLess(stem_span[1], words_span[2], spans)
 
     def test_a_full_readers_search_finds_mail_by_its_attachments_own_text(self):
         """Mail whose attachment's text (not its own) holds every query word: on a full

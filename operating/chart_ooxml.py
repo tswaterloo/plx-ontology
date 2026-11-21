@@ -150,9 +150,9 @@ def blocks(chart: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def provenance(chart: Mapping[str, Any]) -> list[str]:
     """What a file says about where its numbers come from."""
-    lines = [f"Drawn from {chart.get('rows') or len(chart.get('labels') or ())} rows of a "
-             "query read as you" + (f", data as of {chart['as_of']}" if chart.get("as_of")
-                                    else "") + "."]
+    count = chart.get('rows') or len(chart.get('labels') or ())
+    lines = [f"Source: {count} {'record' if count == 1 else 'records'}"
+             + (f", as of {str(chart['as_of'])[:10]}" if chart.get("as_of") else "") + "."]
     if chart.get("partial"):
         lines.append("The query returned only its first rows: this is of those rows.")
     if chart.get("shown") and chart.get("rows") and chart["shown"] < chart["rows"]:
@@ -638,8 +638,10 @@ def sheet_parts(chart: Mapping[str, Any], sheet: int, first_chart: int, name: st
     return parts, overrides, len(natives)
 
 
-def workbook(sheets: Sequence[tuple[str, dict[str, Any], dict[str, str]]]) -> bytes:
-    """A workbook of ``sheets`` (name, parts, overrides), sheet n being ``sheet{n}.xml``."""
+def workbook(sheets: Sequence[tuple[str, dict[str, Any], dict[str, str]]],
+             styles: str = STYLES) -> bytes:
+    """A workbook of ``sheets`` (name, parts, overrides), sheet n being ``sheet{n}.xml``;
+    ``styles``: its styles part (one whose first five cell formats are ``STYLES``')."""
     ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
     listed = "".join(f'<sheet name="{escape(name[:31])}" sheetId="{i}" r:id="rId{i}"/>'
                      for i, (name, _, _) in enumerate(sheets, 1))
@@ -651,7 +653,7 @@ def workbook(sheets: Sequence[tuple[str, dict[str, Any], dict[str, str]]]) -> by
             [(f"rId{i}", "worksheet", f"worksheets/sheet{i}.xml")
              for i in range(1, len(sheets) + 1)]
             + [(f"rId{len(sheets) + 1}", "styles", "styles.xml")]),
-        "xl/styles.xml": STYLES}
+        "xl/styles.xml": styles}
     overrides = {"/xl/workbook.xml": "application/vnd.openxmlformats-officedocument."
                  "spreadsheetml.sheet.main+xml",
                  "/xl/styles.xml": "application/vnd.openxmlformats-officedocument."

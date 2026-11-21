@@ -281,6 +281,14 @@ def first_pass(backend: Any, stop: threading.Event,
     return waited
 
 
+def warm_app_name(api: Optional[str]) -> str:
+    """The warm-up's Postgres ``application_name``: the API's own (its unit's
+    ``PGAPPNAME``) with ``-warm`` (``deploy/ops/pg_priority.py`` lowers those backends;
+    ``plx-release``'s room check counts them as the API's), at most 63 characters."""
+    base = (api or "plx-workbench")[:58]
+    return base if base.endswith("-warm") else base + "-warm"
+
+
 def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
           fixtures: Any = None, live: Any = None, warmed: Any = None) -> int:
     """The warm-up process: its own runtime (``fixtures``: the fixture world's module, for
@@ -292,6 +300,9 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
     if fixtures is None:   # this process's own (a test's thread shares its process's)
         from operating.pg.pool import SESSIONS_MAX_ENV
         os.environ[SESSIONS_MAX_ENV] = str(warm_pg_sessions())
+        # its Postgres logins named as the warm-up's (its read workers inherit it), so their
+        # backends run below the API's own (deploy/ops/pg_priority.py)
+        os.environ["PGAPPNAME"] = warm_app_name(os.environ.get("PGAPPNAME"))
     from operating import parent_watch
     # ends with the API (stopped without its exit handlers it never sends None)
     parent_watch.die_with(parent_watch.spawned_parent())

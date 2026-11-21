@@ -3579,6 +3579,8 @@ export type components = {
             kind: "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "histogram" | "heatmap" | "waterfall" | "funnel" | "combo" | "kpi" | "table";
             /** Labels */
             labels: string[];
+            /** @description The agreed measure or report its rows are, with its definition. */
+            measure?: components["schemas"]["AskChartMeasure"] | null;
             /**
              * Omitted
              * @description Series (split values, panels) not drawn.
@@ -3633,6 +3635,28 @@ export type components = {
              * @description A scatter's x values.
              */
             xs?: (number | null)[] | null;
+        };
+        /**
+         * AskChartMeasure
+         * @description The catalogue entry a chart's result answers (``operating.measures``).
+         */
+        AskChartMeasure: {
+            /** Definition */
+            definition: string;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Owner
+             * @default
+             */
+            owner: string;
+            /**
+             * Period
+             * @default
+             */
+            period: string;
         };
         /**
          * AskChartPanel
@@ -3732,9 +3756,15 @@ export type components = {
         };
         /**
          * AskDocument
-         * @description A file the Ask made for you: its name, kind, size and download link.
+         * @description A file the Ask made for you: its name, kind, size and download link; for an edited
+         *     copy or a redline, every change in it (before and after) to review before using it.
          */
         AskDocument: {
+            /**
+             * Changes
+             * @description An edited copy's or a redline's changes, in order (empty for a new file).
+             */
+            changes?: components["schemas"]["AskDocumentChange"][];
             /** Download Url */
             download_url: string;
             /**
@@ -3746,6 +3776,25 @@ export type components = {
             name: string;
             /** Size */
             size: number;
+        };
+        /**
+         * AskDocumentChange
+         * @description One change in an edited copy: where (a paragraph, slide, cell or form blank), the
+         *     text as it was and as it is in the copy.
+         */
+        AskDocumentChange: {
+            /**
+             * After
+             * @default
+             */
+            after: string;
+            /**
+             * Before
+             * @default
+             */
+            before: string;
+            /** Field */
+            field: string;
         };
         /**
          * AskDraft
@@ -7774,6 +7823,11 @@ export type components = {
             /** Items */
             items: components["schemas"]["InsightInfo"][];
             /**
+             * Measures
+             * @description The agreed measures Ask and the charts use, with their definitions.
+             */
+            measures?: components["schemas"]["MeasureInfo"][];
+            /**
              * Saving
              * @description Whether you can pin and save insights here.
              */
@@ -8852,6 +8906,49 @@ export type components = {
             sign_in?: "microsoft" | "access_link" | "demo";
             /** Tenant */
             tenant: string;
+        };
+        /**
+         * MeasureInfo
+         * @description One agreed business measure (``operating/measures.json``): its definition only, no
+         *     figure. The same for every reader: what it reads is decided when it runs.
+         */
+        MeasureInfo: {
+            /**
+             * Ask
+             * @description A question it answers, to try in Ask.
+             */
+            ask?: string | null;
+            /** Definition */
+            definition: string;
+            /**
+             * Dimensions
+             * @description What it can be broken down by.
+             */
+            dimensions: string[];
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Owner
+             * @description Who agrees the definition (Finance, Quality, ...).
+             */
+            owner: string;
+            /**
+             * Period
+             * @description The period it reads when none is named.
+             */
+            period: string;
+            /**
+             * Source
+             * @description The business view it is read from.
+             */
+            source: string;
+            /**
+             * Unit
+             * @description money, count, quantity or percent.
+             */
+            unit: string;
         };
         /**
          * MeetingFollowUp

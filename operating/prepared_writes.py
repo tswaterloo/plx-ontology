@@ -1117,17 +1117,36 @@ DOC_TOOL_SPEC = {
     "description": (
         "Prepare an edit of a SharePoint or OneDrive document's own content for the person "
         "to confirm in the app (nothing is written by this tool), or edit a file the person "
-        "attached (a copy for them, nothing to confirm). citation: the document's "
+        "attached (a copy for them, nothing to confirm). Every part of the file you do not "
+        "change stays exactly as it was, formatting included. citation: the document's "
         "sharepoint:// handle as read, or the attached file's file: citation. Word, "
         "PowerPoint or text: find (the exact text, quoted enough to occur once) and "
-        "replace. Excel: sheet, cell (like B7) and value. reason: one line why. It answers "
-        "the diff (before/after) or why it was refused."),
+        "replace. Excel: sheet, cell (like B7) and value (an ISO date into a date cell "
+        "stays a date; an empty cell may be written). changes: a list of such edits made "
+        "together on one copy (up to 50: when a number changes, change the totals and "
+        "other text that follow from it in the same call). fields: fill a Word form's "
+        "blanks by label, {label: value} (a table cell beside its label, a 'Label: ____' "
+        "line, or in a grid 'row / column' like 'pH / Result'); fields {} answers the "
+        "form's blanks. Fill only what the records hold; leave the rest blank and say so "
+        "(never write '(unverified)' into a file). "
+        "compare_with: the citation of a newer version of the same Word document: a "
+        "redline copy (Word tracked changes) of what changed from citation to it, and "
+        "the list of changes; report only those. reason: one line why. It answers the "
+        "diff (before/after) or why it was refused."),
     "inputSchema": {
         "type": "object", "additionalProperties": False,
         "required": ["citation", "reason"],
         "properties": {"citation": {"type": "string"}, "find": {"type": "string"},
                        "replace": {"type": "string"}, "sheet": {"type": "string"},
                        "cell": {"type": "string"}, "value": {"type": ["string", "number"]},
+                       "changes": {"type": "array", "maxItems": 50, "items": {
+                           "type": "object", "properties": {
+                               "find": {"type": "string"}, "replace": {"type": "string"},
+                               "sheet": {"type": "string"}, "cell": {"type": "string"},
+                               "value": {"type": ["string", "number"]}}}},
+                       "fields": {"type": "object",
+                                  "additionalProperties": {"type": ["string", "number"]}},
+                       "compare_with": {"type": "string"},
                        "reason": {"type": "string"}}},
     "annotations": {"readOnlyHint": True, "destructiveHint": False},
 }

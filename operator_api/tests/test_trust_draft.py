@@ -889,7 +889,8 @@ class FollowReadsTheLayers(Fixture):
 class TrustReadsTheServedArea(unittest.TestCase):
     """11-13: warm Trust took 2.5-12.5 s, reading the whole autopilot area again on every
     visit. It reads the autopilot page's served copy; one served stale (the queue or a
-    switch moved since) is read again, so Trust never shows an older workflow state."""
+    switch moved since) is shown while serving it reads it again off the request (11-21:
+    the queue file moves every 10-40 s, so re-reading here made most visits 1.2-3.9 s)."""
 
     def build(self, served):
         from types import SimpleNamespace
@@ -907,14 +908,14 @@ class TrustReadsTheServedArea(unittest.TestCase):
             page = trust.build(backend, object(), environ={})
         return [w.workflow for w in page["autopilot"]], calls
 
-    def test_a_current_served_area_is_read_once_and_a_stale_one_again(self):
+    def test_a_served_area_current_or_stale_is_shown_and_never_read_again_here(self):
         from types import SimpleNamespace
         current = SimpleNamespace(workflows=[SimpleNamespace(workflow="kept")],
                                   stale_since=None)
         self.assertEqual(self.build(current), (["kept"], ["served"]))
         stale = SimpleNamespace(workflows=[SimpleNamespace(workflow="kept")],
                                 stale_since="2026-11-13T15:00:00Z")
-        self.assertEqual(self.build(stale), (["fresh"], ["served", "fresh"]))
+        self.assertEqual(self.build(stale), (["kept"], ["served"]))
 
     def test_a_served_area_that_is_busy_is_read_here(self):
         def busy(who):

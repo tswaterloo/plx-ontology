@@ -44,16 +44,36 @@ def _unchanged_or(host: Any, name: str, db: Any, read: Any) -> Any:
     return value
 
 
+_MAILBOX_COLUMNS: dict[int, tuple[Any, int, tuple[str, ...]]] = {}
+
+
 def _mailbox_stamp(db: Any) -> tuple[str, str]:
     """The mail capture's mailbox rows (``_MAILBOX_ROWS``), hashed: every column but
-    when the identity was last checked (each capture run rewrites it; no grant reads it)."""
+    when the identity was last checked (each capture run rewrites it; no grant reads it).
+
+    Read as ONE row (``json_group_array`` of each row's columns, in the rows' order): the
+    mail capture commits several times a minute, so this is read on most requests, and
+    row by row each of the ~170 rows waited for the interpreter lock again on a busy API
+    (11-21: the top cost of a fresh session's Home after the shared stamps). The columns
+    are the query's own, read again whenever the store's schema changes."""
     from integrations import capture_mail
-    cursor = db.execute(capture_mail._MAILBOX_ROWS)
-    names = [column[0] for column in cursor.description]
-    rows = cursor.fetchall()
-    kept = [i for i, name in enumerate(names) if name != "identity_checked_at"]
-    return ("mailboxes", hashlib.sha256(json.dumps(
-        [[row[i] for i in kept] for row in rows], default=str).encode()).hexdigest())
+    version = db.execute("PRAGMA schema_version").fetchone()[0]
+    held = _MAILBOX_COLUMNS.get(id(db))
+    if held is None or held[0] is not db or held[1] != version:
+        cursor = db.execute(f"SELECT * FROM ({capture_mail._MAILBOX_ROWS}) LIMIT 0")
+        names = tuple(column[0] for column in cursor.description)
+        cursor.fetchall()
+        held = (db, version, names)
+        if len(_MAILBOX_COLUMNS) > 64:
+            _MAILBOX_COLUMNS.clear()
+        _MAILBOX_COLUMNS[id(db)] = held   # the connection itself held: its id never reused
+    kept = [name for name in held[2] if name != "identity_checked_at"]
+    if len(set(kept)) != len(kept) or any('"' in name for name in kept):
+        raise ValueError("mailbox columns not distinct")   # read now (the file stamp)
+    columns = ", ".join(f'r."{name}"' for name in kept)
+    got = db.execute(f"SELECT json_group_array(json_array({columns})) FROM "
+                     f"({capture_mail._MAILBOX_ROWS}) r").fetchone()
+    return ("mailboxes", hashlib.sha256(got[0].encode()).hexdigest())
 
 
 def _drives_stamp(db: Any) -> tuple[str, tuple]:

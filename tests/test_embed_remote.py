@@ -265,6 +265,77 @@ class RemotePassTests(unittest.TestCase):
         self.assertEqual((code, report.get("refused")), (2, "another_backfill_running"))
         self.assertEqual(self.vectors()["c1"], (None, None))
 
+    # --- the search follower's step 3 on a Spark GPU (operating.embed.spark_embed) ----
+
+    def follow_embed(self, workers, *, hosts=("a",), budget=60.0):
+        """``follow._embed_spark_first`` over the pending rows: the Spark path through the
+        real ``embed`` with the played host; the box path recorded (no CPU model here)."""
+        import argparse
+        import functools
+        from operating.embed import follow, spark_embed
+        from operating.embed.__main__ import embed as real_embed
+        local = []
+
+        def embed(conn, values, embedder=None, **kw):
+            if embedder is None:
+                local.append(kw["budget_seconds"])
+                return {"local": True}
+            return real_embed(conn, values, embedder=embedder, **kw)
+        opened = functools.partial(spark_embed.embedder, local_cmd=workers)
+        args = argparse.Namespace(embed_seconds=budget, embed_here=False)
+        with mock.patch.object(spark_embed, "fit_hosts", lambda state: list(hosts)), \
+                mock.patch.object(spark_embed, "embedder", opened):
+            got = follow._embed_spark_first(args, self.tmp, self.conn,
+                                            {"PLX_EMBED_MODEL": MODEL}, embed)
+        return got, local
+
+    def test_the_followers_embedding_runs_on_a_fit_spark_and_never_on_the_box(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.conn.execute("TRUNCATE search.chunks")
+                self.conn.commit()
+                texts = {f"c{i}": self.add(i, f"follow {n} {i} " + "y" * (i * 31 % 700))
+                         for i in range(n)}
+                got, local = self.follow_embed([self.worker()])
+                self.assertEqual(got.get("on"), "spark", got)
+                self.assertEqual(local, [])
+                self.assert_embedded(texts)          # no row lost, each its own vector
+
+    def test_a_host_unlike_this_box_or_off_in_parity_is_not_used_and_the_box_embeds(self):
+        self.add(1, "pending")
+        got, local = self.follow_embed([self.worker(revision="other")])
+        self.assertEqual((got.get("on"), len(local)), ("box", 1))
+        self.assertEqual(self.vectors()["c1"], (None, None))   # nothing from that host
+        # same model words, other vectors: refused by the parity check on stored rows
+        self.add(2, "stored", vector=expected("Source: x\nTitle: T2\n\nstored"))
+        got, local = self.follow_embed([self.worker(salt="drift")])
+        self.assertEqual((got.get("on"), len(local)), ("box", 1))
+        self.assertEqual(self.vectors()["c1"], (None, None))
+
+    def test_a_host_failing_part_way_keeps_what_it_stored_and_the_box_does_the_rest(self):
+        from operating.embed import __main__ as em
+        texts = {f"c{i}": self.add(i, f"part {i}") for i in range(12)}
+        with mock.patch.object(em, "EMBED_BATCH", 4):
+            got, local = self.follow_embed([self.worker(die_after=1)], budget=60.0)
+        self.assertEqual(got.get("on"), "box_after_spark", got)
+        self.assertEqual(len(local), 1)
+        self.assertLess(local[0], 60.0)              # only the budget left
+        stored = [cid for cid, (vec, _) in self.vectors().items() if vec is not None]
+        self.assertTrue(stored)                      # the first batch stayed
+        self.assert_embedded({cid: texts[cid] for cid in stored})
+
+    def test_no_fit_host_or_an_unreadable_health_file_embeds_on_the_box(self):
+        from operating.embed import spark_embed
+        self.assertEqual(spark_embed.fit_hosts(self.tmp), [])     # no health file
+        self.assertEqual(spark_embed.fit_hosts(self.tmp, load=lambda state: {
+            "hosts": {"s1": {"embed": False}, "s2": {"embed": "yes"}}}), [])
+        self.assertEqual(spark_embed.fit_hosts(self.tmp, load=lambda state: {
+            "hosts": {"s1": {"embed": True}}}), ["s1"])
+        self.add(1, "pending")
+        got, local = self.follow_embed([self.worker()], hosts=())
+        self.assertEqual((got.get("on"), len(local)), ("box", 1))
+
+
 
 class WorkerParityTests(unittest.TestCase):
     def test_worker_constants_match_the_indexing_provider(self):

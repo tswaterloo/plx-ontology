@@ -979,8 +979,8 @@ class WaitingOnYou(World):
     def test_a_failed_model_call_keeps_the_phrase_rules_answer_for_mail(self):
         """A timeout, an error or an unparsed reply never turns mail into an ask: the mail
         keeps the phrase rules' answer (nothing prepared for a request without a question
-        form), is not cached, and is read again on a later cycle; a phrase-rule ask is
-        prepared whatever the model does."""
+        form), is not cached, and is read again on a later cycle. A phrase-rule ask is read
+        by the model too (it may be automated); with no verdict it stays prepared."""
         for fail in ("raise", "none", "short"):
             with self.subTest(fail=fail):
                 self.setUp()
@@ -993,11 +993,12 @@ class WaitingOnYou(World):
                 model = StubAsks(yes=(self.REQUEST,), fail=fail)
                 out = self.mail_run(model)
                 got = out["prepared_by_autopilot"].get("reply_prep", 0)
-                # "short": the batch's last verdict is missing; the others are the model's
-                self.assertEqual(got, 1 + (2 if fail == "short" else 0))
+                # "short": the batch's last verdict (the phrase-rule ask's) is missing: it
+                # keeps the rules' answer; the three requests are the model's yes
+                self.assertEqual(got, 1 + (3 if fail == "short" else 0))
                 q = self.queue_file()
                 cached = q.conn.execute("SELECT count(*) FROM chat_asks").fetchone()[0]
-                self.assertEqual(cached, 2 if fail == "short" else 0)
+                self.assertEqual(cached, 3 if fail == "short" else 0)
 
     def own_again(self, i: int) -> None:
         """A second own message in thread ``i``, the day before the window."""

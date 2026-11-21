@@ -1,0 +1,25 @@
+# PLX Workbench: Postgres backends of background work (the allow-listed job units, the API's warm-up)
+# at nice 10, the API's own request backends left at normal priority
+# (deploy/ops/pg_priority.py). Runs as the database's own account: it may only raise the
+# nice value of that account's processes, never lower one. Reads pg_stat_activity only.
+[Unit]
+Description=PLX Postgres background backends at lower CPU priority
+After=postgresql.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/python3 @PLX_CURRENT@/deploy/ops/pg_priority.py --interval 1 --background-nice 10
+Restart=always
+RestartSec=5
+Nice=0
+CPUWeight=100
+MemoryMax=128M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@ naming Freightcom never reaches the model; unknown arguments fail closed."""
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from operating import ontology_tools_search as s
@@ -375,6 +376,33 @@ class RoutingTest(unittest.TestCase):
         # files too: this comms leg did not search them (no ``searched``), so the old way
         self.assertEqual(seen["comms"][0]["sources"], ["graph_mail", "sharepoint", "teams"])
         self.assertEqual(seen["docs"][0]["sources"], ["sharepoint", "original"])
+
+    def test_each_legs_time_is_on_the_calls_record_and_never_in_its_result(self):
+        from operating import call_phases
+        seen, comms, docs = self.calls()
+        with call_phases.record() as took:
+            got = s.run(docs, {"query": "pallets"}, call_comms=comms)
+        self.assertEqual(sorted(took), ["comms", "documents"])
+        self.assertTrue(all(n == 1 and ms >= 0 for n, ms in took.values()))
+        self.assertNotIn("phases", json.dumps(got))
+        got = s.run(docs, {"query": "pallets"}, call_comms=comms)   # no record: nothing kept
+        self.assertEqual(len(got["documents"]), 2)
+
+    def test_the_gates_end_line_puts_the_phases_on_the_calls_event(self):
+        from operating.agent_session import attach_call_timing
+        events = [{"type": "tool_call", "name": "plx.search", "arguments": {"query": "a"}},
+                  {"type": "tool_call", "name": "plx.sql", "arguments": {"sql": "x"}}]
+        lines = [json.dumps(x) for x in (
+            {"event": "start", "id": 1, "name": "plx.search", "arguments": {"query": "a"},
+             "at": 10.0},
+            {"event": "start", "id": 2, "name": "plx.sql", "arguments": {"sql": "x"}, "at": 10.1},
+            {"event": "end", "id": 2, "at": 10.3},
+            {"event": "end", "id": 1, "at": 19.0,
+             "phases": {"comms": [1, 6100], "documents": [1, 2400]}})]
+        attach_call_timing(events, lines, 10.0)
+        self.assertEqual(events[0]["phases"], {"comms": [1, 6100], "documents": [1, 2400]})
+        self.assertEqual(events[0]["elapsed_ms"], 9000)
+        self.assertNotIn("phases", events[1])
 
     def test_a_search_too_large_for_one_response_keeps_the_hits_that_fit_and_says_so(self):
         """Live: an all-sources search of 20 hits a leg was refused whole as too large

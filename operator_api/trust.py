@@ -516,9 +516,11 @@ def build(backend: Any, reader: Any, environ: Optional[Mapping[str, str]] = None
     note = None
     # the autopilot page's own served copy (``WorkspaceBackend.autopilot_area``: kept per
     # reader under the same access rules, read again when its inputs move), not a fresh
-    # read of the whole area on every visit (11-13: warm Trust 2.5-12.5 s)
-    # read under the inputs served now; one served stale (its queue or switches moved
-    # since) is read again here, so Trust never shows an older workflow state
+    # read of the whole area on every visit (11-13: warm Trust 2.5-12.5 s). One served
+    # stale (the queue file, rewritten every 10-40 s, or a switch moved since) is shown as
+    # it is: serving it already started its read again off the request, so the next visit
+    # has it (11-21: re-reading it here made Trust 1.2-3.9 s on most visits). Only with no
+    # copy at all (never read, or refused) is the area read here.
     served = getattr(backend, "autopilot_area", None)
     fresh_read = getattr(backend, "_area_read", None)
 
@@ -529,7 +531,7 @@ def build(backend: Any, reader: Any, environ: Optional[Mapping[str, str]] = None
                 got = served(who)
             except Exception:  # noqa: BLE001 - busy or refused: read it here instead
                 got = None
-        if got is None or getattr(got, "stale_since", None) is not None:
+        if got is None:
             got = fresh_read(who) if callable(fresh_read) else got
         if got is None:
             raise LookupError("no autopilot area")

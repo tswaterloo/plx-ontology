@@ -121,6 +121,56 @@ class PoolTimeoutAcrossBorrowsTests(unittest.TestCase):
         self.assertEqual(len(ids), 1)
         self.assertEqual(seen, [(True, True, "300ms")] * 5)
 
+    def test_the_hand_back_is_one_round_trip_and_undoes_a_borrowers_settings(self):
+        """A borrower's own settings, mode and open transaction are gone on the next
+        borrow, the limits hold, and the hand-back sends one statement string (it sent
+        ten round trips; each waited for the interpreter lock again on a busy API)."""
+        import psycopg
+        pool = pg_pool.Pool(self.dsn, max_size=1, configure=lambda conn: None,
+                            statement_timeout_ms=300, idle_in_transaction_ms=900)
+        self.addCleanup(pool.close)
+        with pool.connection() as conn:
+            conn.execute("SET work_mem = '77MB'")
+            conn.execute("SET statement_timeout = 0")
+            conn.execute("SELECT 1")   # left open: the hand-back rolls it back
+        sent = []
+        real = psycopg.Connection.execute
+
+        def counted(self_, query, *a, **k):
+            sent.append(query)
+            return real(self_, query, *a, **k)
+        with pool.connection() as conn:
+            self.assertNotEqual(conn.execute("SHOW work_mem").fetchone()[0], "77MB")
+            self.assertEqual(conn.execute("SHOW statement_timeout").fetchone()[0], "300ms")
+            self.assertEqual(conn.execute(
+                "SHOW idle_in_transaction_session_timeout").fetchone()[0], "900ms")
+            self.assertFalse(conn.autocommit)
+        with mock.patch.object(psycopg.Connection, "execute", counted):
+            with pool.connection() as conn:
+                pass
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0].startswith("RESET ALL; SET statement_timeout = 300"))
+
+    def test_the_default_pool_keeps_the_search_settings_on_every_borrow(self):
+        """The default configure's search settings ride in the hand-back: a borrower that
+        changed them gets them back (needs the vector library on the server)."""
+        import psycopg
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as admin:
+                admin.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        except psycopg.Error as exc:
+            self.skipTest(f"no vector library: {type(exc).__name__}")
+        pool = pg_pool.Pool(self.dsn, max_size=1)
+        self.addCleanup(pool.close)
+        want = (pg_pool.ITERATIVE_SCAN, str(pg_pool.DEFAULT_EF_SEARCH))
+        for borrow in range(3):
+            with pool.connection() as conn:
+                got = (conn.execute("SHOW hnsw.iterative_scan").fetchone()[0],
+                       conn.execute("SHOW hnsw.ef_search").fetchone()[0])
+                self.assertEqual(got, want)
+                conn.execute("SET hnsw.ef_search = 7")
+                conn.execute("SET hnsw.iterative_scan = off")
+
     def test_a_session_idle_in_a_transaction_is_ended_and_the_pool_replaces_it(self):
         import psycopg
         import time

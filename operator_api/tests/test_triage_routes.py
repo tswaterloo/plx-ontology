@@ -44,7 +44,8 @@ class Backend(be.WorkspaceBackend):
 
     def _brief_run(self, reader, job, **_kw):
         view = SimpleNamespace(
-            gap_inbox=lambda **kw: {"status": self.inbox_status, "gaps": [GAP]},
+            gap_inbox=lambda **kw: {"status": self.inbox_status,
+                                    "gaps": getattr(self, "gaps", [GAP])},
             access=SimpleNamespace(reader_policy=lambda: (
                 None, SimpleNamespace(unrestricted=self.owner))),
             _request=lambda: mock.MagicMock())
@@ -116,6 +117,39 @@ class Routes(unittest.TestCase):
             "payload": {"body": "Order 1 ships after the check."}}).json()
         self.assertFalse([p for p in filled["problems"] if p.startswith("Fill in")],
                          filled["problems"])
+
+    def test_a_message_the_triage_read_as_owed_nothing_leaves_the_list(self):
+        """Home's "Needs your reply" follows the triage model's reading kept for the
+        reader's own mailbox: automated, fyi or notice leaves the list; a reply reading, a
+        message with no reading, an old yes/no verdict and another person's reading stay."""
+        from operating import autopilot as ap
+
+        def gap(n):
+            g = json.loads(json.dumps(GAP))
+            g.update(id=f"pe-{n}", object_id=f"Email:synth-{n}")
+            g["event"]["messages"][0]["id"] = f"Email:synth-{n}"
+            return g
+        self.backend.gaps = [gap(n) for n in range(1, 7)]
+        self.backend.state_dir = self.dir
+        (self.dir / "autopilot").mkdir()
+        q = ap.Queue(self.dir / "autopilot" / ap.QUEUE_FILE)
+        with q.conn:
+            q.note_chat_asks([
+                {"message_id": "Email:synth-2", "reader": ME, "asks": False,
+                 "reason": "automated:", "at": "2026-11-21T00:00:00Z"},
+                {"message_id": "Email:synth-3", "reader": ME, "asks": False,
+                 "reason": "fyi:book the pickup", "at": "2026-11-21T00:00:00Z"},
+                {"message_id": "Email:synth-4", "reader": ME, "asks": True,
+                 "reason": "reply:", "at": "2026-11-21T00:00:00Z"},
+                {"message_id": "Email:synth-5", "reader": ME, "asks": False,
+                 "reason": "note", "at": "2026-11-21T00:00:00Z"},
+                {"message_id": "Email:synth-6", "reader": B, "asks": False,
+                 "reason": "automated:", "at": "2026-11-21T00:00:00Z"}])
+        q.close()
+        body = self.client().get("/api/replies").json()
+        self.assertEqual(sorted(x["object_id"] for x in body["lines"]),
+                         ["Email:synth-1", "Email:synth-4", "Email:synth-5", "Email:synth-6"])
+        self.assertEqual(body["total"], 4)
 
     def test_an_alert_list_not_read_yet_is_said_so_never_as_no_access(self):
         # UX walk 11-13: Team's approvals said "couldn't find that, or you don't have

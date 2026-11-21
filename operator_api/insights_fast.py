@@ -123,6 +123,23 @@ def exclusion_stamp(pg: Any) -> Optional[tuple]:
     return tuple(row[0]) if len(row) == 1 and row[0][3] is not None else None
 
 
+_DIGEST_KEPT: list[tuple[str, str]] = []
+_DIGEST_LOCK = threading.Lock()
+
+
+def hidden_digest(text: str) -> str:
+    """``text``'s short digest, kept for the very same text object (``hidden_json`` gives the
+    same object while the set is the same: ``document_marks._own_json``), so a long list is
+    hashed once per change, not once per tile (11-21: ~20 ms of a tile's time)."""
+    with _DIGEST_LOCK:
+        if _DIGEST_KEPT and _DIGEST_KEPT[0][0] is text:
+            return _DIGEST_KEPT[0][1]
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    with _DIGEST_LOCK:
+        _DIGEST_KEPT[:] = [(text, digest)]
+    return digest
+
+
 def hidden_json() -> str:
     """The ids hidden from every reader alike, as the comms door's ``plx.reader_hidden``
     holds them (``document_marks.params`` ``dm_own``: the PLX-issued documents). A full
@@ -281,18 +298,24 @@ class Fast:
         self._lock = threading.Lock()
         self._wanted_until = 0.0
         self._thread: Optional[threading.Thread] = None
+        from .shared_read import SharedRead
+        # the tiles of one visit ask at once: one read, started after each asked
+        self._exclusion_read = SharedRead(self._read_exclusion)
+
+    def _read_exclusion(self) -> Any:
+        with self.connect() as pg:
+            return exclusion_stamp(pg)
 
     def stamp(self) -> tuple:
         """The exclusion's stamp now; ``Unserved`` when it cannot be read or there is none."""
         try:
-            with self.connect() as pg:
-                stamp = exclusion_stamp(pg)
+            stamp = self._exclusion_read()
         except Exception as exc:  # noqa: BLE001 - undecidable: the live path reads
             raise Unserved(type(exc).__name__) from None
         if stamp is None:
             raise Unserved("no people exclusion")
         # the hidden ids the copies leave out: made again when they change
-        return stamp + (hashlib.sha256(hidden_json().encode()).hexdigest()[:16],)
+        return stamp + (hidden_digest(hidden_json()),)
 
     def get(self, spec: Any) -> dict[str, Any]:
         """``spec``'s answer (``{"got", "read_at"}``); its statement's failure as

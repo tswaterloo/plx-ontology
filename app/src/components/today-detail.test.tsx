@@ -60,7 +60,7 @@ describe("Today's detail through the pages door", () => {
     api.getObjectSection.mockReset().mockReturnValue(new Promise(() => undefined));
     render(<TodayDetail row={doorRow} onDone={() => undefined} />);
     await waitFor(() => expect(screen.getAllByText("Total (sum of lines)").length).toBeGreaterThan(0));
-    expect(api.bizPage).toHaveBeenCalledWith("purchase_order", { h: "api://po/2", record: undefined }, expect.anything());
+    expect(api.bizPage).toHaveBeenCalledWith("purchase_order", { h: "api://po/2", record: undefined }, expect.anything(), true);
     expect(api.getObject).not.toHaveBeenCalled();
     expect(screen.getAllByText(/10,083/).length).toBeGreaterThan(0);
     // received against ordered from the lines, in their one unit
@@ -75,7 +75,7 @@ describe("Today's detail through the pages door", () => {
     api.getObjectSection.mockReset().mockReturnValue(new Promise(() => undefined));
     render(<TodayDetail row={{ ...row, key: "po-3" }} onDone={() => undefined} />);
     await waitFor(() => expect(api.getObject).toHaveBeenCalled());
-    expect(api.bizPage).toHaveBeenCalledWith("purchase_order", { h: undefined, record: "PurchaseOrder:x:1" }, expect.anything());
+    expect(api.bizPage).toHaveBeenCalledWith("purchase_order", { h: undefined, record: "PurchaseOrder:x:1" }, expect.anything(), true);
   });
 });
 

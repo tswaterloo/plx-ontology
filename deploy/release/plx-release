@@ -867,6 +867,7 @@ api_memory_mb() {  # what the serving API holds now: its cgroup's anonymous memo
 }
 
 pg_room() {  # empty when Postgres can take a second API's sessions, else why not
+  # (the API's sessions: its own unit's name and its warm-up's, "<unit>-warm")
   # The serving API's idle logins are not counted: each closes after ~15-20 s unused
   # (operating/pg/pool.py IDLE_KEEP_SECONDS), so what it holds through the hand-over is
   # what it has at work (active, in a transaction); a second API needs about PG_NEED
@@ -882,9 +883,11 @@ SELECT CASE WHEN r.rolconnlimit < 0 THEN current_setting('max_connections')::int
             ELSE r.rolconnlimit END,
        (SELECT count(*) FROM pg_stat_activity a
          WHERE a.usename = r.rolname OR (r.rolconnlimit < 0 AND a.usename IS NOT NULL)),
-       (SELECT count(*) FROM pg_stat_activity a WHERE a.application_name = :'app'),
        (SELECT count(*) FROM pg_stat_activity a
-         WHERE a.application_name = :'app' AND a.state IS DISTINCT FROM 'idle')
+         WHERE a.application_name IN (:'app', :'app' || '-warm')),
+       (SELECT count(*) FROM pg_stat_activity a
+         WHERE a.application_name IN (:'app', :'app' || '-warm')
+           AND a.state IS DISTINCT FROM 'idle')
   FROM pg_roles r WHERE r.rolname = :'role';
 SQL
   ) || true

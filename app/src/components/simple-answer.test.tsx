@@ -84,6 +84,22 @@ describe("simple Ask answer", () => {
     expect(link.getAttribute("href")).toBe(doc.download_url);
     expect(link.getAttribute("download")).toBe("Late POs.docx");
     expect(screen.getByTestId("simple-documents")).toHaveTextContent("2 KB");
+    expect(screen.queryByTestId("document-changes")).toBeNull();
+  });
+
+  it("an edited copy lists every change before and after, to review before it is used", () => {
+    const doc = {
+      name: "Agreement (edited).docx", kind: "docx" as const, size: 4096,
+      download_url: "/api/instruct/files/f_0123456789abcdef01234568",
+      changes: [{ field: "paragraph", before: "within thirty (30) days (Net 30)", after: "within forty-five (45) days (Net 45)" },
+                { field: "Product", before: "", after: "Rosemary Mint Body Wash" }],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...simple, documents: [doc] } }} />);
+    const changes = screen.getByTestId("document-changes");
+    expect(changes).toHaveTextContent("2 changes from the original");
+    expect(changes.querySelector("del")?.textContent).toBe("within thirty (30) days (Net 30)");
+    expect([...changes.querySelectorAll("ins")].map((n) => n.textContent)).toEqual(
+      ["within forty-five (45) days (Net 45)", "Rosemary Mint Body Wash"]);
   });
 
   it("an answer from the other path keeps the full card", () => {

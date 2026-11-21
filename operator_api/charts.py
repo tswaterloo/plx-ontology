@@ -696,6 +696,16 @@ def _each(text: str, events: Sequence[Mapping[str, Any]], raw: bool = False) -> 
                 and isinstance(got.get("columns"), list):
             args = event.get("arguments")
             sql = args.get("sql") if isinstance(args, Mapping) else None
+            entry = _measure_of(args)
+            if entry is not None:
+                # a measure call: its statement and definition made again from the call's
+                # own arguments and the catalogue (the result the session got carries them
+                # as source text); a forecast's rows are more than its statement reads, so
+                # it keeps none
+                sql = entry.pop("sql", None)
+                got = {**got, "measure": entry}
+            elif isinstance(got, Mapping) and "measure" in got:
+                got = {k: v for k, v in got.items() if k != "measure"}
             results[got["result"]] = (got, sql if isinstance(sql, str) else None)
     out: list = []
     for block in _CHART_BLOCK.findall(text):
@@ -721,10 +731,48 @@ def _each(text: str, events: Sequence[Mapping[str, Any]], raw: bool = False) -> 
                 chart = build(spec, got["columns"], rows, title=str(spec_raw.get("title") or ""),
                               as_of=got.get("as_of"), sql=sql,
                               truncated=bool(got.get("truncated")))
+                said = _measure_said(got.get("measure"))
+                if said:
+                    chart["measure"] = said
             except NotDrawn as refused_why:
                 why = str(refused_why)
         out.append((chart, why, spec_raw))
     return [(r, w) if raw else (c, w) for c, w, r in out]
+
+
+def _measure_of(args: Any) -> Optional[dict[str, Any]]:
+    """The catalogue entry (with its ``sql``, None for a forecast) a ``plx.sql`` measure
+    call's arguments name, made again by ``operating.measures``; None for any other call
+    or arguments it refuses."""
+    if not isinstance(args, Mapping) or not isinstance(args.get("measure"), str):
+        return None
+    from operating import measures
+    from operating.ontology_tools_identity import ToolError
+    try:
+        if "forecast" in args:
+            _sql, entry = measures.forecast_statement(args["measure"], args["forecast"],
+                                                      args.get("by"), args.get("filter"))
+            return {**entry, "sql": None}
+        _sql, entry = measures.statement(args["measure"], args.get("by"), args.get("days"),
+                                         args.get("compare", False), args.get("period"),
+                                         args.get("against"), args.get("filter"),
+                                         args.get("unusual", False))
+        return dict(entry)
+    except (ToolError, TypeError, ValueError):
+        return None
+
+
+def _measure_said(entry: Any) -> Optional[dict[str, str]]:
+    """The catalogue entry a ``plx.sql`` measure result answers, as the chart shows it
+    beside the drawing (its name and definition: the trusted meaning of its numbers)."""
+    if not isinstance(entry, Mapping) or not isinstance(entry.get("id"), str) \
+            or not isinstance(entry.get("definition"), str):
+        return None
+    period = entry.get("period")
+    return {"id": entry["id"][:64], "name": str(entry.get("name") or entry["id"])[:200],
+            "definition": entry["definition"][:1200],
+            "owner": str(entry.get("owner") or "")[:80],
+            "period": period[:400] if isinstance(period, str) else ""}
 
 
 # the line the Ask's prompt carries about charts (simple_ask)

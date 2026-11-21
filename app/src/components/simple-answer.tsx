@@ -131,6 +131,23 @@ export function SimpleAnswer({ answer, streamed, busy, status, progress }: { ans
                 {d.name}
               </a>
               <span className="text-muted"> {Math.max(1, Math.round(d.size / 1024))} KB</span>
+              {(d.changes ?? []).length > 0 && (
+                <div className="mt-1 border-l border-border pl-3" data-testid="document-changes">
+                  <p className="text-muted">
+                    {(d.changes ?? []).length === 1 ? "1 change" : `${(d.changes ?? []).length} changes`} from the original
+                  </p>
+                  <ol className="space-y-1">
+                    {(d.changes ?? []).map((c, i) => (
+                      <li key={i}>
+                        <span className="text-muted">{c.field}: </span>
+                        {c.before && <del className="text-red-700">{c.before}</del>}
+                        {c.before && c.after && " "}
+                        {c.after && <ins className="text-green-800 no-underline">{c.after}</ins>}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
             </li>
           ))}
         </ul>

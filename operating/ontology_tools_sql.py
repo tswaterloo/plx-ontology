@@ -93,6 +93,10 @@ MEANING_K = 40
 # the longest the search waits, past its word match, for the meaning ranking it started
 # beside it (live: the ranking 1.9-2.3 s, the word match 4-6 s)
 MEANING_WAIT_S = 5.0
+# the ranking's rows are read ahead for at most this many of its objects (the gate keeps
+# MEANING_K of them), and waited for at most this long past the ranking's own wait
+MEANING_READ_K = 80
+MEANING_READ_S = 15.0
 # a plx.search hit list's most (its contract's maxItems)
 HITS_MAX = 50
 MAX_CELL = 400
@@ -282,12 +286,13 @@ class SqlTool:
     def _call(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
         unknown = sorted(set(args) - set(INPUT_SCHEMA["properties"]))
         modes = [k for k in ("sql", "describe", "measure") if k in args]
-        loose = [k for k in ("by", "days", "compare", "period", "against") if k in args]
+        loose = [k for k in ("by", "days", "compare", "period", "against", "filter",
+                             "unusual", "forecast") if k in args]
         if unknown or len(modes) != 1 or (loose and modes != ["measure"]):
             raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"}, "
                             "{\"describe\": true | \"<view>\"} or {\"measure\": true | "
-                            "\"<id>\"} (by, days, period, against and compare go with measure "
-                            "only)")
+                            "\"<id>\"} (by, days, period, against, compare, filter, unusual and "
+                            "forecast go with measure only)")
         if "measure" in args:
             return self._measure(args, actor)
         if "describe" in args:
@@ -313,9 +318,19 @@ class SqlTool:
 
         if args["measure"] is True:
             return measures.listing(full=self._full(actor))
-        made, entry = measures.statement(args["measure"], args.get("by"), args.get("days"),
-                                         args.get("compare", False), args.get("period"),
-                                         args.get("against"))
+        if "forecast" in args:
+            other = sorted(k for k in ("days", "compare", "period", "against", "unusual")
+                           if k in args)
+            if other:
+                raise ToolError("invalid_request", "a forecast reads its own history (the "
+                                "last full periods): no " + ", ".join(other) + " with it")
+            made, entry = measures.forecast_statement(args["measure"], args["forecast"],
+                                                      args.get("by"), args.get("filter"))
+        else:
+            made, entry = measures.statement(args["measure"], args.get("by"),
+                                             args.get("days"), args.get("compare", False),
+                                             args.get("period"), args.get("against"),
+                                             args.get("filter"), args.get("unusual", False))
         if entry.get("scope") == "full" and not self._full(actor):
             # Insights lists such a report only for the readers who see everyone
             raise ToolError("not_readable", f"{entry['id']} is for readers who see everyone")
@@ -326,9 +341,48 @@ class SqlTool:
                     allowed_schema="" if moment is not None else guarded)
         if moment is not None:
             sql = read_ceiling.bounded_sql(sql, moment, guarded)
-        out = self._query(conn, scope, sql, actor)
+        missing: set[str] = set()
+        while True:
+            try:
+                out = self._query(conn, scope, sql, actor)
+                break
+            except ToolError as exc:
+                # the scan of every measure: a view not served here (not built, being
+                # rebuilt) leaves its measures out, named, never the whole scan
+                gone = re.search(r'relation "([a-z_]+)" does not exist', exc.message or "")
+                if entry["id"] != measures.SCAN or exc.code != "unknown_view" or gone is None \
+                        or gone.group(1) in missing or len(missing) >= 5:
+                    raise
+                missing.add(gone.group(1))
+                made, entry = measures.statement(measures.SCAN, None, args.get("days"),
+                                                 unusual=True, without=frozenset(missing))
+                sql = check(made, schemas=self._schema_names(conn),
+                            allowed_schema="" if moment is not None else guarded)
+                if moment is not None:
+                    sql = read_ceiling.bounded_sql(sql, moment, guarded)
         if "error" not in out:
+            if "forecast" in entry:
+                return self._forecasted(out, entry)
             out["measure"] = entry
+        return out
+
+    def _forecasted(self, out: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+        """A forecast's history result with its forecast rows (``measures.forecasted``)
+        under the same result id: a chart of it draws the history and the forecast; the
+        statement kept with it reads the history only."""
+        from operating import measures
+        rid = out["result"].split("//", 1)[1]
+        kept = RESULTS.get(rid)
+        if kept is None or out.get("truncated"):
+            raise ToolError("invalid_request", "the history is longer than one result: "
+                            "forecast by month, or filter to fewer parts")
+        cols, rows, cite = measures.forecasted(kept["columns"], kept["rows"], entry)
+        RESULTS.put(rid, {**kept, "columns": cols, "rows": rows})
+        out["columns"] = cols
+        out["rows"] = [{"cite": f"{out['result']}#row={n}", "cells": [_cell(v)[0] for v in r]}
+                       for n, r in enumerate(rows)]
+        out["row_count"] = len(rows)
+        out["measure"] = {**entry, "forecast": cite}
         return out
 
     # ------------------------------------------------------------------ reader
@@ -505,6 +559,14 @@ class SqlTool:
         # a first page's meaning ranking runs beside the word search (``_comms_widened``)
         ranking = (self._meaning_started(args["query"], actor, wanted)
                    if words and cur is None else None)
+        # and, once that ranking is in, its rows read beside the word passes on their own
+        # pooled connection (``_meaning_rows``): the widening only merges them (they ran
+        # one after the other: words, stems, then the wait and its statement, 5-15 s a call
+        # on 11-21). A participant's search binds the party first: read after, as before.
+        meaning = (_ATTACH_POOL.submit(
+            contextvars.copy_context().run, self._meaning_rows, conn, settings, guarded,
+            actor, wanted, files, args["query"], since, until, ranking)
+            if ranking is not None and not args.get("participant") else None)
         # and a first page's attachment pass (``_comms_attached``): its own statements on
         # its own pooled connection with the same settings; its rows are kept only after
         # the word rows are known (none of theirs again)
@@ -514,35 +576,67 @@ class SqlTool:
             set(), limit + MEANING_EXTRA + 1)
             if words and cur is None and "graph_mail" in wanted and not args.get("participant")
             and self._files_reader(actor) else None)
+        from operating.call_phases import phase
+
+        def stemmed(pg: Any, *_: Any) -> Any:
+            # the rows holding every word by its stem ("renovating" for "Renovation"),
+            # through the same views (``search_rows``); none when the stems are the words
+            (stems,) = pg.execute("SELECT plainto_tsquery('english'::regconfig, %s)"
+                                  "::text", (args["query"],)).fetchone()
+            sq = cs.stem_tsquery(stems)
+            if not sq or sq == q:
+                return None, None, []
+            (budget,) = pg.execute("SELECT current_setting('statement_timeout')").fetchone()
+            pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(STEM_MS),))
+            got = search_rows(pg, sq, None)
+            pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
+            return got
+        # a first page's stem pass runs beside the word pass on its own pooled connection
+        # with the same settings (``_comms_scoped``, as the meaning and attachment passes):
+        # its rows are used only when the word pass finds few, and pass the item gate
+        # then; they ran one after the other (words, then stems: 1.8 s p50 of a search's
+        # time on 6 of 11 HARD20 calls, 11-21). A participant's search binds the party in
+        # the word pass: its stems are read after, as before.
+        stemming = (_ATTACH_POOL.submit(
+            contextvars.copy_context().run, self._comms_scoped, conn, settings, stemmed,
+            actor) if words and cur is None and not args.get("participant") else None)
         try:
-            views, who, rows = self._comms_scoped(conn, settings, work, actor)
+            with phase("comms.words"):
+                views, who, rows = self._comms_scoped(conn, settings, work, actor)
         except cs.SearchInputError as exc:
+            if stemming is not None:
+                stemming.cancel()
             raise ToolError("invalid_input", str(exc)) from None
+        except BaseException:
+            if stemming is not None:
+                stemming.cancel()
+            raise
         if not views:
+            if stemming is not None:
+                stemming.cancel()
             raise ToolError("not_served", "mail and Teams are not served as tables here")
         rows, nxt = self._gated_files(rows, actor, limit, k, cur)
         more = nxt is not None
         documents = cs.hits(rows, words=words, party_=who)
         searched = cs.searched(views, args, words)
         few = not more and len(rows) < min(limit, WIDEN_BELOW)
+        if stemming is not None and not (few and words and cur is None):
+            stemming.cancel()   # not needed: a pass already running ends on its own budget
         if few and words and cur is None:
-            # few rows hold every word as typed: the rows holding every word by its stem
-            # ("renovating" for "Renovation"), through the same views and item gate
-            def stemmed(pg: Any, *_: Any) -> Any:
-                (stems,) = pg.execute("SELECT plainto_tsquery('english'::regconfig, %s)"
-                                      "::text", (args["query"],)).fetchone()
-                sq = cs.stem_tsquery(stems)
-                if not sq or sq == q:
-                    return views, who, []
-                (budget,) = pg.execute("SELECT current_setting('statement_timeout')").fetchone()
-                pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(STEM_MS),))
-                got = search_rows(pg, sq, None)
-                pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
-                return got
+            # few rows hold every word as typed: the rows holding every word by its stem,
+            # through the same views and item gate
             try:
-                _, _, srows = self._comms_scoped(conn, settings, stemmed, actor)
+                with phase("comms.stems"):
+                    if stemming is not None:
+                        # its own budget (STEM_MS) bounds it; the wait has a margin
+                        _, _, srows = stemming.result(
+                            timeout=STEM_MS / 1000 + BUSY_WAIT_SECONDS + 1.0)
+                    else:
+                        _, _, srows = self._comms_scoped(conn, settings, stemmed, actor)
                 srows, _ = self._gated_files(srows, actor, limit - len(rows), k, None)
-            except (ToolError, cs.SearchInputError):
+            except (ToolError, cs.SearchInputError, cf.TimeoutError):
+                if stemming is not None:
+                    stemming.cancel()
                 srows = []
             held = {r[1] for r in rows}
             srows = [r for r in srows if r[1] not in held][:limit - len(rows)]
@@ -560,9 +654,10 @@ class SqlTool:
             # few rows hold every word: the rows holding some of them; and, on any first
             # page, the rows close in meaning; all through the same views
             # (``_comms_widened``)
-            extra, how = self._comms_widened(
-                conn, settings, guarded, actor, views, args["query"], words, who,
-                since, until, room, {r[1] for r in rows}, ranking, few)
+            with phase("comms.widened"):
+                extra, how = self._comms_widened(
+                    conn, settings, guarded, actor, views, args["query"], words, who,
+                    since, until, room, {r[1] for r in rows}, ranking, few, meaning)
             documents += cs.hits(extra, words=words, party_=who)
             for hit, (held, near) in zip(documents[len(rows):], how or []):
                 hit["match"] = held
@@ -582,12 +677,14 @@ class SqlTool:
                  and "graph_mail" in wanted and self._files_reader(actor))
         if (attaching is not None or after) and "emails" in views:
             if attaching is None:
-                attached = self._comms_attached(
-                    conn, settings, guarded, actor, q, who, since, until, ATTACH_EXTRA,
-                    set(), limit + MEANING_EXTRA + 1)
+                with phase("comms.attachments"):
+                    attached = self._comms_attached(
+                        conn, settings, guarded, actor, q, who, since, until, ATTACH_EXTRA,
+                        set(), limit + MEANING_EXTRA + 1)
             else:
                 try:
-                    attached = attaching.result(timeout=ATTACH_MS / 1000 + 1.0)
+                    with phase("comms.attachments_wait"):
+                        attached = attaching.result(timeout=ATTACH_MS / 1000 + 1.0)
                 except Exception:  # noqa: BLE001 - late or failed: the word page answers alone
                     attaching.cancel()
                     attached = []
@@ -681,11 +778,39 @@ class SqlTool:
         # documents cursor; this ranking is only a candidate list
         return plug._POOL.submit(plug._rank, self.base.policy, actor, query, kinds=kinds)
 
+    def _meaning_rows(self, conn: Any, settings: Any, guarded: str, actor: Any,
+                      wanted: set, files: bool, query: str, since: Any, until: Any,
+                      ranking: Any) -> tuple[Any, list[Any]]:
+        """(the meaning ranking, its objects' rows): the ranking waited for at most
+        ``MEANING_WAIT_S``, then every object it names read through the same guarded views
+        as the word search (``meaning_sql``, in the reader's own scope) on a connection of
+        its own, so this runs beside the word passes; the caller gates the ranking
+        (``plug._gated``) and keeps only the rows of the objects that passed. No objects:
+        no statement."""
+        from operating.pg import comms_search as cs
+        raw = ranking.result(timeout=MEANING_WAIT_S)
+        everyone = [h["object_id"] for h in getattr(raw, "hits", None) or ()
+                    if isinstance(h, Mapping) and isinstance(h.get("object_id"), str)]
+        everyone = list(dict.fromkeys(everyone))[:MEANING_READ_K]
+        if not everyone:
+            return raw, []
+
+        def work(pg: Any) -> list[Any]:
+            views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
+                     and (files or v not in cs.SEARCH_ONLY)]
+            sql = cs.meaning_sql(views, guarded=guarded, biz=bv.SCHEMA, party_kind=None,
+                                 since=since is not None, until=until is not None)
+            return pg.execute(sql, {
+                "ids": everyone, "q": cs.tsquery_any(query) or cs.tsquery(query),
+                "q_all": cs.tsquery(query), "party": None, "since": since,
+                "until": until}).fetchall() if sql else []
+        return raw, self._comms_scoped(conn, settings, work, actor)
+
     def _comms_widened(self, conn: Any, settings: Any, guarded: str, actor: Any,
                        views: Sequence[str],
                        query: str, words: Sequence[str], who: Any, since: Any, until: Any,
-                       room: int, seen: set, ranking: Any, few: bool
-                       ) -> tuple[list[Any], Any]:
+                       room: int, seen: set, ranking: Any, few: bool,
+                       meaning: Any = None) -> tuple[list[Any], Any]:
         """Up to ``room`` more rows: the rows ``ranking`` (``_meaning_started``) ranks
         close in meaning that the word search lists on no page, and, for a query whose every-word match found ``few``, the rows
         holding any of its words (``comms_search.tsquery_any``) when there is no such
@@ -698,11 +823,24 @@ class SqlTool:
         rank (None when the ranking did not name it); ``([], None)`` when neither ran."""
         from operating.pg import comms_search as cs
         from operating.search import plug
+        from operating.call_phases import phase
         ids: list[str] = []
-        if ranking is not None:
+        read_ahead = None   # the ranking's rows read beside the word passes
+        if meaning is not None:
             try:
-                ranked = plug._gated(ranking.result(timeout=MEANING_WAIT_S),
-                                     self.base.policy, actor, self.base._item_allowed)
+                with phase("comms.meaning_wait"):
+                    raw, read_ahead = meaning.result(timeout=MEANING_WAIT_S + MEANING_READ_S)
+                ranked = plug._gated(raw, self.base.policy, actor, self.base._item_allowed)
+                ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
+            except Exception:  # noqa: BLE001 - late or failed: the words answer alone
+                meaning.cancel()
+                ranking.cancel()
+                ids, read_ahead = [], None
+        elif ranking is not None:
+            try:
+                with phase("comms.meaning_wait"):
+                    raw = ranking.result(timeout=MEANING_WAIT_S)
+                ranked = plug._gated(raw, self.base.policy, actor, self.base._item_allowed)
                 ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
             except Exception:  # noqa: BLE001 - late or failed: the words answer alone
                 ranking.cancel()
@@ -723,7 +861,11 @@ class SqlTool:
                     "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
                     "walk": cs.walk_rows(pg, any_q)}).fetchall() if sql else []
             near: list[Any] = []
-            if ids:
+            if ids and read_ahead is not None:
+                # read ahead for every ranked object; kept: the ones the gate passed
+                held = set(ids)
+                near = [r for r in read_ahead if r[-1] in held]
+            elif ids:
                 sql = cs.meaning_sql(views, guarded=guarded, biz=bv.SCHEMA, party_kind=who.kind if who else None,
                                      since=since is not None, until=until is not None)
                 near = pg.execute(sql, {
@@ -732,7 +874,11 @@ class SqlTool:
                     "party": who.value if who else None, "since": since,
                     "until": until}).fetchall() if sql else []
             return some, near
-        some, near = self._comms_scoped(conn, settings, work, actor)
+        if any_q is None and read_ahead is not None:
+            some, near = work(None)   # nothing left to read
+        else:
+            with phase("comms.widen_sql"):
+                some, near = self._comms_scoped(conn, settings, work, actor)
         rank = {i: n for n, i in enumerate(ids, start=1)}
         found: dict[str, dict[str, Any]] = {}
         for at, row in enumerate(some):

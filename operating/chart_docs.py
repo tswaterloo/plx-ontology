@@ -98,24 +98,37 @@ def _grid(chart: Mapping[str, Any]) -> tuple[list[str], list[list[str]],
 
 def _pptx_table(sid: int, chart: Mapping[str, Any], x: int, y: int, w: int, h: int) -> str:
     header, rows, fills = _grid(chart)
-    rows = rows[:40]
-    ncol = max(len(header), 1)
-    col_w = w // ncol
-    row_h = min(370840, h // max(len(rows) + 1, 1))
-    big = chart["kind"] == "kpi"
+    return table_frame(sid, header, rows, fills, x, y, w, h, big=chart["kind"] == "kpi")
 
-    def cell(text: str, fill: Optional[str], bold: bool = False, size: int = 1100) -> str:
+
+def table_frame(sid: int, header: Sequence[str], rows: Sequence[Sequence[str]],
+                fills: Sequence[Sequence[Optional[str]]], x: int, y: int, w: int, h: int,
+                *, big: bool = False, right: Sequence[bool] = (),
+                widths: Sequence[int] = ()) -> str:
+    """A native PowerPoint table: a shaded header row and ``rows`` (up to 40), ``right``:
+    the columns aligned right (numbers), ``widths``: relative column widths."""
+    rows = list(rows)[:40]
+    ncol = max(len(header), 1)
+    weights = list(widths) if len(widths) == ncol else [1] * ncol
+    col_ws = [w * k // max(sum(weights), 1) for k in weights]
+    row_h = min(370840, h // max(len(rows) + 1, 1))
+
+    def cell(text: str, fill: Optional[str], bold: bool = False, size: int = 1100,
+             c: int = 0) -> str:
         fill_xml = f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>' if fill else ""
-        return (f'<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p>'
+        align = '<a:pPr algn="r"/>' if c < len(right) and right[c] else ""
+        return (f'<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p>{align}'
                 f"{_run(text, size, bold, ox.ink(fill))}</a:p></a:txBody><a:tcPr>{fill_xml}"
                 "</a:tcPr></a:tc>")
-    trs = [f'<a:tr h="{row_h}">' + "".join(cell(t, "F3F4F6", True) for t in header) + "</a:tr>"]
+    trs = [f'<a:tr h="{row_h}">' + "".join(cell(t, "F3F4F6", True, c=c)
+                                           for c, t in enumerate(header)) + "</a:tr>"]
     for r, row in enumerate(rows):
         size = 2800 if big and r == 0 else 1000 if big else 1100
+        row = list(row) + [""] * (ncol - len(row))
         trs.append(f'<a:tr h="{row_h * (2 if big and r == 0 else 1)}">' + "".join(
             cell(t, fills[r][c] if r < len(fills) and c < len(fills[r]) else None,
-                 big and r == 0, size) for c, t in enumerate(row)) + "</a:tr>")
-    grid = "".join(f'<a:gridCol w="{col_w}"/>' for _ in range(ncol))
+                 big and r == 0, size, c) for c, t in enumerate(row[:ncol])) + "</a:tr>")
+    grid = "".join(f'<a:gridCol w="{cw}"/>' for cw in col_ws)
     return (f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{sid}" name="Table"/>'
             '<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr>'
             f'<p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" '
@@ -147,6 +160,7 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
                  "/ppt/theme/theme1.xml": "application/vnd.openxmlformats-officedocument."
                  "theme+xml"}
     chart_no = 1
+    notes: dict[int, list[str]] = {}
     for n, slide in enumerate(slides, 1):
         tree = [_text_box(2, "Title", MARGIN, 300000, SLIDE_W - 2 * MARGIN, 640080,
                           [_para(str(slide.get("title") or ""), 2600, True)])]
@@ -154,7 +168,19 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
         chart = slide.get("chart")
         lines = [str(t) for t in slide.get("lines") or ()]
         body_top = 1050000
-        if lines and not chart:
+        table = slide.get("table")
+        if table and not chart:   # a slide's own table under its few lines
+            top, width = body_top, SLIDE_W - 2 * MARGIN
+            if lines:
+                lead = 360000 * min(len(lines), 4)
+                tree.append(_text_box(3, "Body", MARGIN, top, width, lead,
+                                      [_para(t[2:] if t.startswith("- ") else t, 1600,
+                                             bullet=t.startswith("- ")) for t in lines[:4]]))
+                top += lead + 120000
+            tree.append(table_frame(4, table["header"], table["rows"], [], MARGIN, top,
+                                    width, SLIDE_H - top - MARGIN, right=table["right"],
+                                    widths=table["widths"]))
+        elif lines and not chart:
             tree.append(_text_box(3, "Body", MARGIN, body_top, SLIDE_W - 2 * MARGIN,
                                   SLIDE_H - body_top - MARGIN,
                                   [_para(t[2:] if t.startswith("- ") else t, 1800,
@@ -184,11 +210,23 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
                     tree.append(_chart_frame(10 + i, rid, MARGIN + per * (i % 3),
                                              top + h * (i // 3), per, h))
                 chart_no += len(made)
-            # never cut (the statement is the evidence): longer notes in smaller type
-            note = " ".join(ox.provenance(chart) + lines[CHART_SLIDE_LINES:])
+            # never cut (the statement is the evidence): the slide says where its numbers
+            # come from, the statement itself goes in the slide's speaker notes whole
+            said_where = ox.provenance(chart)
+            note = " ".join([t for t in said_where if not t.startswith("Statement: ")]
+                            + lines[CHART_SLIDE_LINES:])
             size = 900 if len(note) <= 500 else 700 if len(note) <= 1000 else 600
             tree.append(_text_box(5, "Source", MARGIN, SLIDE_H - 820000, SLIDE_W - 2 * MARGIN,
                                   640000, [_para(note, size, color=MUTED)]))
+            notes[n] = said_where
+        if n in notes:
+            srels.append((f"rId{len(srels) + 1}", "notesSlide",
+                          f"../notesSlides/notesSlide{n}.xml"))
+            parts[f"ppt/notesSlides/notesSlide{n}.xml"] = _notes_slide(notes[n])
+            parts[f"ppt/notesSlides/_rels/notesSlide{n}.xml.rels"] = ox.rels(
+                [("rId1", "notesMaster", "../notesMasters/notesMaster1.xml"),
+                 ("rId2", "slide", f"../slides/slide{n}.xml")])
+            overrides[f"/ppt/notesSlides/notesSlide{n}.xml"] = PML + "notesSlide+xml"
         parts[f"ppt/slides/slide{n}.xml"] = (
             f'{ox.XML}<p:sld {_NS}><p:cSld><p:spTree>{_TREE}{"".join(tree)}</p:spTree>'
             '</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>')
@@ -196,18 +234,37 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
         overrides[f"/ppt/slides/slide{n}.xml"] = PML + "slide+xml"
     ids = "".join(f'<p:sldId id="{255 + n}" r:id="rId{n + 2}"/>'
                   for n in range(1, len(slides) + 1))
+    noted = f"rId{len(slides) + 3}"
+    if notes:
+        parts.update({
+            "ppt/notesMasters/notesMaster1.xml": (
+                f'{ox.XML}<p:notesMaster {_NS}><p:cSld><p:spTree>{_TREE}'
+                f'{_notes_body(2, "")}</p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" '
+                'bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" '
+                'accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" '
+                'folHlink="folHlink"/></p:notesMaster>'),
+            "ppt/notesMasters/_rels/notesMaster1.xml.rels": ox.rels(
+                [("rId1", "theme", "../theme/theme2.xml")]),
+            "ppt/theme/theme2.xml": THEME})
+        overrides["/ppt/notesMasters/notesMaster1.xml"] = PML + "notesMaster+xml"
+        overrides["/ppt/theme/theme2.xml"] = ("application/vnd.openxmlformats-officedocument."
+                                              "theme+xml")
     parts.update({
         "_rels/.rels": ox.rels([("rId1", "officeDocument", "ppt/presentation.xml")]),
         "ppt/presentation.xml": (
             f'{ox.XML}<p:presentation {_NS}><p:sldMasterIdLst><p:sldMasterId id="2147483648" '
-            f'r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>{ids}</p:sldIdLst><p:sldSz '
+            f'r:id="rId1"/></p:sldMasterIdLst>'
+            + (f'<p:notesMasterIdLst><p:notesMasterId r:id="{noted}"/></p:notesMasterIdLst>'
+               if notes else "")
+            + f'<p:sldIdLst>{ids}</p:sldIdLst><p:sldSz '
             f'cx="{SLIDE_W}" cy="{SLIDE_H}"/><p:notesSz cx="6858000" cy="9144000"/>'
             "</p:presentation>"),
         "ppt/_rels/presentation.xml.rels": ox.rels(
             [("rId1", "slideMaster", "slideMasters/slideMaster1.xml"),
              ("rId2", "theme", "theme/theme1.xml")]
             + [(f"rId{n + 2}", "slide", f"slides/slide{n}.xml")
-               for n in range(1, len(slides) + 1)]),
+               for n in range(1, len(slides) + 1)]
+            + ([(noted, "notesMaster", "notesMasters/notesMaster1.xml")] if notes else [])),
         "ppt/slideMasters/slideMaster1.xml": (
             f'{ox.XML}<p:sldMaster {_NS}><p:cSld><p:spTree>{_TREE}</p:spTree></p:cSld>'
             '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" '
@@ -226,6 +283,23 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
         "ppt/theme/theme1.xml": THEME})
     types = ox.content_types({**ox.BASE_TYPES, "xlsx": ox.CT_XLSX}, overrides)
     return ox.zip_parts({"[Content_Types].xml": types, **parts})
+
+
+def _notes_body(sid: int, text: str) -> str:
+    """The notes page's text placeholder holding ``text`` (paragraph per line)."""
+    paras = "".join(f'<a:p><a:r><a:rPr lang="en-US" dirty="0"/><a:t>{escape(t)}</a:t></a:r></a:p>'
+                    for t in text.split("\n")) if text else "<a:p/>"
+    return (f'<p:sp><p:nvSpPr><p:cNvPr id="{sid}" name="Notes"/><p:cNvSpPr><a:spLocks '
+            'noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>'
+            '<p:spPr><a:xfrm><a:off x="685800" y="4343400"/><a:ext cx="5486400" cy="4114800"/>'
+            '</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody>'
+            f"<a:bodyPr/><a:lstStyle/>{paras}</p:txBody></p:sp>")
+
+
+def _notes_slide(lines: Sequence[str]) -> str:
+    return (f'{ox.XML}<p:notes {_NS}><p:cSld><p:spTree>{_TREE}'
+            f'{_notes_body(2, chr(10).join(lines))}</p:spTree></p:cSld><p:clrMapOvr>'
+            "<a:masterClrMapping/></p:clrMapOvr></p:notes>")
 
 
 # ----------------------------------------------------------------------------- Word

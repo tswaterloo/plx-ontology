@@ -3,6 +3,7 @@ what of the caller's environment goes with a run, and what spark_run.sh refuses 
 checked without a Spark (every refusal happens before any connection)."""
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -104,6 +105,33 @@ class RunEnvironment(unittest.TestCase):
                          (["/data/scratch/x"], ["/data/scratch/o"], ["python3", "-c", "1"],
                           "copy"))
 
+
+    def test_the_people_exclusion_goes_with_every_run_or_nothing(self):
+        # the Spark's state copy has no exclusion: the box's list travels in the spec
+        oid = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        cmd = ["0", "0", "0", "python3", "-c", "1"]
+        with tempfile.TemporaryDirectory() as d:
+            env_file = Path(d) / "proactive.env"
+            env_file.write_text(f"PLX_EXCLUDED_PEOPLE_OIDS={oid}\n")
+            env_file.chmod(0o600)
+            env = {**self.ENV, "PLX_EXCLUSION_ENV_FILE": str(env_file)}
+            got = spec.build(cmd, env)
+            self.assertEqual(got["env"]["PLX_EXCLUDED_PEOPLE_OIDS"], oid)
+            # a box path to a list file is replaced by the ids it names
+            listed = Path(d) / "ids.json"
+            from integrations.people_exclusion import SCHEMA
+            listed.write_text(json.dumps({"schema": SCHEMA, "object_ids": [oid]}))
+            got = spec.build(cmd, {**self.ENV, "PLX_EXCLUDED_PEOPLE_FILE": str(listed)})
+            self.assertEqual(got["env"].get("PLX_EXCLUDED_PEOPLE_OIDS"), oid)
+            self.assertNotIn("PLX_EXCLUDED_PEOPLE_FILE", got["env"])
+            # an invalid, absent or unreadable list passes nothing: the run fails closed
+            for bad in ({"PLX_EXCLUDED_PEOPLE_OIDS": "not-an-id"},
+                        {"PLX_EXCLUDED_PEOPLE_OIDS": ""},
+                        {"PLX_EXCLUDED_PEOPLE_FILE": str(Path(d) / "missing.json")},
+                        {"PLX_EXCLUSION_ENV_FILE": ""}):
+                got = spec.build(cmd, {**self.ENV, **bad})
+                self.assertNotIn("PLX_EXCLUDED_PEOPLE_OIDS", got["env"], bad)
+                self.assertNotIn("PLX_EXCLUDED_PEOPLE_FILE", got["env"], bad)
 
 class Metering(unittest.TestCase):
     def test_the_sparks_exporter_settings_pass_with_the_run_name_never_content(self):

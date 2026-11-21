@@ -243,7 +243,11 @@ class Kept:
 
 def door_stamp(connect: Callable[[], Any], schema: str = "biz") -> Callable[[], Optional[int]]:
     """The door's stamp of ``schema`` read on a ``connect()`` connection; None when it has no
-    door or does not serve (the people exclusion not decided as it is now)."""
+    door or does not serve (the people exclusion not decided as it is now). The tiles of one
+    visit ask it at once: they share one read that started after each asked
+    (``shared_read``), never an older one."""
+    from .shared_read import SharedRead
+
     def read() -> Optional[int]:
         from operating.pg import door
         with connect() as pg:
@@ -251,7 +255,7 @@ def door_stamp(connect: Callable[[], Any], schema: str = "biz") -> Callable[[], 
         if got is None or not got[1]:
             return None
         return int(got[0])
-    return read
+    return SharedRead(read)
 
 
 class Keeper:

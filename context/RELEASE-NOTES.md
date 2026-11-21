@@ -93,6 +93,18 @@ Changed:
 - Assist handlers on Postgres read small uncarried types once per run (supplier ETA, invoice keyer)
 - late-PO follow-up uses the twin PO's supplier address and never fans out to the role
 
+## Update 2026-11-21
+Changed:
+- Speed: pool hand-back one round trip, shared Insights stamps, one-row mail stamp, Home pane reuse, API JSON compression, follower embeds on Spark GPU, background/warm-up Postgres backends at nice 10
+- Documents made and edited properly: real tables and styles in PDF/Word/Excel/PowerPoint, form blanks by label, edits applied together, Word redlines, changes shown before/after in the answer
+- Search reads close-in-meaning rows beside the word search (gated before use)
+- Trust serves its saved copy while it refreshes
+- per-tool timing kept out of the model's text
+- Assist triages every message with the model (reply, fyi, automated, notice + implied work)
+- only a real reply from a known sender makes a reply item
+- open junk reply items closed
+- Spark runs carry the people exclusion
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

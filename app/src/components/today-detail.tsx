@@ -318,7 +318,7 @@ export function TodayDetail({
           setPage(withTrail);
           // a page read whole already holds its trail: no second request
           if (!p.complete && trailOf)
-            getObjectSection("trail", row.type, row.objectId, c.signal)
+            getObjectSection("trail", row.type, row.objectId, c.signal, true)
               .then((s) => !c.signal.aborted && s.trail && setPage((cur) => (cur ? mergeSection(cur, s) : cur)))
               .catch(() => undefined);
         })
@@ -326,14 +326,14 @@ export function TodayDetail({
     const k = keyText ? doorKey(row.href, row.type, row.objectId) : null;
     if (!k) own();
     else
-      bizPage(k.kind, { h: k.h, record: k.record }, c.signal).then(
+      bizPage(k.kind, { h: k.h, record: k.record }, c.signal, true).then(
         (p) => {
           if (c.signal.aborted) return;
           clearTimeout(limit);
           setDoor(p);
           // the evidence trail is the old engine's: read after, never waited on
           if (trailOf && !row.item?.trail)
-            getObjectSection("trail", row.type, row.objectId, c.signal)
+            getObjectSection("trail", row.type, row.objectId, c.signal, true)
               .then((s) => !c.signal.aborted && setTrailOnly(s.trail ?? { trails: [] } as unknown as ObjectPage["trail"]))
               .catch(() => undefined);
         },

@@ -477,7 +477,9 @@ class PreparedRoutes(unittest.TestCase):
             {"type": "tool_call", "name": "mcp__plx__plx.edit_document", "is_error": True,
              "result": json.dumps(got)}])
         self.assertEqual(listed, [{"name": "Report May (edited).docx", "kind": "docx",
-                                   "size": len(data), "download_url": copy["download_url"]}])
+                                   "size": len(data), "download_url": copy["download_url"],
+                                   "changes": [{"field": d["field"], "before": d["before"],
+                                                "after": d["after"]} for d in got["diff"]]}])
         plain = edit("notes.txt", b"Ship to Unit 4\n", "Unit 4", "Dock 9")
         self.assertTrue(plain["prepared_id"])
         self.assertNotIn("edited_copy", plain)
@@ -597,6 +599,59 @@ class PreparedRoutes(unittest.TestCase):
         self.assertEqual(slide["diff"], [{"field": "slide 1", "before": "On-time delivery: 97%",
                                           "after": "On-time delivery: 91%"}])
         self.assertEqual(slide["edited_copy"]["kind"], "pptx")
+        # a price and the total it moves change together on one copy, or not at all
+        quote = docx("Item 2: 25 x 14.20 = 355.00", "Total: 1,255.00")
+        v2 = docx("1. Parties. PLX and Acme agree.",
+                  "2. Payment terms. Invoices are payable Net 45 from the invoice date.",
+                  "3. Delivery. FOB origin.", "4. Labels. Acme supplies the labels.")
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("word/document.xml", f'<w:document xmlns:w="{W}"><w:body><w:tbl>'
+                       + "".join(f"<w:tr>{''.join(f'<w:tc><w:p><w:r><w:t>{c}</w:t></w:r></w:p></w:tc>' if c else '<w:tc><w:p/></w:tc>' for c in row)}</w:tr>"
+                                 for row in (("Test", "Spec", "Result"), ("pH", "4.5 - 6.0", ""),
+                                             ("Appearance", "Clear gel", "")))
+                       + "</w:tbl></w:body></w:document>")
+        form = out.getvalue()
+        more = [f.kept for f in b._attached(request(("quote.docx", quote), ("v2.docx", v2),
+                                                    ("coa.docx", form)), ana).files]
+        both = tool(ana).call({"citation": more[0], "reason": "You asked.", "changes": [
+            {"find": "14.20 = 355.00", "replace": "12.50 = 312.50"},
+            {"find": "1,255.00", "replace": "1,212.50"}]})
+        self.assertEqual([d["after"] for d in both["diff"]],
+                         ["Item 2: 25 x 12.50 = 312.50", "Total: 1,212.50"])
+        half = tool(ana).call({"citation": more[0], "reason": "You asked.", "changes": [
+            {"find": "14.20", "replace": "12.50"}, {"find": "9,999.00", "replace": "1"}]})
+        self.assertIn("Change 2 of 2", half["refused"][0])
+        self.assertNotIn("edited_copy", half)
+        # a form's blanks by label; a label it does not hold is refused with its blanks
+        filled = tool(ana).call({"citation": more[2], "reason": "You asked.",
+                                 "fields": {"pH / Result": "5.23"}})
+        self.assertEqual(filled["diff"], [{"field": "pH / Result", "before": "",
+                                           "after": "5.23"}])
+        out_form = b._uploads().file(ana.key, filled["citation"][len("file:"):])
+        self.assertIn("5.23", doc_edit.text_of("x.docx", out_form))
+        wrong = tool(ana).call({"citation": more[2], "reason": "r", "fields": {"Odour": "ok"}})
+        self.assertIn("Appearance / Result", wrong["refused"][0])
+        # a redline of two versions: the newer one with each change tracked, the list of
+        # exactly those changes, nothing written; another reader cannot compare them
+        red = tool(ana).call({"citation": kept[0], "compare_with": more[1], "reason": "r"})
+        self.assertEqual(red["edited_copy"]["name"], "v2 (redline).docx")
+        self.assertEqual([(d["before"], d["after"]) for d in red["diff"]], [
+            ("2. Payment terms. Invoices are payable Net 30 from the invoice date.",
+             "2. Payment terms. Invoices are payable Net 45 from the invoice date."),
+            ("", "4. Labels. Acme supplies the labels.")])
+        body = zipfile.ZipFile(io.BytesIO(b._uploads().file(
+            ana.key, red["citation"][len("file:"):]))).read("word/document.xml").decode()
+        self.assertEqual((body.count("<w:ins "), body.count("<w:del ")), (2, 1))
+        self.assertIn("<w:delText", body)
+        listed = assistant_tools.documents([
+            {"type": "tool_call", "name": "mcp__plx__plx.edit_document",
+             "result": json.dumps(r)} for r in (both, red)])
+        self.assertEqual([len(d["changes"]) for d in listed], [2, 2])
+        self.assertIn("refused", tool(sam).call({"citation": kept[0], "compare_with": more[1],
+                                                 "reason": "r"}))
+        self.assertIn("refused", tool(ana).call({"citation": kept[0], "compare_with":
+                                                 "file:f_" + "0" * 24, "reason": "r"}))
         self.assertEqual(len(self.fake.calls), calls)        # nothing written anywhere
         # someone else's file, a made-up id, an unknown form: refused, nothing made
         for who, citation in ((sam, kept[0]), (ana, "file:f_" + "0" * 24), (ana, "file:x")):
@@ -668,6 +723,48 @@ class PreparedRoutes(unittest.TestCase):
         # no main document part named: refused, never read as an empty document
         self.assertIn("could not be found", " ".join(
             edit(package(["which would constitute it"], main=False))["refused"]))
+
+    def test_a_redline_never_shows_a_version_naming_freightcom_or_an_excluded_person(self):
+        """compare_with reads both versions through the reader's door and filters each
+        whole text (``_pw_withheld``) before any of it can reach the model: a version
+        naming Freightcom or an excluded person's address gives no diff and no copy."""
+        import io
+        import zipfile
+        W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+        def docx(*paras):
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w") as z:
+                z.writestr("word/document.xml", f'<w:document xmlns:w="{W}"><w:body>' + "".join(
+                    f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paras)
+                    + "</w:body></w:document>")
+            return out.getvalue()
+        old, new = "sharepoint://b!d1/01OLD@v1", "sharepoint://b!d1/01NEW@v2"
+        reader = Reader(session=session(OWNER), mode="mock", display_name="a", email=OWNER[0])
+        base = docx("Freight billed at cost.", "Net 30.")
+        for name, newer in (("freightcom", docx("Freight by Freightcom at cost.", "Net 30.")),
+                            ("excluded", docx("Freight billed at cost.",
+                                              f"Net 30, ask {HIDDEN[0]}."))):
+            with self.subTest(name):
+                self.backend.prepared_doc_read = lambda r, c, newer=newer: (
+                    "terms.docx", base if c == old else newer, '"e,1"')
+                tool = {t.spec["name"]: t for t in self.backend.prepared_tools(reader)}[
+                    "plx.edit_document"]
+                got = tool.call({"citation": old, "compare_with": new, "reason": "r"})
+                self.assertIn("refused", got)
+                self.assertNotIn("diff", got)
+                self.assertNotIn("edited_copy", got)
+                self.assertNotIn("Freightcom", json.dumps(got))
+                self.assertNotIn(HIDDEN[0], json.dumps(got))
+        # the same two versions without either: the redline is made
+        self.backend.prepared_doc_read = lambda r, c: (
+            "terms.docx", base if c == old else docx("Freight billed at cost.", "Net 45."),
+            '"e,1"')
+        tool = {t.spec["name"]: t for t in self.backend.prepared_tools(reader)}[
+            "plx.edit_document"]
+        made = tool.call({"citation": old, "compare_with": new, "reason": "r"})
+        self.assertEqual(made.get("diff"), [{"field": "paragraph 2", "before": "Net 30.",
+                                             "after": "Net 45."}], made)
 
     def test_a_grant_revoked_after_prepare_is_refused_at_confirm_and_retry(self):
         grants = self.root / "grants.json"

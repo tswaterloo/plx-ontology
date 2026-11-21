@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider } from "./api";
+import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider, PANE_REUSE_MS } from "./api";
 import { ApiError } from "./errors";
 import { resetSessionCaches } from "./session-cache";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
@@ -339,3 +339,38 @@ describe("an Ask stream the server stops feeding", () => {
   });
 });
 
+
+describe("a record pane's reads (Home's detail)", () => {
+  afterEach(() => {
+    resetSessionCaches();
+    vi.useRealTimers();
+  });
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+
+  it("reuses an answer read moments ago, never a stale one, nothing after a write, and reads again later", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(async (path: string) =>
+      String(path).includes("stale") ? json({ section: "trail", stale_since: "2026-11-21T10:00:00Z" }) : json({ section: "trail", n: fetch.mock.calls.length }));
+    vi.stubGlobal("fetch", fetch);
+    const a = await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1", undefined, true);
+    const b = await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1", undefined, true);
+    expect(b).toEqual(a);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    // a record page's own section read is never served from the pane's copy
+    await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // a stale answer is asked for again
+    await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:stale:1", undefined, true);
+    await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:stale:1", undefined, true);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    // any write drops what was kept
+    await logout().catch(() => undefined);
+    await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1", undefined, true);
+    const afterWrite = fetch.mock.calls.length;
+    await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1", undefined, true);
+    expect(fetch.mock.calls.length).toBe(afterWrite);
+    vi.advanceTimersByTime(PANE_REUSE_MS + 1);
+    await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1", undefined, true);
+    expect(fetch.mock.calls.length).toBe(afterWrite + 1);
+  });
+});

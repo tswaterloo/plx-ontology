@@ -4906,6 +4906,15 @@ class AskChartTrend(_Model):
     n: int
 
 
+class AskChartMeasure(_Model):
+    """The catalogue entry a chart's result answers (``operating.measures``)."""
+    id: str
+    name: str
+    definition: str
+    owner: str = ""
+    period: str = ""
+
+
 class AskChart(_Model):
     """A chart drawn from one query result: ``labels`` are the x column's values in the
     result's row order (a histogram's bins, a pie's slices), each series one numeric
@@ -4946,6 +4955,9 @@ class AskChart(_Model):
         None, json_schema_extra=_optional,
         description="The label of the earliest calendar period the statement's window "
                     "starts inside (a month, quarter or year): its figures are of part of it.")
+    measure: Optional[AskChartMeasure] = Field(
+        None, json_schema_extra=_optional,
+        description="The agreed measure or report its rows are, with its definition.")
 
 
 class ChartFile(_Model):
@@ -4972,11 +4984,29 @@ class InsightInfo(_Model):
                                     "by itself and what it found, in plain words.")
 
 
+class MeasureInfo(_Model):
+    """One agreed business measure (``operating/measures.json``): its definition only, no
+    figure. The same for every reader: what it reads is decided when it runs."""
+    id: str
+    name: str
+    definition: str
+    owner: str = Field(description="Who agrees the definition (Finance, Quality, ...).")
+    unit: str = Field(description="money, count, quantity or percent.")
+    source: str = Field(description="The business view it is read from.")
+    dimensions: list[str] = Field(description="What it can be broken down by.")
+    period: str = Field(description="The period it reads when none is named.")
+    ask: Optional[str] = Field(None, json_schema_extra=_optional,
+                               description="A question it answers, to try in Ask.")
+
+
 class InsightList(_Model):
     scope: Literal["everyone", "self"] = Field(description="everyone: the people views list "
                                                "everyone; self: only your own row.")
     items: list[InsightInfo]
     saving: bool = Field(description="Whether you can pin and save insights here.")
+    measures: list[MeasureInfo] = Field(default_factory=list, json_schema_extra=_optional,
+                                        description="The agreed measures Ask and the charts "
+                                        "use, with their definitions.")
 
 
 class InsightResult(InsightInfo):
@@ -5045,12 +5075,25 @@ class InsightNewsSeen(_Model):
     seen: bool
 
 
+class AskDocumentChange(_Model):
+    """One change in an edited copy: where (a paragraph, slide, cell or form blank), the
+    text as it was and as it is in the copy."""
+    field: str
+    before: str = ""
+    after: str = ""
+
+
 class AskDocument(_Model):
-    """A file the Ask made for you: its name, kind, size and download link."""
+    """A file the Ask made for you: its name, kind, size and download link; for an edited
+    copy or a redline, every change in it (before and after) to review before using it."""
     name: str
     kind: Literal["docx", "xlsx", "pdf", "pptx", "csv"]
     size: int
     download_url: str
+    changes: list[AskDocumentChange] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="An edited copy's or a redline's changes, in order (empty for a new "
+                    "file).")
 
 
 class InstructDocument(_Model):
