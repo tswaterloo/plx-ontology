@@ -123,6 +123,38 @@ class FindingsThroughTheDoor(unittest.TestCase):
         self.assertEqual((out["status"], out["candidates"], out["calls"]), ("ok", 0, 0))
         self.assertEqual(again.seen, [])
 
+    def test_runs_the_model_never_answers_leave_every_message_to_read_later(self):
+        # the live loss: a weekly-limit outage failed ATTEMPTS runs in a row and every
+        # message of those days was never read again (no findings for a whole day)
+        keys = {m["key"] for m in self.model.seen}
+        saved = self.pg().execute("SELECT count(*) FROM biz.comms_findings").fetchone()[0]
+        self.pg().execute("DELETE FROM biz.comms_read; DELETE FROM biz.comms_findings")
+        for _ in range(cf.ATTEMPTS + 1):
+            down = cf.run(self.dsn, extract=Model(fail=True), model="stand-in", **self.run_args)
+            self.assertEqual((down["status"], down["read"]), ("failed", 0))
+        self.assertEqual(self.pg().execute(
+            "SELECT count(*) FROM biz.comms_read WHERE status = 'failed'").fetchone()[0], 0)
+        back = Model()
+        out = cf.run(self.dsn, extract=back, model="stand-in", **self.run_args)
+        self.assertEqual({m["key"] for m in back.seen}, keys)
+        self.assertEqual(out["failed"], 0)
+        self.assertEqual(self.pg().execute(
+            "SELECT count(*) FROM biz.comms_findings").fetchone()[0], saved)
+
+    def test_a_message_whose_call_fails_while_others_answer_is_tried_again_later(self):
+        # a failure while the model answers other calls is the message's own: it uses an
+        # attempt; past ATTEMPTS it waits RETRY_HOURS, then is read once more
+        key = sorted(m["key"] for m in self.model.seen)[0]
+        self.pg().execute("UPDATE biz.comms_read SET status = 'failed', attempts = %s, "
+                          "read_at = %s WHERE message_key = %s", (cf.ATTEMPTS, NOW, key))
+        soon = cf.run(self.dsn, extract=Model(), model="stand-in",
+                      **{**self.run_args, "now": NOW + dt.timedelta(hours=1)})
+        self.assertEqual(soon["candidates"], 0)
+        later = Model()
+        cf.run(self.dsn, extract=later, model="stand-in",
+               **{**self.run_args, "now": NOW + dt.timedelta(hours=cf.RETRY_HOURS + 1)})
+        self.assertEqual([m["key"] for m in later.seen], [key])
+
     def test_senders_of_1_10_60_messages_counted_exactly(self):
         out = self.sql(tmp.MID, "SELECT subject, count(*) FROM comms_findings WHERE subject "
                                 "LIKE 'Bulk %' GROUP BY 1")

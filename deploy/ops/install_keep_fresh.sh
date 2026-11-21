@@ -22,6 +22,8 @@
 #     plx-expiry.timer           daily 06:20 UTC  credential expiry list (alarm within 30 days)
 #     plx-answer-bank.timer      10 min after the last build: the questionnaire answer bank for the
 #                                company (Templates), decided per reader at read; capture read-only
+#     plx-link-marks.timer       10 min after the last run: ontology.link_marks rebuilt when stale
+#                                (the delta units and the API start no build of their own)
 #     plx-qbank-refresh.timer    daily 02:30 ET   Ask question bank: every item's truth re-read from the served
 #                                data (evals/qbank; plx_eval, read-only; writes only QBANK_DIR)
 #     plx-labour.timer           daily 05:40 ET   labour-hours build (department and week totals; capture read-only)
@@ -53,7 +55,7 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh"
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh plx-link-marks"
 SYS_PATHS="plx-autopilot-follow"                       # also started by a .path unit
 RETIRED_SYS_UNITS="plx-autopilot-fast"                 # no longer shipped: stopped and removed
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously

@@ -952,16 +952,20 @@ def shipped_not_invoiced(st: Any, as_of: date, *, gap: Callable, cites: Callable
         got = values.get(record)
         event: dict[str, Any] = {"days": age, "shipped": day.isoformat(),
                                  "shipments": len(dated)}
+        amount_rows: list = []
         if got is not None and got.amount is not None and got.amount > 0:
             first = got.rows[0]
+            amount_rows = list(got.currency_rows)
+            # the currency of record may rest on another record (``order_value``)
+            stated_by = (got.currency_rows or (first,))[0]
             event["amount"] = {
                 "value": _text(got.amount), "currency": got.currency,
                 "basis": ORDER_TOTAL if not got.derived else
                 ("order_value_invoices" if got.basis == order_value.INVOICES
                  else "order_value_lines"),
-                "handle": first["l1_handle"], "currency_handle": first["l1_handle"],
-                "markings": _union_markings([*(r.get("markings") for r in got.rows),
-                                             FINANCE])}
+                "handle": first["l1_handle"], "currency_handle": stated_by["l1_handle"],
+                "markings": _union_markings([*(r.get("markings") for r in
+                                               (*got.rows, *got.currency_rows)), FINANCE])}
         made = gap(
             SHIPPED_UNBILLED, SHIPPED_UNBILLED, record, SO, "unbilled",
             summary=(f"Customer order {', '.join(numbers[:3])} " if numbers else
@@ -978,8 +982,10 @@ def shipped_not_invoiced(st: Any, as_of: date, *, gap: Callable, cites: Callable
                     cites(number_rows) or cites(
                         ((ships.get(shipment) or {}).get("props") or {}).get(
                             "shipment_number", ()), link["markings"])],
-            extra=cites(((ships.get(shipment) or {}).get("props") or {}).get(
+            extra=[*cites(((ships.get(shipment) or {}).get("props") or {}).get(
                 "shipment_number", ()), link["markings"]),
+                   # the record the order's currency of record was read from
+                   *(cites(amount_rows) if amount_rows else [])],
             event=event)
         if made is not None:
             made["requires"] = requires

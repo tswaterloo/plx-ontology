@@ -155,6 +155,75 @@ class OpenTest(unittest.TestCase):
                     {"citation": "original://m/1", "max_chars": 10 ** 9}):
             self.assertEqual(s.open_one(read, bad)["error"]["code"], "invalid_input", bad)
 
+    def test_several_citations_open_each_through_its_own_gates_in_order(self):
+        # 11-21 (Ask listed a supplier's mails and concluded unread): one plx.open reads
+        # several, each exactly as one open reads it; near words go to the mail leg only
+        comms_calls, read_calls = [], []
+
+        def comms(arguments):
+            comms_calls.append(arguments)
+            c = arguments["citation"]
+            if c.startswith("original://"):
+                return {"not_comms": True}
+            if c.endswith("/fc"):
+                return {"citation": c, "text": {"untrusted_text": "Freightcom quote"}}
+            return {"citation": c, "kind": "email",
+                    "text": {"untrusted_text": f"ships 2026-12-0{len(comms_calls)}"}}
+
+        def read(arguments):
+            read_calls.append(arguments)
+            assert "near" not in arguments, "plx.read takes no near"
+            return {"status": "resolved", "text": {"untrusted_text": "COA lot 77"}}
+        shown = {"graph-mail://r.aaaaaaaaaa": "graph-mail://u/m1"}
+        many = ["graph-mail://r.aaaaaaaaaa", "graph-mail://u/m2", "original://m/9",
+                "graph-mail://u/fc", "graph-mail://r.bbbbbbbbbb"]
+        got = s.open_one(read, {"citations": many, "near": "ship date, promised"}, comms,
+                         resolve=lambda c: shown.get(c, None if "r." in c else c))
+        items = got["opened"]
+        self.assertEqual([i["citation"] for i in items],
+                         ["graph-mail://u/m1", "graph-mail://u/m2", "original://m/9",
+                          "graph-mail://u/fc", "graph-mail://r.bbbbbbbbbb"])
+        self.assertIn("ships", items[0]["text"]["untrusted_text"])
+        self.assertEqual(items[2]["status"], "resolved")                 # the old path
+        self.assertEqual(items[3]["error"]["code"], "egress_withheld")   # per item
+        self.assertNotIn("text", items[3])
+        self.assertEqual(items[4]["error"]["code"], "not_found")         # ref not shown
+        self.assertEqual({tuple(c.get("near") or ()) for c in comms_calls},
+                         {("ship", "date", "promised")})
+        self.assertTrue(all(c["max_chars"] == s.MANY_CHARS for c in comms_calls + read_calls))
+        self.assertNotIn("graph-mail://r.bbbbbbbbbb", [c["citation"] for c in comms_calls])
+
+    def test_several_citations_cardinality_and_time(self):
+        def comms(arguments):
+            return {"citation": arguments["citation"], "text": {"untrusted_text": "ok"}}
+        for n in (1, 10, s.MANY_MAX):
+            asked = [f"graph-mail://u/m{i}" for i in range(n)]
+            got = s.open_one(None, {"citations": asked}, comms)["opened"]
+            self.assertEqual([g["citation"] for g in got], asked, n)   # none lost or doubled
+        # past the call's opening time the rest say so, unopened
+        ticks = iter([0.0, 0.0, s.MANY_SECONDS + 1, s.MANY_SECONDS + 2])
+        opened = []
+        got = s.open_one(None, {"citations": ["graph-mail://u/a", "graph-mail://u/b",
+                                              "graph-mail://u/c"]},
+                         lambda a: opened.append(a) or comms(a), clock=lambda: next(ticks))
+        self.assertEqual([g.get("error", {}).get("code") for g in got["opened"]],
+                         [None, "not_opened", "not_opened"])
+        self.assertEqual(len(opened), 1)
+
+    def test_several_citations_bad_input_fails_closed_without_a_read(self):
+        def read(arguments):
+            raise AssertionError("no read for a bad call")
+        for bad in ({"citations": []}, {"citations": "graph-mail://u/m1"},
+                    {"citations": ["a://x"] * 2}, {"citations": [5]},
+                    {"citations": [f"a://{i}" for i in range(s.MANY_MAX + 1)]},
+                    {"citations": ["a://x"], "citation": "a://x"},
+                    {"citations": ["a://x"], "text_offset": 10},
+                    {"citations": ["a://x"], "near": ""}, {"citations": ["a://x"], "near": 3},
+                    {"citations": ["a://x"], "near": "--"},
+                    {"citation": "a://x", "near": "x" * 201}):
+            self.assertEqual(s.open_one(read, bad, read)["error"]["code"], "invalid_input",
+                             bad)
+
     def test_a_refused_read_stays_refused(self):
         refused = {"error": {"code": "not_found", "message": "no such item"}}
         self.assertEqual(s.open_one(lambda a: refused, {"citation": "original://m/3"}),

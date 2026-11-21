@@ -4573,7 +4573,46 @@ def _facts_workers() -> int:
         workers = int(os.environ.get("PLX_FACTS_WORKERS") or 0)
     except ValueError:
         workers = 0
-    return workers if workers > 0 else max(1, (os.cpu_count() or 2) // 2)
+    workers = workers if workers > 0 else max(1, (os.cpu_count() or 2) // 2)
+    day = _facts_day_cap()
+    return min(workers, day[0]) if day is not None else workers
+
+
+# A whole facts read in the working day, by a process that sets ``PLX_FACTS_DAY_WORKERS``
+# (the delta follower's unit): at most that many readers, each statement with at most
+# ``PLX_FACTS_DAY_PARALLEL`` parallel workers (default 1), between ``PLX_FACTS_DAY_HOURS``
+# (default "7-19", US Eastern, every day). Unbounded (8 readers, 4 parallel workers each)
+# it held the box at load 43-54 for 10+ minutes in the day (11-21 10:15 AM ET), the API's
+# reads queued behind it; at night it reads as fast as it can, as before.
+FACTS_DAY_HOURS = (7, 19)
+
+
+def _facts_day_cap(now: "dt.datetime | None" = None) -> "tuple[int, int] | None":
+    """(readers, parallel workers per statement) while the working-day cap holds, else None."""
+    raw = os.environ.get("PLX_FACTS_DAY_WORKERS", "").strip()
+    try:
+        readers = int(raw) if raw else 0
+    except ValueError:
+        readers = 0
+    if readers <= 0:
+        return None
+    try:
+        lo, hi = (int(x) for x in (os.environ.get("PLX_FACTS_DAY_HOURS") or "").split("-"))
+    except ValueError:
+        lo, hi = FACTS_DAY_HOURS
+    try:
+        from zoneinfo import ZoneInfo
+        hour = (now or dt.datetime.now(dt.timezone.utc)).astimezone(
+            ZoneInfo("America/New_York")).hour
+    except Exception:  # noqa: BLE001 - no zone data: the day cap holds (the safe side)
+        hour = lo
+    if not lo <= hour < hi:
+        return None
+    try:
+        parallel = int(os.environ.get("PLX_FACTS_DAY_PARALLEL") or 1)
+    except ValueError:
+        parallel = 1
+    return readers, max(0, parallel)
 
 
 _RANGE_KEYS = {"object": ("object_versions", "object_id", "ov.object_id"),
@@ -4755,11 +4794,17 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
     from operating import ontology_tools
     from operating.pg.ontology_reader import PgStoreReader
     count = max(1, workers or _facts_workers())
+    day = _facts_day_cap()
 
     def opened() -> PgStoreReader:
-        return PgStoreReader.open(dsn, only=only, text_store=text_store,
-                                  statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS,
-                                  temp_limit=_facts_temp_limit())
+        reader = PgStoreReader.open(dsn, only=only, text_store=text_store,
+                                    statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS,
+                                    temp_limit=_facts_temp_limit())
+        if day is not None:   # the working day's cap on each statement's parallel workers
+            with reader.conn._lock:
+                reader.conn._pg.execute(
+                    f"SET max_parallel_workers_per_gather = {int(day[1])}")
+        return reader
 
     leader = opened()
     readers: list[PgStoreReader] = []

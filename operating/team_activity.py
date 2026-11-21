@@ -208,17 +208,26 @@ def calendar_names(state: Path) -> dict[str, Counter]:
 
 
 def departments(state: Path) -> dict[str, str]:
+    """Per object id, the person's department: the org chart capture's (the directory the
+    business view ``biz.staff`` reads, so Team, Insights and Ask say one department), else
+    the mail capture's mailbox directory."""
+    from integrations.capture_org import current_rows
+    out: dict[str, str] = {}
     path = state / "mail-capture" / "capture.db"
-    if not path.is_file():
-        return {}
-    conn = _ro(path)
-    try:
-        return {str(o).lower(): str(d) for o, d in conn.execute(
-            "SELECT mailbox_id, department FROM mailbox_directory") if d and str(d).strip()}
-    except sqlite3.Error:
-        return {}
-    finally:
-        conn.close()
+    if path.is_file():
+        conn = _ro(path)
+        try:
+            out = {str(o).lower(): str(d) for o, d in conn.execute(
+                "SELECT mailbox_id, department FROM mailbox_directory") if d and str(d).strip()}
+        except sqlite3.Error:
+            out = {}
+        finally:
+            conn.close()
+    for oid, row in current_rows(state / "org-capture" / "capture.db").items():
+        said = str(row.get("department") or "").strip()
+        if said:
+            out[str(oid).lower()] = said
+    return out
 
 
 def load_roles(paths: Iterable[Optional[Path]]) -> dict[str, list[str]]:

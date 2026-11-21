@@ -1474,6 +1474,44 @@ class EmailsThroughTheDoor(unittest.TestCase):
         session._note_texts(forged)
         self.assertEqual(session.read_texts(), [], "a span past the served text binds nothing")
 
+    def test_a_near_window_starts_at_the_words_and_is_kept_as_read_text(self):
+        """plx.open near words (and several citations): each mail's window starts just
+        before the first of the words its text holds, its served span is the window's own
+        (the figure check binds exactly those characters), a text holding none of them is
+        shown from its start (near_found false), and the items of a several-citation open
+        are kept as each one's open is."""
+        from operating import mcp_server
+        from operating.mcp_server_calls import CallsMixin
+
+        class Session(CallsMixin):
+            pass
+
+        hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
+        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+            whole = self.tool().comms_open({"citation": hit}, tmp.OWNER)
+            text = whole["text"]["untrusted_text"]
+            at = text.lower().find("agreed")
+            self.assertGreater(at, 0)
+            near = self.tool().comms_open({"citation": hit, "max_chars": 8,
+                                           "near": ["Agreed"]}, tmp.OWNER)
+            none = self.tool().comms_open({"citation": hit, "max_chars": 8,
+                                           "near": ["zzzunheard"]}, tmp.OWNER)
+            for bad in (["x" * 101], "agreed", [3], ["w"] * 17):
+                with self.assertRaises(ts.ToolError):
+                    self.tool().comms_open({"citation": hit, "near": bad}, tmp.OWNER)
+        window = near["text"]["untrusted_text"]
+        self.assertTrue(near["near_found"])
+        self.assertEqual(window, text[near["text_offset"]:near["text_offset"] + 8])
+        self.assertLessEqual(near["text_offset"], at)
+        self.assertGreater(near["text_offset"] + 8, at)
+        self.assertEqual((none["near_found"], none["text_offset"]), (False, 0))
+        session = Session.__new__(Session)
+        session._evidence = mcp_server._session_evidence()
+        session._note_texts(json.loads(json.dumps({"opened": [near], "window_chars": 8})))
+        (cited, _field, spans), = session.read_texts()
+        self.assertEqual((cited, spans), ([hit], [(near["text_offset"],
+                                                    near["text_offset"] + 8)]))
+
     def test_a_body_indexed_late_is_withheld_until_read_then_shown(self):
         import psycopg
         table = f"{bv.SCHEMA}.emails"

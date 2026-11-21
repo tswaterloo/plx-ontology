@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import autopilot_queue as _AUTOPILOT_QUEUE
 
@@ -29,6 +29,16 @@ EVENT_TYPES = ("message.received", "task.assigned", "record.changed", "qc.result
 OWNER_RULES = ("recipient", "assignee", "approvers", "organizer", "buyer", "addressee",
                "hinted")
 ROLE_OWNER = re.compile(r"^role:[a-z_]{1,40}$")
+# an item no one person's record names (a late PO no mail or code names a buyer for): one
+# item the role holds (owner ``pool:<role>``), shown to each of its people until one takes
+# it (``Queue.take``), never one copy per person
+POOL_PREFIX = "pool:"
+
+
+def pool_role(owner: str) -> str | None:
+    """The role a pooled item's owner names, or None for a person's own item."""
+    owner = str(owner or "")
+    return owner[len(POOL_PREFIX):] if owner.startswith(POOL_PREFIX) else None
 CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned", "open", "asks",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
@@ -645,6 +655,28 @@ class Queue:
             return False
         self.conn.execute("INSERT INTO rate VALUES (?, ?, 1) ON CONFLICT(owner, hour) DO "
                           "UPDATE SET n = n + 1", (owner, hour))
+        return True
+
+    def take(self, item_id: str, pool: str, owner: str,
+             readdress: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> bool:
+        """A pooled open item becomes ``owner``'s own (one person's: the first to take it;
+        False when it is not open in ``pool`` any more: taken already, done or gone).
+        ``readdress``: the item's prepared work decided again for ``owner`` (its message's
+        recipients under the taker's own rules), written in the same transaction."""
+        if not pool.startswith(POOL_PREFIX) or not owner or owner.startswith(POOL_PREFIX):
+            return False
+        with self.conn:
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")      # one taker reads and writes at a time
+            row = self.conn.execute("SELECT body FROM items WHERE item_id = ? AND owner = ? "
+                                    "AND state = 'open'", (item_id, pool)).fetchone()
+            if row is None:
+                return False
+            body = json.loads(row[0])
+            if readdress is not None:
+                body = {**body, "prepared": readdress(body.get("prepared") or {})}
+            self.conn.execute("UPDATE items SET owner = ?, body = ? WHERE item_id = ?",
+                              (owner, json.dumps(body, sort_keys=True, default=str), item_id))
         return True
 
     def add_item(self, item: Mapping[str, Any]) -> bool:

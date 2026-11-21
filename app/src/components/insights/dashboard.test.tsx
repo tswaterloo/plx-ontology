@@ -1,3 +1,4 @@
+import { chartNotes } from "@/components/charts/chart-view";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiErrorFrom } from "@/lib/errors";
@@ -15,7 +16,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { AnswerCharts } from "@/components/answer-chart";
-import { InsightsDashboard, ScheduleControl, TOP, askAbout, grouped, topOf } from "./dashboard";
+import { InsightsDashboard, ScheduleControl, TOP, askAbout, grouped, monitorLine, topOf } from "./dashboard";
 
 const base = { about: "Per person: mail sent.", group: "Team", saved: false, question: null, schedule: "" as const, notify: "never" as const };
 const list: InsightList = {
@@ -81,7 +82,8 @@ describe("insights dashboard", () => {
     const top = topOf(chart);
     expect(top.labels).toEqual(names.slice(0, TOP));
     expect(top.series.map((s) => s.values.length)).toEqual([TOP, TOP]);
-    expect([top.shown, top.rows]).toEqual([TOP, 48]);
+    // how many there are is said once, by the tile's own "Top 15 of 48" line, never again under the chart
+    expect(chartNotes(top).join(" ")).not.toMatch(/Shows \d+ of/);
     // a short chart, a pie and a scatter are never cut
     expect(topOf({ ...chart, labels: names.slice(0, TOP) })).toEqual({ ...chart, labels: names.slice(0, TOP) });
     const scatter = { ...chart, kind: "scatter" } as typeof chart;
@@ -120,13 +122,27 @@ describe("insights dashboard", () => {
     const saved = { ...list.items[1], schedule: "" as const, notify: "never" as const, last_run: "Last ran Nov 19, 7:02 AM ET: 4 rows, 1 new." };
     render(<ScheduleControl item={saved} />);
     expect(screen.queryByText(/Last ran/)).toBeNull();          // not scheduled: no run line
-    fireEvent.change(screen.getByLabelText("Runs by itself"), { target: { value: "daily" } });
+    fireEvent.change(screen.getByLabelText("Check it"), { target: { value: "daily" } });
     await waitFor(() => expect(setInsightSchedule).toHaveBeenCalledWith("s7", { schedule: "daily", notify: "new_rows", watch: null }));
     await waitFor(() => expect(screen.getByLabelText("Tell me on Home")).toBeTruthy());
     expect(screen.getByText(/Last ran Nov 19/)).toBeTruthy();
     // a built-in has no schedule control
     render(<InsightsDashboard list={{ ...list, items: [list.items[0]] }} onChanged={vi.fn()} />);
     expect(screen.queryByTestId("schedule-team_output")).toBeNull();
+  });
+
+  it("the monitors the reader runs are listed first, each saying when it checks and what it tells", () => {
+    const watched = { ...list.items[1], schedule: "daily" as const, notify: "crosses" as const, watch: { column: "late_orders", op: "above" as const, value: 5 } };
+    render(<InsightsDashboard list={{ ...list, items: [list.items[0], watched] }} onChanged={vi.fn()} />);
+    expect(screen.getByTestId("monitors")).toHaveTextContent("Open orders by month");
+    expect(screen.getByTestId("monitors")).toHaveTextContent("Every morning, tells you when late orders goes above 5");
+    expect(screen.getByTestId("monitors")).not.toHaveTextContent("Work sent per person");   // a built-in runs no schedule
+    expect(monitorLine({ ...watched, notify: "new_rows", watch: null })).toBe("Every morning, tells you when a new row appears");
+  });
+
+  it("with no monitor the list says how to make one", () => {
+    render(<InsightsDashboard list={list} onChanged={vi.fn()} />);
+    expect(screen.getByTestId("monitors")).toHaveTextContent("None yet");
   });
 
   it("a number is watched against a line once the line is complete", async () => {
@@ -138,10 +154,10 @@ describe("insights dashboard", () => {
     expect(setInsightSchedule).not.toHaveBeenCalled();          // no line yet: nothing sent
     fireEvent.change(screen.getByLabelText("Column to watch"), { target: { value: "days_late" } });
     fireEvent.change(screen.getByLabelText("Line"), { target: { value: "abc" } });
-    expect((screen.getByText("Save line") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Watch") as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Above or below"), { target: { value: "below" } });
     fireEvent.change(screen.getByLabelText("Line"), { target: { value: "30" } });
-    fireEvent.click(screen.getByText("Save line"));
+    fireEvent.click(screen.getByText("Watch"));
     await waitFor(() => expect(setInsightSchedule).toHaveBeenCalledWith("s7", { schedule: "daily", notify: "crosses", watch: { column: "days_late", op: "below", value: 30 } }));
     await waitFor(() => expect(screen.getByText("Watching days late below 30")).toBeTruthy());
   });

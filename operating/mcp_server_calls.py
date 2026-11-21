@@ -366,17 +366,12 @@ class CallsMixin:
             # plx.read itself, as this session's reader; Freightcom never shown. A ref
             # (``open_refs``) opens the full handle this session's results showed for it,
             # through the same gates; one they did not show opens nothing.
-            if isinstance(arguments, Mapping) and open_refs.is_ref(arguments.get("citation")):
-                full = self._refs().resolve(arguments["citation"])
-                if full is None:
-                    return {"error": {"code": "not_found", "message": (
-                        "no plx.search hit or plx.sql row of this session showed that ref: "
-                        "send the ref or citation a result showed")}}
-                arguments = {**arguments, "citation": full}
+            # (each of several ``citations`` the same way)
             return ontology_tools_search.open_one(
                 lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
                 arguments,
-                lambda wanted: self._generic_call(ontology_tools_search.COMMS_OPEN, wanted))
+                lambda wanted: self._generic_call(ontology_tools_search.COMMS_OPEN, wanted),
+                resolve=lambda citation: self._refs().resolve(citation))
         if name in GENERIC_TOOLS or name in AGENDA_TOOLS:
             result = self._generic_call(name, arguments)
             return self._refs().sql(result) if name == SQL_TOOL else result

@@ -1629,9 +1629,12 @@ class PgCompatConnection:
 
     def _stream_conn(self) -> Any:
         """An idle stream connection, a new one while fewer than ``STREAM_CONNECTIONS``
-        are open, else None."""
+        are open, else None. None too when the login is refused at the connection limit
+        or this process's session budget is used up (``pool.session_budget``): the read
+        then runs on the held connection (whole, only not streamed) instead of failing
+        (two APIs side by side through a deploy share the role's limit)."""
         import psycopg
-        from operating.pg.pool import alive
+        from operating.pg.pool import alive, at_limit, session_budget
 
         with self._streams_lock:
             while self._streams:
@@ -1644,7 +1647,9 @@ class PgCompatConnection:
                 return None
             self._streams_open += 1
         try:
-            conn = psycopg.connect(self.dsn, autocommit=True, **self._named())
+            sessions = session_budget()   # a full budget: no wait, the held connection
+            conn = (sessions.take if sessions else lambda f, _w: f())(
+                lambda: psycopg.connect(self.dsn, autocommit=True, **self._named()), 0.0)
             with conn.cursor() as cur:
                 cur.execute(f"SET search_path = {self._search_path}")
                 cur.execute("SET TimeZone = 'UTC'")
@@ -1653,9 +1658,11 @@ class PgCompatConnection:
                 cur.execute("SET plan_cache_mode = force_custom_plan")
                 cur.execute("SET default_transaction_read_only = on")
             conn.autocommit = False
-        except BaseException:
+        except BaseException as exc:
             with self._streams_lock:
                 self._streams_open -= 1
+            if isinstance(exc, psycopg.OperationalError) and at_limit(exc):
+                return None
             raise
         return conn
 

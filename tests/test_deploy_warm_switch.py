@@ -685,7 +685,13 @@ class WarmSwitchRefused(unittest.TestCase):
         psql = bins / "psql"
         psql.write_text("#!/bin/sh\ncat >/dev/null\necho \"$STUB_PG_ROW\"\n")
         psql.chmod(0o755)
-        for row, refused in (("64|40|20", True), ("64|20|20", False), ("garbage", True)):
+        # limit | the role's sessions | the API's | the API's at work (not idle). The
+        # API's idle logins close in seconds, so only those at work and a second API's
+        # need (PG_NEED 40) count: 100 held but 10 at work leaves room (11-21 9:14 AM ET
+        # it was refused so and restarted cold); 60 at work does not
+        for row, refused in (("100|100|100|60", True), ("100|100|100|10", False),
+                             ("100|50|20|5", False), ("100|80|20|5", True),
+                             ("64|20|20", True), ("garbage", True)):
             host = Host(self, caddy=False)
             host.env.update({"PLX_ONTOLOGY_PG": "only", "PLX_PG_DSN": "dbname=none",
                              "STUB_PG_ROW": row, "PATH": f"{bins}:{host.env['PATH']}"})

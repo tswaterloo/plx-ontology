@@ -149,6 +149,165 @@ class IdleConnectionTests(unittest.TestCase):
         self.assertEqual(len(made), 2)
 
 
+    def test_the_exclusion_lookup_closes_its_login_once_idle(self):
+        """``people_excluded``'s per-process lookup connection was kept for the process's
+        life: one idle slot of the role's 100 in every API, warm-up and Ask host process
+        (571 s idle, 11-21). Now closed past ``idle_keep_seconds`` and opened again."""
+        from operating.pg import people_excluded
+        made = []
+
+        class Rows(Conn):
+            def execute(self, sql, *args):
+                return self
+
+            def fetchall(self):
+                return [("h@x", 3)]
+
+        def login(*a, **k):
+            made.append(Rows())
+            return made[-1]
+        lookup = people_excluded._Lookup()
+        with mock.patch("psycopg.connect", side_effect=login):
+            self.assertEqual(lookup.versions(["h@x"]), {"h@x": 3})
+            pg_pool.reap_now(self.later(pg_pool.IDLE_KEEP_SECONDS / 2))
+            self.assertFalse(made[0].closed)          # used a moment ago: kept
+            pg_pool.reap_now(self.later(pg_pool.IDLE_KEEP_SECONDS + 1))
+            self.assertTrue(made[0].closed)           # idle past the keep: its slot freed
+            self.assertEqual(lookup.versions(["h@x"]), {"h@x": 3})
+            self.assertEqual(len(made), 2)            # the next lookup logs in again
+
+    def test_the_marked_and_own_issued_sets_wait_for_a_slot_at_the_role_limit(self):
+        """Both sets were read on a login of their own, refused at once at the role's
+        limit: the marked set then read as unreadable and every kept page's access check
+        said no for 30 s (live 11-21 9:45 AM ET, Home, briefing, team read whole again);
+        now the login waits for a slot (``pool.when_free``) and the set is read."""
+        from operating.search import document_marks
+        from operating.pg import own_issued
+        full = psycopg.OperationalError('FATAL:  too many connections for role "plx_api"')
+        tries = []
+
+        class Rows(Conn):
+            def execute(self, sql, *args):
+                self.sql = sql
+                return self
+
+            def fetchall(self):
+                return ([("Doc:1", "sp://d/1#p2", ["finance"])] if "chunks" in self.sql
+                        else [("SalesInvoice:1",)])
+
+            def fetchone(self):
+                return ("ontology.own_issued",)
+
+        def login(*a, **k):
+            tries.append(1)
+            if len(tries) % 3:   # two refusals, then a slot
+                raise full
+            return Rows()
+        with mock.patch("psycopg.connect", side_effect=login), \
+                mock.patch.dict(os.environ, {pg_pool.FULL_WAIT_ENV: "5"}):
+            ids, handles = document_marks._Marked._read("postgresql://made-up/marks")
+            self.assertEqual(ids, {"Doc:1": frozenset({"finance"})})
+            self.assertEqual(own_issued._Hidden._read(), frozenset({"SalesInvoice:1"}))
+        self.assertEqual(len(tries), 6)
+
+
+class Login(Conn):
+    """A stand-in login a ``pool.Pool`` can lend, reset and keep."""
+    open_now: list = []
+    peak = 0
+    lock = threading.Lock()
+
+    def __init__(self):
+        super().__init__()
+        self.autocommit = self.read_only = self.isolation_level = None
+        self.broken = False
+        with Login.lock:
+            Login.open_now.append(self)
+            Login.peak = max(Login.peak, sum(not c.closed for c in Login.open_now))
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+@unittest.skipIf(pg_pool is None, "psycopg not installed")
+class SessionBudgetTests(unittest.TestCase):
+    """``PLX_PG_SESSIONS_MAX`` (set for the warm-up process, ``warm_process``): one process's
+    Postgres sessions over all its pools at most that many at once; a borrow past it waits
+    (the process's idle logins closed first) and is served, never refused at once. Live
+    11-21 9:14 AM ET: a warm-up pass held the API's whole share of the role (100 of 100), so
+    the deploy found no room for a second API and restarted cold."""
+
+    def borrow_all(self, environ, threads=9, pools=3, barrier=None):
+        Login.open_now, Login.peak = [], 0
+        made = [pg_pool.Pool("postgresql://made-up/budget", max_size=4,
+                             configure=lambda conn: None) for _ in range(pools)]
+        for p in made:
+            self.addCleanup(p.close)
+        served, failed = [], []
+
+        def borrow(n):
+            try:
+                with made[n % pools].connection() as conn:
+                    conn.execute("SELECT 1")
+                    barrier.wait(5) if barrier else time.sleep(0.05)
+                    served.append(n)
+            except Exception as exc:  # noqa: BLE001 - counted
+                failed.append(exc)
+        with mock.patch("psycopg.connect", side_effect=lambda *a, **k: Login()), \
+                mock.patch.dict(os.environ, environ):
+            workers = [threading.Thread(target=borrow, args=(n,)) for n in range(threads)]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join(30)
+        return served, failed
+
+    def test_a_process_budget_bounds_its_sessions_and_serves_every_borrow(self):
+        # unbounded (the API, as before): nine borrows at once over three pools, nine logins
+        served, failed = self.borrow_all({}, barrier=threading.Barrier(9))
+        self.assertEqual((len(served), failed, Login.peak), (9, [], 9))
+        # bounded at 3: never more than three open at once, all nine served
+        served, failed = self.borrow_all({pg_pool.SESSIONS_MAX_ENV: "3",
+                                          pg_pool.FULL_WAIT_ENV: "20"})
+        self.assertEqual((sorted(served), failed), (list(range(9)), []))
+        self.assertLessEqual(Login.peak, 3)
+
+    @unittest.skipUnless(hasattr(os, "fork"), "no fork")
+    def test_a_forked_child_has_a_budget_of_its_own_even_with_the_lock_held(self):
+        with mock.patch.dict(os.environ, {pg_pool.SESSIONS_MAX_ENV: "2"}):
+            parent = pg_pool.session_budget()
+            parent._held.append(lambda: Login())   # one open in the parent
+            with pg_pool._BUDGET_LOCK:   # held by a parent thread across the fork
+                pid = os.fork()
+                if pid == 0:   # the child: a fresh, empty budget at once, never a hang
+                    ok = pg_pool.session_budget() is not parent \
+                        and pg_pool.session_budget().in_use() == 0
+                    os._exit(0 if ok else 1)
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+
+    def test_a_budget_still_full_after_its_wait_is_a_refusal_at_the_limit(self):
+        Login.open_now, Login.peak = [], 0
+        pool = pg_pool.Pool("postgresql://made-up/full", max_size=4,
+                            configure=lambda conn: None)
+        self.addCleanup(pool.close)
+        with mock.patch("psycopg.connect", side_effect=lambda *a, **k: Login()), \
+                mock.patch.dict(os.environ, {pg_pool.SESSIONS_MAX_ENV: "1",
+                                             pg_pool.FULL_WAIT_ENV: "0.3"}):
+            with pool.connection():
+                began = time.monotonic()
+                with self.assertRaises(pg_pool.SessionsFull) as refused:
+                    with pool.connection():
+                        pass
+            self.assertGreaterEqual(time.monotonic() - began, 0.25)   # waited first
+            self.assertTrue(pg_pool.at_limit(refused.exception))   # callers see the limit
+            with pool.connection() as conn:   # handed back: free again
+                self.assertFalse(conn.closed)
+        self.assertEqual(Login.peak, 1)
+
 
 @unittest.skipIf(pg_pool is None, "psycopg not installed")
 class ForkAndNameTests(unittest.TestCase):

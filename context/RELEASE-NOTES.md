@@ -84,6 +84,15 @@ Changed:
 Changed:
 - UI fixes from the 11-21 walk: working card links, Insights names and charts, one count per alert kind, record page facts, Data health from the checks' own findings
 
+## Update 2026-11-21
+Changed:
+- Orders: currency and value of record from the system of record (Sage), one rule for views, records and alert cards
+- Sage records labelled Sage
+- UI fixes 2 from the 11-21 walk: alert rows by record name, one problem per card, Trust lists every source with one verdict, Data health for Admin readers, plain tile senders, a refused link mint says why
+- Home speed: Postgres room for the warm hand-over (idle logins 15 s, warm-up budget), Home Refreshing and service-session re-poll fixes, link slice rebuilt by its own guarded unit with the follower capped in the day, shared first-visit reads, auto-deploy batched every 30 min in the day, prune keeps releases the API runs from
+- Assist handlers on Postgres read small uncarried types once per run (supplier ETA, invoice keyer)
+- late-PO follow-up uses the twin PO's supplier address and never fans out to the role
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

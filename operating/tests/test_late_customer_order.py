@@ -153,6 +153,40 @@ class LateCustomerOrder(Engine):
         self.assertEqual(list(gaps), [plain, rush])
         self.assertNotIn("required_date_default", summary["not_evaluated"].get(RULE, {}))
 
+    def test_a_real_date_in_any_copy_beats_an_entry_default_in_a_higher_one(self):
+        """Owner 2026-11-21: a real date beats a system default. The top-ranked copy's
+        date that is its own order day (the form's default) gives way to another copy's
+        entered date, whatever their rank; with no entered date the own day is kept with
+        its doubt; placeholders and proven defaults are never an entered date."""
+        top, low = so.precedence()[-1], "portal_app"   # Sage, then an unranked copy
+        own_sage = ["2026-07-29"]
+
+        def copy(day, lineage, own, defaults=()):
+            return ([{"value": day, "lineage": lineage}], own, defaults)
+        got = so.requested_date([copy("2026-07-29", top, own_sage),
+                                 copy("2026-08-21", low, ["2026-07-28"])])
+        self.assertEqual((str(got.day), got.reason), ("2026-08-21", None))
+        self.assertEqual(got.governing[0]["lineage"], low)
+        # only own days: kept, with the doubt (as before)
+        got = so.requested_date([copy("2026-07-29", top, own_sage),
+                                 copy("2026-07-28", low, ["2026-07-28T19:53:52"])])
+        self.assertEqual((str(got.day), got.reason), ("2026-07-29", so.OWN_DAY))
+        # a placeholder or a proven bulk default in the other copy is no entered date
+        for other in (copy("1900-01-01", low, ["2026-07-28"]),
+                      copy("2026-09-30", low, ["2026-07-28"],
+                           [so.day_of({"value": "2026-09-30"})])):
+            got = so.requested_date([copy("2026-07-29", top, own_sage), other])
+            self.assertEqual((str(got.day), got.reason), ("2026-07-29", so.OWN_DAY), other)
+        # two entered dates: precedence decides among them, the own-day copy out of it
+        got = so.requested_date([copy("2026-07-29", top, own_sage),
+                                 copy("2026-08-21", low, ["2026-07-28"]),
+                                 copy("2026-08-25", so.precedence()[0], ["2026-07-20"])])
+        self.assertEqual(str(got.day), "2026-08-25")
+        # entered dates disagreeing at the top rank are still disputed
+        got = so.requested_date([copy("2026-08-21", top, ["2026-07-01"]),
+                                 copy("2026-08-22", top, ["2026-07-01"])])
+        self.assertEqual((got.day, got.reason), (None, "required_date_disputed"))
+
     def test_cardinality_every_order_once_within_the_budget(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):

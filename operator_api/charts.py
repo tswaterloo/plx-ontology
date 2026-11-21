@@ -455,6 +455,14 @@ def _pivot(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) 
         if at in row_cells:
             raise NotDrawn(f"Two rows are for {label} and {name}: total them in the statement.")
         row_cells[at] = number(cell(r, y))
+    if spec["kind"] != "heatmap" and len(cells) > 1:
+        # a split value with no amount anywhere ("Unknown" rows of no value) draws nothing:
+        # no legend entry of its own beside the series that do
+        drawn = {n: c for n, c in cells.items() if any(v for v in c.values())}
+        empty = set(cells) - set(drawn) if drawn else set()
+        cells = drawn or cells
+    else:
+        empty = set()
     limit = MAX_HEAT_ROWS if spec["kind"] == "heatmap" else MAX_CHART_SERIES
     ranked = sorted(cells, key=lambda n: -sum(abs(v) for v in cells[n].values()
                                               if v is not None))
@@ -464,7 +472,7 @@ def _pivot(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) 
                      for n in cells if n in keep]
     out["omitted"] = len(cells) - len(keep)
     out["shown"] = sum(1 for r in rows if (_text(cell(r, x)) or "") in labels
-                       and (_text(cell(r, split)) or "(none)") in keep)
+                       and (_text(cell(r, split)) or "(none)") in keep | empty)
 
 
 def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,

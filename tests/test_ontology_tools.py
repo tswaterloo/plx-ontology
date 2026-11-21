@@ -256,6 +256,18 @@ DOC = "Document:sharepoint.docs:d-1"
 DOC_H = "sharepoint://drive-1/item-1@etag1"
 
 
+def sage_customer(store, currency="CAD"):
+    """SO's customer's Sage account, stating its currency: a Portal copy's currency cells
+    are its entry default (order_value), so an order no Sage header or invoice holds is in
+    this account's currency."""
+    acct = "Customer:portal.sage_ar_customer:cur"
+    acct_h = "api://sage.ar_customer/cur@0000000000000001-7"
+    store.obj(acct, "api:sage.ar_customer", acct_h, "gold_etl_from_fm")
+    store.val(acct, "currency", "text", currency, acct_h, "row.codecurn", "gold_etl_from_fm")
+    store.link("lnk-ob-cur", "SalesOrder.ordered_by", SO, acct, "verified", "fk",
+               [SO_V2, acct_h])
+
+
 def build(skip=frozenset()):
     """The fixture store; ``skip`` names objects to leave out entirely (to
     compare a denied reader's answer with a store that never held them)."""
@@ -1032,10 +1044,18 @@ class ObjectTests(ContractMixin, unittest.TestCase):
                       "gold_etl_from_fm", unit="CSE", currency="CAD", markings='["finance"]')
             store.link(f"lnk-z{n}", "SalesOrderLine.line_of", line, SO, "verified", "fk",
                        [line_h, SO_V2])
+        # a Portal copy's own currency cells are its entry default (order_value): an order
+        # no Sage copy or invoice holds is in its customer's Sage account's currency
+        acct = "Customer:portal.sage_ar_customer:z"
+        acct_h = "api://sage.ar_customer/z@0000000000000001-7"
+        store.obj(acct, "api:sage.ar_customer", acct_h, "gold_etl_from_fm")
+        store.val(acct, "currency", "text", "CAD", acct_h, "row.codecurn", "gold_etl_from_fm")
+        store.link("lnk-ob-z", "SalesOrder.ordered_by", SO, acct, "verified", "fk",
+                   [SO_V2, acct_h])
         store.conn.commit()
         (got,) = self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)["derived"]
-        self.assertEqual((got["value"], got["derived_from"], len(got["inputs"])),
-                         ("670.89", "order_lines", 4))
+        self.assertEqual((got["value"], got["currency"], got["derived_from"],
+                          len(got["inputs"])), ("670.89", "CAD", "order_lines", 4))
 
     def test_a_header_total_its_lines_contradict_is_said_with_both_figures_to_its_reader(self):
         """CC-NY-1 (live 11-14: 117 of 297 Portal app orders with a total disagree with
@@ -1058,6 +1078,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
                           "gold_etl_from_fm")
                 store.link(f"lnk-c{n}", "SalesOrderLine.line_of", line, SO, "verified", "fk",
                            [line_h, SO_V2])
+            sage_customer(store)
             store.conn.commit()
             return store
 
@@ -1131,6 +1152,7 @@ class ObjectTests(ContractMixin, unittest.TestCase):
                               markings=outstanding_marks)
                 store.link(f"lnk-s{n}", "SalesOrderLine.line_of", line, SO, "verified",
                            "fk", [line_h, SO_V2])
+            sage_customer(store)
             store.conn.commit()
             return store
 

@@ -656,6 +656,16 @@ def _off() -> bool:
     return os.environ.get("PLX_LINK_MARKS_REFRESH", "").strip().lower() in ("off", "0", "no")
 
 
+def _by_unit() -> bool:
+    """``PLX_LINK_MARKS_REFRESH=unit``: rebuilds are the ``plx-link-marks`` unit's alone
+    (``deploy/systemd/plx-link-marks.service``, on its timer). Started from a delta cycle
+    (a oneshot unit) or an API, the build lived in that unit's control group and was killed
+    when the cycle ended or the API was restarted: every rebuild from 11-21 05:26 to 14:45
+    UTC died 1-7 minutes in ("build stopped without finishing"), so readers and the
+    follower's whole facts reads scanned link_rows (25M rows) in full since 11-15."""
+    return os.environ.get("PLX_LINK_MARKS_REFRESH", "").strip().lower() == "unit"
+
+
 _last_start = 0.0
 
 
@@ -668,6 +678,8 @@ def start_rebuild(dsn: str, *, retry_after: float = RETRY_SECONDS) -> str:
     import psycopg
     if _off():
         return "off"
+    if _by_unit():
+        return "by_unit"
     if _last_start and time.monotonic() - _last_start < 60:
         return "started_lately"
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
@@ -699,7 +711,7 @@ def start_refresh_if_stale(dsn: str | None = None) -> threading.Thread | None:
     """An API start's background ``refresh_if_stale`` (one per database: the lock), unless
     ``PLX_LINK_MARKS_REFRESH=off``. Errors are logged, never raised: readers read
     link_rows meanwhile."""
-    if _off():
+    if _off() or _by_unit():
         return None
     if dsn is None:
         from operating.pg import config

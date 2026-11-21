@@ -21,7 +21,7 @@ times and switch states only: no record, message or person's data.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 import json
 import os
@@ -260,7 +260,62 @@ def freshness(backend: Any, now: Optional[datetime] = None) -> list[m.TrustFresh
         row.state_words = _state_words(row, reads is not None, behind, old, bound,
                                        failed.get(system))
         rows.append(row)
+    if state_dir:
+        rows += carried(Path(state_dir), {r.system: r for r in rows}, now)
     return rows
+
+
+# The systems one capture carries (``operating.ops_health.source_checks``, Admin's own
+# checks): Sage and FileMaker come in with the Portal mirror, Calendar and Planner with the
+# meetings capture. Each is as fresh as its own newest refresh, within its carrier's bound,
+# and no fresher than the carrier's way into the app.
+CARRIED = {"capture:sage": ("Sage", "Portal"), "capture:filemaker": ("FileMaker", "Portal"),
+           "capture:calendar": ("Calendar", None), "capture:planner": ("Planner", None)}
+
+
+def carried(state: Path, held: Mapping[str, m.TrustFreshness],
+            now: datetime) -> list[m.TrustFreshness]:
+    """One row per carried system Admin checks (``ops_health.source_checks``): the same
+    age and the same bound, so Trust and Admin never disagree on it. A carrier that is not
+    configured gives no row (Admin has none either); an unreadable store says so."""
+    from operating import ops_health
+    try:
+        checks = ops_health.source_checks(state, now, ops_health.targets(os.environ))
+    except Exception:  # noqa: BLE001 - unreadable: the rows say so, never a guess
+        checks = [{"name": name, "value": None, "state": "unknown", "target": None,
+                   "detail": "unreadable"} for name in CARRIED]
+    out: list[m.TrustFreshness] = []
+    for check in checks:
+        name = check.get("name")
+        if name not in CARRIED:
+            continue
+        system, via = CARRIED[name]
+        row = m.TrustFreshness(system=system)
+        minutes = check.get("value")
+        if isinstance(minutes, (int, float)) and not isinstance(minutes, bool):
+            at = now - timedelta(minutes=float(minutes))
+            row.captured_at = _iso(at)
+            row.lag_seconds = max(0, int(float(minutes) * 60))
+        carrier = held.get(via) if via else None
+        bound = check.get("target")
+        if row.captured_at is None:
+            row.stale = True
+            row.state_words = "Never read yet." if check.get("state") != "unknown" or \
+                check.get("detail") != "unreadable" else "Behind: its store could not be read."
+        elif check.get("state") == "breach":
+            row.stale = True
+            row.state_words = (f"Behind: not read for over {_hours(float(bound) * 60)}."
+                               if isinstance(bound, (int, float)) else "Behind.")
+        elif carrier is not None and carrier.stale:
+            row.stale = True
+            row.served_at = carrier.served_at
+            row.state_words = (f"Behind: it reaches the app with the {via} data, which is "
+                               "behind.")
+        else:
+            row.served_at = carrier.served_at if carrier is not None else None
+            row.state_words = "Up to date: everything read is in the app."
+        out.append(row)
+    return sorted(out, key=lambda r: r.system)
 
 
 def _ledger_times(rows: list[tuple[Any, ...]]) -> dict[str, Optional[datetime]]:

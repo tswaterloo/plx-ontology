@@ -480,11 +480,28 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
             chat = next(iter(first))
             path = self.runtime.state_dir / capture_teams.STORE_DIR / capture_teams.DB_FILE
             with sqlite3.connect(path) as db:
+                gone = db.execute("SELECT * FROM unit_acl WHERE unit = ?", (chat,)).fetchall()
                 db.execute("DELETE FROM unit_acl WHERE unit = ?", (chat,))
             db.close()
             after = bc.teams_windows(self.runtime, vince)
             self.assertNotIn(chat, after)
             self.assertEqual(after, {u: w for u, w in first.items() if u != chat})
+            # a reopened store connection is decided again whatever its data_version says
+            # (a new connection counts from its own start: equal numbers mean nothing)
+            self.runtime._drop_capture_read(path)
+            with sqlite3.connect(path) as db:
+                db.executemany("INSERT INTO unit_acl VALUES (" + ", ".join(
+                    "?" * len(gone[0])) + ")", gone)
+            db.close()
+            key = (str(path), repr(now[0]))
+            kept = bc._WINDOWS.get(key)
+            self.assertIsNotNone(kept)
+            fresh = self.runtime._capture_read(path)._db
+            # the new connection's counter made equal to the kept one: only the
+            # connection's identity can tell the kept windows are stale
+            version = fresh.execute("PRAGMA data_version").fetchone()[0]
+            bc._WINDOWS[key] = (kept[0], version, *kept[2:])
+            self.assertEqual(bc.teams_windows(self.runtime, vince), first)
 
     # the plx.table cases of the base class are not this view's
     test_cardinality_1_10_60_by_day_bucket = None

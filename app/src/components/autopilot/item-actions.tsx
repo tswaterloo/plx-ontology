@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ErrorNotice } from "@/components/ui/notice";
+import { useProblem } from "@/components/ui/notice";
 import { alwaysDoThis, decideAutopilotItem, saveMemory, setNeverSender, type PreparedItem } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 
@@ -82,7 +82,7 @@ export function MoreMenu({ entries, disabled }: { entries: MenuEntry[]; disabled
  */
 export function ItemActions({ item, onGone, onChanged, primary, entries = [], busy, setAsideOnly }: { item: PreparedItem; onGone: (id: string) => void; onChanged?: () => void; primary?: React.ReactNode; entries?: MenuEntry[]; busy?: boolean; setAsideOnly?: boolean }) {
   const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError, problem] = useProblem();
   const [note, setNote] = useState<string | null>(null);
   const run = async (act: () => Promise<unknown>, then: () => void) => {
     setWorking(true);
@@ -136,7 +136,7 @@ export function ItemActions({ item, onGone, onChanged, primary, entries = [], bu
         <MoreMenu entries={more} disabled={busy || working} />
       </div>
       {note && <p className="text-[12px] text-muted">{note}</p>}
-      {error && <ErrorNotice message={error} />}
+      {problem}
     </>
   );
 }

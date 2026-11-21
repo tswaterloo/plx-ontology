@@ -3,19 +3,21 @@
 // Something that happened and waits on the person but has nothing to prepare (an approval
 // asked of them, a QC hold, a Mission Control question): what happened, why, where it is
 // decided and its records. It is decided in its own system; here it is only set aside, or
-// passed to a colleague (on their list too, under their own access).
+// passed to a colleague (on their list too, under their own access). An item no record
+// names a person for is on the whole role's list (pooled) until one of them takes it.
 
 import { useEffect, useState } from "react";
 import { ItemActions } from "@/components/autopilot/item-actions";
 import { Button } from "@/components/ui/button";
-import { ErrorNotice } from "@/components/ui/notice";
-import { getAutopilotColleagues, handAutopilotItem, setFollowing, type PreparedItem } from "@/lib/api";
+import { useProblem, useProblemSlot } from "@/components/ui/notice";
+import { getAutopilotColleagues, handAutopilotItem, setFollowing, takeAutopilotItem, type PreparedItem } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
-export function AlertCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
+export function AlertCard({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged?: () => void }) {
   const [passing, setPassing] = useState(false);
+  const card = useProblemSlot();
   return (
     <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-alert">
       <div className="flex flex-wrap items-baseline gap-x-3">
@@ -45,9 +47,43 @@ export function AlertCard({ item, linked, onGone }: { item: PreparedItem; linked
         </div>
       )}
       {item.handed_from && <p className="text-[12px] text-muted" data-testid="alert-handed-from">Passed to you by {item.handed_from}. Setting it aside clears it for them too.</p>}
-      <ItemActions item={item} onGone={onGone} setAsideOnly={!!item.handed_from} entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]} />
-      <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} />
+      {item.pooled ? (
+        <Take itemId={item.item_id} onTaken={() => (onChanged ? onChanged() : onGone(item.item_id))} />
+      ) : card.provide(
+        <>
+          <ItemActions item={item} onGone={onGone} setAsideOnly={!!item.handed_from} entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]} />
+          <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} />
+        </>,
+      )}
+      {card.banner}
     </li>
+  );
+}
+
+// Take a pooled item: it becomes yours alone, with its prepared work to check like any of
+// your items; refused when a colleague took it first.
+function Take({ itemId, onTaken }: { itemId: string; onTaken: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [, setError, problem] = useProblem();
+  const take = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await takeAutopilotItem(itemId);
+      onTaken();
+    } catch (e) {
+      setError(plainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-1">
+      <Button size="sm" disabled={busy} onClick={() => void take()} data-testid="alert-take">
+        Take it
+      </Button>
+      {problem}
+    </div>
   );
 }
 
@@ -80,7 +116,7 @@ function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?
   const [pick, setPick] = useState("");
   const [to, setTo] = useState(handedTo ?? "");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError, problem] = useProblem();
   const run = async (act: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -92,6 +128,10 @@ function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?
       setBusy(false);
     }
   };
+  // a closed picker leaves no problem of its own behind
+  useEffect(() => {
+    if (!open) setError(null);
+  }, [open, setError]);
   useEffect(() => {
     if (!open || people !== null) return;
     void run(async () => {
@@ -128,7 +168,7 @@ function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?
           </Button>
         </div>
       ))}
-      {error && <ErrorNotice message={error} />}
+      {problem}
     </div>
   );
 }

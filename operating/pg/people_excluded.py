@@ -183,13 +183,30 @@ def related(handle: str, container: str | None = None) -> tuple[str, ...]:
 class _Lookup:
     """One autocommit connection per process for :func:`latest_versions` (a lock around
     it; reopened after a failure, when the DSN changes, or in a forked child, which never
-    uses its parent's connection)."""
+    uses its parent's connection). Closed once idle past ``pool.idle_keep_seconds``
+    (``pool.reap_idle``), as every pooled connection: kept for the process's life it held a
+    slot of the role's limit in each API, warm-up and host process (idle 571 s, 11-21)."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.conn: Any = None
         self.dsn: str | None = None
         self.pid: int | None = None
+        self.used = 0.0            # monotonic time of the last statement
+        self.reaping: int | None = None   # the pid whose reaper calls ``reap``
+
+    def reap(self, now: float) -> None:
+        """Close the connection when idle past ``pool.idle_keep_seconds`` (never one in use:
+        a statement holds the lock, and a lock not free now is left to the next round)."""
+        from operating.pg.pool import idle_keep_seconds
+        keep = idle_keep_seconds()
+        if keep is None or not self.lock.acquire(blocking=False):
+            return
+        try:
+            if self.conn is not None and self.pid == os.getpid() and now - self.used > keep:
+                self.close_locked()
+        finally:
+            self.lock.release()
 
     def versions(self, handles: Sequence[str]) -> dict[str, int]:
         return dict(self._query(
@@ -220,9 +237,20 @@ class _Lookup:
                     self.conn, self.dsn = None, None   # the parent's: never touched here
                 if self.conn is None or self.conn.closed or self.dsn != dsn:
                     self.close_locked()
-                    self.conn = psycopg.connect(dsn, autocommit=True, connect_timeout=5)
+                    from operating.pg.pool import full_wait_seconds, session_budget
+                    sessions = session_budget()   # the warm-up's bound (pool.py)
+                    open_ = lambda: psycopg.connect(dsn, autocommit=True, connect_timeout=5)
+                    self.conn = (sessions.take(open_, full_wait_seconds()) if sessions
+                                 else open_())
                     self.dsn, self.pid = dsn, os.getpid()
-                return self.conn.execute(sql, args).fetchall()
+                    if self.reaping != self.pid:   # one registration per process
+                        from operating.pg.pool import reap_idle
+                        reap_idle(self.reap)
+                        self.reaping = self.pid
+                try:
+                    return self.conn.execute(sql, args).fetchall()
+                finally:
+                    self.used = time.monotonic()
             except Exception:
                 self.close_locked()
                 raise

@@ -545,13 +545,16 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
           actions: Sequence[Mapping[str, Any]], *, horizon: timedelta, data_end: datetime,
           since: datetime, until: datetime, window_items: bool = False,
           anticipated: set[int] | None = None,
-          source_end: Mapping[str, datetime] | None = None) -> dict[str, Any]:
+          source_end: Mapping[str, datetime] | None = None,
+          pools: Mapping[str, Sequence[str]] | None = None) -> dict[str, Any]:
     """Per workflow: items prepared, judged, matched; the person's actions in [since, until)
     and how many an item anticipated. ``window_items``: only the items whose trigger is in
     [since, until) (a split of the window: dev or held-out days). ``source_end``
     (``source_ends``): an item on a record of such a source is judged only when its horizon
     ends by that source's last event too (else unjudged: its answer may not be captured).
-    The answer window is ``horizon`` of working time (``answer_end``)."""
+    The answer window is ``horizon`` of working time (``answer_end``). ``pools``: a pooled
+    item's owner (``autopilot_queue.POOL_PREFIX``) -> its role's people; such an item
+    matches when any of them acted on it."""
     by_person: dict[str, list[tuple[datetime, Mapping[str, Any]]]] = defaultdict(list)
     for a in actions:
         at = ap._instant(a.get("at"))
@@ -586,7 +589,11 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         until_at = at + timedelta(hours=float(event["match_hours"])) \
             if event.get("match_hours") else close
         hit = None
-        for when, a in by_person.get(item["owner"], ()):
+        mine = by_person.get(item["owner"], ())
+        if pools and item["owner"] in pools:
+            mine = sorted((x for p in pools[item["owner"]] for x in by_person.get(p, ())),
+                          key=lambda x: x[0])
+        for when, a in mine:
             if when <= at or when > until_at:
                 continue
             if a.get("series") and a["series"] in keys["series"]:
@@ -601,7 +608,7 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         if hit is not None:
             c["matched"] += 1
             anticipated.add(id(hit))
-            _credit_burst(hit, by_person.get(item["owner"], ()), anticipated)
+            _credit_burst(hit, by_person.get(hit["person"], ()), anticipated)
     for person_actions in by_person.values():
         for when, a in person_actions:
             if since <= when < until:
@@ -954,7 +961,10 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
             day = nxt
         closes = answer_end(until, config["horizon"])
         last = end or data_end(st, ap._iso(closes))
-        items = queue.items(sorted(who), ("open", "done", "settled", "dismissed"))
+        pools = {autopilot_queue.POOL_PREFIX + r: sorted(set(m) & who)
+                 for r, m in {**roles, **({role: sorted(who)} if not role.startswith(
+                     "person:") else {})}.items() if set(m) & who}
+        items = queue.items(sorted(who | set(pools)), ("open", "done", "settled", "dismissed"))
         ev_ids = sorted({i["event_id"] for i in items})
         events = {}
         for start in range(0, len(ev_ids), 500):
@@ -969,7 +979,8 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
         anticipated: set[int] = set()
         ends = source_ends(st, sorted(who))
         flows = score(items, events, actions, horizon=config["horizon"], data_end=last,
-                      since=since, until=until, anticipated=anticipated, source_end=ends)
+                      since=since, until=until, anticipated=anticipated, source_end=ends,
+                      pools=pools)
         splits: dict[str, Any] = {}
         split_at = until - timedelta(days=held_out_days) if held_out_days else None
         if split_at is not None and since < split_at < until:
@@ -979,7 +990,8 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                                 "workflows": score(items, events, actions,
                                                    horizon=config["horizon"], data_end=last,
                                                    since=lo, until=hi, window_items=True,
-                                                   anticipated=seen, source_end=ends)}
+                                                   anticipated=seen, source_end=ends,
+                                                   pools=pools)}
                 splits[name]["misses"] = misses(queue, items, actions, seen, since=lo,
                                                 until=hi, horizon=config["horizon"])
         missed = misses(queue, items, actions, anticipated, since=since, until=until,

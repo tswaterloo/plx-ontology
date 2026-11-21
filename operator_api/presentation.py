@@ -420,7 +420,21 @@ def shown_words(text: str) -> str:
                    if "_" in f.group(0) else f.group(0), out)
     for pattern, said in PHRASES:
         out = pattern.sub(said, out)
-    return out
+    out = PAREN_PLURAL.sub(_counted, out)
+    return SPACED_PERCENT.sub(r"\1%", out)
+
+
+# "1 open order(s) affected" (a source's own wording): the plural the count calls for
+PAREN_PLURAL = re.compile(r"\b(?:(\d[\d,]*)(\s+(?:[A-Za-z]+\s+){0,2}?))?([A-Za-z]+)\(s\)")
+# "23 %": a percent sign set off from its number
+SPACED_PERCENT = re.compile(r"(\d) %(?![\w%])")
+
+
+def _counted(found: re.Match) -> str:
+    number, between, word = found.group(1), found.group(2) or "", found.group(3)
+    one = number is not None and number.replace(",", "") == "1"
+    plural = word if one else (word + "es" if re.search(r"(?:s|x|z|ch|sh)$", word) else word + "s")
+    return f"{number or ''}{between}{plural}"
 
 
 def polished(model: Any) -> Any:

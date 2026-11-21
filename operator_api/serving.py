@@ -580,7 +580,19 @@ def access_label(session: Any) -> Optional[str]:
     return FULL_READ_LABEL if getattr(session, "access", None) else None
 
 
+# The Portal's database mirrors another system's tables under that system's schema
+# (api://sage.oe_shipment_header/...: Sage OE as the Portal copies it; 8.75M of the 9.65M
+# api:// records served 11-21): such a record is that system's, never the Portal's. The
+# Portal's own schemas (public, silver) stay the Portal's.
+API_SCHEMA_SYSTEMS = {"sage": "Sage"}
+
+
 def system_of(handle: str) -> str:
+    """The system a record comes from, by its L1 handle (``SCHEMES``; an api:// handle by
+    its relation's schema, ``API_SCHEMA_SYSTEMS``)."""
+    if handle.startswith("api://"):
+        schema = unquote(handle[len("api://"):].split("/", 1)[0]).split(".", 1)[0]
+        return API_SCHEMA_SYSTEMS.get(schema.strip().lower(), "Portal")
     for prefix, system in SCHEMES:
         if handle.startswith(prefix):
             return system

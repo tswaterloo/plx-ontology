@@ -231,7 +231,7 @@ function Progress({ turn }: { turn: Turn }) {
         {steps.map((s, i) => (
           <li key={i} className={cn("flex items-center gap-2.5", s.state === "done" ? "text-muted" : "text-fg")}>
             {s.state === "active" ? <Spinner /> : <Check className="size-3.5 shrink-0 text-muted" strokeWidth={2.2} aria-hidden />}
-            <span className="min-w-0 truncate">{s.label}</span>
+            <span className="min-w-0 line-clamp-2">{s.label}</span>
             {s.tiles && (
               <span className="flex shrink-0 gap-1" aria-hidden>
                 {SEARCHED.map((x) => (

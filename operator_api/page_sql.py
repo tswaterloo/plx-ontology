@@ -13,6 +13,7 @@ its numbers are unavailable, never "none"."""
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from contextlib import nullcontext
@@ -159,7 +160,7 @@ def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]) -> m.L
     due = _iso(row.get("requested_date"))
     promised = _iso(row.get("promised_date"))
     days = row.get("days_late")
-    reason = (f"Requested by {due}, still open" if due else "Past its requested-by date")
+    reason = (f"Needed by {due}, still open" if due else "Past its needed-by date")
     if promised and promised != due:
         reason += f"; supplier promised {promised}"
     return m.LatePo(
@@ -490,8 +491,11 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
         oid, _otype, url, sources = _alert_ref(row, ids)
         risk.append(m.AtRisk(object_id=oid, label=alert_label(row), kind=str(row.get("kind")),
                              reason=str(row.get("why") or ""), open_url=url, sources=sources))
+    # as the briefing's: a mail type is never paged here (its group says unavailable), so
+    # it never holds Home in "refreshing" (live 11-21: needs_my_reply kept Home's
+    # "Refreshing" on for good and the app polled /api/home every few seconds)
     stale = {t: runs.get(t, (False, None))[1] for t in types
-             if not runs.get(t, (False, None))[0]}
+             if _paged(t) and not runs.get(t, (False, None))[0]}
     return total, late, _iso(ok), risk, stale
 
 
@@ -529,6 +533,19 @@ def _alert_ref(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]
     url = record_url(row.get("record_table"), handle, otype, oid if rec else "")
     return oid, otype, url, [m.Source(system=system_of(handle), handle=handle,
                                       label=record_words(handle), open_url=open_url(handle))]
+
+
+def _subject(row: Mapping[str, Any], otype: str) -> str:
+    """The alerted record's own name ("BE FIT NOW", "106001"); without one (a record this
+    reader may not see in ``records``) its kind in words ("Purchase order"), never the
+    source system's table words ("BC production", "Portal customer")."""
+    name = str(row.get("subject") or "").strip()
+    if name:
+        return name[:200]
+    if otype:
+        words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", otype).lower()
+        return words[:1].upper() + words[1:]
+    return record_words(str(row.get("handle") or ""))
 
 
 def alert_label(row: Mapping[str, Any]) -> str:
@@ -573,7 +590,7 @@ def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], ran
     return m.BriefingItem(
         rank=rank, id=f"alert:{rule}:{row.get('handle')}:{row.get('topic') or ''}",
         event_type=rule, label=alert_label(row), evidence="live", object_id=oid,
-        object_type=otype, subject_label=record_words(str(row.get("handle") or "")),
+        object_type=otype, subject_label=_subject(row, otype),
         summary=str(row.get("why") or ""),
         next_action=m.NextAction(text=step[0], rule=step[1]),
         new_since_visit=new, new_this_generation=new, alert_kind=alert_kinds.kind_of(rule),
@@ -918,9 +935,15 @@ def _orders_note(n: int, late: int, totals: list[str], unvalued: int, shown: int
 
 
 def _sources(accounts: list[Mapping[str, Any]], built: Mapping[str, Any],
-             views: Sequence[str]) -> str:
+             views: Sequence[str], held_in: Any = None) -> str:
+    """The systems the page's records come from (the accounts' codes, or a record's own
+    ``source_systems``: "bc,portal" or a list) and the oldest read's time."""
     systems = sorted({(codes_text(f"{p}") or "").split(" ")[0] for a in accounts
                       for p in str(a.get("codes") or "").split(",") if ":" in p} - {""})
+    named = held_in.split(",") if isinstance(held_in, str) else held_in \
+        if isinstance(held_in, (list, tuple)) else ()
+    systems = sorted(set(systems) | {_SYSTEMS.get(str(n).strip().lower(), str(n).strip().title())
+                                     for n in named if str(n).strip()})
     stamps = [built[v] for v in views if isinstance(built.get(v), datetime)]
     when = None
     if stamps:
@@ -1061,7 +1084,7 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
     n, late, totals, unvalued = _open_totals(rows["supplier_open_totals"])
     listed = rows["supplier_open_pos"]
     sections = [m.BizTable(key="open_orders", title="Open purchase orders", columns=[
-        "PO", "Ordered", "Requested by", "Promised", "Days late", "Total"], rows=[[
+        "PO", "Ordered", "Needed by", "Promised", "Days late", "Total"], rows=[[
             _t(p, "po_number", account_url("purchase_order", p.get("handle"))),
             _d(p, "order_date"), _d(p, "requested_date"), _d(p, "promised_date"),
             _n(p, "days_late") if p.get("verdict") == "late" else m.BizCell(),
@@ -1114,7 +1137,7 @@ def order(backend: Any, reader: Any, kind: str, handle: str) -> m.BizPage:
                    if h.get("supplier_handle") else None)
         facts.append(m.BizFact(label="Supplier", value=party))
         spec = (("Status", "status", _t), ("Ordered", "order_date", _d),
-                ("Requested by", "requested_date", _d), ("Promised", "promised_date", _d),
+                ("Needed by", "requested_date", _d), ("Promised", "promised_date", _d),
                 ("Purchaser", "purchaser", _t))
         money = "total"
         cols = ["Item", "Description", "Ordered", "Received", "Invoiced", "Unit",
@@ -1171,7 +1194,7 @@ def order(backend: Any, reader: Any, kind: str, handle: str) -> m.BizPage:
         "Purchase order" if kind == "purchase_order" else "Customer order"), facts=facts,
         sections=[m.BizTable(key="lines", title="Lines", columns=cols, rows=body,
                              total=len(lines), note=note)],
-        sources=_sources([], built, (table, f"{table[:-1]}_lines")),
+        sources=_sources([], built, (table, f"{table[:-1]}_lines"), h.get("source_systems")),
         as_of=None, took_ms=int((time.perf_counter() - started) * 1000))
 
 

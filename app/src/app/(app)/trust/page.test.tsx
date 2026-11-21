@@ -56,9 +56,10 @@ describe("Trust page", () => {
     api.trust.mockResolvedValue(page());
     render(<TrustRoute />);
     const fresh = await screen.findByTestId("trust-freshness");
-    const bc = within(fresh).getByText("BC").closest("tr")!;
-    expect(bc).toHaveTextContent("2 h");
-    expect(within(fresh).getByText("Email").closest("tr")).toHaveTextContent("Behind");
+    const bc = within(fresh).getByText("Business Central").closest("tr")!;
+    expect(bc).toHaveTextContent("2 h ago");
+    expect(bc).toHaveTextContent("Up to date");
+    expect(within(fresh).getByText("Mail").closest("tr")).toHaveTextContent("Behind");
     expect(screen.getByTestId("trust-answers-empty")).toHaveTextContent("Not measured yet");
     const auto = screen.getByTestId("trust-autopilot");
     const teams = within(auto).getByText("Teams chat").closest("tr")!;
@@ -91,7 +92,7 @@ describe("Trust page", () => {
     const summary = await screen.findByTestId("trust-summary");
     const lines = within(summary).getAllByRole("listitem").map((li) => li.textContent);
     expect(lines).toEqual([
-      "The app is behind on Teams; the other 3 systems are up to date, though the last read of File failed (see below).",
+      "The app is behind on Teams; the other 3 systems are up to date, though the last read of Files failed (see below).",
       "Answer accuracy on questions never used for tuning has not been measured on this server yet.",
       "1 of the 3 alert types is switched on; the rest stay off (1 was checked by hand but has not passed yet, 1 has not been checked yet).",
       "The autopilot prepares drafts for a person to confirm in 2 kinds of work; nothing goes out without that person's click.",
@@ -99,9 +100,34 @@ describe("Trust page", () => {
     // no "6" beside "3 behind" that reads as "63 behind", no "0 of 0"
     expect(summary).not.toHaveTextContent(/\b0 of 0\b|\d+ behind/);
     const table = screen.getByTestId("trust-freshness");
-    expect(within(table).getByText("File").closest("tr")).toHaveTextContent("failed: it finished without reporting anything it read");
-    expect(within(table).getByText("Teams").closest("tr")).toHaveTextContent("Behind: records read since 11:00 AM ET");
+    expect(within(table).getByText("Files").closest("tr")).toHaveTextContent("failed: it finished without reporting anything it read");
+    const teams = within(table).getByText("Teams").closest("tr")!;
+    // one verdict word, then the reason without repeating it
+    expect(teams).toHaveTextContent("Behind");
+    expect(teams).toHaveTextContent("records read since 11:00 AM ET");
+    expect(teams.textContent).not.toMatch(/Behind.*Behind/);
+    // an up-to-date source says only that
+    const bc = within(table).getByText("Business Central").closest("tr")!;
+    expect(bc.textContent).toMatch(/Up to date/);
+    expect(bc.textContent).not.toMatch(/everything read/);
     expect(within(table).queryByText(/last capture failed/)).toBeNull();
+  });
+
+  it("lists every source Admin checks, each with one verdict, a source never read included", async () => {
+    const fresh: TrustFreshness[] = [
+      { system: "Portal", captured_at: "2026-11-11T19:50:00Z", served_at: "2026-11-11T19:50:00Z", lag_seconds: 600, stale: false, capture: null, state_words: "Up to date: everything read is in the app." },
+      { system: "Sage", captured_at: "2026-11-11T19:40:00Z", served_at: null, lag_seconds: 1200, stale: false, capture: null, state_words: "Up to date: everything read is in the app." },
+      { system: "FileMaker", captured_at: "2026-11-11T19:40:00Z", served_at: null, lag_seconds: 1200, stale: true, capture: null, state_words: "Behind: it reaches the app with the Portal data, which is behind." },
+      { system: "Calendar", captured_at: "2026-11-11T19:30:00Z", served_at: null, lag_seconds: 1800, stale: false, capture: null, state_words: "Up to date: everything read is in the app." },
+      { system: "Planner", captured_at: null, served_at: null, lag_seconds: null, stale: true, capture: null, state_words: "Never read yet." },
+    ];
+    api.trust.mockResolvedValue(page({ freshness: fresh }));
+    render(<TrustRoute />);
+    const table = await screen.findByTestId("trust-freshness");
+    const verdict = (name: string) => within(table).getByText(name).closest("tr")!.children[1].textContent;
+    expect(["Customer Portal", "Sage", "FileMaker", "Calendar", "Planner"].map(verdict)).toEqual(["Up to date", "Up to date", "Behind", "Up to date", "Not read yet"]);
+    expect(within(table).getByText("Planner").closest("tr")!.textContent).not.toMatch(/Never read yet/);
+    expect(screen.getByTestId("trust-summary")).toHaveTextContent("The app is behind on FileMaker and Planner; the other 3 systems are up to date.");
   });
 
   it("says when the newest scorer run was not counted, beside the older counts", async () => {

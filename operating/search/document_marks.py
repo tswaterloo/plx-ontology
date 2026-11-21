@@ -45,6 +45,7 @@ RECORD_KINDS = ("record_text", "bc_text", "record_words")
 # about this long); an unreadable store is retried after ``RETRY_S``.
 REFRESH_S = 120.0
 RETRY_S = 30.0
+LIMIT_WAIT_S = 2.0   # a per-call login at the role's limit waits this long, then fails closed
 _PAGE = re.compile(r"[#&]page=[0-9]+$")
 # The marked documents, read from the partial index on marked chunks (migration 0015,
 # ``chunks_marked``): its predicate is this read's, so it never scans every chunk.
@@ -89,8 +90,10 @@ def withheld(object_ids: Iterable[str], held: Iterable[str], *, conn: Any = None
         if own:
             import psycopg
             from operating.embed import config
-            conn = psycopg.connect(os.environ.get("PLX_PG_DSN") or config.DEFAULT_DSN,
-                                   connect_timeout=5)
+            from operating.pg.pool import when_free
+            dsn = os.environ.get("PLX_PG_DSN") or config.DEFAULT_DSN
+            conn = when_free(lambda: psycopg.connect(dsn, connect_timeout=5),
+                             LIMIT_WAIT_S)
         rows = conn.execute(
             "SELECT DISTINCT object_id FROM search.chunks WHERE object_id = ANY(%s) "
             "AND kind <> ALL(%s) AND NOT (markings <@ %s::text[])",
@@ -124,7 +127,12 @@ class _Marked:
     @staticmethod
     def _read(dsn: str) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
         import psycopg
-        with psycopg.connect(dsn, connect_timeout=5) as conn:
+        from operating.pg.pool import when_free
+        # a login refused at the role's limit waits for a slot (``when_free``): refused at
+        # once, the set read as unreadable and every kept page's check said no for
+        # ``RETRY_S`` (live 11-21: "marks unreadable" on Home, briefing and team while
+        # the API sat at the limit), so each was read whole again
+        with when_free(lambda: psycopg.connect(dsn, connect_timeout=5)) as conn:
             rows = conn.execute(MARKED_SQL, (list(RECORD_KINDS),)).fetchall()
         ids: dict[str, set[str]] = {}
         handles: dict[str, set[str]] = {}

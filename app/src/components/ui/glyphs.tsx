@@ -1,11 +1,13 @@
 import { Activity, ChartColumn, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
-/** No date on record: the ring left open, dashed. */
+/** Not on record: a closed ring with a bar (static; a dashed ring read as a loading spinner). */
 export function OpenRing({ size = 14, tone = "risk", className }: { size?: number; tone?: "risk" | "neutral"; className?: string }) {
   return (
     <svg viewBox="0 0 14 14" width={size} height={size} className={cn("shrink-0", className)} aria-hidden>
-      <circle cx="7" cy="7" r="5.25" fill="none" stroke={tone === "risk" ? "var(--dot-risk)" : "var(--dot-neutral)"} strokeWidth="1.5" strokeDasharray="2.2 2.2" />
+      {/* a closed ring with a bar: "not there", never a dashed ring that reads as loading */}
+      <circle cx="7" cy="7" r="5.25" fill="none" stroke={tone === "risk" ? "var(--dot-risk)" : "var(--dot-neutral)"} strokeWidth="1.5" />
+      <path d="M4.6 7h4.8" stroke={tone === "risk" ? "var(--dot-risk)" : "var(--dot-neutral)"} strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

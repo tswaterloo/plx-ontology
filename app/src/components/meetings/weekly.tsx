@@ -178,7 +178,8 @@ function Figure({ f }: { f: BriefFigure }) {
 }
 
 function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?: boolean }) {
-  const shown = list.filter((s) => (s.rows ?? []).length > 0 || (s.figures ?? []).length > 0);
+  // a section that could not be read yet says its note under its title, never "nothing this week"
+  const shown = list.filter((s) => (s.rows ?? []).length > 0 || (s.figures ?? []).length > 0 || (s.state === "unread" && !!s.note));
   const quiet = list.filter((s) => !shown.includes(s));
   return (
     <>

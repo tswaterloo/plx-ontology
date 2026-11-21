@@ -1,0 +1,41 @@
+# PLX Workbench kept link slice rebuild at low priority: one run of
+# `python3 -m operating.pg.link_marks refresh --if-stale`. Rebuilds ontology.link_marks
+# (migration 0028) only when readers would not take it now and no build failed or began
+# in the last 20 minutes; otherwise it reports the status and exits. Here, in a unit of its
+# own, a build lives as long as it needs: started from a delta cycle (a oneshot) or an
+# API it was killed with that unit's control group (every rebuild one day died 1-7 minutes
+# in), so every reader and the follower's whole facts reads scanned link_rows in full.
+# The delta units and the API set PLX_LINK_MARKS_REFRESH=unit and start none themselves.
+# Started by plx-link-marks.timer; skipped in a migration window (window_lock).
+[Unit]
+Description=PLX kept link slice rebuild when stale (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# Reads no business system: the credentials that can send, write or reach one are dropped
+# (SEC-S-05; tests/test_deploy_release.py names the units that may keep them).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+# a backend whose client the disk guard stopped ends within 2 s (not at its statement's end)
+Environment="PGOPTIONS=-c work_mem=256MB -c max_parallel_workers_per_gather=1 -c client_connection_check_interval=2s"
+ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
+# a build writes the new slice beside the old (about 6 GB) plus WAL: started only with
+# 85 GB free on /data and no standby copy running, stopped under 75 GB (free_space_run.sh;
+# exit 75 = skipped or stopped short, not a failure)
+SuccessExitStatus=75
+# 4 readers, each statement at most 1 parallel worker: a box's quarter, beside the API
+ExecStart=@PLX_CURRENT@/deploy/ops/guards/free_space_run.sh 85 75 /data -- /data/venv/bin/python3 -m operating.pg.link_marks refresh --if-stale --retry-after 1200 --workers 4
+Nice=10
+CPUWeight=20
+IOWeight=20
+MemoryHigh=6G
+MemoryMax=8G
+TimeoutStartSec=4h
+UMask=0077

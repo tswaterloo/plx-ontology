@@ -1452,6 +1452,104 @@ class AlertCards(unittest.TestCase):
         self.assertEqual(self.bc.calls, [])
 
 
+class PooledItems(unittest.TestCase):
+    """An item no record names a person for (a late PO nobody is named buyer of) is one
+    item on the role's list: each member sees what happened and its records, never its
+    prepared message, until one takes it; then it is theirs alone and gone from the
+    others'. Someone outside the role never sees it."""
+
+    client = AutopilotArea.client
+    OUTSIDER = ("zed@plx.example", "66666666-6666-4666-8666-666666666666")
+
+    def setUp(self) -> None:
+        AutopilotArea.setUp(self)
+        path = Path(self.backend.autopilot_queue)
+        (path.parent / autopilot_queue.ROLES_FILE).write_text(json.dumps(
+            {"roles": {"purchasing": [OWNER[1], COLLEAGUE[1]]}}))
+        item = queued("ap_pool", "pool:purchasing")
+        item.update(autopilot="po_followup", title="Supplier PO without confirmation: PO P-80",
+                    audiences=[])
+        item["body"]["prepared"] = {
+            "summary": "PO P-80 was ordered 7 days ago; no confirmation from the supplier.",
+            "draft": {"channel": "email", "to": [{"address": "anna@supplier.example"},
+                                                 {"address": COLLEAGUE[0]}],
+                      "subject": "PO P-80", "body": "Hi Anna, could you confirm PO P-80?"},
+            "links": [{"label": "Open the PO",
+                       "href": object_href('PurchaseOrder:portal.app_purchase_order:{"id":"p80"}')}]}
+        q = ap.Queue(path)
+        with q.conn:
+            q.add_item(item)
+        q.close()
+        from integrations.people_exclusion import PeopleExclusion
+        from operating.chunking.permissions import Exclusion
+        self.backend.autopilot_people = Exclusion(
+            PeopleExclusion(["00000000-0000-4000-8000-0000000000e1"]),
+            directory={OWNER[0]: OWNER[1], COLLEAGUE[0]: COLLEAGUE[1]},
+            internal_domains=["plx.example"])
+
+    def listed(self, client) -> dict:
+        got = client.get("/api/autopilot/drafts")
+        self.assertEqual(got.status_code, 200, got.text)
+        return {i["item_id"]: i for i in got.json()["items"]}
+
+    def test_one_item_on_the_roles_list_until_one_member_takes_it(self):
+        ana, sam, zed = self.client(OWNER), self.client(COLLEAGUE), self.client(self.OUTSIDER)
+        for who in (ana, sam):
+            card = self.listed(who)["ap_pool"]
+            self.assertEqual((card["kind"], card["pooled"], card["body"]), ("alert", "purchasing", ""))
+            self.assertNotIn("could you confirm", json.dumps(card))
+            self.assertEqual([lk["label"] for lk in card["links"]], ["Open the PO"])
+        self.assertNotIn("ap_pool", self.listed(zed))
+        self.assertEqual(zed.post("/api/autopilot/items/ap_pool/take").status_code, 404)
+        got = sam.post("/api/autopilot/items/ap_pool/take")
+        self.assertEqual(got.status_code, 200, got.text)
+        mine = {i["item_id"]: i for i in got.json()["items"]}["ap_pool"]
+        self.assertEqual((mine["kind"], mine["pooled"]), ("reply", ""))
+        self.assertIn("could you confirm", mine["body"])
+        # addressed again for the taker: their own address is never a recipient
+        self.assertEqual(mine["to"], ["anna@supplier.example"])
+        self.assertNotIn("ap_pool", self.listed(ana))
+        self.assertIn(ana.post("/api/autopilot/items/ap_pool/take").status_code, (404, 409))
+        q = ap.Queue(Path(self.backend.autopilot_queue))
+        self.assertEqual(q.item("ap_pool")["owner"], COLLEAGUE[1])
+        self.assertFalse(q.take("ap_pool", "pool:purchasing", OWNER[1]))   # taken already
+        q.close()
+
+
+class PooledTakeRace(unittest.TestCase):
+    """Two people taking one pooled item at the same moment: exactly one gets it."""
+
+    def test_two_takers_at_once_one_gets_it(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ap.QUEUE_FILE
+            q = ap.Queue(path)
+            with q.conn:
+                for n in range(20):
+                    q.add_item(queued(f"ap_p{n}", "pool:purchasing"))
+            q.close()
+            for n in range(20):
+                start, got = threading.Barrier(2), {}
+
+                def take(who: str) -> None:
+                    mine = ap.Queue(path)
+                    try:
+                        start.wait()
+                        got[who] = mine.take(f"ap_p{n}", "pool:purchasing", who)
+                    finally:
+                        mine.close()
+                threads = [threading.Thread(target=take, args=(w,)) for w in (OWNER[1], COLLEAGUE[1])]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                self.assertEqual(sorted(got.values()), [False, True], got)
+                q = ap.Queue(path)
+                winner = next(w for w, ok in got.items() if ok)
+                self.assertEqual(q.item(f"ap_p{n}")["owner"], winner)
+                q.close()
+
+
 class ReplyFromLine(unittest.TestCase):
     """``POST /api/autopilot/items/{id}/reply-from-line``: a "your call" card of the reader's
     own gets its reply written from their line (figures only from the line and the card's

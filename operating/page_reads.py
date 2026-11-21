@@ -193,8 +193,12 @@ QUERIES: dict[str, Query] = {
         "SELECT rule, count(*) AS open, min(since) AS oldest FROM alerts WHERE state = 'open' "
         "AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH + " GROUP BY rule "
         "ORDER BY rule", ("rules",), 64),
+    # ``subject``: the alerted record's own name (its ``records`` row as this reader may see
+    # it; none when they may not), so a row is titled "BE FIT NOW", never "Portal customer"
     "alerts_open": Query(
-        "SELECT rule, kind, record_table, handle, topic, why, since, first_seen FROM alerts "
+        "SELECT rule, kind, record_table, handle, topic, why, since, first_seen, "
+        "(SELECT r.label FROM records r WHERE r.handle = alerts.handle ORDER BY r.record_id "
+        "LIMIT 1) AS subject FROM alerts "
         "WHERE state = 'open' AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH +
         " ORDER BY since, rule, handle, topic LIMIT %(limit)s OFFSET %(offset)s",
         ("rules", "limit", "offset"), MAX_ROWS),
@@ -315,7 +319,7 @@ QUERIES: dict[str, Query] = {
         "total_currency, to_jsonb(p) ->> 'total_basis' AS total_basis, "
         "(to_jsonb(p) ->> 'lines_total')::numeric AS lines_total, "
         "to_jsonb(p) ->> 'lines_total_currency' AS lines_total_currency, purchaser, "
-        "line_count, supplier_handle, handle, withheld "
+        "line_count, supplier_handle, source_systems, handle, withheld "
         "FROM purchase_orders p WHERE handle = %(handle)s", ("handle",)),
     "purchase_order_lines": Query(
         "SELECT item_code, description, ordered_quantity, received_quantity, "
@@ -326,8 +330,8 @@ QUERIES: dict[str, Query] = {
     "sales_order": Query(
         "SELECT order_number, customer, customer_code, customer_po, order_date, "
         "required_date, status, status_reason, order_type, days_late, value, value_currency, "
-        "salesperson, line_count, customer_chain, customer_handle, handle, withheld "
-        "FROM sales_orders WHERE handle = %(handle)s", ("handle",)),
+        "salesperson, line_count, customer_chain, customer_handle, source_systems, handle, "
+        "withheld FROM sales_orders WHERE handle = %(handle)s", ("handle",)),
     "sales_order_lines": Query(
         "SELECT item_code, item_name, description, ordered_quantity, shipped_quantity, "
         "outstanding_quantity, uom, unit_price, unit_price_currency, line_amount, "

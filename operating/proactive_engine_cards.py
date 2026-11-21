@@ -663,14 +663,16 @@ def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
             got = derived.get(gap["object_id"])
             if got is not None:
                 rows = list(got.rows)
-                marks = _markings(*(r.get("markings") for r in rows))
-                gap["extra"] = list(dict.fromkeys([*gap["extra"], *_cites(rows)]))
+                # the currency of record may rest on another record (``order_value``)
+                cur = list(got.currency_rows) or rows[:1]
+                marks = _markings(*(r.get("markings") for r in (*rows, *cur)))
+                gap["extra"] = list(dict.fromkeys([*gap["extra"], *_cites([*rows, *cur])]))
                 gap["follow_up"]["event"] = {
                     **(gap["follow_up"].get("event") or {}),
                     "amount": {"value": str(got.amount), "currency": got.currency,
                                "basis": DERIVED_BASIS[got.basis],
                                "handle": rows[0]["l1_handle"],
-                               "currency_handle": rows[0]["l1_handle"], "markings": marks}}
+                               "currency_handle": cur[0]["l1_handle"], "markings": marks}}
                 continue
             props = (found.get(gap["object_id"]) or {}).get("props") or {}
             total, code = ev._one(props.get(amount)), ev._one(props.get(currency))

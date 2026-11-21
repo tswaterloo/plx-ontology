@@ -77,6 +77,20 @@ class KindsTest(unittest.TestCase):
         self.assertEqual(sum(v for s in c["series"] for v in s["values"]),
                          sum(float(r[2]) for r in LONG))
 
+    def test_a_split_value_with_no_amount_has_no_legend_entry(self):
+        # the walk: a month chart split by status listed "Unknown" for rows of no value
+        rows = [["2026-10", "Open", "210600"], ["2026-10", "Closed", "11970"],
+                ["2026-10", "Unknown", None], ["2026-11", "Open", "200000"],
+                ["2026-11", "Unknown", "0"]]
+        (c,) = drawn({"type": "bar", "x": "month", "split": "status", "y": ["value"]},
+                     ("month", "status", "value"), rows)
+        self.assertEqual([s["name"] for s in c["series"]], ["Open", "Closed"])
+        self.assertEqual(c["shown"], len(rows))   # nothing said to be left out
+        # every split value holding an amount keeps its series
+        (one,) = drawn({"type": "bar", "x": "month", "split": "status", "y": ["value"]},
+                       ("month", "status", "value"), rows[:2] + [["2026-11", "Open", "5"]])
+        self.assertEqual(len(one["series"]), 2)
+
     def test_a_pivot_cell_read_twice_is_refused_never_added(self):
         self.assertEqual(drawn({"type": "bar", "x": "week", "split": "dept", "y": ["n"]},
                                ("week", "dept", "n"), LONG + [LONG[0]]), [])

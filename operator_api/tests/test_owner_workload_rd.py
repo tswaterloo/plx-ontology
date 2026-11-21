@@ -334,7 +334,8 @@ class Owner(unittest.TestCase):
         self.assertEqual((b["awaiting_reply"], b["tasks"], b["alerts_closed"]), (1, 1, 1))
         self.assertEqual((b["d7"], b["d28"]), ({"mail_sent": 7}, {"mail_sent": 28}))
         self.assertEqual((len(b["trend"]), len(b["hours"]), b["reply_minutes_7"]), (28, 24, 30))
-        self.assertEqual((b["team"], b["roles"]), ("Purchasing", ["Purchasing"]))
+        # no department on record: the derived role stays a role, never shown as the team
+        self.assertEqual((b["team"], b["roles"]), (None, ["Purchasing"]))
         self.assertEqual(by[NAMES[C]]["alerts"], 1)
         # no snapshot, or a stale one: the view says it is not built, and lists nobody
         (self.dir / ta.SNAPSHOT_FILE).unlink()

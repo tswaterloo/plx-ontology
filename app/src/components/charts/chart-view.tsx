@@ -9,7 +9,7 @@ import { useRef, useState, type ReactNode } from "react";
 import type { Answer } from "@/lib/types";
 import {
   INK, MOVE, clip, colour, conversion, extent, full, human, inkOn, ramp, short, ticks, waterfall, type Theme,
-  dateLabel,
+  dateLabel, axisLabels,
 } from "./scale";
 
 export type AskChart = NonNullable<Answer["charts"]>[number];
@@ -83,7 +83,7 @@ type Plot = { chart: AskChart; labels: string[]; series: Series[]; theme: Theme;
 
 function Cartesian({ chart, labels: given0, series, theme, width = W, height: given = H, range, compact, onTip }: Plot) {
   const ink = INK[theme];
-  const labels = given0.map((l) => dateLabel(l));
+  const labels = axisLabels(given0);
   const spec = chart.spec ?? undefined;
   const kind = chart.kind;
   const stacked = !!spec?.stacked;
@@ -502,7 +502,7 @@ export function chartKey(chart: AskChart, theme: Theme): { items: { name: string
     const by = (chart.x ?? "").replace(/_/g, " ").trim();
     const caption = chart.kind === "scatter" ? `Each dot is one row: ${by} along the bottom, ${human(one.name).toLowerCase()} up the side. Point at a dot for its name.`
       : chart.kind === "histogram" ? `Rows by ${human(one.name).toLowerCase()}`
-      : by ? `${human(one.name)} by ${by}` : human(one.name);
+      : human(one.name);
     return { items: [], caption };
   }
   const left = names.filter((s) => s.axis !== "right");

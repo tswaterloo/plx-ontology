@@ -52,6 +52,7 @@ from .errors import UserFacing
 DECISIONS_FILE = "autopilot-writes/decisions.jsonl"
 # an alert passed to a colleague (item, to, by, when): the last row of an item holds
 HAND_FILE = "autopilot-writes/handed.jsonl"
+TAKE_FILE = "autopilot-writes/taken.jsonl"     # who took which pooled item (audit only)
 # "never for this sender": a person's own rows, the last for a sender wins
 NEVER_FILE = "autopilot-writes/never-senders.jsonl"
 # a confirmed job change that went nowhere: offered for review again (``_apa_job_stage``)
@@ -197,6 +198,30 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
         subject=title[:300], kind="alert", summary=summary[:600],
         message=shown_message(prepared.get("context") or happened.get("snippet")),
         facts=facts[:ALERT_FACTS], note=note[:300], links=links[:4],
+        created_at=str(item["created_at"]))
+
+
+def pooled_card(item: Mapping[str, Any], shown: Mapping[str, Any]) -> m.AutopilotPrepared:
+    """An item the reader's role holds and nobody has taken (``autopilot_queue.pool_role``):
+    what happened and the records only, never its prepared message (that is the taker's
+    to check and send once it is theirs). Take it, or leave it to a colleague."""
+    body = shown.get("body") or {}
+    prepared = body.get("prepared") or {}
+    happened = body.get("happened") or {}
+    role = autopilot_queue.pool_role(str(item.get("owner") or "")) or ""
+    links = [m.AutopilotLink(label=str(link.get("label") or "Open")[:80],
+                             href=card_href(str(link["href"]))[:600])
+             for link in prepared.get("links") or ()
+             if isinstance(link, Mapping) and str(link.get("href") or "").startswith("/object/")]
+    if not links and happened.get("object_id"):
+        links = [m.AutopilotLink(label="Open the record", href=object_href(str(happened["object_id"])))]
+    words = role.replace("_", " ")
+    return m.AutopilotPrepared(
+        item_id=item["item_id"], sender="", channel="system",
+        subject=str(body.get("label") or "")[:300], kind="alert",
+        summary=str(prepared.get("summary") or "").strip()[:600],
+        note=f"No record names who handles this, so it is on everyone in {words}'s list "
+             "until one of you takes it.", links=links[:4], pooled=words,
         created_at=str(item["created_at"]))
 
 
@@ -576,6 +601,64 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "by_name": viewing.name_among(me),
                          "at": _iso(datetime.now(timezone.utc)),
                          "note": (body.note or "").strip()[:500] or None})
+        return self.autopilot_prepared_list(reader)
+
+    def _apa_exclusion(self, env: Mapping[str, str] | None = None) -> Any:
+        """The people exclusion the writer's screens read; None when it cannot be loaded."""
+        if self.autopilot_people is not None:
+            return self.autopilot_people
+        try:
+            from integrations.people_exclusion import environ_with_exclusion
+            from operating.chunking.permissions import load_exclusion
+            base = getattr(self, "state_dir", None)
+            return load_exclusion(Path(base), environ_with_exclusion(
+                dict(env if env is not None else self._ap_env()))) if base else None  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - no exclusion: fail closed at the caller
+            return None
+
+    def _apa_pools(self, reader: Reader) -> tuple[str, ...]:
+        """The pooled owners of the roles the reader is in (the roles file); none without
+        a reader identity or the file."""
+        me = self._apa_me(reader) - {"unknown"}
+        if not me:
+            return ()
+        return tuple(sorted(autopilot_queue.POOL_PREFIX + r for r, people in
+                            self._apa_roles().items()
+                            if me & {str(p).lower() for p in people or ()}))
+
+    def autopilot_take(self, reader: Reader, item_id: str) -> m.AutopilotDrafts:
+        """Take an item the reader's role holds (``pooled_card``): it becomes theirs alone,
+        with its prepared work to check and confirm as any item of theirs; gone from the
+        others' lists. Refused when someone took it first or it is not the reader's role's.
+        Nothing is sent or written anywhere else."""
+        state = self._apa_state()
+        path = self._ap_queue_path()  # type: ignore[attr-defined]
+        if state is None or path is None or not Path(path).exists():
+            raise UserFacing("action_refused", "The autopilot's state directory is not "
+                             "configured on this server.", 409)
+        me = sorted(self._apa_me(reader) - {"unknown"})
+        found = next((i for i in self._ap_visible(  # type: ignore[attr-defined]
+            reader, pools=self._apa_pools(reader)) or ()
+            if i["item_id"] == item_id and i.get("pooled")), None) if me else None
+        if found is None:
+            raise UserFacing("not_found", "That item is not on your role's list (taken "
+                             "already, or done).", 404)
+        people = self._apa_exclusion()
+        if people is None:
+            raise UserFacing("action_refused", "The people screen is not available, so the "
+                             "item cannot be made yours now.", 409)
+        queue = ap.Queue(Path(path))
+        try:
+            took = queue.take(item_id, str(found["pooled"]), me[0],
+                              readdress=ap.taker_readdress(queue, item_id, me[0], people))
+        finally:
+            queue.close()
+        if not took:
+            raise UserFacing("conflict", "A colleague took it first.", 409)
+        (state / TAKE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with Journal(state / TAKE_FILE).locked() as held:
+            held.append({"event": "item_take", "item_id": item_id, "pool": found["pooled"],
+                         "by": me[0], "at": _iso(datetime.now(timezone.utc))})
         return self.autopilot_prepared_list(reader)
 
     def _apa_roles(self) -> dict[str, list[str]]:
@@ -1080,8 +1163,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         state = self._apa_state()
         hands, mine_ids = self._apa_handed(state), self._apa_me(reader)
         items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
-            reader, also=self._apa_to_me(hands, mine_ids)) or ()
-            if i["mine"] or i.get("handed")]
+            reader, also=self._apa_to_me(hands, mine_ids), pools=self._apa_pools(reader)) or ()
+            if i["mine"] or i.get("handed") or i.get("pooled")]
         decisions = self._apa_decisions(state)
         never = self._apa_never(state, self._apa_me(reader))
         path = self._ap_queue_path()  # type: ignore[attr-defined]
@@ -1116,6 +1199,9 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                 kept = (item.get("body") or {}).get("prepared") or {}
                 shown = autopilot_engine.shown_item(item)
                 prepared = shown["body"].get("prepared") or {}
+                if item.get("pooled"):   # the role's, untaken: what happened, never the draft
+                    out.append(pooled_card(item, shown))
+                    continue
                 if not item["mine"]:     # passed to this reader: only ever as its alert
                     alert = alert_of(item, shown)
                     if alert is not None:
@@ -1439,16 +1525,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                    and str(r.get("at") or "") > hour_ago) >= LINE_REPLIES_PER_HOUR:
                 raise UserFacing("rate_limited", LINE_REFUSED["rate_limited"], 429)
             held.append({"event": "line_attempt", "by": by, "at": _iso(now)})
-        people = self.autopilot_people
-        if people is None:
-            try:
-                from integrations.people_exclusion import environ_with_exclusion
-                from operating.chunking.permissions import load_exclusion
-                base = getattr(self, "state_dir", None)
-                people = load_exclusion(Path(base), environ_with_exclusion(env)) \
-                    if base else None
-            except Exception:  # noqa: BLE001 - no exclusion: nothing goes to the model
-                people = None
+        people = self._apa_exclusion(env)
         if people is None:
             raise UserFacing("action_refused", "The people screen is not available, so no "
                              "reply is written.", 409)

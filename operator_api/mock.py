@@ -597,10 +597,11 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     studio_demo: Any = None
 
     def _ap_visible(self, reader: Reader, everyone: bool = False,
-                    states: tuple[str, ...] = ("open",), also: tuple[str, ...] = ()) -> Any:
+                    states: tuple[str, ...] = ("open",), also: tuple[str, ...] = (),
+                    pools: tuple[str, ...] = ()) -> Any:
         if self.studio_demo is not None:
             return self.studio_demo.visible(reader) if states == ("open",) else []
-        return super()._ap_visible(reader, everyone, states, also)
+        return super()._ap_visible(reader, everyone, states, also, pools)
 
     def _studio_modes(self, passed: bool) -> list[str]:
         if self.studio_demo is None:

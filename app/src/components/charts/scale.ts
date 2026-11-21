@@ -75,8 +75,16 @@ export function full(n: number | null | undefined, currency?: string | null): st
 }
 
 /** A column name as people read it (mail_sent -> Mail sent). */
+const SPELLED: Record<string, string> = { amt: "amount", qty: "quantity", cnt: "count", avg: "average", num: "number", val: "value", tot: "total", inv: "invoice", po: "PO", ar: "receivables", ap: "payables" };
+
+/** A column name as a plain label: "amt_cad" -> "Amount CAD", "busiest_share_pct" -> "Busiest share %". */
 export function human(name: string): string {
-  const s = name.replace(/_/g, " ").replace(/\bpct\b/gi, "%").replace(/\s+%/g, " %").trim();
+  const s = name
+    .replace(/_/g, " ")
+    .replace(/\b[a-z]+\b/gi, (w) => (SPELLED[w.toLowerCase()] ?? (/^(cad|usd|eur|gbp|mxn)$/i.test(w) ? w.toUpperCase() : w)))
+    .replace(/\bpct\b/gi, "%")
+    .replace(/\s+%/g, " %")
+    .trim();
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
@@ -149,4 +157,12 @@ export function conversion(values: (number | null | undefined)[]): { ofFirst: nu
       ofPrev: prev && v !== null && v !== undefined ? v / prev : null,
     };
   });
+}
+
+/** A chart's axis labels: each as ``dateLabel`` says it (a midnight timestamp is its day), and
+ * labels that are all first days of months ("2026-10-01", "2026-11-01") as their months. */
+export function axisLabels(labels: string[], now: Date = new Date()): string[] {
+  const day = labels.map((l) => /^(\d{4}-\d{2}-\d{2})(?:[T ]00:00(?::00(?:\.0+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.exec(l)?.[1] ?? null);
+  if (labels.length > 1 && day.every((d) => d && d.endsWith("-01"))) return day.map((d) => dateLabel(d!.slice(0, 7), now));
+  return labels.map((l, i) => dateLabel(day[i] ?? l, now));
 }

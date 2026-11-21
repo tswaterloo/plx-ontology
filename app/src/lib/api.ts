@@ -208,6 +208,15 @@ async function call(path: string, init: RequestInit & { json?: unknown } = {}): 
   return res;
 }
 
+/** A read the shell and a page both ask for on a first visit (/api/me, /api/ops/status):
+ * callers asking while it is under way share its one request (`shared`, as the Today lists
+ * do); each caller's abort lets go of only its own wait. Asked after it answered, it is read
+ * again. Other reads keep their caller's own request (a typed lookup aborts its own). */
+function getShared<T>(path: string, signal?: AbortSignal): Promise<T> {
+  // its own key: a Today list read by `getRead` polls until it is read, this answers at once
+  return shared(`json ${readKey(path)}`, (s) => getJson<T>(path, s), signal);
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await call(path, { signal });
   try {
@@ -353,7 +362,7 @@ export function getAuthConfig(signal?: AbortSignal): Promise<AuthConfig> {
 }
 
 export function getMe(signal?: AbortSignal): Promise<Me> {
-  return getJson<Me>("/api/me", signal);
+  return getShared<Me>("/api/me", signal);
 }
 
 /** Whom the owner may view as (the owner only). */
@@ -462,7 +471,7 @@ export interface OpsQueue {
 
 /** The reliability alarms' last pass: the owner and the Team readers (403 for every other reader). */
 export function getOpsAlarms(signal?: AbortSignal): Promise<OpsAlarms> {
-  return getJson<OpsAlarms>("/api/ops/status", signal);
+  return getShared<OpsAlarms>("/api/ops/status", signal);
 }
 
 export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
@@ -686,6 +695,8 @@ export type PreparedItem = {
   /** On an alert: where it is decided or answered (never from the card), and its records. */
   note?: string; links?: { label: string; href: string }[];
   handed_to?: string; handed_from?: string;
+  /** On an item nobody is named for: the role whose list it is on until one of them takes it. */
+  pooled?: string;
   auto_would?: string;
   /** On a job or a to-do: what the event asks to be done, and each system change proposed for it. */
   summary?: string; jobs?: ProposedJob[];
@@ -751,6 +762,11 @@ export function getAutopilotColleagues(signal?: AbortSignal): Promise<ViewAsPeop
 /** Pass an alert on your list to a colleague: on their list too, only to set aside there. */
 export async function handAutopilotItem(itemId: string, to: string): Promise<{ items: PreparedItem[] }> {
   return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/hand`, { method: "POST", json: { to } })).json()) as { items: PreparedItem[] };
+}
+
+/** Take an item your role holds (nobody named for it): yours alone from now. */
+export async function takeAutopilotItem(itemId: string): Promise<{ items: PreparedItem[] }> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/take`, { method: "POST" })).json()) as { items: PreparedItem[] };
 }
 
 /** Always do this: Auto for this item's sender, or its whole switch (only where it was earned). */

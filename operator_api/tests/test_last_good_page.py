@@ -1740,6 +1740,29 @@ class SnapshotFirst(LastGoodPage.__base__):
         got = self.serve(who, read)
         self.assertEqual((got.total, got.stale_since, calls), (8, None, []))
 
+    def test_a_service_sessions_refreshed_page_is_current_for_its_next_request(self):
+        """The page measure and the canary are never remembered for reading again, yet a
+        page read again for them off a request is kept under the screen's own inputs, so
+        their next request is served it as current. Live 11-21: the measure session's Home
+        was served stale on every request (the refresh was kept with no screen inputs), and
+        the app asked for it again every 6 s. A real session's the same (regression)."""
+        own = {"v": "files-1"}
+        for canary in (True, False):
+            with self.subTest(canary=canary):
+                who = reader("grp-svc" if canary else "grp-own")
+                who.session.canary = canary
+                serve = lambda read: self.backend._serving(
+                    who, ("late", 0, 25), read, lambda: own["v"])
+                serve(lambda: page(3))
+                self.wait_kept(who, 3)
+                self.inputs = ("gen-svc-%s" % canary,)   # a delta layer landed
+                got = serve(slow(page(8), 0.2))
+                self.assertEqual((got.total, got.stale_since is not None), (3, True))
+                self.wait_kept(who, 8)
+                read, calls = self.counted(page(1))
+                got = serve(read)
+                self.assertEqual((got.total, got.stale_since, calls), (8, None, []))
+
     def test_the_readers_own_write_reads_the_screen_now_not_its_snapshot(self):
         """A reader who marks the briefing seen, asks, or acts sees it at once: their own
         write (any request that is not a read) leaves their kept pages not current, and

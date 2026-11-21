@@ -75,6 +75,7 @@ TEXT_CHARS = 1500         # of a message's own text, read by the model
 TEXT_READ = 8000          # characters of the stored text read to find its own part
 MIN_WORDS = 5             # a message with fewer words of its own is not read
 ATTEMPTS = 3              # a message whose call failed is tried again up to this often
+RETRY_HOURS = 24          # then once more per this many hours (its window still bounds it)
 SUMMARY_CHARS = 240
 WHO_CHARS = 80
 MIN_QUOTE = 8
@@ -217,13 +218,14 @@ def _rule(alias: str) -> str:
 
 
 def candidates_sql(s: str, view: str, *, unread: bool = True) -> str:
-    """The messages not read yet (or failed fewer than ``ATTEMPTS`` times), newest first:
-    (key, handles, said_at, subject, from_us, customer, first handle, its object). A mail
-    message is read only when EVERY copy of it passes the rule (named parameters: covered,
-    since, most; ours: our staff's mail domains, names: their names, lower case)."""
+    """The messages not read yet (or failed fewer than ``ATTEMPTS`` times, or last tried
+    before ``retry``), newest first: (key, handles, said_at, subject, from_us, customer,
+    first handle, its object). A mail message is read only when EVERY copy of it passes
+    the rule (named parameters: covered, since, most, retry; ours: our staff's mail
+    domains, names: their names, lower case)."""
     fresh = (f"NOT EXISTS (SELECT 1 FROM {s}.{READ} r WHERE r.source_view = '{view}' AND "
-             "r.message_key = {key} AND (r.status <> 'failed' OR r.attempts >= "
-             f"{ATTEMPTS}))") if unread else "true"
+             "r.message_key = {key} AND (r.status <> 'failed' OR (r.attempts >= "
+             f"{ATTEMPTS} AND r.read_at >= %(retry)s)))") if unread else "true"
     if view == "emails":
         return (
             "SELECT e.message_id, array_agg(e.handle ORDER BY e.handle), max(e.received_at), "
@@ -520,7 +522,8 @@ def run(dsn: str, *, extract: Optional[Extract] = None, model: str = "",
             out.update(status="off", reason=f"{MODEL_ENV} is not set: nothing was read")
             _run_row(pg, s, when, out, started)
             return out
-        ready, left = gather(pg, s, covered, when - dt.timedelta(days=days), most)
+        ready, left = gather(pg, s, covered, when - dt.timedelta(days=days), most,
+                             retry=when - dt.timedelta(hours=RETRY_HOURS))
         out["candidates"] = len(ready) + len(left)
         for m, why in left:
             _record(pg, s, m["view"], m["key"], m["said"], "screened", reason=why)
@@ -529,14 +532,20 @@ def run(dsn: str, *, extract: Optional[Extract] = None, model: str = "",
         with cf.ThreadPoolExecutor(max(1, parallel)) as pool:
             replies = list(pool.map(_safe(extract), packed))
         out["calls"] = len(packed)
+        # no call answered (the model is down, out of quota): no message's fault, so none
+        # of them uses up an attempt; each stays unread for the next run
+        outage = bool(packed) and not any(
+            isinstance(got, (list, tuple)) and len(got) == len(chunk)
+            for chunk, got in zip(packed, replies))
         for chunk, got in zip(packed, replies):
             got = list(got) if isinstance(got, (list, tuple)) and len(got) == len(chunk) \
                 else [None] * len(chunk)
             for m, items in zip(chunk, got):
                 with pg.transaction():
                     if items is None:
-                        _record(pg, s, m["view"], m["key"], m["said"], "failed",
-                                reason="no_reply", model=model)
+                        if not outage:
+                            _record(pg, s, m["view"], m["key"], m["said"], "failed",
+                                    reason="no_reply", model=model)
                         out["failed"] += 1
                         continue
                     keep(pg, s, m, items, model)
@@ -576,7 +585,7 @@ def batches(ready: Sequence[Mapping[str, Any]], *, most: int = BATCH,
 
 
 def gather(pg: Any, s: str, covered: int, since: dt.datetime, most: int, *,
-           unread: bool = True) -> tuple[list[dict[str, Any]], list[tuple[dict, str]]]:
+           unread: bool = True, retry: Optional[dt.datetime] = None) -> tuple[list[dict[str, Any]], list[tuple[dict, str]]]:
     """The newest ``most`` messages since ``since`` that pass the rule (``unread``: not
     read yet): (those whose own text may be read by the model, each with ``text``;
     (message, why) for those screened)."""
@@ -587,7 +596,8 @@ def gather(pg: Any, s: str, covered: int, since: dt.datetime, most: int, *,
             continue
         rows = pg.execute(candidates_sql(s, view, unread=unread),
                           {"covered": covered, "since": since, "most": most,
-                           "ours": ours, "names": names}).fetchall()
+                           "retry": retry or since, "ours": ours, "names": names}
+                          ).fetchall()
         for key, handles, said, subject, from_us, customer, handle, oid in rows:
             todo.append({"view": view, "key": key, "handles": list(handles), "said": said,
                          "subject": subject or "", "handle": handle, "oid": oid,

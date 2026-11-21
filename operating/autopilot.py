@@ -73,8 +73,8 @@ from operating.declared_schema import autopilot_queue as _AUTOPILOT_QUEUE
 from .autopilot_records import (
     OWN_POSTS_DAYS, _digest, _instant, _iso, _linked, _read, _v)
 from .autopilot_queue import (
-    CONDITIONS, DONE_RULES, EVENT_TYPES, HANDLER_TRIES, OWNER_RULES, QUEUE_FILE, Queue, ROLE_OWNER,
-    RegistryInvalid, SCHEMA, SUMMARY_CHARS, killed, matches)
+    CONDITIONS, DONE_RULES, EVENT_TYPES, HANDLER_TRIES, OWNER_RULES, POOL_PREFIX, QUEUE_FILE,
+    Queue, ROLE_OWNER, RegistryInvalid, SCHEMA, SUMMARY_CHARS, killed, matches, pool_role)
 from .autopilot_events import (
     FEED_CONSUMER, FOLLOW_HORIZON, HORIZON_EVENTS, _people_maps, _value_window, handle_person)
 from .autopilot_handlers import (
@@ -456,8 +456,10 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
         hint = str(event.get("owner_hint") or "")
         if hint and hint in addresses_of:
             return [hint], None                   # who sent the PO to the supplier
+        # else one item the purchasing role holds, never a copy per person: on 11-06..11-21
+        # the role's 9 people got 254 follow-ups for 28 POs and acted on 1
         found = roles.get("purchasing") or []
-        return (found, None) if found else ([], "buyer_unknown")
+        return ([POOL_PREFIX + "purchasing"], None) if found else ([], "buyer_unknown")
     if rule == "hinted":
         # the person the records show doing this work for this party (``owner_hint``),
         # else nobody: never a whole role for one record
@@ -616,7 +618,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     if due:
         try:
             from . import autopilot_work as aw
-            events += aw.po_due_events(st, registry, as_of, domains, directory, addresses_of)
+            events += aw.po_due_events(st, registry, as_of, domains, directory, addresses_of,
+                                       cleared=people.identity_clear)
             events += aw.invoice_due_events(st, registry, as_of, domains, directory)
             events += aw.routine_due_events(st, queue, registry, as_of, people)
             # a project's state is read as it stood at the day's start: once a day is enough
@@ -981,7 +984,10 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             summary["skipped"][f"{ap['id']}:{why}"] += 1
             reasons.append(why)
             continue
-        owners = [o for o in owners if people.identity_clear(o)]
+        # a pooled item's people are each cleared where it is read (``autopilot_reading``)
+        pools = {o: sorted(m for m in _role_members(pool_role(o) or "", roles, directory)
+                           if people.identity_clear(m)) for o in owners if pool_role(o)}
+        owners = [o for o in owners if (pools[o] if o in pools else people.identity_clear(o))]
         if not owners:
             summary["skipped"][f"{ap['id']}:owner_not_cleared"] += 1
             continue
@@ -990,12 +996,14 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             if not owners:
                 continue                       # the assistant's people / the rules' people
         if only_owners is not None:
-            owners = [o for o in owners if o in only_owners]
+            owners = [o for o in owners if o in only_owners
+                      or set(pools.get(o, ())) & set(only_owners)]
             if not owners:
                 continue                       # another role's work (a role's replay)
         if gate is not None:
             workflow = wf.of_item(ap["id"], event)
-            owners = [o for o in owners if gate(o, workflow, item_roles(ap))]
+            owners = [o for o in owners if any(gate(m, workflow, item_roles(ap))
+                                               for m in pools.get(o, [o]))]
             if not owners:
                 summary["skipped"][f"{ap['id']}:workflow_not_passed"] += 1
                 continue
@@ -1150,7 +1158,9 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             # path (``assist.resolve_reply``), never as the handler wrote it
             used = None
             if work.get("kind") != "job":      # a job holds no message to address or style
-                work = _recipients(work, event, owner, people,
+                # a pooled item's message is addressed under its role's first cleared person
+                # (the exclusion and the own-address rules of a person: ``pools``)
+                work = _recipients(work, event, (pools.get(owner) or [owner])[0], people,
                                    _recipient_lessons(learned, owner),
                                    _stated_cc(learned, owner, event))
                 work, used = _with_context(_draft_context(queue, drafting), owner, ap["id"],
@@ -1597,6 +1607,24 @@ def _draft_context(queue: Queue, held: dict[str, Any]) -> Any:
                 print(json.dumps({"autopilot_draft_context": "off",
                                   "reason": type(error).__name__}), file=sys.stderr)
     return held["provider"]
+
+
+def taker_readdress(queue: Queue, item_id: str, owner: str, people: Any
+                    ) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """For ``Queue.take``: a pooled item's message addressed again for the person taking it
+    (``_recipients``: the people exclusion, their own addresses, their learned lessons and
+    stated copies), as the cycle addresses a person's own item."""
+    from .autopilot_engine import _event_body
+    item = queue.item(item_id) or {}
+    event = _event_body(queue, str(item.get("event_id") or ""))
+    learned = _lessons(queue)
+
+    def readdress(prepared: dict[str, Any]) -> dict[str, Any]:
+        if prepared.get("kind") == "job":
+            return prepared
+        return _recipients(prepared, event, owner, people, _recipient_lessons(learned, owner),
+                           _stated_cc(learned, owner, event))
+    return readdress
 
 
 def _lessons(queue: Queue) -> Any:

@@ -391,5 +391,41 @@ class ProjectedSageDiscount(unittest.TestCase):
         self.assertEqual((got.amount, got.reason), (None, ov.HEADER_DISAGREES))
 
 
+class ZeroInvoiceAgainstLines(unittest.TestCase):
+    """A closed order whose invoices bill 0 against priced lines has no value, never 0.00
+    (OR1000154318, live 11-21: one Sage invoice of 0, its Sage line 51 x 5.15 = 262.65)."""
+
+    def invoice(self, subtotal: str, currency: str = "CAD") -> tuple:
+        oid = "SalesInvoice:portal.sage_oe_invoice_header:1"
+        return ({"subtotal": [cell(oid, "subtotal", subtotal, currency=currency)]}, True)
+
+    def judged(self, lines, invoices=None) -> ov.OrderValue:
+        return ov.judge(header("0", binding="portal.sage_oe_order_header"), closed=True,
+                        lines=lines, invoices=invoices or [self.invoice("0")],
+                        currency=lambda r: r.get("currency"))
+
+    def test_priced_lines_against_a_zero_invoice_leave_no_value(self):
+        got = self.judged([sage_line(1, "51", "5.15", "0", "0")])
+        self.assertEqual((got.amount, got.currency, got.reason), (None, None, ov.INVOICE_ZERO))
+
+    def test_a_priced_invoice_still_values_a_closed_order(self):
+        got = self.judged([sage_line(1, "51", "5.15", "0", "0")], [self.invoice("250.00")])
+        self.assertEqual((got.amount, got.basis), (D("250.00"), ov.INVOICES))
+
+    def test_lines_of_zero_or_unpriced_agree_with_the_zero_invoice(self):
+        for lines in ([sage_line(1, "51", "0", "0", "0")], [line(1, description="Part")],
+                      None):
+            got = self.judged(lines)
+            self.assertEqual((got.amount, got.basis), (D("0"), ov.INVOICES), lines)
+
+    def test_lines_in_another_currency_than_the_zero_invoice_leave_no_value(self):
+        lines = [line(1, binding=SAGE, qty="2", price="5.00", discount="0", currency="USD")]
+        got = self.judged(lines)   # the order's CAD header says otherwise
+        self.assertEqual((got.amount, got.reason), (None, ov.CURRENCY_MISMATCH))
+        got = ov.judge({}, closed=True, lines=lines, invoices=[self.invoice("0")],
+                       currency=lambda r: r.get("currency"))   # no header
+        self.assertEqual((got.amount, got.reason), (None, ov.INVOICE_ZERO))
+
+
 if __name__ == "__main__":
     unittest.main()

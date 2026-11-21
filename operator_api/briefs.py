@@ -67,6 +67,16 @@ def late_from_home(brief: m.Brief, late: Any) -> m.Brief:
         got = late()
     except Exception:  # noqa: BLE001 - the section keeps what the review read
         return brief
+    if getattr(got, "reading", False):
+        # Home's first read for this reader is still going on: its empty list is no
+        # finding, so the section never says "nothing late" (or a 0) meanwhile
+        section = m.BriefSection(
+            key="late_pos", title="Late purchase orders (open now)", state="unread",
+            note="Still reading the late purchase orders; open the review again in a moment.")
+        sections = [section if s.key == "late_pos" else s for s in brief.sections]
+        if not any(s.key == "late_pos" for s in brief.sections):
+            sections.insert(1, section)
+        return brief.model_copy(update={"sections": sections})
     rows = []
     for po in got.items:
         bits = [po.supplier or "", f"{po.days_late} days late" if po.days_late else "",

@@ -239,16 +239,8 @@ def binding_rank(binding: str) -> int:
 
 
 def system_of(binding: str) -> str:
-    b = binding or ""
-    if b.startswith("bc."):
-        return "bc"
-    if "sage" in b:
-        return "sage"
-    if "fm_" in b:
-        return "filemaker"
-    if b.startswith("portal."):
-        return "portal"
-    return b.split(".", 1)[0] or "unknown"
+    from operating.order_value import record_system   # the one system rule
+    return record_system(binding)
 
 
 def _marks_size(marks: str) -> int:
@@ -1575,6 +1567,9 @@ OF_RECORD_DOC = ("true: a Sage order header carries the order (Sage is the syste
                  "plx.business leaves of_record = false rows out unless the request filters "
                  "or groups on of_record")
 ITEM_LINK = "SalesOrderLine.for_item"
+# The systems whose order copies state the order's currency (``order_value``: the one
+# rule of an order's currency of record, every surface's)
+from operating.order_value import CURRENCY_STATED_BY  # noqa: E402
 
 
 @dataclass
@@ -1591,6 +1586,30 @@ class Order:
     link_marks: set[str]             # markings of the links its status and value followed
     basis: str = "rule"              # sage: Sage's own complete code decided the status
     order_type: str | None = None    # Sage's order type (order, quote, other)
+    currency: str | None = None      # the order's currency of record (``order_currency``)
+    currency_basis: str | None = None   # invoice, sage_order, bc_order, customer or why none
+    currency_from: tuple[str, str, str] | None = None   # (record id, handle, field path)
+
+
+def order_currency(group: Sequence[Rec], invoices: Sequence[Rec], customer: Thing | None
+                   ) -> Any:
+    """The order's currency of record (``order_value.currency_of_record``, the one rule
+    ``plx.object`` and the engine's cards use too) from its copies, its settled billing
+    invoices and its one customer (None: no one customer)."""
+    from operating import order_value as ov
+
+    def rows(recs: Iterable[Rec], props: Sequence[str]) -> list[dict[str, Any]]:
+        return [r for rec in recs for got in rec.rows(props).values() for r in got]
+    return ov.currency_of_record(rows(group, ov.COPY_CURRENCY_PROPS),
+                                 rows(invoices, ov.INVOICE_CURRENCY_PROPS),
+                                 rows(customer.members if customer else (),
+                                      ov.CUSTOMER_CURRENCY_PROPS))
+
+
+def _cite_of(row: Mapping[str, Any] | None) -> tuple[str, str, str] | None:
+    if not row:
+        return None
+    return (str(row.get("object_id")), str(row.get("l1_handle")), str(row.get("field_path")))
 
 
 def sales_orders_model(rd: Reader) -> dict[str, Any]:
@@ -1605,7 +1624,6 @@ def _sales_orders_model(rd: Reader) -> dict[str, Any]:
     from operating import order_value as ov
     from operating import po_status
     from operating import sales_order_status as so
-    from operating.proactive_engine_cards import currency_word
 
     header = (*so.READ_PROPS, so.DATE_PROP, *so.OWN_DAYS, ov.TOTAL, ov.CURRENCY, ov.SUBTOTAL,
               *SO_EXTRA)
@@ -1666,18 +1684,28 @@ def _sales_orders_model(rd: Reader) -> dict[str, Any]:
             grouped[binding[oid]].append((so.day_of(r), own))
     defaults = so.date_defaults(grouped)
 
-    def code(row: Mapping[str, Any]) -> str | None:
-        raw = row.get("currency")
-        return currency_word(raw) if raw else None
+    # the order's currency of record (``order_currency``): its customer is the one its
+    # copies link (the system of record's copies' links first), one real customer only
+    customers, cthings = customer_things(rd)
+    ordered_by = rd.linked(ORDER_LINK, found, customers)
 
-    def value_of(oid: str) -> Any:
+    def customer_of(group: Sequence[Rec]) -> Thing | None:
+        for recs in ([r for r in group if system_of(r.binding) == ORDER_RECORD_SYSTEM], group):
+            reps = {cthings[c].rep.object_id: cthings[c] for r in recs
+                    for c, _m in ordered_by.get(r.object_id, ()) if c in cthings}
+            if reps:
+                return next(iter(reps.values())) if len(reps) == 1 else None
+        return None
+
+    def value_of(oid: str, of_record: Any) -> Any:
         own = props[oid]
         closed = so.record_status(own, binding=binding[oid]).cls == so.CLOSED
         got_lines = [lines[ln].rows(ov.LINE_PROPS + ov.LINE_TEXT + ov.CHECK_PROPS)
                      if ln in lines else {} for ln in sorted(lines_of.get(oid, ()))]
         got_inv = [(invoices[i].rows(ov.INVOICE_PROPS) if i in invoices else {},
                     billed[i] == {oid}) for i in sorted(invoices_of.get(oid, ()))]
-        return ov.judge(own, closed=closed, lines=got_lines, invoices=got_inv, currency=code)
+        return ov.judge_order(own, object_id=oid, closed=closed, lines=got_lines,
+                              invoices=got_inv, of_record=of_record)
 
     orders: dict[str, Order] = {}
     for thing in things:
@@ -1718,9 +1746,13 @@ def _sales_orders_model(rd: Reader) -> dict[str, Any]:
             (props[m].get(so.DATE_PROP, ()),
              [r.get("value") for n in so.OWN_DAYS for r in props[m].get(n, ())],
              defaults.get(binding[m], ())) for m in group])
+        of_record = order_currency(
+            thing.members, [invoices[i] for m in group for i in sorted(invoices_of.get(m, ()))
+                            if i in invoices], customer_of(thing.members))
+        # valued from its copy of record (Sage's when it holds one: ``value_copies``)
         value = None
-        for m in group:
-            got = value_of(m)
+        for m in ov.value_copies(group):
+            got = value_of(m, of_record)
             if value is None or (value.amount is None and got.amount is not None):
                 value = got
             if got.amount is not None:
@@ -1745,7 +1777,8 @@ def _sales_orders_model(rd: Reader) -> dict[str, Any]:
         orders[top] = Order(thing, status, reason, wanted, value,
                             sorted(ln for ln in lines_of.get(carrier, ()) if ln in lines)
                             if carrier else [], found.get(carrier) if carrier else None, read,
-                            marks, basis, order_kind)
+                            marks, basis, order_kind, of_record.code, of_record.basis,
+                            _cite_of(of_record.row))
     return {"orders": orders, "lines": lines}
 
 
@@ -1769,6 +1802,30 @@ def _order_row(rd: Reader, order: Order, things: Mapping[str, Thing],
     return row
 
 
+# the dates an order without an entered one of its own takes from the one submission that
+# covers it: none stated, a source default, or the order's own day (an entry default)
+CARRIED_FROM_COVER = ("no_required_date", "required_date_default")
+
+
+def _order_covers(orders: Mapping[str, Order], things: Mapping[str, Thing],
+                  ordered_by: Mapping[str, Sequence[tuple[str, str]]]) -> dict[str, list[str]]:
+    """Covering order -> the orders its PO-range number covers (``operating.order_cover``:
+    same one customer by settled links, the covered order's customer PO in the range)."""
+    from operating import order_cover
+
+    def value(thing: Thing, prop: str) -> Any:
+        cell, _ = pick(thing, prop)
+        return cell.value if cell is not None else None
+
+    def customer(thing: Thing) -> str | None:
+        ends = {things[e].rep.object_id for r in thing.members
+                for e, _m in ordered_by.get(r.object_id, ()) if e in things}
+        return ends.pop() if len(ends) == 1 else None
+    return order_cover.covers((top, value(o.thing, "order_number"),
+                               value(o.thing, "customer_po"), customer(o.thing))
+                              for top, o in orders.items())
+
+
 @view("sales_orders", "Every customer order once (Portal, FileMaker, Sage and BC copies of "
       "one order joined by settled identity links), its status by the one sales-order rule "
       "and its value by the one order-value rule (Sage zeroes invoiced headers, so a value "
@@ -1781,13 +1838,24 @@ def _order_row(rd: Reader, order: Order, things: Mapping[str, Thing],
        ("order_date", "date", "order date"),
        ("required_date", "date", "the date the customer asked for: SalesOrder.required_date "
         "of the copy whose source ranks first, empty when that date is no request (see "
-        "required_date_note)"),
+        "required_date_note); when no copy holds an entered date, the one covering "
+        "submission's (required_date_basis covered_by)"),
        ("required_date_note", "text", "why required_date is empty: required_date_own_day "
         "(the source's date equals the order's own day, order_date or the day the record "
         "was written: an entry default, so the order has no promised date and is never "
         "late), required_date_default (a day the source stamps on many orders at once), "
         "no_required_date, required_date_unreadable or required_date_disputed (two "
         "top-ranked copies state different days)"),
+       ("required_date_basis", "text", "own: the order's own copies state required_date; "
+        "covered_by: none of them holds an entered date, so it is the entered date of the "
+        "one submission that covers the order (covered_by); empty when there is no date"),
+       ("covers", "text", "for a submission numbered by a PO range (PO8735-43, 8811-8812, "
+        "PO-008672/73): the order numbers of the same customer's orders whose customer PO "
+        "is in the range (separate orders, never copies of it)"),
+       ("covered_by", "text", "the order numbers of the submissions whose PO range covers "
+        "this order's customer PO (same customer)"),
+       ("covered_by_handle", "text", "the sales_orders row of the covering submission (join "
+        "sales_orders on handle); empty when none or two cover it"),
        ("status", "text", "open, closed, draft or unknown (never guessed open)"),
        ("status_reason", "text", "why the status is unknown (or sage_order_type_<code>: "
         "a Sage quote or other non-order document)"),
@@ -1811,15 +1879,37 @@ def _order_row(rd: Reader, order: Order, things: Mapping[str, Thing],
       reads=("SalesOrder", "SalesOrderLine", "SalesInvoice", "Shipment", "Customer"),
       memos=("customers", "sales_orders", "chains"))
 def _sales_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
+    from operating import order_cover
     from operating import sales_order_status as so
     model = sales_orders_model(rd)
     customers, things = customer_things(rd)
     found = {r.object_id: r for o in model["orders"].values() for r in o.thing.members}
     ordered_by = rd.linked(ORDER_LINK, found, customers)
+    cover = _order_covers(model["orders"], things, ordered_by)
+    covering = order_cover.covered_by(cover)
+
+    def number(top: str) -> str:
+        cell, _ = pick(model["orders"][top].thing, "order_number")
+        return str(cell.value) if cell is not None else ""
+
+    def read_from(row: Row, top: str, column: str) -> None:
+        for rec in model["orders"][top].thing.members:
+            row.read_record(rec.object_id, "*", column=column)
     for top in sorted(model["orders"]):
         order = model["orders"][top]
         thing = order.thing
         row = _order_row(rd, order, things, ordered_by)
+        # the covers link both ways: never an identity, each order its own row
+        for column, them in (("covers", cover.get(top, ())),
+                             ("covered_by", covering.get(top, ()))):
+            row.values[column] = ", ".join(number(t) for t in them) or None
+            for t in them:
+                read_from(row, t, column)
+        subs = covering.get(top, ())
+        row.values["covered_by_handle"] = (_rep_handle(model["orders"][subs[0]].thing.rep)
+                                           if len(subs) == 1 else None)
+        if row.values["covered_by_handle"]:
+            read_from(row, subs[0], "covered_by_handle")
         fill(row, thing, "customer_po", "customer_po")
         fill(row, thing, "order_date", "order_date", to_date)
         day = order.wanted.day if order.wanted is not None else None
@@ -1829,10 +1919,21 @@ def _sales_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
             # entry form's default (Sage OE's expected-ship), no date the customer asked
             # for: the order has no promised date and is never late by it
             day = None
+        wanted, basis = order.wanted, "own"
+        if day is None and len(subs) == 1 and (note in CARRIED_FROM_COVER or note == so.OWN_DAY):
+            # no entered date of its own: the one covering submission's entered date (a
+            # real request, not its own day nor a default) is the date the customer asked
+            # for; two covering submissions, or none with a real date, carry nothing
+            theirs = model["orders"][subs[0]].wanted
+            if theirs is not None and theirs.day is not None and theirs.reason is None:
+                wanted, basis, day, note = theirs, "covered_by", theirs.day, None
+                read_from(row, subs[0], "required_date")
+                read_from(row, subs[0], "required_date_basis")
         row.values["required_date"] = day
         row.values["required_date_note"] = note
-        if day is not None and order.wanted.governing:
-            first = order.wanted.governing[0]
+        row.values["required_date_basis"] = basis if day is not None else None
+        if day is not None and wanted.governing:
+            first = wanted.governing[0]
             row.cites["required_date"] = [first["l1_handle"], first["field_path"]]
             if first.get("markings") not in (None, "", "[]"):
                 row.col_marks["required_date"] = first["markings"]
@@ -1853,6 +1954,13 @@ def _sales_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
                 row.col_marks["value"] = row.col_marks["value_currency"] = json.dumps(marks)
             row.values["value_basis"] = value.basis
             row.derive("value_basis", row, "value")
+            if order.currency_from is not None and value.currency == order.currency and (
+                    first is None or first.get("object_id") != order.currency_from[0]):
+                # the currency of record was read from another record (an invoice, the
+                # Sage copy, the customer): cited, and that record joins the column's class
+                oid, handle, path = order.currency_from
+                row.cites["value_currency"] = [handle, path]
+                row.read_record(oid, handle, column="value_currency")
         else:
             row.values["value_note"] = value.reason if value is not None else "no_value"
         if fill(row, thing, "salesperson", "salesperson_code") is None:
@@ -1860,6 +1968,25 @@ def _sales_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         row.values["line_count"] = len(order.lines)
         row.values["as_of"] = as_of
         yield row
+
+
+def _money_of_record(row: Row, column: str, cell: Cell | None, rec: Rec | None,
+                     order: Order) -> None:
+    """``money`` for a cell of a copy stating no currency: its amount in the order's
+    currency of record (``Order.currency``, cited to the record it was read from); none
+    known leaves the amount out."""
+    amount = to_decimal(cell.num if cell is not None and cell.num is not None
+                        else (cell.value if cell is not None else None))
+    if amount is None or order.currency is None:
+        row.read(None, column)
+        row.read(None, column + "_currency")
+        return
+    row.read(cell, column, amount, rec=rec)
+    row.values[column + "_currency"] = order.currency
+    if order.currency_from is not None:
+        oid, handle, path = order.currency_from
+        row.cites[column + "_currency"] = [handle, path]
+        row.read_record(oid, handle, column=column + "_currency")
 
 
 @view("sales_order_lines", "The lines of every customer order once (the lines of the one "
@@ -1907,6 +2034,11 @@ def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         carrier = order.carrier
         ocur = (carrier.cell("currency"), carrier) if carrier is not None else (None, None)
         code = to_currency(ocur[0].value) if ocur[0] is not None else None
+        # lines of a copy stating no currency (CURRENCY_STATED_BY) are in the order's
+        # currency of record, never in the one their own cells say
+        stated = carrier is not None and system_of(carrier.binding) in CURRENCY_STATED_BY
+        if not stated:
+            code = order.currency
         for ln in order.lines:
             if held[ln] != 1:
                 continue   # a line two orders hold: not one order's line (never twice)
@@ -1943,14 +2075,22 @@ def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
                 fill(row, lthing, column, column, to_decimal)
             fill(row, lthing, "uom", "uom")
             cell, crec = pick(lthing, "unit_price")
-            money(row, "unit_price", cell, crec, ocur)
+            if stated:
+                money(row, "unit_price", cell, crec, ocur)
+            else:
+                _money_of_record(row, "unit_price", cell, crec, order)
             # priced by the one order-value rule; the cell's currency, else its order's
             got = ov._line_amount(rec.rows(ov.LINE_PROPS),
-                                  lambda r: to_currency(r.get("currency")) or code)
+                                  (lambda r: to_currency(r.get("currency")) or code)
+                                  if stated else (lambda r: code))
             if isinstance(got, tuple) and got[1] is not None:
                 amount, cur, used = got
                 row.values["line_amount"], row.values["line_amount_currency"] = cents(amount), cur
                 row.cites["line_amount"] = [used[0]["l1_handle"], used[0]["field_path"]]
+                if not stated and order.currency_from is not None:
+                    oid, handle, path = order.currency_from
+                    row.cites["line_amount_currency"] = [handle, path]
+                    row.read_record(oid, handle, column="line_amount_currency")
                 marks = sorted({m for u in used for m in json.loads(u["markings"] or "[]")})
                 if marks:
                     row.col_marks["line_amount"] = json.dumps(marks)

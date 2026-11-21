@@ -30,14 +30,15 @@ type Item =
   | { kind: "record"; id: string; s: Arranged }
   | { kind: "example"; id: string; q: string };
 
-const PLACES: { label: string; href: string; hint: string; words: string }[] = [
+// `ops`: an Admin page, listed only for the readers Admin is open to (the server refuses the rest)
+const PLACES: { label: string; href: string; hint: string; words: string; ops?: boolean }[] = [
   { label: "Home", href: "/", hint: "What needs you today, and what the autopilots prepared", words: "my work today home front page briefing prepared autopilot drafts entries" },
   { label: "Late POs", href: "/?show=late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
   { label: "Alerts", href: "/?show=alerts", hint: "Every alert, rules and data health", words: "alerts watching briefing rules attention" },
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
   { label: "Messages and tasks", href: "/activity", hint: "Work log: each message and task you started, and whether it went out", words: "activity actions messages tasks sent log journal" },
-  { label: "Data health", href: "/data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
+  { label: "Data health", href: "/data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po", ops: true },
   { label: "Records", href: "/records", hint: "Find a customer, order, supplier or product", words: "records customers orders suppliers products items find" },
   { label: "Switches", href: "/autopilot", hint: "What gets prepared for you, and Auto", words: "autopilot switches auto assist prepare" },
   { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
@@ -100,7 +101,8 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   const items: { group: string; items: Item[] }[] = useMemo(() => {
     const text = q.trim();
     const low = text.toLowerCase();
-    const places = PLACES.filter((p) => !low || p.words.includes(low) || p.label.toLowerCase().includes(low)).map(
+    const ops = state.status === "signed-in" && state.me.ops_reader === true;
+    const places = PLACES.filter((p) => (ops || !p.ops) && (!low || p.words.includes(low) || p.label.toLowerCase().includes(low))).map(
       (p): Item => ({ kind: "go", id: `go-${p.href}`, label: p.label, href: p.href, hint: p.hint }),
     );
     if (!text)
@@ -114,7 +116,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     // Enter opens what was typed for: a record's exact number or name, a page's name ("late"), else the question
     const order = records[0]?.match === "exact" ? [recs, ask, go] : low.length >= 3 && places.some((p) => p.kind === "go" && p.label.toLowerCase().startsWith(low)) ? [go, ask, recs] : [ask, recs, go];
     return order.filter((g) => g.items.length > 0);
-  }, [q, records]);
+  }, [q, records, state]);
   const flat = useMemo(() => items.flatMap((g) => g.items), [items]);
   useEffect(() => setActive((a) => Math.min(a, Math.max(0, flat.length - 1))), [flat.length]);
   useEffect(() => {

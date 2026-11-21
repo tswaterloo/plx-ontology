@@ -415,8 +415,8 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             missing.append("Mail or files you can't open could hold a later supplier "
                            "message.")
     elif otype == "PurchaseOrder":
-        missing.append("The purchase order's trail (confirmations, messages) was not read "
-                       "in time; open the order for it.")
+        missing.append("Its confirmations and messages weren't read in time: open the "
+                       "order for them.")
     if orders and otype == "PurchaseOrder":
         names = [labels.get(o) or "a customer order" for o in orders[:5]]
         reason(f"It holds up {len(orders)} customer order{'s' if len(orders) != 1 else ''}: "
@@ -492,18 +492,15 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             cite("last_vendor_message", message["at"], message["source"]["handle"])
             reason(f"Last cleared message about it: {message['at']}.", message["source"])
         else:
-            missing.append("No vendor message about this order that you can open "
-                           "(the draft does not refer to one).")
+            missing.append("No message from the supplier about this order yet.")
         if eta and eta["answer"] == "yes" and eta.get("when") and eta.get("source"):
             cite("confirmed_delivery_date", eta["when"], eta["source"]["handle"])
         if not lines:
-            missing.append("The order's open lines are not listed here (no line you can "
-                           "open whole); the draft names the order only.")
+            missing.append("The draft names the order, not its open lines.")
         elif not any(line.get("line_item") for line in facts["lines"].values()):
-            missing.append("The order's lines name no item in the records: the draft lists "
-                           "them by quantity.")
+            missing.append("The lines name no item, so the draft lists them by quantity.")
         if contact is None:
-            missing.append("The vendor's contact address.")
+            missing.append("No supplier contact address on record.")
         draft = vendor_draft(po_number=po_number, supplier=supplier[0] if supplier else None,
                              need_date=need_date, eta=eta or {}, contact=contact,
                              last_message=message, lines=lines, cited=cited,
@@ -518,7 +515,7 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
         if required:
             cite("required_date", required, handle)
         else:
-            missing.append("The order's required date is not stated in this finding.")
+            missing.append("No required date on record.")
         draft = customer_draft(order_label=label, required=required, eta=None, cited=cited)
     elif kind == "margin_review":
         handle = next((h for h in lead.get("citations") or () if isinstance(h, str)), None)
@@ -526,8 +523,7 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             cite("loss", f"{money['value']} {money['currency']}", handle)
         draft = margin_note(order_label=label, amount=money, why=lead.get("why"), cited=cited)
     if eta is not None and eta["answer"] == "unknown" and po is not None:
-        missing.append("Whether the vendor confirmed a date is not decided from what you "
-                       "can see.")
+        missing.append("No delivery date confirmed by the supplier yet.")
     if money and money.get("suspect"):
         missing.append(f"The order total looks wrong in the source ({money['suspect']}); "
                        "it is not used to rank.")

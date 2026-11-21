@@ -26,8 +26,7 @@ export function topOf(chart: Drawn, n = TOP): Drawn {
     ...chart,
     labels: chart.labels.slice(0, n),
     series: chart.series.map((s) => ({ ...s, values: s.values.slice(0, n) })),
-    shown: n,
-    rows: chart.rows ?? chart.labels.length,
+    // the tile's own line says "Top 15 of 48" with its Show all: the chart does not say it again
   };
 }
 
@@ -117,7 +116,7 @@ export function ScheduleControl({ item, columns = [] }: { item: InsightInfo; col
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted" data-testid={`schedule-${item.id}`}>
       <label className="flex items-center gap-1">
-        Runs by itself
+        Check it
         <select className={field} value={now.schedule} disabled={busy} onChange={(e) => save({ schedule: e.target.value as InsightInfo["schedule"], notify: now.notify === "never" && e.target.value ? "new_rows" : now.notify, watch: now.watch })}>
           {SCHEDULES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
@@ -134,15 +133,15 @@ export function ScheduleControl({ item, columns = [] }: { item: InsightInfo; col
         <span className="flex items-center gap-1" data-testid={`watch-${item.id}`}>
           <select className={field} aria-label="Column to watch" value={line.column} disabled={busy} onChange={(e) => setLine({ ...line, column: e.target.value })}>
             <option value="">Column</option>
-            {numeric.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
+            {numeric.map((c) => <option key={c} value={c}>{human(c)}</option>)}
           </select>
           <select className={field} aria-label="Above or below" value={line.op} disabled={busy} onChange={(e) => setLine({ ...line, op: e.target.value as Watch["op"] })}>
             <option value="above">above</option>
             <option value="below">below</option>
           </select>
           <input className={`${field} w-20`} aria-label="Line" inputMode="decimal" value={line.value} disabled={busy} onChange={(e) => setLine({ ...line, value: e.target.value })} />
-          <button type="button" className={field} disabled={busy || !ready} onClick={saveLine}>Save line</button>
-          {now.watch && <span>Watching {now.watch.column.replace(/_/g, " ")} {now.watch.op} {now.watch.value}</span>}
+          <button type="button" className={field} disabled={busy || !ready} onClick={saveLine}>Watch</button>
+          {now.watch && <span>Watching {human(now.watch.column).toLowerCase()} {now.watch.op} {now.watch.value}</span>}
         </span>
       )}
       {now.schedule && item.last_run && <span>{item.last_run}</span>}
@@ -219,12 +218,45 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
 }
 
 /** The dashboard: every insight the reader may see, grouped, each read live on its own. */
+/** What each monitor checks and when, in a line: "Every morning, tells you when a new row appears". */
+export function monitorLine(item: InsightInfo): string {
+  const when = SCHEDULES.find(([v]) => v === item.schedule)?.[1] ?? "";
+  const w = item.watch;
+  const tell = item.notify === "crosses" && w
+    ? `tells you when ${human(w.column).toLowerCase()} goes ${w.op} ${w.value}`
+    : item.notify === "never" ? "nothing comes to Home" : `tells you ${(NOTIFY.find(([v]) => v === item.notify)?.[1] ?? "").toLowerCase()}`;
+  return `${when}, ${tell}`;
+}
+
+/** The monitors you run (your charts that run by themselves), listed first, each linking to its chart. */
+function Monitors({ items }: { items: InsightInfo[] }) {
+  const on = items.filter((i) => i.saved && i.schedule);
+  return (
+    <section aria-label="Monitors" className="space-y-1.5" data-testid="monitors">
+      <h2 className="text-[15px] font-semibold">Monitors</h2>
+      {on.length === 0 ? (
+        <p className="text-[13px] text-muted">None yet. Pin a chart from an Ask answer, then set it to check by itself and tell you on Home.</p>
+      ) : (
+        <ul className="divide-y divide-border border-y border-border">
+          {on.map((i) => (
+            <li key={i.id} className="flex flex-wrap items-baseline justify-between gap-x-4 py-1.5 text-[13px]">
+              <a href={`#insight-${i.id}`} className="font-medium hover:underline">{i.title}</a>
+              <span className="text-[12px] text-muted">{monitorLine(i)}{i.last_run ? ` · ${i.last_run}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function InsightsDashboard({ list, onChanged }: { list: InsightList; onChanged: () => void }) {
   return (
     <div className="space-y-8">
       {list.scope === "self" && (
         <p className="text-[13px] text-muted">The team views show your own row only.</p>
       )}
+      {list.saving && <Monitors items={list.items} />}
       {grouped(list.items).map(([group, items]) => (
         <section key={group} className="space-y-4" aria-label={group}>
           <h2 className="text-[15px] font-semibold">{group}</h2>

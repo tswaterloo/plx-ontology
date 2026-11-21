@@ -151,7 +151,8 @@ class Ctx:
         word index. A lookup that cannot answer raises ``FindUnavailable``, never ``[]``:
         "not found" lets a caller act as if the record did not exist (a second order
         draft for an order already keyed). On Postgres the word index read is not tried:
-        a number there reads for minutes, past the handler's deadline (11-17 live)."""
+        a number there reads for minutes, past the handler's deadline (11-17 live); a pair
+        the table does not carry is read in full for a small type (``_scanned``)."""
         self.check()
         norm = re.sub(r"[^0-9a-z]", "", value.lower())
         if not norm:
@@ -164,9 +165,11 @@ class Ctx:
             if "interrupt" in str(exc):
                 raise
             raise FindUnavailable(f"identifiers: {type(exc).__name__}") from exc
-        if hits is None:
-            if getattr(self.st, "pg", False):         # ``proactive_engine._Store.pg``
+        if hits is None and getattr(self.st, "pg", False):   # ``proactive_engine._Store.pg``
+            hits = self._scanned(prefix, prop, norm)
+            if hits is None:
                 raise FindUnavailable(f"{prefix}.{prop} is not in the identifier table")
+        if hits is None:
             from . import proactive_threads as pt
             words = [w for w in re.split(r"[^0-9A-Za-z]+", value) if w]
             hits = pt._word_ids(self.st, " AND ".join('"' + w + '"' for w in words), [prop],
@@ -177,6 +180,43 @@ class Ctx:
         rows = _read(self.st, sorted(hits), [prop])
         return sorted(o for o, r in rows.items()
                       if re.sub(r"[^0-9a-z]", "", _v(r, prop).lower()) == norm)
+
+    def _scanned(self, prefix: str, prop: str, norm: str) -> set[str] | None:
+        """On Postgres, ``prop`` of a type the identifier table does not carry: every
+        ``prefix`` record's value read once per run (the store's ``memo``; 22k supplier
+        items in 0.5 s, 85k accounting invoices in 5.6 s and 160 MB, 11-21 live) and looked up by its normalized form, so "none" is
+        an answer. None (cannot say) for a type of no records or more than ``FIND_SCAN_MAX``,
+        or a property none of its records carries."""
+        def count() -> int:
+            return self.st.conn.execute("SELECT count(*) FROM objects WHERE object_type = ?",
+                                        (prefix,)).fetchone()[0]
+
+        def index() -> dict[str, list[str]]:
+            ids = [r[0] for r in self.st.conn.execute(
+                "SELECT object_id FROM objects WHERE object_type = ?", (prefix,))]
+            out: dict[str, list[str]] = {}
+            for oid, row in _read(self.st, ids, [prop]).items():
+                key = re.sub(r"[^0-9a-z]", "", _v(row, prop).lower())
+                if key:
+                    out.setdefault(key, []).append(oid)
+            return out
+
+        memo = getattr(self.st, "memo", None)
+        keep = memo if callable(memo) else (lambda _key, make: make())
+        n = keep(f"find_count:{prefix}", count)
+        if not 0 < n <= FIND_SCAN_MAX:
+            return None
+        # every pair read in full in one run together stays under FIND_SCAN_TOTAL records
+        budget = keep("find_scan_budget", lambda: {"left": FIND_SCAN_TOTAL, "read": set()})
+        key = f"{prefix}.{prop}"
+        if key not in budget["read"]:
+            if n > budget["left"]:
+                return None
+            budget["left"] -= n
+            budget["read"].add(key)
+        found = keep(f"find_index:{key}", index)
+        # no record of the type carries the property: not served, so it cannot say
+        return set(found.get(norm, ())) if found else None
 
     def _identified_as(self, prefix: str, prop: str, value: str) -> set[str] | None:
         """The records ``find`` reads ``prop`` of from the identifier table; None when the
@@ -220,6 +260,10 @@ class FindUnavailable(Exception):
 # the most carrier records of one value ``Ctx.find`` follows links of (more: it cannot say);
 # a short customer PO many customers use is carried by 678 records (live 11-17: 0.2 s)
 FIND_FOLLOW = 2000
+# the most records of one type ``Ctx.find`` reads a value of in full when the identifier
+# table does not carry it (``_scanned``)
+FIND_SCAN_MAX = 150000
+FIND_SCAN_TOTAL = 400000
 # a record property the identifier table carries on another record, tied by a link: (type,
 # property) -> (the carrier's type, its property, the link). A sales order's customer PO is
 # identified on its CustomerPurchaseOrder (``identified`` reads it the same way; 200 of 200

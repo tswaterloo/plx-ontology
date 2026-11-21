@@ -36,9 +36,10 @@ that is also a day those records were written (``date_defaults``). Many orders s
 real deadline keep it. A date equal to one of the record's own days (its creation or order
 day, ``OWN_DAYS``) is kept and judged with the reason ``required_date_own_day`` (a
 same-day order or a form default). An order whose every date is a default is undated,
-never late (``requested_date``). Among requested dates the declared precedence of
-``SalesOrder.required_date`` governs (the top lineage holding one); two dates in it are
-disputed.
+never late (``requested_date``). A copy's own-day date gives way to any copy's entered
+date (a real date beats a system default, owner 2026-11-21); among those left the declared
+precedence of ``SalesOrder.required_date`` governs (the top lineage holding one); two dates
+in it are disputed.
 """
 
 from __future__ import annotations
@@ -264,6 +265,12 @@ def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable
         return Requested(None, reason="required_date_default" if default else
                          "required_date_unreadable" if unreadable else "no_required_date")
     ranks = precedence()
+    # a real date beats an entry default: when any copy states a day that is none of its
+    # own record's days, the copies whose day is their own (the form's default, the day
+    # the record was written) step aside, whatever their rank
+    entered = [r for r in real if not own_doubt(day_of(r), owns[id(r)])]
+    if entered:
+        real = entered
 
     def rank(row: Mapping[str, Any]) -> int:
         return ranks.index(row.get("lineage")) if row.get("lineage") in ranks else len(ranks)

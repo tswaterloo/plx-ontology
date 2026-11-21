@@ -44,14 +44,16 @@ log = logging.getLogger(__name__)
 # the API keeps up to ~20 of them warm or spare; each kept the connections of its last
 # question (6-8) for as long as it lived, so idle hosts filled max_connections and the
 # live API was refused connections (11-18, 3:46-4:12 PM ET). A new connection on the
-# local socket costs milliseconds; an idle one costs a server slot.
+# local socket costs milliseconds; an idle one costs a server slot. 15 s, not 60: at 60
+# the API's idle logins alone (~50 at rest, up to 100 in a warm-up) filled the role's 100
+# and a deploy found no room for a second API (11-21 9:14 AM ET, cold restart).
 IDLE_KEEP_ENV = "PLX_PG_IDLE_KEEP_SECONDS"
-IDLE_KEEP_SECONDS = 60.0
+IDLE_KEEP_SECONDS = 15.0
 # And at most this many idle per pool (``PLX_PG_IDLE_KEPT_MAX``; one returned past it is
 # closed): ~20 hosts x 3 pools, so idle hosts hold a bounded handful (cap 1-2 per host).
 IDLE_KEPT_MAX_ENV = "PLX_PG_IDLE_KEPT_MAX"
 IDLE_KEPT_MAX = 2
-REAP_EVERY_SECONDS = 10.0
+REAP_EVERY_SECONDS = 5.0    # so none is kept idle past ~IDLE_KEEP_SECONDS + 5
 _REAP_LOCK = threading.Lock()
 _REAPERS: list[Any] = []          # weak references to each pool's ``reap(now)``
 _REAP_THREAD: list[threading.Thread] = []
@@ -139,9 +141,12 @@ def _forget_inherited() -> None:
     """A forked child reaps none of its parent's pools: closing an inherited connection
     sends the server a Terminate on the PARENT's session (its socket is shared), and the
     parent's own thread is gone in the child, so the child's first pool would start a
-    reaper over every inherited registration."""
-    global _REAP_LOCK
+    reaper over every inherited registration. Its session budget is its own too (a new
+    lock: the parent's may be held by a thread the child does not have)."""
+    global _REAP_LOCK, _BUDGET_LOCK
     _REAP_LOCK = threading.Lock()
+    _BUDGET_LOCK = threading.Lock()
+    _BUDGET[:] = [None, None]
     _REAPERS.clear()
     _REAP_THREAD.clear()
 
@@ -241,10 +246,109 @@ def at_limit(exc: BaseException) -> bool:
     return isinstance(exc, psycopg.OperationalError) and any(w in text for w in _FULL_WORDS)
 
 
+# At most this many Postgres sessions open at once in one process (``PLX_PG_SESSIONS_MAX``;
+# unset or 0: no bound, as before). Set for the warm-up process (``warm_process``): its
+# read workers, check workers and their stores each kept logins of their own, and a
+# warm-up pass held the API's whole share of the role (100 of 100, 11-21 9:14 AM ET), so
+# the deploy found no room for a second API and its live requests were refused logins.
+# Bounded, a read-ahead waits for a slot (the process's idle logins closed first) instead.
+SESSIONS_MAX_ENV = "PLX_PG_SESSIONS_MAX"
+
+
+class SessionsFull(psycopg.OperationalError):
+    """No session free in this process's budget within the wait (``SessionBudget``)."""
+
+
+class SessionBudget:
+    """This process's open Postgres sessions, at most ``most`` at once. A session counts
+    from the moment its login starts until its connection is closed (or collected); taking
+    one when all are in use closes this process's idle logins (``reap_now`` as if each
+    were idle past ``idle_keep_seconds``: kept in a pool, returned to it a moment ago, a
+    held store connection between statements) and then waits, with a growing pause, for a
+    lent one to come back (closed so) or close."""
+
+    def __init__(self, most: int) -> None:
+        import weakref
+        self.most = most
+        self._ref = weakref.ref
+        self._lock = threading.Lock()
+        self._held: list[Any] = []      # weak references to open connections
+        self._starting = 0              # logins under way
+
+    def _open_now(self) -> int:
+        self._held = [ref for ref in self._held
+                      if (conn := ref()) is not None and not getattr(conn, "closed", True)]
+        return len(self._held) + self._starting
+
+    def in_use(self) -> int:
+        with self._lock:
+            return self._open_now()
+
+    def take(self, open_: Callable[[], Any], wait: float) -> Any:
+        """``open_()`` once a session is free within ``wait`` seconds, else ``SessionsFull``."""
+        deadline = time.monotonic() + max(0.0, wait)
+        pause, reaped = 0.02, False
+        while True:
+            with self._lock:
+                if self._open_now() < self.most:
+                    self._starting += 1
+                    break
+            if not reaped:   # the idle logins of this process make room first
+                reaped = True
+                keep = idle_keep_seconds()
+                reap_now(time.monotonic() + (keep if keep is not None else 0.0) + 1.0)
+                continue
+            reaped = False   # each round: a lent one handed back since is idle now
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise SessionsFull(f"too many connections in this process ({self.most}, "
+                                   f"{SESSIONS_MAX_ENV})")
+            time.sleep(min(pause, left))
+            pause = min(pause * 2, 0.1)   # a slot frees in ms: poll it often
+        try:
+            conn = open_()
+        except BaseException:
+            with self._lock:
+                self._starting -= 1
+            raise
+        with self._lock:
+            self._starting -= 1
+            self._held.append(self._ref(conn))
+        return conn
+
+
+_BUDGET: list[Any] = [None, None]   # (the setting it was made for, the budget)
+_BUDGET_LOCK = threading.Lock()
+
+
+def session_budget(environ: Any = None) -> SessionBudget | None:
+    """This process's ``SessionBudget`` (``SESSIONS_MAX_ENV``), None when unbounded."""
+    raw = str((os.environ if environ is None else environ).get(SESSIONS_MAX_ENV, "")).strip()
+    try:
+        most = int(raw) if raw else 0
+    except ValueError:
+        most = 0
+    if most <= 0:
+        return None
+    with _BUDGET_LOCK:   # one per process and setting, even when first asked at once
+        if _BUDGET[0] != (os.getpid(), most):
+            _BUDGET[:] = [(os.getpid(), most), SessionBudget(most)]   # a forked child: its own
+        return _BUDGET[1]
+
+
 def when_free(open_: Callable[[], Any], seconds: float | None = None) -> Any:
     """``open_()`` (it makes one connection), tried again with a growing pause while it is
     refused at the connection limit (``at_limit``), for at most ``seconds``
-    (``full_wait_seconds``); any other error, or the limit still hit then, is raised."""
+    (``full_wait_seconds``); any other error, or the limit still hit then, is raised.
+    Within this process's session budget (``session_budget``), waited for as long."""
+    sessions = session_budget()
+    if sessions is not None:
+        return sessions.take(lambda: _when_free(open_, seconds),
+                             full_wait_seconds() if seconds is None else float(seconds))
+    return _when_free(open_, seconds)
+
+
+def _when_free(open_: Callable[[], Any], seconds: float | None = None) -> Any:
     budget = full_wait_seconds() if seconds is None else max(0.0, float(seconds))
     deadline = time.monotonic() + budget
     pause = 0.05

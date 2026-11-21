@@ -56,8 +56,9 @@ caller's time budget (``out_of_time``; a part stopped there keeps its cursor and
   the server's nextLink (the cursor). Incremental: an event whose ``changeKey`` equals the
   current captured version's is kept as it is (no content request); a new or changed one
   is read once (``max_event_reads_per_run``, at most ``workers`` at a time). A run that read
-  the whole window finishes complete: an event no longer in it is marked missing from the
-  source (out of the window or deleted; never "deleted").
+  the whole window finishes complete: an event it no longer lists is marked missing from
+  the source (never "deleted"), except one held wholly outside the window (the window moved
+  past it): that one is kept current as held (``events_kept_outside_window``).
 * Planner (kind ``planner_task``): each mailbox's own tasks name the plans; per plan its
   record (title, container), buckets and every task (paged), and the details
   (description, checklist, reference titles) of each new or changed task (``@odata.etag``)
@@ -608,7 +609,8 @@ def _new_counts() -> dict[str, int]:
         "transcripts_withheld_no_occurrence", "transcripts_rechecked",
         "transcripts_confirmed", "transcripts_gone", "transcripts_recheck_withheld",
         "events_denied", "groups_listed",
-        "groups_excluded", "groups_unread", "plans_from_groups", "tasks_denied")}
+        "groups_excluded", "groups_unread", "plans_from_groups", "tasks_denied",
+        "events_kept_outside_window")}
 
 
 @dataclass
@@ -905,11 +907,55 @@ class MeetingsCapture:
                     reasons.add("event_content_unread")
                     finish("partial", "event_content_unread")
                 else:
+                    self._keep_outside_window(run_id, unit, acl, current, scope, counts)
                     finish("complete")
                 break
             url = next_url
         return {"status": _status(reasons), "reasons": sorted(reasons),
                 "resumed_from": resumed_from}
+
+    def _keep_outside_window(self, run_id: int, unit: str, acl: Mapping[str, Any],
+                             current: Mapping[str, CapturedRecord], scope: MeetingsScope,
+                             counts: dict[str, int]) -> None:
+        """Before a complete traversal marks the unit's unseen events missing: an event
+        held from an earlier run that lies wholly outside this run's window (ended before
+        its start, or starts at or after its end) was not listed because the window moved
+        past it, not because the source dropped it. It is saved again as it is held (its
+        version and content; the mailbox's current ACL), so it stays current; served
+        meeting history no longer shrinks a day per day (11-21: served from 2025-11-21
+        while the store held events from 2025-11-04). Only proven-outside events are kept:
+        one with an unreadable start or end, one the source lists again (seen this run),
+        one naming a person excluded now (or undecided) and one whose organizer the deny
+        list matches now go the old way (missing when unseen). Known limitation: a meeting
+        deleted at the source after it left the window cannot be told from one that only
+        aged out (the window no longer lists either), so it stays held; one already marked
+        missing is never revived here (``current_records`` skips it)."""
+        window = self._window(scope)
+        start, end = _moment(window["startDateTime"]), _moment(window["endDateTime"])
+        seen = {r.path[1] for r in self.store.current_records(EVENT_KIND.name, unit,
+                                                              seen_in_run=run_id)}
+        keep = []
+        for event_id, held in current.items():
+            row = (held.payload or {}).get("row") if isinstance(held.payload, Mapping) else None
+            if event_id in seen or not isinstance(row, Mapping):
+                continue
+            first, last = _moment(row.get("start")), _moment(row.get("end"))
+            if first is None or last is None or start is None or end is None \
+                    or not (last <= start or first >= end):
+                continue
+            people = [p["address"] for p in [row.get("organizer") or {},
+                                             *(row.get("attendees") or [])]
+                      if isinstance(p, Mapping) and p.get("address")]
+            if self._decides(people) is not False \
+                    or self._denied((row.get("organizer") or {}).get("address")):
+                continue
+            keep.append(CapturedRecord(
+                held.path, {"row": dict(row), "meta": {"source_acl": dict(acl),
+                                                       "source_api": "graph.user_calendar_view"}},
+                held.source_version, held.lineage))
+        if keep:
+            self.store.save_page(run_id, keep, None)
+        counts["events_kept_outside_window"] += len(keep)
 
     def _events(self, oid: str, acl: Mapping[str, Any], items: Sequence[Mapping[str, Any]],
                 current: Mapping[str, CapturedRecord], counts: dict[str, int],

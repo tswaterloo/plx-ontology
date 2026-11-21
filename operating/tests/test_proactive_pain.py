@@ -31,6 +31,11 @@ def shipped_order(w: World, shipped: str | None, *, number: str = "SYNTH-SO-1",
                                  "total_amount": total},
                   binding="portal.app_sales_order", audience="api:orders")
     money(w, order, "total_amount", "CAD")
+    # a Portal copy's currency is its entry default (order_value): the order is in its
+    # customer's Sage account's currency
+    w.link("SalesOrder.ordered_by", order,
+           w.obj("Customer", {"name": f"SYNTH {number}", "currency": "CAD"},
+                 binding="portal.sage_ar_customer", audience="api:customers"))
     shipment = w.obj("Shipment", {"status": shipment_status, "shipment_number": "SYNTH-SH",
                                   **({"ship_date": shipped} if shipped else {})},
                      binding="portal.sage_oe_shipment_header", audience="api:shipments")

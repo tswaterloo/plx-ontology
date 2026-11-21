@@ -104,6 +104,9 @@ def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 MAX_OPENED_FIELDS = 16
 
 
+MAX_OPENED_ITEMS = 12   # plx.open's citations maxItems
+
+
 def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:
     """What one ``plx.read`` result (as it left the output boundary) served of each text:
     ``(handles, field, version, served)``, ``served`` True for the whole text, else
@@ -113,6 +116,11 @@ def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:
     result that is not resolved serves nothing."""
     if isinstance(result, dict) and "fields_served" in result and "status" not in result:
         return _opened_texts(result)
+    if isinstance(result, dict) and isinstance(result.get("opened"), list) \
+            and "status" not in result:
+        # a several-citation plx.open: each item serves what its own open serves
+        return [entry for item in result["opened"][:MAX_OPENED_ITEMS]
+                if isinstance(item, dict) for entry in _served_texts(item)]
     if not isinstance(result, dict) or result.get("status") not in ("resolved",
                                                                       "changed_since"):
         return []

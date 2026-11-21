@@ -226,11 +226,14 @@ def sinv(s, key, number, day, total, currency, customer, *, sub=None, bc=False,
 
 
 def so(s, binding, key, number, customer, *, status=None, sage=None, required=None,
-       currency="CAD", total="0", order_type=None):
+       currency="CAD", total="0", order_type=None, po=None, markings="[]"):
     oid = f"SalesOrder:{binding}:{key}"
-    s.obj(oid, f"api:{binding}", _api(binding, key), "gold_etl_from_fm")
+    s.obj(oid, f"api:{binding}", _api(binding, key), "gold_etl_from_fm", markings=markings)
     s.val(oid, "order_number", "text", number)
-    s.val(oid, "currency", "text", currency)
+    if po:
+        s.val(oid, "customer_po", "text", po)
+    if currency:   # None: a copy that states no currency at all
+        s.val(oid, "currency", "text", currency)
     s.val(oid, "total_amount", "money", total, currency=currency)
     s.val(oid, "order_date", "date", "2026-10-01")
     if status:
@@ -356,9 +359,11 @@ def party_fixture(s):
 def build():
     s = tab.Store()
     acme_p = cust(s, "portal.app_customer", "acme", "Acme Ltd", "ACME")
-    acme_s = cust(s, "portal.sage_ar_customer", "acme", "ACME LTD", "ACME")
+    acme_s = cust(s, "portal.sage_ar_customer", "acme", "ACME LTD", "ACME", currency="CAD")
     s.link("tw-acme", "Customer.same_record_as", acme_p, acme_s, "verified")
-    beta = cust(s, "portal.sage_ar_customer", "beta", "Beta Inc", "BETA")
+    # Beta's Sage account states USD: an order of Beta's whose copies state no currency is
+    # in USD (the order's currency of record, business_views.order_currency)
+    beta = cust(s, "portal.sage_ar_customer", "beta", "Beta Inc", "BETA", currency="USD")
     lead_a = cust(s, "portal.app_customer", "lead", "Lead Co", "LEAD")
     lead_b = cust(s, "portal.sage_ar_customer", "lead", "Lead Co", "LEAD")
     s.link("tw-lead", "Customer.same_record_as", lead_a, lead_b, "lead")
@@ -385,8 +390,9 @@ def build():
              required="2026-11-01")
     o1s = so(s, "portal.sage_oe_order_header", "o1", "SO-1", acme_s, sage="1")
     s.link("tw-o1", "SalesOrder.same_record_as", o1p, o1s, "verified")
-    line(s, "o1-a", o1p, "2", "10.00")
-    line(s, "o1-b", o1p, "1", "5.00", desc="secret-priced", price_markings='["finance"]')
+    # its lines are the Sage copy's: Sage holds the order, so its copy prices it
+    line(s, "o1-a", o1s, "2", "10.00")
+    line(s, "o1-b", o1s, "1", "5.00", desc="secret-priced", price_markings='["finance"]')
     o2 = so(s, "portal.sage_oe_order_header", "o2", "SO-2", beta, sage="5")
     line(s, "o2-a", o2, "1", "1.00")
     o3 = so(s, "portal.sage_oe_order_header", "o3", "SO-GONE", beta, sage="1")
@@ -407,6 +413,22 @@ def build():
     ocfp = so(s, "portal.app_sales_order", "ocf", "SO-CF", acme_p, status="OPEN")
     ocfs = so(s, "portal.sage_oe_order_header", "ocf", "SO-CF", beta, sage="1")
     s.link("tw-ocf", "SalesOrder.same_record_as", ocfp, ocfs, "verified")
+    # a submission numbered by its PO range covers the customer's Sage orders of those POs
+    # (never merged): PO900-03 covers OR-901..OR-903 of Beta, not Acme's PO 900; OR-903
+    # is covered by 903/904 as well (two cover it: no date carried); OR-902 keeps its own
+    # entered date; OR-901 has only its own day and takes the submission's entered date.
+    # The submission is finance-marked: a reader without finance sees none of it.
+    so(s, "portal.app_sales_order", "pr1", "PO900-03", beta, status="OPEN",
+       required="2026-11-10", markings='["finance"]')
+    so(s, "portal.app_sales_order", "pr2", "903/904", beta, status="OPEN", required="2026-11-12")
+    so(s, "portal.sage_oe_order_header", "c900", "OR-900", acme_s, sage="1", po="900",
+       required="2026-10-01")
+    so(s, "portal.sage_oe_order_header", "c901", "OR-901", beta, sage="1", po="901",
+       required="2026-10-01")
+    so(s, "portal.sage_oe_order_header", "c902", "OR-902", beta, sage="1", po="PO-000902",
+       required="2026-12-01")
+    so(s, "portal.sage_oe_order_header", "c903", "OR-903", beta, sage="1", po="PO903",
+       required="2026-10-01")
     sinv(s, "s1", "IN-1", "2025-11-05", "113.00", "CAD", acme_s, sub="100.00", order=o2)
     sinv(s, "s2", "IN-2", "2025-11-20", "250.00", "USD", beta, rate="1.2500000")
     s3 = sinv(s, "s3", "IN-GONE", "2025-11-21", "999.00", "CAD", beta)
@@ -414,7 +436,7 @@ def build():
     sinv(s, "s5", "IN-5", "2026-10-02", "10.00", "USD", beta, order=o4, tier="lead")
     sinv(s, "b1", "PILOT-1", "2025-11-10", "5000.00", "CAD", acme_p, bc=True)
     for n in (1, 10, 60):
-        o = so(s, "portal.app_sales_order", f"bulk{n}", f"SO-B{n}", None, status="OPEN")
+        o = so(s, "portal.app_sales_order", f"bulk{n}", f"SO-B{n}", acme_s, status="OPEN")
         for k in range(n):
             line(s, f"bulk{n}-{k}", o, "1", f"{k}.50")
     # purchasing: a supplier held twice; a late PO held in the Portal and Sage (the
@@ -441,8 +463,8 @@ def build():
     s.link("cf-p2", "SupplierConfirmation.confirms", CONF, p2, "verified")
     # a line two orders hold (sales and purchase): never a duplicate row, never a failed
     # build
-    dup_a = so(s, "portal.app_sales_order", "dupa", "SO-DUPA", None, status="OPEN")
-    dup_b = so(s, "portal.app_sales_order", "dupb", "SO-DUPB", None, status="OPEN")
+    dup_a = so(s, "portal.app_sales_order", "dupa", "SO-DUPA", acme_s, status="OPEN")
+    dup_b = so(s, "portal.app_sales_order", "dupb", "SO-DUPB", acme_s, status="OPEN")
     line(s, "dupa-own", dup_a, "1", "1.00")
     line(s, "dupb-own", dup_b, "1", "1.00")
     shared = line(s, "dup-shared", dup_a, "1", "1.00", desc="shared-line")
@@ -1110,12 +1132,13 @@ class BusinessViews(unittest.TestCase):
         out = self.call({"view": "sales_orders", "where": [
             {"field": "status", "op": "=", "value": "open"}], "select": ["order_number"]})
         self.assertEqual(sorted(self.text(r["values"]["order_number"]["value"])
-                                for r in out["rows"]), ["SO-1", "SO-5", "SO-CF", "SO-T5"])
+                                for r in out["rows"]), ["OR-900", "OR-901", "OR-902", "OR-903",
+                                                        "SO-1", "SO-5", "SO-CF", "SO-T5"])
         self.assertIn("not_of_record_rows_left_out", [g["reason"] for g in out["gaps"]])
         count = self.call({"view": "sales_orders", "group_by": ["of_record"], "where": [
             {"field": "status", "op": "=", "value": "open"}], "measures": [{"fn": "count"}]})
         self.assertEqual({g["key"]["of_record"]: g["measures"][0]["value"]
-                          for g in count["groups"]}, {True: "4", False: "5"})
+                          for g in count["groups"]}, {True: "8", False: "5"})
         self.assertNotIn("not_of_record_rows_left_out", [g["reason"] for g in count["gaps"]])
         _o, rows = self.order_rows()
         # a Portal copy joined to its Sage twin is of record; a Portal-only order is not
@@ -1132,15 +1155,16 @@ class BusinessViews(unittest.TestCase):
         said = self.call({"view": "sales_orders", "where": [
             {"field": "of_record", "op": "=", "value": "False"}], "select": ["order_number"]})
         self.assertEqual(sorted(self.text(r["values"]["order_number"]["value"])
-                                for r in said["rows"]), ["SO-4", "SO-B1", "SO-B10", "SO-B60",
-                                                       "SO-DUPA", "SO-DUPB",
-                                                          "SO-ORB"])
+                                for r in said["rows"]), ["903/904", "PO900-03", "SO-4",
+                                                       "SO-B1", "SO-B10", "SO-B60",
+                                                       "SO-DUPA", "SO-DUPB", "SO-ORB"])
 
     def test_sales_orders_once_status_and_value(self):
         _out, rows = self.order_rows()
-        self.assertEqual(sorted(rows), ["SO-1", "SO-2", "SO-4", "SO-5", "SO-B1", "SO-B10",
-                                        "SO-B60", "SO-CF", "SO-DUPA", "SO-DUPB", "SO-ORB",
-                                        "SO-T5", "SQ-6"])
+        self.assertEqual(sorted(rows), ["903/904", "OR-900", "OR-901", "OR-902", "OR-903",
+                                        "PO900-03", "SO-1", "SO-2", "SO-4", "SO-5", "SO-B1",
+                                        "SO-B10", "SO-B60", "SO-CF", "SO-DUPA", "SO-DUPB",
+                                        "SO-ORB", "SO-T5", "SQ-6"])
         one = rows["SO-1"]
         self.assertEqual((one["copies"], self.text(one["values"]["customer"]["value"])),
                          (2, "Acme Ltd"))
@@ -1166,8 +1190,9 @@ class BusinessViews(unittest.TestCase):
         late = self.call({"view": "sales_orders", "where": [
             self.EVERY, {"field": "days_late", "op": ">", "value": 0}],
             "select": ["order_number", "required_date_note"]})
-        self.assertEqual([self.text(r["values"]["order_number"]["value"])
-                          for r in late["rows"]], ["SO-1"])
+        # (OR-901: open, late by the date of the one submission covering it)
+        self.assertEqual(sorted(self.text(r["values"]["order_number"]["value"])
+                                for r in late["rows"]), ["OR-901", "SO-1"])
         self.assertEqual(rows["SO-5"]["copies"], 2)
         self.assertEqual(got("SQ-6", *basis), ("closed", "sage_order_type_4", "sage", "quote"))
         self.assertEqual(got("SO-2", *basis), ("closed", None, "sage", None))
@@ -1177,8 +1202,8 @@ class BusinessViews(unittest.TestCase):
             "select": ["order_number"]})
         self.assertEqual(sorted(self.text(r["values"]["order_number"]["value"])
                                 for r in opened["rows"]),
-                         ["SO-1", "SO-5", "SO-B1", "SO-B10", "SO-B60", "SO-CF", "SO-DUPA",
-                          "SO-DUPB", "SO-T5"])
+                         ["OR-900", "OR-901", "OR-902", "OR-903", "SO-1", "SO-5", "SO-B1",
+                          "SO-B10", "SO-B60", "SO-CF", "SO-DUPA", "SO-DUPB", "SO-T5"])
         out = self.call({"view": "sales_orders", "where": [self.EVERY],
                          "measures": [{"fn": "sum", "field": "value"}, {"fn": "count"}]})
         # the two Sage-only fixtures hold no value (total 0, no lines): a group of their own
@@ -1189,6 +1214,49 @@ class BusinessViews(unittest.TestCase):
                          "measures": [{"fn": "sum", "field": "value"}]}, OPS)
         self.assertEqual(self.sums(ops), {"CAD": "1962.5", "USD": "21", None: None})
         self.assertEqual(ops["withheld"]["objects"], 1)
+
+    def test_a_po_range_submission_covers_its_orders_never_merged(self):
+        cols = ["order_number", "required_date", "required_date_basis", "required_date_note",
+                "covers", "covered_by", "covered_by_handle", "days_late", "status"]
+        out = self.call({"view": "sales_orders", "where": [self.EVERY], "select": cols,
+                         "limit": 200})
+        rows = {self.text(r["values"]["order_number"]["value"]): {
+            c: self.text(r["values"][c]["value"]) for c in cols} for r in out["rows"]}
+        sub = next(r for r in out["rows"]
+                   if self.text(r["values"]["order_number"]["value"]) == "PO900-03")
+        self.assertEqual(rows["PO900-03"]["covers"], "OR-901, OR-902, OR-903")
+        self.assertIsNone(rows["OR-900"]["covered_by"])           # another customer's PO
+        # the one covering submission's entered date: OR-901 is open, so late by it
+        self.assertEqual([rows["OR-901"][c] for c in ("required_date", "required_date_basis",
+                                                      "covered_by", "days_late")],
+                         ["2026-11-10", "covered_by", "PO900-03", "7"])
+        self.assertEqual(rows["OR-901"]["covered_by_handle"], sub["handle"])
+        # its own entered date stands; two covering submissions carry nothing
+        self.assertEqual([rows["OR-902"][c] for c in ("required_date", "required_date_basis")],
+                         ["2026-12-01", "own"])
+        self.assertEqual([rows["OR-903"][c] for c in ("required_date", "required_date_note",
+                                                      "covered_by", "covered_by_handle")],
+                         [None, "required_date_own_day", "PO900-03, 903/904", None])
+        # never merged: each order its own row and status (the submission holds no line)
+        self.assertEqual(rows["PO900-03"]["status"], "unknown")
+        self.assertEqual(rows["OR-901"]["status"], "open")
+        # a reader without finance sees nothing of the finance-marked submission through
+        # the orders it covers: not its number, its row, nor its date
+        ops = self.call({"view": "sales_orders", "where": [
+            self.EVERY, {"field": "order_number", "op": "in", "value": ["OR-901", "OR-902"]}],
+            "select": cols}, OPS)
+        self.assertNotIn("PO900-03", json.dumps(ops))
+        self.assertNotIn("2026-11-10", json.dumps(ops))
+        self.assertNotIn(sub["handle"], json.dumps(ops))
+        # nor, asked for alone, that its date came from a covering submission: the basis
+        # is read from the submission with its date
+        basis = self.call({"view": "sales_orders", "where": [
+            self.EVERY, {"field": "order_number", "op": "in", "value": ["OR-901", "OR-902"]}],
+            "select": ["order_number", "required_date_basis"]}, OPS)
+        self.assertEqual([self.text(r["values"]["required_date_basis"]["value"])
+                          for r in basis["rows"]
+                          if self.text(r["values"]["order_number"]["value"]) == "OR-901"
+                          and self.text(r["values"]["required_date_basis"]["value"])], [])
 
     def test_sales_order_lines_once_per_order(self):
         out = self.call({"view": "sales_order_lines", "group_by": ["order_number"],
@@ -2115,6 +2183,181 @@ class BusinessViews(unittest.TestCase):
                 c.execute("DELETE FROM ontology.people_excluded_state")
                 c.execute("DROP TABLE IF EXISTS biz.door_state, biz.door_views")
         self.assertEqual(seen, [{"follow": False}, {}])
+
+
+def currency_store():
+    """Orders whose copies state their currency differently (walk 11-21: the Portal app
+    labels every order CAD, Soapbox Soaps' orders among them, while Sage states USD and
+    invoices them in USD)."""
+    s = tab.Store()
+    usd = cust(s, "portal.sage_ar_customer", "usd", "Usd Buyer LLC", "USDB", currency="USD")
+    portal_usd = cust(s, "portal.app_customer", "usd", "Usd Buyer", "USDB", currency="CAD")
+    s.link("tw-usd", "Customer.same_record_as", portal_usd, usd, "verified")
+    odd = cust(s, "portal.sage_ar_customer", "odd", "Odd Co", "ODD", currency="$")
+
+    def twin(key, number, total, sage_cur, *, sage="1", customer=usd, sage_total="0"):
+        p = so(s, "portal.app_sales_order", key, number, portal_usd, status="OPEN",
+               currency="CAD", total=total)
+        g = so(s, "portal.sage_oe_order_header", key, number, customer, sage=sage,
+               currency=sage_cur, total=sage_total)
+        s.link(f"tw-{key}", "SalesOrder.same_record_as", p, g, "verified")
+        return p, g
+    # invoiced in USD: the invoice's currency, whatever the Portal copy's cell says
+    _p, g = twin("c1", "SO-C1", "11970", "USD", sage="5")
+    sinv(s, "c1", "IN-C1", "2026-11-12", "11970", "USD", usd, order=g)
+    # not invoiced: the Sage header's currency
+    twin("c2", "SO-C2", "500", "USD", sage_total="500")
+    # a stale Portal copy (walk 11-21, OR1000154169: Portal 18,835.20, Sage 25,113.60):
+    # Sage holds the order, so Sage's copy values it
+    twin("c9", "SO-C9", "18835.20", "USD", sage_total="25113.60")
+    # a Portal-only order: its customer's (the Sage account's, never the Portal copy's)
+    o3 = so(s, "portal.app_sales_order", "c3", "SO-C3", portal_usd, status="OPEN")
+    line(s, "c3-a", o3, "2", "10.00")
+    # no customer, nothing stated: no currency, so no value
+    o4 = so(s, "portal.app_sales_order", "c4", "SO-C4", None, status="OPEN")
+    line(s, "c4-a", o4, "1", "4.00")
+    # a stated copy against its invoice: never converted, never relabelled
+    g5 = so(s, "portal.sage_oe_order_header", "c5", "SO-C5", usd, sage="5", currency="CAD",
+            total="300")
+    sinv(s, "c5", "IN-C5", "2026-11-12", "300", "USD", usd, order=g5)
+    # two invoices in two currencies: a dispute, no pick
+    _p, g6 = twin("c6", "SO-C6", "100", "USD", sage="5")
+    sinv(s, "c6a", "IN-C6A", "2026-11-12", "50", "USD", usd, order=g6)
+    sinv(s, "c6b", "IN-C6B", "2026-11-13", "50", "CAD", usd, order=g6)
+    # the currency of record rests on a finance-marked invoice: the column's class
+    _p, g7 = twin("c7", "SO-C7", "70", None, sage="5")
+    sinv(s, "c7", "IN-C7", "2026-11-12", "70", "USD", usd, order=g7, markings='["finance"]')
+    # a currency no rule reads stops the chain (never passed over to the next step)
+    o8 = so(s, "portal.app_sales_order", "c8", "SO-C8", odd, status="OPEN")
+    line(s, "c8-a", o8, "1", "8.00")
+    return s
+
+
+class OrderCurrency(unittest.TestCase):
+    """The order's currency is the one its source of record states: the invoice's when
+    invoiced, else the Sage order header's, else the customer's; a Portal or FileMaker
+    copy's own currency cell (an entry default) never speaks."""
+    @classmethod
+    def setUpClass(cls):
+        from operating.tests import pg_store_mode
+        import tempfile
+        cls._org_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._org_dir.cleanup)
+        org_capture(cls._org_dir.name)
+        env = mock.patch.dict(os.environ, {"PLX_STATE_DIR": cls._org_dir.name})
+        env.start()
+        cls.addClassCleanup(env.stop)
+        cls.store = currency_store()
+        cls.dsn = pg_store_mode._load("", cls.store.conn)
+        import psycopg
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(cls.dsn, autocommit=True) as c:
+            for mig in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+                c.execute((MIGRATIONS_DIR / mig).read_text())
+        bv.build(cls.dsn, None, schema=SCHEMA, as_of=AS_OF)
+
+    base, call = BusinessViews.base, BusinessViews.call
+    text, sums = staticmethod(BusinessViews.text), BusinessViews.sums
+    EVERY = BusinessViews.EVERY
+
+    def rows(self, view="sales_orders", actor=FULL, key="order_number", select=(
+            "order_number", "value", "value_basis", "value_note")):
+        out = self.call({"view": view, "where": [self.EVERY], "select": list(select),
+                         "limit": 200}, actor)
+        return out, {self.text(r["values"][key]["value"]): r["values"] for r in out["rows"]}
+
+    def test_the_source_of_record_states_the_currency(self):
+        _out, rows = self.rows()
+
+        def got(n):
+            v = rows[n]
+            return (v["value"]["value"], v["value"].get("currency"),
+                    v["value_basis"]["value"], v["value_note"]["value"])
+        # closed in Sage, its header zeroed: the USD invoice billing it
+        self.assertEqual(got("SO-C1"), ("11970", "USD", "invoices", None))
+        self.assertEqual(got("SO-C2"), ("500", "USD", "source_total", None))
+        self.assertEqual(got("SO-C9"), ("25113.6", "USD", "source_total", None))
+        self.assertEqual(got("SO-C3"), ("20", "USD", "order_lines", None))
+        self.assertEqual(got("SO-C4"), (None, None, None, "no_currency_stated"))
+        self.assertEqual(got("SO-C5"), (None, None, None, "currency_mismatch"))
+        self.assertEqual(got("SO-C6"), (None, None, None, "currencies_differ"))
+        self.assertEqual(got("SO-C8"), (None, None, None, "customer_currency_unreadable"))
+        # no CAD anywhere: the Portal copies' CAD cells never label an amount
+        out = self.call({"view": "sales_orders", "where": [self.EVERY],
+                         "measures": [{"fn": "sum", "field": "value"}]})
+        self.assertEqual(self.sums(out), {"USD": "37673.6", None: None})
+        # the currency is cited to the record that stated it (SO-C3: its customer's Sage
+        # account, while its value rests on the Portal copy's line)
+        import psycopg
+        with psycopg.connect(self.dsn) as c:
+            cites, col_objects = c.execute(
+                "SELECT l.cites, l.col_objects FROM biz.sales_orders t JOIN "
+                "biz.lineage l ON l.view = 'sales_orders' AND l.handle = t.handle "
+                "WHERE t.order_number = 'SO-C3'").fetchone()
+        self.assertIn("Customer:portal.sage_ar_customer:usd",
+                      col_objects.get("value_currency") or (), col_objects)
+        self.assertIn("sage_ar_customer", json.dumps(cites.get("value_currency")))
+
+    def test_lines_of_a_copy_stating_none_are_in_the_currency_of_record(self):
+        _out, lines = self.rows("sales_order_lines", select=(
+            "order_number", "unit_price", "line_amount"))
+        c3 = lines["SO-C3"]
+        self.assertEqual((c3["unit_price"]["value"], c3["unit_price"].get("currency"),
+                          c3["line_amount"]["value"], c3["line_amount"].get("currency")),
+                         ("10", "USD", "20", "USD"))
+        c4 = lines["SO-C4"]
+        self.assertEqual((c4["unit_price"]["value"], c4["line_amount"]["value"]), (None, None))
+
+    def test_a_reader_closed_to_the_stating_invoice_never_gets_the_currency(self):
+        _out, full = self.rows()
+        self.assertEqual(full["SO-C7"]["value"].get("currency"), "USD")
+        out, ops = self.rows(actor=OPS)
+        dumped = json.dumps(ops.get("SO-C7", {}))
+        self.assertNotIn("USD", dumped, dumped)
+        self.assertNotIn("IN-C7", json.dumps(out))
+
+    def test_every_surface_states_a_changed_order_alike(self):
+        """The business view, plx.object (``for_reader``) and the engine's cards
+        (``for_store``) state each order at one value in one currency: a Portal copy CAD
+        labels (SO-C1 invoiced in USD, SO-C2 Sage-stated USD, SO-C9 the stale Portal copy
+        Sage values) and a Portal-only order in its customer's currency (SO-C3); an order
+        withheld in the view (SO-C6, invoices in two currencies) is withheld on each."""
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from operating import order_value as ov
+        from operating.proactive_engine import _Store
+        _out, rows = self.rows()
+        tools = self.base()
+        scope = tools._scope(FULL, ev.NOW)
+        portal = {n: f"SalesOrder:portal.app_sales_order:{k}"
+                  for n, k in (("SO-C1", "c1"), ("SO-C2", "c2"), ("SO-C3", "c3"),
+                               ("SO-C9", "c9"), ("SO-C6", "c6"))}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "store.sqlite"
+            dst = sqlite3.connect(path)
+            self.store.conn.backup(dst)
+            dst.close()
+            st = _Store(path, file_only=True)
+            try:
+                cards = ov.for_store(st, sorted(portal.values()))
+            finally:
+                st.close()
+        for n, oid in portal.items():
+            view = rows[n]["value"]
+            if n == "SO-C6":   # withheld (invoices in two currencies) on every surface
+                self.assertIsNone(view["value"], n)
+                for surface, got in (("plx.object", ov.for_reader(tools, scope, oid)),
+                                     ("cards", cards[oid])):
+                    self.assertEqual((got.amount, got.currency), (None, None), (n, surface))
+                    self.assertTrue(got.reason, (n, surface))
+                continue
+            want = (Decimal(view["value"]), view.get("currency"))
+            self.assertEqual(want[1], "USD", n)
+            for surface, got in (("plx.object", ov.for_reader(tools, scope, oid)),
+                                 ("cards", cards[oid])):
+                self.assertEqual((got.amount, got.currency), want, (n, surface, got.reason))
+
 
 
 if __name__ == "__main__":

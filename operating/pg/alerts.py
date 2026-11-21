@@ -756,8 +756,8 @@ PRICE_BELOW_COST = Rule(
     "over the last 180 days (quantity-weighted, one unit and currency).",
     "customers", ("sales_invoice_lines", "customers"),
     "WITH " + _LINES + " " + _PRICE_OUT.format(
-        why="concat_ws(' ', x.customer, 'paid', round(x.f_amt / nullif(x.f_cost, 0) * 100), "
-            "'% of cost for', x.item_name, '(' || x.cur || ' per ' || x.unit || ') over the "
+        why="concat_ws(' ', x.customer, 'paid', round(x.f_amt / nullif(x.f_cost, 0) * 100) "
+            "|| '% of cost for', x.item_name, '(' || x.cur || ' per ' || x.unit || ') over the "
             "last {p[days]} days.')") +
     "FROM paid x JOIN {s}.customers c ON c.handle = x.cust "
     "WHERE x.f_cost > 0 AND x.f_amt < x.f_cost * {p[tolerance]}::numeric",

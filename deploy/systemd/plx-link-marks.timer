@@ -1,0 +1,11 @@
+# 10 minutes after the last run ended (a build that runs long never overlaps the next).
+[Unit]
+Description=PLX kept link slice rebuild check every 10 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

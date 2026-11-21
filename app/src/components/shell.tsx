@@ -98,7 +98,7 @@ export function DevBanner({ className, compact }: { className?: string; compact?
   if (link) {
     return (
       <div role="note" title="Signed in with your access link" className={cn("text-meta text-muted", className)} data-testid="link-banner">
-        <span className={compact ? "text-faint" : undefined}>{compact ? "Access link" : "Signed in with your access link"}</span>
+        <span className={compact ? "text-faint" : undefined}>{compact ? "Signed in by link" : "Signed in with your access link"}</span>
         {compact && <span className="sr-only">: signed in with your access link</span>}
         {access && (
           <span className={compact ? "sr-only" : "block"} data-testid="access-banner">
@@ -511,14 +511,18 @@ export function pageSources(path: string): readonly string[] {
   return [];
 }
 
-/** More than an hour old, or its last capture failed or never ran: "behind" on the quiet line. */
+/** "Behind" on the quiet line: the server's own verdict for the source (its age past that
+ * system's capture bound, the rule Trust and the answers use), or a capture that failed or
+ * never ran. A server that sends no verdict: more than an hour old. */
 export const BEHIND_SECONDS = 3600;
-type SourceAge = { system: string; age_seconds?: number | null; capture?: string | null; as_of?: string | null };
+type SourceAge = { system: string; age_seconds?: number | null; capture?: string | null; as_of?: string | null; stale?: boolean | null };
 export function isBehind(s: SourceAge): boolean {
-  return s.capture === "failed" || s.capture === "never_captured" || !s.as_of || (s.age_seconds ?? 0) > BEHIND_SECONDS;
+  if (s.capture === "failed" || s.capture === "never_captured" || !s.as_of) return true;
+  return typeof s.stale === "boolean" ? s.stale : (s.age_seconds ?? 0) > BEHIND_SECONDS;
 }
 
-const sourceName = (s: string) => (s === "File" ? "Files" : s === "Email" ? "Mail" : (SYSTEM_LABEL as Record<string, string>)[s] ?? s);
+/** A source system as the app names it to a person ("Files", "Mail", "Business Central"). */
+export const sourceName = (s: string) => (s === "File" ? "Files" : s === "Email" ? "Mail" : (SYSTEM_LABEL as Record<string, string>)[s] ?? s);
 
 /** The one quiet line under the sidebar: "Data as of 10:42 AM ET"; amber, naming them, only when
  * a source the open page reads is more than an hour behind. Each system's time on click; every

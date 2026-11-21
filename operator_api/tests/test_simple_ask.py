@@ -95,7 +95,7 @@ class GateTest(unittest.TestCase):
         text = "Invoices came to 812,000.00 CAD, 12% up; INV-77777 is the largest."
         out, marked = ag.gate(text, [OCT], [])
         self.assertEqual(marked, ["812,000.00", "12%", "77777"])
-        self.assertEqual(out, "Invoices came to 812,000.00 (unverified) CAD, 12% "
+        self.assertEqual(out, "Invoices came to 812,000.00 CAD (unverified), 12% "
                               "(unverified) up; INV-77777 (unverified) is the largest.")
         self.assertEqual(out.replace(ag.UNVERIFIED, ""), text)
 
@@ -129,11 +129,192 @@ class GateTest(unittest.TestCase):
                          ["26128B"])
         self.assertEqual(ag.gate("It came to 26127B dollars.", [OCT], [])[1], ["26127B"])
         self.assertEqual(ag.gate("Chased Nov 13, 17, 18 and 20.", [OCT], [])[1], [])
+        self.assertEqual(ag.gate("Chased Nov 13, 17 and 20 by mail.", [OCT], [])[1], [])
+        # never a quantity after the day list, nor a number past 31
+        self.assertEqual(ag.gate("Shipped Nov 3, 12 and 95 cases.", [OCT], [])[1], ["12", "95"])
+        self.assertEqual(ag.gate("Shipped Nov 3, 12 and 25 cases.", [OCT], [])[1],
+                         ["12", "25"])
+        self.assertEqual(ag.gate("Shipped Nov 3 and 45.", [OCT], [])[1], ["45"])
         self.assertEqual(ag.gate("On Nov 13, 2026 we sold 17 units.", [OCT], [])[1],
                          ["17"])
         self.assertEqual(ag.gate('Before: "3. Payment terms. Net 30."', [OCT], ["Net 30"])[1],
                          [])
         self.assertEqual(ag.gate("We hold 7. Then more.", [OCT], [])[1], ["7"])
+
+    def test_figures_of_a_sheet_a_rate_a_month_or_the_persons_file_are_bound(self):
+        # HARD20 on main: a sheet cell's value, a rate's number and a year-month were
+        # marked, and a reply quoting clause 2 of the attached contract marked its "2"
+        sheet = {"type": "tool_call", "name": "plx.open", "is_error": False, "result": {
+            "text": {"untrusted_text": "A17=45846 | D17=104250 | E17=90 | J17=PASS. "
+                                       "Agrees to honour $6.25/unit for the 60ml size."}}}
+        self.assertEqual(ag.gate("One lot of 104,250 cartons, 90 sampled; we keep the "
+                                 "6.25/unit price ($6.25 per unit).", [sheet], [])[1], [])
+        # a year and month is held only when a result or the person's file states it
+        label = {"type": "tool_call", "name": "plx.search", "is_error": False, "result": {
+            "hits": [{"snippet": {"untrusted_text": "lot 2611-0457 best before 2028-05-31"}}]}}
+        self.assertEqual(ag.gate("The label says best before 2028-05.", [label], [])[1], [])
+        self.assertEqual(ag.gate("The label says best before 2028-05.", [OCT], [],
+                                 files=["Best before: 2028-05"])[1], [])
+        self.assertEqual(ag.gate("The label says best before 2031-07.", [label], [])[1],
+                         ["2031"])
+        contract = "SUPPLY AGREEMENT\n1. Parties.\n2. Payment terms. Net 30 from invoice."
+        self.assertEqual(ag.gate("- **Before:** 2. Payment terms. Net 30.\n- **After:** "
+                                 "2. Payment terms. Net 45.", [OCT],
+                                 ["make it net 45", contract], files=[contract])[1], [])
+        # the person's dates, an earlier answer's and the question's numbers hold no count:
+        # only a file's line-start clause numbers are theirs
+        po = sql([["PO100155", "2026-07-30"]], columns=("po_number", "order_date"))
+        earlier = "PO100155 (2026-07-30) is open."
+        self.assertEqual(ag.gate("We are short 30 cartons.", [po], [earlier])[1], ["30"])
+        self.assertEqual(ag.gate("We took 23 orders.", [OCT], ["how many since Oct 23?"])[1],
+                         ["23"])
+        note = "Delivery note dated 2026-10-15\n1. Cartons as ordered."
+        self.assertEqual(ag.gate("We are short 15 cartons.", [OCT], [note], files=[note])[1],
+                         ["15"])
+        # a file's clause number holds only a clause written as one, never a count
+        terms = "AGREEMENT\n12. Payment terms. Net 30."
+        self.assertEqual(ag.gate("- **Before:** 12. Payment terms.", [OCT], [terms],
+                                 files=[terms])[1], [])
+        # a number inside a file's line is no clause number ("... within 14. Late fees")
+        fees = "AGREEMENT\nPayment within 14. Late fees apply."
+        self.assertEqual(ag.gate("- **Before:** 14. Late fees apply.", [OCT], [],
+                                 files=[fees])[1], ["14"])
+        self.assertEqual(ag.gate("Clause 12 now reads Net 45.", [OCT], ["net 45", terms],
+                                 files=[terms])[1], [])   # the live h20 reply
+        for count in ("Clause 13 says Net 30.", "We hold 12 cartons."):
+            self.assertEqual(ag.gate(count, [OCT], [terms], files=[terms])[1],
+                             [count.split()[1] if "Clause" in count else "12"])
+        # a rate written with its unit is an amount: "$1,171.4" in a price list holds the
+        # reply's "1,171.40/kg" (live h17: marked as a code whose digits differ)
+        prices = {"type": "tool_call", "name": "plx.open", "is_error": False,
+                  "result": {"text": "MAJESTEM\r\n$1,171.4\r\nCAD\r\nPack Size"}}
+        self.assertEqual(ag.gate("Croda quoted CAD 1,171.40/kg.", [prices], [])[1], [])
+        self.assertEqual(ag.gate("Croda quoted CAD 1,175.40/kg.", [prices], [])[1],
+                         ["1,175.40"])
+        # a currency-lettered price ("CN$11.32/kg") and a lettered thousand ("3K units")
+        # in a mail are the amounts a reply restates
+        mail = {"type": "tool_call", "name": "plx.open", "is_error": False, "result": {
+            "text": "Pricing :\r\nCN$11.32/kg for 1-7 drums. We'd like the 3K units."}}
+        self.assertEqual(ag.gate("CAD 11.32/kg; bulk for 3,000 units.", [mail], [])[1], [])
+        self.assertEqual(ag.gate("CAD 11.42/kg; bulk for 4,000 units.", [mail], [])[1],
+                         ["11.42", "4,000"])
+        # still marked: a number a cell only names, a rate no result holds, a code's digits
+        self.assertEqual(ag.gate("We hold 17 lots and 7.50/unit.", [sheet], [])[1],
+                         ["17", "7.50"])
+        self.assertEqual(ag.gate("- **Total:** 23. Then more.", [OCT], ["q"])[1], ["23"])
+        # the gap of two percentages the reply holds, in points; another gap is marked
+        shares = "CAD margin 38.2% and USD 31.2%.\n- USD is about {} points below CAD."
+        margins = sql([["CAD", "38.2", "1"], ["USD", "31.2", "1"]])
+        margins["result"]["rows"] += [{"cells": ["other", str(1000 * i + 1000), "1"]}
+                                      for i in range(500)]   # past the pair pool
+        self.assertEqual(ag.gate(shares.format(7), [margins], [])[1], [])
+        self.assertEqual(ag.gate(shares.format(9), [margins], [])[1], ["9"])
+        # two held figures that are no percentages give no points ("7 points" of 38.2, 31.2)
+        plain = "CAD sold 38.2 tonnes and USD 31.2 tonnes.\n- USD is about 7 points below."
+        self.assertEqual(ag.gate(plain, [margins], [])[1], ["7"])
+
+    def test_a_figure_stated_for_the_wrong_period_is_marked_with_the_rows_value(self):
+        # the live walk: the table said October 5 orders, the sentence "23 orders in
+        # October" (November's count): marked, and one line says October's own orders
+        months = sql([["2026-10-01", "5", "222570.00"], ["2026-11-01", "23", "213214.34"]],
+                     columns=("month", "orders", "value"))
+        wrong = "Soapbox placed 23 orders worth 222,570.00 CAD in October."
+        self.assertEqual(ag.gate(wrong, [months], []), (
+            "Soapbox placed 23 (unverified) orders worth 222,570.00 CAD in October.\n\n"
+            "The records show 5 orders for October 2026.", ["23"]))
+        # the walk's own sentence names both months: judged clause by clause
+        both = ("Soapbox Soaps placed 23 orders worth 222,570.00 CAD in October and 23 "
+                "orders worth 213,214.34 CAD so far in November (1\u201321 Nov).")
+        self.assertEqual(ag.gate(both, [months], [])[1], ["23"])
+        # the review's cases: never a figure rewritten, the note only for the named measure
+        wide = sql([["2026-09-01", "40", "100", "7"], ["2026-10-01", "5", "222570", "9"],
+                    ["2026-11-01", "23", "213214", "30"]],
+                   columns=("month", "orders", "value", "customers"))
+        for said, note in (("October had 5 orders and 23 customers.",
+                            "The records show 9 customers for October 2026."),
+                           ("Up 23 orders in October.", "The records show 5 orders for October 2026."),
+                           ("We saw 30 visits in October.", None)):
+            out, marked = ag.gate(said, [wide], [])
+            self.assertTrue(out.startswith(said.replace(marked[0], marked[0] + " (unverified)", 1)), out)
+            self.assertEqual(out.split("\n\n")[1] if note else out.count("\n"), note or 0)
+        for fine in ("Soapbox placed 5 orders worth 222,570.00 CAD in October.",
+                     "October had 5 orders; November had 23.",
+                     "Orders went from 5 in October to 23 in November.",   # both named
+                     "Since Oct 23, 2026 we placed 5 orders.",            # a date, no period
+                     "| October | 23 | 213,214.34 |",                     # a table row
+                     "23 orders came in November.",
+                     # a bullet's own label and its comparison: two periods, not judged
+                     "October: 23 orders, up from 18 in September.",
+                     "- **October**: 23 orders (up from 18 in September)",
+                     "Orders ran 5\u201323 a month in October.",          # a range
+                     "Beta has gone 23 days, so they may be between orders.",  # the verb
+                     "23 orders have come in since mid-October.",         # a bound
+                     "Orders rose in October\u2013November to 23."):      # a span
+            self.assertEqual(ag.gate(fine, [months], [])[1], [], fine)
+        for wrong in ("In October 2026 Soapbox placed 23 orders.", "October had 23 orders.",
+                      "- **October**: 23 orders."):
+            self.assertEqual(ag.gate(wrong, [months], [])[1], ["23"], wrong)
+        # "may" the verb never names May; "in May" does
+        may = sql([["2026-05", "93", "1.00"], ["2026-06", "40", "2.00"]],
+                  columns=("month", "days", "value"))
+        self.assertEqual(ag.gate("They have gone 40 days, so they may be between orders.",
+                                 [may], [])[1], [])
+        self.assertEqual(ag.gate("They placed 40 orders in May.", [may], [])[1], ["40"])
+        # a result whose dates are first and last orders is no period table: never judged
+        spans = sql([["Acme", "2026-09-14", "2026-11-02", "16"],
+                     ["Beta", "2026-07-01", "2026-10-30", "190"]],
+                    columns=("customer", "first_order", "last_order", "open"))
+        self.assertEqual(ag.gate("Acme's 190 open orders in September.", [spans], [])[1], [])
+        # a figure another result also holds is stated from there, not the wrong period
+        other = sql([["Soapbox", "23"]], columns=("customer", "orders"))
+        self.assertEqual(ag.gate(wrong, [months, other], [])[1], [])
+
+    def test_ask_dates_read_in_the_apps_style_and_leave_counts_and_codes_alone(self):
+        from operator_api.ask_dates import dated
+        for said, shown in (("As of 2026-11-21, overdue", "As of 21 Nov 2026, overdue"),
+                            ("Last week (Mon Nov 9 \u2013 Sun Nov 15)", "Last week (Mon 9 Nov \u2013 Sun 15 Nov)"),
+                            ("Nov 16\u201320 for context", "16\u201320 Nov for context"),
+                            ("| 2026-10 | 5 |", "| Oct 2026 | 5 |"),
+                            ("Nov 9, 2026 was busy", "9 Nov 2026 was busy"),
+                            ("2026-11-01T02:00:00Z", "31 Oct 2026 22:00"),
+                            ("2026-11-01T00:00:00+00:00", "1 Nov 2026")):
+            self.assertEqual(dated(said), shown)
+        for kept in ("May 5 orders arrived", "Jan 12 % of sales", "INV-2026-11-21",
+                     "https://x/2026-11-21/a", "bad 2026-02-30", "at 9:30 AM", "Nov 2026 total",
+                     "may 5"):
+            self.assertEqual(dated(kept), kept)
+
+    def test_the_tag_follows_the_whole_figure_and_reply_arithmetic_is_held(self):
+        # the live walk: "9,355.66 (unverified) CAD" split the figure from its currency,
+        # and the change of two figures the reply states (each a result's subtotal) was
+        # marked though right
+        rows = [["2026-10-01", "open", "4", "210600.00"], ["2026-10-01", "closed", "1", "11970.00"],
+                ["2026-11-01", "open", "21", "200000.00"], ["2026-11-01", "closed", "2", "13214.34"]]
+        rows += [["2026-09-01", f"s{i}", str(i), str(1000 + i * 37)] for i in range(70)]
+        split = sql(rows, columns=("month", "status", "orders", "value"))
+        text = ("October came to 222,570.00 CAD and November to 213,214.34 CAD.\n"
+                "The value went down by 9,355.66 CAD.\n| Change | \u22129,355.66 |")
+        self.assertEqual(ag.gate(text, [split], []), (text, []))
+        wrong = "The value went down by 9,355.67 CAD, about 4%."
+        self.assertEqual(ag.gate(wrong, [split], [])[0],
+                         "The value went down by 9,355.67 CAD (unverified), about 4%.")
+        # an average the reply works out from two figures it states (amount over count)
+        avg = ("| Oct | 5 | 222,570.00 |\n| Nov | 23 | 213,214.34 |\n"
+               "Average order value fell: about 44,514 CAD in October, 9,270.19 in November.")
+        self.assertEqual(ag.gate(avg, [split], [])[1], [])
+        self.assertEqual(ag.gate(avg.replace("44,514", "44,914"), [split], [])[1], ["44,914"])
+        # an imprecise figure is never held by the reply's own sums ("5,900" of two others)
+        self.assertEqual(ag.gate("October came to 222,570.00 CAD, November 228,470 CAD.",
+                                 [split], [])[1], ["228,470"])
+        # two shares the reply holds add up: "almost 62%" of 37.4% and 24.4%
+        shares = sql([["A1", "347296.98", "37.4"], ["Amazon", "227061.16", "24.4"],
+                      ["Others", "354672.68", "38.2"]], columns=("customer", "overdue", "pct"))
+        other = sql([[f"c{i}", str(1000 + 7 * i)] for i in range(80)],
+                    columns=("customer", "n"))
+        said = ("| A1 | 37.4% |\n| Amazon | 24.4% |\n"
+                "A1 and Amazon make up almost 62% of what is overdue.")
+        self.assertEqual(ag.gate(said, [other, shares], [])[1], [])
+        self.assertEqual(ag.gate(said.replace("62%", "71%"), [other, shares], [])[1], ["71%"])
 
     def test_nothing_returned_binds_nothing(self):
         # a refused call, an error result and another tool's result bind no figure
@@ -357,7 +538,7 @@ class SessionTest(unittest.TestCase):
         self.assertIn("Person: Invoices last month?", seen["prompt"])
         self.assertIn("You: Which currency?", seen["prompt"])
         self.assertTrue(seen["prompt"].rstrip().endswith("Question: CAD please"))
-        self.assertEqual(ran.text, "It was 703,058.44 CAD and 9 (unverified) USD.")
+        self.assertEqual(ran.text, "It was 703,058.44 CAD and 9 USD (unverified).")
         self.assertEqual(ran.as_of, "2026-11-17T22:00:00+00:00")
         self.assertEqual(closed, [1])
         payload = sa.answer_payload(ran, "CAD please", "c1", 10, "a" * 24)
@@ -1113,7 +1294,7 @@ class FreightcomTest(unittest.TestCase):
                                         "[name withheld]"))
         # a figure only a withheld piece held is not the person's own: it is still marked
         self.assertEqual(ag.gate("It was 4,321.00 CAD.", [], sa.asked_words(
-            "CAD please", history, files))[0], "It was 4,321.00 (unverified) CAD.")
+            "CAD please", history, files))[0], "It was 4,321.00 CAD (unverified).")
 
     def test_a_question_naming_nothing_is_not_rewritten(self):
         question = "Area in m\u00b2 of the \ufb01le, \uff26ull width?"
@@ -1462,11 +1643,37 @@ class StreamTest(unittest.TestCase):
         texts = [t for k, t in shown if k == "text"]
         # narration is replaced (empty) once the next message starts
         self.assertIn("", texts)
-        self.assertEqual(texts[-1].strip(), "It was 703,058.44 CAD and 9 (unverified) USD.")
+        self.assertEqual(texts[-1].strip(), "It was 703,058.44 CAD and 9 USD (unverified).")
         # the raw unbound figure is never shown unmarked
         for text in texts:
-            self.assertNotRegex(text, r"\b9 USD")
-            self.assertNotRegex(text, r"\b5 views")
+            self.assertNotRegex(text, r"\b9 USD(?! \(unverified\))")
+            self.assertNotRegex(text, r"\b5 views(?! \(unverified\))")
+
+    def test_the_words_before_a_tool_call_stay_as_a_progress_note(self):
+        # the walk: first words came 15-31 s in, as narration between reads was replaced;
+        # the line before a call is kept as a step, only when every figure in it is held
+        import json
+        shown = []
+        stream = sa.Streamed(lambda kind, data: shown.append((kind, data["text"])), [])
+        call = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "mcp__plx__plx_sql", "input": {}}]}}
+        back = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": json.dumps(OCT["result"])}]}}
+        start = {"type": "stream_event", "event": {"type": "message_start"}}
+        tool = {"type": "stream_event", "event": {"type": "content_block_start",
+                                                  "content_block": {"type": "tool_use"}}}
+        for line, message in self._lines(
+                start, _delta("Checking Sage invoices for October."), tool, call, back,
+                start, _delta("CAD is 703,058.44 so far; now USD."), tool,
+                start, _delta("USD may be 812,000.00; checking."), tool,
+                start, _delta("It was 703,058.44 CAD.\n")):
+            stream.line(line, message)
+        notes = [t for k, t in shown if k == "note"]
+        self.assertEqual(notes, ["Checking Sage invoices for October.",
+                                 "CAD is 703,058.44 so far; now USD."])
+        self.assertEqual([t for k, t in shown if k == "text"][-1].strip(),
+                         "It was 703,058.44 CAD.")
 
     def test_a_figure_still_being_written_is_never_shown_half_way(self):
         import json

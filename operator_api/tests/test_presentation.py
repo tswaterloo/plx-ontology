@@ -337,3 +337,15 @@ class PeriodNoticeTest(unittest.TestCase):
         current = m.Freshness(as_of="2026-11-05T21:55:00Z", sources=[
             m.FreshnessSource(system="Email", as_of="2026-11-05T21:55:00Z")])
         self.assertIsNone(period_notice("What came in today?", current, now))
+
+
+class SourceWording(unittest.TestCase):
+    def test_a_sources_paren_plural_and_spaced_percent_read_plainly(self):
+        # the 11-21 walk: "1 open order(s) affected", "paid 23 % of cost"
+        self.assertEqual(p.shown_words("Lot BC-1 is Rejected; 1 open order(s) affected."),
+                         "Lot BC-1 is Rejected; 1 open order affected.")
+        self.assertEqual(p.shown_words("3 open order(s) affected; batch(s) held"),
+                         "3 open orders affected; batches held")
+        self.assertEqual(p.shown_words("BE FIT NOW paid 23 % of cost"), "BE FIT NOW paid 23% of cost")
+        for kept in ("23 %d", "a 100% match", "Order(S)", "see (s) below"):
+            self.assertEqual(p.shown_words(kept), kept)

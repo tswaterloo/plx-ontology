@@ -4789,6 +4789,12 @@
             "title": "Options",
             "type": "array"
           },
+          "pooled": {
+            "default": "",
+            "description": "On an item no record names a person for: the role whose list it is on until one of them takes it (Take); empty on your own items.",
+            "title": "Pooled",
+            "type": "string"
+          },
           "redo": {
             "default": false,
             "description": "On a reply the model wrote: it can be written again from one line of what you want to say (reply-from-line).",
@@ -8679,7 +8685,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -11207,7 +11215,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -18210,7 +18220,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -19440,7 +19452,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -19614,7 +19628,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -21648,7 +21664,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -22072,7 +22090,9 @@
               "Email",
               "Teams",
               "File",
-              "MC"
+              "MC",
+              "Calendar",
+              "Planner"
             ],
             "title": "System",
             "type": "string"
@@ -26474,6 +26494,79 @@
         ]
       }
     },
+    "/api/autopilot/items/{item_id}/take": {
+      "post": {
+        "description": "Take an item your role holds (no record names who handles it): yours alone from\nnow, to check and confirm like any of your items; nothing is sent or written.",
+        "operationId": "autopilot_take_api_autopilot_items__item_id__take_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotDrafts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Autopilot Take",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/mode": {
       "post": {
         "description": "Set one category of your own work to off, confirm (prepared in full, one click\nof yours performs it) or auto (performed by itself only where your replay score\nearned it: 409 otherwise). Always your own; recorded on the audit log.",
@@ -28282,7 +28375,7 @@
     },
     "/api/data-health": {
       "get": {
-        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named).",
+        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named). An Admin page: the owner and the\nTeam readers only, as its menu entry (403 for every other reader).",
         "operationId": "data_health_api_data_health_get",
         "responses": {
           "200": {
@@ -28304,6 +28397,16 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
           }
         },
         "summary": "Data Health",

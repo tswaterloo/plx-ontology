@@ -34,6 +34,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+import datetime as dt
+
 from operating.ontology_tools_identity import ToolError
 
 HERE = Path(__file__).resolve().parent
@@ -70,6 +72,11 @@ def reports() -> dict[str, dict[str, Any]]:
         return {}
     # only the company-wide ones: a people view's rows are cut per viewer by the Insights
     # Team rule after the door (``operator_api.insights``), which plx.sql does not apply
+    from operating.pg.business_views import BUSINESS_TZ
+
+    # a tile's day and week edges are the company's ({business_tz}), as Insights runs it
+    data = [{**r, "sql": r["sql"].replace("{business_tz}", BUSINESS_TZ)} if r.get("sql")
+            else r for r in data]
     return {r["id"]: r for r in data if r.get("id") not in measures() and r.get("sql")
             and r.get("scope") in ("everyone", "full") and not r.get("person")
             and not r.get("rollup")}
@@ -90,8 +97,10 @@ def listing(full: bool = False) -> dict[str, Any]:
                      "owner": r.get("group", "")} for r in reports().values()
                     if full or r.get("scope") == "everyone"],
         "use": ("plx.sql {\"measure\": \"<id>\"} runs one; a measure also takes \"by\": "
-                "\"<dimension>\" (or week/month), \"days\": N and \"compare\": true (this "
-                "period against the one before, each part's share of the change)."),
+                "\"<dimension>\" (or week/month), \"days\": N (the last N days) or \"period\": "
+                + PERIOD_FORMS + ", and \"compare\": true (this period against the one "
+                "before, each part's share of the change; with a period, \"against\": "
+                "another named period, else the same kind of period just before)."),
     }
 
 
@@ -126,21 +135,97 @@ def _days(value: Any, default: int) -> int:
     return value
 
 
+_MONTH = re.compile(r"^(\d{4})-(\d{2})$")
+_QUARTER = re.compile(r"^(\d{4})-Q([1-4])$")
+_YEAR = re.compile(r"^(\d{4})$")
+_RANGE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\.\.(\d{4}-\d{2}-\d{2}))?$")
+PERIOD_FORMS = ('"2026-09" (a month), "2026-Q3" (a quarter), "2026" (a year) or '
+                '"2026-08-04..2026-08-17" (days, both ends included)')
+
+
+def _months_on(day: dt.date, months: int) -> dt.date:
+    n = day.year * 12 + day.month - 1 + months
+    return dt.date(n // 12, n % 12 + 1, 1)
+
+
+def _period(text: Any, field: str) -> tuple[dt.date, dt.date, str, int]:
+    """(first day, the day after the last, kind, length in months or days) of a named
+    calendar period; anything else is refused, never guessed."""
+    if not isinstance(text, str) or len(text) > 32:
+        raise _bad(f"{field} is {PERIOD_FORMS}")
+    t = text.strip()
+    try:
+        if m := _MONTH.match(t):
+            start = dt.date(int(m.group(1)), int(m.group(2)), 1)
+            return start, _months_on(start, 1), "month", 1
+        if m := _QUARTER.match(t):
+            start = dt.date(int(m.group(1)), 3 * int(m.group(2)) - 2, 1)
+            return start, _months_on(start, 3), "month", 3
+        if m := _YEAR.match(t):
+            start = dt.date(int(m.group(1)), 1, 1)
+            return start, _months_on(start, 12), "month", 12
+        if m := _RANGE.match(t):
+            start = dt.date.fromisoformat(m.group(1))
+            last = dt.date.fromisoformat(m.group(2) or m.group(1))
+            if last < start:
+                raise _bad(f"{field} ends before it starts")
+            return start, last + dt.timedelta(days=1), "day", (last - start).days + 1
+    except ValueError:
+        raise _bad(f"{field} {t!r} is not a calendar date") from None
+    raise _bad(f"{field} is {PERIOD_FORMS}")
+
+
+def _before(period: tuple[dt.date, dt.date, str, int]) -> tuple[dt.date, dt.date, str, int]:
+    """The same kind and length of period just before (September -> August, Q3 -> Q2, a
+    run of 14 days -> the 14 days before it)."""
+    start, _end, kind, n = period
+    if kind == "month":
+        return _months_on(start, -n), start, kind, n
+    return start - dt.timedelta(days=n), start, kind, n
+
+
+ZONE = "America/New_York"
+
+
+def _edge(day: dt.date) -> str:
+    """A period's edge as an untyped literal: a date column reads it as that date, a
+    timestamp column as midnight in the company's time zone (a month of mail is the
+    month in Toronto, not in UTC)."""
+    return f"'{day.isoformat()} 00:00 {ZONE}'"
+
+
+def _said(p: tuple[dt.date, dt.date, str, int]) -> str:
+    last = p[1] - dt.timedelta(days=1)
+    return f"{p[0].isoformat()} to {last.isoformat()}"
+
+
 def statement(name: Any, by: Any = None, days: Any = None,
-              compare: Any = False) -> tuple[str, dict[str, Any]]:
+              compare: Any = False, period: Any = None,
+              against: Any = None) -> tuple[str, dict[str, Any]]:
     """(the SELECT for one catalogue entry, what to cite with it). Refuses (``ToolError``)
-    a name, dimension or period the entry does not hold."""
+    a name, dimension or period the entry does not hold.
+
+    ``period`` names a calendar period (``PERIOD_FORMS``) instead of the last ``days``;
+    with ``compare`` it is set against ``against`` (the same forms) or, without one, the
+    same kind of period just before it."""
     if not isinstance(name, str):
         raise _bad("measure names one entry of the catalogue")
     if not isinstance(compare, bool):
         raise _bad("compare is true or false")
+    if period is not None and days is not None:
+        raise _bad("send days (the last N days) or period (a named calendar period), not both")
+    if against is not None and period is None:
+        raise _bad("against goes with period: the period to set it against")
+    if against is not None:
+        compare = True
     m = measures().get(name)
     if m is None:
         r = reports().get(name)
         if r is None:
             raise _bad(f"no measure or report named {name[:64]!r}")
-        if by is not None or days is not None or compare:
-            raise _bad(f"{name} is a report: it runs as saved, with no by, days or compare")
+        if by is not None or days is not None or compare or period is not None:
+            raise _bad(f"{name} is a report: it runs as saved, with no by, days, period "
+                       "or compare")
         return r["sql"], {"id": name, "name": r["title"], "kind": "report",
                           "scope": r["scope"],
                           "definition": r.get("about", ""), "owner": r.get("group", ""),
@@ -150,13 +235,19 @@ def statement(name: Any, by: Any = None, days: Any = None,
                            or by not in m["dimensions"] + (list(TIME_DIMENSIONS) if dated else [])):
         raise _bad(f"{name} breaks down by {', '.join(m['dimensions'])}"
                    + (", week or month" if dated else "") + " only")
-    if not dated and (days is not None or compare):
+    if not dated and (days is not None or compare or period is not None):
         raise _bad(f"{name} is a snapshot as it stands now: it has no period to choose "
                    "or compare")
     trend = by in TIME_DIMENSIONS
     if trend and compare:
         raise _bad("a breakdown by week or month already compares periods")
     n = _days(days, TREND_DAYS if trend else int(m.get("days", 30)))
+    named = _period(period, "period") if period is not None else None
+    earlier = None
+    if named and compare:
+        earlier = _period(against, "against") if against is not None else _before(named)
+        if earlier[0] < named[1] and named[0] < earlier[1]:
+            raise _bad("period and against overlap: name two separate periods")
     value, per, view = m["value"], m["per"], m["view"]
     where = [f"({m['where']})"] if m["where"] else []
     keys = []
@@ -168,10 +259,19 @@ def statement(name: Any, by: Any = None, days: Any = None,
         keys.append(per)
     names = [k.split(" AS ")[-1] for k in keys]
     since = f"now() - interval '{n} days'"
+    d = m["date"]
     if compare:
-        where.append(f"{m['date']} >= now() - interval '{2 * n} days'")
         col = _VALUE.match(value).group(3)
-        cur, prev = f"{m['date']} >= {since}", f"{m['date']} < {since}"
+        if named:
+            def within(p):
+                return f"{d} >= {_edge(p[0])} AND {d} < {_edge(p[1])}"
+            cur, prev = within(named), within(earlier)
+            where.append(f"(({cur}) OR ({prev}))")
+            start = _edge(min(named[0], earlier[0]))
+        else:
+            where.append(f"{d} >= now() - interval '{2 * n} days'")
+            cur, prev = f"{d} >= {since}", f"{d} < {since}"
+            start = f"now() - interval '{2 * n} days'"
         # a cell the reader may not read (or never recorded) is NULL: counted, never
         # read as 0; a period with rows but no readable value has no change at all
         unread = (f"count(*) FILTER (WHERE {col} IS NULL)" if col != "*" else "0")
@@ -180,7 +280,6 @@ def statement(name: Any, by: Any = None, days: Any = None,
         # never 0, and there is no change to state
         # (an EXISTS before the start, not the view's min: through a reader's door the min
         # reads every row, ~20 s for mail; the first record is read only when it matters)
-        start = f"now() - interval '{2 * n} days'"
         covered = f"EXISTS (SELECT 1 FROM {view} WHERE {m['date']} <= {start})"
         first = f"(SELECT min({m['date']}) FROM {view} WHERE {m['date']} > {start})"
         inner = (f"SELECT {', '.join(keys + [''])}"
@@ -224,7 +323,12 @@ def statement(name: Any, by: Any = None, days: Any = None,
                    + ") u ORDER BY rank, abs(change) DESC NULLS FIRST")
         else:
             sql = f"WITH p AS ({inner}) {shown} FROM p"
-        period = (f"last {n} days against the {n} days before, by {m['date']}; "
+        said = (f"{period} ({_said(named)}) against "
+                + (f"{against} ({_said(earlier)})" if against is not None
+                   else f"the {earlier[3]} {earlier[2]}{'s' if earlier[3] > 1 else ''} just "
+                   f"before ({_said(earlier)})") + f", by {m['date']}"
+                if named else f"last {n} days against the {n} days before, by {m['date']}")
+        period = (f"{said}; "
                   + (f"the {TOP} largest changes, the rest one 'All others (n)' row"
                      + (f" per {per}" if per else "") + " (the rows add up to the whole "
                      "change); " if by else "") + f"a row whose "
@@ -232,9 +336,16 @@ def statement(name: Any, by: Any = None, days: Any = None,
                   f"starts) has that period not covered: previous and change are unknown (NULL), "
                   f"never 0, and the row is incomplete")
     else:
-        if dated:
+        if named:
+            where.append(f"{d} >= {_edge(named[0])} AND {d} < {_edge(named[1])}")
+        elif dated:
             where.append(f"{m['date']} >= {since}")
-        body = (f"SELECT {', '.join(keys + [''])}{value} AS value, count(*) AS row_count "
+        vcol = _VALUE.match(value).group(3)
+        # a value cell the reader may not read (or never recorded) is NULL: said as a count
+        # beside the value, never silently left out of it
+        unread_plain = f"count(*) FILTER (WHERE {vcol} IS NULL)" if vcol != "*" else "0"
+        body = (f"SELECT {', '.join(keys + [''])}{value} AS value, count(*) AS row_count, "
+                f"{unread_plain} AS unread_cells "
                 f"FROM {view}" + (f" WHERE {' AND '.join(where)}" if where else "")
                 + (f" GROUP BY {', '.join(names)}" if names else ""))
         if by and not trend:
@@ -244,8 +355,10 @@ def statement(name: Any, by: Any = None, days: Any = None,
                    f"LIMIT {TOP}")
         else:
             sql = body + (f" ORDER BY {', '.join(names)}" if names else "")
-        period = (f"last {n} days by {m['date']}" + (f", per {by}" if trend else "")
-                  if dated else "now (a snapshot)") + ("; the first and last are partial" if trend else "")
+        period = ((f"{period} ({_said(named)})" if named else f"last {n} days")
+                  + f" by {m['date']}" + (f", per {by}" if trend else "")
+                  if dated else "now (a snapshot)") + (
+                      "; the first and last are partial" if trend and not named else "")
     return sql, {"id": name, "name": m["name"], "kind": "measure",
                  "definition": m["definition"], "owner": m["owner"], "unit": m["unit"],
                  "source": view, "period": period, "by": by, "sql": sql}

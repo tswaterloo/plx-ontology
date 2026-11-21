@@ -47,9 +47,13 @@ class PageDoor(unittest.TestCase):
         cls.store = build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
-            for name in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
+                         "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / name).read_text())
         bv.build(cls.dsn, None, schema=tbv.SCHEMA, as_of=tbv.AS_OF)
+        from operating.pg import generic_records
+        # every record's own row (an alert's subject is its name there), as served
+        generic_records.build(cls.dsn, bv.SCHEMA, workers=1, uncovered=True, business=True)
         for attempt in range(5):   # the role is the cluster's: parallel modules may race
             try:
                 sql_views.install(cls.dsn)
@@ -221,6 +225,92 @@ class PageDoor(unittest.TestCase):
             self.assertIn("error", out)
             c.execute(f"DELETE FROM {bv.SCHEMA}.alerts WHERE handle = 'mail-1'")
         self.assertEqual(self.alerts(FULL, rules="no_such_rule")[0], set())
+
+    def test_an_excluded_persons_record_never_titles_an_alert(self):
+        """The people exclusion reaches the alert's title (``subject``, read from the
+        ``records`` view) in the same read: with the record's own object an excluded
+        person's, no reader, the owner included, gets its name anywhere in the alerts read,
+        and the name is back once the exclusion is lifted."""
+        import psycopg
+        from operating.pg import alerts as al
+        self.assertEqual(al.run(self.dsn, ["po_late"], schema=bv.SCHEMA, owners={})[0]["status"],
+                         "ok")
+        some = sorted(self.alerts(OPS)[0])[0]
+        own = self.truth("SELECT object_ids FROM {biz}.lineage WHERE view = "
+                         "'purchase_orders' AND handle = %s", (some,))[0][0]
+        self.assertTrue(own)
+        name = "Excluded Title PO 4242"
+
+        def said(actor):
+            return json.dumps(self.alerts(actor)[1]["reads"]["alerts_open"], default=str)
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            before = c.execute(f"SELECT record_id, label FROM {bv.SCHEMA}.records "
+                               "WHERE handle = %s", (some,)).fetchall()
+            self.assertTrue(before)
+            c.execute(f"UPDATE {bv.SCHEMA}.records SET label = %s WHERE handle = %s",
+                      (name, some))
+            try:
+                for actor in (FULL, OPS):
+                    self.assertIn(json.dumps(name), said(actor), actor)
+                c.execute("INSERT INTO ontology.people_excluded_objects (l1_handle, object_id, "
+                          "reason) VALUES ('t-excl-title', %s, 'participant')", (own[0],))
+                try:
+                    for actor in (FULL, OPS):
+                        self.assertNotIn(name, said(actor), actor)
+                        self.assertNotIn(some, said(actor), actor)
+                finally:
+                    c.execute("DELETE FROM ontology.people_excluded_objects "
+                              "WHERE l1_handle = 't-excl-title'")
+                self.assertIn(json.dumps(name), said(FULL))
+            finally:
+                for rid, label in before:
+                    c.execute(f"UPDATE {bv.SCHEMA}.records SET label = %s WHERE record_id = %s",
+                              (label, rid))
+
+    def test_an_alert_is_titled_by_its_records_own_name_as_the_reader_may_see_it(self):
+        """``subject``: the alerted record's ``records`` label (#26: rows said "Portal
+        customer"), read through the reader's own records view: a record row the reader may
+        not read leaves it empty (the row is then titled by its kind), never its name."""
+        import psycopg
+        from operating.pg import alerts as al
+        self.assertEqual(al.run(self.dsn, ["po_late"], schema=bv.SCHEMA, owners={})[0]["status"],
+                         "ok")
+        names = dict(self.truth("SELECT handle, label FROM {biz}.records WHERE type = "
+                                "'PurchaseOrder' ORDER BY record_id DESC"))
+
+        def subjects(actor):
+            got = self.alerts(actor)[1]["reads"]["alerts_open"]
+            cols = got["columns"]
+            return {r[cols.index("handle")]: r[cols.index("subject")] for r in got["rows"]}
+        full = subjects(FULL)
+        self.assertTrue(full)
+        for handle, subject in full.items():
+            self.assertEqual(subject, names[handle], handle)
+        ops = subjects(OPS)
+        self.assertTrue(ops)
+        some = sorted(ops)[0]
+        hidden_cls = self.truth("SELECT access_class FROM {biz}.purchase_orders WHERE "
+                                "handle = ANY(%s)", (sorted(set(full) - set(ops)),))[0][0]
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            before = c.execute(f"SELECT access_class FROM {bv.SCHEMA}.records WHERE handle = %s",
+                               (some,)).fetchall()
+            c.execute(f"UPDATE {bv.SCHEMA}.records SET access_class = %s WHERE handle = %s",
+                      (hidden_cls, some))
+            try:
+                ops = subjects(OPS)
+                self.assertIn(some, ops)             # the alert itself is still the reader's
+                self.assertIsNone(ops[some])         # its record's name is not
+                item = ps.alert_item({"rule": "po_late", "kind": "late", "handle": some,
+                                      "subject": ops[some], "why": "", "record_table":
+                                      "purchase_orders"},
+                                     {some: {"object_id": "PurchaseOrder:x",
+                                             "object_type": "PurchaseOrder"}}, 1, None)
+                self.assertEqual(item.subject_label, "Purchase order")
+                self.assertEqual(subjects(FULL)[some], names[some])
+            finally:
+                for (cls_,) in before[:1]:
+                    c.execute(f"UPDATE {bv.SCHEMA}.records SET access_class = %s "
+                              "WHERE handle = %s", (cls_, some))
 
     # ---- input: unknown or unexpected fails closed --------------------------------------
 
@@ -438,6 +528,14 @@ class PageDoor(unittest.TestCase):
         page = ps.order(screens, reader, "purchase_order", ps.resolve(
             screens, reader, "purchase_order", ids[0]))
         self.assertEqual(page.title, "PO-L01")
+        # the page names the systems the order comes from, never "the business records"
+        held = self.truth("SELECT source_systems FROM {biz}.purchase_orders WHERE handle = %s",
+                          (h,))[0][0]
+        if held:
+            self.assertNotIn("the business records", page.sources)
+            for system in str(held).split(","):
+                self.assertIn(ps._SYSTEMS.get(system.strip().lower(), system.strip().title()),
+                              page.sources)
         with mock.patch.dict("os.environ", {"PLX_PAGES_DOOR": "1"}):
             got = backend_serving.ServingMixin.biz_page(screens, reader, "purchase_order",
                                                         record=ids[0])
@@ -1172,3 +1270,28 @@ class AlertNextStep(unittest.TestCase):
         with mock.patch.dict(NEXT_ACTIONS, without, clear=True):
             self.assertEqual(self.item("lot_on_hold").next_action.text,
                              "Open the record and check it.")
+
+
+class HomeRefreshingTypes(unittest.TestCase):
+    """Live 11-21 walk: Home said "Refreshing" for good and the app asked for it again
+    every few seconds: needs_my_reply (a mail rule, which this page path never pages, so
+    its run is never "current" here) counted as a stale Home type. As in the briefing, only
+    a paged type whose rule is not current holds Home in refreshing."""
+
+    def test_a_mail_type_never_holds_home_in_refreshing(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        ok = [{"rule": r, "ok_at": now} for r in RULES]   # every rule just finished
+        rows = {"alerts_late_po_count": [{"late": 0}], "alerts_late_po_list": [],
+                "alert_runs": ok, "alerts_count": [], "alerts_open": []}
+        scope = SimpleNamespace(enabled=(), routing=None)
+        types = ["needs_my_reply", "lot_on_hold", "po_late"]
+        self.assertTrue(RULES["needs_my_reply"].comms)
+        with mock.patch.object(ps, "reader_scope", lambda *a: scope), \
+                mock.patch.object(ps, "alert_types", lambda *a, **k: types), \
+                mock.patch.object(ps, "routed", lambda *a: True), \
+                mock.patch.object(ps, "read", lambda *a, **k: (rows, {})):
+            stale = ps.alert_home(None, None, limit=5)[4]
+            self.assertEqual(stale, {})
+            # a paged type not current still does
+            rows["alert_runs"] = [r for r in ok if r["rule"] != "lot_on_hold"]
+            self.assertEqual(ps.alert_home(None, None, limit=5)[4], {"lot_on_hold": None})

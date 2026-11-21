@@ -26,12 +26,12 @@
    "name": "Gross margin",
    "owner": "Finance",
    "unit": "money",
-   "definition": "Line revenue less line cost on posted sales invoices, by invoice date. Lines without a cost are not counted. BC pilot invoices are left out (Sage is the system of record).",
+   "definition": "Line revenue less line cost on posted sales invoices, by invoice date. Lines without a cost are not counted, nor lines whose cost looks wrong (cost more than 5 times the line's revenue: see cost_looks_wrong). BC pilot invoices are left out (Sage is the system of record). A line whose margin the reader may not read counts in unread_cells.",
    "view": "sales_invoice_lines",
    "value": "sum(margin)",
    "per": "margin_currency",
    "date": "invoice_date",
-   "where": "margin IS NOT NULL AND NOT pilot",
+   "where": "margin_basis IS DISTINCT FROM 'cost_unknown' AND NOT pilot AND coalesce(NOT (revenue > 0 AND margin < -4 * revenue), true)",
    "dimensions": [
     "customer",
     "customer_chain",
@@ -369,6 +369,94 @@
     "from_side",
     "sender",
     "source"
+   ],
+   "days": 30
+  },
+  {
+   "id": "loss_below_cost",
+   "name": "Loss on lines sold below cost",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Line revenue less line cost on posted sales invoice lines sold for more than 0 whose cost is above their revenue (a negative margin), by invoice date: what selling below cost lost. Not counted: lines without a cost, credit or discount lines (revenue 0 or less), and lines whose cost looks wrong (more than 5 times the line's revenue: cost_looks_wrong lists them). BC pilot invoices are left out (Sage is the system of record). A line whose margin the reader may not read counts in unread_cells, never as no loss.",
+   "view": "sales_invoice_lines",
+   "value": "sum(margin)",
+   "per": "margin_currency",
+   "date": "invoice_date",
+   "where": "margin_basis IS DISTINCT FROM 'cost_unknown' AND NOT pilot AND coalesce(revenue > 0, true) AND (margin IS NULL OR (margin < 0 AND coalesce(margin >= -4 * revenue, true)))",
+   "dimensions": [
+    "customer",
+    "customer_chain",
+    "item_code",
+    "item_name"
+   ],
+   "days": 30
+  },
+  {
+   "id": "cost_looks_wrong",
+   "name": "Invoice lines whose cost looks wrong",
+   "owner": "Finance",
+   "unit": "count",
+   "definition": "Posted sales invoice lines sold for more than 0 whose cost is more than 5 times their revenue (a cost that far off the price is most likely a wrong unit cost in Sage, such as a case cost on an each line), by invoice date. They are left out of gross_margin and loss_below_cost and listed here to be checked. BC pilot invoices are left out.",
+   "view": "sales_invoice_lines",
+   "value": "count(*)",
+   "per": "",
+   "date": "invoice_date",
+   "where": "NOT pilot AND revenue > 0 AND margin < -4 * revenue",
+   "dimensions": [
+    "customer",
+    "item_code",
+    "item_name"
+   ],
+   "days": 365
+  },
+  {
+   "id": "customers_invoiced",
+   "name": "Customers invoiced",
+   "owner": "Sales",
+   "unit": "count",
+   "definition": "Distinct customers with a posted sales invoice, by invoice date (the customers who bought in a period). BC pilot invoices are left out (Sage is the system of record).",
+   "view": "sales_invoices",
+   "value": "count(DISTINCT customer)",
+   "per": "",
+   "date": "invoice_date",
+   "where": "NOT pilot",
+   "dimensions": [
+    "customer_chain",
+    "status"
+   ],
+   "days": 30
+  },
+  {
+   "id": "batches_rejected",
+   "name": "Batches rejected by QC",
+   "owner": "QA/QC",
+   "unit": "count",
+   "definition": "Realized (made) batches whose quality status is Rejected, by the date they were realized.",
+   "view": "batches",
+   "value": "count(DISTINCT batch_code)",
+   "per": "",
+   "date": "realized_date",
+   "where": "status = 'Realized' AND quality_status = 'Rejected'",
+   "dimensions": [
+    "product",
+    "item_code",
+    "production_line"
+   ],
+   "days": 30
+  },
+  {
+   "id": "mail_sent",
+   "name": "Mail sent by our people",
+   "owner": "Operations",
+   "unit": "count",
+   "definition": "Distinct non-bulk emails sent from a PLX staff address domain, by sent date (a message is counted once, however many mailboxes hold it); by sender for each person's mail workload.",
+   "view": "emails",
+   "value": "count(DISTINCT message_id)",
+   "per": "",
+   "date": "sent_at",
+   "where": "NOT is_bulk AND sender_domain IN (SELECT split_part(email, '@', 2) FROM staff WHERE email IS NOT NULL)",
+   "dimensions": [
+    "sender"
    ],
    "days": 30
   }

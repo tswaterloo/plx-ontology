@@ -107,6 +107,8 @@ const SHORT: Record<SourceSystem, string> = {
   Teams: "Teams",
   File: "File",
   MC: "Mission Control",
+  Calendar: "Calendar",
+  Planner: "Planner",
 };
 
 /**

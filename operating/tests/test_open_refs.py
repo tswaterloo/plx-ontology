@@ -99,8 +99,14 @@ class GateTest(unittest.TestCase):
         args = {"citation": open_refs.short(MAIL), "text_offset": 5}
         self.assertEqual(open_refs.expand(args, learnt), {"citation": MAIL, "text_offset": 5})
         # a full handle, a ref never shown, a handle whose ref was never shown: unchanged
-        for other in ({"citation": MAIL}, {"citation": open_refs.short(CHAT)}, {}, None):
+        for other in ({"citation": MAIL}, {"citation": open_refs.short(CHAT)}, {}, None,
+                      {"citations": [MAIL, open_refs.short(CHAT)]}):
             self.assertIs(open_refs.expand(other, learnt), other)
+        # several citations: each shown ref expands, the rest stay as sent (in order)
+        many = {"citations": [open_refs.short(CHAT), open_refs.short(MAIL), MAIL],
+                "near": "date"}
+        self.assertEqual(open_refs.expand(many, learnt),
+                         {"citations": [open_refs.short(CHAT), MAIL, MAIL], "near": "date"})
         quiet: dict = {}
         open_refs.learn(json.dumps(_sql(MAIL, CHAT)), quiet)
         self.assertEqual(quiet, {})
@@ -210,6 +216,16 @@ class HostTest(unittest.TestCase):
         got = host._call(s.OPEN_NAME, {"citation": open_refs.short(MAIL + "x")})
         self.assertEqual(got["error"]["code"], "not_found")
         self.assertEqual(calls, [], "an unshown ref reads nothing")
+        # several at once through the host: each shown ref opens its full handle, another
+        # session's ref opens nothing and says so in its own place
+        calls.clear()
+        got = host._call(s.OPEN_NAME, {"citations": [row["ref"], hit["ref"],
+                                                     open_refs.short(MAIL + "x")],
+                                       "near": "ships"})
+        self.assertEqual([c[1]["citation"] for c in calls], [MAIL, CHAT])
+        self.assertEqual([i["citation"] for i in got["opened"]],
+                         [MAIL, CHAT, open_refs.short(MAIL + "x")])
+        self.assertEqual(got["opened"][2]["error"]["code"], "not_found")
 
 
 if __name__ == "__main__":

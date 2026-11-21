@@ -299,6 +299,60 @@ class TrustAndDraft(unittest.TestCase):
         self.assertEqual((states["Email and Teams messages"], states["Business Central"],
                           states["Planner"]), ("on", "on", "off"))
 
+    def test_every_source_admin_checks_has_one_verdict_on_trust(self):
+        """#31: Trust listed 6 systems while Admin checks Sage, FileMaker, Calendar and
+        Planner too. Each carried system gets a row with Admin's own age and bound
+        (``ops_health.source_checks``): fresh is up to date, past the bound is behind, and a
+        fresh Sage is still behind while the Portal data it comes in with is."""
+        from datetime import timedelta
+        from operating import ops_health
+        now = datetime.now(timezone.utc)
+        iso = lambda d: (now - d).strftime("%Y-%m-%dT%H:%M:%SZ")
+        state = self.backend.state_dir
+        (state / "host" / "host.sqlite").unlink()
+        ledger(state / "host" / "host.sqlite",
+               [("portal", iso(timedelta(minutes=5))), ("meetings", iso(timedelta(minutes=5)))])
+        mirror = state / ops_health.MIRROR_PATH
+        mirror.parent.mkdir(parents=True)
+        conn = sqlite3.connect(mirror)
+        conn.execute("CREATE TABLE relation_state (relation TEXT, last_refresh_at TEXT)")
+        conn.executemany("INSERT INTO relation_state VALUES (?, ?)",
+                         [("sage.ar_customer", iso(timedelta(minutes=20))),
+                          ("public.app_customer", iso(timedelta(minutes=1)))])
+        conn.commit(); conn.close()
+        from integrations import capture_meetings
+        store = state / capture_meetings.STORE_DIR / capture_meetings.DB_FILE
+        store.parent.mkdir(parents=True)
+        conn = sqlite3.connect(store)
+        conn.execute("CREATE TABLE runs (kind TEXT, state TEXT, finished_at TEXT)")
+        conn.executemany("INSERT INTO runs VALUES (?, ?, ?)",
+                         [("calendar_event", "complete", iso(timedelta(minutes=30))),
+                          ("planner_tasks", "complete", iso(timedelta(days=3))),
+                          ("planner_tasks", "failed", iso(timedelta(minutes=2)))])
+        conn.commit(); conn.close()
+        self.backend.freshness = lambda *a, **k: m.Freshness(sources=[
+            m.FreshnessSource(system="Portal", as_of=iso(timedelta(minutes=5)),
+                              capture="complete")])
+        fresh = {r["system"]: r for r in self.client(OWNER).get("/api/trust").json()["freshness"]}
+        self.assertEqual(set(fresh), {"Portal", "Sage", "Calendar", "Planner"})
+        self.assertFalse(fresh["Sage"]["stale"])
+        self.assertAlmostEqual(fresh["Sage"]["lag_seconds"], 20 * 60, delta=90)
+        self.assertTrue(fresh["Sage"]["state_words"].startswith("Up to date"))
+        self.assertFalse(fresh["Calendar"]["stale"])
+        # Planner's last complete run is 3 days old (a newer failed one does not count)
+        self.assertTrue(fresh["Planner"]["stale"])
+        self.assertTrue(fresh["Planner"]["state_words"].startswith("Behind: not read for over"))
+        # FileMaker holds no relation in the mirror: no row (Admin has no check either)
+        self.assertNotIn("FileMaker", fresh)
+        # the carrier behind: Sage is behind with it, said so
+        self.backend.freshness = lambda *a, **k: m.Freshness(sources=[
+            m.FreshnessSource(system="Portal", as_of=iso(timedelta(days=2)), stale=True,
+                              capture="complete")])
+        fresh = {r["system"]: r for r in self.client(OWNER).get("/api/trust").json()["freshness"]}
+        self.assertTrue(fresh["Portal"]["stale"])
+        self.assertTrue(fresh["Sage"]["stale"])
+        self.assertIn("Portal data", fresh["Sage"]["state_words"])
+
     def test_served_time_is_what_the_delta_read_and_applied_per_source(self):
         """11-17: "In the served data" showed each source's stalest relation stamp while
         every capture was served within one delta cycle; review 2dedd09881: a cycle-wide

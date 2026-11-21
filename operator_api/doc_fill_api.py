@@ -121,7 +121,11 @@ def first_form(attachments: Iterable[Any]) -> Optional[tuple[str, bytes]]:
 
 
 def system_of(handle: str) -> str:
-    return _SYSTEM.get(str(handle).split("://", 1)[0].lower(), "File")
+    scheme = str(handle).split("://", 1)[0].lower()
+    if scheme == "api":   # the Portal's mirror of another system (serving.system_of)
+        from .serving import system_of as handle_system
+        return handle_system(str(handle))
+    return _SYSTEM.get(scheme, "File")
 
 
 class DocFillMixin:

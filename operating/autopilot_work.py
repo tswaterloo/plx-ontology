@@ -954,11 +954,36 @@ def _po_open(row: Mapping[str, Any]) -> bool:
         autopilot_records._v(row, "sage_is_complete").lower() not in ("true", "1", "yes")
 
 
+PO_ANSWERED = ("SupplierConfirmation.confirms", "Receipt.receives", "PurchaseOrder.bc_posted_as")
+
+
+def po_followup_done(st: Any, po: str) -> bool:
+    """Whether a late PO's follow-up has nothing left to chase: the PO (as the store holds
+    it now) is closed or received, or it or one of its twins in another system has a
+    supplier confirmation, a receipt or its posting (``po_due_events``' own tests)."""
+    row = autopilot_records._read(st, [po], PO_HEAD).get(po)
+    if row is None or not _po_open(row):
+        return True
+    links = ap._linked(st, po)
+    if {t for t, _o in links} & set(PO_ANSWERED):
+        return True
+    twins = [o for t, o in links if t == "PurchaseOrder.same_record_as"][:4]
+    return bool(twins and st.touching(twins, PO_ANSWERED))
+
+
 def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Sequence[str],
-                  directory: Mapping[str, str], addresses_of: Mapping[str, set[str]]
-                  ) -> list[dict[str, Any]]:
+                  directory: Mapping[str, str], addresses_of: Mapping[str, set[str]],
+                  cleared: Any = None) -> list[dict[str, Any]]:
     """``record.due`` events: open POs ordered between ``window_days`` and ``after_days``
-    ago with no supplier confirmation, receipt or supplier reply (one event per PO)."""
+    ago with no supplier confirmation, receipt or supplier reply (one event per PO).
+    ``cleared`` (the people exclusion's ``identity_clear``): mail of a person it does not
+    clear never names the buyer (the next person does; else the role's pooled item);
+    without it, no mail names one."""
+    def ok(oid: str | None) -> bool:
+        try:
+            return bool(oid) and cleared is not None and bool(cleared(oid))
+        except Exception:  # noqa: BLE001 - undecidable: never the buyer
+            return False
     spec = next((a for a in registry["autopilots"] if a.get("on") == "record.due"
                  and a.get("handler") == "po_followup" and a.get("enabled") is not False),
                 None)
@@ -999,26 +1024,31 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
                   for row in (st.touching(twins, None) if twins else [])]
         mails = [o for _t, o in links if o.startswith("Email:")]
         mrows = autopilot_records._read(st, mails[:40], ("sender", "to_addresses", "sent_at", "mailbox"))
-        replied, owner, to = False, None, None
-        for m, r in sorted(mrows.items(), key=lambda x: autopilot_records._v(x[1], "sent_at")):
+        # the buyer: whoever of ours most recently sent mail naming the PO (to the supplier
+        # first), else the person whose own mailbox most recently holds such mail
+        replied, owner, to, sent_by, held_by = False, None, None, None, None
+        for m, r in sorted(mrows.items(), key=lambda x: (autopilot_records._v(x[1], "sent_at"), x[0])):
             sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
+            box = autopilot_records._v(r, "mailbox").lower()
+            if box in addresses_of and ok(box):
+                held_by = box
             if not sender:
                 continue
             if autopilot_records._internal(sender, domains):
                 ext = [a for a in autopilot_records._addresses(autopilot_records._v(r, "to_addresses"))
                        if not autopilot_records._internal(a, domains)]
-                if ext and directory.get(sender):
+                if ext and ok(directory.get(sender)):
                     owner, to = directory[sender], ext[0]
+                elif ok(directory.get(sender)):
+                    sent_by = directory[sender]
             else:
                 replied = True
         if replied:
             continue
-        if owner is None:             # no outbound copy: the person whose mailbox holds it
-            boxes = sorted({autopilot_records._v(r, "mailbox").lower() for r in mrows.values()
-                            if autopilot_records._v(r, "mailbox").lower() in addresses_of})
-            owner = boxes[0] if len(boxes) == 1 else None
+        owner = owner or sent_by or held_by
         if owner is None:             # nor a mailbox: the buyer its purchaser code names, if one person
             owner = buyer_of(autopilot_records._v(row, "purchaser_code"))
+            owner = owner if ok(owner) else None
         seen_numbers.add(number.upper())
         out.append({"event_id": ap._digest("record.due", "po_followup", oid),
                     "event_type": "record.due", "object_id": oid,
@@ -1050,10 +1080,23 @@ def _po_lines(ctx: Any, po: str) -> list[dict[str, Any]]:
 
 
 def _supplier_contact(ctx: Any, po: str) -> str | None:
-    sups = ctx.linked(po, ("PurchaseOrder.ordered_from",))
+    """The supplier's address: on the PO's supplier, else on the supplier of the PO's
+    record in another system (``same_record_as``) or that supplier's own twin. Measured
+    on 11-06..11-21: 27 of 28 late POs with no address on their own supplier (all Portal
+    POs) had one on the twin's supplier."""
+    from .item_xref import SUPPLIER_TWIN, with_twins
+    sups = sorted(ctx.linked(po, ("PurchaseOrder.ordered_from",)))
     rows = ctx.read(sups, ("csr_email", "rep_email", "bc_email"))
+    if not any(autopilot_records._v(r, p) for r in rows.values()
+               for p in ("csr_email", "rep_email", "bc_email")):
+        twins = ctx.linked(po, ("PurchaseOrder.same_record_as",))[:4]
+        more = sorted(with_twins(ctx, set(sups) | set(ctx.linked_many(
+            twins, ("PurchaseOrder.ordered_from",))), SUPPLIER_TWIN) - set(sups))
+        rows = {**rows, **ctx.read(more[:8], ("csr_email", "rep_email", "bc_email"))}
+        sups = [*sups, *more[:8]]
     found = []
-    for r in rows.values():
+    # the PO's own supplier first, then its twins' in id order: one address, every run the same
+    for r in (rows[o] for o in sups if o in rows):
         for p in ("csr_email", "rep_email", "bc_email"):
             for a in autopilot_records._addresses(autopilot_records._v(r, p)):
                 if a not in found:

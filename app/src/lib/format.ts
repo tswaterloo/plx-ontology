@@ -246,6 +246,8 @@ export const SYSTEM_LABEL: Record<SourceSystem, string> = {
   Teams: "Teams",
   File: "File",
   MC: "Mission Control",
+  Calendar: "Calendar",
+  Planner: "Planner",
 };
 
 const TYPE_LABELS: Record<string, string> = {

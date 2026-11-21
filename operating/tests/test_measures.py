@@ -35,6 +35,10 @@ def _variants():
             yield m["id"], {"compare": True, "by": m["dimensions"][0], "days": 7}
             yield m["id"], {"by": "month"}
             yield m["id"], {"by": "week", "days": 56}
+            yield m["id"], {"period": "2026-09"}
+            yield m["id"], {"by": "month", "period": "2026-Q3"}
+            yield m["id"], {"compare": True, "by": m["dimensions"][0], "period": "2026-09"}
+            yield m["id"], {"period": "2026-08-04..2026-08-17", "against": "2025"}
     for r in measures.reports():
         yield r, {}
 
@@ -91,6 +95,15 @@ class Catalogue(unittest.TestCase):
                 self.assertRegex(measures.statement(name, **opts)[0],
                                  r"(?<!NOT )\bof_record\b(?! *=)", (name, opts))
 
+    def test_a_named_period_reads_its_edges_in_the_company_time_zone(self):
+        """A month of mail is the month in Toronto (live 11-21: Oct 2026 mail sent was 3
+        messages more read in UTC): each edge is an untyped literal at midnight
+        America/New_York, which a date column reads as that same date."""
+        sql, _ = measures.statement("mail_sent", None, None, True, "2026-10")
+        for edge in ("2026-09-01", "2026-10-01", "2026-11-01"):
+            self.assertIn(f"'{edge} 00:00 America/New_York'", sql)
+        self.assertNotIn("DATE '", sql)
+
     def test_what_the_catalogue_does_not_hold_is_refused(self):
         snapshot = next(m["id"] for m in measures.measures().values() if not m["date"])
         dated = next(m["id"] for m in measures.measures().values() if m["date"])
@@ -101,7 +114,16 @@ class Catalogue(unittest.TestCase):
                (dated, {"days": True}), (dated, {"compare": "yes"}),
                (dated, {"by": "month", "compare": True}), (snapshot, {"compare": True}),
                (snapshot, {"days": 30}), (snapshot, {"by": "month"}),
-               (report, {"by": "customer"}), (report, {"days": 7})]
+               (report, {"by": "customer"}), (report, {"days": 7}),
+               # a named period: only the calendar forms, never guessed or mixed with days
+               (dated, {"period": "September"}), (dated, {"period": "2026-13"}),
+               (dated, {"period": "2026-02-30"}), (dated, {"period": "2026-Q5"}),
+               (dated, {"period": "2026-09-30..2026-09-01"}), (dated, {"period": 202609}),
+               (dated, {"period": "2026-09'; DROP TABLE x; --"}),
+               (dated, {"period": "2026-09", "days": 30}), (dated, {"against": "2026-08"}),
+               (dated, {"period": "2026-09", "against": "2026-09-15..2026-10-15"}),
+               (dated, {"period": "2026-09", "by": "month", "compare": True}),
+               (snapshot, {"period": "2026-09"}), (report, {"period": "2026-09"})]
         for name, opts in bad:
             with self.assertRaises(ToolError, msg=(name, opts)) as caught:
                 measures.statement(name, **opts)
@@ -113,7 +135,9 @@ class Catalogue(unittest.TestCase):
                      {"measure": "revenue", "describe": True}, {"by": "customer"},
                      {"sql": "SELECT 1", "days": 7}, {"describe": True, "compare": True},
                      {"measure": "revenue", "unknown": 1}, {"measure": False},
-                     {"measure": "nope"}, {"measure": "revenue", "by": "nope"}):
+                     {"measure": "nope"}, {"measure": "revenue", "by": "nope"},
+                     {"sql": "SELECT 1", "period": "2026-09"}, {"against": "2026-08"},
+                     {"measure": "revenue", "period": "Sept 2026"}):
             out = tool.call("plx.sql", args, FULL)
             self.assertEqual(out["error"]["code"], "invalid_request", args)
         # the list is definitions only: it reads no store (here: none at all)
@@ -217,6 +241,139 @@ class MeasureDoor(unittest.TestCase):
         self.assertTrue(ops["partial"])
         for secret in tsql.tbv.SECRET:
             self.assertNotIn(secret, str(ops))
+
+    def test_a_named_period_compares_exactly_the_calendar_days_it_names(self):
+        """A "why did it change from <month> to <month>" reads the measure over the named
+        calendar periods (live 11-21: with days only, Ask wrote its own SQL and its
+        supplier parts counted draft POs the measure leaves out). Computed from the raw
+        rows: each part's current and previous are its invoices on the named days (first
+        and last day in, the day after out, pilot left out) and the parts add up to the
+        whole change; without against the period just before is used."""
+        out = self.call({"sql": "SELECT invoice_number, invoice_date, customer, pilot FROM "
+                                "sales_invoices WHERE pilot OR NOT pilot"}, FULL)
+        invoices = [dict(zip(out["columns"], r)) for r in self.rows(out)]
+        days = sorted({dt.date.fromisoformat(str(r["invoice_date"])[:10]) for r in invoices})
+        self.assertGreater(len(days), 2)
+        # a period starting and ending on fixture days, so both edges are read
+        a, b = days[len(days) // 2], days[-1]
+        later = f"{a.isoformat()}..{b.isoformat()}"
+        before = f"{days[0].isoformat()}..{(a - dt.timedelta(days=1)).isoformat()}"
+
+        def count(lo, hi):
+            per: dict = {}
+            for r in invoices:
+                d = dt.date.fromisoformat(str(r["invoice_date"])[:10])
+                if lo <= d <= hi and not _true(r["pilot"]):
+                    per.setdefault(r["customer"], set()).add(r["invoice_number"])
+            return {k: len(v) for k, v in per.items()}
+
+        now, then = count(a, b), count(days[0], a - dt.timedelta(days=1))
+        self.assertTrue(now and then)
+        got = self.call({"measure": "invoices_issued", "by": "customer", "period": later,
+                         "against": before}, FULL)
+        rows = [dict(zip(got["columns"], r)) for r in self.rows(got)]
+        self.assertIn(later, got["measure"]["period"])
+        for r in rows:
+            self.assertEqual(int(r["current"] or 0), now.get(r["customer"], 0), r)
+            self.assertEqual(int(r["previous"] or 0), then.get(r["customer"], 0), r)
+        whole = sum(now.values()) - sum(then.values())
+        self.assertEqual(sum(int(r["change"]) for r in rows), whole)
+        # the same kind of period just before: a month against the month before it
+        month = f"{b.year:04d}-{b.month:02d}"
+        first = dt.date(b.year, b.month, 1)
+        prev_last = first - dt.timedelta(days=1)
+        got = self.call({"measure": "invoices_issued", "period": month, "compare": True},
+                        FULL)
+        row = dict(zip(got["columns"], self.rows(got)[0]))
+        self.assertEqual(int(row["current"] or 0), sum(count(first, b).values()))
+        prior = sum(count(dt.date(prev_last.year, prev_last.month, 1), prev_last).values())
+        if _true(row["covered"]):
+            self.assertEqual(int(row["previous"] or 0), prior)
+        else:   # the fixture does not reach back that far: unknown, never 0
+            self.assertIsNone(row["previous"])
+        # a plain read of a named period counts only its days
+        got = self.call({"measure": "invoices_issued", "period": later}, FULL)
+        self.assertEqual(int(dict(zip(got["columns"], self.rows(got)[0]))["value"]),
+                         sum(now.values()))
+
+    def test_the_owner_measures_count_from_the_raw_rows(self):
+        """Computed from the raw rows over a period holding the whole fixture: the loss on
+        lines sold below cost sums the negative margins of lines sold for more than 0 (a
+        credit or discount line is no sale below cost), per currency, pilot left out;
+        customers invoiced counts each customer once."""
+        def raw(sql):
+            out = self.call({"sql": sql}, FULL)
+            return [dict(zip(out["columns"], r)) for r in self.rows(out)]
+
+        def per(name, key, **opts):
+            out = self.call({"measure": name, **opts}, FULL)
+            return {r.get(key, ""): r for r in (dict(zip(out["columns"], x))
+                                                 for x in self.rows(out))}
+
+        span = "2000-01-01..2099-12-31"
+        lines = raw("SELECT revenue, margin, margin_currency, pilot FROM sales_invoice_lines "
+                    "WHERE pilot OR NOT pilot")
+        want: dict = {}
+        for r in lines:
+            if (r["margin"] is not None and r["revenue"] is not None and not _true(r["pilot"])
+                    and Decimal(str(r["revenue"])) > 0 and Decimal(str(r["margin"])) < 0
+                    and Decimal(str(r["margin"])) >= -4 * Decimal(str(r["revenue"]))):
+                want[r["margin_currency"]] = want.get(r["margin_currency"], Decimal(0)) \
+                    + Decimal(str(r["margin"]))
+        self.assertTrue(want)
+        got = per("loss_below_cost", "margin_currency", period=span)
+        self.assertEqual({k: Decimal(str(v["value"])) for k, v in got.items()
+                          if v["value"] is not None}, want)
+        invoices = raw("SELECT customer, pilot FROM sales_invoices WHERE pilot OR NOT pilot")
+        kept = {r["customer"] for r in invoices if not _true(r["pilot"]) and r["customer"]}
+        self.assertTrue(kept)
+        self.assertEqual(int(per("customers_invoiced", "", period=span)[""]["value"]),
+                         len(kept))
+
+    def test_a_cost_that_looks_wrong_is_listed_not_counted_and_hidden_margins_are_said(self):
+        """A line costing more than 5 times its price (live: a case cost on an each line made
+        2024 USD gross margin -103.6M) is left out of gross margin and the below-cost loss
+        and counted by cost_looks_wrong; a reader who may not read a line's margin gets it
+        counted in unread_cells, never silently dropped (live 11-21 review)."""
+        span = "2000-01-01..2099-12-31"
+
+        def rows(name, actor, **opts):
+            out = self.call({"measure": name, "period": span, **opts}, actor)
+            return [dict(zip(out["columns"], r)) for r in self.rows(out)]
+
+        out = self.call({"sql": "SELECT handle FROM sales_invoice_lines WHERE NOT pilot AND "
+                                "revenue > 0 AND margin IS NOT NULL ORDER BY handle LIMIT 1"},
+                        FULL)
+        handle = self.rows(out)[0][0]
+        before = {r["margin_currency"]: r for r in rows("gross_margin", FULL)}
+        wrong = sum(int(r["value"]) for r in rows("cost_looks_wrong", FULL))
+        import psycopg
+        table = f"{tsql.bv.SERVED_SCHEMA}.sales_invoice_lines"
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            kept = conn.execute(f"SELECT margin FROM {table} WHERE handle = %s",
+                                (handle,)).fetchone()[0]
+            conn.execute(f"UPDATE {table} SET margin = -10 * revenue WHERE handle = %s",
+                         (handle,))
+        try:
+            after = {r["margin_currency"]: r for r in rows("gross_margin", FULL)}
+            self.assertEqual(sum(int(r["value"]) for r in rows("cost_looks_wrong", FULL)),
+                             wrong + 1)
+            moved = [c for c in after if after[c]["value"] != before[c]["value"]]
+            self.assertEqual(len(moved), 1)   # the line's own margin left the total
+            self.assertEqual(int(after[moved[0]]["row_count"]),
+                             int(before[moved[0]]["row_count"]) - 1)
+        finally:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                conn.execute(f"UPDATE {table} SET margin = %s WHERE handle = %s",
+                             (kept, handle))
+        # a reader whose margin is withheld: every line it cannot read is counted unread
+        seen = rows("gross_margin", OPS)
+        out = self.call({"sql": "SELECT count(*) FROM sales_invoice_lines WHERE NOT pilot "
+                                "AND margin IS NULL AND margin_basis IS DISTINCT FROM "
+                                "'cost_unknown'"}, OPS)
+        hidden = int(self.rows(out)[0][0])
+        self.assertGreater(hidden, 0)
+        self.assertEqual(sum(int(r["unread_cells"]) for r in seen), hidden)
 
     def test_a_measure_counts_only_the_rows_its_rule_keeps(self):
         """Computed from the raw rows: invoices_issued counts the invoices that are not BC

@@ -282,11 +282,12 @@ class SqlTool:
     def _call(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
         unknown = sorted(set(args) - set(INPUT_SCHEMA["properties"]))
         modes = [k for k in ("sql", "describe", "measure") if k in args]
-        loose = [k for k in ("by", "days", "compare") if k in args]
+        loose = [k for k in ("by", "days", "compare", "period", "against") if k in args]
         if unknown or len(modes) != 1 or (loose and modes != ["measure"]):
             raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"}, "
                             "{\"describe\": true | \"<view>\"} or {\"measure\": true | "
-                            "\"<id>\"} (by, days and compare go with measure only)")
+                            "\"<id>\"} (by, days, period, against and compare go with measure "
+                            "only)")
         if "measure" in args:
             return self._measure(args, actor)
         if "describe" in args:
@@ -313,7 +314,8 @@ class SqlTool:
         if args["measure"] is True:
             return measures.listing(full=self._full(actor))
         made, entry = measures.statement(args["measure"], args.get("by"), args.get("days"),
-                                         args.get("compare", False))
+                                         args.get("compare", False), args.get("period"),
+                                         args.get("against"))
         if entry.get("scope") == "full" and not self._full(actor):
             # Insights lists such a report only for the readers who see everyone
             raise ToolError("not_readable", f"{entry['id']} is for readers who see everyone")
@@ -824,6 +826,10 @@ class SqlTool:
         handle = args.get("citation")
         offset = int(args.get("text_offset") or 0)
         most = int(args.get("max_chars") or 20000)
+        near = args.get("near") or ()
+        if not (isinstance(near, (list, tuple)) and len(near) <= cs.MAX_TERMS
+                and all(isinstance(w, str) and 0 < len(w) <= 100 for w in near)):
+            raise ToolError("invalid_input", "near: up to 16 words")
 
         def work(pg: Any) -> Any:
             views = cs.present(pg, guarded, opening=True)
@@ -851,7 +857,7 @@ class SqlTool:
             raise ToolError("egress_withheld", "this item is never shown to the assistant")
         if moment is not None and read_ceiling.after(rows[0][4], moment):
             raise ToolError("not_found", "no such message")   # it had not happened yet
-        return cs.opened(rows, offset=offset, most=most)
+        return cs.opened(rows, offset=offset, most=most, near=tuple(near))
 
     def _comms_scoped(self, conn: Any, settings: Mapping[str, str], work: Any,
                       actor: Any) -> Any:

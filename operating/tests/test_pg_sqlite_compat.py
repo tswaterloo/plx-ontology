@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import os
 import sqlite3
 import unittest
 
@@ -425,6 +426,27 @@ class CompatTests(unittest.TestCase):
             return top
         whole, streamed = peak(pg.execute), peak(lambda q: pg.stream(q, batch=1000))
         self.assertLess(streamed * 10, whole, (streamed, whole))
+
+    def test_a_streamed_read_at_the_connection_limit_answers_whole(self):
+        """A stream's own login refused at the role's limit (two APIs side by side through
+        a deploy) or past the process's session budget (the warm-up's) runs the read on the
+        held connection with the same rows, instead of failing the page read."""
+        import psycopg
+        from unittest import mock
+        from operating.pg import pool as pg_pool
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sql = "SELECT object_id FROM object_versions ORDER BY object_id"
+        want = [r[0] for r in pg.execute(sql).fetchall()]
+        full = psycopg.OperationalError('FATAL:  too many connections for role "plx_api"')
+        with mock.patch("psycopg.connect", side_effect=full):
+            self.assertEqual([r[0] for r in pg.stream(sql, batch=1).fetchall()], want)
+        self.assertEqual(pg._streams_open, 0)
+        with mock.patch.dict(os.environ, {pg_pool.SESSIONS_MAX_ENV: "1"}):
+            pg_pool.session_budget().take(lambda: pg._conn, 0)   # the held one counted
+            self.assertEqual([r[0] for r in pg.stream(sql, batch=1).fetchall()], want)
+            self.assertLessEqual(pg_pool.session_budget().in_use(), 1)
 
     def test_interrupt_cancels_a_streamed_read_running_on_its_own_connection(self):
         """``interrupt`` (a detector's window spent: ``proactive_engine._Watchdog``,

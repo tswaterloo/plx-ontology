@@ -33,7 +33,7 @@ def customer(w: World, name: str = "SYNTH Customer") -> str:
 
 def order(w: World, who: str | None, *, placed: str, total: str | None = "1000",
           currency: str | None = "CAD", required: str | None = None, status: str = "Open",
-          binding: str = "portal.app_sales_order", audience: str = "api:portal",
+          binding: str = "portal.sage_oe_order_header", audience: str = "api:portal",
           price: str | None = None) -> str:
     values = {"status": status, "order_date": placed}
     if total is not None:

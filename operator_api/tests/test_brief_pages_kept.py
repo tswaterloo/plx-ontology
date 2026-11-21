@@ -200,3 +200,29 @@ class UpcomingKeptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeeklyLatePos(unittest.TestCase):
+    """The weekly review's late-PO section is Home's Late list; while that list's first read
+    is still going on (``reading``) the section says so, never "nothing late" or a 0."""
+
+    def review(self) -> m.Brief:
+        return m.Brief(kind="weekly", title="Weekly review", as_of="2026-11-21", basis="records",
+                       sections=[
+            m.BriefSection(key="summary", title="Summary", state="shown"),
+            m.BriefSection(key="late_pos", title="Late purchase orders (open now)",
+                           state="empty")])
+
+    def test_still_reading_is_said_and_a_read_list_is_listed(self):
+        reading = m.LateList(total=0, offset=0, items=[], reading=True)
+        got = {s.key: s for s in briefs.late_from_home(self.review(), lambda: reading).sections}
+        late = got["late_pos"]
+        self.assertEqual((late.state, late.rows, late.figures), ("unread", [], []))
+        self.assertIn("Still reading", late.note)
+        done = m.LateList(total=0, offset=0, items=[])
+        self.assertEqual({s.key: s for s in briefs.late_from_home(
+            self.review(), lambda: done).sections}["late_pos"].state, "empty")
+
+        def broken():
+            raise RuntimeError("down")
+        self.assertEqual(briefs.late_from_home(self.review(), broken), self.review())

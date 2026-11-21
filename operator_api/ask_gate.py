@@ -29,15 +29,19 @@ EVIDENCE_TOOLS = TOOLS + (INSIGHT,)
 
 _MONTHS = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
            r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_DAY = r"(?:3[01]|[12][0-9]|0?[1-9])"
 # Dates and times are the reply's framing (as of, periods), never a figure to bind.
 _DATES = re.compile(
     r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?\b"
     r"|\b[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}\b"
     rf"|\b{_MONTHS}\.?\s+[0-9]{{1,2}}(?:st|nd|rd|th)?(?:\s?[-\u2013]\s?[0-9]{{1,2}}"
     rf"(?:st|nd|rd|th)?)?"
-    # more days of that month in one list ("Nov 13, 17, 18 and 20"): its last after "and"
-    rf"(?:(?:,\s?[0-9]{{1,2}}(?:st|nd|rd|th)?)*,?\s+(?:and|&)\s+[0-9]{{1,2}}"
-    rf"(?:st|nd|rd|th)?(?![0-9%]|[.,][0-9]))?(?:,?\s+[0-9]{{4}})?\b"
+    # more days of that month in one list ("Nov 13, 17, 18 and 20"): days 1-31 only, its
+    # last after "and", never one a unit or noun follows ("Nov 3, 12 and 95 cases")
+    rf"(?:(?:,\s?{_DAY}(?:st|nd|rd|th)?)*,?\s+(?:and|&)\s+{_DAY}"
+    rf"(?:st|nd|rd|th)?(?![0-9%]|[.,][0-9])(?=\s*(?:$|[^\sA-Za-z0-9]|\s(?:by|in|on|at|to|"
+    rf"from|with|via|for|and|or|but|so|when|while|after|before)\b)))?"
+    rf"(?:,?\s+[0-9]{{4}})?\b"
     rf"|\b[0-9]{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTHS}\b(?:,?\s+[0-9]{{4}})?"
     rf"|\b{_MONTHS}\.?\s+[0-9]{{4}}\b"
     # a weekday and its day ("Mon 9", "Sun, 15"), a day range in a month ("9-15 Nov")
@@ -62,6 +66,8 @@ ROUNDED_SHARE = Decimal("0.05")
 _ROUNDED_BEFORE = re.compile(
     r"\b(?:about|around|roughly|approximately|approx\.?|nearly|almost|some|close\s+to|"
     r"just\s+(?:over|under))\s+(?:[A-Z]{3}\s?)?[$€£]?$|~\s?(?:[A-Z]{3}\s?)?[$€£]?$", re.I)
+# a gap of two percentages: "7 points", "1.5 percentage points", "3 pp"
+_POINTS_AFTER = re.compile(r"\s?(?:percentage[\s-]+points?|points?|pts|pp)\b", re.I)
 # a multiple: "2.2x", "2.2\u00d7", "3 times"
 _RATIO_AFTER = re.compile(r"\s?(?:[x\u00d7](?![A-Za-z0-9])|times\b)")
 # A plain whole number right after a qualifier is the reply's own criterion or window
@@ -120,9 +126,15 @@ _NOT_FIGURES = frozenset({"result", "cite", "citation", "handle", "as_of", "date
                           "received", "seconds", "sql", "views", "columns"})
 
 
+_MONTHS_HELD = "\u2063months:"   # _strings' line of a text's year-months (_read_text)
+
+
 def _strings(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield _DATES.sub(" ", value)
+        months = _YEAR_MONTH.findall(value)
+        if months:   # the year and month each date states (a reply's "2028-05"), whole
+            yield _MONTHS_HELD + " ".join(months)
     elif isinstance(value, Mapping):
         for key, item in value.items():
             if key not in _NOT_FIGURES:
@@ -194,6 +206,13 @@ class Evidence:
     # the numbers the session's own calls named (a threshold, a window, a bucket bound):
     # the reply's criteria, never a figure of the data
     criteria: list[Decimal] = field(default_factory=list)
+    # the small results' rows (at most CONTRA_ROWS): (the labels a reply may name the row
+    # by, its cells), to tell a figure stated for one row that another row holds
+    tables: list[tuple[int, list[tuple[tuple[int, int], list]]]] = field(default_factory=list)
+    # each result cell's value (to the cent): the results that hold it
+    cell_results: dict[Decimal, set[int]] = field(default_factory=dict)
+    # a period result's column names (by result), to name the measure a period's row holds
+    table_names: dict[int, list[str]] = field(default_factory=dict)
 
     def finish(self) -> "Evidence":
         self.values = sorted(set(self.values))[:MAX_POOL]
@@ -227,14 +246,34 @@ def _code(ev: Evidence, text: str) -> None:
     ev.digits.add(text.replace(",", "").lstrip("-"))
 
 
+_CELL_REF = re.compile(r"^[A-Z]{1,3}[0-9]{1,7}=")      # a sheet's cell ("D17=104250")
+# a rate's unit ("$6.25/unit", "58.37/kg"): units only, never a month or a code's part
+_UNITS = (r"(?:unit|units|ea|each|pc|pcs|piece|kg|g|lb|lbs|oz|l|L|ml|mL|gal|case|cs|cse|"
+          r"box|bottle|pail|drum|tote|pallet|hr|hour|day|week|month|year|yr)")
+_PER_UNIT = re.compile(rf"(?<=[0-9])/{_UNITS}$")
+_SCALED = re.compile(r"([0-9]{1,3}(?:\.[0-9]{1,2})?)([kKmM])")
+_CUR_PREFIX = re.compile(r"^(?:[A-Z]{1,3}\$|[$\u20ac\u00a3])(?=[0-9])")   # "CN$11.32", "US$5"
+_RATE_UNIT = re.compile(rf"/{_UNITS}(?![\w-])")   # a reply's rate: an amount per unit
+
+
 def _read_text(ev: Evidence, text: str) -> None:
-    """Numbers stated in ``text``: amounts unless they sit inside an identifier token."""
+    """Numbers stated in ``text``: amounts unless they sit inside an identifier token
+    (a sheet cell's reference and a rate's unit are no part of its number); the year and
+    month of every date it states ("2028-05": held whole, never its year's or month's
+    digits alone)."""
+    if text.startswith(_MONTHS_HELD):
+        ev.digits.update(text[len(_MONTHS_HELD):].split())
+        return
     for tok in _TOKEN.findall(text):
-        tok = tok.strip(".!?-")
+        tok = _CUR_PREFIX.sub("", _PER_UNIT.sub("", _CELL_REF.sub("", tok.strip(".!?-"))))
         if not tok or not any(ch.isdigit() for ch in tok):
             continue
         if _IDENT.search(tok):
             _code(ev, tok)
+            scaled = _SCALED.fullmatch(tok)
+            if scaled:   # "3K units", "1.5M": an amount too (a code is never this short)
+                ev.values.append(Decimal(scaled.group(1)) * (
+                    1000 if scaled.group(2) in "kK" else 1000000))
             continue
         for raw in _NUMBER_IN_TEXT.findall(tok):
             number = _decimal(raw)
@@ -277,6 +316,196 @@ def _label_words(cells: Iterable[Any]) -> frozenset:
         if len(first) >= 4:
             out.add(f" {first} ")
     return frozenset(out)
+
+
+CONTRA_ROWS = 25
+_DAY_OF_MONTH = re.compile(rf"\b{_MONTHS}\.?\s+[0-9]{{1,2}}\b|\b[0-9]{{1,2}}\s+{_MONTHS}\b", re.I)
+_MONTH_NAMES = ("january february march april may june july august september october "
+                "november december").split()
+# a period label cell: a month ("2026-10") or a month's first day ("2026-10-01")
+_PERIOD_CELL = re.compile(r"^([0-9]{4})-(0[1-9]|1[0-2])(?:-01(?:[T ]00:00(?::00)?\S*)?)?$")
+# a month word as the reply writes a period: capitalised, a full name or its short form
+_CAP_MONTH = (r"(?P<m>January|February|March|April|May|June|July|August|September|"
+              r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)"
+              r"(?![A-Za-z])\.?")
+_YEAR = r"(?P<y>(?:19|20)[0-9]{2})(?![0-9])"
+# a month acting as a period: with its year ("October 2026"), after in/for/during ("in
+# October"), or a sentence's or bullet's own label ("October: 23", "October had 23",
+# "October's 23"); "May" the verb, "since mid-September" and "fiscal October" name none
+_PERIOD_WITH_YEAR = re.compile(rf"{_CAP_MONTH}\s+{_YEAR}")
+_PERIOD_AFTER = re.compile(rf"\b(?:in|for|during)\s+(?:the\s+month\s+of\s+)?{_CAP_MONTH}")
+_PERIOD_LABEL = re.compile(rf"^[\s>#*_\-\u2022\d.)]*{_CAP_MONTH}(?P<tail>\**\s*:|'s\b|\s+[a-z])")
+# a span, a comparison or a bound: the figure is not stated for the one period named
+_SPAN_MONTH = _CAP_MONTH.replace("(?P<m>", "(?:")
+_PERIOD_SPAN = re.compile(
+    rf"{_SPAN_MONTH}(?:\s+(?:19|20)[0-9]{{2}})?\s*(?:[-\u2013\u2014/]|to|through|and|or)\s*{_SPAN_MONTH}")
+_RANGE_WORDS = re.compile(r"\b(?:since|until|till|thru|through|between|before|after|from|"
+                          r"vs|versus|compared|than|prior|previous|earlier|later|by)\b", re.I)
+_SENTENCE_CUT = re.compile(r"[.;!?](?:\s|$)")
+
+
+def _period_table(table: Sequence[Sequence[Any]]) -> Optional[list[tuple[tuple[int, int], list]]]:
+    """A small result whose rows are periods: one column where every row holds a distinct
+    month label ("2026-10" or "2026-10-01"). Its rows keyed by (year, month); any other
+    result (first or last dates, a party's rows) is no period table and never judged."""
+    if len(table) < 2 or len(table) > CONTRA_ROWS:
+        return None
+    width = min(len(row) for row in table)
+    for col in range(width):
+        keys = []
+        for row in table:
+            m = _PERIOD_CELL.match(row[col]) if isinstance(row[col], str) else None
+            if not m:
+                break
+            keys.append((int(m.group(1)), int(m.group(2))))
+        if len(keys) == len(table) and len(set(keys)) == len(keys):
+            return [(key, list(row)) for key, row in zip(keys, table)]
+    return None
+
+
+def _month_number(word: str) -> int:
+    return next(i for i, n in enumerate(_MONTH_NAMES, 1) if n.startswith(word.lower()[:3]))
+
+
+def _named_periods(sentence: str) -> Optional[set[tuple[Optional[int], int]]]:
+    """The periods a sentence states a figure for, as (year or None, month); None when it
+    spans, compares or bounds periods (no one period is the figure's)."""
+    if _PERIOD_SPAN.search(sentence) or _RANGE_WORDS.search(sentence):
+        return None
+    text = _DAY_OF_MONTH.sub(lambda m: " " * len(m.group(0)), sentence)  # a day: a date
+    out: set[tuple[Optional[int], int]] = set()
+    years = {m.start("m"): int(m.group("y")) for m in _PERIOD_WITH_YEAR.finditer(text)}
+    for start in years:
+        out.add((years[start], _month_number(text[start:start + 3])))
+    for m in _PERIOD_AFTER.finditer(text):
+        if m.start("m") not in years:
+            out.add((None, _month_number(m.group("m"))))
+    label = _PERIOD_LABEL.match(text)
+    if label and label.start("m") not in years and not (
+            label.group("m") == "May" and not label.group("tail").rstrip().endswith(":")):
+        out.add((None, _month_number(label.group("m"))))
+    return out
+
+
+# where a sentence naming two periods splits into clauses, each stating its own period's
+# figures ("23 orders in October and 5 in November", "October: 23 orders, 18 in September")
+_CLAUSE_CUT = re.compile(r"[,;]\s+|\s+(?:and|but|while|whereas)\s+")
+
+
+def contradicts(fig: "Figure", line: str, ev: Evidence, at: Optional[int] = None) -> bool:
+    """Whether ``fig``, stated on ``line`` for exactly one period of a small period result
+    ("23 orders in October"), is that result's value for another period while the named
+    period's row holds another value in that column and none equal to it (the October row
+    says 5, November's 23). A sentence naming two periods is judged clause by clause
+    ("23 orders in October and 23 in November"). Not judged: a sentence or clause naming
+    no period or two, a span or a comparison; a figure some other result holds; a table
+    row."""
+    return bool(_contradiction(fig, line, ev, at))
+
+
+def _contradiction(fig: "Figure", line: str, ev: Evidence,
+                   at: Optional[int] = None, notes: Optional[list] = None) -> Optional[set]:
+    """The named period's own values in the columns where another period's row holds
+    ``fig`` (``contradicts``); None or empty: no contradiction. ``notes``: gets the line
+    saying the named period's own value of the measure the figure names (``_period_note``)
+    when the word after the figure names exactly one of the result's columns."""
+    if fig.code or fig.percent or fig.ratio or line.lstrip().startswith("|"):
+        return None   # a table row lists rows side by side: judged as a sentence only
+    if fig.plain and abs(fig.value) < 10:
+        return None   # a small whole number (a rank, one of a few) names nothing alone
+    at = line.find(fig.text) if at is None else at
+    if at < 0:
+        return None
+    after = line[at + len(fig.text):at + len(fig.text) + 2]
+    before = line[max(0, at - 2):at]
+    if re.match(r"\s?[-\u2013\u2014]\s?[0-9]", after) or re.search(r"[-\u2013\u2014]\s?$", before):
+        return None   # a range's bound ("290-335"), not a period's figure
+    # the sentence holding the figure: its whole clause and bullet label, never cut at a
+    # colon or a dash ("October: 23 orders, up from 18 in September" names two periods)
+    cuts = [m.end() for m in _SENTENCE_CUT.finditer(line)]
+    begin = max([c for c in cuts if c <= at] or [0])
+    finish = min([c for c in cuts if c > at] or [len(line)])
+    periods = _named_periods(line[begin:finish])
+    if periods and len(periods) > 1:
+        # two periods in one sentence: the clause holding the figure, when it names one
+        sentence = line[begin:finish]
+        marks = [0] + [m.end() for m in _CLAUSE_CUT.finditer(sentence)] + [len(sentence) + 1]
+        rel = at - begin
+        lo = max(c for c in marks if c <= rel)
+        hi = min([m.start() for m in _CLAUSE_CUT.finditer(sentence) if m.start() >= rel]
+                 or [len(sentence)])
+        periods = _named_periods(sentence[lo:hi])
+    if not periods or len(periods) != 1:
+        return None
+    (year, month), = periods
+    target = abs(fig.value)
+
+    def near(cell: Any) -> bool:
+        return isinstance(cell, Decimal) and abs(abs(cell) - target) <= max(
+            fig.tol, Decimal("0.005"))
+    found: set = set()
+    for index, table in ev.tables:
+        named = [i for i, ((y, m), _) in enumerate(table)
+                 if m == month and (year is None or y == year)]
+        if len(named) != 1:
+            continue
+        own = table[named[0]][1]
+        if any(near(c) for c in own):
+            return None   # the named period's row holds it
+        for i, (_, cells) in enumerate(table):
+            if i == named[0]:
+                continue
+            for col, cell in enumerate(cells):
+                if near(cell) and col < len(own) and isinstance(own[col], Decimal):
+                    if ev.cell_results.get(_cell_key(target), {index}) - {index}:
+                        return None   # another result holds it: stated from there
+                    found.add(own[col])
+    if found and notes is not None:
+        said = _period_note(fig, line, at, ev, year, month)
+        if said and said not in notes:
+            notes.append(said)
+    return found
+
+
+_MEASURE_AFTER = re.compile(r"\s*(?:[A-Z]{3}\s+)?([A-Za-z][A-Za-z-]{2,})")
+
+
+def _singular(word: str) -> str:
+    word = word.lower()
+    return word[:-3] + "y" if word.endswith("ies") else word[:-1] if word.endswith("s") \
+        and not word.endswith("ss") else word
+
+
+def _period_note(fig: "Figure", line: str, at: int, ev: Evidence, year: Optional[int],
+                 month: int) -> Optional[str]:
+    """"The records show 5 orders for October 2026.": the named period's own value of the
+    measure the word after ``fig`` names ("23 orders" -> a column named orders or
+    order_count), when exactly one column of exactly one period result matches it and that
+    period's row holds a number there; else None (the figure is only marked)."""
+    m = _MEASURE_AFTER.match(line, at + len(fig.text))
+    if not m:
+        return None
+    word = _singular(m.group(1))
+    hits = []
+    for index, table in ev.tables:
+        names = ev.table_names.get(index) or []
+        cols = [i for i, n in enumerate(names)
+                if word in [_singular(w) for w in re.split(r"[^A-Za-z]+", n) if w]]
+        named = [cells for (y, mo), cells in table if mo == month and (year is None or y == year)]
+        if len(cols) == 1 and len(named) == 1 and cols[0] < len(named[0]) \
+                and isinstance(named[0][cols[0]], Decimal):
+            y = next(y for (y, mo), _ in table if mo == month and (year is None or y == year))
+            hits.append((named[0][cols[0]], y))
+    if len({h[0] for h in hits}) != 1:
+        return None
+    value, y = hits[0]
+    shown = f"{value:,}" if value == value.to_integral_value() and abs(value) >= 1000 \
+        else (f"{value:,.2f}" if value != value.to_integral_value() else f"{value}")
+    return f"The records show {shown} {m.group(1)} for {_MONTH_NAMES[month - 1].title()} {y}."
+
+
+def _cell_key(value: Decimal) -> Decimal:
+    return abs(value).quantize(Decimal("0.01")) if abs(value) < 10 ** 15 else abs(value)
 
 
 def _rollups(ev: Evidence, names: Sequence[Any], table: Sequence[Sequence[Any]]) -> None:
@@ -487,10 +716,15 @@ def evidence(events: Sequence[Mapping[str, Any]],
                     number = _cell_number(cell)
                     line.append(_label(cell) if number is None else number)
                     if number is not None:
+                        ev.cell_results.setdefault(_cell_key(number), set()).add(ev.results)
                         columns.setdefault(i, []).append(number)
                         if len(rows) <= 25:
                             ev.headline.append(number)
                 table.append(line)
+            periods = _period_table(table)
+            if periods:
+                ev.tables.append((ev.results, periods))
+                ev.table_names[ev.results] = [str(n) for n in names]
             for numbers in columns.values():
                 total = sum(numbers, Decimal(0))
                 ev.values += [total, total / len(numbers)]
@@ -533,7 +767,7 @@ def figures(text: str) -> list[Figure]:
             continue
         code = bool(_CODE_BEFORE.search(masked[max(0, m.start() - 14):m.start()])) or (
             masked[m.end():m.end() + 1] in ("-", "/") and masked[m.end() + 1:m.end() + 2]
-            .isalnum())
+            .isalnum() and not _RATE_UNIT.match(masked, m.end()))   # "1,171.40/kg": a rate
         if code:
             before = masked[max(0, m.start() - 24):m.start()]
             if before.rstrip().endswith("#") and re.fullmatch(r"[0-9]{1,2}", num):
@@ -548,6 +782,9 @@ def figures(text: str) -> list[Figure]:
                               Decimal(0), False, True,
                               expanded=whole or num.replace(",", "")))
             continue
+        if re.fullmatch(r"0[1-9]|1[0-2]", num) and re.search(
+                r"(?<![\w-])(?:19|20)[0-9]{2}-$", masked[max(0, m.start() - 6):m.start()]):
+            continue   # the month of a year and month ("2028-05"), judged with its year
         scale = (m.group("scale") or "").strip().lower()
         pct = bool(m.group("pct"))
         plain = "," not in num and "." not in num and not m.group("cur")
@@ -598,8 +835,8 @@ def bound(fig: Figure, ev: Evidence, line: str = "",
     if fig.code:
         return any(key in ev.digits for key in (
             fig.expanded, fig.text.replace(",", "").lstrip("-\u2212$")) if key)
-    if re.fullmatch(r"[0-9]+[A-Za-z]", fig.text) and fig.text in ev.digits:
-        return True   # a code ending in a letter a result holds ("lot 26127B"), no scale
+    if re.fullmatch(r"[0-9]+[kKmMbB]", fig.text) and fig.text in ev.digits:
+        return True   # a scale-lettered token a result holds as a code ("lot 26127B")
     pool = ev.values
     for target in {fig.value, abs(fig.value)}:
         if _near(pool, target, fig.tol):
@@ -734,15 +971,44 @@ def _row_number(text: str, at: int) -> int:
     return 0
 
 
+_CLAUSE_NUMBER = re.compile(r"(?m)^[ \t>*#-]*([0-9]{1,3}(?:\.[0-9]{1,3})?)(?:[.)]\s|\s(?=[A-Z]))")
+_YEAR_MONTH = re.compile(r"(?<![\w-])((?:19|20)[0-9]{2}-(?:0[1-9]|1[0-2]))(?![0-9])")
+
+
+def _year_month(fig: "Figure", text: str) -> Optional[str]:
+    """The year and month a figure starts ("2028" of "2028-05"), else None."""
+    m = _YEAR_MONTH.match(text, fig.start)
+    return m.group(1) if m and fig.end == fig.start + 4 else None
+
+
+_CLAUSE_WORD = re.compile(r"\b(?:clause|section|article|paragraph|schedule|\u00a7)\s?$", re.I)
+
+
+def _clause_quoted(fig: "Figure", text: str) -> bool:
+    """Whether a figure is written as a clause number: "2. Payment terms", "2) ...",
+    "Clause 2", "section 2"."""
+    return bool(re.match(r"[.)]\s+[A-Z]", text[fig.end:fig.end + 4])
+                or _CLAUSE_WORD.search(text[max(0, fig.start - 12):fig.start]))
+
+
 def gate(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] = (),
-         ev: Optional[Evidence] = None) -> tuple[str, list[str]]:
+         ev: Optional[Evidence] = None, files: Sequence[str] = ()) -> tuple[str, list[str]]:
     """The reply with every unbound figure marked "(unverified)" right after it, and the
     figures marked. A figure the person's own words state (the question, the earlier
     turns) needs no binding. Never removes a word. ``ev``: ``evidence(events)`` when the
-    caller already holds it."""
+    caller already holds it; ``files``: the text of the person's attached files (their
+    clause numbers and year-months quoted back need no binding)."""
     ev = evidence(events) if ev is None else ev
     own = {f.value for said in asked for f in figures(said)} | {
         abs(f.value) for said in asked for f in figures(said)}
+    # the clause and list numbers that start a line of the person's own files ("2.",
+    # "2)", "2.3 "): a reply quoting "2. Payment terms" of the attached contract quotes
+    # it; never a date's parts, nor a number of the question or an earlier answer
+    clauses = {n for said in files for raw in _CLAUSE_NUMBER.findall(str(said or ""))
+               if (n := _decimal(raw)) is not None}
+    # a year and month ("best before 2028-05") is held only when a result or one of the
+    # person's files states that year and month
+    months = {m for said in files for m in _YEAR_MONTH.findall(str(said or ""))}
     items = list_counts(text)
     marked: list[str] = []
     out, last = [], 0
@@ -754,12 +1020,31 @@ def gate(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] = 
         end = text.find("\n", fig.end)
         end = len(text) if end < 0 else end
         beside = [f for f in stated if start <= f.start < end and f is not fig]
-        if fig.value in own or abs(fig.value) in own or bound(fig, ev, text[start:end],
-                                                               beside):
+        month = _year_month(fig, text)
+        if month is not None:
+            if month in months or month in ev.digits:
+                ok.add(fig.start)
+                held.append(fig)
+            continue
+        if fig.value in own or abs(fig.value) in own or (
+                fig.plain and fig.value in clauses and _clause_quoted(fig, text)) or bound(
+                fig, ev, text[start:end], beside):
             ok.add(fig.start)
             held.append(fig)
         elif fig.ratio and _near(ev.values, abs(fig.value), fig.tol):
             held.append(fig)
+    # a figure bound only as another row's value of the row its line names: wrong row
+    contra: set[int] = set()
+    notes: list[str] = []   # the named period's own value, said once under the reply
+    for fig in stated:
+        if fig.start in ok and fig.value not in own and abs(fig.value) not in own:
+            start = text.rfind("\n", 0, fig.start) + 1
+            end = text.find("\n", fig.end)
+            line = text[start:len(text) if end < 0 else end]
+            if _contradiction(fig, line, ev, fig.start - start, notes):
+                ok.discard(fig.start)
+                held = [f for f in held if f.start != fig.start]
+                contra.add(fig.start)
     # a product of two held figures is held in turn (a line's amount, then its share of
     # tax): every step needs two figures held before it, so nothing holds without a result
     grown = True
@@ -773,17 +1058,85 @@ def gate(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] = 
     for fig in stated:
         if fig.start in ok:
             continue
+        if fig.start in contra:
+            tag = _tag_at(text, fig)
+            out.append(text[last:tag])
+            out.append(UNVERIFIED)
+            last = tag
+            marked.append(fig.text)
+            continue
+        if _of_reply(fig, held):
+            continue   # the sum or difference of two figures the reply holds
         if (fig.percent or fig.ratio or "." in fig.text) and _compares_line(fig, stated, text):
             continue   # the change, share or quotient of two figures its own line states
+        if _POINTS_AFTER.match(text, fig.end) and any(
+                abs(abs(a.value - b.value) - abs(fig.value)) <= max(fig.tol, a.tol + b.tol)
+                for a in held for b in held if a.percent and b.percent and a is not b):
+            continue   # "7 points below": the gap of two held percentages the reply states
         line = text[text.rfind("\n", 0, fig.start) + 1:fig.start]
         if fig.plain and fig.value in items and not _LIST_ITEM.match(line):
             continue   # how many items the reply itself lists (never a cell of a list)
         if fig.plain and re.fullmatch(r"\s*\|\s*", line) \
                 and fig.value == _row_number(text, fig.start):
             continue   # a table's own row number ("| 7 | K18 Inc |"), never a figure
-        out.append(text[last:fig.end])
+        tag = _tag_at(text, fig)
+        out.append(text[last:tag])
         out.append(UNVERIFIED)
-        last = fig.end
+        last = tag
         marked.append(fig.text)
     out.append(text[last:])
+    if notes:   # a wrong period's figure stays marked; the period's own value beside it
+        out.append("\n\n" + " ".join(notes))
     return "".join(out), marked
+
+
+# what a figure's tag goes after: its currency code or unit ("9,355.66 CAD", "12 kg"),
+# never between the number and what it counts
+_UNIT_AFTER = re.compile(r"(?:\s?(?:[A-Z]{3}|kg|g|lb|lbs|L|ml|EA|ea|pcs)(?![A-Za-z0-9]))?")
+
+
+def _tag_at(text: str, fig: Figure) -> int:
+    """Where the "(unverified)" tag of ``fig`` goes: after the figure and its currency
+    code or unit, so the tag never splits a figure from its unit."""
+    m = _UNIT_AFTER.match(text, fig.end)
+    return m.end() if m else fig.end
+
+
+# a reply's own arithmetic binds only figures precise enough that a chance match is
+# unlikely, and only over a reply of at most this many held figures
+REPLY_ARITH_MOST = 60
+
+
+def _of_reply(fig: Figure, held: Sequence[Figure]) -> bool:
+    """Whether ``fig`` is the sum or difference of two figures the reply states that a
+    result binds (``held``): a change row's "-9,355.66" under 222,570.00 and 213,214.34,
+    "almost 62%" of 37.4% and 24.4%. Amounts only when precise (to the cent or 5
+    significant digits); percentages only of two held percentages."""
+    if fig.code or fig.ratio or not fig.value:
+        return False
+    pool = [f for f in held if not f.code and not f.ratio and f.percent == fig.percent
+            and f is not fig]
+    if len(pool) > REPLY_ARITH_MOST or len(pool) < 2:
+        return False
+    if not fig.percent and fig.tol * 2 > abs(fig.value) * Decimal("0.0001"):
+        return False
+    want = abs(fig.value)
+    for i, a in enumerate(pool):
+        for b in pool[i + 1:]:
+            x, y = abs(a.value), abs(b.value)
+            if abs(x - want) <= fig.tol or abs(y - want) <= fig.tol:
+                continue   # one of them is the figure itself: no computation
+            slack = fig.tol + a.tol + b.tol
+            if abs(x + y - want) <= slack or abs(abs(x - y) - want) <= slack:
+                if fig.percent and x + y > 100 + slack:
+                    continue
+                return True
+            if not fig.percent and min(x, y) >= 1:
+                # an average the reply works out: an amount over a count it states
+                # ("about 44,514 an order" of 222,570.00 over 5 orders)
+                (big, bt), (small, st) = sorted(((x, a), (y, b)), key=lambda p: -p[0])
+                # a count (a plain whole number) is exact; a rounded divisor widens it
+                spread = bt.tol / small + (Decimal(0) if st.plain else big * st.tol / (small * small))
+                if abs(big / small - want) <= fig.tol + spread:
+                    return True
+    return False

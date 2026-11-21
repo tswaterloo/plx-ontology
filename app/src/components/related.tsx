@@ -241,6 +241,8 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
   const unread = [memory, templates, log, runs].some((r) => r?.failed || r?.refused);
   const empty = !loading && !unread && !memoryRows.length && !templateRows.length && !log?.rows.length && !runs?.rows.length;
   const failed = [memory?.failed && "memory", templates?.failed && "templates", log?.failed && "work log", runs?.failed && "run log"].filter(Boolean) as string[];
+  // nothing to say (every read refused to this session, none failed): no empty heading
+  if (!loading && !empty && !failed.length && !memoryRows.length && !templateRows.length && !log?.rows.length && !runs?.rows.length) return null;
   const memoryHref = first ? `/memory?record=${encodeURIComponent(first)}` : "/memory";
   const logHref = first ? `/work-log?record=${encodeURIComponent(first)}` : "/work-log";
   return (

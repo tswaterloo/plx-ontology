@@ -525,7 +525,8 @@ function Today() {
         </div>
       )}
 
-      {!supplier && <HomeAsk className="px-5 pt-3" />}      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
+      {!supplier && <HomeAsk className="shrink-0 px-5 pt-3" />}
+      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="shrink-0 px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing && !briefingError && !error ? { "data-pending": "" } : {})}>
         <SignedInFirstWeek />
         {/* prepared work is its own chip (Confirm): listed under All and Confirm, never under

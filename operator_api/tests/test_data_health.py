@@ -56,11 +56,31 @@ class DataHealthPage(unittest.TestCase):
         self.assertEqual(dh.page(StubView({"status": "not_configured"})).status,
                          "not_configured")
 
-    def test_the_route_lists_every_registered_check(self):
-        body = signed_in().get("/api/data-health")
-        self.assertEqual(body.status_code, 200, body.text)
-        listed = [c["type"] for c in body.json()["checks"]]
-        self.assertEqual(listed, [t["type"] for t in dh.registered()])
+    def test_the_route_lists_every_registered_check_to_admin_readers_only(self):
+        """An Admin page (decided 11-21): the owner and the Team readers read it, like its
+        menu entry; every other reader is refused (403), not served the checks."""
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from operator_api.app import create_app
+        from operator_api.auth import DevAuth, fixture_identity
+        from operator_api.mock import MockBackend
+
+        def client(owner: bool) -> TestClient:
+            backend = MockBackend()
+            backend._is_owner = lambda who: owner
+            c = TestClient(create_app(backend, DevAuth(fixture_identity("plx", ["staff:demo"]),
+                                                       mode="mock"), secure_cookie=False),
+                           base_url="http://testserver")
+            self.assertEqual(c.post("/api/auth/dev-login", json={}).status_code, 200)
+            return c
+        with mock.patch.dict("os.environ", {"PLX_TEAM_VIEW_READERS": ""}):
+            body = client(owner=True).get("/api/data-health")
+            self.assertEqual(body.status_code, 200, body.text)
+            listed = [c["type"] for c in body.json()["checks"]]
+            self.assertEqual(listed, [t["type"] for t in dh.registered()])
+            refused = client(owner=False).get("/api/data-health")
+            self.assertEqual(refused.status_code, 403, refused.text)
+            self.assertNotIn("checks", refused.json())
 
 
 class WorkspaceRead(unittest.TestCase):
@@ -93,6 +113,48 @@ class WorkspaceRead(unittest.TestCase):
         with mock.patch("operating.proactive_engine.hidden_counts") as hc2:
             self.assertEqual(ObjectWorkspace.data_health_gaps(v2, ["x"])["hidden"], {})
         hc2.assert_not_called()
+
+
+from operating.tests import test_proactive_engine as _pe  # noqa: E402
+
+
+class RealStore(unittest.TestCase):
+    """The workspace read over a real projection store and gap inbox: the reader who may
+    read the order sees the "no customer PO" finding; a reader without that audience sees
+    no item, no id and no summary of it, only that one is hidden."""
+
+    # the engine fixture's store, inbox and run, without collecting its own tests here
+    setUp = _pe.Engine.setUp
+    run_engine = _pe.Engine.run_engine
+
+    def workspace(self, audiences):
+        from operator_api.workspace import object_workspace as objects
+        tools = {name: {"handler": lambda arguments, actor: {}}
+                 for name in ("plx.find", "plx.object", "plx.around", "plx.timeline")}
+        return objects.ObjectWorkspace(tools, _pe.OPS, access=_pe.FakeAccess(audiences,
+                                                                              _pe.ALL_MARKINGS),
+                                       store_status=_pe.FakeStatus(self.store))
+
+    def test_a_restricted_reader_is_told_how_many_are_hidden_never_which(self):
+        from unittest import mock
+        world, ids = _pe.seeded()
+        self.run_engine(world, ids["coverage"])
+        order = ids["no_customer_po"]
+        kind = "order_without_customer_po"
+        with mock.patch.object(dh, "registered", return_value=[
+                {"type": kind, "label": "Order without a customer PO", "default": "on"}]):
+            full = dh.page(self.workspace({"api:a", "api:b"}))
+            cut = dh.page(self.workspace({"api:b"}))
+        [seen] = full.checks
+        self.assertEqual((full.status, seen.count, seen.hidden), ("read", 1, 0))
+        self.assertEqual(seen.items[0].object_id, order)
+        [hidden] = cut.checks
+        self.assertEqual((cut.status, hidden.count, hidden.items, hidden.hidden),
+                         ("read", 0, [], 1))
+        text = cut.model_dump_json()
+        self.assertNotIn(order, text)
+        self.assertNotIn(seen.items[0].summary, text)
+        self.assertNotIn(seen.items[0].id, text)
 
 
 if __name__ == "__main__":

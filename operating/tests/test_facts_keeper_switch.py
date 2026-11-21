@@ -89,3 +89,32 @@ class KeeperSwitchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkingDayCap(unittest.TestCase):
+    """The delta follower's whole facts read in the working day (PLX_FACTS_DAY_WORKERS, its
+    unit): at most that many readers and 1 parallel worker per statement, 7 AM-7 PM ET; at
+    night, or for any process that does not set it, as before (11-21 10:15 AM ET: 8 readers
+    x 4 parallel workers held the box at load 43-54 for 10+ minutes)."""
+
+    def test_the_day_cap_holds_in_working_hours_only_and_only_when_set(self):
+        import datetime as dt
+        at = lambda h: dt.datetime(2026, 11, 21, 5, 0, tzinfo=dt.timezone.utc) + dt.timedelta(hours=h)  # h ET
+        env = {"PLX_FACTS_DAY_WORKERS": "3", "PLX_FACTS_WORKERS": "8"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(t._facts_day_cap(at(10)), (3, 1))
+            self.assertEqual(t._facts_day_cap(at(7)), (3, 1))
+            self.assertIsNone(t._facts_day_cap(at(19)))
+            self.assertIsNone(t._facts_day_cap(at(2)))
+            with mock.patch.object(t, "_facts_day_cap", return_value=(3, 1)):
+                self.assertEqual(t._facts_workers(), 3)
+            with mock.patch.object(t, "_facts_day_cap", return_value=None):
+                self.assertEqual(t._facts_workers(), 8)
+        with mock.patch.dict(os.environ, {"PLX_FACTS_WORKERS": "8"}):
+            os.environ.pop("PLX_FACTS_DAY_WORKERS", None)
+            self.assertIsNone(t._facts_day_cap(at(10)))   # not set: no cap (hosts, the API)
+            self.assertEqual(t._facts_workers(), 8)
+        with mock.patch.dict(os.environ, {**env, "PLX_FACTS_DAY_HOURS": "8-17",
+                                          "PLX_FACTS_DAY_PARALLEL": "0"}):
+            self.assertEqual(t._facts_day_cap(at(8)), (3, 0))
+            self.assertIsNone(t._facts_day_cap(at(17)))

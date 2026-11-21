@@ -442,7 +442,9 @@ def measure(st: Any, people: Any, *, role: str, replay_dir: Path, since: datetim
         return {"schema": SCHEMA, "role": role, "status": "no_members"}
     queue = ap.Queue(root / ap.QUEUE_FILE)
     try:
-        items = queue.items(sorted(who), ("open", "done", "settled", "dismissed"))
+        pools = {autopilot_queue.POOL_PREFIX + r: sorted(set(m) & who)
+                 for r, m in saved["roles"].items() if set(m) & who}
+        items = queue.items(sorted(who | set(pools)), ("open", "done", "settled", "dismissed"))
         events = {}
         ev_ids = sorted({i["event_id"] for i in items})
         for start in range(0, len(ev_ids), 500):
@@ -479,7 +481,7 @@ def measure(st: Any, people: Any, *, role: str, replay_dir: Path, since: datetim
     actions = [a for a in actions if id(a) not in dropped]
     anticipated: set[int] = set()
     rp.score(items, events, actions, horizon=config["horizon"], data_end=last, since=since,
-             until=until, anticipated=anticipated)
+             until=until, anticipated=anticipated, pools=pools)
     by_system: Counter = Counter()
     for a in actions:
         if _in(ap._instant(a.get("at")), since, until):

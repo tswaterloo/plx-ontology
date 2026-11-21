@@ -53,7 +53,11 @@ def expand(arguments: Any, refs: Mapping[str, str]) -> Any:
     """``plx.open``'s arguments with a learnt ref as its full handle (else as they are)."""
     if isinstance(arguments, Mapping) and is_ref(arguments.get("citation")) \
             and arguments["citation"] in refs:
-        return {**arguments, "citation": refs[arguments["citation"]]}
+        arguments = {**arguments, "citation": refs[arguments["citation"]]}
+    many = arguments.get("citations") if isinstance(arguments, Mapping) else None
+    if isinstance(many, list) and any(is_ref(c) and c in refs for c in many):
+        arguments = {**arguments, "citations": [refs[c] if is_ref(c) and c in refs else c
+                                                for c in many]}
     return arguments
 
 

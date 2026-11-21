@@ -2016,6 +2016,16 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
 
     def _remember_read(self, key: tuple, reader: Reader, read: Callable[[], Any],
                        inputs_of: Optional[Callable[[], Any]] = None) -> None:
+        with self._lock:
+            # the screen's own inputs, for every session (``_read_and_keep``): a read again
+            # off the request is kept under the inputs its requests are judged by. Without
+            # them a service session's refreshed Home was never current, so every request
+            # served it stale and the app asked again every 6 s (live 11-21, page measure)
+            fns = self.__dict__.setdefault("_screen_inputs_fns", {})
+            fns.pop(key, None)
+            while len(fns) >= LAST_GOOD_KEPT:
+                fns.pop(next(iter(fns)))
+            fns[key] = inputs_of
         if getattr(reader.session, "canary", False):
             # a service session (the canary, the page measure) is nobody's: the reader's
             # own session stays the one their screens are read again for

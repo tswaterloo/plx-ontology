@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AnswerCharts, withoutChartBlocks, type AskChart } from "./answer-chart";
 import { chartNotes } from "./charts/chart-view";
-import { PALETTE, conversion, dateLabel, extent, human, ramp, short, ticks, waterfall } from "./charts/scale";
+import { PALETTE, axisLabels, conversion, dateLabel, extent, human, ramp, short, ticks, waterfall } from "./charts/scale";
 import { panelGrid, wrap } from "./charts/export";
 
 const bars: AskChart = {
@@ -110,7 +110,7 @@ describe("answer charts", () => {
 
   it("a chart with one series says what its axes are", () => {
     render(<AnswerCharts charts={[{ ...bars, series: [{ name: "invoiced_cad", values: [1, 2] }] }]} />);
-    expect(screen.getByTestId("axis-caption").textContent).toBe("Invoiced cad by currency");
+    expect(screen.getByTestId("axis-caption").textContent).toBe("Invoiced CAD");
     cleanup();
     render(<AnswerCharts charts={[{ ...people, title: "S", kind: "scatter", xs: [1, 2, 3], series: [{ name: "invoiced_cad", values: [5, 6, 7] }] }]} />);
     expect(screen.getByTestId("axis-caption").textContent).toBe("Each dot is one row: person along the bottom, invoiced cad up the side. Point at a dot for its name.");
@@ -203,8 +203,14 @@ describe("answer charts", () => {
     expect(dateLabel("2026-11-16", now)).toBe("16 Nov");
     expect(dateLabel("2025-12-29", now)).toBe("29 Dec 2025");
     expect(dateLabel("2026-11", now)).toBe("Nov 2026");
+    // months drawn as their first days read as the months; a midnight timestamp is its day
+    expect(axisLabels(["2026-10-01", "2026-11-01T00:00:00+00:00"], now)).toEqual(["Oct 2026", "Nov 2026"]);
+    expect(axisLabels(["2026-11-16", "2026-11-23T00:00:00"], now)).toEqual(["16 Nov", "23 Nov"]);
     for (const other of ["Croda", "2026-13-01", "2026-W46", "50023359"]) expect(dateLabel(other, now)).toBe(other);
     expect(human("busiest_share_pct")).toBe("Busiest share %");
+    // plain axis words: "Amount", never "Amt by aging bucket"
+    expect(human("amt")).toBe("Amount");
+    expect(human("qty_cad")).toBe("Quantity CAD");
   });
 
   it("draws nothing without charts", () => {

@@ -751,14 +751,35 @@ def assemble(rows: Sequence[Sequence[Any]]) -> str:
     return "\n\n".join(fields[f] for f in sorted(fields))
 
 
-def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int) -> dict[str, Any]:
+def near_offset(text: str, words: Sequence[str], most: int) -> int | None:
+    """Where a window of ``most`` characters starts to show the first place ``text``
+    holds one of ``words`` (a word start, case folded): a quarter of the window before it,
+    at a line or word break; None when it holds none of them."""
+    found = [m.start() for w in words if w
+             for m in [re.search(r"(?<!\w)" + re.escape(w), text, re.IGNORECASE)] if m]
+    if not found:
+        return None
+    at = max(0, min(found) - most // 4)
+    if at:
+        brk = max(text.rfind("\n", 0, at + 1), text.rfind(" ", 0, at + 1))
+        at = brk + 1 if brk >= 0 and min(found) - brk <= most // 2 else at
+    return at
+
+
+def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int,
+           near: Sequence[str] = ()) -> dict[str, Any]:
     """One opened item: its text (every field, joined as ``assemble`` joins them) from
-    ``offset``, at most ``most`` characters, and what of each field that window served
+    ``offset`` (with ``near`` words and no offset: from just before the first of them
+    the text holds, ``near_offset``; ``near_found`` says whether one was), at most
+    ``most`` characters, and what of each field that window served
     (``fields_served``: the field, its text digest, the field's own span served, the
     field's length and where that part starts in ``text``), so the session keeps it as
     it keeps a ``plx.read`` (``mcp_server_evidence._served_texts``)."""
     view, handle, subject, sender, at, to, cc = rows[0][:7]
     text = assemble([(r[7], r[8], r[9]) for r in rows])
+    found = near_offset(text, near, most) if near and not offset else None
+    if found is not None:
+        offset = found
     window = text[offset:offset + most]
     out: dict[str, Any] = {"citation": handle, "kind": VIEWS[view][0],
                            "title": _text(subject, handle, 500) if subject else None,
@@ -770,6 +791,8 @@ def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int) -> dict[str
         out["to"] = list(to)
     if cc:
         out["cc"] = list(cc)
+    if near and not out.get("near_found"):
+        out["near_found"] = found is not None
     if offset + most < len(text):
         out["text"]["truncated"] = True
         out["next_offset"] = offset + most

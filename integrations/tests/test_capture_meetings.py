@@ -212,7 +212,11 @@ class FakeGraph:
             events = self.events.get(box["id"], {})
             if rest == "/calendarView":
                 fields = query["$select"].split(",")
-                listed = [{k: e[k] for k in fields if k in e} for e in events.values()]
+                # calendarView lists the events overlapping its window (ISO UTC text sorts
+                # as time); the window's nextLink keeps it
+                low, high = (query[k].rstrip("Z") for k in ("startDateTime", "endDateTime"))
+                listed = [{k: e[k] for k in fields if k in e} for e in events.values()
+                          if e["end"]["dateTime"][:19] > low and e["start"]["dateTime"][:19] < high]
                 return self._page(parts, sorted(listed, key=lambda e: e["id"]))
             got = re.fullmatch(r"/events/([^/]+)", rest)
             if got and got[1] in events:
@@ -638,6 +642,67 @@ class MeetingsCaptureTest(unittest.TestCase):
                            clock=lambda: later + timedelta(days=2)).run(
             scope(window_days_back=30))
         self.assertNotIn("TrOrphan", {p[2] for p in self.rows(cm.TRANSCRIPT_KIND)})
+
+    def test_events_the_window_moved_past_stay_current_and_deleted_ones_go_missing(
+            self) -> None:
+        # 11-21: a rolling 365-day window marked every event that aged out of it missing,
+        # so served meeting history lost a day per day. An event held wholly outside the
+        # window stays current as held; one the source dropped inside the window still goes
+        # missing; one naming a person excluded since then is not kept; a window widened
+        # again lists the source's own events back (their missing mark cleared).
+        old = NOW - timedelta(days=400)
+        self.graph.event(A_ID, "EvOld", organizer=(A, "Ann Test"), attendees=[(B, "Bob Test")],
+                         start=old, subject="Last year's supplier review")
+        self.graph.event(A_ID, "EvOldX", organizer=(A, "Ann Test"),
+                         attendees=[(X, "Xena Test")], start=old, subject="excluded later")
+        self.graph.event(A_ID, "EvOldGone", organizer=(A, "Ann Test"),
+                         attendees=[(B, "Bob Test")], start=old, subject="aged out, gone")
+        self.graph.event(A_ID, "EvMoved", organizer=(A, "Ann Test"),
+                         attendees=[(B, "Bob Test")], start=old, subject="moved to this week")
+        future = NOW + timedelta(days=60)
+        self.graph.event(A_ID, "EvAhead", organizer=(A, "Ann Test"),
+                         attendees=[(B, "Bob Test")], start=future, subject="next quarter")
+
+        def held():
+            return {p[1]: v["row"] for p, v in self.rows(cm.EVENT_KIND).items()}
+        # read first while Xena was not excluded yet
+        narrower = {**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": "0e0e0e0e-0000-4000-8000-00000000ffff"}
+        report, _ = self.capture(env=narrower, parts=["calendar"], window_days_back=500)
+        self.assertEqual({m["status"] for m in report["mailboxes"]}, {"complete"}, report)
+        self.assertTrue({"EvOld", "EvOldX", "EvOldGone", "EvAhead", "EvA1"} <= set(held()))
+        first = held()
+        # now: the default window (365 back) no longer lists the 400-day-old events, a
+        # 30-day look-ahead no longer lists EvAhead, EvA1 and EvOldGone are deleted at the
+        # source, and Xena (EvOldX's guest) is excluded
+        del self.graph.events[A_ID]["EvA1"], self.graph.events[A_ID]["EvOldGone"]
+        # EvMoved is rescheduled into the window: the source's new version wins over the
+        # held old one
+        self.graph.event(A_ID, "EvMoved", organizer=(A, "Ann Test"),
+                         attendees=[(B, "Bob Test")], start=NOW - timedelta(days=3),
+                         subject="moved to this week", change="ck2")
+        reads = len(self.graph.gets(r"/events/")) + 1
+        report, _ = self.capture(parts=["calendar"], window_days_ahead=30)
+        self.assertEqual({m["status"] for m in report["mailboxes"]}, {"complete"}, report)
+        now = held()
+        self.assertEqual(now["EvOld"], first["EvOld"])            # kept, content as held
+        self.assertEqual(now["EvAhead"], first["EvAhead"])
+        self.assertEqual(now["EvMoved"]["change_key"], "ck2")
+        self.assertNotIn("EvA1", now)                               # deleted in the window
+        self.assertNotIn("EvOldX", now)               # names a person excluded now: not kept
+        self.assertIn("EvOldGone", now)    # outside the window nothing tells it is gone
+        self.assertEqual(report["counts"]["events_kept_outside_window"], 3)
+        self.assertEqual(len(self.graph.gets(r"/events/")), reads)   # no content re-read
+        # a kept event carries its mailbox's current ACL (as one the window lists does)
+        metas = {p[1]: v["meta"] for p, v in self.rows(cm.EVENT_KIND).items()}
+        self.assertEqual(metas["EvOld"]["source_acl"], metas["EvA4"]["source_acl"])
+        # the window widened again lists the source's own old events: EvOldGone is gone
+        # there, so it goes missing now; EvOldX (listed again while Xena is not excluded)
+        # comes back from missing as the source holds it
+        report, _ = self.capture(env=narrower, parts=["calendar"], window_days_back=500)
+        self.assertEqual({m["status"] for m in report["mailboxes"]}, {"complete"}, report)
+        self.assertNotIn("EvOldGone", held())
+        self.assertEqual(held()["EvOldX"], first["EvOldX"])
+        self.assertEqual(held()["EvOld"], first["EvOld"])
 
     def test_hr_organizer_is_withheld(self) -> None:
         self.graph.event(A_ID, "EvHr", organizer=("payroll@example-plx.com", "Payroll"),

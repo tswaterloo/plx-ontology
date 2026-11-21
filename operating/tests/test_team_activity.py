@@ -214,3 +214,24 @@ class SystemDays(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Departments(unittest.TestCase):
+    def test_the_directory_department_is_the_one_team_shows(self):
+        # the walk: Team said "Purchasing" (a derived role) where Insights said the
+        # directory's department; the org chart capture is the one source for both
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d)
+            (state / "mail-capture").mkdir()
+            conn = sqlite3.connect(state / "mail-capture" / "capture.db")
+            conn.execute("CREATE TABLE mailbox_directory (mailbox_id TEXT, department TEXT)")
+            conn.executemany("INSERT INTO mailbox_directory VALUES (?, ?)",
+                             [("AAA", "Old"), ("bbb", "Sales")])
+            conn.commit()
+            conn.close()
+            org = {"aaa": {"department": "Purchasing"}, "ccc": {"department": " "},
+                   "ddd": {"department": None}}
+            with mock.patch("integrations.capture_org.current_rows", return_value=org):
+                self.assertEqual(ta.departments(state), {"aaa": "Purchasing", "bbb": "Sales"})
+            # no store at all: nothing guessed
+            self.assertEqual(ta.departments(state / "none"), {})

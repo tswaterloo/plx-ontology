@@ -910,6 +910,28 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(out.stdout.split(), ["pruned", "r3"])
 
 
+    def test_prune_with_no_readable_process_prunes_nothing(self) -> None:
+        # the API's processes run as their own user: a caller who can read none of the
+        # working directories must not take "no process" for "no release in use"
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = Path(tmp, "rel")
+            for i, rid in enumerate(f"r{i}" for i in range(5)):
+                Path(rel, rid).mkdir(parents=True)
+                Path(rel, rid, "RELEASE.json").write_text("{}")
+                os.utime(Path(rel, rid), (1_000_000 + i, 1_000_000 + i))
+            os.symlink("r4", rel / "current")
+            os.symlink("r3", rel / "previous")
+            proc = Path(tmp, "proc")
+            Path(proc, "10").mkdir(parents=True)   # its cwd unreadable to the caller
+            env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": str(rel),
+                   "PLX_STATE": f"{tmp}/state", "PLX_RELEASE_OWNER": "", "PLX_PROC": str(proc)}
+            out = subprocess.run([str(DEPLOY / "release" / "plx-release"), "prune", "--keep", "1"],
+                                 env=env, text=True, capture_output=True)
+            self.assertNotEqual(out.returncode, 0)
+            self.assertIn("nothing pruned", out.stderr)
+            self.assertEqual(len([p for p in rel.iterdir() if not p.is_symlink()]), 5)
+
+
 class ReleaseRestart(unittest.TestCase):
     """plx-release restart (Fable 11-14 #2/#3): the API and the app are always started, the
     API must answer /api/health and one authenticated read, and a release that does not
@@ -921,7 +943,8 @@ class ReleaseRestart(unittest.TestCase):
                     check_loaded: bool = True, check_ok: bool = True,
                     check_root: str | None = None, preflight: str | None = None,
                     mint: str = "canary", release_mint: bool = False,
-                    release_owner: str = "", probe: str | None = None
+                    release_owner: str = "", probe: str | None = None,
+                    mint_version: int = 0, release_mint_version: int = 0
                     ) -> subprocess.CompletedProcess:
         tmp = self.tmp = tempfile.mkdtemp()
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", tmp]))
@@ -975,13 +998,17 @@ class ReleaseRestart(unittest.TestCase):
         old_mint = (f'#!/bin/sh\necho "mint $*" >> {calls}\n'
                     '[ -n "$1" ] && exit 2\n'
                     f'echo "https://x/#ticket=OWNER-NEW" > {cfg}/workbench-access-link\n')
+        def versioned(body: str, version: int) -> str:
+            return body + (f"PLX_MINT_LINK_VERSION={version}\n" if version else "")
         if mint != "none":
-            mint_path.write_text(canary_mint if mint == "canary" else old_mint)
+            mint_path.write_text(versioned(canary_mint, mint_version) if mint == "canary"
+                                 else old_mint)
             mint_path.chmod(0o755)
         if release_mint:   # the serving release ships the current copy
             for rid in ("old", "new"):
                 src = Path(rel, rid, "deploy/ops/plx-mint-link")
-                src.parent.mkdir(parents=True); src.write_text(canary_mint); src.chmod(0o755)
+                src.parent.mkdir(parents=True)
+                src.write_text(versioned(canary_mint, release_mint_version)); src.chmod(0o755)
         env = {k: v for k, v in os.environ.items() if not k.startswith("PLX_")}
         env.update({"PATH": f"{stubs}:{env.get('PATH', '/usr/bin:/bin')}", "HOME": str(home),
                     "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": str(rel),
@@ -1058,6 +1085,32 @@ class ReleaseRestart(unittest.TestCase):
         self.assertIn('"--canary"', Path(self.tmp, "plx-mint-link").read_text())
         self.assertIn("mint --canary", self.calls)
         self.assert_owner_link_untouched()
+
+    def test_a_mint_link_older_than_the_release_is_refreshed_and_never_downgraded(self) -> None:
+        """An installed copy with --canary but a lower PLX_MINT_LINK_VERSION (the host kept
+        one that swallowed the mint's refusal: exit 2, no reason) is replaced by the sealed
+        release's; a newer installed copy is never replaced by an older release's (rollback)."""
+        import getpass
+        me = getpass.getuser()
+        got = self.run_release("restart", mint="canary", mint_version=1, release_mint=True,
+                               release_mint_version=2, release_owner=me)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("plx-mint-link refreshed from release new (version 2)", self.history)
+        self.assertIn("PLX_MINT_LINK_VERSION=2", Path(self.tmp, "plx-mint-link").read_text())
+        for installed in (2, 3):
+            got = self.run_release("restart", mint="canary", mint_version=installed,
+                                   release_mint=True, release_mint_version=2,
+                                   release_owner=me)
+            self.assertEqual(got.returncode, 0, got.stderr)
+            self.assertNotIn("refreshed", self.history)
+            self.assertIn(f"PLX_MINT_LINK_VERSION={installed}",
+                          Path(self.tmp, "plx-mint-link").read_text())
+        # an older copy and an unsealed release: logged, left alone, deploy not rolled back
+        got = self.run_release("restart", mint="canary", mint_version=1, release_mint=True,
+                               release_mint_version=2)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("not refreshed", self.history)
+        self.assertEqual(self.current, "new")
 
     def test_an_old_mint_link_that_cannot_be_refreshed_is_never_used(self) -> None:
         """No --canary and no sealed copy to refresh from (the release is not owned by the

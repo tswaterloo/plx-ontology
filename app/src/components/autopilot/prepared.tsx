@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ErrorNotice } from "@/components/ui/notice";
+import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { JobCard } from "@/components/autopilot/job";
@@ -40,7 +40,8 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   const [token, setToken] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const card = useProblemSlot();
+  const setError = card.set;
   const run = async (f: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -171,7 +172,7 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
           Learned from your edit: {(item.learned ?? []).join("; ")}
         </p>
       )}
-      <ItemActions
+      {card.provide(<ItemActions
         item={item}
         onGone={onGone}
         onChanged={onChanged}
@@ -189,9 +190,9 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
             </>
           ) : null
         }
-      />
+      />)}
       {note && <p className="text-[12px] text-muted">{note}</p>}
-      {error && <ErrorNotice message={error} />}
+      {card.banner}
     </li>
   );
 }
@@ -213,7 +214,7 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
         ) : i.kind === "todo" ? (
           <TodoCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
         ) : i.kind === "alert" ? (
-          <AlertCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
+          <AlertCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
         ) : (
           <Card key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
         ),

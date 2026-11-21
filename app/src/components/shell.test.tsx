@@ -125,13 +125,25 @@ describe("data as of: one quiet line, amber only for a source the page reads", (
     expect(line.textContent).not.toMatch(/behind|ops|missed|not updating/i);
   });
 
-  it("names a source the page reads that is more than an hour behind, and only that one", () => {
+  it("names a source the page reads that the server calls behind, and only that one", () => {
     nav.path = "/";
-    render(<DataAsOf home={home([src("Email", 3 * 3600), src("File", 9 * 3600), src("BC", 60)])} />);
+    render(<DataAsOf home={home([src("Email", 3 * 3600, { stale: true }), src("File", 9 * 3600, { stale: true }), src("BC", 60)])} />);
     const line = screen.getByTestId("home-freshness");
     expect(line).toHaveAttribute("data-behind");
     // Home reads mail, not SharePoint files: Files is not named on Home
     expect(line.textContent).toMatch(/· Mail behind$/);
+  });
+
+  it("a source older than an hour but within its system's bound is not behind (Trust says the same)", () => {
+    nav.path = "/";
+    render(<DataAsOf home={home([src("Email", 2 * 3600, { stale: false }), src("BC", 3 * 3600, { stale: false })])} />);
+    expect(screen.getByTestId("home-freshness")).not.toHaveAttribute("data-behind");
+  });
+
+  it("without the server's verdict, more than an hour old is behind", () => {
+    nav.path = "/";
+    render(<DataAsOf home={home([src("Email", 2 * 3600, { stale: undefined })])} />);
+    expect(screen.getByTestId("home-freshness")).toHaveAttribute("data-behind");
   });
 
   it("stays quiet on a page that reads none of the late sources", () => {

@@ -225,12 +225,14 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
             # an order of unknown value (a header zeroed once invoiced with nothing that
             # prices it, an unpriced order) is no evidence of less demand
             skipped.note("currency_unknown" if got is not None
-                         and got.reason == "currency_unknown" else "order_value_unknown",
+                         and order_value.currency_unknown(got.reason)
+                         else "order_value_unknown",
                          [verdict.top], cause)
             unvalued.append((verdict, record))
             continue
         total, currency = got.amount, got.currency
-        read.append((verdict, record, day, total, currency, [*got.rows, day_row]))
+        read.append((verdict, record, day, total, currency,
+                     [*got.rows, *got.currency_rows, day_row]))
     # customer, currency -> its orders: (order, day, total, rows, marks, system)
     series: dict[tuple[str, str], list[tuple]] = defaultdict(list)
     for verdict, record, day, total, currency, rows in read:

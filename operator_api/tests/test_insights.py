@@ -73,6 +73,164 @@ class Builtins(unittest.TestCase):
                 ins.builtin.cache_clear()
 
 
+class SenderNames(unittest.TestCase):
+    """The decision and complaint tiles name a sender by its name; a Teams sender with no
+    display name by its kind and id (never its raw JSON), and one malformed sender fails
+    neither tile (a JSON cast over every row once failed the whole tile)."""
+
+    TILES = ("decisions_said", "complaints_latest")
+
+    def test_every_teams_sender_is_named_and_a_malformed_one_fails_nothing(self):
+        import psycopg
+        db, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, db)
+        senders = [
+            ("teams", '{"display_name":"Greg Mitchell","id":"a16b","kind":"user"}', "g"),
+            ("teams", '{"id":"c0ffee","kind":"application"}', "a"),
+            ("teams", '{"display_name":"", "id":"7e57","kind":"user"}', "e"),
+            ("teams", '{not json', "m"),
+            ("email", "ana@plx.example", "x")]
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("CREATE TABLE staff (name text, email text, person_id text)")
+            pg.execute("CREATE TABLE customers (name text, handle text)")
+            pg.execute("CREATE TABLE comms_findings (kind text, topic text, summary text, "
+                       "who text, from_side text, said_at timestamptz, source text, "
+                       "sender text, thread text, customers text[], handle text)")
+            pg.execute("INSERT INTO staff VALUES ('Ana Staff', 'ana@plx.example', 'p-ana')")
+            for kind in ("decision", "complaint"):
+                for n, (source, sender, topic) in enumerate(senders):
+                    pg.execute("INSERT INTO comms_findings VALUES (%s, %s, 'said it', '', "
+                               "'customer', now() - interval '1 day', %s, %s, %s, '{}', %s)",
+                               (kind, topic, source, sender, f"t{n}", f"h{n}"))
+            by_id = {s.id: s for s in ins.builtin()}
+            for tile in self.TILES:
+                with self.subTest(tile=tile):
+                    rows = [r[0] for r in pg.execute(by_id[tile].sql).fetchall()]
+                    self.assertEqual(len(rows), len(senders), rows)
+                    names = sorted(r.split(": ", 1)[0] for r in rows)
+                    self.assertEqual(names, sorted([
+                        "Greg Mitchell", "Teams application c0ffee", "Teams user 7e57",
+                        "Unknown sender", "Ana Staff"]))
+                    self.assertFalse(any("{" in r for r in rows), rows)
+
+
+class OwnerReports(unittest.TestCase):
+    """The revenue outlook and supplier lead-time tiles, computed again here from the raw
+    rows they read (live 11-21: CAD 3-month average 496,313.98, trend 541,157.88 =
+    Python over raw month sums; supplier medians = a separate query)."""
+
+    def test_the_outlook_and_lead_times_are_their_raw_rows_arithmetic(self):
+        import datetime as dt
+        import random
+        from decimal import Decimal
+
+        import psycopg
+        db, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, db)
+        by_id = {s.id: s for s in ins.builtin()}
+        rnd = random.Random(7)
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            today = pg.execute("SELECT current_date").fetchone()[0]
+            first = today.replace(day=1)
+            pg.execute("CREATE TABLE sales_invoice_lines (invoice_date date, revenue numeric, "
+                       "revenue_currency text, pilot boolean)")
+            months = {}
+            for back in range(1, 15):          # 14 full months: only the last 12 count
+                n = first.year * 12 + first.month - 1 - back
+                start = dt.date(n // 12, n % 12 + 1, 1)
+                total = Decimal(0)
+                for _ in range(rnd.randint(1, 6)):
+                    v = Decimal(rnd.randint(100, 900000)) / 100
+                    total += v
+                    pg.execute("INSERT INTO sales_invoice_lines VALUES (%s, %s, 'CAD', false)",
+                               (start + dt.timedelta(days=rnd.randint(0, 27)), v))
+                pg.execute("INSERT INTO sales_invoice_lines VALUES (%s, 999999, 'CAD', true)",
+                           (start,))               # a pilot line counts nowhere
+                months[start] = total
+            pg.execute("INSERT INTO sales_invoice_lines VALUES (%s, 1234.56, 'CAD', false)",
+                       (today,))
+            row = pg.execute(by_id["revenue_this_month_outlook"].sql).fetchone()
+            kept = sorted(months)[-12:]
+            xs = [(m - dt.date(2000, 1, 1)).days for m in kept]
+            ys = [months[m] for m in kept]
+            mx, my = Decimal(sum(xs)) / 12, sum(ys) / 12
+            slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sum((x - mx) ** 2
+                                                                          for x in xs)
+            trend = my + slope * ((first - dt.date(2000, 1, 1)).days - mx)
+            last_day = ((first + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)).day
+            self.assertEqual(row[0], "CAD")
+            self.assertEqual(row[1], Decimal("1234.56"))
+            self.assertEqual(row[2], (Decimal("1234.56") * last_day / today.day).quantize(Decimal("0.01")))
+            self.assertEqual(row[3], (sum(ys[-3:]) / 3).quantize(Decimal("0.01")))
+            self.assertAlmostEqual(float(row[4]), float(trend), delta=0.02)
+            self.assertEqual(row[5], my.quantize(Decimal("0.01")))
+            self.assertEqual(row[6], 12)
+
+            pg.execute("CREATE TABLE records (handle text, type text, fields jsonb)")
+            pg.execute("CREATE TABLE record_links (from_handle text, to_handle text, "
+                       "link_type text)")
+            pg.execute("CREATE TABLE purchase_orders (handle text, supplier text, "
+                       "po_number text, order_date date, status text, source_systems text)")
+            want = []
+            for i in range(10):
+                ordered = today - dt.timedelta(days=200 + i)
+                days = 3 * i
+                pg.execute("INSERT INTO purchase_orders VALUES (%s, 'Acme', %s, %s, 'closed', "
+                           "'sage')", (f"po{i}", f"PO{i}", ordered))
+                for k, extra in enumerate((0, 5)):   # the first receipt is the one read
+                    pg.execute("INSERT INTO records VALUES (%s, 'Receipt', %s)",
+                               (f"r{i}{k}", '{"received_date": "%s"}'
+                                % (ordered + dt.timedelta(days=days + extra)).isoformat()))
+                    pg.execute("INSERT INTO record_links VALUES (%s, %s, 'Receipt.receives')",
+                               (f"r{i}{k}", f"po{i}"))
+                want.append(days)
+            # one receipt dated before its PO: counted apart, not a lead time
+            pg.execute("INSERT INTO purchase_orders VALUES ('pox', 'Acme', 'POX', %s, 'open', "
+                       "'sage')", (today,))
+            # a BC pilot PO and a draft, each with a slow receipt: neither is a lead time
+            for h, status, systems in (("pob", "closed", "bc"), ("pod", "draft", "sage")):
+                pg.execute("INSERT INTO purchase_orders VALUES (%s, 'Acme', %s, %s, %s, %s)",
+                           (h, h.upper(), today - dt.timedelta(days=300), status, systems))
+                pg.execute("INSERT INTO records VALUES (%s, 'Receipt', %s)",
+                           (f"r{h}", '{"received_date": "%s"}'
+                            % (today - dt.timedelta(days=10)).isoformat()))
+                pg.execute("INSERT INTO record_links VALUES (%s, %s, 'Receipt.receives')",
+                           (f"r{h}", h))
+            pg.execute("INSERT INTO records VALUES ('rx', 'Receipt', %s)",
+                       ('{"received_date": "%s"}' % (today - dt.timedelta(days=3)).isoformat(),))
+            pg.execute("INSERT INTO record_links VALUES ('rx', 'pox', 'Receipt.receives')")
+            cur = pg.execute(by_id["supplier_lead_time"].sql)
+            cols = [c.name for c in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            self.assertEqual(len(rows), 1)
+            r = rows[0]
+            self.assertEqual((r["supplier"], r["pos_received"], r["received_before_ordered"]),
+                             ("Acme", 10, 1))
+            want.sort()
+            self.assertEqual(float(r["median_days"]), (want[4] + want[5]) / 2)
+            self.assertIsNone(r["median_days_before"])
+
+
+class OutlookClock(unittest.TestCase):
+    def test_the_outlook_reads_the_month_in_the_company_time_zone_in_the_evening(self):
+        """At 9 PM in Toronto on 30 Nov the UTC date is already 1 Dec: the tile still reads
+        November so far over 30 days (current_date in UTC once flipped it to December)."""
+        import psycopg
+        from decimal import Decimal
+        db, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, db)
+        sql = {s.id: s for s in ins.builtin()}["revenue_this_month_outlook"].sql
+        self.assertNotIn("current_date", sql)
+        fixed = sql.replace("now()", "TIMESTAMPTZ '2026-11-30 21:00 America/New_York'")
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("CREATE TABLE sales_invoice_lines (invoice_date date, revenue numeric, "
+                       "revenue_currency text, pilot boolean)")
+            pg.execute("INSERT INTO sales_invoice_lines VALUES ('2026-10-15', 300, 'CAD', false),"
+                       " ('2026-11-02', 600, 'CAD', false), ('2026-11-30', 300, 'CAD', false)")
+            row = pg.execute(fixed).fetchone()
+        self.assertEqual((row[0], row[1], row[2]), ("CAD", Decimal("900.00"), Decimal("900.00")))
+
+
 class Rows(unittest.TestCase):
     cols = ["person", "n", "person_id"]
 

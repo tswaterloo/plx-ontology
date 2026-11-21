@@ -100,7 +100,7 @@ class Drafts(unittest.TestCase):
         self.assertIsNone(hidden["draft"]["to"]["address"])
         self.assertNotIn("message of", hidden["draft"]["body"])
         self.assertNotIn(SECRET, json.dumps(hidden))
-        self.assertIn("The vendor's contact address.", hidden["missing"])
+        self.assertIn("No supplier contact address on record.", hidden["missing"])
 
     def test_the_due_date_number_and_confirmation_are_the_shared_ones(self):
         """The draft's due date and its basis are the one PO reader's (the trail's

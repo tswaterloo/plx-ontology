@@ -132,6 +132,16 @@ describe("Related panel", () => {
     expect(screen.queryByTestId("related-empty")).toBeNull();
   });
 
+  it("a session refused every read shows no empty Related heading", async () => {
+    api.getMemory.mockRejectedValue(new ApiError(403, "canary_route_refused"));
+    api.getWorkLog.mockRejectedValue(new ApiError(403, "canary_route_refused"));
+    api.getTemplates.mockRejectedValue(new ApiError(403, "canary_route_refused"));
+    const { container } = render(<Related records={[PO]} />);
+    await waitFor(() => expect(screen.queryByText(/Reading your memory/)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("related-panel")).toBeNull());
+    expect(container.textContent).not.toContain("Related");
+  });
+
   it("memory that can't be read (people list not loaded) is a failure, never an empty memory", async () => {
     api.getMemory.mockResolvedValue({ available: false, items: [mem(1, "Vendor ships Tuesdays only", [PO])] });
     render(<Related records={[PO]} />);

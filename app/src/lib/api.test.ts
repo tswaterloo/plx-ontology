@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider } from "./api";
+import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider } from "./api";
 import { ApiError } from "./errors";
 import { resetSessionCaches } from "./session-cache";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
@@ -197,6 +197,46 @@ describe("Today lists still being read", () => {
     expect((await first as DOMException).name).toBe("AbortError");
     await expect(second).resolves.toMatchObject({ status: "read", total: 1 });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a plain read asked twice at once is one request; asked again after it answered, a new one", async () => {
+    let n = 0;
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ n: ++n }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const [a, b] = await Promise.all([getOpsAlarms(), getOpsAlarms()]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(a).toEqual({ n: 1 });
+    expect(b).toEqual({ n: 1 });
+    // another path is its own read; the same path after the answer is read again (never stale)
+    await getMe();
+    await expect(getOpsAlarms()).resolves.toEqual({ n: 3 });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("a plain read: one caller's abort leaves the other's answer, the last one's stops the request", async () => {
+    let seen: AbortSignal | undefined;
+    let answer: (r: Response) => void = () => undefined;
+    const fetch = vi.fn((_url: string, init?: RequestInit) => {
+      seen = init?.signal ?? undefined;
+      return new Promise<Response>((done) => (answer = done));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const left = new AbortController();
+    const first = getOpsAlarms(left.signal).catch((e) => e);
+    const second = getOpsAlarms();
+    await Promise.resolve();
+    left.abort();
+    expect((await first as DOMException).name).toBe("AbortError");
+    expect(seen?.aborted).toBe(false);
+    answer(new Response(JSON.stringify({ ok: 1 }), { status: 200 }));
+    await expect(second).resolves.toEqual({ ok: 1 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const gone = new AbortController();
+    const third = getOpsAlarms(gone.signal).catch((e) => e);
+    await Promise.resolve();
+    gone.abort();
+    expect((await third as DOMException).name).toBe("AbortError");
+    expect(seen?.aborted).toBe(true);
   });
 
   it("a read under way when the person changes is never shared with the next caller", async () => {

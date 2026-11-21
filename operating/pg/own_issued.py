@@ -169,7 +169,8 @@ class _Hidden:
     def _read() -> frozenset[str]:
         import psycopg
         from operating.pg import config
-        with psycopg.connect(config.dsn(), connect_timeout=5) as conn:
+        from operating.pg.pool import when_free   # at the role's limit: wait for a slot
+        with when_free(lambda: psycopg.connect(config.dsn(), connect_timeout=5)) as conn:
             if conn.execute("SELECT to_regclass(%s)", (TABLE,)).fetchone()[0] is None:
                 return frozenset()
             rows = conn.execute(f"SELECT object_id FROM {TABLE}").fetchall()

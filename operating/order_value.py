@@ -27,6 +27,8 @@ The value of one order record (``judge``):
   orders that never shipped (complete 5, nothing shipped, no invoice), and its lines'
   ordered quantity would state a sale that never happened. A closed order whose invoices
   do not price it in full has no value either; its lines are never the fallback.
+  A closed order its invoices bill at 0 is worth 0 only when its lines are 0 or not
+  priced; priced lines disagree with the invoice: no value (``invoiced_zero_lines_priced``).
 * else (an open order) ``order_lines``: every settled line (``LINE_OF``) priced, by its ``line_total``,
   else its ordered quantity (above 0) x its unit price in the same unit of measure, in one
   currency: their sum. A line priced by neither (a charge line, an unpriced copy) leaves
@@ -94,8 +96,9 @@ changes, so nothing is migrated or rebuilt. Fixture runs are ``isolated-fixture`
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
+import functools
 import json
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -133,6 +136,8 @@ REINSERTED_LINE_BINDINGS = frozenset({"portal.app_sales_order_line"})
 LINES_REPEATED, HEADER_DISAGREES = "lines_repeated", "header_disagrees_with_lines"
 HEADER_OUTSTANDING = "header_is_outstanding_value"
 SOURCE_TOTAL, INVOICES, ORDER_LINES = "source_total", "invoices", "order_lines"
+# a closed order invoiced 0 whose lines are priced: the two disagree, no value
+INVOICE_ZERO = "invoiced_zero_lines_priced"
 DERIVED_PROPERTY = "order_value"
 BASIS_WORDS = {SOURCE_TOTAL: "the order's own total",
                INVOICES: "derived: the sum of the invoices that bill it, before tax",
@@ -152,10 +157,171 @@ class OrderValue:
     # the header checked against its lines when they disagree (module docstring)
     check: Mapping[str, Any] | None = None
     check_rows: tuple[Mapping[str, Any], ...] = field(default=())
+    # the cell the currency of record was read from when another record stated it (an
+    # invoice, the Sage copy, the customer: ``currency_of_record``); its markings bound
+    # whoever is told the currency
+    currency_rows: tuple[Mapping[str, Any], ...] = field(default=())
 
     @property
     def derived(self) -> bool:
         return self.basis in (INVOICES, ORDER_LINES)
+
+
+# ------------------------------------------------------- the order's copy and currency of record
+#
+# One rule for every surface (the business views, ``plx.object`` through ``for_reader`` and
+# the engine's cards through ``for_store``), so no two of them state an order in two
+# currencies or at two values.
+#
+# The copy of record: Sage is the system of record for customer orders; an order a Sage
+# copy holds is valued from that copy only (its header, lines or invoices), a Portal,
+# FileMaker or BC copy only when no Sage copy exists (``value_copies``). Live 11-21: the
+# Portal app copy of OR1000154169 states 18,835.20 where Sage states 25,113.60.
+#
+# The currency of record (``currency_of_record``): the currency of the settled invoices
+# billing the order; else the one its Sage copy states, else a BC copy's; else its
+# customer's (the Sage account's, else BC's); else none. A copy of a system that states no
+# currency (``CURRENCY_STATED_BY``) never speaks: the Portal's currency column is its entry
+# form's default (live 11-21: 1,271 of 1,271 Portal app orders and 8,604 of 8,604 of their
+# lines read CAD, 81 of them copies of orders Sage states in USD; Sage headers and their
+# invoices agree on 73,238 of 73,238 orders). Two codes at one step are a dispute
+# (``<step>_currencies_differ``) and a code no rule reads stops there
+# (``<step>_currency_unreadable``): no currency, so no amount is labelled. A copy's amount
+# is in the order's currency of record; a stated copy disagreeing with it is
+# ``currency_mismatch``, never converted.
+RECORD_SYSTEM = "sage"
+CURRENCY_STATED_BY = frozenset({"sage", "bc"})
+ORDER_LINK = "SalesOrder.ordered_by"
+CUSTOMER_TYPE = "Customer"
+COPY_CURRENCY_PROPS = (CURRENCY, TOTAL, SUBTOTAL)
+INVOICE_CURRENCY_PROPS = (SUBTOTAL, TOTAL, CURRENCY)
+CUSTOMER_CURRENCY_PROPS = (CURRENCY,)
+NO_CURRENCY = "no_currency_stated"
+CURRENCY_MISMATCH = "currency_mismatch"
+
+
+def record_system(binding: str | None) -> str:
+    """The system a binding's records come from: bc, sage, filemaker, portal or the
+    binding's first part (the business views' ``system_of``)."""
+    b = binding or ""
+    if b.startswith("bc."):
+        return "bc"
+    if "sage" in b:
+        return "sage"
+    if "fm_" in b:
+        return "filemaker"
+    if b.startswith("portal."):
+        return "portal"
+    return b.split(".", 1)[0] or "unknown"
+
+
+def system_of_record(object_id: Any) -> str:
+    """``record_system`` of an object id (``Type:binding:key``)."""
+    parts = str(object_id or "").split(":", 2)
+    return record_system(parts[1] if len(parts) == 3 else None)
+
+
+def states_currency(object_id: Any) -> bool:
+    return system_of_record(object_id) in CURRENCY_STATED_BY
+
+
+def value_copies(copies: Sequence[str]) -> list[str]:
+    """The copies of one order its value is read from, in the given order: the Sage
+    copies when it has one, else every copy."""
+    sage = [c for c in copies if system_of_record(c) == RECORD_SYSTEM]
+    return sage or list(copies)
+
+
+@functools.lru_cache(maxsize=4)
+def identity_links(object_type: str) -> tuple[str, ...]:
+    """The identity link types between two records of ``object_type`` (the schema's)."""
+    from ontology.schema import load_schema
+    from .ontology_tools_identity import identity_link_type
+
+    schema = load_schema()
+    return tuple(sorted(lid for lid, link in schema.link_types.items()
+                        if link.get("from") == object_type and link.get("to") == object_type
+                        and identity_link_type(link)))
+
+
+@dataclass(frozen=True)
+class OfRecord:
+    code: str | None
+    basis: str
+    row: Mapping[str, Any] | None = None   # the value row it was read from
+
+
+def currency_of_record(copies: Iterable[Mapping[str, Any]],
+                       invoices: Iterable[Mapping[str, Any]],
+                       customer: Iterable[Mapping[str, Any]]) -> OfRecord:
+    """The order's currency of record (above) from value rows (``property``, ``value``,
+    ``currency``, ``object_id``, ...): ``copies`` its copies' ``COPY_CURRENCY_PROPS``,
+    ``invoices`` its settled billing invoices' ``INVOICE_CURRENCY_PROPS``, ``customer``
+    its one customer's records' ``CUSTOMER_CURRENCY_PROPS`` (empty: no one customer)."""
+    from .proactive_engine_cards import currency_word
+
+    def stated(rows: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+        got: dict[str, Mapping[str, Any]] = {}
+        for r in rows:
+            raw = r.get("value") if r.get("property") == CURRENCY else r.get("currency")
+            if raw in (None, "") or (isinstance(raw, str) and not raw.strip()):
+                continue
+            got.setdefault(currency_word(raw) or "?", r)   # "?": a code no rule reads
+        return got
+
+    copies, invoices, customer = list(copies), list(invoices), list(customer)
+    systems = (RECORD_SYSTEM, *sorted(CURRENCY_STATED_BY - {RECORD_SYSTEM}))
+    steps = [("invoice", [r for r in invoices if states_currency(r.get("object_id"))])]
+    steps += [(f"{sy}_order", [r for r in copies if system_of_record(r.get("object_id")) == sy])
+              for sy in systems]
+    steps += [("customer", [r for r in customer
+                            if system_of_record(r.get("object_id")) == sy]) for sy in systems]
+    for basis, rows in steps:
+        got = stated(rows)
+        if "?" in got:
+            return OfRecord(None, f"{basis}_currency_unreadable")
+        if len(got) > 1:
+            return OfRecord(None, f"{basis}_currencies_differ")
+        if got:
+            (code, row), = got.items()
+            return OfRecord(code, basis, row)
+    return OfRecord(None, NO_CURRENCY)
+
+
+def currency_unknown(reason: str | None) -> bool:
+    """Whether a no-value reason is that the order's currency is not known (no currency
+    of record, a dispute, an unreadable code or a copy disagreeing with it)."""
+    r = str(reason or "")
+    return r in ("currency_unknown", NO_CURRENCY, CURRENCY_MISMATCH, "currencies_differ") \
+        or r.endswith(("_currencies_differ", "_currency_unreadable"))
+
+
+def judge_order(header: Mapping[str, Sequence[Mapping[str, Any]]], *, object_id: str,
+                closed: bool, lines: Any, invoices: Any, of_record: OfRecord) -> OrderValue:
+    """``judge`` of one copy of an order in its currency of record: a cell of a copy,
+    line or invoice of a system stating no currency is in ``of_record``'s currency (its
+    own currency cell is no statement); a stated cell disagreeing with it is
+    ``currency_mismatch``; no currency of record says why (``of_record.basis``)."""
+    from .proactive_engine_cards import currency_word
+
+    own = header if states_currency(object_id) else {
+        k: v for k, v in header.items() if k != CURRENCY}
+
+    def code(row: Mapping[str, Any]) -> str | None:
+        if not states_currency(row.get("object_id")):
+            return of_record.code
+        raw = row.get("currency")
+        return currency_word(raw) if raw else None
+    got = judge(own, closed=closed, lines=lines, invoices=invoices, currency=code)
+    if got.amount is not None and of_record.code is not None and got.currency != of_record.code:
+        return OrderValue(None, None, None, reason=CURRENCY_MISMATCH,
+                          source_rows=got.source_rows)
+    if got.amount is None and of_record.code is None and got.reason == "currency_unknown":
+        return OrderValue(None, None, None, reason=of_record.basis, source_rows=got.source_rows)
+    if got.amount is not None and of_record.row is not None and not any(
+            r.get("object_id") == of_record.row.get("object_id") for r in got.rows):
+        got = replace(got, currency_rows=(of_record.row,))
+    return got
 
 
 def decimal(raw: Any) -> Decimal | None:
@@ -219,15 +385,32 @@ def judge(header: Mapping[str, Sequence[Mapping[str, Any]]], *, closed: bool,
     # A closed order is worth what it was invoiced for, and nothing else: its lines' ordered
     # quantity is no value of an order closed without shipping (live: 133 Sage orders
     # complete=5 with no invoice and nothing shipped, up to 107,730 USD ordered).
-    for derive in (_invoiced,) if closed else (_lined,):
+    # Invoices billing nothing (a zero subtotal) never beat priced lines: the closed order
+    # is checked against them (live 11-21: OR1000154318, one Sage invoice of 0, its Sage
+    # line 51 x 5.15 = 262.65). Lines summing to 0 agree with the invoice (0 stands); priced
+    # lines disagree with it, so no value (INVOICE_ZERO): Sage zeroes a completed order's
+    # header, and its lines' ordered value is no sale the invoice billed (218 live closed
+    # orders invoiced 0 against priced lines, up to 176,640.00 USD ordered).
+    zero: tuple | None = None
+    for derive in (_invoiced, _lined) if closed else (_lined,):
+        if derive is _lined and closed and zero is None:
+            break
         got = derive(lines if derive is _lined else invoices, currency)
         if isinstance(got, str):
+            if zero is not None:   # lines unreadable or unpriced: the invoice's 0 stands
+                return OrderValue(*zero, source_rows=source)
             reasons.append("closed_not_invoiced" if got == "no_invoices" else got)
             continue
         amount, code, rows = got
         if said and said != {code}:
             reasons.append("currency_mismatch")
             continue
+        if derive is _invoiced and amount == 0:
+            zero = (amount, code, INVOICES, tuple(rows))
+            continue
+        if zero is not None:
+            return OrderValue(*zero, source_rows=source) if amount == 0 else OrderValue(
+                None, None, None, reason=INVOICE_ZERO, source_rows=source)
         return OrderValue(amount, code, INVOICES if derive is _invoiced else ORDER_LINES,
                           tuple(rows), source_rows=source)
     return OrderValue(None, None, None, reason=reasons[-1] if reasons else "no_lines",
@@ -521,21 +704,65 @@ def _tax_bases(st: Any, rows: Sequence[Mapping[str, Any]]) -> dict[tuple, str | 
     return out
 
 
+def _settled_pairs(rows: Iterable[tuple], kinds: Sequence[str]) -> list[tuple[str, str]]:
+    """(from, to) of the settled, current link rows (``_Store.touching``) of ``kinds``."""
+    return [(r[3], r[4]) for r in rows
+            if r[2] in kinds and r[5] in SETTLED and not r[7]]
+
+
+def _store_twins(st: Any, ids: Sequence[str], object_type: str) -> dict[str, set[str]]:
+    """id -> its settled identity twins (one hop) in the engine's store."""
+    kinds = identity_links(object_type)
+    out: dict[str, set[str]] = {i: set() for i in ids}
+    if not ids or not kinds:
+        return out
+    for a, b in _settled_pairs(st.touching(ids, list(kinds)), kinds):
+        if a in out and b != a:
+            out[a].add(b)
+        if b in out and a != b:
+            out[b].add(a)
+    return out
+
+
+def _one_customer(linked: Sequence[str], twins: Mapping[str, set[str]]) -> list[str]:
+    """The records of an order's one customer: ``linked`` (the customers its copies link,
+    the system of record's copies' first) when they are one customer (each the others'
+    twin), with their twins; else none."""
+    linked = sorted(set(linked))
+    if any(b not in twins.get(a, set()) for a in linked for b in linked if a != b):
+        return []
+    return sorted(set(linked) | {t for c in linked for t in twins.get(c, ())})
+
+
 def for_store(st: Any, orders: Sequence[str],
               header: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, OrderValue]:
     """order id -> its value, over the proactive engine's store (``_Store``: ``values``,
     ``touching``, ``conn``). ``header``: the orders' ``st.values`` when already read
-    (it must hold ``total_amount``, ``currency`` and the status properties)."""
+    (it must hold ``total_amount``, ``currency`` and the status properties).
+
+    The order is valued from its copy of record (``value_copies``: a Sage twin's when it
+    has one) in its currency of record (``currency_of_record``), as the business views
+    and ``for_reader`` value it."""
     from . import po_status
     from . import sales_order_status as so_status
-    from .proactive_business import _currencies, _currency
+    from .proactive_business import _currencies
 
     orders = sorted(set(orders))
-    if header is None:
-        header = st.values([TYPE], (TOTAL, CURRENCY, SUBTOTAL, *so_status.READ_PROPS),
-                           objects=orders)
-    props_of = {o: dict((header.get(o) or {}).get("props") or {}) for o in orders}
-    stating = [o for o in orders
+    twins_of = _store_twins(st, orders, TYPE)
+    # the copy each order is valued from: its own, else a Sage twin's
+    target = {o: o if system_of_record(o) == RECORD_SYSTEM
+              else value_copies(sorted({o} | twins_of[o]))[0] for o in orders}
+    targets = sorted(set(target.values()))
+    twins_of.update(_store_twins(st, [t for t in targets if t not in twins_of], TYPE))
+    group = {o: sorted({o, target[o]} | twins_of[o] | twins_of[target[o]]) for o in orders}
+    copies = sorted({c for g in group.values() for c in g})
+    wanted = (TOTAL, CURRENCY, SUBTOTAL, *so_status.READ_PROPS)
+    got_header = dict(header or {})
+    missing = [c for c in copies if c not in got_header]
+    if missing:
+        got_header.update(st.values([TYPE], wanted, objects=missing))
+    props_of = {o: dict((got_header.get(o) or {}).get("props") or {}) for o in copies}
+    stating = [o for o in targets
                if {decimal(r.get("value")) for r in props_of[o].get(TOTAL, ())} - {Decimal(0)}]
     if stating and any(SUBTOTAL not in props_of[o] for o in stating):
         # the header figure the lines are checked against (a caller's header may not hold it)
@@ -549,19 +776,20 @@ def for_store(st: Any, orders: Sequence[str],
             props_of[oid][TOTAL] = [
                 dict(r, tax_basis=bases.get((r["object_id"], r["l1_handle"])))
                 for r in props_of[oid].get(TOTAL, ())]
-    totals = [r for p in props_of.values() for k in (TOTAL, SUBTOTAL) for r in p.get(k, ())]
     stated = set(stating)
     # sets: two settled link rows of one pair (bills and posted_for_order, or a second
-    # binding) are one invoice or line, never summed twice. Lines of every order (a
-    # header that states a total is checked against them), invoices of the others only.
-    lines_of: dict[str, set[str]] = {o: set() for o in orders}
-    invoices_of: dict[str, set[str]] = {o: set() for o in orders if o not in stated}
-    for row in st.touching(orders, [LINE_OF, *BILLS]) if orders else ():
+    # binding) are one invoice or line, never summed twice. Lines of every valued copy (a
+    # header that states a total is checked against them); invoices of every copy (the
+    # currency of record), valued for the copies stating no total only.
+    lines_of: dict[str, set[str]] = {o: set() for o in targets}
+    invoices_of: dict[str, set[str]] = {o: set() for o in copies}
+    for row in st.touching(copies, [LINE_OF, *BILLS]) if copies else ():
         _rid, _lid, kind, frm, to, tier, _marks, gone = row[:8]
-        if tier not in SETTLED or gone or to not in lines_of:
+        if tier not in SETTLED or gone:
             continue
         if kind == LINE_OF:
-            lines_of[to].add(frm)
+            if to in lines_of:
+                lines_of[to].add(frm)
         elif to in invoices_of:
             invoices_of[to].add(frm)
     invoices = sorted({i for got in invoices_of.values() for i in got})
@@ -573,61 +801,170 @@ def for_store(st: Any, orders: Sequence[str],
     line_values = st.values([LINE_TYPE], (*LINE_PROPS, *LINE_TEXT, *CHECK_PROPS),
                             objects=lines) \
         if lines else {}
-    invoice_values = st.values([INVOICE_TYPE], INVOICE_PROPS, objects=invoices) \
-        if invoices else {}
-    money = [*totals, *(r for e in (*line_values.values(), *invoice_values.values())
-                        for p in ("line_total", "unit_price", SUBTOTAL)
-                        for r in e["props"].get(p, ()))]
+    invoice_values = st.values([INVOICE_TYPE], tuple(dict.fromkeys(
+        (*INVOICE_PROPS, *INVOICE_CURRENCY_PROPS))), objects=invoices) if invoices else {}
+    # the customers: what each copy links, and their twins
+    ordered: dict[str, set[str]] = {c: set() for c in copies}
+    for a, b in _settled_pairs(st.touching(copies, [ORDER_LINK]) if copies else (),
+                               (ORDER_LINK,)):
+        if a in ordered:
+            ordered[a].add(b)
+    customers = sorted({c for got in ordered.values() for c in got})
+    customer_twins = _store_twins(st, customers, CUSTOMER_TYPE)
+    everyone = sorted(set(customers) | {t for got in customer_twins.values() for t in got})
+    customer_values = st.values([CUSTOMER_TYPE], CUSTOMER_CURRENCY_PROPS,
+                                objects=everyone) if everyone else {}
+    entries = [*(props_of[c] for c in copies),
+               *((e.get("props") or {}) for e in (*line_values.values(),
+                                                   *invoice_values.values()))]
+    money = [r for p in entries for k in (TOTAL, SUBTOTAL, "line_total", "unit_price")
+             for r in p.get(k, ())]
     codes = _currencies(st, money) if money else {}
 
-    def code(row: Mapping[str, Any]) -> str | None:
-        return _currency(codes, row)
+    def coded(props: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, list]:
+        # each money cell with its stored currency (the engine's value read leaves it out)
+        return {k: [dict(r, currency=codes.get((r["object_id"], r["property"],
+                                                r["l1_handle"])))
+                    if k in (TOTAL, SUBTOTAL, "line_total", "unit_price") else r for r in v]
+                for k, v in props.items()}
+    props_of = {c: coded(p) for c, p in props_of.items()}
+    line_props = {ln: coded((e.get("props") or {})) for ln, e in line_values.items()}
+    invoice_props = {i: coded((e.get("props") or {})) for i, e in invoice_values.items()}
+
+    def rows(props: Mapping[str, Sequence[Mapping[str, Any]]], keys: Sequence[str]) -> list:
+        return [r for k in keys for r in props.get(k, ())]
     out: dict[str, OrderValue] = {}
     for oid in orders:
-        props = props_of[oid]
-        status = so_status.record_status(props, binding=po_status.binding_of(oid))
-        got_lines = [(line_values.get(ln) or {}).get("props")
-                     for ln in sorted(lines_of.get(oid, ()))]
-        got_invoices = [((invoice_values.get(i) or {}).get("props"), billed[i] == {oid})
-                        for i in sorted(invoices_of.get(oid, ()))]
-        out[oid] = judge(
-            props, closed=status.cls == so_status.CLOSED,
+        mine = group[oid]
+        linked = [c for m in mine if system_of_record(m) == RECORD_SYSTEM
+                  for c in ordered.get(m, ())] or [c for m in mine for c in ordered.get(m, ())]
+        of_record = currency_of_record(
+            [r for m in mine for r in rows(props_of[m], COPY_CURRENCY_PROPS)],
+            [r for i in sorted({i for m in mine for i in invoices_of.get(m, ())})
+             for r in rows(invoice_props.get(i) or {}, INVOICE_CURRENCY_PROPS)],
+            [r for c in _one_customer(linked, customer_twins)
+             for r in rows((customer_values.get(c) or {}).get("props") or {},
+                           CUSTOMER_CURRENCY_PROPS)])
+        t = target[oid]
+        props = props_of[t]
+        status = so_status.record_status(props, binding=po_status.binding_of(t))
+        got_lines = [line_props.get(ln) for ln in sorted(lines_of.get(t, ()))]
+        got_invoices = [] if t in stated else [
+            (invoice_props.get(i), billed[i] == {t}) for i in sorted(invoices_of.get(t, ()))]
+        out[oid] = judge_order(
+            props, object_id=t, closed=status.cls == so_status.CLOSED,
             # a line or invoice whose record the store no longer lists: not known in full
             lines=None if any(p is None for p in got_lines) else got_lines,
             invoices=None if any(p is None for p, _x in got_invoices) else got_invoices,
-            currency=code)
+            of_record=of_record)
     return out
 
 
 # ------------------------------------------------------------------ one reader's view
 
-def for_reader(tools: Any, scope: Any, object_id: str) -> OrderValue:
+def _reader_of_record(store: Any, scope: Any, copies: Sequence[str]) -> OfRecord | None:
+    """``currency_of_record`` of an order whose copies are ``copies``, from what this
+    reader may read; None when a link, record or cell it rests on is hidden from them
+    (never another currency)."""
+    at = scope.params()["at"]
+
+    def kept(ids: Iterable[str]) -> list[str] | None:
+        ids = sorted(set(ids))
+        removed = set(store.removals(ids, at)) if ids else set()
+        ids = [i for i in ids if i not in removed]
+        visible = {r["object_id"] for r in store.visible_versions(scope, ids)} if ids else set()
+        return None if set(ids) - visible else ids
+
+    def values(ids: Sequence[str], props: Sequence[str]) -> list[dict[str, Any]] | None:
+        if not ids:
+            return []
+        if store.withheld_values(scope, ids, props):
+            return None
+        return [dict(r) for r in store.readable_values(scope, ids, props)]
+    if store.withheld_links(scope, copies, [*BILLS, ORDER_LINK]):
+        return None
+    links = [r for r in store.links_touching(scope, copies, [*BILLS, ORDER_LINK])
+             if r["tier"] in SETTLED]
+    invoices = kept(r["from_object"] for r in links
+                    if r["link_type"] != ORDER_LINK and r["to_object"] in copies)
+    ordered = [r for r in links if r["link_type"] == ORDER_LINK and r["from_object"] in copies]
+    linked = sorted({r["to_object"] for r in ordered
+                     if system_of_record(r["from_object"]) == RECORD_SYSTEM}) or \
+        sorted({r["to_object"] for r in ordered})
+    if invoices is None or kept(linked) is None:
+        return None
+    kinds = identity_links(CUSTOMER_TYPE)
+    twins: dict[str, set[str]] = {c: set() for c in linked}
+    if linked and kinds:
+        if store.withheld_links(scope, linked, kinds):
+            return None
+        for r in store.links_touching(scope, linked, kinds):
+            if r["tier"] not in SETTLED:
+                continue
+            a, b = r["from_object"], r["to_object"]
+            if a in twins and b != a:
+                twins[a].add(b)
+            if b in twins and a != b:
+                twins[b].add(a)
+    customer = kept(_one_customer(linked, twins))
+    if customer is None:
+        return None
+    got = [values(copies, COPY_CURRENCY_PROPS), values(invoices, INVOICE_CURRENCY_PROPS),
+           values(customer, CUSTOMER_CURRENCY_PROPS)]
+    if any(g is None for g in got):
+        return None
+    return currency_of_record(*got)
+
+
+def for_reader(tools: Any, scope: Any, object_id: str, *,
+               of_record_copy: bool = True) -> OrderValue:
     """One order's value as ``plx.object`` shows it to its reader (``tools``:
     ``OntologyTools``; ``scope``: the reader's scope at its time). Only what the reader may
     read counts: a line, invoice or link it may not see, or a cell withheld from it, leaves
-    the order without a derived value (``withheld``), never with a smaller one."""
+    the order without a derived value (``withheld``), never with a smaller one.
+
+    The same rule as the business views and ``for_store``: a copy whose order Sage holds is
+    valued as its Sage twin (``value_copies``; ``of_record_copy`` False: this copy itself),
+    in the order's currency of record (``currency_of_record``) over the copies it and its
+    settled twins are."""
     from . import po_status
     from . import sales_order_status as so_status
 
     store = tools.store
+    hidden = OrderValue(None, None, None, reason="withheld")
+    twin_kinds = list(identity_links(TYPE))
+    if twin_kinds and store.withheld_links(scope, [object_id], twin_kinds):
+        return hidden
+    twins = sorted({r["to_object"] if r["from_object"] == object_id else r["from_object"]
+                    for r in (store.links_touching(scope, [object_id], twin_kinds)
+                              if twin_kinds else ())
+                    if r["tier"] in SETTLED} - {object_id})
+    removed = set(store.removals(twins, scope.params()["at"])) if twins else set()
+    twins = [t for t in twins if t not in removed]
+    if twins and set(twins) - {r["object_id"] for r in store.visible_versions(scope, twins)}:
+        return hidden   # a twin this reader may not see could be the copy of record
+    if of_record_copy and system_of_record(object_id) != RECORD_SYSTEM:
+        sage = [t for t in twins if system_of_record(t) == RECORD_SYSTEM]
+        if sage:
+            return for_reader(tools, scope, sage[0], of_record_copy=False)
+    of_record = _reader_of_record(store, scope, [object_id, *twins])
+    if of_record is None:
+        return hidden
     props: dict[str, list[Mapping[str, Any]]] = {}
     for row in store.readable_values(scope, [object_id],
                                      (TOTAL, CURRENCY, SUBTOTAL, *so_status.READ_PROPS)):
         props.setdefault(row["property"], []).append(dict(row))
     if store.withheld_values(scope, [object_id], (TOTAL,)):
-        return OrderValue(None, None, None, reason="withheld")
+        return hidden
 
-    def code(row: Mapping[str, Any]) -> str | None:
-        from .proactive_engine_cards import currency_word
-        raw = row.get("currency")
-        return currency_word(raw) if raw else None
     # a header stating a total: checked against its lines (never its invoices); lines this
     # reader may not read in full leave the header's total as stated, unchecked
     stating = bool({decimal(r.get("value")) for r in props.get(TOTAL, ())} - {Decimal(0)})
 
     def withheld() -> OrderValue:
         if stating:
-            return judge(props, closed=False, lines=None, invoices=[], currency=code)
+            return judge_order(props, object_id=object_id, closed=False, lines=None,
+                               invoices=[], of_record=of_record)
         return OrderValue(None, None, None, reason="withheld",
                           source_rows=tuple(props.get(TOTAL, ())))
     kinds = [LINE_OF] if stating else [LINE_OF, *BILLS]
@@ -670,8 +1007,8 @@ def for_reader(tools: Any, scope: Any, object_id: str) -> OrderValue:
             if ends else ():
         by_object[row["object_id"]].setdefault(row["property"], []).append(dict(row))
     status = so_status.record_status(props, binding=po_status.binding_of(object_id))
-    return judge(props, closed=status.cls == so_status.CLOSED,
-                 lines=[by_object[ln] for ln in lines],
-                 invoices=[(by_object[i], billed[i] == {object_id}) for i in invoices]
-                 if invoices_known else None,
-                 currency=code)
+    return judge_order(props, object_id=object_id, closed=status.cls == so_status.CLOSED,
+                       lines=[by_object[ln] for ln in lines],
+                       invoices=[(by_object[i], billed[i] == {object_id}) for i in invoices]
+                       if invoices_known else None,
+                       of_record=of_record)

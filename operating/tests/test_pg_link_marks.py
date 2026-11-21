@@ -553,6 +553,11 @@ class LinkMarks(unittest.TestCase):
         self.sql("SELECT ontology.link_marks_stale('test')")
         _, facts = tt._read_pg_facts_parallel(self.dsn, (), workers=2)
         self.assertEqual(facts[("slices", "link")], expected)
+        # under the working day's cap (1 parallel worker per statement): the same facts
+        with mock.patch.dict(os.environ, {"PLX_FACTS_DAY_WORKERS": "1",
+                                          "PLX_FACTS_DAY_HOURS": "0-24"}):
+            _, facts = tt._read_pg_facts_parallel(self.dsn, ())
+        self.assertEqual(facts[("slices", "link")], expected)
 
     def test_an_api_start_refreshes_only_when_asked_and_stale(self):
         from operating.pg import link_marks
@@ -698,6 +703,13 @@ class LinkMarks(unittest.TestCase):
                 self.assertEqual(link_marks.start_rebuild(self.dsn), "retry_later")
             self.sql("UPDATE ontology.link_marks_build SET failed_at = now() - "
                      "interval '2 hours'")
+            with mock.patch.object(link_marks, "_last_start", 0.0), \
+                    mock.patch.dict(os.environ, {"PLX_LINK_MARKS_REFRESH": "unit"}):
+                # the unit's alone (plx-link-marks.service): a delta cycle or an API
+                # starts none, as its build died with that unit's control group (11-21)
+                self.assertEqual(link_marks.start_rebuild(self.dsn), "by_unit")
+                self.assertIsNone(link_marks.start_refresh_if_stale(self.dsn))
+            self.assertEqual(popen.call_count, 0)
             with mock.patch.object(link_marks, "_last_start", 0.0):
                 self.assertEqual(link_marks.start_rebuild(self.dsn), "started")
         self.assertEqual(popen.call_count, 1)

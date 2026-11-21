@@ -28,9 +28,12 @@
 # config from the API's own /etc/plx/workbench-api.env. The mint itself runs as the API's
 # user, so its audit row lands in the API's state with the API's owner; who asked goes to the
 # system log (and sudo's). The link goes to the caller's ~/.config/plx/workbench-access-link
-# (0600, the caller's); it is never printed.
+# (0600, the caller's); it is never printed. Every refusal exits 2 with its reason on stderr.
 set -euo pipefail
 umask 077
+# raised with every change here: a deploy replaces an installed copy with a lower number from
+# the sealed release (plx-release refresh_mint_link), never with a lower or equal one
+PLX_MINT_LINK_VERSION=2
 API_USER=${PLX_MINT_API_USER:-plx-workbench}
 ETC=${PLX_MINT_ETC:-/etc/plx}
 VENV=${PLX_MINT_VENV:-/data/venv}
@@ -134,8 +137,27 @@ sys.path.insert(0, sys.argv[1])
 sys.argv = ["console_ticket"] + sys.argv[2:]
 runpy.run_module("operator_api.workspace.console_ticket", run_name="__main__", alter_sys=True)
 ' "$(readlink -f "$RELEASE")" mint --state-dir "$STATE" --host-config "$work/host/$(basename "$HOST_CONFIG")" \
-  --reader-env "$VAR" --ttl-minutes "$TTL" "${SERVICE[@]}" --out "$work/ticket.url" >/dev/null
+  --reader-env "$VAR" --ttl-minutes "$TTL" "${SERVICE[@]}" --out "$work/ticket.url" \
+  >"$work/mint.json" 2>"$work/mint.err" || rc=$?
 secrets=(); excl=""
+# a refusal is the mint's one JSON line {"status": "refused", "reason": ...} (no ticket, no
+# secret): say why, never a bare exit 2. Anything else it printed stays unshown (a crash's
+# trace may quote the environment); only its last line's exception name is given.
+if [ "${rc:-0}" != 0 ] || [ ! -s "$work/ticket.url" ]; then
+  reason=$(sed -n 's/^{"status": "refused", "reason": "\([A-Za-z0-9_.:-]*\)"}$/\1/p' "$work/mint.json" | head -1)
+  if [ -z "$reason" ]; then
+    reason="the mint stopped (exit ${rc:-0}$(tail -1 "$work/mint.err" | grep -oE '^[A-Za-z_.]+(Error|Exception|Exit)' | sed 's/^/, /' || true))"
+  fi
+  case $reason in
+    session_ticket_ttl_invalid) reason="$reason: $TTL minutes is longer than this kind of link may live" ;;
+    state_not_live:*) reason="$reason: the API's state folder is not the live one" ;;
+    session_secret_unavailable) reason="$reason: no session secret in $ETC/live-session.env" ;;
+    reader_identity_invalid|no_employee_identity) reason="$reason: check $VAR in $ETC/mint-readers.env" ;;
+    portal_access_unavailable|employee_policy_*) reason="$reason: the host config's employee policy or Portal access snapshot is missing or stale" ;;
+    audit_unwritable|out_unwritable) reason="$reason: a full disk or a folder the API user cannot write" ;;
+  esac
+  die "no link minted: $reason"
+fi
 url=$(cat "$work/ticket.url")
 home=$(getent passwd "$CALLER" | cut -d: -f6)
 out="$home/.config/plx/$OUT_NAME"

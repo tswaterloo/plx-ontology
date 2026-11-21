@@ -113,6 +113,7 @@ READY_S=${PLX_API_READY_S:-660}
 MEM_RESERVE_MB=${PLX_API_MEM_RESERVE_MB:-2048}   # left on the host with both APIs up
 MEM_FLOOR_MB=${PLX_API_MEM_FLOOR_MB:-1024}       # a standby is stopped below this
 PG_MARGIN=${PLX_API_PG_MARGIN:-8}                # sessions left to everyone else
+PG_NEED=${PLX_API_PG_NEED:-40}                   # sessions a second API takes as it starts and warms
 API_ROLE=${PLX_API_PG_ROLE:-plx_api}
 MEMINFO=${PLX_MEMINFO:-/proc/meminfo}
 PROC=${PLX_PROC:-/proc}                          # prune skips releases a process runs in
@@ -547,21 +548,30 @@ rollback() {
 # mint_has_canary <mint>: the installed plx-mint-link knows --canary (the canary's own link)
 mint_has_canary() { grep -qF -- '"--canary"' "$1" 2>/dev/null; }
 
-# refresh_mint_link <mint>: an installed plx-mint-link without --canary is replaced by the
-# serving release's copy, before the probe needs it, so an old host copy (which reads --canary
-# as a TTL and refuses) never rolls a deploy back. Only from a sealed release (owned by the
+# mint_version <mint>: its PLX_MINT_LINK_VERSION (0 for a copy from before the number)
+mint_version() {
+  local v; v=$(sed -n 's/^PLX_MINT_LINK_VERSION=\([0-9][0-9]*\)$/\1/p' "$1" 2>/dev/null | head -1)
+  echo "${v:-0}"
+}
+
+# refresh_mint_link <mint>: an installed plx-mint-link older than the serving release's copy
+# (a lower PLX_MINT_LINK_VERSION, or no --canary) is replaced by that copy before the probe
+# needs it, so an old host copy (one that reads --canary as a TTL, or hides why a mint was
+# refused) never outlives the release that fixed it. Only from a sealed release (owned by the
 # release owner, nothing group/other-writable; never the repo checkout), only a copy that has
-# --canary (never a downgrade), never anything else.
+# --canary and a higher number (never a downgrade, e.g. on rollback), never anything else.
 refresh_mint_link() {
   local mint=$1 owner=${PLX_RELEASE_OWNER:-root}
   local src; src="$PLX_RELEASES/$(current_id)/deploy/ops/plx-mint-link"
-  mint_has_canary "$mint" && return 0
   [ -f "$src" ] && mint_has_canary "$src" || return 0
+  if mint_has_canary "$mint" && [ "$(mint_version "$src")" -le "$(mint_version "$mint")" ]; then
+    return 0
+  fi
   if [ "$(stat -L -c %U "$src")" != "$owner" ] || [ -n "$(find -L "$src" -perm /022)" ]; then
     log "plx-mint-link not refreshed: $src is not sealed"; return 0
   fi
   sudo -n install -m 755 "$src" "$mint" >/dev/null 2>&1 \
-    && log "plx-mint-link refreshed from release $(current_id) (--canary)" \
+    && log "plx-mint-link refreshed from release $(current_id) (version $(mint_version "$src"))" \
     || log "plx-mint-link could not be refreshed from release $(current_id)"
 }
 
@@ -586,7 +596,9 @@ auth_probe() {
     return 0
   fi
   local link="$HOME/.config/plx/ask-canary-access-link" jar body code=000
-  sudo -n "$mint" --canary >/dev/null 2>&1 || { echo "auth probe: the canary link could not be minted" >&2; return 1; }
+  local why
+  why=$(sudo -n "$mint" --canary 2>&1 >/dev/null) \
+    || { echo "auth probe: the canary link could not be minted (${why:-no reason given})" >&2; return 1; }
   jar=$(mktemp); body=$(mktemp); chmod 600 "$jar" "$body"
   python3 -I -c 'import json,sys;u=open(sys.argv[1]).read().strip();print(json.dumps({"ticket":u.split("#ticket=",1)[1]}))' \
     "$link" > "$body" 2>/dev/null \
@@ -855,6 +867,12 @@ api_memory_mb() {  # what the serving API holds now: its cgroup's anonymous memo
 }
 
 pg_room() {  # empty when Postgres can take a second API's sessions, else why not
+  # The serving API's idle logins are not counted: each closes after ~15-20 s unused
+  # (operating/pg/pool.py IDLE_KEEP_SECONDS), so what it holds through the hand-over is
+  # what it has at work (active, in a transaction); a second API needs about PG_NEED
+  # (its own start-up and its warm-up, whose sessions are bounded: warm_process
+  # WARM_PG_SESSIONS). Counting the idle ones too (and the second API as large as the
+  # first) refused every warm switch near the role's 100 (11-21 9:14 AM ET: cold restart).
   pg_only || return 0
   local dsn; dsn=$(pg_dsn)
   [ -n "$dsn" ] || { echo "no PLX_PG_DSN to count the API's Postgres sessions"; return 0; }
@@ -864,15 +882,19 @@ SELECT CASE WHEN r.rolconnlimit < 0 THEN current_setting('max_connections')::int
             ELSE r.rolconnlimit END,
        (SELECT count(*) FROM pg_stat_activity a
          WHERE a.usename = r.rolname OR (r.rolconnlimit < 0 AND a.usename IS NOT NULL)),
-       (SELECT count(*) FROM pg_stat_activity a WHERE a.application_name = :'app')
+       (SELECT count(*) FROM pg_stat_activity a WHERE a.application_name = :'app'),
+       (SELECT count(*) FROM pg_stat_activity a
+         WHERE a.application_name = :'app' AND a.state IS DISTINCT FROM 'idle')
   FROM pg_roles r WHERE r.rolname = :'role';
 SQL
   ) || true
-  [[ $row =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)$ ]] \
+  [[ $row =~ ^([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)$ ]] \
     || { echo "the API's Postgres sessions could not be counted"; return 0; }
   local limit=${BASH_REMATCH[1]} used=${BASH_REMATCH[2]} api=${BASH_REMATCH[3]}
-  if [ $((used + api + PG_MARGIN)) -gt "$limit" ]; then
-    echo "Postgres has no room for a second API ($API_ROLE: $used of $limit sessions in use, the API holds $api)"
+  local active=${BASH_REMATCH[4]}
+  local others=$((used - api)); [ "$others" -ge 0 ] || others=0
+  if [ $((others + active + PG_NEED + PG_MARGIN)) -gt "$limit" ]; then
+    echo "Postgres has no room for a second API ($API_ROLE: $used of $limit sessions in use, the API holds $api, $active of them at work; a second API needs ~$PG_NEED)"
   fi
 }
 
@@ -1130,7 +1152,12 @@ prune() {
   [ "${1:-}" = "--keep" ] && keep=$2
   local cur prev busy d n=0
   cur=$(current_id); prev=$(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || echo none)")
-  busy=$(for p in "$PROC"/[0-9]*; do readlink "$p/cwd" 2>/dev/null || true; done | sort -u)
+  # read as the releases' owner (root when sealed): the API and its standby run as their own
+  # user, whose /proc/<pid>/cwd the caller cannot read (11-21: as the deploy user, plx-api's read as
+  # nothing, so a release it ran from outside current/previous/newest was not kept); a read
+  # that fails prunes nothing (as_root dies)
+  busy=$(as_root bash -c 'for p in "$1"/[0-9]*; do readlink "$p/cwd" 2>/dev/null || true; done' _ "$PROC" | sort -u)
+  [ -n "$busy" ] || die "prune: no process's working directory could be read: nothing pruned"
   for d in $(ls -1td "$PLX_RELEASES"/*/ 2>/dev/null); do
     d=${d%/}; local id; id=$(basename "$d")
     [ -L "$d" ] && continue   # current/previous: links, never releases (rm -rf would drop the link)

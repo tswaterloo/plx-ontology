@@ -77,3 +77,48 @@ export function StaleNote({ since, readAt, className }: { since?: string | null;
     </p>
   );
 }
+
+type Report = (message: string | null, from: symbol) => void;
+const OneProblemSlot = React.createContext<Report | null>(null);
+
+/**
+ * One problem banner for a whole card: every part inside `provide(...)` that uses
+ * `useProblem` reports to it, and so does the card itself through `set`. The newest failure
+ * replaces the one shown, so two failed clicks never stack two boxes; a part that clears its
+ * own problem clears the banner only while it is still that part's. Put `banner` where the
+ * card shows it.
+ */
+export function useProblemSlot(): {
+  provide: (children: React.ReactNode) => React.ReactNode;
+  banner: React.ReactNode;
+  set: (message: string | null) => void;
+} {
+  const [shown, setShown] = React.useState<{ message: string; from: symbol } | null>(null);
+  const [own] = React.useState(() => Symbol("card"));
+  const report = React.useCallback<Report>((message, from) => {
+    setShown((cur) => (message ? { message, from } : cur?.from === from ? null : cur));
+  }, []);
+  const set = React.useCallback((m: string | null) => report(m, own), [report, own]);
+  const provide = (children: React.ReactNode) => <OneProblemSlot.Provider value={report}>{children}</OneProblemSlot.Provider>;
+  return { provide, banner: shown ? <ErrorNotice message={shown.message} /> : null, set };
+}
+
+/**
+ * A part's problem: `[message, set, banner]`. Inside a card's `useProblemSlot` the message
+ * goes to the card's one banner and `banner` is null; anywhere else `banner` is this part's
+ * own notice.
+ */
+export function useProblem(): [string | null, (message: string | null) => void, React.ReactNode] {
+  const slot = React.useContext(OneProblemSlot);
+  const [me] = React.useState(() => Symbol("problem"));
+  const [message, setMessage] = React.useState<string | null>(null);
+  const set = React.useCallback(
+    (m: string | null) => {
+      setMessage(m);
+      slot?.(m, me);
+    },
+    [slot, me],
+  );
+  React.useEffect(() => () => slot?.(null, me), [slot, me]);
+  return [message, set, !slot && message ? <ErrorNotice message={message} /> : null];
+}

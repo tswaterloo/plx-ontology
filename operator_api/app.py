@@ -982,10 +982,14 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return backend.sidebar(who)
 
     @app.get("/api/data-health", response_model=m.DataHealth, tags=["home"],
-             responses={401: {"model": m.ErrorResponse}})
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def data_health(who: Reader = Depends(reader)) -> m.DataHealth:
         """Every data-health check: the findings you may see, and how many more it found on
-        records you may not open (counted, never named)."""
+        records you may not open (counted, never named). An Admin page: the owner and the
+        Team readers only, as its menu entry (403 for every other reader)."""
+        if not ops_reader(who):
+            raise UserFacing("forbidden", "Only the owner and the Team readers see data "
+                             "health.", 403)
         return backend.data_health(who)
 
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
@@ -1163,6 +1167,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Pass an alert on your list to a colleague: on their list too, under their own
         access, only to set aside there; nothing is decided, sent or written."""
         return backend.autopilot_hand(who, item_id, body)
+
+    @app.post("/api/autopilot/items/{item_id}/take", response_model=m.AutopilotDrafts,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse}})
+    def autopilot_take(item_id: str, who: Reader = Depends(reader)) -> m.AutopilotDrafts:
+        """Take an item your role holds (no record names who handles it): yours alone from
+        now, to check and confirm like any of your items; nothing is sent or written."""
+        return backend.autopilot_take(who, item_id)
 
     @app.post("/api/autopilot/items/{item_id}/decision", response_model=m.AutopilotItem,
               tags=["actions"], responses={401: {"model": m.ErrorResponse},

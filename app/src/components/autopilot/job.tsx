@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ErrorNotice } from "@/components/ui/notice";
+import { useProblem, useProblemSlot } from "@/components/ui/notice";
 import { PreparedChange } from "@/components/prepared-change";
 import { TodoSteps } from "@/components/autopilot/todo";
 import { prepareAutopilotJob, type PreparedItem, type ProposedJob } from "@/lib/api";
@@ -34,7 +34,7 @@ export { tomorrowMorning } from "@/components/autopilot/item-actions";
 function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
   const [pid, setPid] = useState<string | null>(job.prepared_id ?? null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError, problem] = useProblem();
   const review = async () => {
     setBusy(true);
     setError(null);
@@ -61,12 +61,13 @@ function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
           Review this change
         </Button>
       )}
-      {error && <ErrorNotice message={error} />}
+      {problem}
     </li>
   );
 }
 
 export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
+  const card = useProblemSlot();
   return (
     <li id={`prepared-${item.item_id}`} className={linked ? "space-y-2 border-l-2 border-accent py-4 pl-3" : "space-y-2 py-4"} data-testid="prepared-job">
       <div className="flex flex-wrap items-baseline gap-x-3">
@@ -93,13 +94,18 @@ export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?:
           ))}
         </div>
       )}
-      <ul className="max-w-[46rem] divide-y divide-border" aria-label="Changes to review">
-        {(item.jobs ?? []).map((j) => (
-          <Proposed key={j.index} itemId={item.item_id} job={j} />
-        ))}
-      </ul>
-      <TodoSteps todos={item.todos ?? []} />
-      <ItemActions item={item} onGone={onGone} />
+      {card.provide(
+        <>
+          <ul className="max-w-[46rem] divide-y divide-border" aria-label="Changes to review">
+            {(item.jobs ?? []).map((j) => (
+              <Proposed key={j.index} itemId={item.item_id} job={j} />
+            ))}
+          </ul>
+          <TodoSteps todos={item.todos ?? []} />
+          <ItemActions item={item} onGone={onGone} />
+        </>,
+      )}
+      {card.banner}
     </li>
   );
 }

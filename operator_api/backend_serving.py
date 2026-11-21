@@ -499,9 +499,11 @@ class ServingMixin:
         """The screen read again and kept: (the read's value, the reader's access state
         before and after it, the inputs stamp taken before it)."""
         with self._lock:   # the screen's own inputs, as its last request named them
+            own = self.__dict__.get("_screen_inputs_fns", {}).get(key)
             served = self._snap_reads().get(key)
-        inputs = self._inputs_of(reader, served[3] if served and len(served) > 3 else None,
-                                 key[2][0] if key[2] else None)
+            if own is None and served and len(served) > 3:
+                own = served[3]
+        inputs = self._inputs_of(reader, own, key[2][0] if key[2] else None)
         before = self._access_now(reader, key[2])
         value = read()
         after = self._access_now(reader, key[2])

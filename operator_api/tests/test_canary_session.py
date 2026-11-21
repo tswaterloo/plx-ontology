@@ -7,6 +7,7 @@ make or unmake (its mark is the signed ticket id)."""
 from __future__ import annotations
 
 import argparse
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -412,6 +413,67 @@ class ConsoleTicketServiceTest(Fixture):
                 ct.mint(long_measure, env)
         self.assertFalse((self.dir / "link-long").exists())
         self.assertEqual(len(rows), 3)
+
+
+class MintLinkRefusalTest(Fixture):
+    """A refused mint says why (the walk's measure link failed with a bare exit 2: the
+    wrapper threw the mint's refusal away). The wrapper's own refusal block runs on what the
+    mint really prints."""
+
+    def wrapper_says(self, mint_stdout: str, rc: int, stderr: str = "",
+                     ttl: str = "120") -> subprocess.CompletedProcess:
+        text = (Path(__file__).resolve().parents[2] / "deploy" / "ops"
+                / "plx-mint-link").read_text()
+        block = text[text.index("# a refusal is the mint's"):]
+        block = block[:block.index("\nfi\n") + 4]
+        work = self.dir / "work"
+        work.mkdir(exist_ok=True)
+        (work / "mint.json").write_text(mint_stdout)
+        (work / "mint.err").write_text(stderr)
+        script = ('set -euo pipefail\ndie() { echo "plx-mint-link: $*" >&2; exit 2; }\n'
+                  f'work={work}; rc={rc}; TTL={ttl}; ETC=/etc/plx; VAR=PLX_EVAL_READER\n'
+                  + block + '\necho reached-the-link-write\n')
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def test_a_refused_mint_names_its_reason_and_writes_no_link(self):
+        import contextlib
+        import io
+        from operator_api.workspace import console_ticket as ct
+        state = self.dir / "state"
+        state.mkdir()
+        env = {"PLX_WORKBENCH_SESSION_SECRET": SECRET,
+               "PLX_EVAL_READER": '{"uid": "cmuser1", "email": "%s", "entraTenantId": "%s", '
+               '"entraObjectId": "%s"}' % (EMAIL_A, TID, OID_A)}
+        printed = io.StringIO()
+        with mock.patch.object(ct, "_live_state", return_value=state), \
+                mock.patch.object(ct, "_resolver", return_value=self.resolver()), \
+                contextlib.redirect_stdout(printed):
+            rc = ct.main(["mint", "--state-dir", str(state), "--host-config", "/nonexistent",
+                          "--reader-env", "PLX_EVAL_READER", "--ttl-minutes", "120",
+                          "--service", si.SERVICE_MEASURE,
+                          "--out", str(self.dir / "ticket.url")], environ=env)
+        self.assertEqual(rc, 2)
+        got = self.wrapper_says(printed.getvalue(), rc)
+        self.assertEqual(got.returncode, 2)
+        self.assertNotIn("reached-the-link-write", got.stdout)
+        self.assertEqual(got.stderr.strip(), "plx-mint-link: no link minted: "
+                         "session_ticket_ttl_invalid: 120 minutes is longer than this "
+                         "kind of link may live")
+
+    def test_an_unknown_failure_still_says_something_and_quotes_nothing(self):
+        trace = ("Traceback (most recent call last):\n  File x\n"
+                 "PermissionError: [Errno 13] PLX_WORKBENCH_SESSION_SECRET=hunter2\n")
+        got = self.wrapper_says("", 1, stderr=trace)
+        self.assertEqual(got.returncode, 2)
+        self.assertEqual(got.stderr.strip(),
+                         "plx-mint-link: no link minted: the mint stopped (exit 1, PermissionError)")
+        self.assertNotIn("hunter2", got.stderr)
+        # a reason shaped otherwise (or a success line) is never echoed as a reason
+        odd = self.wrapper_says('{"status": "refused", "reason": "a$(id)"}\n', 2)
+        self.assertIn("the mint stopped (exit 2)", odd.stderr)
+        self.assertNotIn("$(id)", odd.stderr)
+        # a mint that exited 0 but wrote no link file is refused all the same
+        self.assertEqual(self.wrapper_says('{"status": "minted"}\n', 0).returncode, 2)
 
 
 class MintLinkCanaryTest(unittest.TestCase):

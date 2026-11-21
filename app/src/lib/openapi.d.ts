@@ -555,6 +555,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/items/{item_id}/take": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Take
+         * @description Take an item your role holds (no record names who handles it): yours alone from
+         *     now, to check and confirm like any of your items; nothing is sent or written.
+         */
+        post: operations["autopilot_take_api_autopilot_items__item_id__take_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/mode": {
         parameters: {
             query?: never;
@@ -1038,7 +1059,8 @@ export type paths = {
         /**
          * Data Health
          * @description Every data-health check: the findings you may see, and how many more it found on
-         *     records you may not open (counted, never named).
+         *     records you may not open (counted, never named). An Admin page: the owner and the
+         *     Team readers only, as its menu entry (403 for every other reader).
          */
         get: operations["data_health_api_data_health_get"];
         put?: never;
@@ -4902,6 +4924,12 @@ export type components = {
              */
             options?: components["schemas"]["AutopilotOption"][];
             /**
+             * Pooled
+             * @description On an item no record names a person for: the role whose list it is on until one of them takes it (Take); empty on your own items.
+             * @default
+             */
+            pooled: string;
+            /**
              * Redo
              * @description On a reply the model wrote: it can be written again from one line of what you want to say (reply-from-line).
              * @default false
@@ -6420,7 +6448,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
         };
         /**
          * CustomerSummary
@@ -7429,7 +7457,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
         };
         /** GraphRequest */
         GraphRequest: {
@@ -10225,7 +10253,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
             /** Why */
             why: string;
         };
@@ -10736,7 +10764,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
         };
         /**
          * SourceRecord
@@ -10817,7 +10845,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
             /** Text */
             text?: string | null;
             /**
@@ -11723,7 +11751,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
             /** Title */
             title: string;
         };
@@ -11890,7 +11918,7 @@ export type components = {
              * System
              * @enum {string}
              */
-            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
         };
         /**
          * TrustGate
@@ -14320,6 +14348,64 @@ export interface operations {
             };
         };
     };
+    autopilot_take_api_autopilot_items__item_id__take_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotDrafts"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     autopilot_mode_api_autopilot_mode_post: {
         parameters: {
             query?: never;
@@ -15528,6 +15614,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

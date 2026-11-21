@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from operating import read_ceiling
@@ -52,6 +54,12 @@ FALLBACK = frozenset({"not_served", "not_ready"})
 OPEN_FALLBACK = FALLBACK | {"not_readable"}
 ALL_SOURCES = ("graph_mail", "sharepoint", "original", "teams", RECORDS)
 OPEN_MAX_CHARS = 20000
+# plx.open with ``citations``: how many in one call, each one's window, the call's time
+# for opening (call_limits gives plx.open 30 s; what is left over answers)
+MANY_MAX = 12
+MANY_CHARS = 2500
+MANY_SECONDS = 20.0
+_NEAR_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 CHECK_MAX_CHARS = 200_000  # a hit's full text checked for Freightcom up to this many chars
 CHECK_RESERVE_S = 2.0      # time kept back from the call's limit when checking full texts
 DEFAULT_LIMIT = 20
@@ -430,32 +438,97 @@ def fitted(result: Any, fits: Callable[[dict[str, Any]], bool]) -> Any:
     return cut(low)
 
 
+def _near_words(value: Any) -> list[str] | None:
+    """``near``'s words (as plx.search splits a query), at most ``comms_search``'s
+    MAX_TERMS; None: not a usable value."""
+    if not isinstance(value, str) or not value.strip() or len(value) > 200:
+        return None
+    words = list(dict.fromkeys(w.casefold() for w in _NEAR_WORD.findall(value)))
+    return words[:16] or None
+
+
 def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
-             call_comms: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
+             call_comms: Callable[[dict[str, Any]], Any] | None = None, *,
+             resolve: Callable[[str], Any] = lambda citation: citation,
+             clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """One ``plx.open``: a mail or Teams item through ``call_comms`` (the host's internal
     ``plx.sql_comms_open``: the same guarded views as the search); any other citation, or
     a host not serving the mail tables, through ``call_read`` (the host's own ``plx.read``
     for the session's reader: its gates decide). A result naming Freightcom anywhere is
-    never shown (``egress_withheld``). Unknown arguments fail closed."""
+    never shown (``egress_withheld``). Unknown arguments fail closed.
+
+    ``citations`` (several, ``MANY_MAX``): each is opened exactly as one ``citation`` is
+    (``resolve`` turns a session ref into its handle; None: not shown this session, that
+    item is not found), in a ``MANY_CHARS`` window, the results in the order sent under
+    ``opened``; one item's refusal or error is that item's, never the others'. Past
+    ``MANY_SECONDS`` no further item is opened (each says so). ``near`` words: a mail or
+    Teams window starts just before the first of them its text holds (11-21: Ask listed
+    35 of a supplier's mails and concluded without opening one; one call now reads the
+    part of each that holds the date or amount asked about)."""
     if not isinstance(arguments, Mapping):
         return _error("invalid_input", "arguments must be an object")
     unknown = sorted(set(arguments) - set(_OPEN["input"]["properties"]))
     if unknown:
         return _error("invalid_input", "unknown arguments: " + ", ".join(unknown)[:200])
+    near = None
+    if "near" in arguments:
+        near = _near_words(arguments["near"])
+        if near is None:
+            return _error("invalid_input", "near: the words to start each window at")
+    if "citations" in arguments:
+        many = arguments["citations"]
+        if "citation" in arguments or "text_offset" in arguments:
+            return _error("invalid_input", "send citation (one, text_offset to read on) or "
+                                           "citations (several), not both")
+        if not isinstance(many, list) or not 0 < len(many) <= MANY_MAX or not all(
+                isinstance(c, str) and c.strip() for c in many) or len(set(many)) != len(many):
+            return _error("invalid_input", f"citations: 1 to {MANY_MAX} different citations")
+        start, out = clock(), []
+        for asked in many:
+            if clock() - start > MANY_SECONDS:
+                out.append({"citation": asked, "error": {
+                    "code": "not_opened", "message": "not opened in this call's time: "
+                                                     "open it again"}})
+                continue
+            full = resolve(asked)
+            if not isinstance(full, str):
+                out.append({"citation": asked, "error": {
+                    "code": "not_found", "message": "no result of this session showed it"}})
+                continue
+            got = _open_single(call_read, call_comms, full, None, near, MANY_CHARS)
+            # each says which it is: an error by the citation as sent, a result by its own
+            # (else the handle opened)
+            out.append({"citation": asked, **got} if "error" in got
+                       else got if "citation" in got else {"citation": full, **got})
+        return {"opened": out, "window_chars": MANY_CHARS}
     citation = arguments.get("citation")
     if not isinstance(citation, str) or not citation.strip():
         return _error("invalid_input", "send citation: a plx.search hit's citation")
-    wanted: dict[str, Any] = {"citation": citation, "max_chars": OPEN_MAX_CHARS}
     offset = arguments.get("text_offset")
     if offset is not None:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             return _error("invalid_input", "text_offset must be a whole number >= 0")
+    full = resolve(citation)
+    if not isinstance(full, str):
+        return {"error": {"code": "not_found", "message": (
+            "no plx.search hit or plx.sql row of this session showed that ref: "
+            "send the ref or citation a result showed")}}
+    return _open_single(call_read, call_comms, full, offset, near, OPEN_MAX_CHARS)
+
+
+def _open_single(call_read: Callable[[dict[str, Any]], Any],
+                 call_comms: Callable[[dict[str, Any]], Any] | None, citation: str,
+                 offset: int | None, near: list[str] | None, most: int) -> dict[str, Any]:
+    """One item's open (``open_one``), its gates whole."""
+    wanted: dict[str, Any] = {"citation": citation, "max_chars": most}
+    if offset is not None:
         wanted["text_offset"] = offset
     try:
         moment = read_ceiling.ceiling()
     except read_ceiling.CeilingInvalid as exc:
         return _error("not_ready", str(exc))
-    got = call_comms(dict(wanted)) if call_comms is not None else None
+    got = call_comms({**wanted, **({"near": near} if near else {})}) \
+        if call_comms is not None else None
     via_comms = isinstance(got, Mapping) and not got.get("not_comms") and (
         got.get("error") or {}).get("code") not in OPEN_FALLBACK
     if not via_comms:
@@ -471,7 +544,7 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
         return {"error": {"code": "egress_withheld",
                           "message": "this item is never shown to the assistant"}}
     if via_comms:
-        # a mail, Teams or file row of the guarded views: Freightcom was decided on its
+        # a mail or Teams row of the guarded views: Freightcom was decided on its
         # whole text at build (``ai_ok``; a text not yet read is held back), so a long
         # mail's window (its ``text`` cut, ``next_offset``) is shown, never read again
         return dict(got)

@@ -52,6 +52,20 @@ FIRST_PASS_SECONDS = 420
 # read workers of the warm-up process (``PLX_WARM_READ_WORKERS``): each is a runtime of its
 # own (~0.3-0.5 GB), so a few, not one per core
 WARM_READ_WORKERS = 3
+# Postgres sessions the warm-up process may hold at once (``PLX_WARM_PG_SESSIONS``; its
+# read and check workers' stores, probes and pools together: ``pool.session_budget``). A
+# pass unbounded held the API's whole share of the role's 100 (11-21 9:14 AM ET), so the
+# deploy's second API found no room and live requests were refused logins; bounded, a
+# read-ahead waits for one of its own process's slots instead.
+WARM_PG_SESSIONS = 24
+
+
+def warm_pg_sessions(environ: Any = None) -> int:
+    raw = str((os.environ if environ is None else environ).get("PLX_WARM_PG_SESSIONS", ""))
+    try:
+        return max(4, min(64, int(raw.strip()))) if raw.strip() else WARM_PG_SESSIONS
+    except ValueError:
+        return WARM_PG_SESSIONS
 
 
 def read_workers() -> int:
@@ -275,6 +289,9 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
     once the first pass is kept (``first_pass``)."""
     logging.basicConfig(level=logging.INFO,   # the warm-up's timings, in the app's log
                         format="%(asctime)s %(name)s %(message)s")
+    if fixtures is None:   # this process's own (a test's thread shares its process's)
+        from operating.pg.pool import SESSIONS_MAX_ENV
+        os.environ[SESSIONS_MAX_ENV] = str(warm_pg_sessions())
     from operating import parent_watch
     # ends with the API (stopped without its exit handlers it never sends None)
     parent_watch.die_with(parent_watch.spawned_parent())

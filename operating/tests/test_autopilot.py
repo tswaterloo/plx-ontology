@@ -1105,6 +1105,92 @@ class SupplierFollowUp(Fixture):
         self.assertEqual(owners.get(pos["OPS"]), OURS_OID, ran)
         self.assertNotIn(pos["ZZQX"], owners)             # a code naming nobody: nobody
 
+    def test_the_address_on_the_twin_pos_supplier_is_used_when_its_own_has_none(self):
+        """A PO whose supplier carries no address (Portal POs on 11-06..11-21: 28 of 28)
+        is followed up to the address on the supplier of its twin PO in another system;
+        with no address on either, nothing is prepared. A PO naming no buyer is one item the
+        purchasing role holds, never a copy per person (11-06..11-21: 254 follow-ups to 9
+        people for 28 POs, 1 acted on)."""
+        w = self.w
+        self.env[autopilot_queue.ROLES_ENV] = str(self.dir / "roles.json")
+        (self.dir / "roles.json").write_text(json.dumps(
+            {"roles": {"purchasing": [OURS_OID, APPROVER_OID]}}))
+        pos = {}
+        for i, twin_mail, code in ((0, "anna.reed@synth-twin.example", "OPS"),
+                                   (1, "", "OPS"), (2, "bo.lind@synth-twin.example", "")):
+            po = w.obj("PurchaseOrder", {"po_number": f"P-8{i}", "order_date": "2026-10-14",
+                                         "status": "Released", "vendor_name": "Synth",
+                                         **({"purchaser_code": code} if code else {})})
+            w.link("PurchaseOrder.ordered_from", po, w.obj("Supplier", {"name": f"Synth {i}"}))
+            twin = w.obj("PurchaseOrder", {"po_number": f"P-8{i}"})
+            w.link("PurchaseOrder.same_record_as", po, twin)
+            w.link("PurchaseOrder.ordered_from", twin, w.obj("Supplier", {
+                "name": f"Synth twin {i}", **({"csr_email": twin_mail} if twin_mail else {})}))
+            w.link(autopilot_queue.PO_LINE_OF, w.obj("PurchaseOrderLine", {
+                "item_code": "SYN-8", "ordered_quantity": "4", "uom": "CS"}), po)
+            pos[i] = po
+        self.build(events=[("PurchaseOrder.created", p, "2026-10-14T10:00:00Z")
+                           for p in pos.values()])
+        ran = self.cycle([], registry=ap.load_registry())
+        self.assertEqual(ran["prepared"], {"po_followup": 2}, ran)
+        self.assertEqual(ran["skipped"].get("po_followup:supplier_contact_unknown"), 1, ran)
+        items = self.queue().items([OURS_OID, APPROVER_OID, "pool:purchasing"])
+        self.assertEqual(sorted((i["body"]["happened"]["object_id"], i["owner"]) for i in items),
+                         sorted([(pos[0], OURS_OID), (pos[2], "pool:purchasing")]))
+        mail_to = {i["owner"]: [t["address"] for t in i["body"]["prepared"]["draft"]["to"]]
+                   for i in items}
+        self.assertEqual(mail_to, {OURS_OID: ["anna.reed@synth-twin.example"],
+                                   "pool:purchasing": ["bo.lind@synth-twin.example"]})
+        # done once the PO is confirmed (here on its twin) or received, pooled or not; the
+        # other stays open until then
+        events = [("PurchaseOrder.created", p, "2026-10-14T10:00:00Z") for p in pos.values()]
+        twin2 = next(l["to_object"] for l in w.rows["links"]
+                     if l["link_type"] == "PurchaseOrder.same_record_as" and l["from_object"] == pos[2])
+        w.link("SupplierConfirmation.confirms", w.obj("SupplierConfirmation", {"tier": "mail"}), twin2)
+        self.build(events=events)
+        self.cycle([], registry=ap.load_registry(), now=NOW + timedelta(hours=1))
+        state = {i["owner"]: (i["state"], i["done_reason"]) for i in self.queue().items(
+            [OURS_OID, "pool:purchasing"], ("open", "done"))}
+        self.assertEqual(state, {OURS_OID: ("open", None), "pool:purchasing": ("done", "po_answered")})
+        w.link("Receipt.receives", w.obj("Receipt", {"receipt_number": "R-1"}), pos[0])
+        self.build(events=events)
+        self.cycle([], registry=ap.load_registry(), now=NOW + timedelta(hours=2))
+        state = {i["owner"]: i["state"] for i in self.queue().items(
+            [OURS_OID, "pool:purchasing"], ("open", "done"))}
+        self.assertEqual(state, {OURS_OID: "done", "pool:purchasing": "done"})
+
+    def test_the_buyer_is_whoever_most_recently_sent_mail_naming_the_po(self):
+        """Mail naming the PO decides its buyer: the most recent of ours the people
+        exclusion clears to send it (an internal note counts when nobody sent it to the
+        supplier); with no role either, a PO naming nobody gets no item."""
+        w = self.w
+        po = self.po(3)
+        self.w.rows["links"] = [l for l in self.w.rows["links"]
+                                if not (l.get("link_type") == "Email.mentions_po")]
+        note = mail(w, SENT - timedelta(days=2), sender=APPROVER, to=(OURS,),
+                    body="Chasing P-503", subject="P-503", mailbox=OURS_OID,
+                    conversation="po-int", n=41_003)
+        w.link("Email.mentions_po", note, po)
+        # a later mail naming it from a person the exclusion does not clear never makes
+        # them the buyer: the one before them is
+        later = mail(w, SENT - timedelta(days=1), sender=BOSS, to=("x@synth-supplier.example",),
+                     body="P-503 status?", subject="P-503", mailbox=OURS_OID,
+                     conversation="po-boss", n=41_004)
+        w.link("Email.mentions_po", later, po)
+        nobody = w.obj("PurchaseOrder", {"po_number": "P-99", "order_date": "2026-10-14",
+                                         "status": "Released", "vendor_name": "Synth"})
+        w.link("PurchaseOrder.ordered_from", nobody, w.obj("Supplier", {
+            "name": "Synth 99", "csr_email": "x@synth-supplier.example"}))
+        w.link(autopilot_queue.PO_LINE_OF, w.obj("PurchaseOrderLine", {
+            "item_code": "SYN-9", "ordered_quantity": "4", "uom": "CS"}), nobody)
+        self.build(events=[("PurchaseOrder.created", p, "2026-10-14T10:00:00Z")
+                           for p in (po, nobody)])
+        ran = self.cycle([], registry=ap.load_registry())
+        owners = {i["body"]["happened"]["object_id"]: i["owner"]
+                  for i in self.queue().items([OURS_OID, APPROVER_OID, "pool:purchasing"])}
+        self.assertEqual(owners, {po: APPROVER_OID}, ran)
+        self.assertEqual(ran["skipped"].get("po_followup:buyer_unknown"), 1, ran)
+
     def test_open_pos_without_confirmation_get_one_follow_up_each(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):
@@ -1744,12 +1830,24 @@ class FindOnPostgres(Fixture):
         self.assertEqual(self.queue().items(), [])
 
     def test_no_identifier_table_for_the_po_holds_the_order_entry(self):
-        self.order("45160")                      # keyed, but the table carries no customer PO
-        msg = self.po_past_the_head()
-        out = self.run_pg(self.build_with({}), [msg])
-        self.assertEqual(out["prepared"], {})
-        self.assertEqual(out["skipped"]["customer_po:entered_check_unavailable"], 1)
-        self.assertEqual(self.queue().items(), [])
+        """The table carries no customer PO: a type too large to read in full cannot say,
+        so the entry holds; a small one is read in full and finds the keyed order."""
+        for limit in (0, autopilot_handlers.FIND_SCAN_MAX):
+            with self.subTest(limit=limit):
+                self.setUp()
+                mine = self.order("45160")       # keyed, but the table carries no customer PO
+                msg = self.po_past_the_head()
+                with mock.patch.object(autopilot_handlers, "FIND_SCAN_MAX", limit):
+                    out = self.run_pg(self.build_with({}), [msg])
+                if not limit:
+                    self.assertEqual(out["prepared"], {})
+                    self.assertEqual(out["skipped"]["customer_po:entered_check_unavailable"], 1)
+                    self.assertEqual(self.queue().items(), [])
+                    continue
+                (item,) = self.queue().items()
+                work = item["body"]["prepared"]
+                self.assertEqual((work["done_hint"], work["order"]["object_id"]),
+                                 ("order_entered", mine))
 
     def test_every_order_under_one_customer_po_is_found(self):
         for n in (1, 10, 60):
@@ -1772,6 +1870,47 @@ class FindOnPostgres(Fixture):
                                  sorted(orders))
                 with self.assertRaises(autopilot_handlers.FindUnavailable):
                     ctx.find("RelSageApVendor", "vendorid", "V100")   # not carried: holds
+
+
+    def test_a_value_the_identifier_table_does_not_carry_is_read_from_a_small_type(self):
+        """On Postgres a pair the identifier table does not carry (a supplier's item
+        number: every supplier mail failed its handler, 11-06..11-21) is read in full from
+        a small type: found with letters and digits alike, "none" an answer. It cannot say
+        (raises) for a type with no records, a property no record carries, or a type over
+        ``FIND_SCAN_MAX``."""
+        for n in (1, 10, 60):
+            with self.subTest(items=n):
+                self.setUp()
+                mine = [self.w.obj("SupplierItem", {"supplier_item_number": f"AB-{i}-77"})
+                        for i in range(n)]
+                self.w.obj("SupplierItem", {"supplier_item_number": "AB-0-78"})
+                self.w.obj("Supplier", {"name": "Synth"})
+                path = self.build_with({})
+                st = pe._Store(path, threads=1)
+                self.addCleanup(st.close)
+                ctx = autopilot_handlers.Ctx(_PostgresStore(st), NOW.date(),
+                                             time.monotonic() + 60, ())
+                for i, oid in enumerate(mine):
+                    self.assertEqual(ctx.find("SupplierItem", "supplier_item_number",
+                                              f" ab{i}77"), [oid])
+                self.assertEqual(ctx.find("SupplierItem", "supplier_item_number", "ZZ-1"), [])
+                for prefix, prop in (("RelSageApVendor", "vendorid"), ("Supplier", "vendor_code")):
+                    with self.assertRaises(autopilot_handlers.FindUnavailable):
+                        ctx.find(prefix, prop, "V100")
+                capped = pe._Store(path, threads=1)     # a run whose total budget is spent
+                self.addCleanup(capped.close)
+                with mock.patch.object(autopilot_handlers, "FIND_SCAN_TOTAL", n):
+                    spent = autopilot_handlers.Ctx(_PostgresStore(capped), NOW.date(),
+                                                   time.monotonic() + 60, ())
+                    with self.assertRaises(autopilot_handlers.FindUnavailable):
+                        spent.find("SupplierItem", "supplier_item_number", "AB-0-77")
+                big = pe._Store(path, threads=1)        # a run of its own: nothing memoized
+                self.addCleanup(big.close)
+                with mock.patch.object(autopilot_handlers, "FIND_SCAN_MAX", n):
+                    fresh = autopilot_handlers.Ctx(_PostgresStore(big), NOW.date(),
+                                                   time.monotonic() + 60, ())
+                    with self.assertRaises(autopilot_handlers.FindUnavailable):
+                        fresh.find("SupplierItem", "supplier_item_number", "AB-0-77")
 
 
 class OneCardPerLot(unittest.TestCase):

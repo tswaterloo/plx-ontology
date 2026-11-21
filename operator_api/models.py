@@ -20,7 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 API_VERSION = "1.0.0"
 
-System = Literal["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]
+System = Literal["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC", "Calendar",
+                 "Planner"]
 AuthMode = Literal["entra", "dev", "mock"]
 SignIn = Literal["microsoft", "access_link", "demo"]
 Intent = Literal["status", "why", "who", "how_much", "compare", "find_document", "policy",
@@ -3912,6 +3913,9 @@ class AutopilotPrepared(_Model):
         default_factory=list, description="On an alert: the records or task it is about.")
     handed_to: str = Field("", description="On an alert you passed on: to whom.")
     handed_from: str = Field("", description="On an alert passed to you: by whom.")
+    pooled: str = Field("", description="On an item no record names a person for: the role "
+                        "whose list it is on until one of them takes it (Take); empty on "
+                        "your own items.")
     auto_would: str = Field("", description="A dry run of Auto on this reply, when your "
                             "replay score earned its workflow: \"send\" (it would go by "
                             "itself once you switch Auto on) or \"keep: <reasons>\" (it would "

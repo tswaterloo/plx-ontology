@@ -211,7 +211,7 @@ def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[
     roles = [ta.ROLE_LABELS[r] for r in row.get("roles") or () if r in ta.ROLE_LABELS]
     reply, n = row.get("reply") or {}, row.get("reply_n") or {}
     return {"key": key_of(oid), "name": str(row.get("name")), "self": is_self,
-            "team": team or row.get("department") or (roles[0] if roles else None),
+            "team": team or row.get("department"),   # a derived role is a role, never a team
             "roles": roles,
             "d7": _sum(days, until - timedelta(days=6), until),
             "d28": _sum(days, until - timedelta(days=27), until),

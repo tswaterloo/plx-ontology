@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { eastern, SectionTabs } from "@/components/shell";
+import { eastern, SectionTabs, sourceName } from "@/components/shell";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
@@ -54,11 +54,20 @@ function listed(names: string[]): string {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** One verdict per source: "Up to date", "Behind" or "Not read yet"; the reason, if any, beside it. */
+function verdictOf(f: TrustFreshness): { word: string; tone: string; why: string } {
+  const words = (f.state_words ?? "").trim();
+  const why = words.replace(/^(Up to date|Behind)(:\s*|\.\s*)/, "").replace(/^everything read is in the app\.?\s*/i, "").trim();
+  if (!f.captured_at) return { word: "Not read yet", tone: "text-late", why: why === "Never read yet." ? "" : why };
+  if (f.stale) return { word: "Behind", tone: "text-late", why };
+  return { word: "Up to date", tone: "text-ok", why: f.capture === "failed" ? why : "" };
+}
+
 /** One sentence: is the app's data keeping up with the systems it reads? */
 function sourcesSentence(fresh: TrustFreshness[]): string {
   if (fresh.length === 0) return "No source system is read on this server.";
-  const behind = fresh.filter((f) => f.stale).map((f) => f.system);
-  const failed = fresh.filter((f) => !f.stale && f.capture === "failed").map((f) => f.system);
+  const behind = fresh.filter((f) => f.stale).map((f) => sourceName(f.system));
+  const failed = fresh.filter((f) => !f.stale && f.capture === "failed").map((f) => sourceName(f.system));
   const head = behind.length === 0
     ? `The app is up to date with all ${plural(fresh.length, "system", "systems")} it reads`
     : behind.length === fresh.length
@@ -175,25 +184,24 @@ export default function TrustRoute() {
                 <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-freshness">
                   <thead className="text-[12px] text-muted">
                     <tr className="border-b border-border">
-                      <th className="py-1 pr-3 font-normal">System</th>
+                      <th className="py-1 pr-3 font-normal">Source</th>
+                      <th className="py-1 pr-3 font-normal">State</th>
                       <th className="py-1 pr-3 font-normal">Last read</th>
-                      <th className="py-1 pr-3 font-normal">In the app up to</th>
-                      <th className="py-1 pr-3 font-normal">How long ago</th>
-                      <th className="py-1 font-normal">State</th>
+                      <th className="py-1 font-normal max-sm:hidden">Why</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {fresh.map((f) => (
-                      <tr key={f.system} className="align-top">
-                        <td className="py-1.5 pr-3 font-medium">{f.system}</td>
-                        <td className="num py-1.5 pr-3">{f.captured_at ? eastern(f.captured_at) : <span className="text-faint">not in the ledger</span>}</td>
-                        <td className={cn("num py-1.5 pr-3", f.stale && "text-late")}>{f.served_at ? eastern(f.served_at) : <span className="text-faint">not served yet</span>}</td>
-                        <td className={cn("num py-1.5 pr-3", (f.lag_seconds ?? 0) > 6 * 3600 && "text-risk")}>{lagText(f.lag_seconds)}</td>
-                        <td className="py-1.5 text-[12px] text-muted">
-                          {f.state_words ?? (f.stale ? "Behind." : "Up to date.")}
-                        </td>
-                      </tr>
-                    ))}
+                    {fresh.map((f) => {
+                      const v = verdictOf(f);
+                      return (
+                        <tr key={f.system} className="align-top">
+                          <td className="py-1.5 pr-3 font-medium">{sourceName(f.system)}</td>
+                          <td className={cn("py-1.5 pr-3 font-medium whitespace-nowrap", v.tone)}>{v.word}</td>
+                          <td className="num py-1.5 pr-3 whitespace-nowrap">{f.captured_at ? `${eastern(f.captured_at)} · ${lagText(f.lag_seconds)} ago` : "—"}</td>
+                          <td className="py-1.5 text-[12px] text-muted max-sm:hidden">{v.why}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}

@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ItemActions } from "@/components/autopilot/item-actions";
-import { ErrorNotice } from "@/components/ui/notice";
+import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
@@ -49,7 +49,8 @@ export function TodoSteps({ todos }: { todos: TodoStep[] }) {
 
 export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const card = useProblemSlot();
+  const setError = card.set;
   const decide = async (decision: "accept") => {
     setBusy(true);
     setError(null);
@@ -72,7 +73,7 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
       {item.summary && <p className="max-w-[46rem] text-[13px]">{item.summary}</p>}
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
       <TodoSteps todos={item.todos ?? []} />
-      <ItemActions
+      {card.provide(<ItemActions
         item={item}
         onGone={onGone}
         busy={busy}
@@ -81,8 +82,8 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
             Done
           </Button>
         }
-      />
-      {error && <ErrorNotice message={error} />}
+      />)}
+      {card.banner}
     </li>
   );
 }

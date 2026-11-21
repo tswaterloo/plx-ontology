@@ -846,6 +846,14 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                 r = _read(st, [oid], ("status",)).get(oid)
                 if r and _v(r, "status").lower() not in ("", "pending"):
                     reason = "approval_decided"
+            if not reason and item["autopilot"] == "po_followup" and \
+                    str(oid or "").startswith("PurchaseOrder:"):
+                # a late PO's follow-up (a person's or its role's pooled one) is done once
+                # the PO is closed, received or confirmed: its event is no message, so no
+                # reply rule could ever close it
+                from .autopilot_work import po_followup_done
+                if po_followup_done(st, str(oid)):
+                    reason = "po_answered"
             if reason:
                 pass
             elif rule == "owner_replied" and happened.get("channel") == "mail":

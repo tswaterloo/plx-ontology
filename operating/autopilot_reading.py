@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from .citation_schemes import HANDLE_PREFIX
 
 from .autopilot_records import _iso
-from .autopilot_queue import CARD_PREFIX, Queue
+from .autopilot_queue import CARD_PREFIX, POOL_PREFIX, Queue
 
 
 # ----------------------------------------------------------------------------- reading side
@@ -21,11 +21,13 @@ from .autopilot_queue import CARD_PREFIX, Queue
 def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
             held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
             grants: Mapping[str, Any] | None = None,
-            states: Sequence[str] = ("open",), also: Iterable[str] = ()
-            ) -> list[dict[str, Any]]:
+            states: Sequence[str] = ("open",), also: Iterable[str] = (),
+            pools: Iterable[str] = ()) -> list[dict[str, Any]]:
     """The items this reader may see (module doc), fail closed; ``also``: the ids of
-    items passed to them (not theirs: ``mine`` false, ``handed`` true), under the same
-    checks of their own."""
+    items passed to them (not theirs: ``mine`` false, ``handed`` true); ``pools``: the
+    pooled owners (``autopilot_queue.POOL_PREFIX``) of the roles they are in, whose items
+    they may take (``mine`` false, ``pooled`` the owner); each under the same checks of
+    their own."""
     from .proactive_commitments import owner_ids
     mine = owner_ids(reader)
     if not mine:
@@ -36,7 +38,8 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
     for oid in mine:
         held_teams.update((grants.get("managers") or {}).get(oid) or ())
     reports = {o for o, t in teams.items() if t in held_teams}
-    owners = mine | reports
+    pooled = {p for p in pools if str(p).startswith(POOL_PREFIX)}
+    owners = mine | reports | pooled
     held = set(held)
 
     def readable(item: Mapping[str, Any]) -> bool:
@@ -59,6 +62,8 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
     for item in queue.items(owners, states):
         if readable(item):
             item["mine"] = item["owner"] in mine
+            if item["owner"] in pooled:
+                item["pooled"] = item["owner"]
             out.append(item)
     seen = {i["item_id"] for i in out}
     for item_id in dict.fromkeys(also):

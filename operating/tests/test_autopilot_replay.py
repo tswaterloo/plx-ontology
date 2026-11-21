@@ -694,6 +694,27 @@ class Config(unittest.TestCase):
         self.assertEqual((short["teams_chat"]["judged"], short["teams_chat"]["unjudged"]),
                          (0, 3))
 
+    def test_a_pooled_item_matches_when_any_of_its_roles_people_acted(self):
+        """An item the role holds (``pool:<role>``) is answered by whichever of its people
+        acts on its record in the window; someone outside the role never answers it."""
+        utc = timezone.utc
+        at = datetime(2026, 10, 19, 13, tzinfo=utc)
+        events = {f"e{i}": {"event_type": "record.change", "object_id": f"PurchaseOrder:p{i}",
+                            "object_type": "PurchaseOrder", "at": ap._iso(at)} for i in range(3)}
+        items = [{"event_id": f"e{i}", "autopilot": "po_followup", "owner": "pool:purchasing",
+                  "created_at": ap._iso(at), "body": {}} for i in range(3)]
+        acts = [{"person": who, "kind": "mail_sent", "workflow": "purchase_order_to_supplier",
+                 "conversation": f"x{i}", "at": ap._iso(at + timedelta(hours=2)),
+                 "records": [f"PurchaseOrder:p{i}"]}
+                for i, who in enumerate(("ana", "ben", "zed"))]
+        args = dict(horizon=timedelta(hours=24), data_end=at + timedelta(days=5),
+                    since=at - timedelta(days=1), until=at + timedelta(days=1))
+        got = rp.score(items, events, acts, pools={"pool:purchasing": ["ana", "ben"]}, **args)
+        flow = got["purchase_order_to_supplier"]
+        self.assertEqual((flow["judged"], flow["matched"]), (3, 2))
+        alone = rp.score(items, events, acts, **args)["purchase_order_to_supplier"]
+        self.assertEqual(alone["matched"], 0)
+
     def test_cardinality_mail_past_its_mailboxs_capture_end_is_not_judged(self):
         """One mailbox's capture stopped (its access withdrawn) while the others went on:
         a mail item of that mailbox whose window closes after its last capture read is
