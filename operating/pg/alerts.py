@@ -147,6 +147,10 @@ ACTIVE_BATCH = ("allocated", "committed", "generated", "scheduled", "planned",
                 "in progress", "released")
 STATE_SHARE = "0.95"                   # source_defaults.STATE_SHARE
 STATE_MINIMUM = 10                     # source_defaults.MINIMUM
+# A batch made longer ago than this and still marked on hold is history, not news: the hold
+# was never cleared in its old system (batches made in 2017-2019 still read On-Hold), and
+# nobody decides a release for stock that old. It stays readable on the batch itself.
+HOLD_STALE_DAYS = 365
 REPLY_DAYS = 30                        # proactive_commitments.REPLY_DAYS
 MAX_TO = 5                             # inbox_triage.MAX_TO
 MARGIN_DAYS = 30                       # proactive_events.MARGIN_DAYS
@@ -682,7 +686,8 @@ OPEN_LONG = Rule(
 # bulk share (STATE_SHARE of at least STATE_MINIMUM) of the batches in its state carry.
 LOT_ON_HOLD = Rule(
     "lot_on_hold", "quality_hold",
-    "A batch Quality holds: its QC status is a hold word, it is not cancelled, and the hold "
+    "A batch Quality holds: its QC status is a hold word, it is not cancelled, it was made "
+    "within the last year (or is not made yet), and the hold "
     "is not the default every unmade batch in its state carries.",
     "batches", ("batches",),
     "WITH cp AS (SELECT DISTINCT ON (lg.handle) lg.handle, v.value AS qs FROM {s}.lineage lg "
@@ -704,14 +709,17 @@ LOT_ON_HOLD = Rule(
     "|| to_char(r.realized_date, 'Mon DD, YYYY') ELSE '' END || '.'), "
     "r.realized_date::timestamptz, " + ONE + " "
     "FROM b r JOIN st ON st.said = r.said WHERE r.held AND r.said <> ALL({p[closed]}) "
+    "AND (r.realized_date IS NULL OR r.realized_date >= {p[day]}::date - {p[stale]}) "
     "AND (r.said = ANY({p[made]}) OR (r.said = ANY({p[active]}) AND st.n >= {p[minimum]} "
     "AND st.h < st.n * {p[share]}::numeric))",
-    "Quality releases or rejects the batch (on its newest copy), or it is cancelled",
+    "Quality releases or rejects the batch (on its newest copy), it is cancelled, or it "
+    "was made more than a year ago",
     "lot_attention (lot_on_hold, stock_state.batch_hold)", side=("{s}.lineage",
                                                                 "ontology.object_values"),
     shows=("batch_code", "lot_number", "product", "quality_status", "realized_date"),
     params={"hold": list(HOLD_WORDS), "closed": list(CLOSED_BATCH), "made": list(MADE_BATCH),
-            "active": list(ACTIVE_BATCH), "minimum": STATE_MINIMUM, "share": STATE_SHARE})
+            "active": list(ACTIVE_BATCH), "minimum": STATE_MINIMUM, "share": STATE_SHARE,
+            "stale": HOLD_STALE_DAYS})
 
 # The price rules' lines (proactive_prices): posted Sage lines of record in the window with a
 # positive quantity in a unit, a positive revenue in a currency, an item code. A series is

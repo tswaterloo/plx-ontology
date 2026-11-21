@@ -13,6 +13,9 @@ LocalTool``) beside the write tools (``simple_ask.write_tools``):
   ones they may use, save their own (from a description, or from a document they read: its
   ``source`` handle kept with it) and delete their own. A placeholder names a record field
   (``{{po_number}}``); an unknown one is refused with the fields there are.
+* ``plx.read_document``: one document read whole from its original (a SharePoint file the
+  reader's host opens, or the person's own file), paged and searchable
+  (``operator_api.doc_read_tool``).
 * ``plx.make_document``: a Word, Excel, PowerPoint, PDF or CSV file of what the model wrote, made as the
   instruction engine makes its documents (``InstructMixin._prepare_document``: cleaned of
   excluded people and secret-looking text) and kept for this reader only: its download
@@ -35,7 +38,8 @@ DOCUMENT = "plx.make_document"
 # a prepared document edit keeps its edited copy for the reader (``prepared_area``)
 EDITED = "plx.edit_document"
 WATCH = "plx.watch_measure"
-NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH)
+READ_DOCUMENT = "plx.read_document"
+NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH, READ_DOCUMENT)
 # the kinds of file plx.make_document makes (``operating.instruct_files.KINDS``)
 KINDS = ("docx", "xlsx", "pdf", "pptx", "csv")
 MOST_LISTED = 40
@@ -103,6 +107,13 @@ DOCUMENT_SPEC = {
         "\"x\", \"y\": [...], options as in a chart block}: the statement is read again as "
         "the person and the chart drawn from its rows (a native chart in Word, Excel and "
         "PowerPoint); a line '[chart N]' in content places chart N, the rest go at the end. "
+        "tables: up to 8 tables, each {\"sql\": <a SELECT you ran with plx.sql>, "
+        "\"title\"}: EVERY row of the statement is read again as the person and put in the "
+        "file (up to 50,000 rows in xlsx/csv, 5,000 in docx/pdf, 30 in pptx), so a list "
+        "of all orders, customers or lines is a table, never rows you type into content; "
+        "a line '[table N]' in content places table N (the rest go at the end); a csv "
+        "of one table needs only content '[table 1]'. The result says each table's row "
+        "count: state that count. "
         "name: the file name. It answers file_id and download_url: to email it, call "
         "plx.prepare_write (system mail, operation send_email) with change.attachments: "
         "[file_id]; to save it to SharePoint, operation file_upload with change.file_id "
@@ -114,7 +125,11 @@ DOCUMENT_SPEC = {
                        "kind": {"type": "string", "enum": ["docx", "xlsx", "pdf", "pptx", "csv"]},
                        "content": {"type": "string"},
                        "charts": {"type": "array", "maxItems": 8,
-                                  "items": {"type": "object", "required": ["sql", "type", "y"]}}}},
+                                  "items": {"type": "object", "required": ["sql", "type", "y"]}},
+                       "tables": {"type": "array", "maxItems": 8,
+                                  "items": {"type": "object", "required": ["sql"],
+                                            "properties": {"sql": {"type": "string"},
+                                                           "title": {"type": "string"}}}}}},
     "annotations": {"readOnlyHint": False, "destructiveHint": False},
 }
 
@@ -216,6 +231,10 @@ class AssistantToolsMixin:
         if callable(getattr(self, "_prepare_document", None)):
             out.append(LocalTool(spec=DOCUMENT_SPEC,
                                  call=lambda a: self._document_call(reader, a)))
+        if callable(getattr(self, "_pw_withheld", None)) \
+                and callable(getattr(self, "_instruct_guard", None)):
+            from . import doc_read_tool
+            out.append(doc_read_tool.tool(self, reader))
         if callable(getattr(self, "insight_store", None)):
             out.append(LocalTool(spec=WATCH_SPEC, call=lambda a: self._watch_call(reader, a)))
         return out
@@ -358,24 +377,76 @@ class AssistantToolsMixin:
         if kind == "csv" and args.get("charts"):
             return {"refused": "A CSV file holds rows only, never a chart: make an xlsx "
                     "(Excel) for the chart, or the CSV without it."}
+        from operating import instruct_files as files
+        if kind in ("xlsx", "csv") and files.data_rows(str(args.get("content") or "")) \
+                > files.MAX_ROWS:
+            return {"refused": f"More than {files.MAX_ROWS:,} rows typed into content: put "
+                    "a list of rows in tables (its SELECT; every row is read for the file)."}
         from integrations.image_ocr_gpu import touches_freightcom
         if touches_freightcom(str(args.get("content") or ""), str(args.get("name") or "")):
             # the carrier whose data never reaches the AI or an action: no file of it
             return {"refused": "That carrier is never written about through the Workbench."}
         try:
             charts = self._document_charts(reader, args.get("charts"))
+            tables, held = self._document_tables(reader, args.get("tables"), kind)
             doc = self._prepare_document(  # type: ignore[attr-defined]
                 reader, {"kind": kind, "content": str(args.get("content") or ""),
                          "name": _words(args.get("name")) or "Document"}, [], guard,
-                charts=charts)
+                charts=charts, tables=tables)
         except UserFacing as refused:
             return {"refused": refused.message}
         file_id = doc.download_url.rsplit("/", 1)[-1]
-        return {"file_id": file_id, "name": doc.name, "kind": doc.kind, "size": doc.size,
-                "download_url": doc.download_url,
-                "note": "Made and kept for them only. The app shows the file and its "
-                        "download link under your answer: say what it holds, never its file "
-                        "name or link."}
+        out = {"file_id": file_id, "name": doc.name, "kind": doc.kind, "size": doc.size,
+               "download_url": doc.download_url,
+               "note": "Made and kept for them only. The app shows the file and its "
+                       "download link under your answer: say what it holds, never its file "
+                       "name or link."}
+        if held:
+            out["tables"] = held
+        return out
+
+    def _document_tables(self, reader: Any, raw: Any, kind: str
+                         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The tables a document asks for, each every row of its statement read again now
+        as ``reader`` (``doc_tables.read_all`` over ``insights.read_sql``: their door), and
+        what each holds (rows, columns, order) for the answer. One that cannot be read
+        whole refuses the document with why: never a file with part of the rows."""
+        from operating import instruct_files as files
+        from integrations.image_ocr_gpu import touches_freightcom
+        from . import doc_tables
+        from .errors import UserFacing
+        from .insights import Refused, read_sql
+        if raw is None:
+            return [], []
+        if not isinstance(raw, list) or len(raw) > doc_tables.MAX_TABLES:
+            raise UserFacing("table", f"A document holds up to {doc_tables.MAX_TABLES} "
+                             "tables.", 422)
+        tables, held = [], []
+        for n, item in enumerate(raw, 1):
+            sql = item.get("sql") if isinstance(item, Mapping) else None
+            if not isinstance(sql, str) or not sql.strip() or set(item) - {"sql", "title"}:
+                raise UserFacing("table", f"Table {n} is not a table of a statement "
+                                 "(sql, title).", 422)
+            try:
+                got = doc_tables.read_all(lambda q: read_sql(self, reader, q), sql,
+                                          max_rows=files.MAX_TABLE_ROWS[kind])
+            except doc_tables.TableRefused as why:
+                raise UserFacing("table", f"Table {n} is not made: {why}", 422) from None
+            except Refused as why:
+                raise UserFacing("table", f"Table {n} can't be read: {why.message}", 422) from None
+            t = files.table(item.get("title"), got["columns"], got["rows"])
+            if touches_freightcom(t["title"], t["lines"]):
+                raise UserFacing("table", "That carrier is never written about through "
+                                 "the Workbench.", 422)
+            tables.append(t)
+            held.append({"table": n, "rows": len(got["rows"]), "columns": got["columns"],
+                         "ordered": got["ordered"]} | ({"partial": "some cells are values "
+                                                       "this person may not read: blank"}
+                                                      if got["partial"] else {})
+                        | ({"cells_cut": f"{got['cells_cut']} long text cells are cut at "
+                                         "400 characters in the file"}
+                           if got.get("cells_cut") else {}))
+        return tables, held
 
 
     def _document_charts(self, reader: Any, raw: Any) -> list[dict[str, Any]]:

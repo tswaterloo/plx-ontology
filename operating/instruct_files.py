@@ -55,6 +55,10 @@ MAX_DOC_CHARTS = 8
 _CHART_AT = re.compile(r"^\s*\[chart\s+([1-9][0-9]?)\]\s*$", re.I)
 MAX_CONTENT = 60_000
 MAX_ROWS, MAX_COLS = 2000, 40
+# a table read from a statement (``make`` ``tables``): its rows per file kind, past which
+# the file is refused (a deck holds a short table only; Excel and CSV hold the long ones)
+MAX_TABLE_ROWS = {"xlsx": 50_000, "csv": 50_000, "docx": 5_000, "pdf": 5_000, "pptx": 30}
+_TABLE_AT = re.compile(r"^\s*\[table\s+([1-9][0-9]?)\]\s*$", re.I)
 # SharePoint grant roles that let a person add a file to a folder
 WRITE_ROLES = frozenset({"write", "owner"})
 NO_WRITE = "Your SharePoint access to that folder does not include adding files."
@@ -82,7 +86,7 @@ class FileRefused(ValueError):
 def file_name(raw: Any, kind: str) -> str:
     """A safe file name with the kind's extension."""
     base = _NAME.sub(" ", str(raw or "")).strip(" .")
-    base = re.sub(r"\.(docx|xlsx|pdf|pptx|csv)$", "", base, flags=re.I)[:80].strip() or "Document"
+    base = re.sub(r"\.(docx|xlsx|pdf|pptx|csv|xls|doc)$", "", base, flags=re.I)[:80].strip() or "Document"
     return f"{base}.{kind}"
 
 
@@ -243,11 +247,16 @@ def _column(n: int) -> str:
         n -= 1
 
 
-def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_ROWS
+          ) -> bytes:
     rows = []
-    lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)]
-    for r, line in enumerate(lines[:MAX_ROWS], 1):
-        cells = [c.strip() for c in line.split("|")][:MAX_COLS]
+    lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
+             and not _RULE_ROW.match(ln)]
+    for r, line in enumerate(lines[:cap], 1):
+        row = line.strip()
+        if row.startswith("|") and row.endswith("|") and len(row) > 1:
+            row = row[1:-1]   # a Markdown table's row: no empty first and last cell
+        cells = [c.strip() for c in row.split("|")][:MAX_COLS]
         xml = []
         for c, value in enumerate(cells):
             ref = f"{_column(c)}{r}"
@@ -362,21 +371,85 @@ def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
     return chart_docs.pptx(slides)
 
 
-def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+def data_rows(content: str) -> int:
+    """The rows of ``content`` a sheet would hold: not the blank lines, "[chart N]" or
+    "[table N]" placeholders or divider lines. ``make``'s own count, so a pointer to
+    tables and the refusal agree."""
+    return sum(1 for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
+               and not _TABLE_AT.match(ln) and not _RULE_ROW.match(ln))
+
+
+def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
+         tables: Sequence[Mapping[str, Any]] = ()) -> bytes:
     """The file of ``kind`` holding ``content`` (lines; a docx reads its Markdown headings,
     bullets, bold and tables; an xlsx row's cells split on "|"; a pptx a slide per
-    heading) and ``charts`` (drawn charts, ``models.AskChart`` dicts, at most
-    ``MAX_DOC_CHARTS``) where "[chart N]" lines place them."""
+    heading), ``charts`` (drawn charts, ``models.AskChart`` dicts, at most
+    ``MAX_DOC_CHARTS``) where "[chart N]" lines place them, and ``tables`` (``table``:
+    every row of a statement read as the person) where "[table N]" lines place them (the
+    rest at the end). Content of more rows than an Excel or CSV file takes is refused,
+    never cut."""
     if kind not in KINDS:
         raise FileRefused("kind_unknown")
-    if len(content) > MAX_CONTENT or not (content.strip() or charts):
+    if len(content) > MAX_CONTENT or not (content.strip() or charts or tables):
         raise FileRefused("content_size")
     if kind == "csv" and charts:
         raise FileRefused("charts_not_held")   # a CSV is rows only: never a dropped chart
+    if kind in ("xlsx", "csv") and data_rows(content) > MAX_ROWS:
+        raise FileRefused("content_size")
+    if any(int(t.get("count") or 0) > MAX_TABLE_ROWS[kind] for t in tables):
+        raise FileRefused("table_size")
+    content, cap = _with_tables(kind, content, tables)
     content = mask_served(content)   # an exported file never holds a card or a secret
     charts = [_masked(c) for c in list(charts)[:MAX_DOC_CHARTS]]
-    return {"docx": _docx, "xlsx": _xlsx, "pdf": _pdf, "pptx": _pptx,
-            "csv": _csv}[kind](content, charts)
+    if kind in ("xlsx", "csv"):
+        return {"xlsx": _xlsx, "csv": _csv}[kind](content, charts, cap)
+    return {"docx": _docx, "pdf": _pdf, "pptx": _pptx}[kind](content, charts)
+
+
+def table(title: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]]
+          ) -> dict[str, Any]:
+    """A table for ``make``: its title and its header and rows as Markdown table lines
+    (a cell's "|" and line breaks read as "/" and spaces, so no cell splits)."""
+    def cell(value: Any) -> str:
+        return re.sub(r"\s*[\r\n]+\s*", " ", str(value)).replace("|", "/").strip()
+    lines = ["| " + " | ".join(cell(c) for c in columns[:MAX_COLS]) + " |"]
+    lines += ["| " + " | ".join(cell(c) for c in list(r)[:MAX_COLS]) + " |" for r in rows]
+    return {"title": str(title or "").strip(), "lines": "\n".join(lines),
+            "count": len(rows)}
+
+
+def _with_tables(kind: str, content: str, tables: Sequence[Mapping[str, Any]]
+                 ) -> tuple[str, int]:
+    """``content`` with each table's lines where its "[table N]" line stands (unplaced ones
+    at the end; a line naming no table dropped), and the rows an Excel or CSV file may
+    then hold. A title goes above its table (a heading; in Excel a row of its own when the
+    sheet holds more than the table; a CSV holds rows only)."""
+    if not tables:
+        return content, MAX_ROWS
+    own = [ln for ln in content.split("\n") if ln.strip() and not _TABLE_AT.match(ln)]
+
+    def block(t: Mapping[str, Any]) -> list[str]:
+        title = str(t.get("title") or "")
+        head = [] if not title or kind == "csv" or (kind == "xlsx" and not own and
+                                                    len(tables) == 1) \
+            else [title if kind == "xlsx" else f"## {title}"]
+        return head + str(t.get("lines") or "").split("\n") + [""]
+
+    out, used = [], set()
+    for line in content.split("\n"):
+        at = _TABLE_AT.match(line)
+        if at:
+            n = int(at.group(1)) - 1
+            if n < len(tables) and n not in used:
+                used.add(n)
+                out += block(tables[n])
+            continue
+        out.append(line)
+    for n, t in enumerate(tables):
+        if n not in used:
+            out += block(t)
+    held = sum(int(t.get("count") or 0) + 3 for t in tables)
+    return "\n".join(out), MAX_ROWS + held
 
 
 # a table row's rule line ("|---|:--:|"): a Markdown table's, never data
@@ -386,7 +459,8 @@ _FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 _NUMBER = re.compile(r"[+-]?\d+(?:[.,]\d+)*(?:\.\d+)?%?")
 
 
-def _csv(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+def _csv(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_ROWS
+         ) -> bytes:
     """One CSV row per line, cells split on "|" as an xlsx's (a Markdown table's outer
     pipes and rule row dropped), quoted as the csv module does, UTF-8 with a byte-order
     mark (Excel then reads accents right) and CRLF rows. A cell that a spreadsheet would
@@ -397,7 +471,7 @@ def _csv(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
     writer = csv.writer(out, lineterminator="\r\n")
     lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
              and not _RULE_ROW.match(ln)]
-    for line in lines[:MAX_ROWS]:
+    for line in lines[:cap]:
         row = line.strip()
         if row.startswith("|") and row.endswith("|") and len(row) > 1:
             row = row[1:-1]

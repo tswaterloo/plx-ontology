@@ -4,7 +4,7 @@ import { SectionTabs } from "@/components/shell";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChartNoAxesColumn, ChevronDown, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview, nextStep } from "@/components/late/overview";
-import { TodayDetail, type QueueRow } from "@/components/today-detail";
+import { stepWords, TodayDetail, type QueueRow } from "@/components/today-detail";
 import { DoneRing, lateEdge, lateFigure, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -20,6 +20,7 @@ import { useListKeys } from "@/lib/list-keys";
 import type { ActionResult, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const PAGE = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const MOST = 1000; // the list reads at most this many orders, then says how many it left out
 
 function hrefOf(po: LatePo): string {
@@ -128,7 +129,7 @@ function Row({ po, on, onPick, chase }: { po: LatePo; on: boolean; onPick: (() =
     chase.holds.length ? `holds ${recordLabel(chase.holds[0].type, chase.holds[0].label)}${chase.holds.length > 1 ? ` +${chase.holds.length - 1}` : ""}` : null,
     typeof po.open_lines === "number" && po.open_lines > 0 ? plural(po.open_lines, "open line") : null,
   ].filter(Boolean);
-  const next = chase.next ?? nextStep(po);
+  const next = chase.next ? stepWords(chase.rule, chase.next, po.supplier ?? null) : nextStep(po);
   const needed = po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : "No due date";
   return (
     <li>
@@ -354,7 +355,8 @@ export function LateView() {
     <span className="tabular-nums" data-testid="late-all-count">
       {filtered ? `${shown.length} of ${items.length} match` : total > items.length ? `${items.length} of ${total} POs loaded` : plural(items.length, "PO")}
       {filtered && total > items.length ? ` · ${total} late in all` : ""}
-      {asOf ? ` · BC as of ${formatDate(asOf, { short: true })}` : ""}
+      {/* the sidebar's Data as of is the screen's time: the purchase orders' own day only when it is behind */}
+      {asOf && Date.now() - new Date(asOf).getTime() > DAY_MS ? ` · BC as of ${formatDate(asOf, { short: true })}` : ""}
     </span>
   );
 
@@ -363,6 +365,8 @@ export function LateView() {
       <div role="tablist" aria-label="Days late" className="flex h-10 gap-4 overflow-x-auto px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {DAY_BANDS.map((b) => {
           const n = dayCount(b.id);
+          // a band with nothing in it is no choice (as Home's chips): only All, or the band picked
+          if (n === 0 && b.id !== "all" && filter.days !== b.id) return null;
           return (
             <button
               key={b.id}
@@ -399,13 +403,17 @@ export function LateView() {
             </option>
           ))}
         </Pick>
-        <Pick label="Supplier date" value={filter.state ?? "all"} onChange={(v) => setFilter((f) => ({ ...f, state: v as StateBand }))} className="w-[9rem] shrink-0">
-          {STATE_BANDS.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.label} ({b.id === "all" ? items.length : items.filter((p) => inStateBand(p, b.id)).length})
-            </option>
-          ))}
-        </Pick>
+        {/* the supplier date state filters only where some PO has one: with none known every
+            choice but one would list nothing */}
+        {(items.some((p) => p.confirmation) || (filter.state ?? "all") !== "all") && (
+          <Pick label="Supplier date" value={filter.state ?? "all"} onChange={(v) => setFilter((f) => ({ ...f, state: v as StateBand }))} className="w-[9rem] shrink-0">
+            {STATE_BANDS.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label} ({b.id === "all" ? items.length : items.filter((p) => inStateBand(p, b.id)).length})
+              </option>
+            ))}
+          </Pick>
+        )}
         <span className="flex shrink-0 items-center">
           <Pick label="Sort by" value={sort.key} onChange={(v) => setSort({ key: v as SortKey, desc: false })} className="w-[7.25rem]">
             {SORTS.map((s) => (

@@ -53,6 +53,18 @@ NOT_DECLARED = {
     # Python and built as biz.<view>_next, then swapped in whole; its columns are the
     # view's own declaration (business_views.VIEWS), never a store table
     "operating/pg/business_views.py",
+    # Postgres-side builds of the biz schema beside business_views: the comms view and the
+    # access lineage (built as <view>_next and swapped in), the generic records and links
+    # (records_new / record_links_new, swapped by generic_records.swap) with their type list
+    # and state, the comms findings' view, read marks and runs, the search door's view
+    # list and state, and the alert rows and runs; each also uses session TEMP tables.
+    # Postgres tables made by their own build, never a SQLite store
+    "operating/pg/business_comms.py", "operating/pg/business_views_access.py",
+    "operating/pg/generic_records.py", "operating/pg/generic_views.py",
+    "operating/pg/comms_findings.py", "operating/pg/door.py", "operating/pg/alerts.py",
+    # the capture backup's pack check: a throwaway SQLite file of one pack's names, made
+    # and deleted in one run; never a store the Workbench opens
+    "deploy/backup/capture_backup.py",
     # the identifier re-parse's stage (a scratch SQLite file the stage writes and the apply
     # reads, one per run); its served rows go through migrate_chunks' row log
     "operating/pg/identifier_reparse.py",

@@ -588,14 +588,22 @@ class Jobber:
 
     def _triaged(self, event_text: str) -> Optional[bool]:
         """True/False from the small model; None when it failed (the session decides)."""
-        from . import model_ledger
-        from .agent_environment import agent_environment
         if not self.triage:
             return True
-        prompt = triage_prompt(event_text)
+        got = self.small(triage_prompt(event_text), self.triage, FEATURE + "_triage")
+        if got is None or not isinstance(got.get("work"), bool):
+            return None
+        return got["work"]
+
+    def small(self, prompt: str, model: str, feature: str) -> Optional[dict[str, Any]]:
+        """One turn of a small model with no tools (a sort before a session): the JSON
+        object it answered, or None when the call or its answer failed (the caller then
+        lets the session decide)."""
+        from . import model_ledger
+        from .agent_environment import agent_environment
         argv = [self.binary, "-p", "--setting-sources", "", "--tools", "",
                 "--no-session-persistence", "--max-turns", "1", "--output-format", "json",
-                "--model", self.triage]
+                "--model", model]
         env = dict(agent_environment(os.environ))
         env["HOME"] = self.home
         env["CLAUDE_CONFIG_DIR"] = os.path.join(self.home, ".claude")
@@ -605,17 +613,14 @@ class Jobber:
                              timeout=TRIAGE_SECONDS, env=env, start_new_session=True)
             reply = json.loads(done.stdout or "{}")
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-            model_ledger.record(FEATURE + "_triage", prompt=prompt, ok=False,
+            model_ledger.record(feature, prompt=prompt, ok=False,
                                 seconds=time.monotonic() - started, reason=type(exc).__name__)
             return None
         good = isinstance(reply, dict) and not reply.get("is_error")
         turns, tokens = model_ledger.usage_of(reply if isinstance(reply, dict) else {})
-        model_ledger.record(FEATURE + "_triage", prompt=prompt, ok=good, turns=turns,
+        model_ledger.record(feature, prompt=prompt, ok=good, turns=turns,
                             tokens=tokens, seconds=time.monotonic() - started)
-        got = _json(reply.get("result")) if good else None
-        if got is None or not isinstance(got.get("work"), bool):
-            return None
-        return got["work"]
+        return _json(reply.get("result")) if good else None
 
     def _session(self, owner: str, event_text: str, person: str, message: bool = True,
                  as_of: str = "", brief_ok: bool = False, reads: bool = True

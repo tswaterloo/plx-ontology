@@ -40,6 +40,7 @@ import os
 import re
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 
@@ -100,12 +101,62 @@ def whole_problem(row: Sequence[Any] | None) -> str | None:
     return None
 
 
+# The short checks every store open asks (``whole``, ``change_stamp``, ``store_meta``,
+# ``ready``) were each a login of their own: an inbox open asked two, Home about ten
+# inboxes, so a busy API made several logins a second only for them. At the role's
+# connection limit (two APIs side by side through a deploy) such a login was refused at
+# once and the open failed as ``store_not_whole unreachable`` (Home's approvals and
+# replies answered 500 after 12 s, 11-21). They run on a few connections this process
+# keeps instead (``pool.Pool``: a lost one replaced before it is lent, idle ones closed
+# after ``pool.IDLE_KEEP_SECONDS``), and a login they still need waits for a free slot at
+# the limit (``pool.when_free``). Each borrow is a transaction of its own (rolled back on
+# return), so every check reads what Postgres holds at that moment, as before.
+PROBE_CONNECTIONS = 4
+PROBE_CONNECT_SECONDS = 5
+PROBE_BORROW_SECONDS = 10.0
+_PROBES: dict[tuple[int, str], Any] = {}
+_PROBES_LOCK = threading.Lock()
+
+
+def _probes_after_fork() -> None:
+    """A forked child starts with a lock of its own (the parent's may be held by a thread
+    the child does not have) and none of the parent's pools."""
+    global _PROBES_LOCK
+    _PROBES_LOCK = threading.Lock()
+    _PROBES.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_probes_after_fork)
+
+
+def _probe_configure(conn: Any) -> None:
+    """A check's connection takes the server's session defaults (no search settings)."""
+
+
+@contextmanager
+def _probe(target: str | None = None) -> Iterator[Any]:
+    """A connection to ``target`` (default ``PLX_PG_DSN``) for one short check, from this
+    process's kept ones (per process: a forked child never shares its parent's)."""
+    from operating.pg.pool import Pool
+    key = (os.getpid(), str(target or dsn()))
+    with _PROBES_LOCK:
+        pool = _PROBES.get(key)
+        if pool is None:
+            pool = _PROBES[key] = Pool(key[1], max_size=PROBE_CONNECTIONS,
+                                       timeout=PROBE_BORROW_SECONDS,
+                                       configure=_probe_configure,
+                                       connect_timeout=PROBE_CONNECT_SECONDS,
+                                       idle_in_transaction_ms=None)
+    with pool.connection() as pg:
+        yield pg
+
+
 def whole(target: str | None = None) -> str | None:
     """``whole_problem`` of the database at ``target`` (default ``PLX_PG_DSN``); an
     unreachable one is ``unreachable``."""
     try:
-        import psycopg
-        with psycopg.connect(target or dsn(), connect_timeout=5) as pg:
+        with _probe(target) as pg:
             row = pg.execute(_WHOLE_SQL).fetchone()
     except Exception as error:  # noqa: BLE001 - not whole: refused, never empty
         return f"unreachable:{type(error).__name__}"
@@ -136,8 +187,7 @@ def store_meta(keys: Sequence[str], target: str | None = None) -> dict[str, str]
     keys current), when it is whole (``whole``); else None, as an unreadable SQLite
     generation's are."""
     try:
-        import psycopg
-        with psycopg.connect(target or dsn(), connect_timeout=5) as pg:
+        with _probe(target) as pg:
             if whole_problem(pg.execute(_WHOLE_SQL).fetchone()) is not None:
                 return None
             return dict(pg.execute("SELECT key, value FROM ontology.store_meta WHERE key = "
@@ -152,10 +202,8 @@ def change_stamp(target: str | None = None) -> str | None:
     (``ontology.sq_data_version``). When Postgres is the only store this stands where a
     generation's content digest stood (the gap inbox's runs, ``served_behind``); None when
     Postgres cannot say."""
-    import psycopg
-
     try:
-        with psycopg.connect(target or dsn(), connect_timeout=5) as pg:
+        with _probe(target) as pg:
             row = pg.execute(
                 "SELECT (SELECT value FROM ontology.store_meta WHERE key = 'content_digest'), "
                 "ontology.sq_data_version()").fetchone()
@@ -187,9 +235,8 @@ def ready(target: str | None = None, *, digest: str | None = None) -> bool:
     if os.environ.get("PLX_ONTOLOGY_PG_PARTIAL") == "1":
         return True   # diagnostics only: read a partial load
     try:
-        import psycopg
         from operating.pg.ontology_load import OPTIONAL, ORDER
-        with psycopg.connect(target or dsn(), connect_timeout=5) as pg:
+        with _probe(target) as pg:
             done = {row[0] for row in pg.execute(
                 "SELECT substr(name, 7) FROM ontology.load_state WHERE name LIKE 'table:%%'")}
             generation = pg.execute("SELECT value FROM ontology.load_state WHERE name = "

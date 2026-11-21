@@ -25,7 +25,7 @@ from . import models as m
 from .auth import Reader, sign_in_kind
 from .serving import (
     access_label, ASK_WORKERS, CAPTURE_RANK, CARD_WORDS_KEPT, derived_code_status, eastern_words,
-    KNOWN_READERS, KNOWN_READERS_FILE, RECENT_USER_SECONDS, LEDGER_SYSTEMS, ORIGINAL_READS, others_app_data,
+    KNOWN_MEASURE_FILE, KNOWN_READERS, KNOWN_READERS_FILE, RECENT_USER_SECONDS, LEDGER_SYSTEMS, ORIGINAL_READS, others_app_data,
     PAGE_DIR, page_scope,
     ReaderCache, REWARM_SECONDS, SessionSlots, STORE_SYSTEMS, truth_flag, WARM_IDLE_SECONDS,
     WARM_RECENT_PAGES, Worker
@@ -328,7 +328,7 @@ class WarmMixin:
         return self.warmer
 
     def _known_path(self) -> Optional[Path]:
-        if not self.data_dir or getattr(self, "others_data", None) is not None:
+        if not getattr(self, "data_dir", None) or getattr(self, "others_data", None) is not None:
             return None   # another user's API keeps it (``others_app_data``)
         return self.data_dir / KNOWN_READERS_FILE
 
@@ -379,8 +379,48 @@ class WarmMixin:
         now = time.time()
         return {oid: v for oid, v in (held.items() if isinstance(held, dict) else ())
                 if isinstance(v, Mapping) and float(v.get("exp") or 0) > now
+                and not v.get("measure")   # never a service session's (kept apart)
                 and re.fullmatch(r"[0-9a-f-]{36}", str(oid))
                 and re.fullmatch(r"[0-9a-f]{64}", str(v.get("ref") or ""))}
+
+    def prewarm_people(self) -> list[tuple[str, int, Optional[str]]]:
+        """Whom this API decides policies and kept-page checks for before it serves:
+        (object id, expiry of the read-ahead identity, ticket reference to check for
+        revocation or None). Each known reader under their session's own expiry, then each
+        recent user (``recent_users``: used the app within ``RECENT_USER_SECONDS``, not
+        signed out) whose session has ended, under a read-ahead identity of
+        ``DIRECTORY_WARM_SECONDS`` as the directory's read-ahead uses: their next sign-in
+        after a deploy finds this API's checks done (11-21: the only known reader had
+        expired 25 h before, so every deploy prewarmed nobody). Each is still resolved
+        as a sign-in is (``identity_for``) and serves nothing."""
+        known = self.known_readers()
+        out = [(oid, int(v["exp"]), str(v["ref"])) for oid, v in known.items()]
+        # a page-measure session while valid, never for someone signed out (it is not
+        # their sign-in) nor beside their own session
+        gone = self.signed_out()
+        out += [(oid, exp, ref) for oid, (exp, ref) in self.measure_sessions().items()
+                if oid not in known and oid.lower() not in gone]
+        listed = {oid for oid, _e, _r in out}
+        expires = int(time.time()) + DIRECTORY_WARM_SECONDS
+        refs = self._ended_refs()
+        for oid in self.recent_users():
+            if oid in listed:
+                continue
+            ref = refs.get(oid)   # its ended session's ticket: a revoked one is still refused
+            if ref is not None and self.revoked(ref):
+                continue
+            out.append((oid, expires, None))
+        return out
+
+    def _ended_refs(self) -> dict[str, str]:
+        """Each entry's last ticket reference (sessions ended included)."""
+        path = self._known_path()
+        try:
+            held = json.loads(path.read_text(encoding="utf-8")) if path else {}
+        except (OSError, ValueError):
+            return {}
+        return {oid: str(v["ref"]) for oid, v in (held.items() if isinstance(held, dict) else ())
+                if isinstance(v, Mapping) and re.fullmatch(r"[0-9a-f]{64}", str(v.get("ref") or ""))}
 
     def recent_users(self) -> list[str]:
         """Employees who used the app within ``RECENT_USER_SECONDS`` whose session has since
@@ -436,10 +476,14 @@ class WarmMixin:
         oid = getattr(getattr(session, "employee", None), "object_id", None)
         ref, exp = getattr(session, "session_ref", None), getattr(session, "expires_at", None)
         if not isinstance(oid, str) or not isinstance(ref, str) or not isinstance(exp, int) \
-                or getattr(session, "warm_ahead", False) or getattr(session, "view_as", False) \
-                or getattr(session, "canary", False):
-            # a service session (the Ask canary, the page measure) is nobody's: it must not
-            # take the place of the reader's own session (its pages and ticket reference)
+                or getattr(session, "warm_ahead", False) or getattr(session, "view_as", False):
+            return
+        if getattr(session, "canary", False):
+            # a service session is nobody's own sign-in: never the reader's entry (no
+            # signed-out mark cleared, no recent window extended, no recurring run); the
+            # page measure is noted apart for the read-ahead only (``_remember_measure``)
+            if getattr(session, "measure", False):
+                self._remember_measure(oid, ref, exp)
             return
         with self._known_locked():
             known = self.known_readers()
@@ -450,6 +494,45 @@ class WarmMixin:
                 return
             known[oid] = {"seen": time.time(), "ref": ref, "exp": exp, "pages": pages}
             self._write_known(known)
+
+    def _measure_path(self) -> Optional[Path]:
+        path = self._known_path()
+        return None if path is None else path.with_name(KNOWN_MEASURE_FILE)
+
+    def measure_sessions(self) -> dict[str, tuple[int, str]]:
+        """The page-measure sessions still valid: object id -> (expiry, ticket reference)."""
+        path = self._measure_path()
+        try:
+            held = json.loads(path.read_text(encoding="utf-8")) if path else {}
+        except (OSError, ValueError):
+            return {}
+        now = time.time()
+        return {oid: (int(v["exp"]), str(v["ref"]))
+                for oid, v in (held.items() if isinstance(held, dict) else ())
+                if isinstance(v, Mapping) and isinstance(v.get("exp"), int) and v["exp"] > now
+                and re.fullmatch(r"[0-9a-f-]{36}", str(oid))
+                and re.fullmatch(r"[0-9a-f]{64}", str(v.get("ref") or ""))}
+
+    def _remember_measure(self, oid: str, ref: str, exp: int) -> None:
+        """A page-measure session (valid an hour at most), in a file of its own beside the
+        known readers: read ahead for while valid, nothing else of the reader's changed."""
+        path = self._measure_path()
+        if path is None:
+            return
+        with self._known_locked():
+            held = self.measure_sessions()
+            if held.get(oid) == (exp, ref):
+                return
+            held[oid] = (exp, ref)
+            try:
+                tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump({o: {"exp": e, "ref": r} for o, (e, r) in held.items()}, handle)
+                keep_shared(tmp, 0o600)
+                os.replace(tmp, path)
+            except OSError:
+                pass
 
     def forget_reader(self, reader: Reader) -> None:
         """Signed out: never read ahead for this employee again until they sign in."""
@@ -492,11 +575,14 @@ class WarmMixin:
         if self.identity_for is None:
             return 0
         warmed = 0
-        for oid, held in self.known_readers().items():
+        known = self.known_readers()
+        people = self.prewarm_people()   # and the recent users whose session ended
+        for oid, exp, ref in people:
+            held = known.get(oid) or {}
             try:
-                if self.revoked(str(held["ref"])):
+                if ref is not None and self.revoked(ref):
                     continue
-                session = self.identity_for(oid, int(held["exp"]))
+                session = self.identity_for(oid, exp)
             except Exception:  # noqa: BLE001 - refused now: not warmed
                 continue
             reader = Reader(session, self.reader_mode, "", None)
@@ -506,7 +592,7 @@ class WarmMixin:
                 if pages and not self._pages_seen.get(reader.key):
                     self._pages_seen[reader.key] = pages[:WARM_RECENT_PAGES]
             warmed += self.warm(reader, force=True, today=today)
-        return warmed + self._warm_directory(set(self.known_readers()), today=today)
+        return warmed + self._warm_directory({oid for oid, _e, _r in people}, today=today)
 
     def _warm_directory(self, known: set, *, today: bool = True) -> int:
         """Read ahead for every active employee of the directory (``directory_for``: the

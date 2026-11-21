@@ -1,7 +1,8 @@
 [Unit]
 # operating/autopilot_fast.serve (AUDIT3-10): one consumer reads a capture's signal within
-# a second; plx-autopilot-fast.path/.timer stand down while it holds fast.lock and take over
-# while it is down. Prepares My work items only (never sends, writes or approves).
+# a second; while it is down plx-autopilot-follow is its backstop (the per-signal
+# plx-autopilot-fast units were retired). Prepares My work items only (never sends,
+# writes or approves).
 Description=PLX Workbench autopilot fast feed, continuous (prepares work items only)
 After=postgresql.service
 # a failing consumer backs off itself (15 s doubling to 15 min, before it takes the lock)
@@ -18,9 +19,9 @@ EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
 # exclusion or PLX_AUTOPILOT_OFF), so Restart=always starts it over the new values
 Environment=PLX_PROACTIVE_ENV=@PLX_HOME@/.config/plx/proactive.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
-# This consumer is the fast feed that runs (it holds fast.lock; plx-autopilot-fast stands
-# down), so it carries every drafting setting plx-autopilot-fast.service has, line for line
-# (operating/tests/test_install_keep_fresh.py holds them equal). Without them it prepared
+# This consumer is the fast feed, so it carries every drafting setting the live feed
+# (plx-autopilot-follow.service) has (operating/tests/test_install_keep_fresh.py holds
+# them). Without them it prepared
 # no reply draft for anyone (2026-11-18: 0 drafts in the live queue in two weeks, every
 # model-drafted item dropped as draft_model_off).
 # the chat ask reader (operating.chat_ask_model): claude -p on the user's own login

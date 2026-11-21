@@ -58,14 +58,23 @@ export function DraftSheet({ draft, who }: { draft: SuggestionDraft; who: string
 
 const MORE: CardActionOffer["kind"][] = ["snooze", "dismiss"];
 
-/** The card's actions: send first, then message, follow up and done, the rest under More. */
+/** Whether the card's drafted email names nobody to send it to: "Review and send" would open a
+ * send that cannot go until an address is found, so it is not the main action. */
+export function draftUnaddressed(card: ProactiveSuggestion): boolean {
+  return !!card.draft && !card.draft.to?.address;
+}
+
+/** The card's actions: send first, then message, follow up and done, the rest under More. A
+ * draft with no address on record keeps its send one step away, under More, saying so. */
 export function SuggestionActions({ card, state, onDone }: { card: ProactiveSuggestion; state?: ActionResult | null; onDone: (r: ActionResult) => void }) {
   const [open, setOpen] = useState<CardActionOffer | null>(null);
   const offers = card.actions ?? [];
   if (!offers.length) return null;
+  const unaddressed = draftUnaddressed(card);
+  const tucked = (o: CardActionOffer) => MORE.includes(o.kind) || (unaddressed && o.kind === "send_email");
   const rank = (k: string) => ["send_email", "teams_message", "create_follow_up", "mark_done"].indexOf(k);
-  const shown = offers.filter((o) => !MORE.includes(o.kind)).sort((a, b) => ((rank(a.kind) + 9) % 9) - ((rank(b.kind) + 9) % 9));
-  const more = offers.filter((o) => MORE.includes(o.kind));
+  const shown = offers.filter((o) => !tucked(o)).sort((a, b) => ((rank(a.kind) + 9) % 9) - ((rank(b.kind) + 9) % 9));
+  const more = offers.filter(tucked);
   // a phone has room for the first two (send and message); the rest go under More
   const narrow = shown.slice(2);
   return (
@@ -94,7 +103,7 @@ export function SuggestionActions({ card, state, onDone }: { card: ProactiveSugg
             <Menu.Content align="end" sideOffset={4} className="z-50 min-w-36 rounded-xl bg-raised p-1.5 shadow-pop">
               {[...narrow, ...more].map((o) => (
                 <Menu.Item key={o.kind} onSelect={() => setOpen(o)} className={cn("flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover", narrow.includes(o) && "sm:hidden")} data-testid={`action-${o.kind}`}>
-                  {o.label}
+                  {o.kind === "send_email" && unaddressed ? "Send email (add the address)" : o.label}
                 </Menu.Item>
               ))}
             </Menu.Content>

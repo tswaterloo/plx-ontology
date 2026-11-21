@@ -730,7 +730,7 @@ class PreparedRoutes(unittest.TestCase):
                         email=OWNER[0])
         self.assertEqual(sorted(t.spec["name"] for t in simple_ask.write_tools(b, reader)),
                          ["plx.edit_document", "plx.make_document", "plx.prepare_write",
-                          "plx.remember", "plx.template"])
+                          "plx.read_document", "plx.remember", "plx.template"])
         ask = lambda q, **kw: b.ask_does(reader, m.AskRequest(question=q, **kw))  # noqa: E731
         with mock.patch.dict("os.environ", {"PLX_ASK_SIMPLE": "1"}):
             self.assertTrue(ask("Write a memo of our late POs and email it to Sam"))

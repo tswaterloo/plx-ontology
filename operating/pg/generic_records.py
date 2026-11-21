@@ -45,6 +45,8 @@ evidence's records (lineage ``read_ids``: the people exclusion drops the link wi
 
   python3 -m operating.pg.generic_records build [--schema S] [--workers N]
   python3 -m operating.pg.generic_records refresh [--schema S]
+  python3 -m operating.pg.generic_records indexes [--schema S]   (any the live tables lack)
+  python3 -m operating.pg.generic_records labels [--schema S]    (label the served rows again)
 """
 from __future__ import annotations
 
@@ -52,11 +54,13 @@ import argparse
 import concurrent.futures as cf
 import datetime as dt
 import json
+import re
 import sys
 import time
 from typing import Any, Mapping, Sequence
 
 from operating.pg import access_classes as ac
+from operating.chunking import headers
 from operating.pg import business_views as bv
 from operating.pg import generic_views as gv
 
@@ -211,6 +215,50 @@ DAY = ("CASE WHEN c.value ~ '^[12][0-9]{3}-[01][0-9]-[0-3][0-9]' THEN left(c.val
        "|| '-' || substr(c.value, 5, 2) || '-' || substr(c.value, 7, 2) END")
 
 
+# A value that is not a name never becomes a label (11-21: "tbd", "NA", a lone quote, a date
+# read as a title). By shape, in three strengths by where the text came from:
+# * true junk (``junk_sql``): empty, no letter or digit, a generic placeholder; applies to
+#   every source, identifiers included (the label column's own clearing uses only this);
+# * a display field (``display_valid_sql``): also under two characters; a date is allowed
+#   (a record's own number may read as one: SO "17-06-2025", PO "12/11/2018");
+# * free text (title, name, a list item's JSON Title; ``free_valid_sql``): also a date.
+# A record's own identifier is its name whatever it looks like (lot "09/08/22", CAS
+# "9005-65-6") and a one-character code ("X", "9") is kept (11-21 review).
+PLACEHOLDERS = ("tbd", "tba", "tbc", "n/a", "na", "n.a.", "none", "null", "nil", "unknown",
+                "unspecified", "undefined", "not applicable", "no data", "missing")
+_MONTH = ("(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|"
+          "sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)")
+_DATE_SHAPES = ("^[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2}([T ][0-9:.+Z-]*)?$",
+                "^[0-9]{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4}$",
+                f"^{_MONTH}[.]? [0-9]{{1,2}},? [0-9]{{2,4}}$")
+
+
+def junk_sql(e: str) -> str:
+    """SQL: whether text ``e`` is true junk: empty, no letter or digit, a placeholder, or
+    numerically zero ("0", "00.0": unset; 107k live RelSageApIbd ``transnbr`` = 0 rows, whose
+    ``cntbtch`` holds the real batch, so the record's next label field names it)."""
+    return (f"(btrim({e}) = '' OR {e} !~ '[[:alnum:]]' OR lower(btrim({e})) = "
+            f"ANY({_arr(PLACEHOLDERS)}) OR btrim({e}) ~ '^0+([.]0+)?$')")
+
+
+def _date_sql(e: str) -> str:
+    return "(" + " OR ".join(f"lower(btrim({e})) ~ {_lit(d.lower())}" for d in _DATE_SHAPES) + ")"
+
+
+def valid_sql(e: str) -> str:
+    """SQL: ``e`` trimmed, NULL when it is true junk (an identifier's rule)."""
+    return f"(CASE WHEN NOT {junk_sql(e)} THEN btrim({e}) END)"
+
+
+def display_valid_sql(e: str) -> str:
+    return f"(CASE WHEN NOT {junk_sql(e)} AND length(btrim({e})) >= 2 THEN btrim({e}) END)"
+
+
+def free_valid_sql(e: str) -> str:
+    return (f"(CASE WHEN NOT {junk_sql(e)} AND length(btrim({e})) >= 2 AND NOT {_date_sql(e)} "
+            f"THEN btrim({e}) END)")
+
+
 def _first_unmarked(col: str, expr: str, cond: str) -> str:
     """``expr`` over the record's first-ranked unmarked cell of the first of the catalog's
     ``col`` fields (in their declared order) that has one meeting ``cond``."""
@@ -231,7 +279,8 @@ def _insert(pg: Any, schema: str, table: str) -> int:
     with pg.transaction():   # short: a build's parallel batches only wait on the ids
         ac.assign(pg, schema, "SELECT keys, marks FROM gr_k")
         ac.assign_cols(pg, schema, "SELECT DISTINCT cms FROM gr_k")
-    label = _first_unmarked("label_fields", "c.value", "true")
+    label = _first_unmarked("label_fields", display_valid_sql("c.value"),
+                            f"{display_valid_sql('c.value')} IS NOT NULL")
     record_date = _first_unmarked("date_fields", DAY, f"({DAY}) IS NOT NULL")
     cur = pg.execute(
         f"INSERT INTO {schema}.{table} (rid, record_id, type, system, source, handle, label, "
@@ -246,7 +295,100 @@ def _insert(pg: Any, schema: str, table: str) -> int:
         f"NOT k.blocked JOIN {schema}.col_classes cc ON cc.marks = gk.cms AND "
         "cc.needs = '{}'::jsonb LEFT JOIN gr_f f ON f.rid = b.rid "
         f"LEFT JOIN {schema}.record_types rt ON rt.type = b.object_type")
+    _labels(pg, schema, table, "r.rid IN (SELECT rid FROM gr_b)")
     return cur.rowcount
+
+
+# A record no display field names (``record_types.label_fields`` empty, or none of them
+# holding a value: 1.64M of 10.3M live on 11-21, mostly lines) is labelled by its own title
+# or name field as any reader of the record reads it (``fields_open``: 4,490 live, e.g.
+# expense receipts), else by the Title of a field holding its columns as one JSON object
+# (a SharePoint list item's ``fields``), else by its first current, unmarked business
+# identifier with the kind's word ("PO5267", "Lot 390373", "Tracking 1Z..."), so
+# ``label ILIKE`` and plx.search's records leg find it by its name or number.
+# Never a technical identifier (``chunking.headers.TECHNICAL``: FileMaker row ids, BC
+# system ids, hashes: 11-21 review, 5,669 FileMaker POs would have read "5292" for PO5267),
+# and a carrier's reference (a tracking number) only when nothing else names the record.
+CARRIER_KINDS = ("tracking_number",)
+_ID_WORDS = "CASE i.identifier_kind " + " ".join(
+    f"WHEN {_lit(k)} THEN {_lit(w)}" for k, w in sorted(headers._LABELS.items())) + " END"
+_ID_LABEL = (
+    "(SELECT CASE WHEN w.word IS NULL THEN w.raw WHEN w.word !~ ' ' AND w.raw ~* ('^' || "
+    "w.word || '[-#[:space:]]?[0-9]') THEN w.raw ELSE w.word || ' ' || w.raw END FROM ("
+    f"SELECT btrim(i.raw) AS raw, {_ID_WORDS} AS word FROM {ONT}.identifiers i WHERE "
+    "i.object_id = r.record_id AND i.superseded_at IS NULL AND "
+    f"i.markings = {_lit(UNMARKED)} AND {valid_sql('i.raw')} IS NOT NULL AND NOT "
+    f"(i.identifier_kind = ANY({_arr(sorted(headers.TECHNICAL))})) ORDER BY "
+    f"(i.identifier_kind = ANY({_arr(CARRIER_KINDS)})), (i.role = 'primary') DESC, "
+    "i.identifier_kind, i.normalized LIMIT 1) w)")
+# a title that is only a number (a list's date column exported as an Excel serial) names
+# nothing
+_TITLE = free_valid_sql("COALESCE(x.j->>'Title', x.j->>'title')")
+_JSON_TITLE = (
+    f"(SELECT {_TITLE} FROM "
+    "jsonb_each(r.fields_open) e(k, v) CROSS JOIN LATERAL (SELECT CASE WHEN "
+    "jsonb_typeof(e.v) = 'string' AND left(ltrim(e.v #>> '{}'), 1) = '{' AND "
+    "pg_input_is_valid(e.v #>> '{}', 'jsonb') THEN (e.v #>> '{}')::jsonb WHEN "
+    "jsonb_typeof(e.v) = 'object' THEN e.v END AS j) x WHERE jsonb_typeof(x.j) = 'object' "
+    f"AND {_TITLE} IS NOT NULL AND {_TITLE} !~ '^[0-9]+([.][0-9]+)?$' ORDER BY e.k LIMIT 1)")
+# A Sage shipment or receipt header is named by its own number ("Shipment SHI0001",
+# "Receipt RCP0042"; live 11-21: 86,129 Shipment and 6,517 Receipt records, none labelled):
+# the type's number property (live names: ``fields_open`` sage_shipment_number /
+# sage_receipt_number).
+NUMBER_FIELDS = {"Shipment": ("sage_shipment_number", "Shipment"),
+                 "Receipt": ("sage_receipt_number", "Receipt")}
+
+
+def _own_number() -> str:
+    arms = []
+    for typ, (col, word) in sorted(NUMBER_FIELDS.items()):
+        n = valid_sql(f"r.fields_open->>{_lit(col)}")
+        arms.append(f"WHEN {_lit(typ)} THEN (CASE WHEN {n} IS NULL THEN NULL WHEN {n} ~* "
+                    f"{_lit('^' + word)} THEN {n} ELSE {_lit(word + ' ')} || {n} END)")
+    return "(CASE r.type " + " ".join(arms) + " END)"
+
+
+_OWN_TITLE = free_valid_sql("r.fields_open->>'title'")
+_OWN_NAME = free_valid_sql("r.fields_open->>'name'")
+# the record's display fields as the catalog declares them (``record_types.label_fields``,
+# in order), the first holding a name: what a build writes, read again from ``fields_open``
+_DISPLAY = (f"(SELECT {display_valid_sql('r.fields_open->>u.p')} FROM @SCHEMA@.record_types rt "
+            "CROSS JOIN LATERAL unnest(rt.label_fields) WITH ORDINALITY u(p, n) WHERE "
+            f"rt.type = r.type AND {display_valid_sql('r.fields_open->>u.p')} IS NOT NULL "
+            "ORDER BY u.n LIMIT 1)")
+LABEL_SQL = (f"COALESCE({_OWN_TITLE}, {_OWN_NAME}, {_DISPLAY}, {_JSON_TITLE}, "
+             f"{_own_number()}, {_ID_LABEL})")
+
+
+def _labels(pg: Any, schema: str, table: str, where: str) -> int:
+    """Label the rows of ``where`` (over ``r``) that have none (``LABEL_SQL``, read once
+    per row)."""
+    return pg.execute(f"UPDATE {schema}.{table} t SET label = x.l FROM (SELECT r.rid, "
+                      f"{LABEL_SQL.replace('@SCHEMA@', schema)} AS l FROM {schema}.{table} r WHERE ({where}) AND "
+                      "r.label IS NULL) x WHERE t.rid = x.rid AND x.l IS NOT NULL").rowcount
+
+
+def relabel(dsn: str, schema: str | None = None, *, step: int = BATCH) -> dict[str, int]:
+    """The served rows with no label labelled as a build labels them now (``_labels``), in
+    place: one short transaction per ``step`` rows of ``rid`` (row locks only; the refresh
+    goes on). A padded label is left as it is (11-21 live: 6.85M rows, a rewrite of most of
+    the table): a build or refresh writes the row trimmed."""
+    import psycopg
+    s = schema or bv.SCHEMA
+    out = {"cleared": 0, "labelled": 0}
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        _session(pg)
+        lo, hi = pg.execute(f"SELECT coalesce(min(rid), 0), coalesce(max(rid), -1) FROM "
+                            f"{s}.records").fetchone()
+        for start in range(lo, hi + 1, step):
+            with pg.transaction():
+                out["cleared"] += pg.execute(
+                    f"UPDATE {s}.records SET label = NULL WHERE rid >= {int(start)} AND rid < "
+                    f"{int(start + step)} AND label IS NOT NULL AND ({junk_sql('label')} OR "
+                    f"(type = 'SharePointListItem' AND {_date_sql('label')}))").rowcount
+                out["labelled"] += _labels(pg, s, "records", f"r.rid >= {int(start)} AND "
+                                           f"r.rid < {int(start + step)}")
+    return out
 
 
 def _link_insert(pg: Any, schema: str, records: str, table: str, where: str) -> int:
@@ -577,17 +719,81 @@ def build(dsn: str, schema: str | None = None, workers: int = 4, *,
             "seconds": round(time.monotonic() - started, 1)}
 
 
+# The served tables' indexes (besides the record id's unique one), as (table, method, key):
+# a build makes them on its new tables, ``ensure_indexes`` adds any the live tables lack.
+# ``record_links`` is read by the text ids the guarded view shows (``from_id``/``to_id``: a
+# reader's filter or a join to ``records.record_id``); without them every such read scanned
+# its link type or all 25M links (11-21 live: 45-58 s, a records join timed out at 60 s).
+INDEXES = (("records", "btree", "type, access_class) INCLUDE (ai_ok, record_id"),
+           ("records", "btree", "handle"), ("records", "btree", "type, record_date"),
+           ("records", "btree", "source"),
+           # a record found by its name or number (``label ILIKE '%...%'``) without a scan
+           ("records", "gin", "label gin_trgm_ops"),
+           ("record_links", "btree", "from_rid, link_type"),
+           ("record_links", "btree", "to_rid, link_type"),
+           ("record_links", "btree", "link_type"),
+           ("record_links", "btree", "from_id, link_type"),
+           ("record_links", "btree", "to_id, link_type"))
+
+
+def _trgm(pg: Any) -> bool:
+    return pg.execute("SELECT 1 FROM pg_opclass WHERE opcname = 'gin_trgm_ops'").fetchone() \
+        is not None
+
+
 def index(pg: Any, s: str, records: str, links: str) -> None:
-    for cols in ("type, access_class) INCLUDE (ai_ok, record_id", "handle", "type, record_date",
-                 "source"):
-        pg.execute(f"CREATE INDEX ON {s}.{records} ({cols})")
-    # a record found by its name or number (``label ILIKE '%...%'``) without a scan
-    if pg.execute("SELECT 1 FROM pg_opclass WHERE opcname = 'gin_trgm_ops'").fetchone():
-        pg.execute(f"CREATE INDEX ON {s}.{records} USING gin (label gin_trgm_ops)")
-    for cols in ("from_rid, link_type", "to_rid, link_type", "link_type"):
-        pg.execute(f"CREATE INDEX ON {s}.{links} ({cols})")
+    names = {"records": records, "record_links": links}
+    trgm = _trgm(pg)
+    for table, method, key in INDEXES:
+        if "gin_trgm_ops" in key and not trgm:
+            continue
+        pg.execute(f"CREATE INDEX ON {s}.{names[table]} USING {method} ({key})")
     pg.execute(f"ANALYZE {s}.{records}")
     pg.execute(f"ANALYZE {s}.{links}")
+
+
+def _index_shape(method: str, key: str) -> str:
+    """An index's method and key as ``pg_get_indexdef`` spells them, spaces dropped."""
+    return re.sub(r"\s+", "", f"USING {method} ({key})").lower()
+
+
+LOCK_TIMEOUT_S = 600
+
+
+def ensure_indexes(dsn: str, schema: str | None = None, *, free: Any = None,
+                   wait: float = ROOM_WAIT_SECONDS) -> list[str]:
+    """Make each ``INDEXES`` entry the live tables lack, ``CONCURRENTLY`` (reads and the
+    refresh's writes go on), one at a time, each after the disk check a batch makes
+    (``room``: the floor plus one batch free). An invalid index of the same shape (a
+    concurrent build that failed) is dropped and made again. Returns what it made; nothing
+    before ``records`` exists."""
+    import psycopg
+    s = schema or bv.SCHEMA
+    made: list[str] = []
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        # a concurrent build waits for every older transaction: bounded, an index it
+        # could not finish is left invalid and made again on the next run
+        pg.execute(f"SET lock_timeout = '{int(LOCK_TIMEOUT_S)}s'")
+        trgm = _trgm(pg)
+        for table, method, key in INDEXES:
+            if "gin_trgm_ops" in key and not trgm:
+                continue
+            if pg.execute("SELECT to_regclass(%s)", (f"{s}.{table}",)).fetchone()[0] is None:
+                continue
+            want = _index_shape(method, key)
+            have = [(name, valid) for name, valid, ddl in pg.execute(
+                "SELECT c.relname, i.indisvalid, pg_get_indexdef(i.indexrelid) FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = %s::regclass",
+                (f"{s}.{table}",)).fetchall()
+                if re.sub(r"\s+", "", ddl).lower().endswith(want)]
+            if any(valid for _, valid in have):
+                continue
+            for name, _ in have:
+                pg.execute(f'DROP INDEX CONCURRENTLY IF EXISTS {s}."{name}"')
+            room(pg, 1, free=free, wait=wait)
+            pg.execute(f"CREATE INDEX CONCURRENTLY ON {s}.{table} USING {method} ({key})")
+            made.append(f"{table} ({key})")
+    return made
 
 
 def swap(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any]) -> None:
@@ -765,6 +971,37 @@ def _views_follow_masks(pg: Any, s: str) -> None:
         return
 
 
+def code_fingerprints() -> dict[str, str]:
+    """Digests of the code that writes the catalog and ``records``/``record_links``
+    (``ontology.build_keys.code_digest``); a table whose code cannot be read has none."""
+    from ontology.build_keys import code_digest
+    mod = "operating.pg.generic_records"
+    out: dict[str, str] = {}
+    for table, roots in (("catalog", [("operating.pg.generic_views", "build_catalog")]),
+                         ("records", [(mod, "refresh"), (mod, "build")])):
+        digest = code_digest(roots)
+        if digest:
+            out[table] = digest[:32]
+    return out
+
+
+def _held_codes(dsn: str, s: str) -> dict[str, str | None]:
+    import psycopg
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        return {view: (notes or {}).get("code") for view, notes in pg.execute(
+            f"SELECT view, notes FROM {s}.state WHERE view IN ('records', 'record_types')")}
+
+
+def _record_codes(dsn: str, s: str, codes: dict[str, str]) -> None:
+    import psycopg
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        for view, table in (("record_types", "catalog"), ("records", "records")):
+            if table in codes:
+                pg.execute(f"UPDATE {s}.state SET notes = COALESCE(notes, '{{}}'::jsonb) || "
+                           "jsonb_build_object('code', %s::text) WHERE view = %s",
+                           (codes[table], view))
+
+
 def follow(dsn: str, day: dt.date, schema: str | None = None) -> dict[str, Any]:
     """The business views' refresh (``business_views.refresh``) keeps the generic door
     current: the catalog again on a new day (new types, fields and counts), then
@@ -781,17 +1018,37 @@ def follow(dsn: str, day: dt.date, schema: str | None = None) -> dict[str, Any]:
         return {}
     out: dict[str, Any] = {}
     new_day = not str(built.get("record_types") or "").startswith(day.isoformat())
+    # the code that writes each table, as of its last build/refresh (state.notes['code'])
+    codes = code_fingerprints()
+    held = _held_codes(dsn, s)
+    if not new_day and codes.get("catalog") and held.get("record_types") not in (
+            None, codes["catalog"]):   # none held: adopted below, no rebuild
+        new_day = True   # the catalog's own code changed: it is small, built again now
+        out["catalog_code_changed"] = True
     if new_day:
         from ontology.schema import load_schema
         from operating.ontology_tools_identity import SchemaView
         out["catalog"] = gv.build_catalog(dsn, SchemaView.from_compiled(load_schema()), s)
+    if codes.get("records") and held.get("records") not in (None, codes["records"]):
+        # a full rebuild of ``records`` is a deliberate job (hours: ``build``), never a
+        # side effect of a refresh: reported once, then the new code is the baseline
+        out["records_code_changed"] = ("rows written before this change keep the old "
+                                       "rule until a deliberate generic_records build")
+    _record_codes(dsn, s, codes)
     out["records"] = refresh(dsn, s, sweep=new_day)
+    try:   # speed only: a failure is reported, never the refresh's
+        made = ensure_indexes(dsn, s)
+    except (psycopg.Error, RuntimeError) as exc:
+        out["indexes_failed"] = str(exc).splitlines()[0][:300]
+    else:
+        if made:
+            out["indexes"] = made
     return out
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m operating.pg.generic_records")
-    ap.add_argument("command", choices=("build", "refresh"))
+    ap.add_argument("command", choices=("build", "refresh", "indexes", "labels"))
     ap.add_argument("--dsn")
     ap.add_argument("--schema")
     ap.add_argument("--workers", type=int, default=4)
@@ -816,6 +1073,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         out = build(dsn, args.schema, args.workers, uncovered=args.uncovered,
                     mirrors=args.mirrors, skip_prefixes=args.skip_prefix,
                     business=args.business, narrow=args.narrow)
+    elif args.command == "indexes":
+        out = {"indexes": ensure_indexes(dsn, args.schema)}
+    elif args.command == "labels":
+        out = relabel(dsn, args.schema)
     else:
         out = refresh(dsn, args.schema)
     print(json.dumps(out, default=str))

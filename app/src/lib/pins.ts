@@ -29,7 +29,6 @@ export interface PinReader {
 export const ROLE_PINS: Record<string, PinnedPage[]> = {
   owner: [
     { href: "/team#approvals", label: "Approvals waiting on others" },
-    { href: "/autopilot", label: "Autopilot review queue" },
     { href: "/?show=alerts#alerts", label: "Alerts" },
   ],
   purchasing: [

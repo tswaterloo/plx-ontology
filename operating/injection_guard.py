@@ -361,6 +361,13 @@ WORKBENCH_ORIGIN = "workbench://"  # + the tool name: text the Workbench wrote
 STRUCTURED_SOURCES: Mapping[str, str] = {"api://": "portal_api", "fixture://": "portal_api",
                                          "bc://": "bc"}
 STRUCTURED_SCHEMES = tuple(STRUCTURED_SOURCES)
+# Captured rows whose columns the schema types for the role rule only (``cited_role``),
+# never for row envelopes or column types: a Planner task (``meetings.planner_tasks``).
+# The scheme names the schema relation (a captured view carries no ``relation``; the
+# Workbench names the relation by its binding, ``RELATION_SCHEMES``).
+ROLE_SOURCES: Mapping[str, str] = {**STRUCTURED_SOURCES, "planner-task://": "meetings"}
+SCHEME_RELATIONS: Mapping[str, str] = {"planner-task://": "plannerTasks"}
+RELATION_SCHEMES: Mapping[str, str] = {"meetings.planner_tasks": "planner-task://"}
 ROW_ENVELOPE_KEYS = frozenset({"origin", "cells"})
 COLUMN_GRAMMARS: Mapping[str, str] = {
     "identifier": "token", "enum": "token", "boolean": "boolean", "integer": "number",
@@ -1110,8 +1117,9 @@ def _property_role(prop: Mapping[str, Any]) -> Any:
 
 def schema_column_roles(schema: Any) -> dict[str, dict[str, dict[str, str]]]:
     """binding source -> relation -> {column: role} of a compiled ontology schema's
-    ``portal_api`` and ``bc`` bindings; a column whose properties disagree has none."""
-    sources = frozenset(STRUCTURED_SOURCES.values())
+    ``portal_api``, ``bc`` and ``ROLE_SOURCES`` bindings; a column whose properties
+    disagree has none."""
+    sources = frozenset(ROLE_SOURCES.values())
     seen: dict[tuple[str, str], dict[str, set[str]]] = {}
     for object_type in schema.object_types.values():
         for prop in object_type.get("properties") or ():
@@ -1248,13 +1256,14 @@ def cited_role(handle: Any, content: Any, field_path: Any, value: Any = _CELL) -
         role = declared.get(column) if isinstance(declared, Mapping) else None
         return (_decided_role(role, frozenset(), value)
                 if isinstance(role, str) and ROLE.fullmatch(role) else None)
-    source = next((STRUCTURED_SOURCES[s] for s in ("api://", "bc://") if handle.startswith(s)),
+    scheme = next((s for s in ("api://", "bc://", *SCHEME_RELATIONS) if handle.startswith(s)),
                   None)
-    if source is None:
+    if scheme is None:
         return None
+    source = ROLE_SOURCES[scheme]
     if not _COLUMN_ROLES:
         _COLUMN_ROLES.append(schema_column_roles(load_schema()))
-    relation = str(content.get("relation"))
+    relation = SCHEME_RELATIONS.get(scheme) or str(content.get("relation"))
     return _decided_role(_COLUMN_ROLES[0].get(source, {}).get(relation, {}).get(column),
                          _carried_kinds(relation, column), value)
 
@@ -1262,12 +1271,14 @@ def cited_role(handle: Any, content: Any, field_path: Any, value: Any = _CELL) -
 def same_role(written: str | None, cited: str | None) -> bool:
     """Whether a cell of role ``cited`` may supply a field of role ``written``. An
     ambiguous role on either side never fits; a field with no declared role takes any
-    other cell; a declared one needs the same role, an identifier also one of its
-    kind's declared alias kinds (identifiers.json)."""
+    other cell; a declared one needs the same role (a timestamp field also takes a date),
+    an identifier also one of its kind's declared alias kinds (identifiers.json)."""
     if AMBIGUOUS_ROLE in (written, cited):
         return False
     if written is None or written == cited:
         return True
+    if (written, cited) == ("timestamp", "date"):
+        return True   # a date fills a timestamp field exactly (its midnight), not back
     if cited is None or not (written.startswith(_IDENTIFIER_ROLE)
                              and cited.startswith(_IDENTIFIER_ROLE)):
         return False

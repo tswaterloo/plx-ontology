@@ -68,6 +68,18 @@ Changed:
 - One switch per kind of work on the Autopilot page: off, prepare and confirm each with one click, or Auto, which opens only where replaying past days scored high enough for the person
 - the score shows beside it
 
+## Update 2026-11-21
+Changed:
+- Ask data: record_links id indexes, Sage AP due dates, label fallback (business identifiers, JSON titles), catalog join and mail-window rules, files stay search-only
+- Assist: decision replies are the person's call (question + option replies), else a [blank] draft
+- drafter says only what is asked, note without figures
+- the check reads contradictions and checks the note
+- a session whose reads are screened retries from the screened thread alone
+- Assist cards keep ready answers: on a turn the person's call keeps the answers the check kept, an unsupported option reply is repaired with [placeholders], labels never say what the reply no longer says, no placeholder-only or duplicate buttons
+- Assist: one item per MC approval
+- job_approval keeps the rule-based recommendation when the model proposes no change (fresh days 142/149)
+- Approval items: recommendation after the last failed try
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

@@ -57,7 +57,7 @@ class InsightToolTest(unittest.TestCase):
         self.assertNotIn(OTHER, json.dumps(out))
         self.assertEqual(out["row_count"], 1)
         self.assertNotIn("person_id", out["columns"])   # the person column is dropped
-        self.assertEqual(out["rows"][0][0], {"untrusted_text": "Me Myself"})   # enveloped
+        self.assertEqual(out["rows"][0]["cells"][0], {"untrusted_text": "Me Myself"})   # enveloped
 
     def test_a_reader_who_sees_everyone_gets_every_row(self):
         out = self.call(Backend(True), "colleagues_waiting")
@@ -85,6 +85,38 @@ class InsightToolTest(unittest.TestCase):
         for gone in ("Other", "Hidden", ti.OTHER, ti.HIDDEN, ti.ME):
             self.assertNotIn(gone, said)
         self.assertEqual(out["row_count"], 1)
+
+    def test_a_figure_the_tile_returned_binds_the_reply_and_is_cited(self):
+        """The Ask's figure gate and citations read a plx.insight result as a plx.sql one:
+        the tile's own number passes, a number it does not hold is still marked, and the
+        citation holds only the rows the asker got (live 11-21 wt10, flag on: every tile
+        number came out "(unverified)", 8/10 answers partial)."""
+        out = self.call(Backend(False), "colleagues_waiting")
+        events = [{"type": "tool_call", "name": it.NAME, "arguments": {"id": "colleagues_waiting"},
+                   "result": json.dumps(out)}]
+        text, marked = simple_ask.gate("Me Myself has 3 colleagues waiting.", events)
+        self.assertEqual(marked, [], text)
+        text, marked = simple_ask.gate("Me Myself has 7 colleagues waiting.", events)
+        self.assertIn("7" + simple_ask.UNVERIFIED, text)
+        (table,) = simple_ask.cited(events)
+        self.assertTrue(table["about"].startswith("Insights: "), table)
+        self.assertEqual(table["rows"], [["Me Myself", "3"]])
+        self.assertNotIn("Other Person", json.dumps(table))
+        failed = [{**events[0], "is_error": True}]
+        self.assertEqual(simple_ask.cited(failed), [])
+        self.assertIn("3" + simple_ask.UNVERIFIED, simple_ask.gate("Me Myself has 3.", failed)[0])
+
+    def test_a_tile_that_fails_to_read_is_unreadable_and_logs_no_value(self):
+        class Broken(Backend):
+            def insight_result(self, reader, iid):
+                raise ValueError("Secret Customer 4417")
+        with self.assertLogs("operator_api.ask", "WARNING") as logs:
+            out = self.call(Broken(True), "colleagues_waiting")
+        self.assertEqual(out["error"], "insight_unreadable")
+        said = json.dumps(out) + "".join(logs.output)
+        self.assertNotIn("Secret", said)
+        self.assertNotIn("4417", said)
+        self.assertIn("ValueError", "".join(logs.output))
 
     def test_its_description_fits_the_listing(self):
         self.assertLessEqual(len(it.SPEC["description"]), 600)

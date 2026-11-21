@@ -1,19 +1,18 @@
 "use client";
 
 // What needs the owner: the decisions, approvals and blocked items waiting on them across
-// the Workbench, read from the reader-scoped endpoints that already hold them (the
-// autopilot review queue, prepared write entries and the approvals queue). Reliability
+// the Workbench, read from the reader-scoped endpoints that already hold them (prepared
+// write entries and the approvals queue; what the autopilot prepared is the queue above it). Reliability
 // alarms are not the owner's work: they live on the Admin page. Shown only when the server
 // says the reader is the owner; a source that can't be
 // read is named, never counted as zero.
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getApprovals, getAutopilot, getMe, getWrites } from "@/lib/api";
-import { systemLabel } from "@/lib/autopilot";
+import { getApprovals, getMe, getWrites } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, formatDateTime, objectHref, plural } from "@/lib/format";
-import type { ApprovalsQueue, AutopilotArea, Me, WriteIntentView } from "@/lib/types";
+import { ago, objectHref, plural } from "@/lib/format";
+import type { ApprovalsQueue, Me, WriteIntentView } from "@/lib/types";
 
 export type NeedKind = "decide" | "approve" | "blocked";
 export interface Need {
@@ -27,7 +26,6 @@ export interface Need {
 }
 export interface NeedsSources {
   me: Me | null;
-  autopilot: AutopilotArea | null;
   writes: WriteIntentView[] | null;
   /** undefined while the queue is still being read (it fills in later; never "couldn't read") */
   approvals?: ApprovalsQueue | null;
@@ -58,12 +56,6 @@ function writeHref(v: WriteIntentView): string | null {
 export function needsOf(s: NeedsSources, now = new Date()): { needs: Need[]; unread: string[] } {
   const needs: Need[] = [];
   const unread: string[] = [];
-  if (s.autopilot) {
-    for (const i of s.autopilot.items ?? []) {
-      if (!i.mine || i.state !== "waiting") continue;
-      needs.push({ key: `ap:${i.item_id}`, kind: "decide", title: i.title, detail: `${i.label && i.label !== i.title ? `${i.label} · ` : ""}${i.system ? `${systemLabel(i.system)} · ` : ""}due ${formatDateTime(i.due_at, now)}`, href: `/autopilot?item=${encodeURIComponent(i.item_id)}`, rank: stamp(i.due_at) });
-    }
-  } else unread.push("the autopilot review queue");
   if (s.writes) {
     for (const v of s.writes) {
       const id = (v.intent as { intent_id?: string }).intent_id ?? v.at;
@@ -157,15 +149,13 @@ export function NeedsMe() {
   useEffect(() => {
     const ctl = new AbortController();
     const soft = <T,>(p: Promise<T>) => p.then((v) => v, () => null);
-    Promise.all([soft(getMe(ctl.signal)), soft(getAutopilot(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items))]).then(
-      ([me, autopilot, writes]) => {
-        if (!ctl.signal.aborted) setSources({ me, autopilot, writes });
-      },
-    );
+    Promise.all([soft(getMe(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items))]).then(([me, writes]) => {
+      if (!ctl.signal.aborted) setSources({ me, writes });
+    });
     soft(getApprovals(ctl.signal)).then((a) => !ctl.signal.aborted && setApprovals(a));
     return () => ctl.abort();
   }, []);
-  // the owner is the server's word (the autopilot area's owner flag); unknown is not the owner
-  if (!sources?.autopilot?.owner) return null;
+  // the owner is the server's word (/api/me); unknown is not the owner
+  if (!sources?.me?.owner) return null;
   return <NeedsMeList sources={{ ...sources, approvals }} />;
 }

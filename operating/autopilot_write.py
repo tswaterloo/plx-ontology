@@ -134,6 +134,30 @@ WRITE_SYSTEMS = {"mc": "mc_task", "bc": "bc_write", "sage": "sage_write",
 OWN_MAILBOX = frozenset({"calendar"})     # systems written only in the item owner's mailbox
 SETTLED = frozenset({"done", "failed"})
 UNSURE = frozenset({"pending", "unknown"})
+# a blank the drafter left for the person (operating.autopilot_agent's rule: a few words in
+# square brackets naming one piece, "[ship date]", "[yes or no]"); never a mail tag
+# ("[EXTERNAL]", "[SPAM]"), a footnote "[1]", an address, a link or an inline image
+_BRACKETED = re.compile(r"\[([^\[\]\n]{1,80})\]")
+_MAIL_TAGS = frozenset({"external", "ext", "external email", "external sender", "spam",
+                        "suspected spam", "suspicious", "caution", "warning", "secure",
+                        "encrypt", "encrypted", "confidential", "sensitive", "bulk",
+                        "newsletter", "phish", "phishing", "marketing", "fyi"})
+
+
+def placeholders(text: Any) -> list[str]:
+    """The unfilled blanks the drafter left in ``text`` (see ``_BRACKETED``)."""
+    out = []
+    for m in _BRACKETED.finditer(str(text or "")):
+        inner = m.group(1).strip()
+        low = inner.lower()
+        if not inner or not re.search(r"[a-z]", inner) or len(inner.split()) > 12 \
+                or re.search(r"[@/\\]|://", inner) or low in _MAIL_TAGS \
+                or low.startswith(("cid:", "mailto:", "image:", "http", "www.")):
+            continue
+        out.append(inner)
+    return out
+
+
 _EMAIL = re.compile(r"[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
 _SERVICE = re.compile(r"^(?:sp_|agent:|svc[_:-]|service[_:-])", re.IGNORECASE)
 _ROLE_FLOW = re.compile(r"^[a-z0-9_:@.-]{1,120}$")
@@ -442,6 +466,10 @@ def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[s
     for name in spec.get("deny_term_classes") or ():
         if any(rx.search(text) for rx in rules["_classes"][name]):
             why.append(f"term:{name}")
+    # a draft or an entry holding a [blank] only the person can fill waits for them:
+    # never sent or written by itself with the bracket in it (every kind with text)
+    if kind != "mc_approval" and any(placeholders(t) for t in _strings(action.get("payload"))):
+        why.append("incomplete:placeholder")
     if kind == "mc_approval":
         scope = (action.get("payload") or {}).get("scope") or {}
         if not isinstance(scope, Mapping) or scope.get("kind") not in spec.get("scope_kind_in", ()):
@@ -804,7 +832,11 @@ class WriteGate:
     clean past windows); the verdict is recomputed from the counts (``rules.gate``) at every
     read. Missing or unreadable: nothing passes."""
 
-    def __init__(self, path: Path, rules: Mapping[str, Any]) -> None:
+    def __init__(self, path: Path, rules: Mapping[str, Any],
+                 aliases: Any = None) -> None:
+        # identity -> the person's other identities (address <-> directory id), so their
+        # own judged score is found whichever one an item or opt-in carries
+        self.aliases = aliases
         precision = Decimal(str(rules["gate"]["precision"]))
         minimum = int(rules["gate"]["min_judged"])
         self.precision, self.minimum = precision, minimum
@@ -837,6 +869,13 @@ class WriteGate:
         except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError,
                 RulesInvalid):
             self.roles, self.counts = {}, {}
+        # Auto rests on the judged precision of the workflow's category
+        # (``autopilot_judged``): a replay count that only says the person acted on the
+        # thread earns nothing by itself. No judged score: nothing passes.
+        from operating import autopilot_judged
+        self.judged = autopilot_judged.load(Path(path).parent, rules) if self.readable else {}
+        for _members, ok, _seen in self.roles.values():
+            ok.difference_update([f for f in ok if not self.judged_all(f)])
         # the product gate's semantics over our verdicts (a workflow our stricter rules or
         # the freshness check refuse is passed in as measured and failed)
         self._gate, _ = autopilot_engine.gate_of({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
@@ -844,6 +883,41 @@ class WriteGate:
                 f: {"judged": autopilot_engine.GATE_MIN_JUDGED, "matched": autopilot_engine.GATE_MIN_JUDGED if f in ok else 0}
                 for f in seen}}
             for n, (m, ok, seen) in self.roles.items()}})
+
+    def judged_all(self, workflow: str) -> bool:
+        """The workflow's category passes on everyone's judged score."""
+        from operating import autopilot_judged
+        from operating.assist_switches import choice_of
+        cat = choice_of(workflow)
+        every = self.judged.get((autopilot_judged.ALL, cat)) if cat else None
+        return every is not None and every.passes(self.precision, self.minimum)
+
+    def identities(self, person: str) -> list[str]:
+        """``person`` and their other identities (``aliases``); every own score found must
+        pass, so an alias can only hold Auto back. A lookup that fails adds none."""
+        person = str(person or "").strip().lower()
+        out = [person]
+        if self.aliases is not None:
+            try:
+                out += [str(a).strip().lower() for a in self.aliases(person) or () if a]
+            except Exception:  # noqa: BLE001 - no alias: the identity alone
+                pass
+        return list(dict.fromkeys(out))
+
+    def judged_for(self, people: Iterable[str], workflow: str
+                   ) -> tuple[bool, "Any"]:
+        """Whether the workflow's category earned Auto for the person (any of ``people``)
+        on its judged score, and the score shown for it (``autopilot_judged.shown``)."""
+        from operating import autopilot_judged
+        from operating.assist_switches import choice_of
+        cat = choice_of(workflow)
+        if not cat:
+            return False, None
+        people = [str(p).lower() for p in people]
+        return (autopilot_judged.passes(self.judged, people, cat, self.precision,
+                                        self.minimum),
+                autopilot_judged.shown(self.judged, people, cat, self.precision,
+                                       self.minimum))
 
     def passing(self) -> list[tuple[str, str]]:
         return sorted((r, f) for r, (_m, ok, _s) in self.roles.items() for f in ok)
@@ -853,7 +927,8 @@ class WriteGate:
         gate's semantics (``autopilot.gate_of``); [] when it does not pass."""
         owner, roles = str(owner).lower(), set(roles)
         mine = [n for n, (m, ok, _s) in self.roles.items() if owner in m and workflow in ok]
-        if not mine or not self._gate(owner, workflow, roles):
+        if not mine or not self._gate(owner, workflow, roles) or \
+                not self.judged_for(self.identities(owner), workflow)[0]:
             return []
         personal = [n for n in mine if n.startswith("person:")]
         return personal or ([n for n in mine if n in roles] if roles else mine)
@@ -977,6 +1052,26 @@ def shortfall(gate: WriteGate, person: str, workflow: str) -> dict[str, Any]:
     weakest of their roles measured on it (``below_bar``: under the precision; ``too_few``:
     under the judged minimum), or ``no_score`` when no score of theirs is on record."""
     person = str(person).lower()
+    need = {"need_judged": gate.minimum,
+            "need_percent": str((gate.precision * 100).quantize(Decimal("0.1")))}
+    ids = gate.identities(person)
+    earned, score = gate.judged_for(ids, workflow)
+    if not earned:          # the category's judged score decides first (what Auto rests on)
+        from operating import autopilot_judged
+        from operating.assist_switches import choice_of
+        cat = choice_of(workflow) or ""
+        every = gate.judged.get((autopilot_judged.ALL, cat))
+        owns = [autopilot_judged.for_person(gate.judged, p, cat)[1] for p in ids]
+        failed = [x for x in (every, *owns)
+                  if x is not None and not x.passes(gate.precision, gate.minimum)]
+        if every is None or not failed:
+            return {"reason": "no_score", **need}
+        score = failed[0]
+        pct = score.percent()
+        return {"reason": "too_few" if score.judged < gate.minimum else "below_bar",
+                "role": "judged", "judged": score.judged, "matched": score.matched,
+                "percent": str(pct) if pct is not None else None,
+                "source": score.source, "measured_on": score.measured_on, **need}
     measured = [(r, gate.counts[(r, workflow)]) for r, (m, ok, seen) in gate.roles.items()
                 if person in m and workflow in seen and (r, workflow) in gate.counts]
     failing = [(r, c) for r, c in measured if workflow not in gate.roles[r][1]] or measured
@@ -1437,6 +1532,16 @@ class Executor:
                 break
         return results
 
+    def _aliases(self, person: str) -> list[str]:
+        """The person's directory id when the item carries their address (the people
+        guard's ``object_id_of``). A judged run keys each item under both the address and
+        the id, so an item that carries the id finds that score directly."""
+        lookup = getattr(self.guard, "object_id_of", None)
+        if lookup is None or "@" not in person:
+            return []
+        oid = lookup(person)
+        return [oid] if oid else []
+
     def _record(self, row: dict[str, Any], now: datetime, event: str = "decision"
                 ) -> dict[str, Any]:
         with self.journal.locked() as held:
@@ -1479,6 +1584,17 @@ class Executor:
             row["acknowledged"] = list(not_routine)
         elif not_routine:
             return self._record({**row, "status": "not_routine", "reasons": not_routine}, now)
+        if approval is None:
+            # performed by itself: the person's own switch conditions (sender, days,
+            # hours, their bar) must hold too, else it waits for their click
+            from . import assist_switches
+            gate = WriteGate(self.state / WRITE_GATE_FILE, rules, aliases=self._aliases)
+            held_back = assist_switches.reasons(
+                self.state, gate.identities(base["owner"]), item, str(base["workflow"]),
+                now, gate)
+            if held_back:
+                return self._record({**row, "status": "not_routine", "reasons": held_back},
+                                    now)
         if adapter is None:
             return self._record({**row, "status": "unavailable",
                                  "reasons": ["no_adapter"]}, now)
@@ -1493,7 +1609,7 @@ class Executor:
         row["undo_request"] = _audit_view(kind, _journal_safe(undo_plan, wire=True))
         row["undo_waits_for"] = wa.placeholders(undo_plan)
         row["undo_note"] = adapter.undo_note()
-        gate = WriteGate(self.state / WRITE_GATE_FILE, rules)
+        gate = WriteGate(self.state / WRITE_GATE_FILE, rules, aliases=self._aliases)
         with self.journal.locked() as held:
             spec = self._spec(str(item.get("autopilot")))
             # an opt-in the gate no longer carries is suspended (and recorded) first
@@ -1604,7 +1720,7 @@ class Executor:
             return []
         approved = approved_kinds(self.environ)
         spec = self._spec(str(item.get("autopilot")))
-        gate = WriteGate(self.state / WRITE_GATE_FILE, rules)
+        gate = WriteGate(self.state / WRITE_GATE_FILE, rules, aliases=self._aliases)
         mode, _missing = write_state(gate, self.journal.rows() if rows is None else rows,
                                      self.environ,
                                      str(item.get("owner") or "").lower(), workflow,

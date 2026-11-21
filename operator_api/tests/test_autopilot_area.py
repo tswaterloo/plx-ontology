@@ -21,11 +21,13 @@ from fastapi.testclient import TestClient
 
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
+from operating import autopilot_queue
 from operating import autopilot_engine
 from operating import autopilot_write as aw
 from operating import autopilot_write_adapters as wa
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
-from operating.tests.test_autopilot_write import BC_COMPANY, NEW_ID, Transport, po_item
+from operating.tests.test_autopilot_write import (
+    BC_COMPANY, NEW_ID, Transport, admit_judged, po_item)
 from operator_api import autopilot_area as ws
 from operator_api.app import create_app
 from operator_api.auth import DevAuth
@@ -105,6 +107,7 @@ class AutopilotArea(unittest.TestCase):
         rules = aw.load_rules()
         self.assertIn(ROLE, aw.record_scores(run, self.state / aw.WRITE_GATE_FILE,
                                              rules)["admitted"])
+        admit_judged(self.state, self.state.parent, 16, 15, person=OWNER[0])
         aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE),
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
                      datetime.now(timezone.utc))
@@ -198,9 +201,10 @@ class AutopilotArea(unittest.TestCase):
                                     json={"decision": "reject"}).status_code, 404)
         self.assertEqual(self.bc.calls, [])
 
-    def score_fresh(self, roles: dict) -> None:
+    def score_fresh(self, roles: dict, judged=(15, 15)) -> None:
         """A fresh scorer run of ``roles`` (role -> (members, {workflow: (judged, matched)}))
-        admitted to the write gate, and the gate synced."""
+        admitted to the write gate, every category's judged score ``judged`` (judged,
+        matched; None: none on record), and the gate synced."""
         run = self.state.parent / f"fresh-{len(list(self.state.parent.glob('fresh-*')))}"
         run.mkdir(parents=True)
         (run / autopilot_engine.GATE_FILE).write_text(json.dumps({"schema": autopilot_engine.GATE_SCHEMA, "roles": {
@@ -214,6 +218,9 @@ class AutopilotArea(unittest.TestCase):
                  "window": ["2026-11-06T07:00:00Z", "2026-11-10T07:00:00Z"]}))
         rules = aw.load_rules()
         aw.record_scores(run, self.state / aw.WRITE_GATE_FILE, rules)
+        if judged:
+            admit_judged(self.state, self.state.parent, *judged,
+                         categories=tuple(c for c, _l, _f in aw.DRAFT_CHOICES))
         aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE),
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
                      datetime.now(timezone.utc))
@@ -226,14 +233,15 @@ class AutopilotArea(unittest.TestCase):
         lee = ("lee@plx.example", "66666666-6666-4666-8666-666666666666")
         lee_role, lee_flow = f"person:{lee[0]}", "supplier_eta_receiving"
         self.score_fresh({ROLE: ([OWNER[1]], {FLOW: (16, 15)}),
-                          lee_role: ([lee[1]], {lee_flow: (40, 38)})})
+                          lee_role: ([lee[1]], {lee_flow: (40, 38)})}, judged=(16, 15))
         owner, them = self.client(OWNER), self.client(lee)
         mine = owner.get("/api/autopilot").json()
         self.assertEqual([(o["workflow"], o["eligible"], o["on"]) for o in mine["my_opt_ins"]],
                          [(FLOW, True, False)])                     # off by default
-        self.assertEqual(mine["my_opt_ins"][0]["score"], {
+        self.assertEqual(mine["my_opt_ins"][0]["score"], {      # the judged score, sourced
             "judged": 16, "matched": 15, "percent": 93.8, "need_judged": 15,
-            "need_percent": 90.0})
+            "need_percent": 90.0, "source": "fixture set", "measured_on": "2026-11-12",
+            "window": ["2026-11-06T15:00:00Z", "2026-11-06T15:15:01Z"], "scope": "team"})
         self.assertEqual(mine["switched_on"], [])
         theirs = them.get("/api/autopilot").json()
         self.assertEqual([(o["workflow"], o["on"]) for o in theirs["my_opt_ins"]],
@@ -417,6 +425,46 @@ class AutopilotArea(unittest.TestCase):
         self.assertFalse(any(c["on"] for c in off.json()["my_drafts"]))
         self.assertEqual(switched(aw.Journal(self.state / aw.AUDIT_FILE).rows()), {})
 
+    def test_auto_rests_on_the_judged_score_never_the_replay_count(self) -> None:
+        """A category earns Auto only on its judged precision (items
+        Auto would have performed, graded right by the judge, >= 90% on >= 15, held-out
+        days). A replay count that passes (the person acted on the thread) earns nothing
+        without it, a judged score under the bar keeps Auto shut, and the switch shows the
+        judged number with its source and date."""
+        lee = ("lee@plx.example", "66666666-6666-4666-8666-666666666666")
+        lee_role, lee_flow = f"person:{lee[0]}", "supplier_eta_receiving"
+        them = self.client(lee)
+
+        def row():
+            return next(c for c in them.get("/api/autopilot").json()["my_drafts"]
+                        if c["choice"] == "supplier_followups")
+        self.score_fresh({lee_role: ([lee[1]], {lee_flow: (40, 40)})}, judged=None)
+        self.assertEqual((row()["auto_ok"], row().get("score")), (False, None))
+        self.assertEqual(them.post("/api/autopilot/mode", json={
+            "choice": "supplier_followups", "mode": "auto"}).status_code, 409)
+        admit_judged(self.state, self.state.parent, 30, 26,
+                     categories=("supplier_followups",))          # 86.7%: under the bar
+        got = row()
+        self.assertFalse(got["auto_ok"])
+        self.assertEqual((got["score"]["judged"], got["score"]["matched"],
+                          got["score"]["percent"], got["score"]["source"]),
+                         (30, 26, 86.7, "fixture set"))
+        self.assertEqual(them.post("/api/autopilot/mode", json={
+            "choice": "supplier_followups", "mode": "auto"}).status_code, 409)
+        admit_judged(self.state, self.state.parent, 30, 27,
+                     categories=("supplier_followups",))          # 90.0%: earned
+        self.assertTrue(row()["auto_ok"])
+        self.assertEqual(them.post("/api/autopilot/mode", json={
+            "choice": "supplier_followups", "mode": "auto"}).status_code, 200)
+        # a later judged run under the bar stops it at once: the opt-in is suspended
+        admit_judged(self.state, self.state.parent, 30, 20,
+                     categories=("supplier_followups",))
+        gate = aw.WriteGate(self.state / aw.WRITE_GATE_FILE, aw.load_rules())
+        self.assertEqual(aw.eligible(gate, lee[1], lee_flow), [])
+        self.assertEqual(aw.shortfall(gate, lee[1], lee_flow)["reason"], "below_bar")
+        self.assertFalse(row()["auto_ok"])
+        self.assertEqual(self.bc.calls, [])
+
     def test_one_switch_per_category_off_confirm_auto_and_auto_only_where_earned(self) -> None:
         """Each category is off, confirm
         (prepared in full; nothing is performed without the person's click) or auto (only
@@ -424,7 +472,7 @@ class AutopilotArea(unittest.TestCase):
         auto, an unknown mode or choice, a nameless session write nothing."""
         lee = ("lee@plx.example", "66666666-6666-4666-8666-666666666666")
         lee_role, lee_flow = f"person:{lee[0]}", "supplier_eta_receiving"
-        self.score_fresh({lee_role: ([lee[1]], {lee_flow: (40, 38)})})
+        self.score_fresh({lee_role: ([lee[1]], {lee_flow: (40, 38)})}, judged=(20, 19))
         them = self.client(lee)
         journal = aw.Journal(self.state / aw.AUDIT_FILE)
 
@@ -432,7 +480,7 @@ class AutopilotArea(unittest.TestCase):
             return next(c for c in area["my_drafts"] if c["choice"] == choice)
         start = row(them.get("/api/autopilot").json())
         self.assertEqual((start["mode"], start["auto_ok"], start["score"]["judged"],
-                          start["score"]["matched"]), ("off", True, 40, 38))
+                          start["score"]["matched"]), ("off", True, 20, 19))
         self.assertEqual(row(them.get("/api/autopilot").json(), "teams_replies")["auto_ok"],
                          False)
         for body, code in (({"choice": "supplier_followups", "mode": "live"}, 422),
@@ -1166,12 +1214,15 @@ class AlertCards(unittest.TestCase):
             "summary": "Approval requested for TASK-1: merge gate.",
             "reasons": ["no earlier approval of this task"], "evidence": [{"object_id": task}],
             "recommendation": "review",
+            "mc": {"link": "https://mc.plxcustomer.io/tasks/TASK-1"},
             "action": {"kind": "mc_approval", "gate": "apg_secret1",
                        "note": "Decide in Mission Control."}}
         hold = ReplyFromLine.card("ap_hold", OWNER[1])
         hold.update(autopilot="qc_hold", title="QC hold: Lot L-1")
         hold["body"]["prepared"] = {
             "summary": "Lot L-1 is on-hold; it holds up 1 open order.", "lot": "L-1",
+            # a link not on MC's own task pages is never shown
+            "mc": {"link": "https://elsewhere.example/tasks/TASK-1"},
             "affected": [{"customer": "Three Ships", "order_number": "OR-9",
                           "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s1"}'}]}
         theirs = json.loads(json.dumps(approval))
@@ -1194,9 +1245,13 @@ class AlertCards(unittest.TestCase):
         appr, hold = mine["ap_appr"], mine["ap_hold"]
         self.assertEqual((appr["channel"], appr["note"], appr["facts"]),
                          ("system", "Decide in Mission Control.",
-                          ["no earlier approval of this task"]))
-        self.assertEqual([lk["label"] for lk in appr["links"]], ["Open the task"])
-        self.assertTrue(appr["links"][0]["href"].startswith("/object/MCTask:"))
+                          ["Recommended: review", "no earlier approval of this task"]))
+        self.assertEqual([(lk["label"], lk["href"]) for lk in appr["links"]][0],
+                         ("Decide in Mission Control", "https://mc.plxcustomer.io/tasks/TASK-1"))
+        self.assertEqual([lk["label"] for lk in appr["links"]],
+                         ["Decide in Mission Control", "Open the task"])
+        self.assertTrue(appr["links"][1]["href"].startswith("/object/MCTask:"))
+        self.assertEqual([lk["label"] for lk in hold["links"]], ["Open the order"])
         self.assertEqual(hold["facts"], ["OR-9, Three Ships"])
         self.assertEqual(hold["links"][0]["label"], "Open the order")
         self.assertNotIn("apg_secret1", json.dumps(mine))
@@ -1205,6 +1260,116 @@ class AlertCards(unittest.TestCase):
         self.assertEqual(got.status_code, 200, got.text)
         self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
         self.assertEqual(self.bc.calls, [])
+
+    def test_one_card_per_lot_one_line_per_order_and_no_title_saying_the_summary_twice(self):
+        """Items stored before the handler kept one card per lot: the newest item about a lot
+        stands for it (an older one is not listed, decided or not); one line and one link per
+        order however many systems hold a copy; the heading is the workflow, not the summary
+        again."""
+        order = 'SalesOrder:portal.app_sales_order:{"id":"s%s"}'
+        summary = "Lot L-1 (NBY-005) is on-hold; it holds up 3 open orders."
+        newer = ReplyFromLine.card("ap_hold2", OWNER[1])
+        newer.update(autopilot="qc_hold", title="QC hold or fail: " + summary,
+                     created_at="2099-01-01T00:00:00Z")
+        newer["body"]["label"] = "QC hold or fail"
+        newer["body"]["prepared"] = {
+            "summary": summary, "lot": "l-1",
+            "affected": [{"customer": "Three Ships", "order_number": "OR-9",
+                          "object_id": order % 1},
+                         {"customer": "THREE SHIPS INC.", "order_number": "or 9",
+                          "object_id": order % 2},
+                         {"customer": "Soapbox", "order_number": "OR-10",
+                          "object_id": order % 3}]}
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.add_item(newer)
+        q.close()
+        owner = self.client(OWNER)
+        mine = self.alerts(owner)
+        self.assertEqual(set(mine), {"ap_appr", "ap_hold2"})
+        hold = mine["ap_hold2"]
+        # the stored summary counted each copy; the card counts the orders it lists
+        self.assertEqual((hold["subject"], hold["summary"]), (
+            "QC hold or fail", summary.replace("3 open orders", "2 open orders")))
+        self.assertEqual(hold["facts"], ["OR-9, Three Ships", "OR-10, Soapbox"])
+        self.assertEqual([lk["label"] for lk in hold["links"]],
+                         ["Open order OR-9", "Open order OR-10"])
+        # set aside, the lot's card is gone: the older item never comes back in its place
+        got = owner.post("/api/autopilot/items/ap_hold2/decision", json={"decision": "reject"})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
+
+    def newer_hold(self) -> None:
+        """A newer item about lot L-1 (another batch record), with the engine's settle note
+        that it replaces ``ap_hold``."""
+        newer = json.loads(json.dumps(ReplyFromLine.card("ap_hold3", OWNER[1])))
+        newer.update(autopilot="qc_hold", title="QC hold: Lot L-1",
+                     created_at="2099-01-01T00:00:00Z")
+        newer["body"]["prepared"] = {
+            "summary": "Lot L-1 is on-hold; it holds up 1 open order.", "lot": "L-1",
+            "affected": [{"customer": "Three Ships", "order_number": "OR-9",
+                          "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s1"}'}]}
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.add_item(newer)
+            q.settle_item("ap_hold", "superseded", "same_subject", "2099-01-01T00:00:01Z")
+            q.set_meta(autopilot_queue.SUPERSEDED_BY, {"ap_hold": "ap_hold3"})
+        q.close()
+
+    def test_a_snooze_carries_to_the_newer_item_about_the_same_lot(self):
+        owner = self.client(OWNER)
+        later = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        got = owner.post("/api/autopilot/items/ap_hold/decision",
+                         json={"decision": "snooze", "until": later})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.newer_hold()
+        self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
+
+    def test_a_pass_to_a_colleague_carries_to_the_newer_item_about_the_same_lot(self):
+        from operator_api import view_as as va
+        self.backend.view_as = va.ViewAs(
+            candidates=lambda: [(OWNER[1], OWNER[0]), (COLLEAGUE[1], COLLEAGUE[0])],
+            identity=lambda oid, seconds: None, excluded=lambda: (lambda oid: False))
+        owner, sam = self.client(OWNER), self.client(COLLEAGUE)
+        key = owner.get("/api/autopilot/colleagues").json()["people"][0]["key"]
+        got = owner.post("/api/autopilot/items/ap_hold/hand", json={"to": key})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.newer_hold()
+        self.assertEqual(set(self.alerts(sam)), {"ap_appr2", "ap_hold3"})
+        self.assertEqual(self.alerts(sam)["ap_hold3"]["handed_from"], "Ana")
+        self.assertEqual(self.alerts(owner)["ap_hold3"]["handed_to"], "Sam")
+
+    def test_a_person_the_roster_names_only_by_id_is_named_from_the_staff_list(self):
+        """Named from the staff list only while the people exclusion clears them; nobody is
+        added to the list by it."""
+        from operator_api import view_as as va
+        gone = {"sam": False}
+        self.backend.view_as = va.ViewAs(
+            candidates=lambda: [(OWNER[1], OWNER[0]), (COLLEAGUE[1], COLLEAGUE[0]),
+                                ("66666666-6666-4666-8666-666666666666", "zed@plx.example")],
+            identity=lambda oid, seconds: None,
+            excluded=lambda: (lambda oid: gone["sam"] and oid == COLLEAGUE[1]))
+        owner = self.client(OWNER)
+        people = {p["id"]: p["name"] for p in owner.get("/api/autopilot").json()["people"]}
+        self.assertEqual(people.get(COLLEAGUE[1]), "Sam")
+        self.assertNotIn("66666666-6666-4666-8666-666666666666", people)
+        # excluded after the staff cache is built (no cache clear): the read-time check names nobody
+        gone["sam"] = True
+        people = {p["id"]: p["name"] for p in owner.get("/api/autopilot").json()["people"]}
+        self.assertEqual(people.get(COLLEAGUE[1], ""), "")
+        self.assertEqual(self.backend.view_as.names_of([COLLEAGUE[1]]), {})
+
+    def test_names_of_names_nobody_when_the_exclusion_check_raises(self):
+        from operator_api import view_as as va
+
+        def boom(oid):
+            raise RuntimeError("exclusion unavailable")
+        v = va.ViewAs(candidates=lambda: [(COLLEAGUE[1], COLLEAGUE[0])],
+                      identity=lambda oid, seconds: None, excluded=lambda: boom)
+        self.assertEqual(v.names_of([COLLEAGUE[1]]), {})
+        v2 = va.ViewAs(candidates=lambda: [(COLLEAGUE[1], COLLEAGUE[0])],
+                       identity=lambda oid, seconds: None, excluded=lambda: (_ for _ in ()).throw(OSError("x")))
+        self.assertEqual(v2.names_of([COLLEAGUE[1]]), {})
 
     def test_an_alert_passed_to_a_colleague_is_on_their_list_to_set_aside_only(self):
         from operator_api import view_as as va

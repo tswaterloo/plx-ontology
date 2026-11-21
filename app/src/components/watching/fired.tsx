@@ -89,15 +89,24 @@ function ItemNext({ it }: { it: BriefingItem }) {
   );
 }
 
+/** A kind's last check over an hour ago: then (only) its own time is shown beside it. */
+export const CHECK_BEHIND_MS = 60 * 60 * 1000;
+export function checkBehind(asOf: string, now: number = Date.now()): boolean {
+  const t = new Date(asOf).getTime();
+  return Number.isFinite(t) && now - t > CHECK_BEHIND_MS;
+}
+
 /** One kind that fired: its count and new count, its top items, the rest a click away. */
 export function FiredKind({ f }: { f: Fired }) {
   return (
     <section className="py-3" data-testid={`fired-${f.kind}`} aria-label={f.label}>
       <h3 className="flex items-baseline gap-3 text-[13px]">
         <span className="font-semibold">{f.label}</span>
-        <span className="num text-fg">{f.count}</span>
+        {/* a kind that could not be read has no count: never a 0 beside "unavailable" */}
+        {(f.count > 0 || !(f.unavailable ?? []).length) && <span className="num text-fg">{f.count}</span>}
         {f.fresh > 0 && <span className="num text-[12px] text-accent">{f.fresh} new</span>}
-        {f.asOf && <span className="text-[11px] text-faint" data-testid="fired-as-of">as of {formatDateTime(f.asOf)}</span>}
+        {/* the sidebar's Data as of is the screen's time; a kind's own check time only when it is behind */}
+        {f.asOf && checkBehind(f.asOf) && <span className="text-[11px] text-faint" data-testid="fired-as-of">checked {formatDateTime(f.asOf)}</span>}
         <span className="ml-auto text-[11px] text-faint">{f.on ? "On" : "Off: shown here only"}</span>
       </h3>
       {(f.unavailable ?? []).map((u) => (

@@ -45,7 +45,8 @@ describe("a to-do item", () => {
   it("Not needed rejects it", async () => {
     const calls = fetchMock();
     render(<PreparedView items={[todo]} empty="none" onGone={() => undefined} onChanged={() => undefined} />);
-    await userEvent.click(screen.getByRole("button", { name: "Not needed" }));
+    await userEvent.click(screen.getByRole("button", { name: "More" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Not needed" }));
     await waitFor(() => expect(calls).toEqual([["/api/autopilot/items/ap_9/decision", { decision: "reject" }]]));
   });
 

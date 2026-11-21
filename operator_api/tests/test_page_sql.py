@@ -1144,3 +1144,31 @@ class AlertRunsAsScreenInput(unittest.TestCase):
         backend = SimpleNamespace(pg_dsn="x", pg=lambda: 1 / 0)
         self.assertEqual(ps.runs_fresh(backend), "unread")
         self.assertEqual(ps.runs_fresh(SimpleNamespace(pg_dsn=None)), "unread")
+
+
+class AlertNextStep(unittest.TestCase):
+    """An alert carries its kind's own next step (the one the briefing's items say); a kind
+    with none keeps the plain step, never another kind's."""
+
+    def item(self, rule: str):
+        row = {"rule": rule, "kind": "x", "handle": "api://public.app_batch/1", "topic": "",
+               "why": "Batch B1 is on quality hold.", "first_seen": None,
+               "record_table": "batches"}
+        return ps.alert_item(row, {}, 1, None)
+
+    def test_each_kind_says_its_own_step(self):
+        from typing import get_args
+        from operating.briefing import NEXT_ACTIONS
+        from operator_api import models as m
+        listed = set(get_args(m.BriefingItem.model_fields["event_type"].annotation))
+        for rule in [r for r in RULES if r in listed]:
+            got = self.item(rule).next_action
+            self.assertEqual((got.text, got.rule),
+                             NEXT_ACTIONS.get(rule, ("Open the record and check it.", rule)), rule)
+        hold = self.item("lot_on_hold").next_action
+        self.assertEqual(hold.rule, "hold_ask_quality")
+        self.assertTrue(hold.text.startswith("Ask Quality"))
+        without = {k: v for k, v in NEXT_ACTIONS.items() if k != "lot_on_hold"}
+        with mock.patch.dict(NEXT_ACTIONS, without, clear=True):
+            self.assertEqual(self.item("lot_on_hold").next_action.text,
+                             "Open the record and check it.")

@@ -26,7 +26,9 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote
@@ -42,6 +44,7 @@ from operating import workflows as wf
 from operating.card_actions import Journal
 
 from . import models as m
+from .assist_switch_area import AssistSwitchMixin, own_conditions as _own_conditions
 from .auth import Reader
 from .errors import UserFacing
 
@@ -110,7 +113,7 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
     body = shown.get("body") or {}
     prepared = body.get("prepared") or {}
     happened = body.get("happened") or {}
-    summary = str(prepared.get("summary") or "").strip()
+    summary = original = str(prepared.get("summary") or "").strip()
     if not summary or prepared.get("kind") or prepared.get("jobs") or prepared.get("todos") \
             or prepared.get("teams_draft") or prepared.get("your_call") \
             or ((prepared.get("draft") or {}).get("body") if isinstance(
@@ -118,42 +121,106 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
         return None
     if not any(prepared.get(k) for k in ALERT_BASIS):
         return None   # a summary alone ("nothing to act on") is not a card
-    facts = [str(r) for r in prepared.get("reasons") or () if isinstance(r, str)]
+    facts, links = decision_view(prepared)
+    # one line (and one link) per order, however many systems hold a copy of it: an item
+    # made before the handler kept one copy lists the Portal's and BC's records of one order
+    affected: list[Mapping[str, Any]] = []
+    numbers: set[str] = set()
     for a in prepared.get("affected") or ():
-        if isinstance(a, Mapping):
-            facts.append(", ".join(str(a[k]) for k in ("order_number", "customer")
-                                   if a.get(k)) or "an open order")
+        if not isinstance(a, Mapping):
+            continue
+        number = autopilot_queue.order_key(a.get("order_number"))
+        if number and number in numbers:
+            continue
+        numbers.add(number)
+        affected.append(a)
+        facts.append(", ".join(str(a[k]) for k in ("order_number", "customer")
+                               if a.get(k)) or "an open order")
+    raw = [a for a in prepared.get("affected") or () if isinstance(a, Mapping)]
+    if len(affected) < len(raw):
+        # a summary written before the copies were folded counts each copy: it says the
+        # orders the card lists
+        n = len(affected)
+        said = "1 open order" if n == 1 else f"{n} open orders"
+        summary = re.sub(r"holds up \d+ open orders?", "holds up " + said, summary)
+        summary = re.sub(r"\d+ open order\(s\) affected", said + " affected", summary)
     options = [str(o) for o in prepared.get("options") or () if isinstance(o, str)]
     if options:
         facts.append("Choices asked: " + "; ".join(options))
-    links: list[m.AutopilotLink] = []
     for link in prepared.get("links") or ():
         if isinstance(link, Mapping) and str(link.get("href") or "").startswith("/object/"):
             links.append(m.AutopilotLink(label=str(link.get("label") or "Open")[:80],
                                          href=str(link["href"])[:600]))
-    if not links:
+    if not [link for link in links if link.href.startswith("/object/")]:
+        named = {str(a.get("object_id")): str(a.get("order_number") or "")
+                 for a in affected if a.get("object_id")}
         oids = [str(e.get("object_id")) for e in [
-            *(prepared.get("evidence") or ()), *(prepared.get("affected") or ()),
+            *(prepared.get("evidence") or ()), *affected,
             prepared.get("task")] if isinstance(e, Mapping) and e.get("object_id")]
         oids = oids or ([str(happened["object_id"])] if happened.get("object_id") else [])
+        orders = sum(1 for o in dict.fromkeys(oids) if o.startswith("SalesOrder:"))
         for oid in dict.fromkeys(oids):
             label = {"MCTask": "Open the task", "SalesOrder": "Open the order",
                      "Batch": "Open the lot"}.get(oid.split(":", 1)[0], "Open the record")
+            if orders > 1 and named.get(oid):
+                # two order links must say which order each one opens
+                label = f"Open order {named[oid]}"
             links.append(m.AutopilotLink(label=label, href="/object/" + quote(oid, safe=":")))
     action = prepared.get("action") if isinstance(prepared.get("action"), Mapping) else {}
     note = str(prepared.get("note") or action.get("note") or "").strip()
+    # the title is "<workflow>: <summary>": shown above the summary it would say it twice,
+    # so the card's heading is the workflow's name and the summary says what happened
+    title = str(shown.get("title") or "").strip()
+    label = str(body.get("label") or "").strip()
+    rest = title[len(label) + 1:].strip() if label and title.startswith(label + ":") else ""
+    if title and (title in (summary, original) or (rest and original.startswith(
+            rest.rstrip(".…")))):
+        title = label
     return m.AutopilotPrepared(
         item_id=item["item_id"], sender=str(happened.get("sender") or ""), channel="system",
-        subject=str(shown.get("title") or "")[:300], kind="alert", summary=summary[:600],
+        subject=title[:300], kind="alert", summary=summary[:600],
         message=shown_message(prepared.get("context") or happened.get("snippet")),
         facts=facts[:ALERT_FACTS], note=note[:300], links=links[:4],
         created_at=str(item["created_at"]))
+
+
+def decision_view(prepared: Mapping[str, Any]) -> tuple[list[str], list[m.AutopilotLink]]:
+    """What a card shows of a prepared decision (an MC approval's recommendation): the
+    recommendation word first, then its reasons, and the link to decide it in Mission
+    Control (only an address on MC's own task pages; anything else is left out)."""
+    from operating import mc_digest
+    facts: list[str] = []
+    rec = prepared.get("recommendation")
+    if isinstance(rec, str) and rec.strip():
+        facts.append(f"Recommended: {rec.strip()[:40]}")
+    facts += [str(r) for r in prepared.get("reasons") or () if isinstance(r, str)]
+    links: list[m.AutopilotLink] = []
+    mc = prepared.get("mc") if isinstance(prepared.get("mc"), Mapping) else {}
+    href = str(mc.get("link") or "")
+    if href.startswith(mc_digest.MC_TASKS_URL) and len(href) <= 600 and \
+            mc_digest.TASK_ID.match(href[len(mc_digest.MC_TASKS_URL):]):
+        links.append(m.AutopilotLink(label="Decide in Mission Control", href=href))
+    return facts, links
 
 
 ALERT_FACTS = 8
 # what makes an item with nothing to prepare worth the person's look: why, what it holds up,
 # what is asked, or the records and where it is decided
 ALERT_BASIS = ("reasons", "affected", "options", "links", "evidence", "task", "action", "note")
+
+
+def carried(rows: Mapping[str, Mapping[str, Any]], replaced: Mapping[str, str],
+            keep: Callable[[Mapping[str, Any]], bool] = lambda r: True
+            ) -> dict[str, dict[str, Any]]:
+    """Rows keyed by item id with each ``keep`` row of a replaced item carried to the item
+    replacing it (a pass to a colleague, a snooze: never quietly undone when a newer item
+    about the same lot takes its place); the newer item's own row wins."""
+    out = {k: dict(v) for k, v in rows.items()}
+    for old, row in rows.items():
+        new = autopilot_queue.newest_of(old, replaced)
+        if new != old and new not in rows and keep(row):
+            out[new] = {**row, "item_id": new, "carried_from": old}
+    return out
 
 
 def passed(alert: m.AutopilotPrepared, hands: Mapping[str, Mapping[str, Any]],
@@ -292,7 +359,7 @@ def _person_name(role: str) -> str:
     return local.replace(".", " ").replace("_", " ").strip().title()
 
 
-class AutopilotAreaMixin:
+class AutopilotAreaMixin(AssistSwitchMixin):
     """Needs ``AutopilotMixin``. Tests may set ``autopilot_write_state`` (the write path's
     state dir), ``autopilot_adapters`` (kind -> adapter; a test never reaches a real
     system), ``autopilot_guard`` (the people exclusion) and ``autopilot_owner``
@@ -352,13 +419,29 @@ class AutopilotAreaMixin:
             return []
         return self._apa_journal(state).rows()
 
+    def _apa_replaced(self) -> dict[str, str]:
+        """Which item replaced which (the engine's settle: one card per lot); {} when the
+        queue is not there or its note unreadable (nothing is carried then)."""
+        path = self._ap_queue_path()  # type: ignore[attr-defined]
+        if path is None or not Path(path).exists():
+            return {}
+        try:
+            queue = ap.Queue(path)
+            try:
+                got = queue.meta(autopilot_queue.SUPERSEDED_BY)
+            finally:
+                queue.close()
+        except (OSError, ValueError, sqlite3.Error):
+            return {}
+        return {str(k): str(v) for k, v in got.items()} if isinstance(got, Mapping) else {}
+
     def _apa_decisions(self, state: Optional[Path]) -> dict[str, dict[str, Any]]:
         if state is None or not (state / DECISIONS_FILE).exists():
             return {}
         last: dict[str, dict[str, Any]] = {}
         for row in Journal(state / DECISIONS_FILE).rows():
             last[str(row.get("item_id"))] = row
-        return last
+        return carried(last, self._apa_replaced(), lambda r: r.get("decision") == "snooze")
 
     @staticmethod
     def _apa_never(state: Optional[Path], me: set[str]) -> list[str]:
@@ -406,6 +489,7 @@ class AutopilotAreaMixin:
             rules = None
         if state is None or rules is None:
             return lambda item: ""
+        from operating import assist_switches
         from operating import workflows as wf
         gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, rules)
 
@@ -418,6 +502,8 @@ class AutopilotAreaMixin:
                 actions = aw.actions_of(item)
                 why = [r for a in actions for r in aw.routine(rules, item, a, flow)] \
                     if actions else ["no_action"]
+                why += assist_switches.reasons(state, me, item, flow,
+                                               datetime.now(timezone.utc), gate)
             except Exception:  # noqa: BLE001 - a dry run never stops the list
                 return ""
             return "send" if not why else ("keep: " + ", ".join(dict.fromkeys(why)))[:200]
@@ -427,7 +513,8 @@ class AutopilotAreaMixin:
         """item -> the last row passing it on (``HAND_FILE``)."""
         if state is None or not (state / HAND_FILE).exists():
             return {}
-        return {str(row.get("item_id")): row for row in Journal(state / HAND_FILE).rows()}
+        return carried({str(row.get("item_id")): row for row in Journal(state / HAND_FILE).rows()},
+                       self._apa_replaced())
 
     @staticmethod
     def _apa_to_me(hands: Mapping[str, Mapping[str, Any]], me: set[str]) -> tuple[str, ...]:
@@ -682,6 +769,15 @@ class AutopilotAreaMixin:
         for it in items:
             people.setdefault(it.owner, m.AutopilotPerson(id=it.owner, name=stated.get(
                 str(it.owner).lower(), "")))
+        # still unnamed (the roster holds ids): the staff list's name, for a person the
+        # people exclusion clears now ("Quality colleague 2" otherwise)
+        viewing = getattr(self, "view_as", None)
+        unnamed = [oid for oid, p in people.items() if not p.name]
+        if unnamed and viewing is not None and viewing.available:
+            for oid, name in viewing.names_of(unnamed).items():
+                for key in (oid, *(k for k in unnamed if k.lower() == oid)):
+                    if key in people and not people[key].name:
+                        people[key].name = name
         for oid, p in people.items():
             p.you = oid in me
             p.roles = sorted(member_of.get(oid, ()))
@@ -770,7 +866,7 @@ class AutopilotAreaMixin:
                     scored_at=str(window[-1]) if window else None,
                     open_items=open_by.get(flow, 0),
                     draft=flow in (drafted.get(role) or ()) and st == "dry_run",
-                    countdown=_countdown(published.get(role), flow, rules)))
+                    countdown=_countdown(published.get(role), flow, rules, gate)))
         if not dev and not fresh:
             notes.append("No replay has scored the workflows yet.")
         # what is prepared for whom: the rule the live feed reads
@@ -806,8 +902,10 @@ class AutopilotAreaMixin:
             for flow, how in (prep.get(oid) or {}).items():
                 if flow not in mine or mine[flow][0] == aw.BY_OWNER:
                     mine[flow] = how
+        conditions = _own_conditions(state, me)
         my_drafts = [_with_mode(_choice_row(cid, label, flows, mine), flows, mine, chosen, me,
-                                gate) for cid, label, flows in aw.DRAFT_CHOICES]
+                                gate, conditions.get(cid))
+                     for cid, label, flows in aw.DRAFT_CHOICES]
         drafts_who = None
         if sees_all:
             drafts_who = [m.AutopilotDraftsPerson(person=p, choice=c.choice, label=c.label,
@@ -977,8 +1075,18 @@ class AutopilotAreaMixin:
         jobs_cache: dict[str, Any] = {}
         auto_would = self._apa_auto_would(state, mine_ids)
         out: list[m.AutopilotPrepared] = []
+        # one card per real-world thing: an older item about the lot (or other subject) a
+        # newer item of the reader's is about is not listed, decided or not (the engine's
+        # settle sets it aside; until then it would show the same thing twice)
+        # (across every queue owner the reader reads for: their own and their role's)
+        gone = autopilot_queue.superseded([{**i, "owner": ""} for i in items if i["mine"]])
+        # before the settle sets the older ones aside: their snooze or pass carries already
+        decisions = carried(decisions, gone, lambda r: r.get("decision") == "snooze")
+        hands = carried(hands, gone)
         try:
             for item in items:
+                if item["item_id"] in gone:
+                    continue
                 dec = decisions.get(item["item_id"])
                 # kept: an edit, an accept the write path refused (nothing went out: the
                 # reply stays to confirm again), a snooze that has run out
@@ -1045,6 +1153,7 @@ class AutopilotAreaMixin:
         finally:
             if queue is not None:
                 queue.close()
+        out = self._apa_with_switch(state, mine_ids, {i["item_id"]: i for i in items}, out)
         out.sort(key=lambda d: d.created_at, reverse=True)
         return m.AutopilotDrafts(items=out, never_senders=never)
 
@@ -1183,6 +1292,9 @@ class AutopilotAreaMixin:
         brief = str(prepared.get("brief") or "")
         if (stages and all(st == "decided" for st in stages)) or (not stages and not brief):
             return None
+        facts, links = decision_view(prepared)
+        action = prepared.get("action") if isinstance(prepared.get("action"), Mapping) else {}
+        note = str(action.get("note") or "").strip() if facts else ""
         channel = str(happened.get("channel") or "")
         return m.AutopilotPrepared(
             item_id=item["item_id"], sender=str(happened.get("sender") or ""),
@@ -1192,6 +1304,9 @@ class AutopilotAreaMixin:
             message=brief[:3000] if brief else shown_message(happened.get("snippet")),
             kind="job",
             summary=str(prepared.get("summary") or "")[:300], jobs=jobs, todos=todos,
+            # a decision the job came with (an MC approval): its recommendation, reasons
+            # and where it is decided, on the same card as the proposed changes
+            facts=facts[:ALERT_FACTS], links=links[:4], note=note[:300],
             created_at=str(item["created_at"]))
 
     def autopilot_job_prepare(self, reader: Reader, item_id: str, index: int
@@ -1643,14 +1758,8 @@ class AutopilotAreaMixin:
                 if not roles and not found:
                     continue
                 score = None
-                if gate is not None:
-                    if roles:
-                        role = max(roles, key=lambda r: _share(gate.counts.get((r, flow))))
-                        score = _bar(gate.counts.get((role, flow)), gate)
-                    else:
-                        short = aw.shortfall(gate, person, flow)
-                        if short.get("judged") is not None:
-                            score = _bar((short["judged"], short["matched"]), gate)
+                if gate is not None:     # what Auto rests on: the category's judged score
+                    score = _judged_bar(gate.judged_for((person,), flow)[1], gate)
                 susp = found.get("suspended") or None
                 suspension = None
                 if susp:
@@ -1805,15 +1914,18 @@ def _choice_row(cid: str, label: str, flows: tuple[str, ...],
 
 def _with_mode(row: m.AutopilotDraftChoice, flows: tuple[str, ...],
                mine: Mapping[str, Any], chosen: Mapping[tuple[str, str], Any], me: Any,
-               gate: Optional[aw.WriteGate]) -> m.AutopilotDraftChoice:
+               gate: Optional[aw.WriteGate], conditions: Any = None
+               ) -> m.AutopilotDraftChoice:
     """The reader's own choice row with its mode (``operating.assist_modes``), whether
-    auto is earned for any of it and its replay score against the bar."""
+    auto is earned for any of it, its replay score against the bar and the limits the
+    reader set on its auto (``operating.assist_switches``)."""
     from operating import assist_modes as am
-    counts = am.score(gate, me, flows)
     return row.model_copy(update={
         "mode": am.mode_of(flows, mine, chosen, me),
         "auto_ok": bool(am.earned(gate, me, flows)),
-        "score": _bar(counts, gate) if counts and gate is not None else None})
+        "score": _judged_bar(am.score(gate, me, flows), gate) if gate is not None else None,
+        "conditions": m.AutopilotSwitchConditions(**conditions.as_dict())
+        if conditions is not None and not conditions.empty() else None})
 
 
 class _Cleared:
@@ -1845,20 +1957,36 @@ def _identities(reader: Reader) -> set[str]:
 
 
 def _countdown(entry: Optional[Mapping[str, Any]], flow: str,
-               rules: Optional[Mapping[str, Any]]) -> Optional[m.AutopilotCountdown]:
+               rules: Optional[Mapping[str, Any]], gate: Optional[aw.WriteGate] = None
+               ) -> Optional[m.AutopilotCountdown]:
+    """The replay counts against the gate, and the category's judged score beside them:
+    it passes only when both do, as the write gate decides."""
     if not rules:            # unreadable rules: no countdown, nothing is performed
         return None
     try:
         found = aw.countdown(entry, flow, rules)
     except Exception:  # noqa: BLE001 - unreadable rules: no countdown, never a guess
         return None
-    return m.AutopilotCountdown(**found) if found else None
+    if not found:
+        return None
+    from operating import autopilot_judged
+    from operating.assist_switches import choice_of
+    every = (gate.judged.get((autopilot_judged.ALL, choice_of(flow) or ""))
+             if gate is not None else None)
+    found["passes"] = bool(found["passes"] and gate is not None and gate.judged_all(flow))
+    return m.AutopilotCountdown(**found, judged_score=_judged_bar(every, gate)
+                                if gate is not None else None)
 
 
-def _share(counts: Optional[tuple[int, int]]) -> Decimal:
-    if not counts or counts[0] <= 0:
-        return Decimal(-1)
-    return Decimal(counts[1]) / Decimal(counts[0])
+def _judged_bar(score: Any, gate: aw.WriteGate) -> Optional[m.AutopilotScoreBar]:
+    """A category's judged score (``autopilot_judged.Score``) against the gate's bar, with
+    where and when it was measured."""
+    if score is None:
+        return None
+    bar = _bar((score.judged, score.matched), gate)
+    return bar.model_copy(update={"source": score.source, "measured_on": score.measured_on,
+                                  "window": list(score.window),
+                                  "scope": score.scope}) if bar else None
 
 
 def _bar(counts: Optional[tuple[int, int]], gate: aw.WriteGate) -> Optional[m.AutopilotScoreBar]:

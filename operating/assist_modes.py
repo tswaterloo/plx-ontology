@@ -61,27 +61,20 @@ def earned(gate: Optional[aw.WriteGate], me: Iterable[str], flows: Iterable[str]
     return [f for f in flows if any(aw.eligible(gate, p, f) for p in me)]
 
 
-def score(gate: Optional[aw.WriteGate], me: Iterable[str], flows: Iterable[str]
-          ) -> Optional[tuple[int, int]]:
-    """(judged, matched) of the category on replay for the person: per workflow the best
-    scored role of theirs, summed over the workflows; None when nothing is scored."""
+def score(gate: Optional[aw.WriteGate], me: Iterable[str], flows: Iterable[str]) -> Any:
+    """The category's judged score shown beside the person's switch
+    (``autopilot_judged.shown``: their own when on record, else everyone's): what Auto
+    rests on, with its source and date. None when nothing is judged."""
     if gate is None:
         return None
-    me = {str(p).lower() for p in me}
-    judged = matched = 0
-    seen = False
-    for flow in flows:
-        best: Optional[tuple[int, int]] = None
-        for role, (members, _ok, _seen) in gate.roles.items():
-            counts = gate.counts.get((role, flow))
-            if not counts or not (members & me) or counts[0] <= 0:
-                continue
-            if best is None or counts[1] * best[0] > best[1] * counts[0]:
-                best = (int(counts[0]), int(counts[1]))
-        if best is not None:
-            seen = True
-            judged, matched = judged + best[0], matched + best[1]
-    return (judged, matched) if seen else None
+    from operating import autopilot_judged
+    from operating.assist_switches import choice_of
+    cats = {choice_of(f) for f in flows} - {None}
+    if len(cats) != 1:
+        return None
+    return autopilot_judged.shown(getattr(gate, "judged", {}) or {},
+                                  [str(p).lower() for p in me], cats.pop(),
+                                  gate.precision, gate.minimum)
 
 
 def apply(journal: Any, gate: aw.WriteGate, ids: Sequence[str], flows: Sequence[str],

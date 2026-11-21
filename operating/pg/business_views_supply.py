@@ -796,8 +796,10 @@ def _purchase_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
 AP_OPEN = "RelSageApOpenDocument"
 VENDOR_SUPPLIER_LINKS = ("RelSageApVendor.portal_supplier_by_sage_id",
                          "RelSageApVendor.portal_supplier", "RelSageApVendor.bc_vendor")
-AP_PROPS = ("idinvc", "idvend", "txttrxtype", "dateinvc", "datedue", "amtduetc", "amtinvctc",
-            "codecurn", "swpaid", "idponbr", "descinvc")
+# Sage AP's due date is ``dateinvcdu`` (APOBL; AR's ARODOC field is ``datedue``, which AP
+# rows do not hold: 0 of 73,437 live on 11-21, every AP due date and aging was empty)
+AP_PROPS = ("idinvc", "idvend", "txttrxtype", "dateinvc", "dateinvcdu", "datedue", "amtduetc",
+            "amtinvctc", "codecurn", "swpaid", "idponbr", "descinvc")
 SAGE_AP_DOC = {"1": "invoice", "2": "debit note", "3": "credit note", "4": "interest",
                "5": "unapplied cash", "10": "prepayment", "11": "payment"}
 AP_DOC_TYPE_DOC = doc_type_doc(SAGE_AP_DOC, "payments, prepayments, unapplied cash and "
@@ -822,7 +824,8 @@ def _ap_row(rd: Reader, rec: Rec, vendors: Mapping[str, Thing],
     row.read(kind, "document_type", SAGE_AP_DOC.get(_text(kind.value) or "", "other")
              if kind else None, rec=krec)
     fill(row, thing, "document_date", "dateinvc", to_date)
-    fill(row, thing, "due_date", "datedue", to_date)
+    if fill(row, thing, "due_date", "dateinvcdu", to_date) is None:
+        fill(row, thing, "due_date", "datedue", to_date)
     cur = pick(thing, "codecurn")
     cell, crec = pick(thing, "amtduetc")
     if cell is None:
@@ -934,7 +937,7 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
        ("amount_due", "money", "remaining balance, Sage AP amtduetc in codecurn; only documents "
         "Sage marks unpaid (swpaid 0)"),
        ("original_amount", "money", "document amount"),
-       ("days_overdue", "integer", "as_of - due_date in days (Sage datedue); 0 or less: "
+       ("days_overdue", "integer", "as_of - due_date in days (Sage AP dateinvcdu); 0 or less: "
         "not yet due. Overdue = owed and past due: amount_due > 0 and days_overdue > 0; a "
         "credit, receipt or prepayment (amount_due < 0) is never overdue whatever its date "
         "(net it in only when a net balance is asked for)"),

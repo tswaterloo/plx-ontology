@@ -31,6 +31,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -179,7 +180,8 @@ def build_view(v: Any, write: Any, *, as_of: dt.date, digest: str | None = None
         with write.transaction():
             write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{nxt}")
             write.execute(f"CREATE TABLE {bv.SCHEMA}.{nxt} ({cols})")
-            notes = {"as_of": as_of.isoformat(), "marks": dict(v.fill(write, nxt, as_of))}
+            notes = {"as_of": as_of.isoformat(), "marks": dict(v.fill(write, nxt, as_of)),
+                     "code": _code_fingerprint(v)}
             count = write.execute(f"SELECT count(*) FROM {bv.SCHEMA}.{nxt}").fetchone()[0]
     except BaseException:
         # the stage the readers committed outlives the rolled-back transaction
@@ -1358,10 +1360,16 @@ def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
         rows = write.execute(f"SELECT count(*) FROM {bv.SCHEMA}.{view}").fetchone()[0]
         write.execute(
             f"UPDATE {bv.SCHEMA}.state SET built_at = %s, digest = %s, rows = %s, "
-            "notes = %s WHERE view = %s",
+            "notes = %s::jsonb || CASE WHEN notes ? 'code' THEN jsonb_build_object('code', "
+            "notes->'code') ELSE '{}'::jsonb END WHERE view = %s",   # only a build stamps code
             (dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), digest, rows,
              json.dumps({"as_of": bv.today().isoformat(), "marks": got}), view))
     return {"view": view, "dropped": dropped, "read": added, "rows": rows, "marks": got}
+
+
+def _code_fingerprint(v: Any) -> str:
+    from operating.pg import business_views_code
+    return business_views_code.fingerprint(v)
 
 
 def _ensure_units(write: Any) -> None:
@@ -1779,9 +1787,16 @@ def teams_windows(runtime: Any, actor: Any) -> dict[str, str]:
         def visible(unit: str, acl: Any) -> bool:
             return bool(entitlement.item_acl_allows(acl, statuses=statuses)
                         or entitlement.full_read_allows("teams-chat", acl))
+    kept = None
     with runtime._capture_lock:
         try:
-            rows = runtime._capture_read(path)._db.execute(
+            db = runtime._capture_read(path)._db
+            if entitlement is not None:
+                kept = _windows_key(entitlement, db, path)
+                hit = _kept_windows(kept)
+                if hit is not None:
+                    return hit
+            rows = db.execute(
                 "SELECT unit, acl FROM unit_acl WHERE kind = ?", (CHAT_KIND.name,)).fetchall()
         except Exception:  # noqa: BLE001 - unreadable: nothing is served
             runtime._drop_capture_read(path)
@@ -1805,7 +1820,49 @@ def teams_windows(runtime: Any, actor: Any) -> dict[str, str]:
             if visible(unit, _history_acl(acl, {"created_at": at})):
                 out[unit] = at
                 break
+    if kept is not None:
+        _keep_windows(kept, out)
     return out
+
+
+# A reader's Teams windows, kept per process (deciding them walks every chat's membership:
+# ~1 s, paid by every comms search, open and statement, 11-21): reused only while nothing
+# they were decided from moved: the very capture store connection with the same
+# ``PRAGMA data_version`` (any commit by another connection changes it; read before the
+# rows, so a commit in between only makes the next call decide again), an equal
+# entitlement (its repr: every field) and the very people exclusion object its full-read
+# grant is held under (a reloaded list is a new object). Anything else: decided again.
+WINDOWS_KEPT = 16
+_WINDOWS: dict[tuple, tuple] = {}
+_WINDOWS_ORDER: list[tuple] = []
+_WINDOWS_LOCK = threading.Lock()
+
+
+def _windows_key(entitlement: Any, db: Any, path: Any) -> tuple:
+    grant = getattr(entitlement, "full_read", None)
+    guard = grant.guard() if grant is not None else None
+    version = db.execute("PRAGMA data_version").fetchone()[0]
+    return (str(path), repr(entitlement)), (db, version, guard)
+
+
+def _kept_windows(kept: tuple) -> dict[str, str] | None:
+    key, (db, version, guard) = kept
+    with _WINDOWS_LOCK:
+        got = _WINDOWS.get(key)
+    if got is None or got[0] is not db or got[1] != version or got[2] is not guard:
+        return None
+    return dict(got[3])
+
+
+def _keep_windows(kept: tuple, out: Mapping[str, str]) -> None:
+    key, (db, version, guard) = kept
+    with _WINDOWS_LOCK:
+        _WINDOWS[key] = (db, version, guard, dict(out))
+        if key in _WINDOWS_ORDER:
+            _WINDOWS_ORDER.remove(key)
+        _WINDOWS_ORDER.append(key)
+        while len(_WINDOWS_ORDER) > WINDOWS_KEPT:
+            _WINDOWS.pop(_WINDOWS_ORDER.pop(0), None)
 
 
 def recheck_all(dsn: str) -> list[dict[str, Any]]:

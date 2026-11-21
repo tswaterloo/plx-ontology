@@ -15,8 +15,8 @@ const ROUTES = readdirSync(join(__dirname, "../app/(app)"), { withFileTypes: tru
   .map((d) => `/${d.name}`);
 
 describe("the sidebar: one fixed list (owner, 11-17: items moved depending on the page)", () => {
-  it("a plain reader sees Home, Ask, Records, Meetings, Autopilot; no Team, no Admin; Memory, Templates and Work log in the account menu (simpler tabs 11-18)", () => {
-    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Autopilot"]);
+  it("a plain reader sees Home, Ask, Insights, Records, Meetings; no Team, no Admin; Memory, Templates and Work log in the account menu; the switches are Home's tab (one queue)", () => {
+    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings"]);
     expect(navSectionsFor({}).filter((s) => s.group === "account").map((s) => s.href)).toEqual(["/memory", "/templates", "/work-log"]);
     expect(navSectionsFor({}).some((s) => s.group === "last")).toBe(false);
   });
@@ -42,10 +42,10 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
 
   it("sub-pages are tabs of the page they belong to, never of another item", () => {
     const of = (key: string) => NAV_SECTIONS.find((s) => s.key === key)!.children.map((c) => c.href);
-    expect(of("home")).toEqual(["/", "/?show=alerts", "/?show=late"]); // one page; Data health is Admin's
+    expect(of("home")).toEqual(["/", "/?show=alerts", "/?show=late", "/autopilot"]); // the queue and its switches; Data health is Admin's
     expect(of("work-log")).toEqual(["/work-log", "/activity"]);
     expect(of("ask")).toEqual([]); // Memory and Templates are their own items, never under Ask
-    expect(of("autopilot")).toEqual([]); // Team's approvals are Team's
+    expect(NAV_SECTIONS.some((x) => x.key === "autopilot")).toBe(false); // folded into Home
     for (const s of NAV_SECTIONS) {
       for (const c of s.children) {
         const [base, frag] = c.href.split("#");
@@ -119,9 +119,9 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(pinnable("/rd-projects")).toBe(false);
   });
 
-  it("the owner's sidebar is Home, Ask, Insights, Records, Meetings, Autopilot, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
+  it("the owner's sidebar is Home, Ask, Insights, Records, Meetings, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
     const secs = navSectionsFor({ owner: true, ops_reader: true, feedback_admin: true });
-    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Autopilot", "Team", "Admin"]);
+    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Team", "Admin"]);
     expect(secs.filter((s) => s.group === "account").map((s) => s.key)).toEqual(["memory", "templates", "work-log"]);
   });
 });
@@ -137,7 +137,7 @@ describe("the sidebar drawn on every page is identical", () => {
     // path, #fragment, the one row that is highlighted
     ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"], ["/?show=alerts", "#data-health", "/ops"],
     ["/ask", "", "/ask"], ["/memory", "", ""], ["/templates", "", ""],
-    ["/autopilot", "", "/autopilot"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
+    ["/autopilot", "", "/"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
     ["/records", "", "/records"], ["/supplier/S-1", "", "/records"], ["/object/PurchaseOrder/x", "", "/records"],
     ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"], ["/trust", "", "/ops"],
     ["/feedback", "", "/ops"], ["/help", "", ""],
@@ -157,11 +157,11 @@ describe("the sidebar drawn on every page is identical", () => {
       expect(links.filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.getAttribute("href")), `${path}${hash}`).toEqual(current ? [current] : []);
       unmount();
     }
-    // every item once, nothing twice: the owner's default pins (Team's approvals, Autopilot, Alerts) are not repeated
+    // every item once, nothing twice: the owner's default pins (Team's approvals, Alerts) are not repeated
     const hrefs = first!.map(([h]) => h);
     expect(new Set(hrefs).size).toBe(hrefs.length);
-    // the seven items, then the one pin that is a view of its own (purchasing's supplier alerts)
-    expect(first!.map(([, l]) => l)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Autopilot", "Team", "Admin", "Supplier issues"]);
+    // the six items, then the one pin that is a view of its own (purchasing's supplier alerts)
+    expect(first!.map(([, l]) => l)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Team", "Admin", "Supplier issues"]);
     expect(first!.map(([, l]) => l).join("|")).not.toMatch(/Watching|Memory|Templates|Approvals|Autopilot review queue|Alerts|Autopilot log|Prepared for you|Your actions|Lists|ops targets? missed/);
   });
 
@@ -198,7 +198,7 @@ describe("pinned pages", () => {
   });
 
   it("the owner's defaults are approvals and alerts; purchasing's are POs and supplier issues", () => {
-    expect(defaultPins({ owner: true }).map((p) => p.label)).toEqual(["Approvals waiting on others", "Autopilot review queue", "Alerts"]);
+    expect(defaultPins({ owner: true }).map((p) => p.label)).toEqual(["Approvals waiting on others", "Alerts"]);
     expect(defaultPins({ roles: ["purchasing"] }).map((p) => p.href)).toEqual(["/?show=late", "/?show=alerts&for=purchasing#alerts"]);
     expect(defaultPins({ roles: ["made_up"] }).length).toBeGreaterThan(0); // an unknown role still gets a start
   });

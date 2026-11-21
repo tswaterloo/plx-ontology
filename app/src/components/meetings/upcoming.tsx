@@ -92,10 +92,11 @@ function Summary({ meetings, now, layout, onLayout }: { meetings: UpcomingMeetin
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 border-b border-border pb-3">
       <dl className="flex flex-wrap gap-x-7 gap-y-2 text-[12px]" data-testid="meetings-summary">
-        <Fig label="Today" value={`${left.length} of ${today.length}`} sub="still to come" />
+        {/* only figures with something in them: "0 of 0 still to come" says nothing */}
+        {today.length > 0 && <Fig label="Today" value={`${left.length} of ${today.length}`} sub="still to come" />}
         <Fig label="Two weeks" value={String(meetings.length)} sub={meetings.length === 1 ? "meeting" : "meetings"} />
-        <Fig label="With customers or suppliers" value={String(outside.length)} />
-        <Fig label="Open action items carried" value={String(carried)} tone={carried ? "risk" : undefined} />
+        {outside.length > 0 && <Fig label="With customers or suppliers" value={String(outside.length)} />}
+        {carried > 0 && <Fig label="Open action items carried" value={String(carried)} tone="risk" />}
         {next && (
           <div className="min-w-0">
             <dt className="text-muted">Next</dt>

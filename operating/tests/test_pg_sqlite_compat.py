@@ -775,6 +775,14 @@ class CompatTests(unittest.TestCase):
             with pg_testdb._admin() as admin:
                 self.assertEqual(admin.execute("SELECT count(*) FROM pg_stat_activity WHERE "
                                                "pid = %s", (first[0],)).fetchone()[0], 0)
+            # a PRAGMA Postgres has nothing for answers here, without a login (live
+            # 11-21: one reaped reader after another logged in again for a PRAGMA alone
+            # and held that login idle for the next 60 s, ~50 of the role's 100)
+            for pragma in ("PRAGMA database_list", "  pragma query_only = ON",
+                           "EXPLAIN QUERY PLAN SELECT 1"):
+                got = pg.execute(pragma)
+                self.assertEqual((got.fetchall(), got.rowcount), ([], 0))
+            self.assertTrue(pg._conn.closed)
             again = login()
             self.assertNotEqual(again[0], first[0])
             self.assertEqual(again[1:], first[1:])

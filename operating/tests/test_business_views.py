@@ -42,14 +42,14 @@ def tearDownModule():
 
 AR = "RelSageArOpenDocument"
 MONEY = {p: "money" for p in ("subtotal", "total_tax", "total_amount", "remaining_amount",
-                              "unit_price", "line_total")}
+                              "unit_price", "line_total", "invoice_discount")}
 SO_PROPS = ("order_number", "status", "sage_complete", "required_date", "order_date",
             "currency", "subtotal", "total_amount", "erp_code", "customer_po",
             "sage_order_type")
 PO_PROPS = ("po_number", "status", "sage_is_complete", "expected_date", "order_date",
             "currency", "total_cost")
 AP = "RelSageApOpenDocument"
-AP_TEXT = ("idinvc", "idvend", "txttrxtype", "dateinvc", "datedue", "amtduetc", "amtinvctc",
+AP_TEXT = ("idinvc", "idvend", "txttrxtype", "dateinvc", "dateinvcdu", "amtduetc", "amtinvctc",
            "codecurn", "swpaid")
 IL_MONEY = {p: "money" for p in ("unit_price", "amount_excluding_tax", "extended_amount",
                                   "invoice_discount_share", "unit_cost")}
@@ -197,7 +197,8 @@ def doc(s, key, customer, number, amount, currency, *, paid="0", due="20261001",
 
 
 def sinv(s, key, number, day, total, currency, customer, *, sub=None, bc=False,
-         markings="[]", order=None, tier="verified", rate=None, home="CAD"):
+         markings="[]", order=None, tier="verified", rate=None, home="CAD",
+         discount=None, discount_markings=None):
     binding = "bc.sales_invoices" if bc else "portal.sage_oe_invoice_header"
     oid = f"SalesInvoice:{binding}:{key}"
     handle = ev.make_handle(ev.BC_KIND, ("production", ev.CO, "salesInvoices", key),
@@ -214,6 +215,9 @@ def sinv(s, key, number, day, total, currency, customer, *, sub=None, bc=False,
         if rate is not None:   # Sage inrate: home currency per one invoice currency unit
             s.val(oid, "exchange_rate", "text", rate)
             s.val(oid, "home_currency", "text", home)
+    if discount is not None:   # Sage invdiscamt: the header's discount amount
+        s.val(oid, "invoice_discount", "money", discount, currency=cell_cur,
+              markings=discount_markings)
     if customer:
         s.link(f"bt-{key}", "SalesInvoice.billed_to", oid, customer, "verified")
     if order:
@@ -304,8 +308,9 @@ def purchase(s, key, number, supplier, expected, lines, *, status="Pending",
 
 def ap(s, key, number, vendor, kind, amount, currency, *, paid="0", due="20261001"):
     oid = obj(s, AP, "gen.sage.ap_open_document", key, {
+        # Sage AP's due date is dateinvcdu (AR's is datedue)
         "idinvc": number, "idvend": "CRO01", "txttrxtype": kind, "dateinvc": "20260901",
-        "datedue": due, "amtduetc": amount if paid == "0" else "0", "amtinvctc": amount,
+        "dateinvcdu": due, "amtduetc": amount if paid == "0" else "0", "amtinvctc": amount,
         "codecurn": currency, "swpaid": paid})
     s.link(f"av-{key}", f"{AP}.vendor", oid, vendor, "verified")
     return oid
@@ -545,8 +550,10 @@ def build():
     # case of 12, costed per each), a misc charge with no cost, a USD line costed in CAD
     # (no margin), a line whose unit cost is finance-marked, a line of the source-deleted
     # invoice, and invoices of 1, 10 and 60 lines
-    s1 = "SalesInvoice:portal.sage_oe_invoice_header:s1"
-    s2 = "SalesInvoice:portal.sage_oe_invoice_header:s2"
+    # their invoices state the subtotal the lines sum to (Sage invnetnotx: line revenue is
+    # reconciled to it, ``reconcile_to_subtotal``)
+    s1 = sinv(s, "s1l", "IN-L1", "2024-04-01", "683.54", "CAD", acme_s, sub="604.90")
+    s2 = sinv(s, "s2l", "IN-L2", "2024-04-01", "1030.00", "USD", beta, rate="1.2500000")
     iline(s, "s1-a", s1, "7", "51.70", "361.90", "22", "CAD", item=base)
     iline(s, "s1-b", s1, "2", "120.00", "240.00", "4.5", "CAD", conv=("12", "1"),
           disc="12.00", item=label)
@@ -561,9 +568,30 @@ def build():
         inv_x = sinv(s, key, number, "2024-03-01", "20.00", "USD", beta, rate=rate, home=home)
         iline(s, f"{key}-a", inv_x, "1", "20.00", "20.00", "13", "USD")
     for n in (1, 10, 60):
-        inv_n = sinv(s, f"il{n}", f"IL-{n}", "2025-12-01", "1.00", "CAD", beta)
+        inv_n = sinv(s, f"il{n}", f"IL-{n}", "2025-12-01", "1.00", "CAD", beta,
+                     sub=f"{2 * n}.00")
         for k in range(n):
             iline(s, f"il{n}-{k}", inv_n, "1", "2.00", "2.00", "1", "CAD")
+    # line revenue reconciled to the header subtotal (Sage invnetnotx: the lines less every
+    # discount the invoice takes): a header discount of 30.68 none of the lines carry, one
+    # of 0.10 over three lines of 1.00 (cents left over), one of 1.20 over 60 lines, one
+    # the line already carries in full, one with a line in another currency, one whose
+    # discount is finance-marked, one whose lines carry 10.00 of their own and the header
+    # 9.50 more (as 1000105025: 100.51 on the lines, 95.47 on the header), and lines
+    # below their subtotal (nothing is added)
+    for key, disc, sub, lines, carry, marks in (
+            ("d1", "30.68", "276.12", [("200.00", "CAD"), ("106.80", "CAD")], "0", None),
+            ("d2", "0.10", "2.90", [("1.00", "CAD")] * 3, "0", None),
+            ("d3", "1.20", "118.80", [("2.00", "CAD")] * 60, "0", None),
+            ("d4", "12.00", "88.00", [("100.00", "CAD")], "12.00", None),
+            ("d5", "5.00", "95.00", [("50.00", "CAD"), ("50.00", "USD")], "0", None),
+            ("d6", "1.00", "9.00", [("10.00", "CAD")], "0", '["finance"]'),
+            ("d7", "9.50", "180.50", [("100.00", "CAD"), ("100.00", "CAD")], "5.00", None),
+            ("d8", None, "60.00", [("50.00", "CAD")], "0", None)):
+        inv_d = sinv(s, key, f"ID-{key}", "2026-08-31", "1.00", "CAD", beta, sub=sub,
+                     discount=disc, discount_markings=marks)
+        for k, (ext, cur) in enumerate(lines):
+            iline(s, f"{key}-{k}", inv_d, "1", ext, ext, "1", cur, disc=carry)
     # chains: three store accounts named "<chain> - <store>" (one chain by name), a branch
     # billed to its parent, a store under a Sage national account; Take 5 trades now and
     # a year ago, owes and has an open order
@@ -948,7 +976,7 @@ class BusinessViews(unittest.TestCase):
             for r in out["rows"]}
 
     def test_sales_invoice_lines_revenue_cost_margin_per_currency(self):
-        _out, got = self.lines("IN-1")
+        _out, got = self.lines("IN-L1")
         self.assertEqual(set(got), {"line s1-a", "line s1-b", "line s1-c"})
         a, b, c = got["line s1-a"], got["line s1-b"], got["line s1-c"]
         self.assertEqual((a["revenue"], a["cost"], a["margin"], a["margin_pct"]),
@@ -960,7 +988,7 @@ class BusinessViews(unittest.TestCase):
                          (("228", "CAD"), ("108", "CAD"), ("120", "CAD")))
         self.assertEqual((c["line_type"][0], c["cost"], c["margin"]),
                          ("misc", ("0", "CAD"), ("15", "CAD")))
-        _out, usd = self.lines("IN-2")
+        _out, usd = self.lines("IN-L2")
         u = usd["line s2-a"]
         # cost stated in CAD for a USD line: converted at the invoice's own rate (1.25 CAD
         # per USD) for the margin, the cost column stays as stated
@@ -970,7 +998,7 @@ class BusinessViews(unittest.TestCase):
                           "cost_converted_at_invoice_rate"))
         self.assertEqual(usd["line s2-b"]["margin"], ("2.01", "USD"))   # 10 - 9.99/1.25
         rate = self.call({"view": "sales_invoices", "where": [
-            {"field": "invoice_number", "op": "=", "value": "IN-2"}],
+            {"field": "invoice_number", "op": "=", "value": "IN-L2"}],
             "select": ["exchange_rate"]})
         self.assertEqual(rate["rows"][0]["values"]["exchange_rate"]["value"], "1.25")
         # no usable rate (none, zero, another home currency): margin unstated, never guessed
@@ -980,7 +1008,7 @@ class BusinessViews(unittest.TestCase):
             self.assertEqual((only["margin"], only["margin_pct"], only["margin_basis"][0]),
                              ((None, None), (None, None), "cost_in_other_currency"), number)
         total = self.call({"view": "sales_invoice_lines", "where": [
-            {"field": "invoice_number", "op": "in", "value": ["IN-1", "IN-2", "IN-6"]}],
+            {"field": "invoice_number", "op": "in", "value": ["IN-L1", "IN-L2", "IN-6"]}],
             "measures": [{"fn": "sum", "field": "margin"}, {"fn": "sum", "field": "revenue"}]})
         # margins sum per currency; the lines whose margin is unstated sum to nothing
         pairs = sorted(((g["measures"][0].get("currency") or "", g["measures"][0]["value"]),
@@ -995,15 +1023,51 @@ class BusinessViews(unittest.TestCase):
             out, _g = self.lines(f"IL-{n}")
             self.assertEqual(len(out["rows"]), n)
 
+    def test_sales_invoice_lines_reconcile_to_the_header_subtotal(self):
+        def revenue(number, actor=FULL):
+            out, got = self.lines(number, actor)
+            return out, [got[f"line {number[3:]}-{k}"]["revenue"] for k in range(len(got))]
+        # Sage's own figures: subtotal 276.12 = 306.80 of lines less the 30.68 discount
+        _o, d1 = revenue("ID-d1")
+        self.assertEqual(d1, [("180", "CAD"), ("96.12", "CAD")])
+        self.assertEqual(sum(Decimal(v) for v, _c in d1), Decimal("276.12"))
+        _o, d2 = revenue("ID-d2")   # 0.10 over three: 0.04 + 0.03 + 0.03, none lost
+        self.assertEqual(sorted(v for v, _c in d2), ["0.96", "0.97", "0.97"])
+        out, d3 = revenue("ID-d3")   # 60 lines, each once, each 2.00 less 0.02
+        self.assertEqual(len(out["rows"]), 60)
+        self.assertEqual({v for v, _c in d3}, {"1.98"})
+        total = self.call({"view": "sales_invoice_lines", "where": [
+            {"field": "invoice_number", "op": "=", "value": "ID-d3"}],
+            "measures": [{"fn": "sum", "field": "revenue"}]})
+        self.assertEqual(total["groups"][0]["measures"][0]["value"], "118.8")
+        _o, d4 = revenue("ID-d4")   # the line carries the discount already: once only
+        self.assertEqual(d4, [("88", "CAD")])
+        _o, d5 = revenue("ID-d5")   # a line in another currency: no revenue is stated
+        self.assertEqual(d5, [(None, None), (None, None)])
+        _o, d6 = revenue("ID-d6")
+        self.assertEqual(d6, [("9", "CAD")])
+        _o, d7 = revenue("ID-d7")   # 190.00 on the lines, 180.50 the subtotal
+        self.assertEqual(d7, [("90.25", "CAD"), ("90.25", "CAD")])
+        _o, d8 = revenue("ID-d8")   # below its subtotal: as stated
+        self.assertEqual(d8, [("50", "CAD")])
+        # the finance-marked header discount guards the revenue it changed
+        hidden = self.call({"view": "sales_invoice_lines", "where": [
+            {"field": "invoice_number", "op": "=", "value": "ID-d6"}],
+            "select": ["description", "revenue"], "limit": 200}, OPS)
+        self.assertNotIn('"9"', json.dumps(hidden))
+        self.assertEqual(hidden["rows"], [])
+
     def test_sales_invoice_lines_restricted_reader(self):
-        _out, full = self.lines("IN-2")
+        _out, full = self.lines("IN-L2")
         self.assertEqual(full["line s2-b"]["cost"], ("9.99", "CAD"))
         out = self.call({"view": "sales_invoice_lines", "where": [
-            {"field": "invoice_number", "op": "=", "value": "IN-2"}], "select": [
+            {"field": "invoice_number", "op": "=", "value": "IN-L2"}], "select": [
             "description", "cost", "margin", "margin_pct", "margin_basis"], "limit": 200}, OPS)
         # the finance-marked unit cost: the line withheld whole for a reader using its cost
+        # (counted over the view, whatever the where: s2-b, and ID-d6's line whose margin
+        # took off a finance-marked header discount)
         self.assertNotIn("9.99", json.dumps(out))
-        self.assertEqual(out["withheld"]["objects"], 1)
+        self.assertEqual(out["withheld"]["objects"], 2)
         self.assertTrue(out["partial"])
         self.assertEqual({self.text(r["values"]["description"]["value"]) for r in out["rows"]},
                          {"line s2-a"})
@@ -1492,6 +1556,17 @@ class BusinessViews(unittest.TestCase):
         out = self.call({"view": "supplier_balances",
                          "measures": [{"fn": "sum", "field": "amount_due"}, {"fn": "count"}]})
         self.assertEqual(self.sums(out), {"CAD": "60", "USD": "200"})   # paid, gone left out
+        # 11-21 live: every Sage AP row had no due date (read from AR's field name), so
+        # nothing owed could be called overdue
+        due = self.call({"view": "supplier_balances", "select": ["document_number",
+                                                                 "due_date", "days_overdue"]})
+        got = {self.text(r["values"]["document_number"]["value"]):
+               (r["values"]["due_date"]["value"], r["values"]["days_overdue"]["value"])
+               for r in due["rows"]}
+        self.assertEqual({k: v[0] for k, v in got.items()},
+                         {"V-INV-1": "2026-10-01", "V-INV-2": "2026-12-01",
+                          "V-PRE-3": "2026-10-01"})
+        self.assertTrue(all(v[1] is not None for v in got.values()), got)
         docs = self.call({"view": "supplier_invoices", "select": ["document_number", "paid",
                                                                   "supplier"]})
         self.assertEqual(sorted(self.text(r["values"]["document_number"]["value"])
@@ -1761,6 +1836,113 @@ class BusinessViews(unittest.TestCase):
         self.assertEqual(got.get("swept"), ["customers_next", "lineage_customers_next"])
         self.assertEqual(self._leftovers(), [])
         self.assertEqual({v: self._snapshot(v) for v in views}, before)
+
+    def _feed_state(self, c):
+        from operating.pg import change_feed
+        c.execute(change_feed.DDL)
+        c.execute("INSERT INTO ontology.change_cycles (name, source) VALUES ('t', 'delta')")
+        c.execute("UPDATE biz.state SET notes = notes || '{\"feed\": 0}'::jsonb")
+
+    def _drop_feed(self, c):
+        c.execute("DROP TABLE IF EXISTS ontology.change_feed, ontology.change_cycles, "
+                  "ontology.change_cursors")
+
+    def test_a_views_own_code_change_rebuilds_exactly_that_view(self):
+        """Sources unchanged and the same day: a view whose recorded code fingerprint differs
+        is stale, alone; with every fingerprint current nothing is; a build records it."""
+        import psycopg
+        from operating.pg import business_views_code as code
+        comms = next(n for n, v in bv.VIEWS.items() if v.fill is not None)
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self._feed_state(c)
+            try:
+                self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), [])
+                for name in ("sales_invoice_lines", comms):
+                    got = dict(c.execute("SELECT view, notes->>'code' FROM biz.state"))
+                    self.assertEqual(got[name], code.fingerprint(bv.VIEWS[name]), name)
+                    c.execute("UPDATE biz.state SET notes = notes || "
+                              "'{\"code\": \"older\"}'::jsonb WHERE view = %s", (name,))
+                    self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), [name])
+                    self.assertEqual(code.code_changed(c, "biz", bv.VIEWS), [name])
+                    c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
+                              "'code', %s::text) WHERE view = %s",
+                              (code.fingerprint(bv.VIEWS[name]), name))
+                self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), [])
+            finally:
+                self._drop_feed(c)
+
+    def test_first_run_after_deploy_records_fingerprints_and_rebuilds_nothing(self):
+        """Views built before fingerprints existed are adopted (recorded, no rebuild): a
+        deploy that adds the rule does not rebuild every view; only a later change does."""
+        import psycopg
+        from operating.pg import business_views_code as code
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self._feed_state(c)
+            try:
+                c.execute("UPDATE biz.state SET notes = notes - 'code'")
+                self.assertEqual(code.code_changed(c, "biz", bv.VIEWS), [])
+                self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), [])
+                adopted = code.adopt(c, "biz", bv.VIEWS)
+                self.assertEqual(sorted(adopted), sorted(bv.VIEWS))
+                self.assertEqual(code.adopt(c, "biz", bv.VIEWS), [])
+                self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), [])
+                with mock.patch.dict(os.environ, {"PLX_BIZ_CODE_REFRESH": "0"}):
+                    c.execute("UPDATE biz.state SET notes = notes || "
+                              "'{\"code\": \"older\"}'::jsonb")
+                    self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), [])
+                for name, v in bv.VIEWS.items():
+                    c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
+                              "'code', %s::text) WHERE view = %s", (code.fingerprint(v), name))
+                c.execute("UPDATE biz.state SET notes = notes || "
+                          "jsonb_build_object('code', 'older'::text) WHERE view = 'products'")
+                self.assertEqual(bv.stale_views(c, bv.VIEWS, "moved", AS_OF), ["products"])
+            finally:
+                for name, v in bv.VIEWS.items():   # the shared state as the build left it
+                    c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
+                              "'code', %s::text) WHERE view = %s", (code.fingerprint(v), name))
+                self._drop_feed(c)
+
+    def test_a_code_edit_moves_only_the_views_that_reach_it(self):
+        """A changed helper changes the fingerprints of the views naming it, not the
+        others'; a change to the shared reading machinery changes every business view's; a comment or docstring changes nothing."""
+        from operating.pg import business_views_code as code
+        before = {n: code.fingerprint(v) for n, v in bv.VIEWS.items()}
+        self.assertEqual(len(set(before.values())), len(before))   # none shares one
+        defs = code._defs()
+        saved = (dict(code._CACHE), dict(defs))
+
+        def after(helper):
+            code._CACHE.clear()
+            defs[helper] = [(m, t + "-edited") for m, t in defs[helper]]
+            try:
+                return {n: code.fingerprint(v) for n, v in bv.VIEWS.items()}
+            finally:
+                defs.clear(); defs.update(saved[1])
+                code._CACHE.clear(); code._CACHE.update(saved[0])
+        moved = {n for n, f in after("invoice_heads").items() if f != before[n]}
+        self.assertIn("sales_invoice_lines", moved)
+        self.assertNotIn("products", moved)
+        self.assertLess(len(moved), len(before) // 2)
+        every = {n for n, f in after("Reader").items() if f != before[n]}
+        self.assertTrue({n for n, v in bv.VIEWS.items() if v.fill is None} <= every)
+        self.assertFalse(any(bv.VIEWS[n].fill is not None for n in moved))   # not a comms rule
+        # a helper module outside the view modules: its source is part of the views'
+        # that name it (EXPLICIT list), and only theirs
+        saved_text = dict(code._MODTEXT)
+        try:
+            code._CACHE.clear()
+            code._MODTEXT["operating.po_status"] = "edited"
+            moved = {n for n, v in bv.VIEWS.items() if code.fingerprint(v) != before[n]}
+        finally:
+            code._MODTEXT.clear(); code._MODTEXT.update(saved_text)
+            code._CACHE.clear(); code._CACHE.update(saved[0])
+        self.assertEqual(moved, {n for n, deps in code.EXTERNAL.items()
+                                 if "operating.po_status" in deps})
+        self.assertEqual(moved, {"purchase_orders", "purchase_order_lines", "sales_orders",
+                                 "sales_order_lines"})
+        import ast
+        self.assertEqual(code._text(ast.parse("def f():\n    'doc'\n    return 1  # c")),
+                         code._text(ast.parse("def f():\n    return 1")))
 
     def test_missing_views_are_built_first(self):
         """A run stopped by its time limit never re-spends the next run on the views it

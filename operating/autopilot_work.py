@@ -117,6 +117,26 @@ class CaptureTexts:
                 return row[0], raw.decode("utf-8", "replace")
         return row[0], None
 
+    def mailbox_seen_to(self, mailbox: str) -> Any:
+        """Until when the capture saw this mailbox: the last time a capture run read any of
+        its messages (``messages.last_seen_at``); None when it holds none (unknown: the
+        caller sets no bound). A mailbox whose capture stopped (access withdrawn) ends there
+        while other mailboxes go on."""
+        try:
+            # the capture's own spelling of the id, any case (the mailboxes table is small;
+            # the messages index is read by its exact value)
+            ids = [r[0] for r in self.conn.execute(
+                "SELECT mailbox_id FROM mailboxes WHERE lower(mailbox_id) = ?",
+                (str(mailbox).strip().lower(),))]
+            if not ids:
+                return None
+            row = self.conn.execute(
+                "SELECT max(last_seen_at) FROM messages WHERE mailbox_id IN "
+                "(SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return ap._instant(row[0]) if row and row[0] else None
+
     def close(self) -> None:
         self.conn.close()
 
@@ -1449,7 +1469,9 @@ def brief(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
 
     sections = {
         "decisions": pick(lambda i: work(i).get("kind") in ("decision", "escalation") or
-                          i["autopilot"] in ("approval_request", "mail_approval_request")),
+                          i["autopilot"] in ("approval_request", "mail_approval_request") or
+                          ((i.get("body") or {}).get("happened") or {}).get("event_type")
+                          == "approval.requested"),
         "drafts": pick(lambda i: bool(work(i).get("draft"))),
         "orders_to_enter": pick(lambda i: bool(work(i).get("write"))),
         "supplier_followups": pick(lambda i: i["autopilot"] == "po_followup"),

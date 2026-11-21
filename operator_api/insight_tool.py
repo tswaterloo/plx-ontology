@@ -5,6 +5,7 @@ what a tile counts matches the tile. Off unless ``PLX_ASK_INSIGHT_TOOL=1``: its 
 eval decides."""
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Mapping
 
@@ -17,12 +18,12 @@ SPEC = {
     "name": NAME,
     "description": (
         "Read a built-in Insights tile exactly as the Insights page shows it to this person "
-        "(their access and Team view applied; rows it hides from them never come back): its "
-        "columns and rows. Use it, not a count of your own, when the question is what a tile "
+        "(their access and Team view applied; rows it hides never come back). Use it, not a count of your own, when the question is what a tile "
         "measures: colleagues_waiting / team_waiting (who is waiting on whom), "
         "team_reply_time, team_output, waiting_on_others, planner_open, leader_scorecard, "
         "org_span. A tile not for this person is refused (insight_withheld): say so, never "
-        "work around it. plx.sql {\"describe\": true} lists the other tiles."),
+        "work around it; one that cannot be read now (insight_unreadable): count it with "
+        "plx.sql. plx.sql {\"describe\": true} lists the other tiles."),
     "inputSchema": {"type": "object", "additionalProperties": False, "required": ["id"],
                     "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}}},
     "annotations": {"readOnlyHint": True},
@@ -49,6 +50,18 @@ def read(backend: Any, reader: Any, arguments: Mapping[str, Any]) -> dict[str, A
     except insights.Refused as refused:
         return {"ok": False, "error": str(getattr(refused, "code", "") or "refused"),
                 "detail": str(refused)[:300]}
+    except Exception as error:  # noqa: BLE001 - unread now: the Ask counts with plx.sql
+        # where it failed (file:line of the last frames, never a value): 9 of 15 calls
+        # failed so on a loaded Spark (11-21), not reproduced alone
+        import logging
+        import traceback
+        where = [f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno}"
+                 for f in traceback.extract_tb(error.__traceback__)[-4:]]
+        logging.getLogger("operator_api.ask").warning(json.dumps(
+            {"insight_unread": type(error).__name__, "where": where}))
+        return {"ok": False, "error": "insight_unreadable",
+                "detail": "the tile could not be read now: count it with plx.sql"}
     return {"ok": True, "insight": iid, "title": got.title, "columns": list(got.columns),
-            "rows": [[_cell(c)[0] for c in row] for row in got.rows],
+            # plx.sql's row shape, so the Ask's figure gate and citations read it as one
+            "rows": [{"cells": [_cell(c)[0] for c in row]} for row in got.rows],
             "row_count": got.row_count, "truncated": got.truncated, "as_of": got.as_of}

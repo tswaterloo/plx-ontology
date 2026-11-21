@@ -67,6 +67,30 @@ class Catalogue(unittest.TestCase):
             n += 1
         self.assertGreater(n, 100)
 
+    def test_a_measure_leaves_out_pilot_rows_and_orders_of_no_record(self):
+        """BC pilot invoices are not business (Sage is the system of record; plx.sql's
+        rules say leave them out unless asked): every statement of a measure over a view
+        with a ``pilot`` column reads only the other rows (live 11-21: revenue for July
+        2026 CAD counted 930,586.59 of pilot lines, September's 10.00 made a "why" answer's
+        change disagree with its own months)."""
+        views = sqlt._dictionary()
+        piloted = [m for m in measures.measures().values()
+                   if "pilot" in views[m["view"]]["columns"]]
+        self.assertTrue(piloted)
+        # the same for orders no Sage copy holds (sales_orders.of_record = false: FileMaker
+        # order entry, Portal-only, BC pilot; live 11-21 late_orders 66 for the 55 of record)
+        of_record = [m for m in measures.measures().values()
+                     if "of_record" in views[m["view"]]["columns"]]
+        self.assertTrue(of_record)
+        for name, opts in _variants():
+            m = measures.measures().get(name)
+            if m in piloted:
+                self.assertRegex(measures.statement(name, **opts)[0], r"\bNOT pilot\b",
+                                 (name, opts))
+            if m in of_record:
+                self.assertRegex(measures.statement(name, **opts)[0],
+                                 r"(?<!NOT )\bof_record\b(?! *=)", (name, opts))
+
     def test_what_the_catalogue_does_not_hold_is_refused(self):
         snapshot = next(m["id"] for m in measures.measures().values() if not m["date"])
         dated = next(m["id"] for m in measures.measures().values() if m["date"])
@@ -193,6 +217,36 @@ class MeasureDoor(unittest.TestCase):
         self.assertTrue(ops["partial"])
         for secret in tsql.tbv.SECRET:
             self.assertNotIn(secret, str(ops))
+
+    def test_a_measure_counts_only_the_rows_its_rule_keeps(self):
+        """Computed from the raw rows: invoices_issued counts the invoices that are not BC
+        pilot ones, open_orders the open orders Sage holds (of_record) that are not quotes;
+        the fixture holds a pilot invoice and an order held only outside Sage, so a measure
+        counting them would be larger."""
+        def raw(sql):
+            out = self.call({"sql": sql}, FULL)
+            return [dict(zip(out["columns"], r)) for r in self.rows(out)]
+
+        def value(name, **opts):
+            out = self.call({"measure": name, **opts}, FULL)
+            rows = [dict(zip(out["columns"], r)) for r in self.rows(out)]
+            self.assertEqual(len(rows), 1, (name, rows))
+            return int(Decimal(str(rows[0]["value"])))
+
+        since = dt.date.today() - dt.timedelta(days=3650)
+        invoices = raw("SELECT invoice_number, invoice_date, pilot FROM sales_invoices "
+                       "WHERE pilot OR NOT pilot")
+        kept = {r["invoice_number"] for r in invoices if not _true(r["pilot"])
+                and dt.date.fromisoformat(str(r["invoice_date"])[:10]) > since}
+        self.assertTrue(any(_true(r["pilot"]) for r in invoices))
+        self.assertEqual(value("invoices_issued", days=3650), len(kept))
+        orders = raw("SELECT order_number, status, order_type, of_record FROM sales_orders "
+                     "WHERE of_record OR NOT of_record")
+        open_kept = {r["order_number"] for r in orders if r["status"] == "open"
+                     and r["order_type"] != "quote" and _true(r["of_record"])}
+        self.assertTrue(any(r["status"] == "open" and not _true(r["of_record"])
+                            for r in orders))
+        self.assertEqual(value("open_orders"), len(open_kept))
 
     def test_shares_of_a_change_add_up_to_100_per_currency(self):
         out = self.call({"measure": "receivables_open", "by": "customer"}, FULL)

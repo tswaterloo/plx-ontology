@@ -153,7 +153,6 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "autopilot_reply_latency": "Autopilot reply time",
           "autopilot_fast_waiting": "Autopilot fast feed",
           "autopilot_fast_restarts": "Autopilot fast feed restart loop",
-          "autopilot_fast_failing": "Autopilot fast feed failing",
           "autopilot_settle_errors": "Autopilot items not checked for done",
           "load_high": "Host overload", "delta_apply_cost": "Data refresh apply cost",
           "app_sessions_store": "App sign-in sessions store",
@@ -340,54 +339,6 @@ def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
         if detail:
             out.append(_check(prefix + uid, since, 0, True, "h", detail))
     return out
-
-
-FAST_FEED_UNIT = "plx-autopilot-fast.service"
-FAST_FEED_FAILS, FAST_FEED_MINUTES = 3, 30   # failed runs seen in the window that page
-
-
-def _unix(stamp: str) -> Optional[datetime]:
-    """A ``--timestamp=unix`` value (``@1794329939``) as a time; None when unset."""
-    if not stamp.startswith("@"):
-        return None
-    try:
-        return datetime.fromtimestamp(int(stamp[1:]), timezone.utc)
-    except (ValueError, OverflowError, OSError):
-        return None
-
-
-def fast_feed_checks(held: dict[str, Any], units: Sequence[Mapping[str, str]],
-                     now: datetime) -> list[Check]:
-    """``autopilot_fast_failing``: the path-started fast feed (a oneshot run once per capture
-    write; no start limit since AUDIT3-04) failing ``FAST_FEED_FAILS`` runs within
-    ``FAST_FEED_MINUTES``. A pass sees only the unit's last run, and one clean run in between
-    closes the unit's own ``failed`` alarm, so a crash loop could pass unnoticed: each failed
-    run a pass sees is kept by its exit time in ``held["fast_feed_failures"]`` (the window;
-    the same run seen twice counts once) and the count pages. The count is a lower bound
-    (runs between two passes are not seen). Nothing while the unit is not installed."""
-    unit = next((u for u in units if u.get("Id") == FAST_FEED_UNIT), None)
-    if unit is None or unit.get("LoadState") in ("not-found", "masked"):
-        held.pop("fast_feed_failures", None)
-        return []
-    kept = [s for s in held.get("fast_feed_failures") or [] if isinstance(s, str)
-            and (age := _minutes(now, ops_health._parse(s))) is not None
-            and age <= FAST_FEED_MINUTES]
-    result = unit.get("Result", "")
-    if result not in ("", "success"):
-        at = _unix(unit.get("ExecMainExitTimestamp", "")) \
-            or _unix(unit.get("StateChangeTimestamp", "")) or now
-        key = at.isoformat().replace("+00:00", "Z")
-        if key not in kept and (_minutes(now, at) or 0) <= FAST_FEED_MINUTES:
-            kept.append(key)
-    held["fast_feed_failures"] = sorted(kept)
-    n = len(kept)
-    check = _check("autopilot_fast_failing", n, FAST_FEED_FAILS, n >= FAST_FEED_FAILS,
-                   "failures",
-                   f"{FAST_FEED_UNIT} failed {n} runs in the last {FAST_FEED_MINUTES} min "
-                   f"(last result: {result if result not in ('', 'success') else 'success'})"
-                   if n >= FAST_FEED_FAILS else "")
-    check["level"] = "high"
-    return [check]
 
 
 BACKUP_DIR_ENV = "PLX_BACKUP_DIR"
@@ -1640,8 +1591,6 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
                           lambda: unit_checks(scope, units, now, t, ignore, reported))
         if scope == "system":
             checks += guarded("backups", lambda: backup_checks(units, now, t, backup_root))
-            if held is not None:
-                checks += guarded("fast_feed", lambda: fast_feed_checks(held, units, now))
     if backup_root is not None:   # capture and off-box copies, partial sets (main only)
         checks += guarded("backup_stores", lambda: _backup_stores.backup_store_checks(
             now, t, backup_root, environ))
@@ -1813,7 +1762,7 @@ def _public(incident: Mapping[str, Any]) -> dict[str, Any]:
     return {k: incident[k] for k in keep if k in incident}
 
 
-SLOW_KEYS = ("growth", "pg_health", "drift", "load_samples", "fast_feed_failures",
+SLOW_KEYS = ("growth", "pg_health", "drift", "load_samples",
              "truth_checked")
 
 

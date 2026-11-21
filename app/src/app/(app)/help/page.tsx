@@ -18,7 +18,7 @@ import { GUIDES, guideFor, guideLabel, roleKey, type GuideRole } from "@/lib/onb
 const TELL = [
   "From now on, keep answers short. Memory keeps it; correct or forget it there.",
   "Stop drafting replies to news@supplier.com. Always cc ana@company.com on supplier emails. The Autopilot follows both.",
-  "Save a template for chasing a late PO. Use my late PO template for PO 106001.",
+  "Save a template for chasing a late PO. Use my late PO template for the oldest late PO.",
   "Write a one-page memo of our late POs and email it to Ana as a Word file.",
   "Make that a Word document and save it beside the March price list in SharePoint.",
   "Rewrite this in my style: ...",

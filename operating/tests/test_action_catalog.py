@@ -367,8 +367,9 @@ class CatalogShapeTests(unittest.TestCase):
                 declared = entry["parameters"][param]["role"]
                 for relation in entry["target_relations"]:
                     # The one role rule (schema role, else the carriers' kind).
+                    scheme = injection_guard.RELATION_SCHEMES.get(relation, "api://")
                     found = injection_guard.cited_role(
-                        f"api://{relation}/1@g1", {"relation": relation, "row": {}},
+                        f"{scheme}{relation}/1@g1", {"relation": relation, "row": {}},
                         f"row.{field}")
                     with self.subTest(action=name, field=field):
                         if "." in field:

@@ -3453,6 +3453,10 @@ class AutopilotCountdown(_Model):
     refused_run: Optional[str] = None
     parts: list[AutopilotGatePart] = Field(default_factory=list, description="The scored "
                                            "windows summed into these counts, oldest first.")
+    judged_score: Optional["AutopilotScoreBar"] = Field(
+        None, json_schema_extra=_optional, description="The judged precision of the "
+        "workflow's category on held-out days (``operating.autopilot_judged``), which Auto "
+        "rests on: ``passes`` needs it to pass too. Absent: none on record.")
 
 
 class AutopilotWorkflowRow(_Model):
@@ -3596,12 +3600,23 @@ class AutopilotSwitches(_Model):
 
 
 class AutopilotScoreBar(_Model):
-    """A workflow's held-out score for one person against the gate's bar."""
+    """A workflow's held-out score for one person against the gate's bar. For Auto it is
+    the category's judged precision on held-out days (``operating.autopilot_judged``):
+    items Auto would have performed, graded right or not by the judge."""
     judged: int
     matched: int
     percent: Optional[float] = None
     need_judged: int
     need_percent: float
+    source: Optional[str] = Field(None, json_schema_extra=_optional, description="The "
+                                  "judged run the counts come from (set, engine, judge).")
+    measured_on: Optional[str] = Field(None, json_schema_extra=_optional, description="The "
+                                       "day it was graded (YYYY-MM-DD).")
+    window: list[str] = Field(default_factory=list, json_schema_extra=_optional,
+                              description="The replayed days: first and last item time.")
+    scope: Optional[Literal["you", "team"]] = Field(
+        None, json_schema_extra=_optional, description="you: the person's own items; "
+        "team: everyone's items (the category's score).")
 
 
 class AutopilotSuspension(_Model):
@@ -3637,6 +3652,34 @@ class AutopilotDraftChoice(_Model):
     score: Optional[AutopilotScoreBar] = Field(None, json_schema_extra=_optional,
                                                description="Its replay score for you, "
                                                "against the bar auto needs.")
+    conditions: Optional["AutopilotSwitchConditions"] = Field(
+        None, json_schema_extra=_optional, description="Your own limits on auto for it "
+        "(``operating.assist_switches``); absent: none set.")
+
+
+class AutopilotSwitchConditions(_Model):
+    """Limits on a category's auto: it performs by itself only for these senders, on these
+    days, between these times (US Eastern) and for work whose replay score is at least
+    this; anything else waits for your click. Empty: no limit beyond the gate and rules."""
+    senders: list[str] = Field(default_factory=list, max_length=50, description="Addresses "
+                               "or @domains; empty: any sender.")
+    days: list[int] = Field(default_factory=list, max_length=7, description="0 = Monday to "
+                            "6 = Sunday; empty: every day.")
+    start: Optional[str] = Field(None, max_length=5, description="HH:MM, US Eastern.")
+    end: Optional[str] = Field(None, max_length=5, description="HH:MM, US Eastern.")
+    min_percent: Optional[float] = Field(None, description="Your own bar, percent; never "
+                                         "below the gate's.")
+
+
+class AutopilotConditionsRequest(AutopilotSwitchConditions):
+    choice: str = Field(max_length=60, description="One of ``my_drafts``' choices.")
+
+
+class AutopilotAlwaysRequest(_Model):
+    scope: Literal["sender", "category"] = Field(description="sender: auto for this item's "
+                                                 "sender in its category; category: auto "
+                                                 "for the whole category. Only where your "
+                                                 "replay score earned auto.")
 
 
 class AutopilotOptIn(_Model):
@@ -3836,6 +3879,11 @@ class AutopilotPrepared(_Model):
                             "replay score earned its workflow: \"send\" (it would go by "
                             "itself once you switch Auto on) or \"keep: <reasons>\" (it would "
                             "still wait for your click); empty otherwise. Nothing is done.")
+    category: str = Field("", description="The switch this item falls under (one of "
+                          "``my_drafts``' choices), empty when none.")
+    category_label: str = Field("", description="That switch's name, as the switches show it.")
+    always_ok: bool = Field(False, description="Your replay score earned Auto for this item's "
+                            "work, so \"always do this\" can be chosen for it.")
     jobs: list[AutopilotJob] = Field(default_factory=list)
     todos: list[AutopilotTodo] = Field(
         default_factory=list, description="Things to do by hand, on any kind of item.")
@@ -5208,6 +5256,8 @@ class UploadApprove(_Model):
 
 # AskDraft names CardActionOffer before it is defined
 AskDraft.model_rebuild()
+AutopilotDraftChoice.model_rebuild()
+AutopilotCountdown.model_rebuild()
 AnswerPayload.model_rebuild()
 AskRequest.model_rebuild()
 TemplateFillField.model_rebuild()

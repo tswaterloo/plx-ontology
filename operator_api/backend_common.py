@@ -36,8 +36,9 @@ GRANT_SCREENS = frozenset({"my_work", "autopilot", "workload"})
 # each its own job on the ``SCREENS_AHEAD_WORKERS`` workers, most visited first (the live
 # API's requests per screen over ten days: Home 535, the late list 499, the briefing and
 # its items 499, the sidebar on every page, Autopilot 155, suggestions 129, approvals 115,
-# replies 89, Meetings 61, the answer bank 54, My work 41, action items 24, Team and
-# workload 20 each), under the keys the app asks for. An entry: a method name, or a tuple
+# replies 89, Meetings 61, the answer bank 54, action items 24, Team and
+# workload 20 each; My work is no screen of the app any more), under the keys the app asks
+# for. An entry: a method name, or a tuple
 # of it, its positional arguments and, last, a dict of its keyword arguments.
 DIRECTORY_WARM_SECONDS = 900   # a directory read-ahead identity's life
 
@@ -71,7 +72,7 @@ SCREENS_AHEAD = ("_home_served", ("late_list", {"offset": 0, "limit": 100}),
                  ("briefing", {"since_visit": False}), "_briefing_pages_ahead", "_sidebar_served", "_late_trails_ahead",
                  "autopilot_area",
                  "suggestions", "approvals_queue", "reply_triage", "upcoming_meetings",
-                 ("answer_bank", None), "my_work", "_insights_ahead", ("my_action_items", None),
+                 ("answer_bank", None), "_insights_ahead", ("my_action_items", None),
                  ("weekly_review", None), "workload", "team_view")
 # a screen read ahead that answered "still reading" is read again this often, for at most
 # this long (``WorkspaceBackend._screens_ahead``)

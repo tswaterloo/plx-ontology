@@ -89,7 +89,13 @@ Pick a set: `S=/data/backups/daily; T=<stamp>`.
 4. Postgres schema: `createdb plx_new && pg_restore --no-owner -d plx_new $S/plx-$T.dump`,
    point `PLX_PG_DSN` at it, `python3 -m operating.pg status`, and let the ontology load and
    `plx-search-follow` re-fill the data from the served projection; a full-data dump
-   (`PLX_BACKUP_PG_SCHEMA_ONLY=`) restores directly.
+   (`PLX_BACKUP_PG_SCHEMA_ONLY=`) restores directly. Then, as a superuser, re-make what
+   `pg_dump` does not carry: migration 0051's text[] operators sit in the builtin GIN
+   `array_ops` family, which a dump leaves out (the `plx_ops` schema, functions and operators it does
+   carry). Run its last statement, `ALTER OPERATOR FAMILY pg_catalog.array_ops USING gin ADD
+   OPERATOR 1 plx_ops.&& (text[], text[]), OPERATOR 2 plx_ops.@> (text[], text[]);`, with
+   `psql -d plx_new` (the ledger already records 0051); without it every `@>`/`&&` filter on a guarded view's array
+   column is slow (same rows).
 5. Start the services again; `systemctl status 'plx-*'`.
 
 ## Off-box copy to a Spark (owner, 15 Nov 2026; no S3)

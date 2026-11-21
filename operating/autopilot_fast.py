@@ -5,8 +5,9 @@ measured before: Teams p50 85 min, p95 134 min from the message to its event).
 
 * **Signal.** A capture store that stores a new person-to-person message version touches
   ``<store>.new`` (``integrations.capture_store.signal_new``: the Teams store per page, the
-  mail store per message); ``plx-autopilot-fast.path`` starts ``python3 -m operating.autopilot
-  fast`` on it, and its timer every minute in case a signal came while a cycle ran.
+  mail store per message); the continuous consumer below sees it within ``POLL_SECONDS``
+  (a one-off ``python3 -m operating.autopilot fast`` runs one start by hand; its per-signal
+  units were retired: 2855 starts in a day, none prepared anything).
 * **Take** (``take``): the message versions each store holds past this feed's mark (the
   queue's meta ``fast_marks``: the Teams store's capture id under its generation, the mail
   store's version id), at most ``MAX_RECORDS`` a cycle, oldest first. A first cycle, or a
@@ -64,9 +65,9 @@ measured before: Teams p50 85 min, p95 134 min from the message to its event).
   served), sees a capture's signal within ``POLL_SECONDS`` and runs the same cycles over the
   same ordered event queue (``operating.jobq.events``: per conversation in order, an approval
   or a customer's message first), and runs one at least every ``BACKSTOP_SECONDS`` though no
-  signal came. It holds ``SERVE_LOCK`` beside the queue for as long as it runs; a start of
-  the path or timer unit that finds it held does nothing (``served``), so those units are the
-  backstop while the consumer is down, and ``follow`` remains the backstop of both. Each cycle
+  signal came. It holds ``SERVE_LOCK`` beside the queue for as long as it runs; a one-off
+  start that finds it held does nothing (``served``), and ``follow`` is the backstop while
+  the consumer is down. Each cycle
   a signal woke records ``wake_seconds`` (the signal's time to the cycle's start).
   Its environment is its unit's ``proactive.env``, read once by systemd: before each cycle it
   checks that file (``env_moved``: mtime, then a hash of the content) and ends when it

@@ -447,6 +447,7 @@ CARD_WORDS_KEPT = 20000
 # seen, that session's reference and expiry, and the record pages they opened last; no
 # name), kept owner-only in the app's own data directory, never the state's.
 KNOWN_READERS_FILE = "known-readers.json"
+KNOWN_MEASURE_FILE = "known-measure.json"   # page-measure sessions, read ahead for only
 
 
 def others_app_data(data_dir: Optional[Path]) -> Optional[int]:
@@ -594,6 +595,10 @@ def record_words(handle: str) -> str:
     part = unquote(part).split(".")[-1]
     part = re.sub(r"^app_", "", part)
     part = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", part).replace("_", " ").strip().lower()
+    # the ledgers' table prefixes are accounting shorthand, not words: "ar customer" is the
+    # customer, "ap vendor" the supplier
+    part = re.sub(r"^(?:ar|ap) ", "", part)
+    part = {"vendor": "supplier", "batch record": "batch"}.get(part, part)
     if system == "Email":
         return "Email message"
     if system == "Teams":

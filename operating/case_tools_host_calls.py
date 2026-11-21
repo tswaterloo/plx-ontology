@@ -58,11 +58,16 @@ def _mailbox_stamp(db: Any) -> tuple[str, str]:
 
 def _drives_stamp(db: Any) -> tuple[str, tuple]:
     """The SharePoint capture's drives, by the (drive_id, item_id) index, one step a drive
-    (1 ms; the DISTINCT scan of every item took 0.03-0.75 s a request)."""
-    return ("drives", tuple(row[0] for row in db.execute(
+    (1 ms; the DISTINCT scan of every item took 0.03-0.75 s a request), as ONE row: the
+    capture commits several times a second, so this is read on most requests, and row by
+    row each of the ~150 rows waited for the interpreter lock again on a busy API (the
+    top cost of a Home visit after the kept-policy fix: ~10 s of 20 s sampled)."""
+    got = db.execute(
         "WITH RECURSIVE d(x) AS (SELECT MIN(drive_id) FROM items UNION ALL "
         "SELECT (SELECT MIN(drive_id) FROM items WHERE drive_id > d.x) "
-        "FROM d WHERE d.x IS NOT NULL) SELECT x FROM d WHERE x IS NOT NULL")))
+        "FROM d WHERE d.x IS NOT NULL) SELECT json_group_array(x) FROM d "
+        "WHERE x IS NOT NULL").fetchone()
+    return ("drives", tuple(sorted(json.loads(got[0]))))
 
 
 class _CallsMixin:

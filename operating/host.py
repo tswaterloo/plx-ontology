@@ -1020,9 +1020,31 @@ class Host:
         self._orphans: list[str] = []   # sources a killed holder's children were reading
         self._lock_handle: Any = None   # the cycle lock's file while this host holds it
         (self.state_dir / HOST_DIR).mkdir(parents=True, exist_ok=True)
-        with self._ledger() as db:
-            for statement in _LEDGER_DDL:
-                db.execute(statement)
+        if not self._ledger_made():
+            with self._ledger() as db:
+                for statement in _LEDGER_DDL:
+                    db.execute(statement)
+
+    def _ledger_made(self) -> bool:
+        """Whether the ledger already holds every table ``_LEDGER_DDL`` makes, read without
+        the write lock: a host started beside a running cycle (every Ask session's tool
+        host) then never waits on the cycle's write (11-21: 4 of 87 bench asks ended
+        host_stopped, 'database is locked' after the 30 s busy wait). Any doubt: made again."""
+        import re
+        wanted = {m.group(1) for statement in _LEDGER_DDL for m in re.finditer(
+            r"CREATE\s+(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+(\w+)", statement, re.I)}
+        path = self.state_dir / HOST_DIR / LEDGER_FILE
+        if not wanted or not path.is_file():
+            return False
+        try:
+            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+            try:
+                have = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+            finally:
+                db.close()
+        except sqlite3.Error:
+            return False
+        return wanted <= have
 
     @contextmanager
     def _ledger(self) -> Iterator[sqlite3.Connection]:

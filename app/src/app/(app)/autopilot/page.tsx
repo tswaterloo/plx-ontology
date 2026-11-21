@@ -5,6 +5,7 @@ import { AutopilotView } from "@/components/autopilot/area";
 import { RecurringView } from "@/components/autopilot/recurring";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
+import { SectionTabs } from "@/components/shell";
 import { PageIntro } from "@/components/ui/page-intro";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getAutopilot } from "@/lib/api";
@@ -13,7 +14,7 @@ import { useStaleRefresh } from "@/lib/stale-refresh";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AutopilotArea } from "@/lib/types";
 
-// The autopilot: your five switches and what was prepared for you, to confirm, edit, copy or open in Outlook.
+// Home's Switches tab: what is prepared for you and what may go by itself. The items are on Home.
 export default function AutopilotPage() {
   return (
     <Suspense>
@@ -27,7 +28,8 @@ function Autopilot() {
   useStaleRefresh(area?.stale_since, retry);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar heading title="Autopilot" />
+      <Toolbar heading title="Home" />
+      <SectionTabs section="home" />
       <PageIntro path="/autopilot" />
       <div className="w-full px-6 py-5">
         {error ? (
@@ -39,7 +41,7 @@ function Autopilot() {
             <RecurringView />
           </>
         ) : (
-          <Pending page label="Reading the autopilots" />
+          <Pending page label="Reading your switches" />
         )}
       </div>
     </div>

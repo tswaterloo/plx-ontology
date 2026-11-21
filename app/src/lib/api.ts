@@ -35,7 +35,6 @@ import type { AskChatUpdate, AskChats, DocList, Explore, LabourPage, LateList, R
   LabelChanges,
   LabelRevisions,
   ReplyTriage,
-  MyWork,
   AutopilotArea,
   AutopilotAudit,
   AutopilotDecisionRequest,
@@ -655,16 +654,6 @@ export function getReplies(signal?: AbortSignal): Promise<ReplyTriage> {
   return getRead<ReplyTriage>("/api/replies", signal);
 }
 
-// The work the autopilots prepared for you (and your granted reports), with your digest.
-export function getMyWork(signal?: AbortSignal): Promise<MyWork> {
-  return getJson<MyWork>("/api/my-work", signal);
-}
-
-/** Your item's prepared entry as a dry-run write intent, approved in the write panel. */
-export async function prepareMyWorkWrite(itemId: string): Promise<WriteIntentView> {
-  return (await (await call(`/api/my-work/${encodeURIComponent(itemId)}/write`, { method: "POST" })).json()) as WriteIntentView;
-}
-
 /** The autopilot area: prepared items you may see, per workflow scores, state and switches. */
 export function getAutopilot(signal?: AbortSignal): Promise<AutopilotArea> {
   const key = readKey("/api/autopilot");
@@ -699,6 +688,8 @@ export type PreparedItem = {
   redo?: boolean;
   /** Things to do by hand that no prepared change reaches, on any kind of item. */
   todos?: TodoStep[];
+  /** The switch it falls under, and whether your replay score earned Auto for it ("always do this"). */
+  category?: string; category_label?: string; always_ok?: boolean;
   ask: string; facts: string[]; options?: { label: string; reply: string }[]; created_at: string;
   /** On a draft you edited: what the edit changed, as it is learned for your next drafts. */
   learned?: string[];
@@ -755,6 +746,17 @@ export function getAutopilotColleagues(signal?: AbortSignal): Promise<ViewAsPeop
 /** Pass an alert on your list to a colleague: on their list too, only to set aside there. */
 export async function handAutopilotItem(itemId: string, to: string): Promise<{ items: PreparedItem[] }> {
   return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/hand`, { method: "POST", json: { to } })).json()) as { items: PreparedItem[] };
+}
+
+/** Always do this: Auto for this item's sender, or its whole switch (only where it was earned). */
+export async function alwaysDoThis(itemId: string, scope: "sender" | "category"): Promise<AutopilotArea> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/always`, { method: "POST", json: { scope } })).json()) as AutopilotArea;
+}
+
+/** Your own limits on one switch's Auto: senders, days, hours (US Eastern), a stricter bar. */
+export type SwitchLimits = { senders: string[]; days: number[]; start?: string | null; end?: string | null; min_percent?: number | null };
+export async function setSwitchLimits(choice: string, limits: SwitchLimits): Promise<AutopilotArea> {
+  return (await (await call("/api/autopilot/conditions", { method: "POST", json: { choice, ...limits } })).json()) as AutopilotArea;
 }
 
 /** The reply to a "your call" card, written from your one line and kept as your edit. */

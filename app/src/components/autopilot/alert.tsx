@@ -5,8 +5,8 @@
 // decided and its records. It is decided in its own system; here it is only set aside, or
 // passed to a colleague (on their list too, under their own access).
 
-import { useState } from "react";
-import { SetAside } from "@/components/autopilot/job";
+import { useEffect, useState } from "react";
+import { ItemActions } from "@/components/autopilot/item-actions";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { getAutopilotColleagues, handAutopilotItem, setFollowing, type PreparedItem } from "@/lib/api";
@@ -15,6 +15,7 @@ import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
 export function AlertCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
+  const [passing, setPassing] = useState(false);
   return (
     <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-alert">
       <div className="flex flex-wrap items-baseline gap-x-3">
@@ -35,7 +36,7 @@ export function AlertCard({ item, linked, onGone }: { item: PreparedItem; linked
         <div className="flex flex-wrap gap-3 text-[13px]">
           {(item.links ?? []).map((l) => (
             <span key={l.href} className="inline-flex items-baseline gap-2">
-              <a href={l.href} className="text-accent underline-offset-2 hover:underline">
+              <a href={l.href} {...(l.href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="text-accent underline-offset-2 hover:underline">
                 {l.label}
               </a>
               {l.href.startsWith("/object/") && <Follow objectId={decodeURIComponent(l.href.slice("/object/".length))} label={l.label} />}
@@ -44,8 +45,8 @@ export function AlertCard({ item, linked, onGone }: { item: PreparedItem; linked
         </div>
       )}
       {item.handed_from && <p className="text-[12px] text-muted" data-testid="alert-handed-from">Passed to you by {item.handed_from}. Setting it aside clears it for them too.</p>}
-      <SetAside itemId={item.item_id} onGone={onGone} />
-      <PassOn itemId={item.item_id} handedTo={item.handed_to} />
+      <ItemActions item={item} onGone={onGone} setAsideOnly={!!item.handed_from} entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]} />
+      <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} />
     </li>
   );
 }
@@ -74,7 +75,7 @@ function Follow({ objectId, label }: { objectId: string; label: string }) {
   );
 }
 
-function PassOn({ itemId, handedTo }: { itemId: string; handedTo?: string }) {
+function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?: string; open: boolean; onClose: () => void }) {
   const [people, setPeople] = useState<{ key: string; name: string }[] | null>(null);
   const [pick, setPick] = useState("");
   const [to, setTo] = useState(handedTo ?? "");
@@ -91,30 +92,28 @@ function PassOn({ itemId, handedTo }: { itemId: string; handedTo?: string }) {
       setBusy(false);
     }
   };
-  const open = () =>
-    run(async () => {
+  useEffect(() => {
+    if (!open || people !== null) return;
+    void run(async () => {
       const got = (await getAutopilotColleagues()).people ?? [];
       setPeople(got);
       setPick(got[0]?.key ?? "");
     });
+  }, [open, people]);
   const hand = () =>
     run(async () => {
       await handAutopilotItem(itemId, pick);
       setTo(people?.find((p) => p.key === pick)?.name ?? "a colleague");
-      setPeople(null);
+      onClose();
     });
   return (
     <div className="space-y-1">
       {to && <p className="text-[12px] text-muted" data-testid="alert-handed-to">Passed to {to}. If they set it aside, it leaves your list too.</p>}
-      {people === null ? (
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => void open()}>
-          Pass to a colleague
-        </Button>
-      ) : people.length === 0 ? (
+      {open && people !== null && (people.length === 0 ? (
         <p className="text-[12px] text-muted">Nobody to pass it to.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <select className="h-8 rounded-md border border-border bg-transparent px-2 text-[13px]" aria-label="Colleague" value={pick} onChange={(e) => setPick(e.target.value)}>
+          <select className="h-8 border border-border bg-transparent px-2 text-[13px]" aria-label="Colleague" value={pick} onChange={(e) => setPick(e.target.value)}>
             {people.map((p) => (
               <option key={p.key} value={p.key}>
                 {p.name}
@@ -124,11 +123,11 @@ function PassOn({ itemId, handedTo }: { itemId: string; handedTo?: string }) {
           <Button size="sm" disabled={busy || !pick} onClick={() => void hand()}>
             Pass on
           </Button>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => setPeople(null)}>
+          <Button size="sm" variant="outline" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
         </div>
-      )}
+      ))}
       {error && <ErrorNotice message={error} />}
     </div>
   );

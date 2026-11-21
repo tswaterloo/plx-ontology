@@ -277,47 +277,6 @@ class AlarmPassTest(unittest.TestCase):
         from operating import ops_notify
         self.assertEqual(ops_notify.level_for("load_high"), ops_notify.LEVELS["high"])
 
-    def test_fast_feed_failing_runs_page_though_a_clean_run_comes_between(self) -> None:
-        # post-ops-1115f review: with the start limit gone (AUDIT3-04) a fast feed that
-        # crashes runs once per capture write; one clean run closes the unit's own failed
-        # alarm, so the failed runs seen within 30 min are counted: 3 open it, high.
-        def at(minute, result):
-            fast = unit("plx-autopilot-fast.service", "failed" if result != "success"
-                        else "inactive", "failed" if result != "success" else "dead", result,
-                        ExecMainExitTimestamp=f"@{STAMP + minute * 60 - 20}")
-            return Fake(system=healthy_units() + [fast])
-
-        def keys(status):
-            return [i["key"] for i in status["open"]]
-
-        self.run_at(at(0, "exit-code"), 0)
-        status = self.run_at(at(0, "exit-code"), 5)     # the same run seen again: once
-        self.assertNotIn("autopilot_fast_failing", keys(status))
-        self.run_at(at(10, "success"), 10)               # a clean run between
-        status = self.run_at(at(15, "exit-code"), 15)
-        self.assertNotIn("autopilot_fast_failing", keys(status))
-        status = self.run_at(at(20, "exit-code"), 20)
-        (opened,) = [i for i in status["open"] if i["key"] == "autopilot_fast_failing"]
-        self.assertEqual(opened["line"], "Autopilot fast feed failing: "
-                         "plx-autopilot-fast.service failed 3 runs in the last 30 min "
-                         "(last result: exit-code)")
-        self.assertEqual(opened["level"], "high")
-        # clean from here: the window empties and it closes after two passing runs
-        for minute in (40, 45, 50, 55):
-            status = self.run_at(at(minute, "success"), minute)
-        self.assertNotIn("autopilot_fast_failing", keys(status))
-
-    def test_fast_feed_failures_spread_over_the_window_never_page(self) -> None:
-        for minute in (0, 35, 70):
-            fast = unit("plx-autopilot-fast.service", "failed", "failed", "exit-code",
-                        ExecMainExitTimestamp=f"@{STAMP + minute * 60 - 20}")
-            status = self.run_at(Fake(system=healthy_units() + [fast]), minute)
-            self.assertNotIn("autopilot_fast_failing", [i["key"] for i in status["open"]])
-        # not installed: no check at all
-        status = self.run_at(Fake(), 75)
-        self.assertNotIn("autopilot_fast_failing",
-                         [c["name"] for c in status["checks"]])
-
     def test_memory_under_eight_gb_warns_at_once_naming_the_top_consumers(self) -> None:
         fake = Fake(mem_gb=9.0)
         status = self.run_at(fake, 0)

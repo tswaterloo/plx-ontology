@@ -72,7 +72,7 @@ from .ontology_tools_identity import _error
 from .ontology_tools_policy import (_ITEM_ACL_SCHEMES, TOOL_NAMES, ReadPolicy, _envelope_bytes,
                                     load_contracts)
 from .ontology_tools_results import item_gate_from_case_runtime
-from .ontology_host_bc import _BC_HANDLE_RANGES, store_bc_units  # noqa: F401
+from .ontology_host_bc import _BC_HANDLE_RANGES, ListingAsked, store_bc_units  # noqa: F401
 
 # Why plx.object answers object_not_found (``CaseHostTools.not_found_reason``).
 NOT_FOUND_REASONS = ("withheld", "no_current_version", "gate_error", "absent")
@@ -1277,12 +1277,17 @@ class CaseHostTools:
 
     def _decide_policy(self, actor: Any, bc_lookup: Any) -> ReadPolicy:
         self.tools  # noqa: B018 - built on first use
-        return case_host_policy(self.runtime, actor, self.schema,
-                                audience_keys=self._reader_keys, bc_lookup=bc_lookup,
-                                bc_units=self._bc_units,
-                                knowledge_namespaces=self.knowledge_namespaces,
-                                marking_grants=self.marking_grants,
-                                staff_units=self._staff_units())
+        decided = self.__dict__.setdefault("_policy_decided", threading.local())
+        decided.last = None   # one that raises leaves nothing settled
+        asked = None if bc_lookup is None else ListingAsked(bc_lookup)
+        policy = case_host_policy(self.runtime, actor, self.schema,
+                                  audience_keys=self._reader_keys, bc_lookup=asked,
+                                  bc_units=self._bc_units, knowledge_namespaces=self.knowledge_namespaces,
+                                  marking_grants=self.marking_grants,
+                                  staff_units=self._staff_units())
+        # per thread: did it use the BC listing (``policy_settled``; full/staff never do)
+        decided.last = (actor, asked is not None and asked.asked)
+        return policy
 
     def _staff_units(self) -> Mapping[str, Any] | None:
         """The precomputed audience units the staff scope is decided from
@@ -1382,8 +1387,12 @@ class CaseHostTools:
         company listing that was refused or unreadable is read again on the next call
         (``BcLookup.companies``), so such a policy is never kept."""
         lookup = self._bc_lookup
+        # decided on this thread for this actor without the BC listing: nothing transient
+        last = getattr(self.__dict__.get("_policy_decided"), "last", None)
+        if lookup is None or last is not None and last[0] is actor and last[1] is False:
+            return True
         kept = getattr(lookup, "listed", None)
-        return lookup is None or (callable(kept) and kept(actor) is True)
+        return callable(kept) and kept(actor) is True
 
     @property
     def evidence(self) -> Any:

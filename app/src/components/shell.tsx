@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, BellRing, BookMarked, Bookmark, Bot, CalendarClock, ChartColumn, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, BookMarked, Bookmark, CalendarClock, ChartColumn, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
@@ -319,11 +319,12 @@ export interface NavSection extends NavPlace {
 
 /**
  * The sidebar (the owner, 11-17: "items move depending on the page"; 11-18: "simpler tabs"):
- * one fixed list, the same on every page, the current page highlighted: Home, Ask, Records,
- * Meetings, Autopilot, Team, then Admin last. A page's sub-pages are tabs under its title
- * (SectionTabs), never sidebar rows. Home is one page with three tabs: what needs you, the
- * alerts (was Watching) and the late POs (was its own page); /watching, /late and /my-work
- * redirect into it (next.config). Memory, Templates and Work log are in the account menu.
+ * one fixed list, the same on every page, the current page highlighted: Home, Ask, Insights,
+ * Records, Meetings, Team, then Admin last. A page's sub-pages are tabs under its title
+ * (SectionTabs), never sidebar rows. Home is the queue (One engine, one queue)
+ * with four tabs: what needs you (the prepared items first), the alerts (was Watching), the
+ * late POs (was its own page) and the switches (/autopilot, was its own sidebar entry);
+ * /watching, /late and /my-work redirect into it (next.config). Memory, Templates and Work log are in the account menu.
  * Team shows only to a reader with a team grant (the owner, a full-read grant, an ops
  * reader); Admin only to an ops reader or a feedback admin, each of its tabs to the readers
  * it serves.
@@ -332,11 +333,12 @@ export const ALERTS_HREF = "/?show=alerts";
 export const LATE_HREF = "/?show=late";
 export const NAV_SECTIONS: NavSection[] = [
   {
-    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late"], group: "main",
+    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late", "/autopilot"], group: "main",
     children: [
       { href: "/", label: "Needs you" },
       { href: ALERTS_HREF, label: "Alerts" },
       { href: LATE_HREF, label: "Late POs", late: true },
+      { href: "/autopilot", label: "Switches" },
     ],
   },
   { key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: [], group: "main", children: [] },
@@ -347,7 +349,6 @@ export const NAV_SECTIONS: NavSection[] = [
     children: [],
   },
   { key: "meetings", href: "/meetings", label: "Meetings", place: "/meetings", icon: CalendarClock, holds: [], group: "main", children: [] },
-  { key: "autopilot", href: "/autopilot", label: "Autopilot", place: "/autopilot", icon: Bot, holds: [], group: "main", children: [] },
   { key: "team", href: "/team", label: "Team", place: "/team", icon: Users, holds: [], group: "main", grant: true, children: [] },
   { key: "memory", href: "/memory", label: "Memory", place: "/memory", icon: BookMarked, holds: [], group: "account", children: [] },
   { key: "templates", href: "/templates", label: "Templates", place: "/templates", icon: FileText, holds: [], group: "account", children: [] },
@@ -433,9 +434,9 @@ export function isOpsReader(me: { ops_reader?: boolean } | null | undefined): bo
   return !!me?.ops_reader;
 }
 
-/** Phone tabs: the sidebar's first items (Home, Ask, Records, Autopilot), in its order,
+/** Phone tabs: the sidebar's first items (Home, Ask, Records, Meetings), in its order,
  * then More for the rest in the same order. */
-export const TABS = ["home", "ask", "records", "autopilot"];
+export const TABS = ["home", "ask", "records", "meetings"];
 
 /** Whether the location (path, #fragment, ?query) is the place `href`: its path (or a page
  * under it), its #fragment when it names one, and every key of its ?query when `search` is
@@ -586,6 +587,7 @@ const OPS_LABEL: Record<string, string> = {
   ingest_start: "Update restarts",
   config_keys_ignored: "Ignored settings",
   search_follow_last_pass: "Search index",
+  capture_undecided_list: "Mail addresses the directory can't place",
 };
 
 const CAPTURE_LABEL: Record<string, string> = {
@@ -614,6 +616,24 @@ export function opsLabel(name: string) {
     return `${CAPTURE_LABEL[sys] ?? words(sys)} capture`;
   }
   return OPS_LABEL[name] ?? words(name);
+}
+
+/**
+ * An open problem's line in words: a check's raw name in front ("capture_undecided_list: 1
+ * undecided address") becomes its label, a service unit ("plx-reply-drafts.timer (system):
+ * stopped") its job's name ("Reply drafts schedule: stopped"). The rest of the line, which
+ * the check already words, stays as it is.
+ */
+export function opsLine(key: string, line: string): string {
+  const unit = /^(?:plx-)?([a-z0-9-]+)\.(timer|service|path|socket)(?: \((?:system|user)\))?: (.*)$/i.exec(line);
+  if (key.startsWith("unit:") && unit) {
+    const job = unit[1].replace(/-/g, " ");
+    const kind = unit[2] === "timer" ? "schedule" : unit[2] === "service" ? "job" : unit[2];
+    return `${job[0].toUpperCase()}${job.slice(1)} ${kind}: ${unit[3]}`;
+  }
+  const lead = /^([a-z0-9]+(?:[_:][a-z0-9/.-]+)+): (.*)$/.exec(line);
+  if (lead && (lead[1] === key || key.startsWith(lead[1]))) return `${opsLabel(lead[1])}: ${lead[2]}`;
+  return line;
 }
 
 /** 45 min, 5 h, 2 days: the size a reader takes in at a glance. */

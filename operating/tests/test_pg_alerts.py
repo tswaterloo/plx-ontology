@@ -809,14 +809,22 @@ class AlertRules(unittest.TestCase):
         self.put("batches", "made", batch_code="B1", status="Realized", quality_status="On-Hold",
                  realized_date=dt.date(2026, 11, 2))
         self.put("batches", "gone", batch_code="B2", status="Cancelled", quality_status="On-Hold")
+        # made years ago and never released in its old system: history, not news; a year
+        # to the day is still listed
+        self.put("batches", "old", batch_code="B3", status="Realized", quality_status="On-Hold",
+                 realized_date=dt.date(2019, 4, 26))
+        self.put("batches", "year", batch_code="B4", status="Realized", quality_status="On-Hold",
+                 realized_date=dt.date(2025, 11, 17))
         for i in range(12):   # every scheduled batch carries the hold before release
             self.put("batches", f"s{i}", batch_code=f"S{i}", status="Scheduled",
                      quality_status="On Hold")
         self.fire("lot_on_hold")
-        self.assertEqual(set(self.rows("lot_on_hold")), {"made"})
+        self.assertEqual(set(self.rows("lot_on_hold")), {"made", "year"})
         self.assertEqual(self.rows("lot_on_hold")["made"]["since"].date(), dt.date(2026, 11, 2))
         self.update("batches", "made", quality_status="Released")
         self.assertEqual(self.fire("lot_on_hold")["lot_on_hold"]["resolved"], 1)
+        # a day later the year-old batch ages out: it resolves without a release
+        self.assertEqual(self.fire("lot_on_hold", day="2026-11-18")["lot_on_hold"]["resolved"], 1)
 
     def test_lot_on_hold_reads_the_newest_copy(self):
         """Copies disagreeing on the hold: the one recorded last wins (a tie keeps the

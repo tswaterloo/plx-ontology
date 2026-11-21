@@ -89,12 +89,11 @@ function autopilotSentence(rows: AutopilotWorkflowRow[]): string {
   if (rows.length === 0) return "No autopilot workflow is set up on this server yet.";
   const drafted = rows.filter((r) => r.draft).length;
   const live = rows.filter((r) => r.state === "live").length;
+  if (!drafted && !live) return "The autopilot sends and changes nothing yet.";
   const parts: string[] = [];
-  if (drafted) parts.push(`prepares drafts for a person to approve in ${drafted}`);
-  if (live) parts.push(`acts on approval in ${live}`);
-  const rest = rows.length - drafted - live;
-  if (!parts.length) return `The autopilot has ${plural(rows.length, "workflow", "workflows")}; none sends or writes anything yet.`;
-  return `The autopilot ${parts.join(" and ")} of its ${rows.length} workflows${rest > 0 ? `; the other ${rest} send and write nothing` : ""}.`;
+  if (drafted) parts.push(`prepares drafts for a person to confirm in ${plural(drafted, "kind of work", "kinds of work")}`);
+  if (live) parts.push(`acts on a person's approval in ${live}`);
+  return `The autopilot ${parts.join(" and ")}; nothing goes out without that person's click.`;
 }
 
 const STATE_TONE = { live: "text-ok", gated: "text-risk", pending: "text-muted" } as const;

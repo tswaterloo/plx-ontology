@@ -1,22 +1,21 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { setViewingAs } from "@/lib/view-as";
-import { MyWorkList } from "./my-work";
-import type { MyWork } from "@/lib/types";
+import { ReplyList } from "./reply-list";
+import type { ReplyTriage } from "@/lib/types";
 
-const empty = { items: [], digest: { open: 0, due_today: 0, past_due: 0 } } as unknown as MyWork;
+const empty = { as_of: "2026-11-05", total: 0, sent: 0, writes: 0, lines: [] } as unknown as ReplyTriage;
 
 describe("screens read as the person viewed", () => {
   afterEach(() => act(() => setViewingAs(null)));
 
-  it("says 'you' in the owner's own view and the name while viewing as someone", async () => {
-    // the verdict follows the replies read (never before it: owner walk 11-17)
-    const { unmount } = render(<MyWorkList work={empty} />);
-    expect(await screen.findByText("Nothing is waiting on you.")).toBeTruthy();
+  it("says 'your' in the owner's own view and the name while viewing as someone", async () => {
+    const { unmount } = render(<ReplyList triage={empty} />);
+    expect(await screen.findByText("Nothing is waiting on your reply.")).toBeTruthy();
     unmount();
     act(() => setViewingAs({ key: "0123456789abcdef0123", name: "Vince" }));
-    render(<MyWorkList work={empty} />);
-    expect(await screen.findByText("Nothing is waiting on Vince.")).toBeTruthy();
-    expect(screen.queryByText(/waiting on you/)).toBeNull();
+    render(<ReplyList triage={empty} />);
+    expect(await screen.findByText("Nothing is waiting on Vince's reply.")).toBeTruthy();
+    expect(screen.queryByText(/your reply/)).toBeNull();
   });
 });

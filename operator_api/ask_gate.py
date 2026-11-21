@@ -1,8 +1,8 @@
 """The simple Ask's figure gate (``operator_api.simple_ask``): every figure a reply states
 must be a value a returned ``plx.sql``/``plx.search``/``plx.open`` result holds, or computed
 from them (a column's sum or mean, a row count, a subtotal or run of a result's rows, the
-sum, difference, ratio or share of two returned values, the change or quotient of two
-figures its own line states), else it is marked "(unverified)" in place. The reply is never
+sum, difference, ratio or share of two returned values, the change, quotient or product
+of two figures its own line states), else it is marked "(unverified)" in place. The reply is never
 blanked; its framing (a date, a year, a rank, a table's row number, a code, the session's
 own threshold) is no figure."""
 
@@ -16,8 +16,13 @@ import re
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 UNVERIFIED = " (unverified)"
-# the tools whose results bind a figure (the Ask's read tools)
-TOOLS = ("plx.sql", "plx.search", "plx.open")
+# the tools whose results bind a figure (the Ask's read tools; plx.read_document: a
+# document read whole, ``operator_api.doc_read_tool``)
+TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document")
+# results whose numbers bind a reply's figures: the read tools and ``plx.insight`` (a
+# built-in tile read as the asker, rows shaped as plx.sql's: operator_api.insight_tool)
+INSIGHT = "plx.insight"
+EVIDENCE_TOOLS = TOOLS + (INSIGHT,)
 
 
 # ---------------------------------------------------------------------------- the gate
@@ -29,7 +34,10 @@ _DATES = re.compile(
     r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?\b"
     r"|\b[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}\b"
     rf"|\b{_MONTHS}\.?\s+[0-9]{{1,2}}(?:st|nd|rd|th)?(?:\s?[-\u2013]\s?[0-9]{{1,2}}"
-    rf"(?:st|nd|rd|th)?)?(?:,?\s+[0-9]{{4}})?\b"
+    rf"(?:st|nd|rd|th)?)?"
+    # more days of that month in one list ("Nov 13, 17, 18 and 20"): its last after "and"
+    rf"(?:(?:,\s?[0-9]{{1,2}}(?:st|nd|rd|th)?)*,?\s+(?:and|&)\s+[0-9]{{1,2}}"
+    rf"(?:st|nd|rd|th)?(?![0-9%]|[.,][0-9]))?(?:,?\s+[0-9]{{4}})?\b"
     rf"|\b[0-9]{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTHS}\b(?:,?\s+[0-9]{{4}})?"
     rf"|\b{_MONTHS}\.?\s+[0-9]{{4}}\b"
     # a weekday and its day ("Mon 9", "Sun, 15"), a day range in a month ("9-15 Nov")
@@ -430,8 +438,9 @@ def _arg_strings(value: Any) -> Iterable[str]:
         yield str(value)
 
 
-def evidence(events: Sequence[Mapping[str, Any]], tools: Sequence[str] = TOOLS) -> Evidence:
-    """Every number a returned ``plx.sql`` or ``plx.search`` result holds, with each SQL
+def evidence(events: Sequence[Mapping[str, Any]],
+             tools: Sequence[str] = EVIDENCE_TOOLS) -> Evidence:
+    """Every number a returned ``plx.sql``, ``plx.insight`` or ``plx.search`` result holds, with each SQL
     result's row count and numeric columns' sums and means. Cells of identifier columns
     and identifier tokens in text (INV-20417, SO-1083) are codes: they bind a code the
     reply names, never an amount or an addend. A refused or failed call returns nothing
@@ -551,6 +560,9 @@ def figures(text: str) -> list[Figure]:
             if not masked[line_start:m.start()].strip() and masked[m.end():m.end() + 2] in (
                     ". ", ") "):
                 continue   # a list number
+            if masked[m.start() - 1:m.start()] in ('"', "\u201c") and \
+                    masked[m.end():m.end() + 2] in (". ", ") "):
+                continue   # a quoted text's clause number ('Before: "2. Payment terms')
             if _CRITERION_BEFORE.search(masked[max(0, m.start() - 24):m.start()]):
                 continue   # the reply's own criterion or window
         places = len(num.split(".", 1)[1]) if "." in num else 0
@@ -586,6 +598,8 @@ def bound(fig: Figure, ev: Evidence, line: str = "",
     if fig.code:
         return any(key in ev.digits for key in (
             fig.expanded, fig.text.replace(",", "").lstrip("-\u2212$")) if key)
+    if re.fullmatch(r"[0-9]+[A-Za-z]", fig.text) and fig.text in ev.digits:
+        return True   # a code ending in a letter a result holds ("lot 26127B"), no scale
     pool = ev.values
     for target in {fig.value, abs(fig.value)}:
         if _near(pool, target, fig.tol):
@@ -680,6 +694,32 @@ def _compares_line(fig: Figure, stated: Sequence[Figure], text: str) -> bool:
     return False
 
 
+def _product_of_line(fig: Figure, factors: Sequence[Figure], text: str) -> bool:
+    """Whether an amount is the product of two other figures stated on its own line (a
+    line's "12 x 20L @ 210.00 CAD = 2,520.00", a table row's "500 kg | 456.89 CAD/kg |
+    228,445.00", or a percent of a stated amount: "228,445.00 | 8% | 18,275.60"). Only
+    ``factors`` count: the line's figures a result (or the person) binds on their own,
+    never one bound only by another product or comparison of the line; neither may be the
+    figure's own value."""
+    if fig.code or fig.percent or fig.ratio or not fig.value:
+        return False
+    start = text.rfind("\n", 0, fig.start) + 1
+    end = text.find("\n", fig.end)
+    end = len(text) if end < 0 else end
+    values = [float(abs(f.value)) / (100.0 if f.percent else 1.0) for f in factors
+              if start <= f.start < end and f is not fig and not f.code and f.value]
+    if len(values) > LINE_MOST:
+        return False   # a line of many figures multiplies to nearly anything
+    want, tol = float(abs(fig.value)), float(fig.tol)
+    for i, a in enumerate(values):
+        for b in values[i + 1:]:
+            if min(a, b) == 1.0 or abs(a - want) <= tol or abs(b - want) <= tol:
+                continue   # x 1 or one factor the figure itself: no computation
+            if abs(a * b - want) <= tol:
+                return True
+    return False
+
+
 def _row_number(text: str, at: int) -> int:
     """The body row of a Markdown table the line holding ``at`` is (1 = the first under
     the header rule); 0 when it is no table body row."""
@@ -707,6 +747,8 @@ def gate(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] = 
     marked: list[str] = []
     out, last = [], 0
     stated = figures(text)
+    ok: set[int] = set()      # the figures (by position) a result or the person binds
+    held: list[Figure] = []   # those, and a multiplier ("12 x") whose number a result holds
     for fig in stated:
         start = text.rfind("\n", 0, fig.start) + 1
         end = text.find("\n", fig.end)
@@ -714,6 +756,22 @@ def gate(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] = 
         beside = [f for f in stated if start <= f.start < end and f is not fig]
         if fig.value in own or abs(fig.value) in own or bound(fig, ev, text[start:end],
                                                                beside):
+            ok.add(fig.start)
+            held.append(fig)
+        elif fig.ratio and _near(ev.values, abs(fig.value), fig.tol):
+            held.append(fig)
+    # a product of two held figures is held in turn (a line's amount, then its share of
+    # tax): every step needs two figures held before it, so nothing holds without a result
+    grown = True
+    while grown:
+        grown = False
+        for fig in stated:
+            if fig.start not in ok and _product_of_line(fig, held, text):
+                ok.add(fig.start)
+                held.append(fig)
+                grown = True
+    for fig in stated:
+        if fig.start in ok:
             continue
         if (fig.percent or fig.ratio or "." in fig.text) and _compares_line(fig, stated, text):
             continue   # the change, share or quotient of two figures its own line states

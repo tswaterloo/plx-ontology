@@ -81,6 +81,10 @@ def refused_accept(decision: Optional[Mapping[str, Any]]) -> bool:
         and decision.get("outcome") in REFUSED_OUTCOMES
 
 
+# a "Not needed" the person made into a task of their own (the app's "Make it a task")
+TASK_NOTE = "made a task"
+
+
 def _same(a: Optional[str], b: Optional[str]) -> bool:
     return " ".join((a or "").split()) == " ".join((b or "").split())
 
@@ -99,6 +103,9 @@ def classify(item: Mapping[str, Any], decision: Optional[Mapping[str, Any]],
             return "accepted", "accepted_as_prepared"
         if word == "edit":
             return "edited", "edited_not_accepted"
+        if word == "reject" and decision.get("note") == TASK_NOTE:
+            # the person took it on as a task of their own: no verdict on what was prepared
+            return "ignored", "made_a_task"
         if word == "reject":
             return "rejected", "rejected"
         if word == "snooze":

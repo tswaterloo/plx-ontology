@@ -18,7 +18,6 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import time
-import copy
 import unittest
 from unittest import mock
 
@@ -849,17 +848,9 @@ def mc_people(*, unavailable: bool = False) -> Exclusion:
                      internal_domains=["petrasoap.com"], chat_members={})
 
 
-def with_mc_approvals(load):
-    """The registry with MC approval requests on: the owner switched them off (3dfdbb78a5,
-    Mission Control's own queue); these tests check the fast path for when they are on."""
-    def on(*a, **k):
-        reg = copy.deepcopy(load(*a, **k))
-        for entry in reg.get("autopilots") or []:
-            if entry.get("id") == "approval_request":
-                entry.pop("enabled", None)
-                entry.pop("off_reason", None)
-        return reg
-    return on
+def md_url() -> str:
+    from operating import mc_digest
+    return mc_digest.MC_TASKS_URL
 
 
 class FastFeedApprovals(unittest.TestCase):
@@ -884,21 +875,23 @@ class FastFeedApprovals(unittest.TestCase):
         self.gate("apg_old", status="approved", decided=True)
         self.queue = ap.Queue(self.state / "autopilot" / ap.QUEUE_FILE)
         self.addCleanup(self.queue.close)
-        self.shipped = ap.load_registry
-        switched_on = mock.patch.object(ap, "load_registry", with_mc_approvals(ap.load_registry))
-        switched_on.start()
-        self.addCleanup(switched_on.stop)
 
-    def test_the_shipped_registry_keeps_mc_approvals_off_and_prepares_nothing(self) -> None:
-        (entry,) = [e for e in self.shipped()["autopilots"] if e["id"] == "approval_request"]
+    def test_the_shipped_registry_prepares_one_item_per_approval(self) -> None:
+        """The shipped registry prepares an approval once, as ``job_approval`` (its standing
+        work is the rule-based recommendation); ``approval_request`` stays off."""
+        reg = ap.load_registry()
+        (entry,) = [e for e in reg["autopilots"] if e["id"] == "approval_request"]
         self.assertIs(entry["enabled"], False)
-        with mock.patch.object(ap, "load_registry", self.shipped):
-            served = self.projected("served")
-            self.gate("apg_new")
-            out = af.cycle(self.state, served, self.queue, mc_people(), ap.load_registry(),
-                           gate=lambda *a, **k: True, now=self.now, environ={})
+        (job,) = [e for e in reg["autopilots"] if e["id"] == "job_approval"]
+        self.assertEqual((job["handler"], job["standing"]), ("job", "approval_recommendation"))
+        served = self.projected("served")
+        self.assertEqual(af.idle(self.state, self.queue, {}), "idle")
+        self.gate("apg_new")
+        out = af.cycle(self.state, served, self.queue, mc_people(), reg,
+                       gate=lambda *a, **k: True, now=self.now, environ={})
         self.assertEqual(out["status"], "complete", out)
-        self.assertEqual(self.queue.conn.execute("SELECT count(*) FROM items").fetchone()[0], 0)
+        rows = self.queue.conn.execute("SELECT autopilot FROM items").fetchall()
+        self.assertEqual([r[0] for r in rows], ["job_approval"])
 
     def save(self, collection: str, record_id: str, row: dict, *more: tuple[str, dict]
              ) -> None:
@@ -1037,6 +1030,96 @@ class FastFeedApprovals(unittest.TestCase):
                        environ={})
         self.assertEqual(out["status"], "blocked")
 
+    def test_the_recommendation_stands_whatever_the_model_proposes(self) -> None:
+        """No model, or a model that finds no system work: the item is the rule-based
+        recommendation (prepare-only, with the task's MC link). A model that proposes a
+        change: one item, the job's changes beside the recommendation. A model still
+        working or failed: no item yet (tried again), never a second one."""
+        from operating import autopilot_jobs as aj
+
+        class Stub:
+            busy = False
+
+            def __init__(self, got, why):
+                self.got, self.why = got, why
+
+            def new_cycle(self):
+                pass
+
+            def pending(self):
+                return []
+
+            def run(self, *a, **k):
+                return self.got, self.why
+
+        change = {"tool": "plx.prepare_write", "arguments": {
+            "system": "planner", "operation": "task_create", "target": {},
+            "change": {"title": "Release follow-up"}, "reason": "after the gate"}}
+        cases = [(None, "rules"), (Stub(None, "no_system_work"), "rules"),
+                 (Stub(aj.Job("Approve and plan", [change]), ""), "job"),
+                 (Stub(None, "job_failed"), "none")]
+        served = self.projected("served")
+        for n, (stub, kind) in enumerate(cases):
+            with self.subTest(n=n):
+                queue = ap.Queue(self.state / f"q{n}" / "autopilot" / ap.QUEUE_FILE)
+                self.addCleanup(queue.close)
+                if stub is not None:
+                    queue.__dict__.setdefault("_draft_context", {})["jobber"] = stub
+                self.assertEqual(af.idle(self.state, queue, {}), "idle")
+                self.gate(f"apg_s{n}")
+                af.cycle(self.state, served, queue, mc_people(), ap.load_registry(),
+                         gate=lambda *a, **k: True, now=self.now, environ={})
+                rows = [json.loads(r[1]) for r in queue.conn.execute(
+                    "SELECT autopilot, body FROM items WHERE autopilot = 'job_approval'")]
+                if kind == "none":
+                    self.assertEqual(rows, [])
+                    continue
+                (body,) = rows
+                work = body["prepared"]
+                self.assertIn(work["recommendation"], ("approve", "review", "superseded"))
+                self.assertEqual(work["action"]["kind"], "mc_approval")
+                self.assertTrue(str(work["mc"]["link"]).startswith(md_url()))
+                self.assertEqual(work.get("kind") == "job", kind == "job")
+                self.assertEqual(len(work.get("jobs") or ()), 1 if kind == "job" else 0)
+
+    def test_a_failing_session_is_retried_then_the_recommendation_is_the_one_item(self) -> None:
+        """Every session try fails: no item while tries are left, then exactly one item
+        (the rule-based recommendation) on the last; later cycles add none."""
+        class Failing:
+            busy = False
+            runs = 0
+
+            def new_cycle(self):
+                pass
+
+            def pending(self):
+                return []
+
+            def run(self, *a, **k):
+                Failing.runs += 1
+                return None, "job_failed"
+
+        self.gate("apg_retry")
+        whole = self.projected("whole")
+        # every approval the store holds: only the pending one is an approval to decide
+        ids = [r[0] for r in whole.conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = 'MCApproval'")]
+        queue = ap.Queue(self.state / "retry" / "autopilot" / ap.QUEUE_FILE)
+        self.addCleanup(queue.close)
+        queue.__dict__.setdefault("_draft_context", {})["jobber"] = Failing()
+        counts = []
+        for _ in range(ap.HANDLER_TRIES + 2):
+            ap.run_cycle(whole, queue, ids, people=mc_people(), gate=lambda *a, **k: True,
+                         now=self.now, environ={}, due=False)
+            counts.append(queue.conn.execute(
+                "SELECT count(*) FROM items WHERE autopilot = 'job_approval'").fetchone()[0])
+        self.assertEqual(counts[:ap.HANDLER_TRIES - 1], [0] * (ap.HANDLER_TRIES - 1))
+        self.assertEqual(set(counts[ap.HANDLER_TRIES - 1:]), {1})
+        self.assertEqual(Failing.runs, ap.HANDLER_TRIES)
+        (body,) = [json.loads(r[0]) for r in queue.conn.execute(
+            "SELECT body FROM items WHERE autopilot = 'job_approval'")]
+        self.assertEqual(body["prepared"]["action"]["kind"], "mc_approval")
+
     def test_a_cycle_prepares_the_approval_once_and_follow_does_not_again(self) -> None:
         served = self.projected("served")                  # before the request was stored
         self.assertEqual(af.idle(self.state, self.queue, {}), "idle")
@@ -1054,7 +1137,7 @@ class FastFeedApprovals(unittest.TestCase):
         # not hold the gate yet; prepared only (nothing approves)
         items = self.queue.conn.execute("SELECT autopilot, owner FROM items").fetchall()
         self.assertEqual([(i["autopilot"], i["owner"]) for i in items],
-                         [("approval_request", tct.U_VINCE)])
+                         [("job_approval", tct.U_VINCE)])
         self.assertEqual(out["latency"]["approvals"], 1)
         self.assertEqual(out["latency"]["messages"], 0)
         whole = self.projected("whole")

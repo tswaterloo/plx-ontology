@@ -176,7 +176,8 @@ OWNER_DISPATCH = frozenset({"refused", "isolated_owner_only", MC_WRITE_DOOR, GAT
 # ``real_capability`` (dispatch ``gated_adapter`` or ``mc_write_door`` only): the adapter
 # per target system (a code constant; each names one adapter class), the risk tiers,
 # how the owner takes our idempotency key and how the write is made conditional.
-REAL_ADAPTERS: Mapping[str, str] = {"portal_http": "portal", MC_WRITE_DOOR: "mc"}
+REAL_ADAPTERS: Mapping[str, str] = {"portal_http": "portal", "graph_planner": "planner",
+                                    MC_WRITE_DOOR: "mc"}
 RISK_TIERS = ("low", "medium", "high")
 IDEMPOTENCY_SUPPORT = ("native", "none")
 CONDITIONAL_WRITES = ("if_match", "read_before_write", "none")

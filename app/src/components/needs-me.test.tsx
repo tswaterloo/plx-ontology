@@ -1,13 +1,12 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { ApprovalsQueue, AutopilotArea, Me, WriteIntentView } from "@/lib/types";
+import type { ApprovalsQueue, Me, WriteIntentView } from "@/lib/types";
 import type { OpsAlarms } from "@/lib/api";
 
 const api = vi.hoisted(() => ({ owner: true as boolean | null, failWrites: false }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
-  getMe: () => Promise.resolve(me),
-  getAutopilot: () => (api.owner === null ? Promise.reject(new Error("503")) : Promise.resolve({ ...area, owner: api.owner })),
+  getMe: () => (api.owner === null ? Promise.reject(new Error("503")) : Promise.resolve({ ...me, owner: api.owner })),
   getWrites: () => (api.failWrites ? Promise.reject(new Error("503")) : Promise.resolve({ items: writes })),
   getApprovals: () => Promise.resolve(approvals),
   getOpsAlarms: () => Promise.resolve(alarms),
@@ -18,13 +17,6 @@ import { NeedsMe, NeedsMeList, needsOf, type NeedsSources } from "./needs-me";
 const now = new Date("2026-11-11T15:00:00Z");
 const h = (n: number) => new Date(now.getTime() + n * 3_600_000).toISOString();
 const me = { display_name: "Pat Owner", email: "pat@plx.example", principal: "p", auth: "mock", data_label: "", dev_mode: true } as Me;
-const item = (id: string, due: number, extra: Partial<AutopilotArea["items"] & object> = {}) =>
-  ({ item_id: id, autopilot: "po_followup", label: "PO follow-up", title: `Item ${id}`, mine: true, state: "waiting", due_at: h(due), created_at: h(-5), owner: "o", system: "Mail", ...extra }) as unknown as NonNullable<AutopilotArea["items"]>[number];
-const area = {
-  owner: true,
-  switches: {},
-  items: [item("late", 5), item("soon", 1), item("theirs", 0, { mine: false } as never), item("done", 0, { state: "accepted" } as never)],
-} as unknown as AutopilotArea;
 const writes = [
   { intent: { intent_id: "w1", record_id: "PurchaseOrder:demo:90412" }, status: "prepared", text: "Set PO 90412 expected date to 18 Nov", at: h(-2), replayed: false },
   { intent: { intent_id: "w2", record_id: "x" }, status: "failed", text: "Note on vendor Ridgeway", at: h(-30), replayed: false },
@@ -40,15 +32,13 @@ const approvals = {
   ],
 } as unknown as ApprovalsQueue;
 const alarms = { configured: true, running: true, open: [{ key: "unit:x", line: "plx-proactive.service: killed: out of memory", opened_at: h(-1) }], recovered: [], checks: [] } as OpsAlarms;
-const all: NeedsSources = { me, autopilot: area, writes, approvals };
+const all: NeedsSources = { me, writes, approvals };
 
 describe("Needs you (owner)", () => {
-  it("lists decisions, approvals and blocked items in that order, each pointing to where it is done", () => {
+  it("lists approvals and blocked items in that order, each pointing to where it is done; what the autopilot prepared is not repeated here", () => {
     const { needs, unread } = needsOf(all, now);
     expect(unread).toEqual([]);
     expect(needs.map((n) => `${n.kind}:${n.key}`)).toEqual([
-      "decide:ap:soon",
-      "decide:ap:late",
       "approve:a:a1",
       "approve:w:w1",
       "blocked:ag:Sam",
@@ -56,7 +46,6 @@ describe("Needs you (owner)", () => {
       "blocked:w:w2",
     ]);
     const by = Object.fromEntries(needs.map((n) => [n.key, n]));
-    expect(by["ap:soon"].href).toBe("/autopilot?item=soon");
     expect(by["w:w1"].href).toBe("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412");
     expect(by["w:w2"].href).toBeNull();
     expect(by["ag:Sam"].title).toBe("2 approvals waiting on Sam");
@@ -80,18 +69,18 @@ describe("Needs you (owner)", () => {
   });
 
   it("draws nothing when every source was read and nothing waits, no heading and no zero counts", () => {
-    const { container } = render(<NeedsMeList sources={{ me, autopilot: { ...area, items: [] }, writes: [], approvals: { ...approvals, groups: [] } }} />);
+    const { container } = render(<NeedsMeList sources={{ me, writes: [], approvals: { ...approvals, groups: [] } }} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("caps a kind at four rows with the rest one click away", async () => {
-    const many = { ...area, items: Array.from({ length: 6 }, (_, i) => item(`i${i}`, i)) } as AutopilotArea;
-    render(<NeedsMeList sources={{ ...all, autopilot: many }} />);
-    const decide = screen.getByTestId("needs-me-decide");
-    expect(screen.getByTestId("needs-me-counts")).toHaveTextContent(/^6 to decide · \d+ to approve · \d+ to unblock$/);
-    expect(within(decide).getAllByRole("listitem")).toHaveLength(4);
-    within(decide).getByRole("button", { name: "2 more" }).click();
-    await waitFor(() => expect(within(screen.getByTestId("needs-me-decide")).getAllByRole("listitem")).toHaveLength(6));
+    const many = Array.from({ length: 6 }, (_, i) => ({ intent: { intent_id: `m${i}`, record_id: "x" }, status: "prepared", text: `Entry ${i}`, at: h(-i), replayed: false })) as unknown as WriteIntentView[];
+    render(<NeedsMeList sources={{ ...all, writes: many, approvals: { ...approvals, groups: [] } }} />);
+    const approve = screen.getByTestId("needs-me-approve");
+    expect(screen.getByTestId("needs-me-counts")).toHaveTextContent(/^6 to approve$/);
+    expect(within(approve).getAllByRole("listitem")).toHaveLength(4);
+    within(approve).getByRole("button", { name: "2 more" }).click();
+    await waitFor(() => expect(within(screen.getByTestId("needs-me-approve")).getAllByRole("listitem")).toHaveLength(6));
   });
 
   it("shows nothing to a reader the server doesn't call the owner, or when that can't be read", async () => {

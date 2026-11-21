@@ -7,6 +7,11 @@
       "pattern": "^(?=.{3,40}$)(?=.*[0-9])(?!0+$)[A-Za-z0-9](?:[A-Za-z0-9_/.#-]*[A-Za-z0-9])?$",
       "rule": "after trimming, 3..40 characters from A-Z a-z 0-9 - _ / . #, starting and ending with a letter or digit, at least one digit, not only zeros",
       "upstream": "operating/customer_po_coverage.py PO_SHAPE_RULE (tests assert the two agree)"
+    },
+    "tracking_like": {
+      "pattern": "^(?=.{6,40}$)(?=.*[0-9])[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$",
+      "rule": "after trimming, 6..40 letters, digits or hyphens, starting and ending with a letter or digit, at least one digit (carrier tracking numbers; no spaces)",
+      "upstream": "operating/autopilot_write_adapters.py PORTAL_ROUTES purchase-order.update trackingNumber (string, 100)"
     }
   },
   "actions": {
@@ -1105,6 +1110,313 @@
         "risk_tier": "medium",
         "upstream": "PLX_MC@073f192 src/lib/mcp/create-http-server.ts:267-296, src/lib/mcp/actions.ts:226-307, src/lib/mcp/task-create-idempotency.ts:28-66, src/lib/mcp/read-actions.ts:89-114"
       }
+    },
+    "portal.purchase_order.set_tracking_number": {
+      "kind": "owner_system_proposal",
+      "summary": "Set the tracking number on one Customer Portal purchase order to the number a supplier's ship notice or mail cites, through the Portal's own staff route; prepared for one-click confirm and the MC approval gate, never over a tracking number the order already holds, refused until a Portal workbench_write key is issued.",
+      "owner_system": "portal",
+      "target_relations": [
+        "public.app_purchase_order"
+      ],
+      "hosts": [
+        "case_host"
+      ],
+      "parameters": {
+        "proposed_tracking_number": {
+          "type": "string",
+          "role": "identifier:tracking_number",
+          "required": true,
+          "trace": {
+            "kind": "cited_value",
+            "citation": "evidence_citation",
+            "field": "evidence_field"
+          }
+        },
+        "evidence_citation": {
+          "type": "citation",
+          "required": true,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "evidence_field": {
+          "type": "field_path",
+          "required": true,
+          "trace": {
+            "kind": "cited_field",
+            "citation": "evidence_citation"
+          }
+        }
+      },
+      "effect": {
+        "value_parameter": "proposed_tracking_number"
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        },
+        {
+          "id": "effect_fields_writable",
+          "check": "effect_fields_within",
+          "fields": [
+            "tracking_number"
+          ]
+        },
+        {
+          "id": "effect_sets_the_value",
+          "check": "effect_equals_payload_value",
+          "value": "proposed_tracking_number"
+        },
+        {
+          "id": "value_is_tracking_shaped",
+          "check": "payload_value_matches_shape",
+          "value": "proposed_tracking_number",
+          "shape": "tracking_like"
+        },
+        {
+          "id": "value_in_cited_evidence",
+          "check": "payload_value_in_cited_field",
+          "value": "proposed_tracking_number",
+          "citation": "evidence_citation",
+          "field": "evidence_field"
+        },
+        {
+          "id": "evidence_value_is_not_the_po_number",
+          "check": "payload_value_not_in_cited_fields",
+          "value": "proposed_tracking_number",
+          "citation": "evidence_citation",
+          "fields": [
+            "po_number",
+            "order_number"
+          ]
+        },
+        {
+          "id": "target_has_no_tracking_number",
+          "check": "target_fields_hold_no_shape",
+          "shape": "tracking_like",
+          "fields": [
+            "tracking_number"
+          ],
+          "ignore_equal_to": [
+            "po_number"
+          ]
+        },
+        {
+          "id": "value_is_not_the_po_number",
+          "check": "payload_value_not_in_target_fields",
+          "value": "proposed_tracking_number",
+          "fields": [
+            "po_number"
+          ]
+        },
+        {
+          "id": "person_confirms_evidence_belongs_to_order",
+          "check": "person_confirms",
+          "statement": "a person at PLX confirms the cited shipment is for this purchase order",
+          "evidence_link": "asserted_by_proposer_not_verified"
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "gated_adapter",
+        "owner_interface": "PATCH /api/mrp/purchase-orders/{id} {trackingNumber} -> the purchase-order.update workbench_write route (PORTAL_ROUTES, pinned PORTAL_PIN)"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "public.app_purchase_order",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "upstream": "operating/autopilot_write_adapters.py PORTAL_ROUTES purchase-order.update (plx-customer-portal staging a8b4b92, TASK-5101 workbench-write-routes.ts)",
+      "real_capability": {
+        "target_system": "portal",
+        "adapter": "portal_http",
+        "write": {
+          "method": "PATCH",
+          "path": "/api/mrp/purchase-orders/{id}",
+          "path_keys": {
+            "id": "id"
+          },
+          "fields": {
+            "tracking_number": "trackingNumber"
+          }
+        },
+        "read_back": {
+          "method": "GET",
+          "path": "/api/mrp/purchase-orders/{id}",
+          "path_keys": {
+            "id": "id"
+          },
+          "fields": {
+            "tracking_number": "trackingNumber"
+          }
+        },
+        "entitlement": {
+          "owner_check": "the Portal's workbench_write key check on purchase-order.update (TASK-5101), run as the key's bound STAFF user with the same handler and audit (API_KEY_WRITE) a session gets",
+          "workbench_identity": "none issued: a workbench_write key bound to a Portal staff user (PORTAL_WRITE_KEY, outside git) is a go-live step, as is confirming the GET of /api/mrp/purchase-orders/{id} (assumed on the sales-order route's pattern)"
+        },
+        "idempotency": {
+          "key": "intent",
+          "owner_support": "none",
+          "conditional": "read_before_write",
+          "rule": "the route takes no idempotency key and no compare-and-set: the action path sends the intent's key at most once (dispatch.started is committed first; an unknown answer is reconciled only by read-back, never re-sent) and the adapter re-reads the order by GET just before the PATCH and sends nothing unless every structured precondition on the written field still holds and tracking_number (named by the no-overwrite guard target_has_no_tracking_number) holds nothing (not atomic: a save between that GET and the PATCH is not caught)"
+        },
+        "risk_tier": "low",
+        "downstream": "the Portal's own handlers carry the purchase order's trackingNumber onward (not traced here); the Workbench never writes BC",
+        "upstream": "operating/autopilot_write_adapters.py PORTAL_ROUTES purchase-order.update (plx-customer-portal staging a8b4b92, TASK-5101 workbench-write-routes.ts)"
+      }
+    },
+    "planner.task.set_due_at": {
+      "kind": "owner_system_proposal",
+      "summary": "Set one Microsoft Planner task's due date to a date a cited structured record holds (for example the promised date of the sales order the task is about), so the plan shows the date the business has committed to. Prepared only; sent once after a person's per-call approval of the exact call (PATCH with the task's etag as just read), then read back and verified only when the task holds the date sent. Never live until a Graph identity for the Workbench is issued.",
+      "owner_system": "planner",
+      "target_relations": [
+        "meetings.planner_tasks"
+      ],
+      "hosts": [
+        "case_host"
+      ],
+      "registration": null,
+      "parameters": {
+        "proposed_due_at": {
+          "type": "string",
+          "role": "timestamp",
+          "required": true,
+          "trace": {
+            "kind": "cited_value",
+            "citation": "evidence_citation",
+            "field": "evidence_field"
+          }
+        },
+        "evidence_citation": {
+          "type": "citation",
+          "required": true,
+          "trace": {
+            "kind": "citation"
+          }
+        },
+        "evidence_field": {
+          "type": "field_path",
+          "required": true,
+          "trace": {
+            "kind": "cited_field",
+            "citation": "evidence_citation"
+          }
+        }
+      },
+      "effect": {
+        "value_parameter": "proposed_due_at"
+      },
+      "preconditions": [
+        {
+          "id": "case_open",
+          "check": "case_open"
+        },
+        {
+          "id": "structured_preconditions_hold",
+          "check": "proposal_preconditions",
+          "checked_by": "operating/action_path.py register, prepare_gate, request_gate, dispatch"
+        },
+        {
+          "id": "effect_fields_writable",
+          "check": "effect_fields_within",
+          "fields": [
+            "due_at"
+          ]
+        },
+        {
+          "id": "effect_sets_the_value",
+          "check": "effect_equals_payload_value",
+          "value": "proposed_due_at"
+        },
+        {
+          "id": "value_in_cited_evidence",
+          "check": "payload_value_in_cited_field",
+          "value": "proposed_due_at",
+          "citation": "evidence_citation",
+          "field": "evidence_field"
+        },
+        {
+          "id": "person_confirms_evidence_belongs_to_task",
+          "check": "person_confirms",
+          "statement": "a person at PLX confirms the cited date is the one this Planner task is due on",
+          "evidence_link": "asserted_by_proposer_not_verified"
+        }
+      ],
+      "approval": {
+        "required": "mc_gate",
+        "tool": "mc_request_approval",
+        "per_call_human_approval": true,
+        "decider": "a human MC admin/owner other than the requester, on the approver roster"
+      },
+      "executor": {
+        "kind": "owner_dispatch",
+        "dispatch": "gated_adapter",
+        "owner_interface": "PATCH https://graph.microsoft.com/v1.0/planner/tasks/{id} {dueDateTime} with If-Match the task's @odata.etag (operating/action_adapters.py GraphPlannerAdapter)"
+      },
+      "read_back": {
+        "kind": "owner_record",
+        "relation": "meetings.planner_tasks",
+        "fields": "expected_effect.fields",
+        "values": "expected_effect.values"
+      },
+      "real_capability": {
+        "target_system": "planner",
+        "adapter": "graph_planner",
+        "risk_tier": "low",
+        "upstream": "learn.microsoft.com/graph/api/plannertask-update (If-Match required; 412 on a stale etag); ontology/schema/domains/meetings.json PlannerTask",
+        "write": {
+          "method": "PATCH",
+          "path": "/v1.0/planner/tasks/{id}",
+          "path_keys": {
+            "id": "id"
+          },
+          "fields": {
+            "due_at": "dueDateTime"
+          }
+        },
+        "read_back": {
+          "method": "GET",
+          "path": "/v1.0/planner/tasks/{id}",
+          "path_keys": {
+            "id": "id"
+          },
+          "fields": {
+            "due_at": "dueDateTime"
+          }
+        },
+        "entitlement": {
+          "owner_check": "Graph Tasks.ReadWrite (delegated) and membership of the plan's group",
+          "workbench_identity": "none issued: a delegated Graph sign-in per person (or a reviewed app identity) is a go-live step"
+        },
+        "idempotency": {
+          "key": "intent",
+          "owner_support": "none",
+          "conditional": "if_match",
+          "rule": "Graph takes no idempotency key on PATCH /planner/tasks/{id}: the action path sends the intent's key at most once (dispatch.started is committed first; an unknown answer is reconciled only by read-back) and the adapter re-reads the task just before the PATCH and sends it with If-Match that read's @odata.etag, so a task changed in between is refused by Graph (412), never overwritten"
+        },
+        "owner_state": {
+          "api_field": "percentComplete",
+          "locked": [
+            "100"
+          ],
+          "rule": "a completed task (percentComplete 100) is never written",
+          "upstream": "learn.microsoft.com/graph/resources/plannertask (percentComplete 100 = completed)"
+        }
+      },
+      "upstream": "operating/autopilot_write_adapters.py PlannerAdapter (task_update); ontology/schema/domains/meetings.json PlannerTask"
     }
   }
 }

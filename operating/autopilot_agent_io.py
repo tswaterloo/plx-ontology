@@ -110,12 +110,8 @@ def gated(got: Any, event: Mapping[str, Any]) -> Any:
     due = reply_due(event)
     if not due:
         got.reply, got.ask, got.todos = "", None, []
-    elif due == "turn" and not got.reply and got.ask and got.ask.get("options"):
-        # nothing was asked of the person, it is only their turn: offered answers become
-        # the open question; a written reply stands (the person reviews it before it goes)
-        from .autopilot_check import ASK_PLAIN
-        question = str((got.ask or {}).get("question") or "").strip() or ASK_PLAIN
-        got.reply, got.ask = "", {"question": question, "options": []}
+    # only their turn: a written reply stands, and so does their call with the answers the
+    # check kept (two or more, each judged against the message): the person picks one
     return got
 
 
@@ -282,6 +278,8 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
             o for o in got.ask["options"] if not ad._HOLLOW.match(o["reply"])
             and ad.check(o["reply"], m) is None and not ad._tics(o["reply"])
             and not ob.held(ctx, o["reply"], readers, allowed, account)]
+        from .autopilot_check import ready_options
+        got.ask["options"] = ready_options(got.ask["options"])
         if len(got.ask["options"]) == 1:
             # one answer left is a guess at the person's choice (``autopilot_check``)
             got.ask["options"] = []

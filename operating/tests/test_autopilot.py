@@ -992,6 +992,13 @@ class Kinds(Fixture):
         order = self.order("PO-9")
         lot = w.obj("Batch", {"lot_number": "L-1", "quality_status": "Rejected",
                               "order_list": "SO-7001", "tested_by": "QA"})
+        # the same order's other system copy (BC beside the Portal): one order, one line
+        twin = w.obj("SalesOrder", {"order_number": "so-7001", "status": "Open",
+                                    "required_date": "2026-10-30"})
+        w.link("SalesOrder.ordered_by", twin, self.customer)
+        # another batch record (another run) of lot L-1: cycled later
+        rerun = w.obj("Batch", {"batch_number": "l-1", "quality_status": "On-Hold",
+                                "order_list": "SO-7001", "tested_by": "QA"})
         # a lot on hold that holds up no open order: nothing to decide, no item (11-18
         # owner walk: ten "0 open order(s) affected" items)
         idle = w.obj("Batch", {"lot_number": "L-2", "quality_status": "On-Hold",
@@ -1044,6 +1051,16 @@ class Kinds(Fixture):
         left = {i["item_id"]: i["state"] for i in self.queue().items(states=("open", "done"))
                 if i["autopilot"] == "qc_hold"}
         self.assertEqual(left, {held["item_id"]: "open", "ap_old_qc": "done"})
+        # a second batch record (another run) of the same lot raises a newer item: one card
+        # per lot, the older one set aside (superseded, never deleted)
+        self.cycle([rerun], now=NOW + timedelta(minutes=5))
+        left = {i["item_id"]: i["state"]
+                for i in self.queue().items(states=("open", "done", "superseded"))
+                if i["autopilot"] == "qc_hold"}
+        self.assertEqual(sorted(left.values()), ["done", "open", "superseded"], left)
+        self.assertEqual(left[held["item_id"]], "superseded")
+        (newer,) = [i for i in self.queue().items() if i["autopilot"] == "qc_hold"]
+        self.assertEqual(newer["body"]["prepared"]["subject"], "lot:L1")
         self.assertTrue(items["task_assigned"]["answer"])
         eta = items["supplier_eta"]
         self.assertEqual((eta["eta"]["stated"], eta["eta"]["slip_days"]), ("2026-11-20", 31))
@@ -1755,3 +1772,77 @@ class FindOnPostgres(Fixture):
                                  sorted(orders))
                 with self.assertRaises(autopilot_handlers.FindUnavailable):
                     ctx.find("RelSageApVendor", "vendorid", "V100")   # not carried: holds
+
+
+class OneCardPerLot(unittest.TestCase):
+    """A lot raised again (another batch record or run) replaces its older item for the
+    same person only; order copies fold by number and keep the customer address either
+    copy states."""
+
+    @staticmethod
+    def item(item_id: str, owner: str, lot: str, created: str) -> dict:
+        return {"item_id": item_id, "owner": owner, "created_at": created,
+                "body": {"prepared": {"lot": lot, "affected": [{"order_number": "1"}]}}}
+
+    def test_only_the_same_person_and_the_same_lot_are_replaced(self):
+        items = [self.item("a_old", "ana", "BC-1", "2026-11-18T10:00:00Z"),
+                 self.item("a_new", "ana", "bc 1", "2026-11-19T10:00:00Z"),
+                 self.item("s_old", "sam", "BC-1", "2026-11-17T10:00:00Z"),
+                 self.item("a_lot2", "ana", "BC-2", "2026-11-10T10:00:00Z"),
+                 {"item_id": "reply", "owner": "ana", "created_at": "2026-11-01T00:00:00Z",
+                  "body": {"prepared": {"draft": {"body": "x"}}}}]
+        self.assertEqual(autopilot_queue.superseded(items), {"a_old": "a_new"})
+        self.assertEqual(autopilot_queue.newest_of("a_old", {"a_old": "a_mid",
+                                                             "a_mid": "a_new"}), "a_new")
+
+    def test_settle_keeps_which_item_replaced_which(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            q = ap.Queue(Path(tmp) / "q.sqlite")
+            base = {"event_id": "e", "autopilot": "qc_hold", "title": "t", "audiences": [],
+                    "markings": [], "citations": [], "due_at": "2026-11-19T00:00:00Z"}
+            with q.conn:
+                for it in (self.item("a_old", "ana", "BC-1", "2026-11-18T10:00:00Z"),
+                           self.item("a_new", "ana", "BC-1", "2026-11-19T10:00:00Z"),
+                           self.item("s_old", "sam", "BC-1", "2026-11-17T10:00:00Z")):
+                    q.add_item({**base, **it, "event_id": "e-" + it["item_id"],
+                                "body": {**it["body"], "done_when": "batch_released"}})
+            done = autopilot_engine.settle(_NoStore(), q, {}, None,
+                                           now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc))
+            self.assertEqual(done["same_subject"], 1)
+            states = {i["item_id"]: i["state"]
+                      for i in q.items(states=("open", "superseded"))}
+            self.assertEqual(states, {"a_old": "superseded", "a_new": "open", "s_old": "open"})
+            self.assertEqual(q.meta(autopilot_queue.SUPERSEDED_BY), {"a_old": "a_new"})
+            q.close()
+
+    def test_order_copies_fold_and_keep_the_address_either_copy_states(self):
+        class Ctx:
+            rows = {"SO:p": {"order_number": "OR-9001", "status": "Open"},
+                    "SO:b": {"order_number": "or9001", "status": "Open"},
+                    "C:p": {"name": "Three Ships"},
+                    "C:b": {"name": "THREE SHIPS INC", "email": "buyer@ships.example"}}
+            cust = {"SO:p": ["C:p"], "SO:b": ["C:b"]}
+
+            def find(self, prefix, prop, value):
+                return ["SO:p", "SO:b"]
+
+            def linked(self, oid, types=None):
+                return self.cust.get(oid, []) if types == ("SalesOrder.ordered_by",) else []
+
+            def read(self, ids, props):
+                return {i: {k: v for k, v in self.rows[i].items() if k in props}
+                        for i in ids if i in self.rows}
+        with mock.patch.object(autopilot_handlers, "_v",
+                               lambda r, k: str((r or {}).get(k) or "")):
+            got = autopilot_handlers.h_qc(Ctx(), {"object_id": "Batch:1", "quality": "On-Hold",
+                                                  "fields": {"lot_number": "L-1",
+                                                             "order_list": "OR-9001"}})
+        self.assertEqual([(a["object_id"], a["customer"]) for a in got["affected"]],
+                         [("SO:p", "Three Ships")])
+        self.assertEqual([d["to"] for d in got["customer_notices"]],
+                         [[{"address": "buyer@ships.example"}]])
+        self.assertIn("holds up 1 open order.", got["summary"])
+
+
+class _NoStore:
+    """A store the settle never needs to read (no rule asks it anything here)."""

@@ -4,7 +4,8 @@
 action path, ``IsolatedOwnerSystem`` for the ``fixture.*`` types, the per-call approver,
 the human MC decisions) with the twins in place of the owning systems: the Portal twin
 answers the Portal adapter through ``TwinTransport`` and resolves its ``api://...@twin``
-citations; the MC twin serves the MC client. The call approvers and the MC role roster the
+citations; the MC twin serves the MC client; the Planner twin answers the Planner adapter and
+resolves its ``planner-task://...@twin`` citations. The call approvers and the MC role roster the
 action path checks deciders against come from the isolated approver roster, read through
 ``load_approver_roster`` as every host reads its own. ``registry`` sends every catalog
 action type to the twin or refuses it as the catalog declares; the Workbench-internal types
@@ -43,12 +44,18 @@ from . import mode
 from .bc import BcTwin, load_captures as load_bc_captures
 from .bc.odata import ODataDoor
 from .mc import McTwin
+from .planner import PlannerTwin
 from .portal import PortalTwin, load_captures
 from .transport import TwinTransport
 
 SCHEMA = "plx-twin-lifecycle/v1"
 ACTOR, SESSION = g2.ACTOR, g2.SESSION
 PORTAL_CAPABILITY = "portal.sales_order.set_customer_po"
+TRACKING_CAPABILITY = "portal.purchase_order.set_tracking_number"
+PO_RELATION = "public.app_purchase_order"
+# A supplier ship notice the isolated owner holds (untyped: not the goal-2 PO document).
+NOTICE_RELATION = "fixture.ship_notice"
+PLANNER_CAPABILITY = "planner.task.set_due_at"
 ORDER_RELATION = "public.app_sales_order"
 # The MC twin's users (mc_users): the admin decides, the member and the agent cannot.
 USERS = {g2.MC_ADMIN: {"role": "admin", "oid": g2.MC_ADMIN_OID},
@@ -117,7 +124,8 @@ class TwinWorld(g2.Lifecycle):
                                         write_tools=frozenset({"mc_create_task"}))
         self.bc = BcTwin.from_captures(self.state_dir / "bc-owner.db", load_bc_captures(),
                                        tenant=ACTOR.tenant, clock=self.clock)
-        self.transport = TwinTransport(self.portal, self.bc)
+        self.planner = PlannerTwin(readers=frozenset({"ops"}))
+        self.transport = TwinTransport(self.portal, self.bc, self.planner)
         self.bc.owner.door = ODataDoor(self.bc, self.transport)
         self.registry = registry(self)
         self.bc_registry = bc_registry(self)
@@ -136,6 +144,8 @@ class TwinWorld(g2.Lifecycle):
     def resolve(self, handle: str, actor: Any) -> dict[str, Any]:
         if isinstance(handle, str) and handle.startswith("api://"):
             return self.portal.resolve(handle, actor)
+        if isinstance(handle, str) and handle.startswith("planner-task://"):
+            return self.planner.resolve(handle, actor)
         if self.bc.holds(handle):
             return self.bc.resolve(handle, actor)
         return self.owner.resolve(handle, actor)
@@ -164,6 +174,54 @@ class TwinWorld(g2.Lifecycle):
             citations=[target, document], session=SESSION,
             expected_effect={"relation": ORDER_RELATION, "key": {"id": order},
                              "fields": ["po_reference"], "equals": value})
+        intent = self.path.register(ACTOR, case_id, proposal["proposal_id"], session=SESSION)
+        self.case_ids.append(case_id)
+        return case_id, intent["intent_id"]
+
+    def tracking_intent(self, value: str) -> tuple[str, str]:
+        """A case on fixture purchase order ``po-twin-1`` whose captured ship notice (held by
+        the isolated owner) states tracking number ``value``; the ``set_tracking_number``
+        proposal cites both and is registered. ``(case_id, intent_id)``."""
+        target = PortalTwin.citation(PO_RELATION, "po-twin-1")
+        notice = self.owner.seed(NOTICE_RELATION, {"id": 201},
+                                 {"id": 201, "tracking_number": value, "po_number": "PO-T0001",
+                                  "order_number": "SN-T0201"})
+        case_id = self.path.open_case(
+            ACTOR, "Does PO-T0001 carry the tracking number its ship notice states?",
+            roots=["twin-po-1"], objective_author_kind="human", session=SESSION)
+        proposal = self.path.record_proposal(
+            ACTOR, case_id, TRACKING_CAPABILITY,
+            {"proposed_tracking_number": value, "evidence_citation": notice,
+             "evidence_field": "tracking_number"},
+            [{"check": "field_empty", "citation": target, "field": "tracking_number"},
+             "a person at PLX confirms the cited shipment is for this purchase order"],
+            citations=[target, notice], session=SESSION,
+            expected_effect={"relation": PO_RELATION, "key": {"id": "po-twin-1"},
+                             "fields": ["tracking_number"], "equals": value})
+        intent = self.path.register(ACTOR, case_id, proposal["proposal_id"], session=SESSION)
+        self.case_ids.append(case_id)
+        return case_id, intent["intent_id"]
+
+    def planner_intent(self, number: int) -> tuple[str, str]:
+        """A case on a Planner twin task with no due date and fixture order ``number``,
+        whose order date the ``set_due_at`` proposal cites as the date the task is due;
+        registered. ``(case_id, intent_id)``."""
+        task = f"task-twin-{number}"
+        target = self.planner.seed({"id": task, "plan_id": "plan-twin", "percent_complete": 0,
+                                    "title": f"Ship order SO-T{number:04d}", "due_at": None})
+        order = PortalTwin.citation(ORDER_RELATION, f"so-twin-{number}")
+        value = self.portal.resolve(order, ACTOR)["row"]["order_date"]
+        case_id = self.path.open_case(
+            ACTOR, f"Is Planner task {task} due on the date order SO-T{number:04d} states?",
+            roots=[f"twin-task-{number}"], objective_author_kind="human", session=SESSION)
+        proposal = self.path.record_proposal(
+            ACTOR, case_id, PLANNER_CAPABILITY,
+            {"proposed_due_at": value, "evidence_citation": order, "evidence_field": "order_date"},
+            [{"check": "field_empty", "citation": target, "field": "due_at"},
+             "a person at PLX confirms the cited date is the one this Planner task is due on"],
+            citations=[target, order], session=SESSION,
+            expected_effect={"relation": "meetings.planner_tasks", "key": {"id": task},
+                             "fields": ["due_at"], "equals": value})
         intent = self.path.register(ACTOR, case_id, proposal["proposal_id"], session=SESSION)
         self.case_ids.append(case_id)
         return case_id, intent["intent_id"]
@@ -219,6 +277,36 @@ def run_portal_scenario(world: TwinWorld, name: str) -> dict[str, Any]:
                 first_dispatch=first["state"], first_reason=first.get("reason"),
                 replayed=replay.get("replayed"), twin_writes=world.portal.writes - writes,
                 escalation_tasks=escalations)
+
+
+def run_tracking_lifecycle(world: TwinWorld) -> dict[str, Any]:
+    """``set_tracking_number`` on the Portal twin: MC gate, one PATCH, read-back, and a
+    replayed dispatch that sends nothing."""
+    path = world.path
+    case_id, iid = world.tracking_intent("1Z999AA10123456784")
+    world.authorize(iid, "TASK-TWIN-PO-1")
+    writes = world.portal.writes
+    first = path.dispatch(ACTOR, iid, world.registry, world.mc_client, session=SESSION)
+    dispatcher = world.registry.for_capability(TRACKING_CAPABILITY)
+    if path.get(ACTOR, iid)["state"] in ("dispatched", "dispatched_unknown"):
+        path.read_back(ACTOR, iid, dispatcher.read_back, session=SESSION)
+    replay = path.dispatch(ACTOR, iid, world.registry, world.mc_client, session=SESSION)
+    return _row(world, TRACKING_CAPABILITY, iid, case_id, first_dispatch=first["state"],
+                replayed=replay.get("replayed"), twin_writes=world.portal.writes - writes)
+
+
+def run_planner(world: TwinWorld) -> dict[str, Any]:
+    """``set_due_at`` on the Planner twin: MC gate, one PATCH with the etag just read,
+    read-back."""
+    case_id, iid = world.planner_intent(6)
+    world.authorize(iid, "TASK-TWIN-PT-6")
+    first = world.path.dispatch(ACTOR, iid, world.registry, world.mc_client, session=SESSION)
+    if world.path.get(ACTOR, iid)["state"] in ("dispatched", "dispatched_unknown"):
+        world.path.read_back(ACTOR, iid,
+                             world.registry.for_capability(PLANNER_CAPABILITY).read_back,
+                             session=SESSION)
+    return _row(world, PLANNER_CAPABILITY, iid, case_id, first_dispatch=first["state"],
+                first_reason=first.get("reason"), twin_writes=world.planner.writes)
 
 
 def _internal(world: TwinWorld) -> list[dict[str, Any]]:
@@ -300,7 +388,7 @@ def run_lifecycle(state_dir: Path) -> dict[str, Any]:
     state_dir = Path(state_dir)
     if state_dir.exists() and any(state_dir.iterdir()):
         raise ValueError("state_dir_not_empty: the run needs a fresh directory")
-    with mode.test_mode(allow={PORTAL_CAPABILITY}):
+    with mode.test_mode(allow={PORTAL_CAPABILITY, TRACKING_CAPABILITY, PLANNER_CAPABILITY}):
         world = TwinWorld(state_dir)
         rows = _internal(world)
         fixture = g2.run_scenario(world, "happy", 1)
@@ -320,6 +408,8 @@ def run_lifecycle(state_dir: Path) -> dict[str, Any]:
                                           for c in world.case_ids)})
         portal = [run_portal_scenario(world, name) for name in PORTAL_SCENARIOS]
         rows.append(portal[0])
+        rows.append(run_tracking_lifecycle(world))
+        rows.append(run_planner(world))
         rows.extend(_refused(world))
     return {"schema": SCHEMA, "evidence_label": mode.TWIN_LABEL,
             "types": sorted(rows, key=lambda row: row["action_type"]),

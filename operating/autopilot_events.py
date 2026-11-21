@@ -214,9 +214,14 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
         cleared = all(people.identity_clear(a) for a in participants)
         links = _linked(st, oid)
         side = next((SIDE_LINKS[t] for t, _o in links if t in SIDE_LINKS), None)
+        known_party = side is not None
         if side is None:
             side = "internal" if _internal(sender, domains) else \
                 _party_side(parties or st, sender, domains)
+            # a sender stated on customer and supplier records both reads as side unknown,
+            # yet it is a party of ours, never a cold sender
+            known_party = side in ("customer", "supplier") or (
+                side == "unknown" and bool(_parties(parties or st, sender)))
         records = sorted({o for _t, o in links if o.split(":", 1)[0] in BUSINESS})
         message_id = _v(row, "internet_message_id") or oid
         at = _v(row, "received_at") or _v(row, "sent_at")
@@ -237,6 +242,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             **_mail_ask(it, text, subject, to_me=bool(mine & set(to))),
             "closing": closing(text),
             "addressed_other": addressed_other(text, mine, [*to, *cc]),
+            "known_party": known_party,
             "reply_all": reply_all(sender, to, cc, mine),
             "cleared": cleared,
             "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3],
@@ -570,15 +576,19 @@ def _first_names(addresses: Iterable[str]) -> set[str]:
     return out
 
 
+# an Outlook @mention in a mail's text ("@Maria Hooper can you invoice this?"): the first
+# name, capitalised, not part of an address
+AT_MENTION = re.compile(r"(?<![\w.@])@([A-Z][A-Za-z'-]+)")
+
+
 def addressed_other(text: str, mine: Iterable[str], recipients: Iterable[str]) -> bool:
-    """Whether a message opens by greeting another of its recipients, not the mailbox's
-    owner ("Hi Sam," on a mail to Sam with the owner copied in): the note is Sam's to answer.
-    A name is one of the owner's (or another recipient's) when either starts with the other
-    ("Hi V", "Hi Chris" to christopher@); a greeting naming neither, or no greeting: no."""
-    found = GREETING.match(text or "")
-    if not found:
-        return False
-    named = {g.lower() for g in found.groups() if g}
+    """Whether a message is put to others of its recipients, not the mailbox's owner: it
+    opens by greeting another recipient ("Hi Sam," on a mail to Sam with the owner copied
+    in), or it @mentions another recipient and never the owner ("@Sam Doe can you invoice
+    this?"): the note is Sam's to answer. A name is one of the owner's (or another
+    recipient's) when either starts with the other ("Hi V", "Hi Chris" to christopher@); a
+    greeting or @mention naming neither, or none: no. Measured on one person's fresh mail
+    2026-11-06..18: of 27 messages @mentioning only others, the owner answered 1 by mail."""
     own = _first_names(mine)
     others = _first_names(r for r in recipients if str(r).lower() not in
                           {str(m).lower() for m in mine}) - own
@@ -586,9 +596,18 @@ def addressed_other(text: str, mine: Iterable[str], recipients: Iterable[str]) -
     def one_of(name: str, pool: set[str]) -> bool:
         return any(name == p or (len(name) >= 3 and (p.startswith(name) or name.startswith(p)))
                    for p in pool)
-    if not own or any(one_of(n, own) for n in named):
+    if not own:
         return False
-    return any(one_of(n, others) for n in named)
+    found = GREETING.match(text or "")
+    if found:
+        named = {g.lower() for g in found.groups() if g}
+        if any(one_of(n, own) for n in named):
+            return False
+        if any(one_of(n, others) for n in named):
+            return True
+    mentioned = {m.lower() for m in AT_MENTION.findall(text or "")}
+    return bool(mentioned) and not any(one_of(n, own) for n in mentioned) and \
+        any(one_of(n, others) for n in mentioned)
 
 
 ONE_TO_ONE = re.compile(r"^19:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_"

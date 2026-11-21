@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
-import { setAutopilotOptIn, setAutopilotPaused, setMyWorkMode } from "@/lib/api";
+import { setAutopilotOptIn, setAutopilotPaused, setMyWorkMode, setSwitchLimits, type SwitchLimits } from "@/lib/api";
 import { optInScore, personName, suspendedWords, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
@@ -46,7 +46,97 @@ function Row({ o, busy, onSet }: { o: AutopilotOptIn; busy: boolean; onSet: (on:
 
 type Mode = "off" | "confirm" | "auto";
 
-function DraftRow({ c, busy, onSet }: { c: AutopilotDraftChoice; busy: boolean; onSet: (mode: Mode) => void }) {
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** The limits on a switch's Auto in a line: "only for x; Mon to Fri; 8:00 to 17:00; at 95% or better". */
+export function limitsLine(l: SwitchLimits | null | undefined): string {
+  if (!l) return "";
+  const parts: string[] = [];
+  if (l.senders.length) parts.push(`only for ${l.senders.join(", ")}`);
+  if (l.days.length) parts.push(l.days.map((d) => DAYS[d]).join(", "));
+  if (l.start && l.end) parts.push(`${l.start} to ${l.end} ET`);
+  if (l.min_percent != null) parts.push(`only work that matched you ${l.min_percent}% or more`);
+  return parts.join("; ");
+}
+
+/** Limits on one switch's Auto: senders, days, hours (US Eastern) and a stricter bar. */
+function Limits({ c, onArea }: { c: AutopilotDraftChoice; onArea: (a: Area) => void }) {
+  const cur = (c.conditions ?? null) as SwitchLimits | null;
+  const [open, setOpen] = useState(false);
+  const [senders, setSenders] = useState((cur?.senders ?? []).join(", "));
+  const [days, setDays] = useState<number[]>(cur?.days ?? []);
+  const [start, setStart] = useState(cur?.start ?? "");
+  const [end, setEnd] = useState(cur?.end ?? "");
+  const [bar, setBar] = useState(cur?.min_percent != null ? String(cur.min_percent) : "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    const pct = bar.trim() ? Number(bar.trim()) : null;
+    if (pct !== null && !Number.isFinite(pct)) {
+      setError("The bar is a percentage, for example 95.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const limits: SwitchLimits = { senders: senders.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean), days, start: start || null, end: end || null, min_percent: pct };
+      onArea(await setSwitchLimits(c.choice, limits));
+      setOpen(false);
+    } catch (e) {
+      setError(plainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const line = limitsLine(cur);
+  return (
+    <div className="space-y-1 pt-1 text-[12px]" data-testid="auto-limits">
+      <p className="text-muted">
+        {line ? `Auto: ${line}.` : "Auto: no limits of your own."}{" "}
+        <button type="button" className="text-accent underline-offset-2 hover:underline cursor-pointer" onClick={() => setOpen((v) => !v)}>
+          {open ? "Close" : "Change limits"}
+        </button>
+      </p>
+      {open && (
+        <div className="max-w-[40rem] space-y-2 border-l-2 border-border pl-3">
+          <label className="block text-muted">
+            Only for these senders (addresses or @domain, comma separated; empty: anyone)
+            <input value={senders} onChange={(e) => setSenders(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
+          </label>
+          <fieldset className="flex flex-wrap items-center gap-3 text-muted">
+            <legend className="pb-1">Only on these days (none: every day)</legend>
+            {DAYS.map((d, n) => (
+              <label key={d} className="flex items-center gap-1">
+                <input type="checkbox" checked={days.includes(n)} onChange={(e) => setDays((xs) => (e.target.checked ? [...xs, n].sort() : xs.filter((x) => x !== n)))} />
+                {d}
+              </label>
+            ))}
+          </fieldset>
+          <div className="flex flex-wrap items-end gap-3 text-muted">
+            <label>
+              From (ET)
+              <input type="time" aria-label="From" value={start} onChange={(e) => setStart(e.target.value)} className="mt-1 block h-8 border border-border bg-bg px-2 text-[13px] text-fg" />
+            </label>
+            <label>
+              To (ET)
+              <input type="time" aria-label="To" value={end} onChange={(e) => setEnd(e.target.value)} className="mt-1 block h-8 border border-border bg-bg px-2 text-[13px] text-fg" />
+            </label>
+            <label>
+              Only work that matched me at least (%)
+              <input inputMode="decimal" aria-label="Your bar" value={bar} onChange={(e) => setBar(e.target.value)} placeholder={c.score ? String(c.score.need_percent) : "90"} className="mt-1 block h-8 w-24 border border-border bg-bg px-2 text-[13px] text-fg" />
+            </label>
+          </div>
+          <Button size="sm" disabled={busy} onClick={() => void save()}>
+            Save limits
+          </Button>
+          {error && <ErrorNotice message={error} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DraftRow({ c, busy, onSet, onArea }: { c: AutopilotDraftChoice; busy: boolean; onSet: (mode: Mode) => void; onArea: (a: Area) => void }) {
   const on = c.partly ? "Partly on" : "On";
   const state = !c.on ? "Off" : c.by_owner ? `${on}, set by the owner` : c.since && !c.partly ? `On since ${formatDateTime(c.since)}` : on;
   const auto = c.mode === "auto";
@@ -74,6 +164,7 @@ function DraftRow({ c, busy, onSet }: { c: AutopilotDraftChoice; busy: boolean; 
             {optInScore({ eligible: !!c.auto_ok, score: c.score })}
           </p>
         )}
+        {c.on && (c.auto_ok || c.conditions) && <Limits c={c} onArea={onArea} />}
       </div>
       <Button size="sm" variant="outline" role="switch" aria-checked={c.on} aria-label={`${c.label}: ${c.on ? "on" : "off"}`} disabled={busy} onClick={() => onSet(c.on ? "off" : "confirm")}>
         {c.on ? "Turn off" : "Turn on"}
@@ -106,12 +197,12 @@ export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) =>
         What to prepare for me
       </h2>
       <p className="max-w-[46rem] text-[12px] text-muted">
-        Switched on, a reply or an action is drafted for you and waits on Home. Nothing is sent or changed until you confirm it there, and you can edit it first. Auto sends or enters it without your click, and only opens for work where replaying past days matched what you did often enough. Money and anything unclear still wait for you. What the owner turned on for you, you can turn off; your choice wins.
+        Turned on, replies and changes are prepared for you and wait on Home until you confirm them. Auto lets them go without your click, and only opens where replaying past days matched what you did often enough; money and anything unclear still wait for you. You can turn off what the owner turned on for you.
       </p>
       {error && <ErrorNotice message={error} />}
       <ul className="divide-y divide-border" aria-label="What to prepare for me">
         {choices.map((c) => (
-          <DraftRow key={c.choice} c={c} busy={busy} onSet={(mode) => void set(c.choice, mode)} />
+          <DraftRow key={c.choice} c={c} busy={busy} onSet={(mode) => void set(c.choice, mode)} onArea={onArea} />
         ))}
       </ul>
     </section>

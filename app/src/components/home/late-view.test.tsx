@@ -54,6 +54,19 @@ describe("late list", () => {
     expect(oldest).toHaveTextContent(`PO ${100000 + n}, ${n % 3 === 0 ? "DSM" : "Acme"}`);
   });
 
+  it("offers no supplier date filter or count when no PO's supplier date state is known, and says the late step in a row's own words", async () => {
+    const sugg = { id: "s1", subject: { object_id: "PurchaseOrder:2", type: "PurchaseOrder", label: "100002", open_url: "" },
+      action: { text: "Ask the supplier for a confirmed delivery date and tell the people whose orders need this material.", rule: "late_ask_supplier" } };
+    serve(3, [sugg]);
+    render(<LatePage />);
+    await screen.findByTestId("late-table");
+    expect(screen.queryByLabelText("Supplier date")).toBeNull();
+    // every PO is up to 30 days late: the empty bands are no tabs
+    expect(screen.getAllByRole("tab").map((t) => t.getAttribute("aria-label"))).toEqual(["All 3", "Up to 30 days 3"]);
+    expect(screen.queryByText("No supplier date")).toBeNull();
+    expect(await within(rows()[1]).findByText("Ask Acme for a confirmed delivery date")).toBeTruthy();
+  });
+
   it("a busy server is a calm notice that tries again by itself", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let calls = 0;

@@ -313,6 +313,71 @@ class ServiceSessionKnownReaderTest(Fixture):
         self.assertEqual(before[OID_A]["pages"], [["purchase_order", "PO1"]])
 
 
+    def test_a_reader_seen_after_the_last_write_is_read_ahead_and_an_expired_one_only_while_recent(self):
+        """11-21: the file held one entry, expired 25 h before, so every deploy's new API
+        prewarmed nobody and each first page after it was read cold. A page-measure session
+        with no own session held is a known reader while valid (never in the place of the
+        reader's own one, which replaces it); the canary never is. A reader whose session
+        ended stays read ahead (``prewarm_people``, no ticket to check) while they used
+        the app within ``RECENT_USER_SECONDS``, then drops out."""
+        import json
+        import shutil
+        import time
+        from operator_api import backend as be
+        from operator_api.auth import Reader
+        from operator_api.backend_common import DIRECTORY_WARM_SECONDS
+        from operator_api.serving import KNOWN_READERS_FILE, RECENT_USER_SECONDS
+        tmp = Path(tempfile.mkdtemp(prefix="app-known-new-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test", data_dir=tmp)
+        backend.revoked = lambda ref: False   # no ticket revoked (unset: every one is)
+        canary = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE, secret=SECRET,
+                                     ticket=self.ticket(jti=si.service_jti(si.SERVICE_CANARY)))
+        backend.remember_reader(Reader(canary, "dev", "Ana", EMAIL_A))
+        self.assertEqual(backend.known_readers(), {})
+        measure = si.employee_session(
+            self.resolver(), channel=si.CHANNEL_CONSOLE, secret=SECRET,
+            ticket=self.ticket(jti=si.service_jti(si.SERVICE_MEASURE), ttl_seconds=30 * 60))
+        backend.remember_reader(Reader(measure, "dev", "Ana", EMAIL_A))
+        # read ahead for while valid, and nothing else: no known reader (the recurring
+        # instructions and the door's keep run as known readers only), no recent use
+        self.assertEqual(backend.known_readers(), {})
+        self.assertEqual(backend.recent_users(), [])
+        self.assertEqual(backend.prewarm_people(),
+                         [(OID_A, measure.expires_at, measure.session_ref)])
+        own = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,
+                                  ticket=self.ticket(), secret=SECRET)
+        backend.remember_reader(Reader(own, "dev", "Ana", EMAIL_A))
+        self.assertEqual(backend.known_readers()[OID_A]["ref"], own.session_ref)
+        self.assertEqual(backend.prewarm_people(),       # the own session, not the measure
+                         [(OID_A, own.expires_at, own.session_ref)])
+        # signed out: a measure session never clears the mark nor is read ahead for
+        backend.forget_reader(Reader(own, "dev", "Ana", EMAIL_A))
+        seen = json.loads((tmp / KNOWN_READERS_FILE).read_text())[OID_A]
+        backend._remember_measure(OID_A, "d" * 64, int(time.time()) + 600)
+        backend.remember_reader(Reader(measure, "dev", "Ana", EMAIL_A))
+        self.assertEqual(json.loads((tmp / KNOWN_READERS_FILE).read_text())[OID_A], seen)
+        self.assertEqual(backend.signed_out(), {OID_A})
+        self.assertEqual(backend.prewarm_people(), [])
+        # an earlier signed-in entry again, for the ended-session part below
+        backend.remember_reader(Reader(own, "dev", "Ana", EMAIL_A))
+        # sessions that ended: one used the app an hour ago, one past the recent window
+        path = tmp / KNOWN_READERS_FILE
+        other, gone = "1" * 8 + OID_A[8:], "2" * 8 + OID_A[8:]
+        now = time.time()
+        rows = json.loads(path.read_text())
+        rows[other] = {"seen": now - 3600, "ref": "a" * 64, "exp": int(now) - 60, "pages": []}
+        rows[gone] = {"seen": now - RECENT_USER_SECONDS - 60, "ref": "b" * 64,
+                      "exp": int(now) - 60, "pages": []}
+        path.write_text(json.dumps(rows))
+        self.assertEqual(set(backend.known_readers()), {OID_A})
+        people = {oid: (exp, ref) for oid, exp, ref in backend.prewarm_people()}
+        self.assertEqual(set(people), {OID_A, other})
+        self.assertIsNone(people[other][1])               # no ticket of theirs to check
+        self.assertGreater(people[other][0], now)         # a read-ahead identity's life
+        self.assertLessEqual(people[other][0], now + DIRECTORY_WARM_SECONDS + 5)
+
+
 class ConsoleTicketServiceTest(Fixture):
     def test_the_mint_marks_a_service_ticket_and_its_audit_row_says_so(self):
         from operator_api.workspace import console_ticket as ct

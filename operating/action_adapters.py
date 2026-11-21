@@ -427,7 +427,34 @@ class PortalAdapter(OwnerAdapter):
     __slots__ = ()
 
 
-ADAPTER_TYPES = (PortalAdapter,)
+class GraphPlannerAdapter(OwnerAdapter):
+    """A Planner task through Microsoft Graph (JSON in and out). Graph takes no idempotency
+    key; an update must carry ``If-Match`` the task's etag (``if_match``): the etag of the
+    pre-write GET, so a task changed since is refused (412), never overwritten."""
+
+    SYSTEM = "planner"
+    ADAPTER = "graph_planner"
+    __slots__ = ()
+
+    def _pre_write_refusal(self, intent: Any, record: Mapping[str, Any],
+                           body: Mapping[str, Any]) -> str | None:
+        # Graph's percentComplete is a number (100 = completed); the owner state compares
+        # text, so the catalog's locked "100" is its decimal text (any other type refuses)
+        done = body.get("percentComplete") if isinstance(body, Mapping) else None
+        if isinstance(done, int) and not isinstance(done, bool):
+            body = {**body, "percentComplete": str(done)}
+        return super()._pre_write_refusal(intent, record, body)
+
+    def _condition_headers(self, before: Mapping[str, Any] | None) -> dict[str, str]:
+        if before is None:   # the request's shape only (``refusal``): no read yet
+            return {}
+        etag = before.get("@odata.etag") if isinstance(before, Mapping) else None
+        if not isinstance(etag, str) or not etag.strip():
+            raise AdapterError("owner_etag_unread")
+        return {"If-Match": etag}
+
+
+ADAPTER_TYPES = (PortalAdapter, GraphPlannerAdapter)
 
 
 def status(environ: Mapping[str, str] | None = None) -> dict[str, Any]:

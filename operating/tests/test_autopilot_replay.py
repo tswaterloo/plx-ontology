@@ -13,6 +13,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import unittest
 from unittest import mock
 
@@ -693,6 +694,71 @@ class Config(unittest.TestCase):
         self.assertEqual((short["teams_chat"]["judged"], short["teams_chat"]["unjudged"]),
                          (0, 3))
 
+    def test_cardinality_mail_past_its_mailboxs_capture_end_is_not_judged(self):
+        """One mailbox's capture stopped (its access withdrawn) while the others went on:
+        a mail item of that mailbox whose window closes after its last capture read is
+        unjudged, answered or not (the owner's reply copies after it are unseen); the same
+        items of a mailbox still captured are judged. ``source_ends`` reads each member's
+        mailbox end from the capture; a mailbox it holds nothing of gets no bound."""
+        utc = timezone.utc
+        t0 = datetime(2026, 10, 20, 14, tzinfo=utc)                 # a Tuesday
+        stop = t0 + timedelta(hours=6)
+
+        class Capture:
+            def mailbox_seen_to(self, box):
+                return {"box-a": stop}.get(box)
+
+        class Store:
+            autopilot_capture = Capture()
+        ends = rp.source_ends(Store(), ["BOX-A", "box-b"])
+        self.assertEqual(ends, {"mail:box-a": stop})
+        # the capture's reader: its mailbox id in any case, the last read of its messages
+        import sqlite3
+        import tempfile
+        from operating import autopilot_work as aw
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "mail-capture").mkdir()
+            db = sqlite3.connect(Path(d) / "mail-capture" / "capture.db")
+            db.execute("CREATE TABLE mailboxes (mailbox_id TEXT PRIMARY KEY)")
+            db.execute("CREATE TABLE messages (mailbox_id TEXT, last_seen_at TEXT)")
+            db.execute("INSERT INTO mailboxes VALUES ('Box-A')")
+            db.executemany("INSERT INTO messages VALUES ('Box-A', ?)",
+                           [(ap._iso(stop - timedelta(hours=2)),), (ap._iso(stop),)])
+            db.commit()
+            db.close()
+            reader = aw.CaptureTexts(d)
+            try:
+                self.assertEqual(reader.mailbox_seen_to("box-a"), stop)
+                self.assertEqual(reader.mailbox_seen_to("BOX-A"), stop)
+                self.assertIsNone(reader.mailbox_seen_to("box-b"))
+            finally:
+                reader.close()
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                events, items, acts = {}, [], []
+                for box in ("box-a", "box-b"):
+                    for i in range(n):
+                        eid = f"{box}-{i}"
+                        events[eid] = {"event_type": "message.received", "object_id": eid,
+                                       "object_type": "Email", "mailbox": box,
+                                       "at": ap._iso(t0), "conversation_id": f"c-{eid}"}
+                        items.append({"event_id": eid, "autopilot": "desk", "owner": box,
+                                      "created_at": ap._iso(t0), "body": {}})
+                        if i % 2 == 0:      # answered within the hour, before the stop
+                            acts.append({"person": box, "kind": "mail_sent",
+                                         "workflow": "other_internal",
+                                         "conversation": f"c-{eid}", "records": [],
+                                         "at": ap._iso(t0 + timedelta(hours=1))})
+                args = dict(horizon=timedelta(hours=24), data_end=t0 + timedelta(days=9),
+                            since=t0 - timedelta(days=1), until=t0 + timedelta(days=1))
+                for bound, judged, matched in (({}, 2 * n, 2 * ((n + 1) // 2)),
+                                               (ends, n, (n + 1) // 2)):
+                    got = rp.score(items, events, acts, source_end=bound, **args)
+                    flow = next(v for v in got.values() if v["prepared"])
+                    self.assertEqual((flow["prepared"], flow["judged"], flow["unjudged"],
+                                      flow["matched"]),
+                                     (2 * n, judged, 2 * n - judged, matched))
+
     def test_every_work_graph_workflow_has_a_name(self):
         for subject, side, want in (("Remittance advice", "customer", "cash_remittance"),
                                     ("Invoice 4410", "supplier", "ap_supplier_invoice"),
@@ -988,6 +1054,11 @@ class WaitingOnYou(World):
             5: ("Thanks so much. We are close - can we make $19 work?", ()),   # an ask
             6: ("Hi Ops, please send the signed forms today.", (APPROVER,)),   # the owner
             7: ("Hi Le, the forms are attached.", ()),                 # names no recipient
+            # an @mention of another recipient and never of the owner: theirs to answer
+            8: ("@Lead Person can you please send the signed forms today?", (APPROVER,)),
+            9: ("Hi team, @Lead can you check it? @Ops please confirm the date?",
+                (APPROVER,)),                                          # the owner too
+            10: ("Can you send it to @Le or me?", ()),                 # names no recipient
         }
         for i, (body, cc) in notes.items():
             self.thread(i, ask=body, cc=cc)
@@ -997,7 +1068,7 @@ class WaitingOnYou(World):
         got = {json.loads(q.conn.execute("SELECT body FROM events WHERE event_id = ?",
                                          (i["event_id"],)).fetchone()[0])["conversation_id"]
                for i in q.items(None)}
-        self.assertEqual(got, {"th-5", "th-6", "th-7"})
+        self.assertEqual(got, {"th-5", "th-6", "th-7", "th-9", "th-10"})
 
     def test_a_colleague_the_owner_rarely_answers_by_mail_gets_no_reply_item(self):
         def history(sender: str, k: int) -> None:   # 4 messages a week before, unanswered
@@ -1052,6 +1123,122 @@ class WaitingOnYou(World):
         self.assertEqual(sum(c.get("participant_not_cleared", 0)
                              for c in out["misses"]["by_workflow"].values()), 1)
 
+    def test_cardinality_a_cold_ask_from_an_unknown_sender_makes_no_item(self):
+        """An ask from a sender with no customer or supplier record, in a thread the owner
+        never wrote in, to someone they never wrote to (offers, trials, newsletters: 1 of
+        22 answered on fresh mail) prepares nothing; the same ask from someone the owner
+        wrote to before, or from a sender on both a customer and a supplier record, still
+        does, and without the rule the cold ask did. N=1/10/60."""
+        ask = "Can you confirm the quantity for next week?"
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                for i in range(n):
+                    known = f"known{i}@partner-{i}.example"
+                    made = mail(self.w, SENT - timedelta(days=5), sender=OURS, to=(known,),
+                                body="Here is the spec sheet.", subject=f"Spec {i}",
+                                mailbox=OURS_OID, conversation=f"old-{i}", n=89_000 + i,
+                                hour=9)
+                    self.sent(made, 9, -5)
+                    both = f"both{i}@two-sided-{i}.example"   # a customer and a supplier
+                    self.w.obj("Customer", {"name": f"Two sided {i}", "email": both})
+                    self.w.obj("Supplier", {"name": f"Two sided {i}", "rep_email": both})
+                    for kind, sender in (("cold", f"sales{i}@cold-{i}.example"),
+                                         ("known", known), ("both", both)):
+                        made = mail(self.w, SENT, sender=sender, to=(OURS,), body=ask,
+                                    subject=f"Quote {i}", mailbox=OURS_OID,
+                                    conversation=f"{kind}-{i}",
+                                    n={"cold": 90_000, "known": 91_000,
+                                       "both": 92_000}[kind] + i, hour=10)
+                        self.sent(made, 10)
+                self.store()
+
+                def run(registry):          # the owner's desk: the approver roster
+                    shutil.rmtree(self.dir / "out", ignore_errors=True)
+                    st = pe._Store(self.dir / "s.sqlite", threads=1)
+                    try:
+                        out = rp.replay(st, people(), role=f"person:{OURS}",
+                                        out=self.dir / "out", since=DAY,
+                                        until=DAY + timedelta(days=1),
+                                        roles={"owner": [OURS_OID]}, config=rp.load_config(),
+                                        registry=registry, environ={},
+                                        end=DAY + timedelta(days=10), probe=lambda: 64.0)
+                    finally:
+                        st.close()
+                    return out["prepared_by_autopilot"], self.prepared_in()
+                shipped = ap.load_registry()
+                # a sender on both a customer and a supplier record reads as side unknown,
+                # yet is a known party: never dropped as cold
+                self.assertEqual(run(shipped), ({"desk": 2 * n}, {"known": n, "both": n}))
+                # the shipped desk rule without its cold-sender condition took both
+                reg = json.loads(json.dumps(shipped))
+                next(a for a in reg["autopilots"] if a["id"] == "desk")["when"].pop("any_of")
+                self.assertEqual(run(reg), ({"desk": 3 * n},
+                                            {"known": n, "cold": n, "both": n}))
+
+    def test_cardinality_a_fresh_opt_in_reads_their_captured_sent_mail_once(self):
+        """A person opted in today has an empty queue: whom they wrote to before comes from
+        their own captured sent mail (60 days, read the first time the queue meets their
+        mailbox), so an ask from someone they wrote to three weeks ago is prepared from the
+        first cycle; marked read already (the old empty history) it was dropped as cold.
+        The history is read once: a second cycle reads nothing again. N=1/10/60."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                for i in range(n):
+                    known = f"known{i}@partner-{i}.example"
+                    made = mail(self.w, SENT - timedelta(days=21), sender=OURS, to=(known,),
+                                body="Here is the spec sheet.", subject=f"Spec {i}",
+                                mailbox=OURS_OID, conversation=f"old-{i}", n=93_000 + i,
+                                hour=9)
+                    self.sent(made, 9, -21)
+                    made = mail(self.w, SENT, sender=known, to=(OURS,),
+                                body="Can you confirm the quantity for next week?",
+                                subject=f"Quote {i}", mailbox=OURS_OID,
+                                conversation=f"known-{i}", n=94_000 + i, hour=8 + i % 8)
+                    self.sent(made, 8 + i % 8)      # under the hourly cap per owner
+                self.store()
+
+                def cycle(name, *, history_read):
+                    root = self.dir / name
+                    root.mkdir()
+                    (root / autopilot_queue.ROLES_FILE).write_text(
+                        json.dumps({"roles": {"owner": [OURS_OID]}}))
+                    q = ap.Queue(root / ap.QUEUE_FILE)
+                    self.addCleanup(q.close)
+                    if history_read:
+                        with q.conn:
+                            q.set_meta(f"sent_seeded:{OURS_OID.lower()}", {"days": 0})
+                    st = pe._Store(self.dir / "s.sqlite", threads=1)
+                    try:
+                        reg = ap.load_registry()
+                        ids = ap.window_ids(st, reg, ap._iso(DAY), ap._iso(DAY + timedelta(days=1)))
+                        out = [ap.run_cycle(st, q, ids, people=people(), registry=reg,
+                                            environ={}, now=DAY + timedelta(days=1),
+                                            as_of=DAY.date(), settle_items=False,
+                                            rate_by_event_hour=True)
+                               for _ in range(2)]
+                    finally:
+                        st.close()
+                    return q, out
+                q, out = cycle("fresh", history_read=False)
+                self.assertEqual(len(q.items(None)), n)
+                self.assertEqual(out[0].get("sent_seeded"), n)
+                self.assertNotIn("sent_seeded", out[1])            # read once
+                q, _out = cycle("empty", history_read=True)
+                self.assertEqual(q.items(None), [])
+
+    def prepared_in(self) -> Counter:
+        """The kinds of conversation (``<kind>-<i>``) the queue holds an item for."""
+        q = ap.Queue(self.dir / "out" / f"person_{OURS.split('@')[0]}_synth_tenant_example"
+                     / ap.QUEUE_FILE)
+        try:
+            return Counter(json.loads(q.conn.execute(
+                "SELECT body FROM events WHERE event_id = ?", (i["event_id"],)
+            ).fetchone()[0])["conversation_id"].split("-")[0] for i in q.items(None))
+        finally:
+            q.close()
+
     def test_a_mail_the_person_starts_is_self_initiated(self):
         made = mail(self.w, SENT, sender=OURS, to=(REP,), body="New topic.", subject="Hello",
                     mailbox=OURS_OID, conversation="fresh-1", n=83_000, hour=11)
@@ -1100,14 +1287,9 @@ class WaitingOnYou(World):
 class PastApprovals(World):
     """A replay reads today's approval records: one decided after the live feed first held
     the request (its time plus ``feed_lag_minutes``) was pending then, so it is prepared and
-    the decision scores it, even on the same day; one decided sooner never could be."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        from operating.tests.test_autopilot_fast import with_mc_approvals
-        switched_on = mock.patch.object(ap, "load_registry", with_mc_approvals(ap.load_registry))
-        switched_on.start()
-        self.addCleanup(switched_on.stop)
+    the decision scores it, even on the same day; one decided sooner never could be. The
+    shipped registry prepares it as ``job_approval``'s standing work (the rule-based
+    recommendation; a replay never starts the job's model session)."""
 
     def approval(self, i: int, *, decided_hours: int) -> str:
         oid = self.w.obj("MCApproval", {
@@ -1131,7 +1313,7 @@ class PastApprovals(World):
                 self.store()
                 out = Replay.replay(self)
                 flow = out["workflows"]["internal_approval"]
-                self.assertEqual(out["prepared_by_autopilot"], {"approval_request": n + 1})
+                self.assertEqual(out["prepared_by_autopilot"], {"job_approval": n + 1})
                 self.assertEqual((flow["judged"], flow["matched"]), (n + 1, n + 1))
                 # actions count inside the window: the two same-day decisions
                 self.assertEqual((flow["actions"], flow["anticipated"]), (2, 1))
@@ -1416,6 +1598,12 @@ class MCQuestions(World):
         # an approval's decision as a task event: the approval provider counts it, not this
         task = self.w.obj("MCTask", {"task_id": "TASK-A"}, binding="mission_control.tasks")
         self._event("TASK-A", task, "approval.decided", OURS, DAY + timedelta(hours=11), {})
+        # MC's audit marks beside a decision or an answer (the person decided their own
+        # request, answered a question addressed to someone else): no second action
+        self._event("TASK-A", task, "approval.owner_override", OURS, DAY + timedelta(hours=11),
+                    {"gateId": "g", "decision": "approved", "reasonCode": "self_requested"})
+        self._event("TASK-0", task, "question.owner_override", OURS, DAY + timedelta(hours=11),
+                    {"questionId": "q-0", "addressee": "ops", "reasonCode": "not_addressee"})
         # agents working under the person's identity: an approval request and a question
         # naming their runtime, an update marked an agent's, an actor kind never seen
         at = DAY + timedelta(hours=12)

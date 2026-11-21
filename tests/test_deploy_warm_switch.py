@@ -48,6 +48,15 @@ if os.path.exists(os.path.join(os.environ["PLX_API_HOLD_DIR"], f"hold-{name}")):
     if never:                      # held: open only once warm
         time.sleep(3600)
     time.sleep(warm)
+    cg = os.environ.get("PLX_CGROUP_ROOT", "")   # its weight while it warmed (the deploy's)
+    unit = "plx-api@standby" if uds else "plx-api"
+    try:
+        seen = open(f"{cg}/system.slice/{unit}.service/cpu.weight").read().strip()
+        io = open(f"{cg}/system.slice/{unit}.service/io.weight").read().strip()
+        with open(os.path.join(os.environ["STUB_STATE"], "weights"), "a") as f:
+            f.write(f"{unit} {seen} {io}\n")
+    except OSError:
+        pass
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def address_string(self): return "local"
@@ -113,6 +122,7 @@ def show(unit, props, value):
     loaded = "not-found" if (standby and cfg.get("no_template")) else "loaded"
     p = "--port " + port(unit) if unit == "plx-api" else "--unix-socket " + port(unit)
     out = {"LoadState": loaded, "MemoryCurrent": str(cfg.get("api_bytes", 1 << 30)),
+           "CPUWeight": "1000", "IOWeight": "1000",
            "MainPID": pidfile(unit).read_text() if alive(unit) else "0",
            "DropInPaths": " ".join(cfg["dropins"]) if not standby else "",
            "ExecStart": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m operator_api serve "
@@ -383,6 +393,94 @@ class WarmSwitchThroughCaddy(unittest.TestCase):
                       "127.0.0.1 --unix-socket /run/plx-api-%i/api.sock $PLX_API_ARGS", slot)
         links = sorted(p.name for p in (host.tmp / "units" / "plx-api@.service.d").iterdir())
         self.assertEqual(links, ["a.conf", "zzzz-slot.conf"])   # not the plx-.service.d one
+
+    def test_a_warming_api_yields_the_cores_to_the_one_that_serves(self):
+        """While a held API warms beside the serving one its cgroup's CPU and IO weight are
+        the deploy's low ones (live 11-21: at equal weight the serving standby's reads took
+        14-17 s), and its own again before it serves; a warm-up past WARM_LOW_S gets its
+        own back while still warming, so a loaded box never starves it past the wait."""
+        def run(**env):
+            host = Host(self, caddy=True)
+            for unit in ("plx-api", "plx-api@standby"):
+                cg = host.tmp / "cg" / "system.slice" / f"{unit}.service"
+                cg.mkdir(parents=True)
+                (cg / "cpu.weight").write_text("1000\n")
+                (cg / "io.weight").write_text("default 1000\n")
+            host.env.update({"PLX_CGROUP_ROOT": str(host.tmp / "cg"), **env})
+            host.switch_to_new()
+            got = host.restart()
+            self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+            self.assertIn("warm switch", got.stdout)
+            seen = (host.state / "weights").read_text().split("\n")
+            after = {u: ((host.tmp / "cg" / "system.slice" / f"{u}.service" / "cpu.weight")
+                         .read_text().strip(),
+                         (host.tmp / "cg" / "system.slice" / f"{u}.service" / "io.weight")
+                         .read_text().strip()) for u in ("plx-api", "plx-api@standby")}
+            return [line for line in seen if line], after
+        own = {"plx-api": ("1000", "default 1000"), "plx-api@standby": ("1000", "default 1000")}
+        seen, after = run()
+        # the standby warms beside the old, warm API at its own weight; plx-api, warming
+        # again while the standby serves alone, at the low one
+        self.assertEqual(seen, ["plx-api@standby 1000 default 1000", "plx-api 100 default 100"])
+        self.assertEqual(after, own)
+        # a warm-up longer than WARM_LOW_S (here 0 s; the stand-in warms 3 s) has its own
+        # weight back before it is ready
+        seen, after = run(PLX_API_WARM_LOW_S="0", WARM="3")
+        self.assertEqual(seen, ["plx-api@standby 1000 default 1000",
+                                "plx-api 1000 default 1000"])
+        self.assertEqual(after, own)
+
+    def _weighted(self) -> "Host":
+        host = Host(self, caddy=True)
+        for unit in ("plx-api", "plx-api@standby"):
+            cg = host.tmp / "cg" / "system.slice" / f"{unit}.service"
+            cg.mkdir(parents=True)
+            (cg / "cpu.weight").write_text("1000\n")
+            (cg / "io.weight").write_text("default 1000\n")
+        host.env["PLX_CGROUP_ROOT"] = str(host.tmp / "cg")
+        return host
+
+    @staticmethod
+    def _weights(host: "Host") -> dict:
+        cg = host.tmp / "cg" / "system.slice"
+        return {u: ((cg / f"{u}.service" / "cpu.weight").read_text().strip(),
+                    (cg / f"{u}.service" / "io.weight").read_text().strip())
+                for u in ("plx-api", "plx-api@standby")}
+
+    OWN = {"plx-api": ("1000", "default 1000"), "plx-api@standby": ("1000", "default 1000")}
+
+    def test_a_failed_or_stopped_warm_up_gives_the_unit_its_weight_back(self):
+        """A standby never ready, and a deploy stopped (SIGTERM) while plx-api warms,
+        both leave every API unit at its own weights; weights a killed deploy left low are
+        put back by the next switch and by ``plx-release slots``."""
+        host = self._weighted()
+        (Path(host.cfg["current"]).parent / "new" / "NOT_READY").write_text("")
+        host.switch_to_new()
+        got = host.restart()
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("not ready within", got.stderr)
+        self.assertEqual(self._weights(host), self.OWN)
+
+        host = self._weighted()
+        host.env["WARM"] = "4"
+        host.switch_to_new()
+        tool = subprocess.Popen([str(TOOL), "restart"], env=host.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        end = time.monotonic() + 15
+        while self._weights(host)["plx-api"][0] != "100" and time.monotonic() < end:
+            time.sleep(0.05)
+        self.assertEqual(self._weights(host)["plx-api"], ("100", "default 100"))
+        tool.terminate()
+        tool.communicate(timeout=30)
+        self.assertEqual(self._weights(host), self.OWN)
+
+        for unit in ("plx-api", "plx-api@standby"):   # left low by a deploy killed -9
+            cg = host.tmp / "cg" / "system.slice" / f"{unit}.service"
+            (cg / "cpu.weight").write_text("100\n")
+            (cg / "io.weight").write_text("default 100\n")
+        subprocess.run([str(TOOL), "slots"], env=host.env, text=True, capture_output=True,
+                       timeout=60)
+        self.assertEqual(self._weights(host), self.OWN)
 
     def _releases_from_commits(self, host, changed: str) -> None:
         """old and new built from two commits of a repo whose second commit changes ``changed``."""

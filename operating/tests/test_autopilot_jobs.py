@@ -512,6 +512,42 @@ def job_item(item_id: str, owner: str, jobs: list) -> dict:
             "due_at": now, "created_at": now}
 
 
+class ApprovalJobSettles(unittest.TestCase):
+    """A job item about an MC approval request leaves the queue once the approval is
+    decided in MC (by anyone), whatever its own rule: 22 of 23 such items in one live
+    queue were open on approvals MC already showed approved. A pending approval keeps
+    its item (the person's own decision still closes it); a status that cannot be read
+    keeps it too."""
+
+    def test_decided_in_mc_closes_pending_stays_person_decided_still_closes(self):
+        from unittest import mock
+        from operating import autopilot_engine as ae
+        with tempfile.TemporaryDirectory() as tmp:
+            q = ap.Queue(Path(tmp) / "queue" / ap.QUEUE_FILE)
+            try:
+                status = {}
+                with q.conn:
+                    for n, st in enumerate(("approved", "rejected", "pending", "pending", "")):
+                        item = job_item(f"ap_{n}", OWNER[1], [])
+                        oid = f"MCApproval:mission_control.approvals:{{\"id\":\"apg_{n}\"}}"
+                        item["autopilot"] = "job_approval"
+                        item["body"]["happened"] = {"event_type": "approval.requested",
+                                                    "object_id": oid}
+                        q.add_item(item)
+                        if st:
+                            status[oid] = {"status": {"value": st}}
+                    q.add_item(job_item("ap_meeting", OWNER[1], []))
+                read = lambda _st, ids, _props: {i: status[i] for i in ids if i in status}  # noqa: E731
+                with mock.patch.object(ae, "_read", read):
+                    done = ae.settle(object(), q, {}, None, now=datetime.now(timezone.utc),
+                                     decided={"ap_3": {"closed": "person_decided"}})
+                self.assertEqual(dict(done), {"approval_decided": 2, "person_decided": 1})
+                self.assertEqual({i["item_id"] for i in q.items()},
+                                 {"ap_2", "ap_4", "ap_meeting"})
+            finally:
+                q.close()
+
+
 class JobReview(unittest.TestCase):
     """The person reviews a proposed change: it is prepared through the desk as them (one
     prepared change per job, never a second), confirmed on ``/api/prepared``; another
@@ -593,6 +629,27 @@ class JobReview(unittest.TestCase):
         self.assertEqual(owner.post("/api/autopilot/items/ap_job/jobs/0/prepare").json()[
             "prepared_id"], card["prepared_id"])
 
+    def test_an_approval_job_card_carries_its_recommendation_reasons_and_mc_link(self):
+        item = job_item("ap_gate", OWNER[1], [{"tool": "plx.prepare_write", "arguments": TASK}])
+        item["autopilot"] = "job_approval"
+        item["body"]["prepared"].update({
+            "recommendation": "approve", "reasons": ["an earlier approval was granted"],
+            "mc": {"link": "https://mc.plxcustomer.io/tasks/TASK-3"},
+            "action": {"kind": "mc_approval", "note": "Decide in Mission Control."}})
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.add_item(item)
+        q.close()
+        card = self.drafts(self.client(OWNER))["ap_gate"]
+        self.assertEqual((card["kind"], len(card["jobs"])), ("job", 1))
+        self.assertEqual(card["facts"], ["Recommended: approve", "an earlier approval was granted"])
+        self.assertEqual([(lk["label"], lk["href"]) for lk in card["links"]],
+                         [("Decide in Mission Control", "https://mc.plxcustomer.io/tasks/TASK-3")])
+        self.assertEqual(card["note"], "Decide in Mission Control.")
+        # a plain job card carries none of it
+        plain = self.drafts(self.client(OWNER))["ap_job"]
+        self.assertEqual((plain["facts"], plain["links"], plain["note"]), ([], [], ""))
+
     def test_another_persons_item_a_refused_proposal_or_a_bad_index_is_not_found(self):
         owner = self.client(OWNER)
         for path in ("/api/autopilot/items/ap_sam/jobs/0/prepare",
@@ -663,6 +720,14 @@ class RegistryRules(unittest.TestCase):
         bad.pop("draft")
         with self.assertRaises(ap.RegistryInvalid):
             ap.validate_registry({**base, "autopilots": [bad]})
+        # standing work: a rule-based handler, on a job autopilot only
+        for wrong in ({"standing": "no_such_handler"}, {"standing": "job"},
+                      {"standing": "approval_recommendation", "draft": "agent"}):
+            with self.subTest(wrong=wrong), self.assertRaises(ap.RegistryInvalid):
+                ap.validate_registry({**base, "autopilots": [{**jobs[0], "id": "job_bad",
+                                                              **wrong}]})
+        ap.validate_registry({**base, "autopilots": [
+            {**jobs[0], "id": "job_ok", "standing": "approval_recommendation"}]})
 
 
 if __name__ == "__main__":

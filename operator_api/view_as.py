@@ -184,6 +184,31 @@ class ViewAs:
         found = self._table().get(key)
         return (found[0], name_of(found[1])) if found else None
 
+    def names_of(self, oids: Iterable[str]) -> dict[str, str]:
+        """object id -> name, for the ids of active staff the people exclusion clears now
+        (asked once, as ``people`` does); an id it does not clear, or does not hold, gets no
+        name. Only names people a caller already lists: nobody is added by it."""
+        wanted = {str(i).strip().lower() for i in oids}
+        if not wanted:
+            return {}
+        try:
+            test = self.excluded()   # type: ignore[misc]
+        except Exception:  # noqa: BLE001 - undecidable: nobody named
+            return {}
+        if test is None:
+            return {}
+        out: dict[str, str] = {}
+        for oid, email in self._table().values():
+            if oid not in wanted:
+                continue
+            try:
+                if test(oid):
+                    continue
+            except Exception:  # noqa: BLE001 - undecidable: not named
+                continue
+            out[oid] = name_of(email)
+        return out
+
     def name_among(self, owner_ids: Iterable[str]) -> str:
         """The name of the first of these ids the table holds, else "A colleague"."""
         ids = {str(i).lower() for i in owner_ids}

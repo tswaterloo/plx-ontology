@@ -57,18 +57,25 @@ Prepare what {person} would do about it now, the way they would do it:
 - a reply in this conversation: "reply", in {person}'s own voice, saying only what the \
 records, the thread or the message show; a status, a date, a confirmation, a document, a \
 how-to, a short courtesy answer;
-- when the answer turns on what only {person} knows or decides (their decision, the state \
-of their own work, their plan or availability, money, a commitment the records do not back), \
-still write the reply in full, ready to send, with each piece only they can give as a \
-placeholder in square brackets ([yes or no], [ship date], [quantity]): never pick it for them \
-and never invent it. A placeholder is a few words naming one piece, never a sentence or a list \
-of alternatives, and the reply around it is what {person} would send, as short as they write, \
-answering what the message asks first: when nearly all of it is theirs to give, the one or two \
-lines they would write around it, never a form of blanks; never "I'll check and come back" \
-where their answer goes: the answer is the placeholder. Put what they must fill in as "ask": the question, and when the message \
-offers a choice, the two or three answers they would choose between, each with the full reply \
-that answer would send. Any reply says only what the message, the thread or the records show: \
-no time, promise, price, name or step of anyone's that nobody stated;
+- when the reply turns on a decision only {person} can make (approve or decline, which way \
+to go, whether to take it on, their plan or a commitment the records do not back): no written \
+reply; put it to them as "ask": the question in one or two plain sentences (no figure, price \
+or date restated: the thread beside it carries them), and the two or three answers they would \
+choose between, each with the full short reply that answer would send, in their voice, saying \
+only what is shown;
+- when the reply is clear but a piece of it is only {person}'s to give (a date, a quantity, \
+the state of their own work, a yes or no on a fact of theirs), write the reply in full, ready \
+to send, with each such piece as a placeholder in square brackets ([ship date], [quantity]): \
+never pick it for them and never invent it. A placeholder is a few words naming one piece, \
+never a sentence or a list of alternatives, and the reply around it is what {person} would \
+send, as short as they write, answering what the message asks first; never "I'll check and \
+come back" where their answer goes: the answer is the placeholder. Put what they fill in as \
+"ask": the question in a few plain words, no figure restated;
+- either way, say what the message asks and no more: no background, cause or state of things \
+it did not ask about (a record can be behind what {person} knows now); a question put to \
+{person} about their product, plan or choice is answered only from what was stated. Any reply \
+says only what the message, the thread or the records show: no time, promise, price, name or \
+step of anyone's that nobody stated;
 - a change in a business system: plx.prepare_write (plx.edit_document for a document's text \
 or cells), with the record's ids as the records hold them; a message to someone other than \
 the sender (asking a colleague to do their part, a supplier, passing it on): plx.prepare_write \
@@ -130,6 +137,11 @@ NO_READS = ("Someone outside the company reads this conversation: you have no re
             "records; never name another customer or supplier, their orders, purchase "
             "orders, invoices or shipments, or a price their own lines do not state (what "
             "needs more is a question to {person}).")
+
+# a message whose session read something the screens bar (``Assistant._decide``): the same
+# task again with no record tool, from the screened message and thread alone
+THREAD_ONLY = ("You have no record tools for this one: write only from the message and the "
+               "thread; a piece only a record or {person} could give is a [placeholder].")
 
 AS_OF = ("The records only show what was known by then; anything dated later did not happen "
          "yet: act as of then.")
@@ -205,22 +217,47 @@ def when_of(as_of: str) -> str:
     return moment.astimezone(ZoneInfo("America/New_York")).strftime("%A %Y-%m-%d %I:%M %p ET")
 
 
-def task(person: str, when: str, what: str, replay: bool = False, reads: bool = True) -> str:
+def task(person: str, when: str, what: str, replay: bool = False, reads: bool = True,
+         thread_only: bool = False) -> str:
     who = person or "the person"
     return TASK.format(person=who, when=when, what=what,
-                       reads=READS if reads else NO_READS.format(person=who),
+                       reads=THREAD_ONLY.format(person=who) if thread_only
+                       else READS if reads else NO_READS.format(person=who),
                        catalogue="\n".join(aj.catalogue())) + ("\n\n" + AS_OF if replay else "")
+
+
+# the reply sort before a session on a message (``Assistant.reply_screen``): a small model's
+# one turn, false only for mail plainly owed nothing; measured on 134 open reply lines the
+# session had judged (55 drafted, 79 nothing to do; 22 of them first seen after the prompt
+# was written): it set aside 28 of the 79 and none of the 55
+REPLY_SCREEN = """You sort {person}'s mail before an assistant drafts replies. Read the \
+message below. Would {person} write anything back to it, or have to decide something about \
+it? Answer false only when it is plainly one of: marketing, a promotion, a newsletter, a sales \
+pitch or cold outreach from someone they have no business with; an automatic notice (a \
+delivery or tracking update, a verification code, a receipt, a statement, an invoice or \
+account notice sent by a system) that asks nothing; or a closing note that needs no answer \
+(thanks, OK, received, done). Anything a customer, supplier, colleague or partner asks, \
+chases, proposes or needs from them is true, and so is a meeting invitation. When unsure, \
+answer true. Answer with one JSON object only: {{"reply": true or false, "what": "<a few \
+words>"}}
+
+{event}"""
+SCREEN_CHARS = 8000
+SCREEN_FEATURE = "assist_reply_screen"
 
 
 class Assistant(aj.Jobber):
     """The decision step: ``run`` (an event: the jobber's pool, screens and keys, every
     event goes to the session, no triage) and ``look`` (a time); each returns
-    (``Decision``, "") or (None, why)."""
+    (``Decision``, "") or (None, why). ``reply_screen``: a small model that first sorts
+    out a message plainly owed no reply (``REPLY_SCREEN``: why ``no_reply_wanted``, no
+    session); None (the default, the live cycle's): every message goes to the session."""
 
     def __init__(self, model: str, *, lookup: Any = None, checker: Any = None,
-                 **kw: Any) -> None:
+                 reply_screen: Optional[str] = None, **kw: Any) -> None:
         from .autopilot_check import Checker
         super().__init__(model, triage=None, lookup=lookup, **kw)
+        self.reply_screen = reply_screen
         # the second pass (``autopilot_check``): only what it finds supported stands
         self.checker = checker if checker is not None else Checker(
             binary=self.binary, home=self.home)
@@ -232,12 +269,28 @@ class Assistant(aj.Jobber):
         from datetime import datetime, timezone
         if self.lookup is None:
             return None, "agent_no_session", []
+        if message and self.reply_screen and not event_text.startswith(LOOK_HEAD) \
+                and self._owed_nothing(event_text, person):
+            return None, "no_reply_wanted", []
         now = as_of or datetime.now(timezone.utc).isoformat()
         what = event_text if event_text.startswith(LOOK_HEAD) else \
             "This just happened:\n" + event_text
         prompt = task(person, when_of(now), what, replay=bool(as_of), reads=reads)
+        look = event_text.startswith(LOOK_HEAD)
+        again = task(person, when_of(now), what, replay=bool(as_of), reads=False,
+                     thread_only=True) if (message and reads and not look) else ""
         return self._decide(owner, prompt, message, reads, what=event_text, person=person,
-                            look=event_text.startswith(LOOK_HEAD), when=when_of(now))
+                            look=look, when=when_of(now), again=again)
+
+    def _owed_nothing(self, event_text: str, person: str) -> bool:
+        """Whether the reply sort reads the message as plainly owed nothing; a failed call
+        or an answer that is not a plain false counts as owed (the session decides)."""
+        from .card_text import mask_served
+        # card numbers and credential-shaped values masked, as every session's input is
+        prompt = mask_served(REPLY_SCREEN.format(person=person or "the person",
+                                                 event=event_text[:SCREEN_CHARS]))
+        got = self.small(prompt, str(self.reply_screen), SCREEN_FEATURE)
+        return got is not None and got.get("reply") is False
 
     def run(self, event: Mapping[str, Any], owner: str, event_text: str, person: str,
             people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True
@@ -269,8 +322,15 @@ class Assistant(aj.Jobber):
         return (None, "not_on_changes") if got.empty else (got, "")
 
     def _decide(self, owner: str, prompt: str, message: bool, reads: bool = True, *,
-                what: str = "", person: str = "", look: bool = False, when: str = ""
-                ) -> tuple[Optional[Decision], str, list[str]]:
+                what: str = "", person: str = "", look: bool = False, when: str = "",
+                again: str = "") -> tuple[Optional[Decision], str, list[str]]:
+        """``again``: a message's task with no record tool (``THREAD_ONLY``), run once when
+        what this session read is screened (``_screened``: ``thread_screen``'s people
+        exclusion and pay or HR, and Freightcom; each is tested to retry):
+        the message and thread passed the screens before any call, so a decision written
+        from them alone may stand; nothing of the screened session's reads or decision
+        reaches it (measured on dev: 4 of 20 replies were lost to a record the session
+        looked up, never to the message itself)."""
         proposals: list[dict[str, Any]] = []
         ran = self.lookup.run(owner, prompt, tools=aj.proposal_tools(proposals), agent=True,
                               reads=reads)
@@ -282,6 +342,9 @@ class Assistant(aj.Jobber):
         if got.empty:
             return None, "nothing_to_do", looked
         if self._screened(got, looked):
+            if again:
+                return self._decide(owner, again, message, False, what=what, person=person,
+                                    look=look, when=when)
             # never to the check's model: ``_finish`` drops the whole decision
             return got, "", looked
         got, why = self.checker.check(got, what, looked, person, look, when=when)

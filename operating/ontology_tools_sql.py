@@ -38,6 +38,8 @@ id>``: the query, the reader and the views it read are kept (``RESULTS``) so the
 gate can bind a stated figure to the cell that holds it."""
 from __future__ import annotations
 
+import concurrent.futures as cf
+import contextvars
 import datetime as dt
 import hashlib
 import json
@@ -81,6 +83,8 @@ MEANING_EXTRA = 5
 # attachment's own text holds every word that the word match did not list
 # (``_comms_attached``: "QuikPAK orders appearing" was only in a PDF's text)
 ATTACH_EXTRA = 5
+# the attachment passes run beside their word searches (``_comms_search``)
+_ATTACH_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-attach")
 # the attachment pass's own statement budget: past it, no attachment rows (the word page
 # answers alone); a common word's walk ran ~24 s live 11-19 under load
 ATTACH_MS = 2_500
@@ -499,6 +503,15 @@ class SqlTool:
         # a first page's meaning ranking runs beside the word search (``_comms_widened``)
         ranking = (self._meaning_started(args["query"], actor, wanted)
                    if words and cur is None else None)
+        # and a first page's attachment pass (``_comms_attached``): its own statements on
+        # its own pooled connection with the same settings; its rows are kept only after
+        # the word rows are known (none of theirs again)
+        attaching = (_ATTACH_POOL.submit(
+            contextvars.copy_context().run, self._comms_attached, conn, settings, guarded,
+            actor, q, None, since, until, ATTACH_EXTRA,
+            set(), limit + MEANING_EXTRA + 1)
+            if words and cur is None and "graph_mail" in wanted and not args.get("participant")
+            and self._files_reader(actor) else None)
         try:
             views, who, rows = self._comms_scoped(conn, settings, work, actor)
         except cs.SearchInputError as exc:
@@ -561,11 +574,24 @@ class SqlTool:
                     "some of the words or close in meaning, each with its match" if few else
                     f"also up to {MEANING_EXTRA} items close in meaning that the word "
                     "match did not list, each with its match"))))
-        if words and cur is None and "emails" in views and self._files_reader(actor):
-            attached = self._comms_attached(
-                conn, settings, guarded, actor, q, who, since, until,
-                min(ATTACH_EXTRA, HITS_MAX - len(documents)),
-                {h["citation"] for h in documents})
+        # a participant's search: the pass needs the party ``search_rows`` resolved, so it
+        # runs after the word search (as before the parallel pass), bound to that party
+        after = (attaching is None and who is not None and words and cur is None
+                 and "graph_mail" in wanted and self._files_reader(actor))
+        if (attaching is not None or after) and "emails" in views:
+            if attaching is None:
+                attached = self._comms_attached(
+                    conn, settings, guarded, actor, q, who, since, until, ATTACH_EXTRA,
+                    set(), limit + MEANING_EXTRA + 1)
+            else:
+                try:
+                    attached = attaching.result(timeout=ATTACH_MS / 1000 + 1.0)
+                except Exception:  # noqa: BLE001 - late or failed: the word page answers alone
+                    attaching.cancel()
+                    attached = []
+            seen = {h["citation"] for h in documents}
+            attached = [r for r in attached if r[1] not in seen][
+                :max(0, min(ATTACH_EXTRA, HITS_MAX - len(documents)))]
             for hit in cs.hits(attached, words=words, party_=who):
                 hit["match"] = "every word, in an attachment's text"
                 documents.append(hit)
@@ -583,8 +609,8 @@ class SqlTool:
         return out
 
     def _comms_attached(self, conn: Any, settings: Any, guarded: str, actor: Any, q: str,
-                        who: Any, since: Any, until: Any, room: int, seen: set
-                        ) -> list[Any]:
+                        who: Any, since: Any, until: Any, room: int, seen: set,
+                        spare: int = 0) -> list[Any]:
         """Up to ``room`` rows of the reader's mail (``comms_search.attachment_sql``, the
         same guarded view as the word search) whose attachment's text holds every word of
         ``q``, newest first: none in ``seen`` or that a word page lists (``listed_sql``),
@@ -619,7 +645,7 @@ class SqlTool:
                                     common=common)
             rows = [r for r in pg.execute(sql, {
                 "q": q, "party": who.value if who else None, "since": since,
-                "until": until, "k": 2 * room + len(seen), "walk": cs.ATTACH_WALK,
+                "until": until, "k": 2 * room + len(seen) + spare, "walk": cs.ATTACH_WALK,
                 "mails": mails}) if r[1] not in seen]
             pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
             if not rows:
@@ -1344,16 +1370,79 @@ class SqlTool:
         values: dict[str, list[Any]] = {}
         for key, value, n in common:
             if len(values.setdefault(key, [])) < SAMPLE_VALUES:
-                values[key].append([_cell(value)[0], n])
-        return {"rules": RULES, "record_type": {
+                values[key].append([value, n])
+        return _fitted_type({"rules": RULES, "record_type": {
             k: (_cell(v)[0] if not isinstance(v, (list, dict)) else v)
-            for k, v in entry.items()},
-            "sample": {"records_you_can_read": total,
-                       "rows": [{"handle": h, "label": _cell(lb)[0], "record_date": d,
-                                 "fields": {k: _cell(v)[0] for k, v in (f or {}).items()}}
-                                for h, lb, d, f in sample],
-                       "commonest_values": values,
-                       "values_read_from": f"the first {TYPE_SAMPLE} records"}}
+            for k, v in entry.items()}}, total, sample, values)
+
+
+# A record type's describe fits one response (``_fits_response``): a type
+# whose records carry many long fields (a certificate's extracted text) gave
+# result_too_large, and the reader saw none of its fields. Cut in this order, each said in
+# ``trimmed``: free text (each value once) out of the commonest values, then those values
+# and the sample's field texts shorter, then fewer sample rows, then fewer values per field;
+# when no cut fits, the whole sample (the host then sends it once as text, or refuses).
+DESCRIBE_STEPS = (("free_text", None), ("text", 160), ("rows", 1), ("text", 80),
+                  ("values", 3), ("text", 40), ("values", 1))
+
+
+def _fits_response(out: Mapping[str, Any]) -> bool:
+    """Whether ``out`` fits one response as the host sends it (wrapped for a client,
+    written twice: ``mcp_server._envelope_bytes``)."""
+    from operating import mcp_server
+    return mcp_server._envelope_bytes(dict(out)) <= mcp_server.MAX_RESULT_BYTES
+
+
+def _short(value: Any, most: int | None) -> Any:
+    cell = _cell(value)[0]
+    if most is not None and isinstance(cell, dict) and len(cell["untrusted_text"]) > most:
+        return {"untrusted_text": cell["untrusted_text"][:most], "truncated": True}
+    return cell
+
+
+def _fitted_type(head: dict[str, Any], total: int, sample: Sequence[Any],
+                 values: Mapping[str, list[Any]]) -> dict[str, Any]:
+    """``head`` with its sample (``sample``: (handle, label, record_date, fields) rows;
+    ``values``: field -> [[value, count], ...] commonest first) cut to fit one response."""
+    most: int | None = None
+    rows, per, free = len(sample), SAMPLE_VALUES, False
+    trimmed: list[str] = []
+    steps = iter(DESCRIBE_STEPS)
+    while True:
+        kept = {k: [[_short(v, most), n] for v, n in vals[:per]] for k, vals in values.items()
+                if not (free and vals and all(n == 1 for _, n in vals))}
+        out = {**head, "sample": {
+            "records_you_can_read": total,
+            "rows": [{"handle": h, "label": _cell(lb)[0], "record_date": d,
+                      "fields": {k: _short(v, most) for k, v in (f or {}).items()}}
+                     for h, lb, d, f in sample[:rows]],
+            "commonest_values": kept,
+            "values_read_from": f"the first {TYPE_SAMPLE} records"}}
+        if trimmed:
+            out["sample"]["trimmed"] = trimmed
+        if not trimmed:
+            first = out
+        if _fits_response(out):
+            return out
+        step = next(steps, None)
+        if step is None:
+            # no cut fits (the type's own catalog entry is the bulk): the whole sample as
+            # before, for the host to send as text once or refuse
+            return first
+        kind, n = step
+        if kind == "free_text":
+            free = True
+            trimmed.append("fields whose sampled values each occur once (free text) left "
+                           "out of commonest_values")
+        elif kind == "text":
+            most = n
+            trimmed.append(f"texts cut to {n} characters")
+        elif kind == "rows":
+            rows = min(rows, n)
+            trimmed.append(f"{n} sample row")
+        else:
+            per = n
+            trimmed.append(f"{n} commonest value(s) per field")
 
 
 def _teams_windows(base: Any, actor: Any) -> dict[str, str]:
@@ -1650,7 +1739,9 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
             names = list(settings)
             local = [*names, "search_path", "statement_timeout", "lock_timeout",
                      *(["role"] if as_role else [])]
-            values = [*(settings[n] for n in names), where + ", pg_catalog",
+            # plx_ops: the text[] @> / && a guarded view's filter may run before its guard
+            # (migration 0051; an absent schema is passed over, the filters then slower)
+            values = [*(settings[n] for n in names), where + ", plx_ops, pg_catalog",
                       str(int(seconds * 1000)), "2000", *([role] if as_role else [])]
             pg.execute("SELECT " + ", ".join("set_config(%s, %s, true)" for _ in local),
                        [x for pair in zip(local, values) for x in pair])

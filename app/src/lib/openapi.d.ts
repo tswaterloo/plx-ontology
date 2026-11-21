@@ -401,6 +401,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/conditions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Conditions
+         * @description Set your own limits on one category's auto: only these senders, these days,
+         *     these hours (US Eastern), your own stricter bar. Limits only narrow auto.
+         */
+        post: operations["autopilot_conditions_api_autopilot_conditions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/drafts": {
         parameters: {
             query?: never;
@@ -421,6 +442,27 @@ export type paths = {
          *     written by itself. Always your own; recorded on the audit log.
          */
         post: operations["autopilot_drafts_api_autopilot_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/items/{item_id}/always": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Always
+         * @description Always do this: auto for this item's sender, or its whole category, where your
+         *     replay score earned auto (409 otherwise). Money and unclear items still wait.
+         */
+        post: operations["autopilot_always_api_autopilot_items__item_id__always_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3853,6 +3895,15 @@ export type components = {
              */
             system: string;
         };
+        /** AutopilotAlwaysRequest */
+        AutopilotAlwaysRequest: {
+            /**
+             * Scope
+             * @description sender: auto for this item's sender in its category; category: auto for the whole category. Only where your replay score earned auto.
+             * @enum {string}
+             */
+            scope: "sender" | "category";
+        };
         /**
          * AutopilotArea
          * @description The autopilot area: today's prepared items you may see, per workflow its scores and
@@ -4027,6 +4078,39 @@ export type components = {
             /** People */
             people?: components["schemas"]["ViewAsPerson"][];
         };
+        /** AutopilotConditionsRequest */
+        AutopilotConditionsRequest: {
+            /**
+             * Choice
+             * @description One of ``my_drafts``' choices.
+             */
+            choice: string;
+            /**
+             * Days
+             * @description 0 = Monday to 6 = Sunday; empty: every day.
+             */
+            days?: number[];
+            /**
+             * End
+             * @description HH:MM, US Eastern.
+             */
+            end?: string | null;
+            /**
+             * Min Percent
+             * @description Your own bar, percent; never below the gate's.
+             */
+            min_percent?: number | null;
+            /**
+             * Senders
+             * @description Addresses or @domains; empty: any sender.
+             */
+            senders?: string[];
+            /**
+             * Start
+             * @description HH:MM, US Eastern.
+             */
+            start?: string | null;
+        };
         /**
          * AutopilotCountdown
          * @description The workflow's way to its write gate: the counts the gate admitted
@@ -4040,6 +4124,8 @@ export type components = {
             data_end?: string | null;
             /** Judged */
             judged: number;
+            /** @description The judged precision of the workflow's category on held-out days (``operating.autopilot_judged``), which Auto rests on: ``passes`` needs it to pass too. Absent: none on record. */
+            judged_score?: components["schemas"]["AutopilotScoreBar"] | null;
             /** Matched */
             matched: number;
             /** Need Judged */
@@ -4162,6 +4248,8 @@ export type components = {
             by_owner?: boolean;
             /** Choice */
             choice: string;
+            /** @description Your own limits on auto for it (``operating.assist_switches``); absent: none set. */
+            conditions?: components["schemas"]["AutopilotSwitchConditions"] | null;
             /** Label */
             label: string;
             /**
@@ -4694,6 +4782,12 @@ export type components = {
          */
         AutopilotPrepared: {
             /**
+             * Always Ok
+             * @description Your replay score earned Auto for this item's work, so "always do this" can be chosen for it.
+             * @default false
+             */
+            always_ok: boolean;
+            /**
              * Ask
              * @default
              */
@@ -4710,6 +4804,18 @@ export type components = {
              * @default
              */
             body: string;
+            /**
+             * Category
+             * @description The switch this item falls under (one of ``my_drafts``' choices), empty when none.
+             * @default
+             */
+            category: string;
+            /**
+             * Category Label
+             * @description That switch's name, as the switches show it.
+             * @default
+             */
+            category_label: string;
             /** Cc */
             cc?: string[];
             /**
@@ -4889,19 +4995,41 @@ export type components = {
         };
         /**
          * AutopilotScoreBar
-         * @description A workflow's held-out score for one person against the gate's bar.
+         * @description A workflow's held-out score for one person against the gate's bar. For Auto it is
+         *     the category's judged precision on held-out days (``operating.autopilot_judged``):
+         *     items Auto would have performed, graded right or not by the judge.
          */
         AutopilotScoreBar: {
             /** Judged */
             judged: number;
             /** Matched */
             matched: number;
+            /**
+             * Measured On
+             * @description The day it was graded (YYYY-MM-DD).
+             */
+            measured_on?: string | null;
             /** Need Judged */
             need_judged: number;
             /** Need Percent */
             need_percent: number;
             /** Percent */
             percent?: number | null;
+            /**
+             * Scope
+             * @description you: the person's own items; team: everyone's items (the category's score).
+             */
+            scope?: ("you" | "team") | null;
+            /**
+             * Source
+             * @description The judged run the counts come from (set, engine, judge).
+             */
+            source?: string | null;
+            /**
+             * Window
+             * @description The replayed days: first and last item time.
+             */
+            window?: string[];
         };
         /** AutopilotScoreDay */
         AutopilotScoreDay: {
@@ -4965,6 +5093,39 @@ export type components = {
             /** Reason */
             reason: string;
             score?: components["schemas"]["AutopilotScoreBar"] | null;
+        };
+        /**
+         * AutopilotSwitchConditions
+         * @description Limits on a category's auto: it performs by itself only for these senders, on these
+         *     days, between these times (US Eastern) and for work whose replay score is at least
+         *     this; anything else waits for your click. Empty: no limit beyond the gate and rules.
+         */
+        AutopilotSwitchConditions: {
+            /**
+             * Days
+             * @description 0 = Monday to 6 = Sunday; empty: every day.
+             */
+            days?: number[];
+            /**
+             * End
+             * @description HH:MM, US Eastern.
+             */
+            end?: string | null;
+            /**
+             * Min Percent
+             * @description Your own bar, percent; never below the gate's.
+             */
+            min_percent?: number | null;
+            /**
+             * Senders
+             * @description Addresses or @domains; empty: any sender.
+             */
+            senders?: string[];
+            /**
+             * Start
+             * @description HH:MM, US Eastern.
+             */
+            start?: string | null;
         };
         /** AutopilotSwitchRequest */
         AutopilotSwitchRequest: {
@@ -13575,6 +13736,75 @@ export interface operations {
             };
         };
     };
+    autopilot_conditions_api_autopilot_conditions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotConditionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_prepared_list_api_autopilot_drafts_get: {
         parameters: {
             query?: never;
@@ -13614,6 +13844,77 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AutopilotDraftsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_always_api_autopilot_items__item_id__always_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotAlwaysRequest"];
             };
         };
         responses: {

@@ -496,11 +496,13 @@ class RuntimeCitations(CitationReader):
                 "host holds no captured text of that page for this reader")])
         if scheme in ("sharepoint", "bc", "sharepoint-list"):
             return self._read_live(handle, actor, scheme)
-        if scheme in ("mc", "teams-chat", "teams-channel"):
-            # A Mission Control record or a Teams message (its captured text included):
-            # read from the host's capture only, through the runtime's per-reader resolve
-            # (``_read_capture``), which gates a message by its conversation's captured
-            # membership and the people exclusion, as the chat itself is gated.
+        if scheme in ("mc", "teams-chat", "teams-channel") + MEETING_SCHEMES:
+            # A Mission Control record, a Teams message (its captured text included) or a
+            # calendar event, Planner task or meeting transcript: read from the host's
+            # capture only, through the runtime's per-reader resolve (``_read_capture``),
+            # which gates a message by its conversation's captured membership, a meetings
+            # record by its calendar, plan or participants, and both by the people
+            # exclusion, as the SQL views over the same captures are gated.
             return self._read_capture(handle, actor)
         return self._out("unresolvable", "citation_scheme_not_supported")
 
@@ -3337,6 +3339,8 @@ TEXT_NOT_EXTRACTED = "text_not_extracted"
 # The citations plx.read serves as raw source rows, whose value markings apply to the read
 # (``EvidenceTools._marked``): Portal mirror rows and BC records (live or captured).
 RAW_ROW_SCHEMES = ("api", "bc")
+# The meetings capture's schemes (``integrations.capture_meetings.KINDS``).
+MEETING_SCHEMES = ("calendar-event", "planner-task", "meeting-transcript")
 # A live read of a file: its metadata, read now; its text is read from a capture only.
 LIVE_METADATA_ONLY = "live_metadata_only"
 # The mail capture relations of a file (whose text is extracted), not of a message body.

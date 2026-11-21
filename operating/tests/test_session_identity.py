@@ -224,6 +224,27 @@ class TicketTests(unittest.TestCase):
         with sqlite3.connect(guard.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM ticket_jti").fetchone()[0], 1)
 
+    def test_a_per_request_check_only_reads_and_still_refuses_a_revoked_ticket(self):
+        """The check every request makes takes no write lock (it answers while a writer
+        holds one) and refuses a revoked ticket as before; a revocation row past its exp
+        counts as gone, as the write path drops it."""
+        guard = si.TicketReplayGuard(self.dir / "read.db")
+        live = {"jti": "c" * 16, "exp": 9000}
+        gone = {"jti": "d" * 16, "exp": 1500}
+        guard.revoke(live, now=1000)
+        guard.revoke(gone, now=1000)
+        writer = sqlite3.connect(guard.path, isolation_level=None)
+        self.addCleanup(writer.close)
+        writer.execute("BEGIN IMMEDIATE")   # a sign-in recording its ticket meanwhile
+        with mock.patch.object(si.sqlite3, "connect", wraps=sqlite3.connect) as opened:
+            with self.assertRaises(si.SessionIdentityRefused) as caught:
+                guard.check(live, now=2000)
+            self.assertEqual(caught.exception.reason, "session_ticket_revoked")
+            guard.check(gone, now=2000)   # its row expired: as if dropped
+            guard.check({"jti": "e" * 16, "exp": 9000}, now=2000)
+        self.assertEqual([c.kwargs.get("timeout") for c in opened.call_args_list], [30] * 3)
+        writer.execute("ROLLBACK")
+
     def test_a_full_guard_of_expired_rows_still_takes_a_revocation(self):
         guard = si.TicketReplayGuard(self.dir / "cap.db", max_entries=1)
         guard.revoke({"jti": "a" * 16, "exp": 1}, now=0)

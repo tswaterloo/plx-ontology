@@ -2,7 +2,7 @@
  "format": "plx.layer-contract.v1",
  "about": "Upward imports frozen by tools/layer_contract.py: only removals, never additions without a reviewed reason.",
  "counts": {
-  "integrations -> operating": 42,
+  "integrations -> operating": 41,
   "ontology -> integrations": 65,
   "ontology -> operating": 50,
   "operating -> operator_api": 9,
@@ -172,10 +172,6 @@
   [
    "integrations.text_formats",
    "operating.msg_reader"
-  ],
-  [
-   "integrations.write_transports",
-   "operating.write_intents"
   ],
   [
    "ontology.build_budget",

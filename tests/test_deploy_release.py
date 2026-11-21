@@ -17,7 +17,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
 PG_ONLY_UNITS = (
-    "plx-api", "plx-api@", "plx-api-check@", "plx-ai-watcher", "plx-autopilot-fast", "plx-autopilot-fast-serve",
+    "plx-api", "plx-api@", "plx-api-check@", "plx-ai-watcher", "plx-autopilot-fast-serve",
     "plx-autopilot-follow", "plx-proactive", "plx-proactive-inc", "plx-proactive-nightly",
     "plx-proactive-whole", "plx-delta", "plx-delta-compact", "plx-ontology-pg-follow",
     "plx-search-follow", "plx-search-generation", "plx-rag-backfill", "plx-truth-check",

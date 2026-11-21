@@ -183,6 +183,8 @@ export interface Chase {
   ask: string | null;
   holds: ObjectRef[];
   next: string | null;
+  /** The rule behind ``next`` (late_ask_supplier...): the row says it in its own words. */
+  rule?: string | null;
 }
 
 const ETA_WORDS: Record<string, string | null> = { no: "supplier gave no date", possibly: "possible date, unconfirmed", conflicting: "dates on record disagree", hidden: "date in a record you can't open", unknown: null, yes: null };
@@ -199,5 +201,6 @@ export function chaseOf(s: ProactiveSuggestion | null | undefined): Chase {
     ask: to?.name || to?.address || s?.action?.contact || null,
     holds: s?.impact?.orders ?? [],
     next: s?.action?.text ?? null,
+    rule: s?.action?.rule ?? null,
   };
 }

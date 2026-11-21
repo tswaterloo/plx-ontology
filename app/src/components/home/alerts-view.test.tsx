@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError } from "@/lib/errors";
 import { describe, expect, it, vi } from "vitest";
@@ -21,19 +21,18 @@ import { AlertsView as WatchingPage } from "./alerts-view";
 const figure = (label: string) => screen.getByText(label).nextElementSibling?.textContent;
 
 describe("Watching figures", () => {
-  it("claims no count of kinds firing until what fired has been read", async () => {
+  it("claims no count until what fired has been read", async () => {
     api.briefing = () => new Promise(() => {});
     render(<WatchingPage />);
     await screen.findByText("Late PO");
-    expect(figure("Kinds firing")).toBe("·");
     expect(figure("Firing now")).toBe("·");
   });
 
-  it("counts the kinds firing once read", async () => {
+  it("counts what fires once read, and no count of kinds (a number nobody acts on)", async () => {
     api.briefing = () => Promise.resolve({ status: "read", count: 2, new_since_visit: 0, groups: [{ event_type: "po_late", count: 2, in_top: 0, new_since_visit: 0, label: "Late purchase order" }], items: [] });
     render(<WatchingPage />);
-    await screen.findByText("1 of 2");
-    expect(figure("Firing now")).toBe("2");
+    await waitFor(() => expect(figure("Firing now")).toBe("2"));
+    expect(screen.queryByText("Kinds firing")).toBeNull();
     // nothing new, no rules, no follows: those counters are not drawn at all
     const figs = within(screen.getByTestId("watching-figures"));
     expect(figs.queryByText("New since your visit")).toBeNull();
@@ -49,7 +48,7 @@ describe("Watching figures", () => {
     const retry = await within(fired).findByRole("button", { name: /try again|retry/i });
     expect(within(fired).queryByText(/Reading what fired/)).toBeNull();
     await userEvent.click(retry);
-    await screen.findByText("1 of 2");
+    await waitFor(() => expect(figure("Firing now")).toBe("2"));
     expect(calls).toBe(2);
   });
 

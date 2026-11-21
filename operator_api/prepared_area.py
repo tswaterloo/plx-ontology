@@ -419,7 +419,9 @@ class PreparedWritesMixin(DocumentEditMixin, TeamsConnectMixin):
             return None
         digest = hashlib.sha256(data).hexdigest()
         return {"file_id": file_id, "name": rows[-1]["name"],
-                "content_type": files.MEDIA[rows[-1]["kind"]], "size": len(data),
+                "content_type": files.MEDIA.get(rows[-1]["kind"]) or {
+                    "xls": "application/vnd.ms-excel", "doc": "application/msword"
+                }[rows[-1]["kind"]], "size": len(data),
                 "sha256": digest, "content_b64": base64.b64encode(data).decode("ascii"),
                 "people": sorted({str(a).lower() for a in named})}
 

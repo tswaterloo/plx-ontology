@@ -430,6 +430,62 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
                 self.assertEqual(bc.teams_windows(self.runtime, actor), {})
                 self.assertEqual(self.door(base, actor), set())
 
+    def test_kept_windows_follow_the_store_the_grant_and_the_exclusion(self):
+        """A reader's Teams windows are kept between calls only while nothing they were
+        decided from moved: a membership change committed to the capture store, another
+        entitlement or a reloaded people exclusion decides them again at once."""
+        import sqlite3
+        from types import SimpleNamespace
+        from integrations import capture_teams
+        from ontology.types import Actor
+        from operating.employee_permissions import EmployeeEntitlement, EmployeePrincipal
+        tenant = tct.ENV["MICROSOFT_GRAPH_TENANT_ID"]
+        vince = Actor("plx", frozenset({"employee:" + tct.U_VINCE}), "restricted")
+        guard = [object()]
+        grant = SimpleNamespace(guard=lambda: guard[0],
+                                allows_item=lambda scheme, acl, record=None: False)
+
+        def ent(identities):
+            return EmployeeEntitlement(principal=EmployeePrincipal(tenant, tct.U_VINCE),
+                                       actor=vince, denied_reason=None,
+                                       source_identities=frozenset(identities),
+                                       full_read=grant)
+        now = [ent({tct.U_VINCE, tct.VINCE})]
+        gate = self.runtime.employee_gate
+        real = capture_teams._history_acl
+        decided = []
+
+        def counted(*a, **k):
+            decided.append(1)
+            return real(*a, **k)
+        with mock.patch.object(gate, "entitlement", side_effect=lambda actor: now[0]), \
+                mock.patch.object(capture_teams, "_history_acl", side_effect=counted):
+            first = bc.teams_windows(self.runtime, vince)
+            self.assertEqual(first, bc.teams_windows(self.runtime, tct.VINCE_ONLY))
+            self.assertTrue(first)
+            decided.clear()
+            self.assertEqual(bc.teams_windows(self.runtime, vince), first)
+            self.assertEqual(decided, [])                       # kept: nothing moved
+            # a reloaded people exclusion (a new guard object): decided again
+            guard[0] = object()
+            self.assertEqual(bc.teams_windows(self.runtime, vince), first)
+            self.assertTrue(decided)
+            # another entitlement (no identity in any chat): decided again, nothing
+            now[0] = ent({"nobody@petrasoap.com"})
+            self.assertEqual(bc.teams_windows(self.runtime, vince), {})
+            now[0] = ent({tct.U_VINCE, tct.VINCE})
+            self.assertEqual(bc.teams_windows(self.runtime, vince), first)
+            # a chat's membership gone from the capture store (another connection's
+            # commit): gone from the windows on the very next call
+            chat = next(iter(first))
+            path = self.runtime.state_dir / capture_teams.STORE_DIR / capture_teams.DB_FILE
+            with sqlite3.connect(path) as db:
+                db.execute("DELETE FROM unit_acl WHERE unit = ?", (chat,))
+            db.close()
+            after = bc.teams_windows(self.runtime, vince)
+            self.assertNotIn(chat, after)
+            self.assertEqual(after, {u: w for u, w in first.items() if u != chat})
+
     # the plx.table cases of the base class are not this view's
     test_cardinality_1_10_60_by_day_bucket = None
     test_past_the_cap_or_the_time_undecided_messages_are_withheld_never_counted = None

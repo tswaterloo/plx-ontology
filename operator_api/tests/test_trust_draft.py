@@ -31,6 +31,7 @@ from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
 from operating import autopilot_engine
 from operating import autopilot_write as aw
+from operating.tests.test_autopilot_write import admit_judged
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operator_api import models as m
 from operator_api import work_log as wl
@@ -469,6 +470,15 @@ class TrustAndDraft(unittest.TestCase):
         self.assertEqual((row["countdown"]["matched"], row["countdown"]["run"],
                           row["countdown"]["refused"], row["countdown"]["refused_run"]),
                          (11, run.name, "counts", bad.name))
+        # no judged score of the category: the replay counts alone pass nothing
+        good = scorer_run(self.root / "m15", ROLE, judged=15, matched=15)
+        aw.record_scores(good, self.state / aw.WRITE_GATE_FILE, rules)
+        row = next(w for w in self.client(TEAM).get("/api/autopilot").json()["workflows"]
+                   if w["role"] == ROLE and w["workflow"] == FLOW)
+        self.assertEqual((row["countdown"]["passes"], row["countdown"].get("judged_score")),
+                         (False, None))
+        self.assertEqual(aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules).passing(), [])
+        admit_judged(self.state, self.root, 15, 15, categories=("approvals",))
         # 15 judged at 14 passes on the countdown and the gate alike; 13 fails both
         for matched, passes in ((14, True), (13, False)):
             good = scorer_run(self.root / f"m{matched}", ROLE, judged=15, matched=matched)

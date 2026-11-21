@@ -65,6 +65,45 @@ class ReplyDrafts(unittest.TestCase):
                                 "at": hour}, now))
         for why in ("nothing_to_do", "excluded_in_thread", "draft_failed:OSError"):
             self.assertFalse(rd.due({"state": "none", "why": why, "at": hour}, now), why)
+        # past the retry: a failure or a screen is drafted again; the message's own judgment
+        # (nothing to send, the reply sort's, only changes kept) stays like a ready draft
+        late = (now - timedelta(hours=rd.RETRY_HOURS, minutes=1)).isoformat()
+        for why in ("excluded_in_thread", "draft_failed:OSError", "no_draft", ""):
+            self.assertTrue(rd.due({"state": "none", "why": why, "at": late}, now), why)
+        for why in ("nothing_to_do", "no_reply_wanted", "changes_prepared"):
+            self.assertFalse(rd.due({"state": "none", "why": why, "at": "2020-01-01T00:00:00"
+                                     "+00:00"}, now), why)
+        lines = [(ANA, "Email:j", 3), (ANA, "Email:f", 2)]
+        self.kept.mark(ANA, "Email:j", "none", why="no_reply_wanted")
+        self.kept.mark(ANA, "Email:f", "none", why="draft_failed:OSError")
+        self.assertEqual(rd.wanted(lines, self.kept, now=now + timedelta(days=2)),
+                         [(ANA, "Email:f")])
+
+    def test_the_kept_store_is_readable_by_the_shared_group_the_api_reads_with(self):
+        import os, stat
+        state = self.tmp / "state"
+        state.mkdir()
+        os.chmod(state, 0o3770)   # the shared state root: setgid + sticky, group rwx
+        old = os.umask(0o077)     # the jobs' private umask
+        try:
+            kept = rd.Kept(rd.path_of(state))
+            kept.mark(ANA, "Email:1", "ready", kind="reply", body="Yes.")
+        finally:
+            os.umask(old)
+        d, f = rd.path_of(state).parent, rd.path_of(state)
+        self.assertEqual(stat.S_IMODE(os.stat(f).st_mode) & 0o060, 0o060)
+        self.assertEqual(stat.S_IMODE(os.stat(d).st_mode) & 0o070, 0o070)
+        self.assertEqual(stat.S_IMODE(os.stat(f).st_mode) & 0o007, 0)
+        self.assertTrue(os.stat(d).st_mode & stat.S_ISGID)
+        self.assertIn("reply-drafts", (Path(__file__).resolve().parents[2] / "deploy" / "release"
+                                       / "api_user_setup.sh").read_text().split("R_DIRS=(")[1]
+                      .split(")")[0])
+
+    def test_the_reply_sort_is_haiku_unless_set_or_off(self):
+        self.assertEqual(rd.screen_model({}), "haiku")
+        self.assertEqual(rd.screen_model({rd.SCREEN_ENV: "sonnet"}), "sonnet")
+        for off in ("off", "none", "0", " OFF "):
+            self.assertIsNone(rd.screen_model({rd.SCREEN_ENV: off}), off)
 
     def test_run_marks_drafting_first_then_keeps_each_outcome(self):
         seen = []

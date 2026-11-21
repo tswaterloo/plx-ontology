@@ -2,7 +2,9 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/errors";
 import type { BizPage, ObjectPage, ObjectSection } from "@/lib/types";
-import { TodayDetail, type QueueRow } from "./today-detail";
+import { doorReceived, TodayDetail, type QueueRow } from "./today-detail";
+import { SuggestionActions } from "./record/next-step";
+import type { ProactiveSuggestion } from "@/lib/types";
 
 const api = vi.hoisted(() => ({ getObject: vi.fn(), getObjectSection: vi.fn(), bizPage: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...(await original<object>()), ...api }));
@@ -74,5 +76,33 @@ describe("Today's detail through the pages door", () => {
     render(<TodayDetail row={{ ...row, key: "po-3" }} onDone={() => undefined} />);
     await waitFor(() => expect(api.getObject).toHaveBeenCalled());
     expect(api.bizPage).toHaveBeenCalledWith("purchase_order", { h: undefined, record: "PurchaseOrder:x:1" }, expect.anything());
+  });
+});
+
+describe("Received on a PO's lines", () => {
+  const page = (unit: string[]) => ({ sections: [{ key: "lines", columns: ["Ordered", "Received", "Unit"],
+    rows: unit.map((u, n) => [{ number: String(10 + n), hidden: false }, { number: n ? "0" : "1", hidden: false }, { text: u, hidden: false }]) }] }) as unknown as BizPage;
+  it("adds quantities only in one stated unit: lines with no unit are counted short, never summed", () => {
+    expect(doorReceived(page(["kg", "kg"]))).toMatchObject({ got: "1", of: "21", uom: "kg" });
+    expect(doorReceived(page(["", ""]))).toMatchObject({ got: "Partly", lines: 2 });
+    expect(doorReceived(page([""]))).toMatchObject({ got: "1", of: "10" });
+  });
+});
+
+describe("A drafted supplier email with no address on record", () => {
+  const offer = (kind: string, label: string) => ({ kind, label, outbound: kind === "send_email" || kind === "teams_message" });
+  const card = (address: string | null) => ({
+    id: "s1", draft: { channel: "email", to: { address, name: null }, subject: "106001: please confirm", body: "Hello" },
+    actions: [offer("send_email", "Send email"), offer("teams_message", "Teams message"), offer("mark_done", "Mark done"), offer("snooze", "Snooze")],
+  }) as unknown as ProactiveSuggestion;
+  it("offers no Review and send as the main action; the send waits under More, saying it needs the address", async () => {
+    const { unmount } = render(<SuggestionActions card={card(null)} onDone={() => undefined} />);
+    expect(screen.queryByText("Review and send")).toBeNull();
+    expect(screen.getByRole("button", { name: "Teams message" })).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "More actions" }).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 } as PointerEventInit)));
+    expect(await screen.findByText("Send email (add the address)")).toBeTruthy();
+    unmount();
+    render(<SuggestionActions card={card("orders@dsm.example")} onDone={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Review and send" })).toBeTruthy();
   });
 });

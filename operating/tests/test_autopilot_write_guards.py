@@ -22,7 +22,7 @@ from operating import autopilot_engine
 from operating import autopilot_write as aw
 from operating import card_actions
 from operating.tests.test_autopilot_write import (
-    HIDDEN, HIDDEN_OID, NOW, OWNER, OWNER_OID, Base, mc_item, po_item)
+    HIDDEN, HIDDEN_OID, NOW, OWNER, OWNER_OID, Base, admit_judged, mc_item, po_item)
 
 OTHER = "other@plx.example"
 OTHER_OID = "55555555-5555-4555-8555-555555555555"
@@ -85,6 +85,7 @@ class Guards(Base):
         rules = aw.load_rules()
         out = aw.record_scores(run, self.state / aw.WRITE_GATE_FILE, rules)
         self.assertEqual(sorted(out["admitted"]), sorted(f"person:{p}" for p in people))
+        admit_judged(self.state, Path(self.tmp.name))     # the categories' judged scores pass
 
     def journal(self) -> aw.Journal:
         return aw.Journal(self.state / aw.AUDIT_FILE)

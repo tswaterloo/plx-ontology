@@ -30,7 +30,7 @@ import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
-from .ask_gate import TOOLS, UNVERIFIED, Evidence, _cell_number, _parsed, evidence, gate
+from .ask_gate import EVIDENCE_TOOLS, INSIGHT, TOOLS, UNVERIFIED, Evidence, _cell_number, _parsed, evidence, gate
 
 ENV = "PLX_ASK_SIMPLE"
 # The model and its reasoning effort (Claude Code ``--model``, ``--effort``): one setting,
@@ -93,12 +93,18 @@ METHOD = """Working habits:
 - Look before you rely on a guess: plx.sql {"describe": "<view>"} shows a view's sample rows and commonest values; zero rows or odd values mean refine before you conclude. The list, library, folder or site a record belongs to may be named only in a URL or path field (web_url, path: .../Lists/<List%20Name>/...), so match the name there too.
 - "The <customer or supplier> order/PO" with no number means the one that matters now: read all of that party's open ones whatever their date (never cut them by a recent-date window or a small LIMIT first), lead with the late or at-risk one (verdict, days_late), then name the others in a line; ask back only when two are equally likely. "Latest on" means the latest news about it, not the newest-dated record.
 - A count of orders, POs or invoices is the system of record's first (of_record: Sage); the ones only another system holds (Portal, FileMaker, BC) go in their own line beside it, never folded into one number.
+- A field the question turns on (a promised, due or ship date, a buyer, a price) blank where you first read it: before calling it unknown, read in one turn the same thing's other copies and parts: the same order or PO in the other systems (Portal, FileMaker, BC: match by its number), its lines' own dates and prices, and its linked invoices, receipts or shipments (their dates as delivery). Use what they hold, name where it came from and say it is an estimate; say a figure cannot be checked only when none of them holds it.
 - A customer's or supplier's mail: emails.customers / emails.suppliers where filled; else match the party's own email domain (customers.email, suppliers.email: the part after @) in emails.domains, and say the mail was matched by domain.
-- Aggregate in SQL; group amounts by currency and never add or convert across currencies; state every amount with its currency code and the as-of date of what you read. A source's own total or summary row (no party on it, a blank currency) may add currencies together: sum the parties' own rows per currency instead.
+- Aggregate in SQL; group amounts by currency and never add or convert across currencies; state every amount with its currency code and the as-of date of what you read. A list ranked by amount ranks within each currency (one list per currency, or say it is ordered by own-currency amount). A source's own total or summary row (no party on it, a blank currency) may add currencies together: sum the parties' own rows per currency instead.
 - A question word with more than one fair reading (regular, active, open, partly received): pick the plain business one, say in one line which you used, and keep to it.
+- Finding documents (a COA, spec sheet, contract, price list): open in one turn every hit you will list or rely on (up to 8) and say what each one holds from its content (product, lot, date, from whom, the values asked about), never a file name or snippet alone.
+- What happened in a period (yesterday, this week): lead with what is dated in that period (created, changed, sent, received, shipped in it); standing backlog (long-late orders, old holds) gets one line at most, marked as older.
+- When the answer is that something is not there (no promise, no reply, nobody chasing it, no such document): say how far you looked, in numbers (which systems and channels, which party, words or numbers, the window, how many messages or records you read), and what would have counted. A reason you give for the absence names its evidence (each record or document with its date); one source alone makes it a likely reason, never a fact; read the record itself (its own fields and linked documents) before calling it a test, a duplicate or an error.
 - When you answer a narrower question than was asked (a date window, systems, parties or items the person did not name, the top N, a sample, rows cut by a LIMIT, or only what you could read), say so in one plain line in the answer: what you covered and what you left out, so the person can ask for the rest.
 - A broad question (what is going on with a customer or supplier, a summary across systems): in your first turn send every independent read at once (its open orders, POs, invoices or balance, and its mail and Teams within a date window: the last 2-4 weeks unless the question says otherwise; never a mail or Teams search with no date), then open only the few messages that matter. Lead with what needs action (late, stuck, disputed), then the rest by system.
+- Who has been talking to or about a party, what was said, asked or promised, or whether an issue got sorted: read every channel the data holds for that window in the same first turn: mail, Teams and meetings (comms_findings, emails, teams_messages, meetings), never mail alone; name any channel you could not read.
 - A named business figure (revenue, margin, orders, receivables, late orders, batches, stock, complaints...): use its measure (plx.sql {"measure": "<id>"}, by/days as needed) before writing your own SQL, and state the measure's name and one-line definition with the figure; write your own SQL only when no measure fits, and say so.
+- Why a customer or supplier did something (ordered less, paid late, complained): read its own mail and Teams in that period (by its address or domain: every thread, those about its orders and POs too), not only messages holding the question's words; quote the sentence that gives the reason, with who said it and when.
 - Why did X change / why is X low: measure this period and the one before (measure with "compare": true, or your own SQL); break the change down by each dimension that could carry it ("by": "<dimension>", "compare": true) and name the 2-3 parts carrying most of it with their change and share (when the net change is near zero, compare the parts' own changes, not shares); for those parts, read the rows behind them (count vs size vs rate: fewer orders, smaller orders, or a lower margin rate) and the reasons said in that period (comms_findings for the customer, item or supplier, then mail and Teams); a compare row with covered false means the source only starts on its data_from, after the earlier period began: that period was not captured, not zero, so give the current figure with data_from and say no comparison is possible (never "up from 0"); call something a cause only when its timing fits and the rows or messages show how it moved the number, else say it goes with the change; show 2-3 example rows or messages.
 - Verify a total that is the answer a second way (sum of the groups, count of the rows); a key figure the answer turns on (an amount owed, a count, a late date) is checked by a second, independent read before you state it.
 {search}
@@ -475,7 +481,7 @@ class Streamed:
             return
         from operating.agent_session import parse_stream_json
         try:
-            events = parse_stream_json(self.lines, TOOLS).events
+            events = parse_stream_json(self.lines, EVIDENCE_TOOLS).events
             # the results so far read once, not on every flush of a long reply
             returned = sum(1 for e in events if e.get("result") is not None)
             if self._ev[0] != returned:
@@ -522,7 +528,8 @@ def cited(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for event in events:
         if event.get("is_error") or str(event.get("name") or "") not in ("plx.sql",
-                                                                          "plx.search"):
+                                                                          "plx.search",
+                                                                          INSIGHT):
             continue
         result = _parsed(event.get("result"))
         if not isinstance(result, Mapping) or "error" in result:
@@ -531,12 +538,15 @@ def cited(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                                                      default=str)[:2000])
         if key in seen:
             continue
-        if event.get("name") == "plx.sql" and isinstance(result.get("columns"), list):
+        if event.get("name") in ("plx.sql", INSIGHT) and isinstance(result.get("columns"),
+                                                                     list):
             columns = [str(c) for c in result["columns"]]
             rows = [[_cell_text(c) for c in r.get("cells", [])] for r in
                     result.get("rows") or [] if isinstance(r, Mapping)]
             views = [str(v) for v in result.get("views") or []]
             about = ", ".join(_VIEW_WORDS.sub(" ", v) for v in views) or "business records"
+            if event.get("name") == INSIGHT:   # a built-in tile, by its title
+                about = "Insights: " + str(_cell_text(result.get("title")) or "a tile")
             records = int(result.get("row_count") or len(rows))
             as_of = _cell_text(result.get("as_of"))
         elif isinstance(result.get("documents"), list):

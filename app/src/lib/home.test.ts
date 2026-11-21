@@ -43,12 +43,17 @@ describe("Home headline", () => {
 });
 
 describe("staleLine", () => {
-  it("says when the shown page was read, in Eastern time, and that it is refreshing", () => {
-    expect(staleLine("2026-11-07T02:08:00Z")).toBe("As of 9:08 PM ET · refreshing");
+  const read = "2026-11-07T02:08:00Z";
+  const at = (min: number) => new Date(read).getTime() + min * 60_000;
+  it("says only that a recent stale page is refreshing: the sidebar's Data as of is the one clock", () => {
+    expect(staleLine(read, null, at(4))).toBe("Refreshing");
+  });
+  it("names the read's time, in Eastern time, once it is over an hour old", () => {
+    expect(staleLine(read, null, at(61))).toBe("Showing the read from 9:08 PM ET · refreshing");
   });
   it("says when a kept page was read, without refreshing, when it is current", () => {
-    expect(staleLine(null, "2026-11-07T02:08:00Z")).toBe("As of 9:08 PM ET");
-    expect(staleLine("2026-11-07T02:08:00Z", "2026-11-07T03:00:00Z")).toBe("As of 9:08 PM ET · refreshing");
+    expect(staleLine(null, read)).toBe("As of 9:08 PM ET");
+    expect(staleLine(read, "2026-11-07T03:00:00Z", at(90))).toBe("Showing the read from 9:08 PM ET · refreshing");
   });
   it("shows nothing for a fresh page or an unreadable time", () => {
     expect(staleLine(null)).toBeNull();

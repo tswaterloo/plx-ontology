@@ -319,6 +319,28 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0})
             self.assertEqual(self.flags(), before)
 
+    def test_an_in_place_refresh_never_stamps_a_code_fingerprint(self):
+        """Rows a refresh keeps were built by the code the state row records: only a build
+        stamps ``code`` (a refresh that stamped the current one would hide old rows)."""
+        import psycopg
+        q = f"SELECT notes->>'code' FROM {bv.SCHEMA}.state WHERE view = 'emails'"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            built = pg.execute(q).fetchone()[0]
+            self.assertTrue(built)   # the build stamped it
+            try:
+                pg.execute(f"UPDATE {bv.SCHEMA}.state SET notes = notes || "
+                           "'{\"code\": \"older\"}'::jsonb WHERE view = 'emails'")
+                bc.refresh_changed(pg, "emails", self.marks(pg))
+                self.assertEqual(pg.execute(q).fetchone()[0], "older")
+                pg.execute(f"UPDATE {bv.SCHEMA}.state SET notes = notes - 'code' WHERE "
+                           "view = 'emails'")
+                bc.refresh_changed(pg, "emails", self.marks(pg))
+                self.assertIsNone(pg.execute(q).fetchone()[0])
+            finally:
+                pg.execute(f"UPDATE {bv.SCHEMA}.state SET notes = notes || "
+                           "jsonb_build_object('code', %s::text) WHERE view = 'emails'",
+                           (built,))
+
     def marks(self, pg):
         notes = pg.execute(f"SELECT notes FROM {bv.SCHEMA}.state WHERE view = 'emails'"
                            ).fetchone()[0]
@@ -1065,6 +1087,15 @@ class EmailsThroughTheDoor(unittest.TestCase):
             # on the first page only (``found`` fails a hit doubled across pages)
             self.assertIn(plain, self.found(tmp.OWNER, query=q))
             self.assertFalse(self.search(tmp.OWNER, query=q, since="2100-01-01")["documents"])
+            # a participant's search: the attachment pass runs bound to that party
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                (addresses,) = pg.execute(f"SELECT addresses FROM {bv.SCHEMA}.emails WHERE "
+                                          "handle = %s", (plain,)).fetchone()
+            bound = self.search(tmp.OWNER, query=q, participant=addresses[0])
+            self.assertIn(plain, [h["citation"] for h in bound["documents"]
+                                  if "attachment" in h.get("match", "")])
+            self.assertNotIn(plain, {h["citation"] for h in self.search(
+                tmp.OWNER, query=q, participant="nobody@nowhere.example")["documents"]})
             self.assertNotIn(plain, {h["citation"] for h in self.search(
                 tmp.NARROW, query=q)["documents"]})
             # the person's own search: the same rule (Freightcom attachments left out too)

@@ -33,7 +33,7 @@ CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
               "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in",
-              "to_me", "after_own_post", "cc_min", "usual_answerer", "any_of")
+              "to_me", "after_own_post", "cc_min", "usual_answerer", "known_party", "any_of")
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
               "owner_mailed_attendees", "question_answered", "person_decided")
 MAX_RECORDS = 12          # business records one handler reads around its event
@@ -139,7 +139,7 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             return False
         if key in ("assigned", "open", "tested", "ended", "organizer_copy",
                    "external_or_linked", "asks", "engaged", "correspondent", "closing",
-                   "addressed_other", "to_me") and \
+                   "addressed_other", "to_me", "known_party") and \
                 bool(event.get(key)) != bool(want):
             return False
         if key == "answers_sender":
@@ -205,6 +205,65 @@ def names_reader(text: Any, names: Iterable[str]) -> bool:
 
 # ----------------------------------------------------------------------------- queue
 
+def order_key(number: Any) -> str:
+    """An order or lot number compared as one identity: letters and digits only, case aside
+    ("OR-1000154316" and "or1000154316" are one order); "" for none."""
+    return re.sub(r"[^0-9A-Za-z]", "", str(number or "")).upper()
+
+
+def lot_subject(lot: Any) -> str:
+    """The subject key of an item about a lot ("lot:<number>"), "" with no number."""
+    key = order_key(lot)
+    return f"lot:{key}" if key else ""
+
+
+def subject_of(item: Mapping[str, Any]) -> str:
+    """The real-world thing an item is about, when its prepared work names one: the
+    handler's ``subject``, else (an item made before handlers wrote one) a QC item's lot.
+    Two open items of one owner with the same subject are one card: the newer replaces the
+    older (``autopilot_engine.settle``, and the list the person reads). "" = no subject:
+    the item stands alone."""
+    prepared = ((item.get("body") or {}).get("prepared") or {})
+    if not isinstance(prepared, Mapping):
+        return ""
+    subject = prepared.get("subject")
+    if isinstance(subject, str) and subject.strip():
+        return subject.strip()
+    if "affected" in prepared and prepared.get("lot"):
+        return lot_subject(prepared.get("lot"))
+    return ""
+
+
+def superseded(items: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """Each item id an item of the same owner and subject made later replaces -> the id of
+    the newest one (ties: the larger item id stands, so the choice is the same on every
+    read)."""
+    groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for item in items:
+        subject = subject_of(item)
+        if subject:
+            groups.setdefault((str(item.get("owner") or ""), subject), []).append(item)
+    out: dict[str, str] = {}
+    for members in groups.values():
+        members.sort(key=lambda i: (str(i.get("created_at") or ""), str(i.get("item_id") or "")))
+        head = str(members[-1]["item_id"])
+        for item in members[:-1]:
+            out[str(item["item_id"])] = head
+    return out
+
+
+def newest_of(item_id: str, replaced: Mapping[str, str]) -> str:
+    """The item that stands for ``item_id`` now: followed through every replacement."""
+    seen = {item_id}
+    while item_id in replaced and replaced[item_id] not in seen:
+        item_id = replaced[item_id]
+        seen.add(item_id)
+    return item_id
+
+
+SUPERSEDED_BY = "superseded_by"   # queue meta: replaced item id -> the item replacing it
+
+
 class Queue:
     """The autopilot's own SQLite file (events, prepared items, rate counts, meta)."""
 
@@ -242,6 +301,15 @@ class Queue:
                           "WHERE event_id = ?", (state, reason, now, event_id))
         if state != "deferred":
             self.conn.execute("DELETE FROM meta WHERE key = ?", ("tries:" + event_id,))
+
+    def tries(self, event_id: str) -> int:
+        """How many failed handler tries an event has had so far (counts nothing)."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?",
+                                ("tries:" + event_id,)).fetchone()
+        try:
+            return int(row[0]) if row is not None else 0
+        except (TypeError, ValueError):
+            return HANDLER_TRIES
 
     def tried(self, event_id: str) -> int:
         """Count one more failed handler try of an event; how many it has had."""

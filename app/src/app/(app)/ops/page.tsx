@@ -1,6 +1,6 @@
 "use client";
 
-import { eastern, opsLabel, SectionTabs } from "@/components/shell";
+import { eastern, opsLabel, opsLine, SectionTabs } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
@@ -194,7 +194,7 @@ export default function OpsPage() {
                     const oldest = [...alarms.open].sort((x, y) => Date.parse(x.opened_at) - Date.parse(y.opened_at))[0];
                     return oldest ? (
                       <span className="min-w-0 truncate" title={oldest.line}>
-                        Oldest open {span(oldest.opened_at)}: <span className="text-fg">{oldest.line}</span>
+                        Oldest open {span(oldest.opened_at)}: <span className="text-fg">{opsLine(oldest.key, oldest.line)}</span>
                       </span>
                     ) : null;
                   })()}
@@ -222,7 +222,7 @@ export default function OpsPage() {
                   <tbody className="divide-y divide-border">
                     {alarms.open.map((i: OpsIncident) => (
                       <tr key={i.key} className="align-top">
-                        <td className="py-1.5 pr-3 text-late">{i.line}</td>
+                        <td className="py-1.5 pr-3 text-late" title={i.key}>{opsLine(i.key, i.line)}</td>
                         <td className="py-1.5 pr-3 text-muted max-sm:hidden">{areaOf(i.key)}</td>
                         <td className="py-1.5 pr-3 whitespace-nowrap tabular-nums" title={`since ${eastern(i.opened_at)}`}>
                           {span(i.opened_at)}
@@ -244,7 +244,7 @@ export default function OpsPage() {
                   <tbody className="divide-y divide-border">
                     {alarms.paused!.map((i) => (
                       <tr key={i.key} className="align-top">
-                        <td className="py-1.5 pr-3">{i.line}</td>
+                        <td className="py-1.5 pr-3" title={i.key}>{opsLine(i.key, i.line)}</td>
                         <td className="py-1.5 pr-3 whitespace-nowrap text-[12px] text-muted">until {eastern(i.paused?.until)}</td>
                         <td className="py-1.5 text-[12px] text-muted max-sm:hidden">{i.paused?.why || "no reason given"}</td>
                       </tr>
@@ -270,7 +270,7 @@ export default function OpsPage() {
                   <tbody className="divide-y divide-border">
                     {alarms.recovered.map((i) => (
                       <tr key={`${i.key}-${i.opened_at}`} className="align-top">
-                        <td className="py-1.5 pr-3">{i.line}</td>
+                        <td className="py-1.5 pr-3" title={i.key}>{opsLine(i.key, i.line)}</td>
                         <td className="py-1.5 pr-3 whitespace-nowrap text-[12px] text-muted">
                           {eastern(i.opened_at)} to {eastern(i.closed_at)}
                         </td>

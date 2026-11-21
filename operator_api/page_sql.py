@@ -562,8 +562,12 @@ def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], ran
                last_visit: Optional[str]) -> m.BriefingItem:
     """One open alert as a briefing item (Watching lists and counts these)."""
     from operating import alert_kinds
+    from operating.briefing import NEXT_ACTIONS
     oid, otype, url, sources = _alert_ref(row, ids)
     rule = str(row.get("rule"))
+    # the kind's own next step (the one the briefing's items carry); a kind without one
+    # keeps the plain step
+    step = NEXT_ACTIONS.get(rule) or ("Open the record and check it.", rule)
     seen = _iso(row.get("first_seen"))
     new = bool(seen and (last_visit is None or seen > last_visit))
     return m.BriefingItem(
@@ -571,7 +575,7 @@ def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], ran
         event_type=rule, label=alert_label(row), evidence="live", object_id=oid,
         object_type=otype, subject_label=record_words(str(row.get("handle") or "")),
         summary=str(row.get("why") or ""),
-        next_action=m.NextAction(text="Open the record and check it.", rule=rule),
+        next_action=m.NextAction(text=step[0], rule=step[1]),
         new_since_visit=new, new_this_generation=new, alert_kind=alert_kinds.kind_of(rule),
         default_on=alert_kinds.default_on(rule), home=alert_kinds.home(rule),
         first_seen=seen, open_url=url, sources=sources)

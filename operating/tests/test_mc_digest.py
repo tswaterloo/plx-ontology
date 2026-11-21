@@ -39,10 +39,6 @@ REASONS = {          # class -> a synthetic reason stating it
 class Digest(World):
     def setUp(self) -> None:
         super().setUp()
-        from operating.tests.test_autopilot_fast import with_mc_approvals
-        switched_on = mock.patch.object(ap, "load_registry", with_mc_approvals(ap.load_registry))
-        switched_on.start()
-        self.addCleanup(switched_on.stop)
 
     def gate(self, i: int, reason: str, *, audience: str = OURS_P, hour: int = 10,
              task: str | None = None, task_id: str | None = None) -> str:
@@ -213,9 +209,34 @@ class Digest(World):
         (entry,) = md.digest([item], NOW)["deciders"][0]["groups"][0]["items"]
         self.assertEqual((entry["class"], entry["recommendation"], entry["link"],
                           entry["history"]["low_risk"]), ("other", "review", None, False))
-        # a mail approval ask is not an MC gate
-        mail_item = dict(item, autopilot="mail_approval_request")
+        # a mail approval ask is not an MC gate (its trigger is the mail), nor is an item
+        # about a gate without its recommendation
+        mail_item = dict(item, autopilot="mail_approval_request",
+                         body={**item["body"], "happened": {"object_type": "Email"}})
         self.assertEqual(md.digest([mail_item], NOW)["pending"], 0)
+        bare = dict(item, autopilot="job_approval", body={**item["body"], "prepared": {}})
+        self.assertEqual(md.digest([bare], NOW)["pending"], 0)
+        # the same gate prepared twice for one decider is one entry
+        twice = [dict(item, item_id="a", body={**item["body"], "happened": {
+            "object_type": "MCApproval", "object_id": "MCApproval:g1", "fields": {}}}),
+                 dict(item, item_id="b", autopilot="job_approval", body={**item["body"],
+                      "happened": {"object_type": "MCApproval", "object_id": "MCApproval:g1",
+                                   "fields": {}}})]
+        self.assertEqual(md.digest(twice, NOW)["pending"], 1)
+        self.assertEqual(md.digest([mail_item], NOW)["pending"], 0)
+
+    def test_the_morning_brief_counts_an_approval_job_among_the_decisions(self):
+        from operating import autopilot_work as aw
+        made = "2026-11-20T12:00:00Z"
+        items = [{"item_id": "j", "autopilot": "job_approval", "title": "Approval to decide",
+                  "created_at": made, "body": {"happened": {"event_type": "approval.requested",
+                                                            "object_type": "MCApproval"},
+                                               "prepared": {"recommendation": "approve"}}},
+                 {"item_id": "m", "autopilot": "job_message", "title": "System work",
+                  "created_at": made, "body": {"happened": {"event_type": "message.received"},
+                                               "prepared": {"kind": "job"}}}]
+        self.assertEqual(aw.brief(items, NOW)["top"]["decisions"],
+                         [{"item_id": "j", "title": "Approval to decide"}])
 
     def test_no_network_and_no_mc_client_on_the_path(self):
         tree = ast.parse(Path(md.__file__).read_text(encoding="utf-8"))

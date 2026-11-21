@@ -92,7 +92,7 @@ class DeltaConsumerOrderingTests(unittest.TestCase):
     back (After=plx-delta.service), so the live feed ran no cycle for hours. The delta's
     readers take in only the layers Postgres applied, each in one transaction, so they need
     no ordering after the delta and must not wait on it."""
-    READERS = ("plx-autopilot-follow", "plx-autopilot-fast", "plx-proactive-inc",
+    READERS = ("plx-autopilot-follow", "plx-autopilot-fast-serve", "plx-proactive-inc",
                "plx-ai-watcher", "plx-truth-check")
     LONG = ("plx-delta.service", "plx-delta-compact.service")
 

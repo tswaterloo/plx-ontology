@@ -193,6 +193,97 @@ class ForkAndNameTests(unittest.TestCase):
                     pg_pool.connect("postgresql://made-up/db")
         self.assertEqual(seen, ["plx-search", "plx-workbench", "plx-api", "plx-api"])
 
+    def test_store_checks_reuse_a_kept_connection_and_survive_the_role_limit(self):
+        """``ontology_reader.whole`` / ``change_stamp`` (asked on every inbox and store
+        open) log in once per process, not per check; once the role is at its limit
+        (two APIs through a deploy) a check answers from the kept connection instead of
+        ``unreachable`` (live 11-21: Home's approvals and replies 500 after 12 s); a lost
+        kept connection is replaced; another process (a forked child) never borrows it."""
+        from operating.pg import ontology_reader
+        from operating.pg.ontology_load import ORDER
+
+        class Row(Conn):
+            def __init__(self):
+                super().__init__()
+                self.autocommit = False
+                self.broken = False
+                self.queries = 0
+
+            def execute(self, sql, *args):
+                self.queries += 1
+                self.last = sql
+                return self
+
+            def fetchone(self):
+                if "sq_data_version" in self.last:
+                    return ("digest-1", 7)
+                return (list(ORDER), {"content_digest": "digest-1"}, True)
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        logins = []
+        full = psycopg.OperationalError('FATAL:  too many connections for role "plx_api"')
+
+        def login(*a, **k):
+            if logins and logins[-1] == "full":
+                raise full
+            conn = Row()
+            logins.append(conn)
+            return conn
+
+        dsn = "postgresql://made-up/probe-test"
+        ontology_reader._PROBES.clear()
+        with mock.patch("psycopg.connect", side_effect=login), \
+                mock.patch.dict(os.environ, {pg_pool.FULL_WAIT_ENV: "0"}):
+            for _ in range(5):
+                self.assertIsNone(ontology_reader.whole(dsn))
+                self.assertEqual(ontology_reader.change_stamp(dsn), "digest-1@7")
+            self.assertEqual(len(logins), 1)            # ten checks, one login
+            self.assertGreaterEqual(logins[0].queries, 10)
+            logins.append("full")                       # the role at its limit now
+            self.assertIsNone(ontology_reader.whole(dsn))   # the kept one answers
+            # the kept connection lost: a new login is needed and refused at the limit
+            logins[0].closed = True
+            self.assertEqual(ontology_reader.whole(dsn), "unreachable:OperationalError")
+            logins.pop()                                # a slot free again
+            self.assertIsNone(ontology_reader.whole(dsn))
+            self.assertEqual(len(logins), 2)
+            # another process (a fork has another pid) logs in for itself
+            with mock.patch("os.getpid", return_value=os.getpid() + 1):
+                self.assertIsNone(ontology_reader.whole(dsn))
+            self.assertEqual(len(logins), 3)
+        ontology_reader._PROBES.clear()
+
+    def test_a_forked_child_gets_its_own_probe_lock_and_no_parent_pools(self):
+        """Forked while another thread holds the store checks' lock, the child still checks
+        (its own lock), and holds none of its parent's pools."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        code = (
+            "import os, threading, time\n"
+            "from operating.pg import ontology_reader as o\n"
+            "o._PROBES[(os.getpid(), 'x')] = object()\n"
+            "held = threading.Event()\n"
+            "def hold():\n"
+            "    with o._PROBES_LOCK:\n"
+            "        held.set(); time.sleep(5)\n"
+            "threading.Thread(target=hold, daemon=True).start(); held.wait()\n"
+            "r, w = os.pipe()\n"
+            "if os.fork() == 0:\n"
+            "    ok = o._PROBES_LOCK.acquire(timeout=1)\n"
+            "    os.write(w, f'{ok} {len(o._PROBES)}'.encode()); os._exit(0)\n"
+            "os.wait(); print(os.read(r, 99).decode(), len(o._PROBES))\n")
+        root = Path(__file__).resolve().parents[2]
+        out = subprocess.run([sys.executable, "-c", code], cwd=root, text=True, timeout=60,
+                             capture_output=True, env={**os.environ, "PYTHONPATH": str(root)})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.split(), ["True", "0", "1"])
+
 
 if __name__ == "__main__":
     unittest.main()

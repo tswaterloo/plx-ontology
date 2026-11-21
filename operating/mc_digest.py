@@ -231,12 +231,19 @@ def digest(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
     classes first, low-risk classes last; in a class the oldest request first, superseded
     gates after the rest. ``items``: what ``autopilot.visible`` showed the reader."""
     by_owner: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
     for item in items:
         happened = (item.get("body") or {}).get("happened") or {}
-        if item.get("autopilot") != "approval_request" or \
-                happened.get("object_type") != "MCApproval":
+        # any item about an MC gate that holds its recommendation, whichever autopilot
+        # prepared it (``job_approval``'s standing work, or the older ``approval_request``)
+        if happened.get("object_type") != "MCApproval" or \
+                not ((item.get("body") or {}).get("prepared") or {}).get("recommendation"):
             continue
-        by_owner.setdefault(str(item.get("owner") or ""), []).append(_entry(item, now))
+        key = (str(item.get("owner") or ""), str(happened.get("object_id") or item.get("item_id")))
+        if key in seen:
+            continue                 # one entry per gate and decider, however many items
+        seen.add(key)
+        by_owner.setdefault(key[0], []).append(_entry(item, now))
     deciders = []
     for owner, entries in sorted(by_owner.items()):
         groups: dict[str, list[dict[str, Any]]] = {}

@@ -37,7 +37,11 @@ class KnownReaderWarmTests(unittest.TestCase):
     """The read-ahead at start follows only an unexpired, unrevoked real session, keeps no
     name, and its identity serves and audits nothing."""
 
-    def test_only_live_sessions_are_followed_and_nothing_names_the_person(self):
+    def test_live_and_recent_sessions_are_followed_and_nothing_names_the_person(self):
+        """A live session is read ahead under its own expiry; one that ended within
+        ``RECENT_USER_SECONDS`` under a read-ahead identity of ``DIRECTORY_WARM_SECONDS``
+        (11-21: after the owner's session ended every deploy prewarmed nobody); a revoked
+        one never, while live or after it ended."""
         tmp = Path(tempfile.mkdtemp(prefix="app-known-"))
         self.addCleanup(shutil.rmtree, tmp, True)
         backend = be.WorkspaceBackend(lambda s: None, data_label="test", data_dir=tmp)
@@ -62,12 +66,26 @@ class KnownReaderWarmTests(unittest.TestCase):
             made.append((oid, exp))
             return SimpleNamespace(principals=frozenset({f"employee:{oid}"}), email=None)
         backend.identity_for = identity_for
-        self.assertEqual(backend.warm_known(), 1)
-        self.assertEqual(made, [("29e05178-0bd1-49b9-be6e-b01be1975f70", now + 3600)])
+        from operator_api.backend_common import DIRECTORY_WARM_SECONDS
+        self.assertEqual(backend.warm_known(), 2)
+        self.assertEqual(made[0], ("29e05178-0bd1-49b9-be6e-b01be1975f70", now + 3600))
+        self.assertEqual(made[1][0], "00000000-0000-4000-8000-000000000002")   # ended
+        self.assertTrue(now < made[1][1] <= int(time.time()) + DIRECTORY_WARM_SECONDS)
+        self.assertEqual(len(made), 2)   # the revoked one never
         # Today first on the read workers (Home, the briefing and its groups, the
         # suggestion cards, the late list, the upcoming meetings), then the pages and
-        # last week's review on the warm worker
-        self.assertEqual((backend.reads.jobs.qsize(), backend.warmer.jobs.qsize()), (5, 2))
+        # last week's review on the warm worker; for each of the two
+        self.assertEqual((backend.reads.jobs.qsize(), backend.warmer.jobs.qsize()), (10, 4))
+        # a revoked session that has since ended is still never read ahead
+        made.clear()
+        backend.revoked = lambda ref: ref in ("b" * 64, "c" * 64)
+        # (the live ones keep their ticket: each caller checks it)
+        self.assertEqual(sorted(oid for oid, _e, ref in backend.prewarm_people() if ref),
+                         ["00000000-0000-4000-8000-000000000001",
+                          "29e05178-0bd1-49b9-be6e-b01be1975f70"])
+        self.assertEqual([oid for oid, _e, ref in backend.prewarm_people() if ref is None], [])
+        self.assertEqual(backend.warm_known(), 1)
+        backend.revoked = lambda ref: ref == "b" * 64
         # signed out: never read ahead for again
         backend.forget_reader(be.Reader(SimpleNamespace(
             principals=frozenset(), employee=SimpleNamespace(

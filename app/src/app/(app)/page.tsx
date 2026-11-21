@@ -17,20 +17,20 @@ import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
 import { HomeAsk } from "@/components/home-start";
-import { PreparedList } from "@/components/my-work";
+import { AssistQueue } from "@/components/home/assist-queue";
 import { YourCommitments } from "@/components/your-commitments";
 import { InsightNewsList } from "@/components/insights/news";
 import { YourTurn } from "@/components/memory-people";
 import { SignedInFirstWeek } from "@/components/first-week";
 import { isPutAway } from "@/lib/actions";
 import { useStaleRefresh } from "@/lib/stale-refresh";
-import { getActionStates, getReplies, getBriefing, getBriefingItems, getMyWork, getSuggestions, markBriefingSeen } from "@/lib/api";
+import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { replyLine, withoutCarried } from "@/components/briefing";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { headline, keyOwner, refreshingLine } from "@/lib/home";
-import type { MyWork, ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
+import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const SEEN_AFTER_MS = 6000; // the visit is marked seen after this at the latest, cards settled or not
 const TZ = "America/Toronto";
@@ -53,6 +53,7 @@ const ORDER = ["po_late", "negative_margin", "customer_order_at_risk", "po_due",
 const SHORT_GROUP: Record<string, string> = { po_late: "Late", po_undated: "No date", po_due: "Due soon" };
 /** My work's chips: what the reader does about an item. */
 const VERBS = [
+  { verb: "confirm", label: "Confirm" },
   { verb: "reply", label: "Reply" },
   { verb: "approve", label: "Approve" },
   { verb: "chase", label: "Chase" },
@@ -234,14 +235,8 @@ function Today() {
     getReplies(c.signal).then(setReplies, (e) => !c.signal.aborted && setRepliesError(e));
     return () => c.abort();
   }, []);
-  // what the autopilots prepared for you (was its own page, /my-work): one list with the rest (ARCH 16)
-  const [work, setWork] = useState<MyWork | null>(null);
-  const [workFailed, setWorkFailed] = useState(false);
-  useEffect(() => {
-    const c = new AbortController();
-    getMyWork(c.signal).then(setWork, () => !c.signal.aborted && setWorkFailed(true));
-    return () => c.abort();
-  }, []);
+  // how many items the queue holds (AssistQueue reports it once read; null until then or on a failed read)
+  const [queued, setQueued] = useState<number | null>(null);
   const [picked, setPicked] = useState<string | null>(params.get("sel"));
   const [replyPick, setReplyPick] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -449,12 +444,12 @@ function Today() {
   const loading = !error && groups.length === 0 && (!home || late === null);
   const alertsReading = !briefing && !briefingError && !error;
   const refreshing = briefing?.refreshing || na?.refreshing;
-  const prepared = work?.items?.length ?? 0;
+  const prepared = queued ?? 0;
   // replies or prepared items listed below: no "nothing needs action" line above them
   const othersListed = filter === "all" && !supplier && ((replies?.total ?? 0) > 0 || prepared > 0);
   // the one count, shared with the sidebar: late, alerts, replies you owe and prepared items;
   // unknown (null) until every part is read, and while any part failed (never a partial number)
-  const everyRead = !loading && !error && !!briefing && briefing.status === "read" && late !== null && replies !== null && !repliesError && work !== null && !workFailed;
+  const everyRead = !loading && !error && !!briefing && briefing.status === "read" && late !== null && replies !== null && !repliesError && queued !== null;
   const total = everyRead ? groups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared : null;
   useEffect(() => {
     if (!supplier) publishNeedsCount(total);
@@ -467,7 +462,7 @@ function Today() {
   const tabs =
     bySupplier.length > 1 || (replies?.total ?? 0) > 0 || prepared > 0 ? (
       <div className="flex h-full min-w-0 gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
-        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) })).filter((v) => v.count > 0)].map((g) => (
+        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "confirm" ? (supplier ? 0 : prepared) : v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) })).filter((v) => v.count > 0)].map((g) => (
           <button
             key={g.type}
             type="button"
@@ -529,10 +524,22 @@ function Today() {
       {!supplier && <HomeAsk className="px-5 pt-3" />}      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing && !briefingError && !error ? { "data-pending": "" } : {})}>
         <SignedInFirstWeek />
-        <NeedsMe />
-        <YourCommitments />
-        <InsightNewsList />
-        <YourTurn />
+        {/* prepared work is its own chip (Confirm): listed under All and Confirm, never under
+            another verb, so All is the sum of the chips; kept mounted so its count stays read */}
+        {!supplier && !error && (
+          <div hidden={filter !== "all" && filter !== "confirm"}>
+            <AssistQueue onCount={setQueued} />
+          </div>
+        )}
+        {/* sections no chip counts: under All only (a chip lists what its count says) */}
+        {filter === "all" && !supplier && (
+          <>
+            <NeedsMe />
+            <YourCommitments />
+            <InsightNewsList />
+            <YourTurn />
+          </>
+        )}
         {error ? (
           <div className="p-4">
             <LoadProblem message={error} busy={busy} onRetry={() => load(true)} />
@@ -629,8 +636,6 @@ function Today() {
               </div>
             )}
             {repliesError && <div className="px-5 pt-3"><LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /></div>}
-            {work && <PreparedList work={work} />}
-            {workFailed && <div className="px-5 pt-3"><LoadProblem message="The prepared items didn't load." onRetry={() => window.location.reload()} /></div>}
           </>
         )}
       </div>

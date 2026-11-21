@@ -103,7 +103,7 @@
    "id": "org_depth",
    "group": "Org",
    "title": "Levels in the org chart",
-   "about": "How many people sit at each level below the top of each reporting chain (level 1: a manager with no manager on record), from the directory's manager links; a person not shown on the Team page is not counted.",
+   "about": "How many people sit at each level below the top of each reporting chain (level 1: a manager with no manager on record), from the directory's manager links; a person with neither a manager nor reports on record is on no chain and is not counted (the directory states a manager for only some people); a person not shown on the Team page is not counted.",
    "sql": "WITH RECURSIVE chain AS (\n  SELECT name, email, person_id, 1 AS level FROM staff WHERE manager_email IS NULL AND reports_count > 0\n  UNION ALL\n  SELECT s.name, s.email, s.person_id, c.level + 1 FROM staff s JOIN chain c ON s.manager_email = c.email WHERE c.level < 20)\nSELECT level, person_id FROM chain ORDER BY level",
    "chart": {
     "kind": "bar",

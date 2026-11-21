@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
-import { JobCard, SetAside } from "@/components/autopilot/job";
+import { JobCard } from "@/components/autopilot/job";
+import { ItemActions, type MenuEntry } from "@/components/autopilot/item-actions";
 
-export { tomorrowMorning } from "@/components/autopilot/job";
+export { tomorrowMorning } from "@/components/autopilot/item-actions";
 import { TodoCard, TodoSteps } from "@/components/autopilot/todo";
 import { AlertCard } from "@/components/autopilot/alert";
 import { cn } from "@/lib/cn";
@@ -35,6 +36,7 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   const [editing, setEditing] = useState(false);
   const [line, setLine] = useState("");
   const [pref, setPref] = useState("");
+  const [open, setOpen] = useState<"rewrite" | "pref" | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -55,6 +57,8 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
       const out = await replyFromLine(item.item_id, line);
       setText(out.decision?.text ?? "");
       setEditing(true);
+      setOpen(null);
+      setLine("");
       onChanged();
     });
   const confirm = () =>
@@ -66,16 +70,22 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
       }
       if (out.decision?.sent) onGone(item.item_id);
       else if (out.state === "waiting") setNote("Not sent: the send was refused or failed. It stays here to confirm again.");
-      else setNote("Confirmed. Nothing was sent: this is not switched on for sending yet.");
+      else setNote("Confirmed. Nothing was sent: sending isn't switched on for this yet.");
     });
-  const copy = () => run(async () => void (await navigator.clipboard.writeText(text)));
   const keep = () =>
     run(async () => {
       await saveMemory({ kind: "preference", text: pref.trim() });
       setPref("");
+      setOpen(null);
       setNote("Saved as your preference: your next drafts follow it. Change or remove it in Memory.");
     });
   const haveReply = text.trim() !== "";
+  const versions = (item.options ?? []).filter((o) => o.reply.trim() && o.reply !== text);
+  const entries: MenuEntry[] = [];
+  if (haveReply && item.redo) entries.push({ label: "Rewrite from a line", run: () => setOpen("rewrite") });
+  if (haveReply) entries.push({ label: "Copy", run: () => run(async () => void (await navigator.clipboard.writeText(text))) });
+  if (haveReply && item.channel === "mail" && item.to.length > 0) entries.push({ label: "Open in Outlook", run: () => void (window.location.href = mailtoOf(item, text)) });
+  entries.push({ label: "Save a preference for my drafts", run: () => setOpen("pref") });
   return (
     <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-item">
       <div className="flex flex-wrap items-baseline gap-x-3">
@@ -104,8 +114,8 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
             </div>
           )}
           <label className="block text-[12px] text-muted">
-            {(item.options ?? []).length > 0 ? "Other: answer in a few words" : "What do you want to say?"}
-            <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-lg border border-border bg-bg px-2 text-[13px] text-fg" />
+            {(item.options ?? []).length > 0 ? "Or say it in a few words" : "What do you want to say?"}
+            <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
           </label>
           <Button size="sm" disabled={busy || !line.trim()} onClick={() => void write()}>
             Write the reply
@@ -114,43 +124,46 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
       )}
       {haveReply && (
         <>
-          {editing ? <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full max-w-[46rem] rounded-lg border border-border bg-bg p-2 text-[13px] text-fg" /> : <p className="max-w-[46rem] whitespace-pre-wrap rounded-lg bg-hover p-3 text-[13px]">{text}</p>}
-          {item.redo && (
+          {editing ? <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full max-w-[46rem] border border-border bg-bg p-2 text-[13px] text-fg" /> : <p className="max-w-[46rem] whitespace-pre-wrap bg-hover p-3 text-[13px]">{text}</p>}
+          {versions.length > 0 && (
+            <div className="flex max-w-[46rem] flex-wrap items-center gap-2" aria-label="Other versions">
+              <span className="text-[12px] text-muted">Other versions:</span>
+              {versions.map((o) => (
+                <Button key={o.reply} size="sm" variant="ghost" disabled={busy} onClick={() => setText(o.reply)}>
+                  {o.label || "Another version"}
+                </Button>
+              ))}
+            </div>
+          )}
+          {open === "rewrite" && (
             <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
               <label className="block min-w-[16rem] flex-1 text-[12px] text-muted">
                 Rewrite it: what do you want to say?
-                <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-lg border border-border bg-bg px-2 text-[13px] text-fg" />
+                <input autoFocus value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
               </label>
               <Button size="sm" variant="outline" disabled={busy || !line.trim()} onClick={() => void write()}>
                 Rewrite
               </Button>
             </div>
           )}
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={() => void confirm()}>
-              {token ? "Confirm again to send" : "Confirm"}
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing((v) => !v)}>
-              {editing ? "Done editing" : "Edit"}
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void copy()}>
-              Copy
-            </Button>
-            {item.channel === "mail" && item.to.length > 0 && (
-              <a className="inline-flex h-8 items-center rounded-lg border border-border px-3 text-[13px] hover:bg-hover" href={mailtoOf(item, text)}>
-                Open in Outlook
-              </a>
-            )}
-          </div>
         </>
+      )}
+      {open === "pref" && (
+        <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
+          <label className="min-w-[16rem] flex-1 text-[12px] text-muted">
+            Save as a preference (for example: never mention prices to Kim)
+            <input autoFocus value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
+          </label>
+          <Button size="sm" variant="outline" disabled={busy || !pref.trim()} onClick={() => void keep()}>
+            Save
+          </Button>
+        </div>
       )}
       <TodoSteps todos={item.todos ?? []} />
       <DraftUse use={draftUseOf(item)} />
       {item.auto_would && (
         <p className="max-w-[46rem] text-[12px] text-muted" data-testid="auto-would">
-          {item.auto_would === "send"
-            ? "Dry run: with Auto on, this would go by itself."
-            : `Dry run: with Auto on, this would still wait for you (${item.auto_would.replace(/^keep: /, "")}).`}
+          {item.auto_would === "send" ? "With Auto on, this would go by itself." : "With Auto on, this would still wait for you."}
         </p>
       )}
       {(item.learned ?? []).length > 0 && (
@@ -158,16 +171,25 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
           Learned from your edit: {(item.learned ?? []).join("; ")}
         </p>
       )}
-      <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
-        <label className="min-w-[16rem] flex-1 text-[12px] text-muted">
-          Save as a preference (for example: never mention prices to Kim)
-          <input value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full rounded-lg border border-border bg-bg px-2 text-[13px] text-fg" />
-        </label>
-        <Button size="sm" variant="outline" disabled={busy || !pref.trim()} onClick={() => void keep()}>
-          Save
-        </Button>
-      </div>
-      <SetAside itemId={item.item_id} disabled={busy} onGone={onGone} sender={item.sender} onNever={onChanged} />
+      <ItemActions
+        item={item}
+        onGone={onGone}
+        onChanged={onChanged}
+        busy={busy}
+        entries={entries}
+        primary={
+          haveReply ? (
+            <>
+              <Button size="sm" disabled={busy} onClick={() => void confirm()}>
+                {token ? "Confirm again to send" : "Confirm"}
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing((v) => !v)}>
+                {editing ? "Done editing" : "Edit"}
+              </Button>
+            </>
+          ) : null
+        }
+      />
       {note && <p className="text-[12px] text-muted">{note}</p>}
       {error && <ErrorNotice message={error} />}
     </li>
@@ -233,27 +255,31 @@ export function EveryoneView({ area }: { area: Area }) {
         {who.length === 0 ? (
           <p className="text-[13px] text-muted">Nobody has switched anything on.</p>
         ) : (
-          <ul className="divide-y divide-border">
-            {who.map((w) => (
-              <li key={`${w.person}/${w.choice}`} className="flex gap-3 py-1.5 text-[13px]">
-                <span>{personName(area, w.person)}</span>
-                <span className="text-muted">
-                  {w.label}
-                  {w.partly ? ", partly" : ""}
-                  {w.by_owner ? ", set by the owner" : ""}
-                </span>
-              </li>
-            ))}
+          // one line per person (their workflows in it), never the same name once per workflow
+          <ul className="divide-y divide-border" data-testid="ap-who">
+            {[...new Set(who.map((w) => w.person))].map((person) => {
+              const theirs = who.filter((w) => w.person === person);
+              // "set by the owner" once when it holds for every one of them
+              const allOwner = theirs.every((w) => w.by_owner);
+              return (
+                <li key={person} className="flex gap-3 py-1.5 text-[13px]">
+                  <span className="shrink-0">{personName(area, person)}</span>
+                  <span className="text-muted">
+                    {theirs.map((w) => `${w.label}${w.partly ? " (partly)" : ""}${w.by_owner && !allOwner ? " (set by the owner)" : ""}`).join(", ")}
+                    {allOwner ? "; all set by the owner" : ""}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
-      <section aria-labelledby="ap-score" className="space-y-2">
-        <h2 id="ap-score" className="text-[13px] font-semibold">
-          How each one is doing
-        </h2>
-        {by.length === 0 ? (
-          <p className="text-[13px] text-muted">Nothing has been accepted, edited or rejected yet.</p>
-        ) : (
+      {/* only once something was accepted, edited or rejected: an empty score section says nothing */}
+      {by.length > 0 && (
+        <section aria-labelledby="ap-score" className="space-y-2">
+          <h2 id="ap-score" className="text-[13px] font-semibold">
+            How each one is doing
+          </h2>
           <ul className="divide-y divide-border">
             {by.map(([name, c]) => {
               const s = scoreOf(c);
@@ -268,8 +294,8 @@ export function EveryoneView({ area }: { area: Area }) {
               );
             })}
           </ul>
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }

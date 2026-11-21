@@ -159,6 +159,7 @@ FIELD_ROLES: Mapping[str, str] = {
     "po_reference": "identifier:customer_po",
     "external_document_number": "identifier:bc_external_document_no",
     "customer_po": "identifier:customer_po",
+    "tracking_number": "identifier:tracking_number",
     "line_count": "integer",
     "lines_stated": "text",
 }

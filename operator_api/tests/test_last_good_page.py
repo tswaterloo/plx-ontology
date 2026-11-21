@@ -1266,6 +1266,42 @@ class FirstReadAnswersReading(LastGoodPage.__base__):
         self.backend._access_now(reader("grp-a"))
         self.assertEqual(waits, [be.ACCESS_WAIT_SECONDS])
 
+    def test_a_kept_page_whose_access_is_not_decided_yet_answers_reading_not_a_blank_wait(self):
+        """A fresh API after a deploy (or a new session) holds the reader's kept page but
+        has not decided its access yet, so it may not serve it: the read gets the rest of
+        ``first_wait``, then goes on off the request and the screen answers ``reading``
+        (11-21 7:13 AM ET switch: Home, approvals, replies 9-15 s blank); the next request
+        is served the page that read kept. Without the route's mark it is waited for."""
+        from concurrent.futures import Future
+        self.backend._inputs_of = lambda *a, **k: (("served", 1), 0)
+        who = reader("grp-a")
+        self.assertEqual(self.ask(who, lambda: page(5)).total, 5)   # kept
+        self.wait_over()
+        real = self.backend._access_later
+        undecided = Future()                                       # never answers
+        self.backend._access_later = lambda *a, **k: undecided
+        release = threading.Event()
+
+        def slow():
+            release.wait(10)
+            return page(7)
+
+        started = time.monotonic()
+        got = self.ask(who, slow)
+        self.assertLess(time.monotonic() - started, be.ACCESS_WAIT_SECONDS + 2)
+        self.assertEqual((got.reading, got.total, got.items), (True, 0, []))
+        self.backend._access_later = real
+        release.set()
+        self.wait_over()
+        got = self.ask(who, slow)
+        self.assertEqual((got.reading, got.total), (False, 7))   # the page that read kept
+        # an action's card (no route mark) still waits for the read itself
+        self.backend._access_later = lambda *a, **k: undecided
+        got = self.backend._serving(who, ("late", 0, 25), lambda: page(9),
+                                    reading=lambda: m.LateList(total=0, offset=0, reading=True))
+        self.assertEqual((got.reading, got.total), (False, 9))
+        self.backend._access_later = real
+
     def test_a_quick_first_read_is_the_answer(self):
         got = self.ask(reader("grp-a"), lambda: page(5))
         self.assertEqual((got.reading, got.total), (False, 5))
@@ -1672,6 +1708,8 @@ class SnapshotFirst(LastGoodPage.__base__):
                                            "gone": {"ref": "r" * 63 + "x", "exp": 9}},
                     check_worker=worker, access_worker=None, state_worker=None,
                     _prewarm_kept_checks=lambda view, r, until: ran.append(r.session) or 1)
+                fake.prewarm_people = lambda: [(oid, int(v["exp"]), v["ref"])
+                                               for oid, v in fake.known_readers().items()]
                 started = time.monotonic()
                 self.assertEqual(be.WorkspaceBackend.prewarm_checks_after_warm(fake, 5.0), n)
                 self.assertLess(time.monotonic() - started, 2.0)

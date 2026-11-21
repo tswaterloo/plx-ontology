@@ -119,6 +119,22 @@ class GateTest(unittest.TestCase):
         self.assertEqual(ag.gate("It came to 1,083.00.", [hit], [])[1], ["1,083.00"])
         self.assertEqual(ag.gate("It came to 22,917.00.", [hit], [])[1], ["22,917.00"])
 
+    def test_framing_and_lettered_codes_are_no_figures(self):
+        # a code ending in a letter binds only by the same token a result holds (never as
+        # a scale: "26127B" is no 26,127 billion); a day list of one month is a date; a
+        # quoted clause number is the text's own numbering
+        lots = sql([["26127B", "DPI-005"], ["26130A", "DPI-006"]], columns=("lot", "item"))
+        self.assertEqual(ag.gate("DPI-006 was listed with lot 26127B.", [lots], [])[1], [])
+        self.assertEqual(ag.gate("DPI-006 was listed with lot 26128B.", [lots], [])[1],
+                         ["26128B"])
+        self.assertEqual(ag.gate("It came to 26127B dollars.", [OCT], [])[1], ["26127B"])
+        self.assertEqual(ag.gate("Chased Nov 13, 17, 18 and 20.", [OCT], [])[1], [])
+        self.assertEqual(ag.gate("On Nov 13, 2026 we sold 17 units.", [OCT], [])[1],
+                         ["17"])
+        self.assertEqual(ag.gate('Before: "3. Payment terms. Net 30."', [OCT], ["Net 30"])[1],
+                         [])
+        self.assertEqual(ag.gate("We hold 7. Then more.", [OCT], [])[1], ["7"])
+
     def test_nothing_returned_binds_nothing(self):
         # a refused call, an error result and another tool's result bind no figure
         failed = {**OCT, "is_error": True}
@@ -245,6 +261,30 @@ class GateTest(unittest.TestCase):
                        ["2026-11 (1-18)", "USD", "164001.36", "2026-11-16"]],
                       columns=("period", "currency", "sales", "last_invoice"))
         self.assertEqual(ag.gate("CAD sales are down 15.2% on last year.", [periods])[1], [])
+
+    def test_a_product_of_two_figures_its_line_states_binds(self):
+        # the quantity and the price are returned; the line's amount is their product, and
+        # a percent of it on the same table row binds the same way
+        lines = sql([["R-0098", "500", "456.89"], ["Base", "12", "210.00"]],
+                    columns=("item", "open_qty", "unit_price"))
+        row = "| R-0098 | 500 kg | 456.89 CAD/kg | 228,445.00 CAD | 8% | 18,275.60 CAD |"
+        for text, asked in ((row, ["what is 8% of the open value?"]),
+                            ("Base: 12 x 20L @ 210.00 CAD = 2,520.00 CAD.", [])):
+            self.assertEqual(ag.gate(text, [lines], asked)[1], [], text)
+        # a rate no result or the person states is no factor: the amount it makes stays
+        # marked (the rate itself passes as the share of its line's two amounts, as before)
+        self.assertIn("18,275.60", ag.gate(row, [lines], [])[1])
+        # an amount that is no product of the line's figures stays marked, and so does a
+        # factor no result holds (the product never vouches for its factors)
+        self.assertEqual(ag.gate("| R-0098 | 500 kg | 456.89 CAD/kg | 228,454.00 CAD |",
+                                 [lines], [])[1], ["228,454.00"])
+        self.assertIn("2,730.00", ag.gate("Base: 13 x 20L @ 210.00 CAD = 2,730.00 CAD.",
+                                          [lines], [])[1])
+        # a line of many figures multiplies to nearly anything: no product binds there
+        many = "| " + " | ".join(["500", "456.89", "12", "210.00", "3", "7", "9"]) + \
+            " | 2,520.00 |"
+        more = sql([["a", "3", "7"], ["b", "9", "11"]], columns=("k", "x", "y"))
+        self.assertIn("2,520.00", ag.gate(many, [lines, more], [])[1])
 
     def test_framing_and_codes_are_no_amounts(self):
         hit = {**SEARCH, "result": {"documents": [{"citation": "original://m/3", "snippet": {

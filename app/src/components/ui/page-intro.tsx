@@ -7,11 +7,11 @@ import { cn } from "@/lib/cn";
  * record it shows.
  */
 export const PAGE_INTROS = {
-  "/": "What needs you today: late orders to chase, replies to send and alerts to decide.",
+  "/": "What needs you today: what was prepared for you to confirm, replies to send, late orders to chase and alerts to decide.",
   "/ask": "Ask about any order, supplier, customer or lot. Answers come only from the records and mail you may open.",
   "/?show=alerts": "Alerts from the rules you set and the records you follow.",
   "/?show=late": "Every purchase order past its due date, with the date the supplier gave, if any.",
-  "/autopilot": "What is prepared for you to answer, and what you want prepared. Each person turns their own on.",
+  "/autopilot": "What gets prepared for you, and what may go without your click. Each person sets their own.",
   "/autopilot-log": "What the autopilot did and what each person did with it, with undo.",
   "/meetings": "Your upcoming meetings, the weekly review and the follow-ups you owe from recorded meetings.",
   "/team": "What people are working on and what waits on whom, as far as your access allows.",

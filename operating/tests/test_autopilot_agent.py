@@ -72,7 +72,7 @@ class Check:
         self.prompts.append(input)
         if self.fail is not None:
             raise self.fail
-        ids = re.findall(r"^\[([RQOPT]\d*)\]", input, re.M)
+        ids = re.findall(r"^\[([RNQOPT]\d*)\]", input, re.M)
         out = self.answer if self.answer is not None else json.dumps(
             {"items": [{"id": i, "keep": "no" if i in self.drop else "yes", "why": "-",
                         **({"fixed": self.fixed} if i == "R" and i in self.drop else {})}
@@ -176,6 +176,169 @@ class AssistantBoundary(unittest.TestCase):
 
 # put to the person, no certain ask, but they usually answer this sender: a turn
 TURN = {**MAIL, "to_me": True, "asks": False, "sender_history": [10, 8]}
+
+
+class Sort:
+    """The reply sort's ``claude -p`` stand-in: answers ``answer`` (a JSON text) or raises
+    ``fail``; keeps every prompt it was shown."""
+
+    def __init__(self, answer='{"reply": false, "what": "a newsletter"}', fail=None) -> None:
+        self.answer, self.fail = answer, fail
+        self.prompts: list[str] = []
+        self.models: list[str] = []
+
+    def __call__(self, argv, *, input, **_kw):
+        self.prompts.append(input)
+        self.models.append(argv[argv.index("--model") + 1])
+        if self.fail is not None:
+            raise self.fail
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"result": self.answer}),
+                                           stderr="")
+
+
+def sorted_by(session, sort, model="haiku") -> ag.Assistant:
+    return ag.Assistant("opus", lookup=session, binary=BIN, home=HOME, per_cycle=100,
+                        checker=ck.Checker(binary=BIN, home=HOME, call=Check()),
+                        reply_screen=model, call=sort)
+
+
+class ReplySort(unittest.TestCase):
+    """The small model's sort before the session (``Assistant.reply_screen``, the open
+    replies' drafts): only a plain false keeps the session from running."""
+
+    def test_a_plain_false_runs_no_session_anything_else_lets_the_session_decide(self):
+        session, sort = Session(), Sort()
+        self.assertEqual(run(sorted_by(session, sort)), (None, "no_reply_wanted"))
+        self.assertEqual((session.runs, sort.models), ([], ["haiku"]))
+        self.assertIn(MAIL["text"], sort.prompts[0])
+        self.assertIn("me@plx.example", sort.prompts[0])
+        # a card number in the message is masked before the sort reads it
+        card = {**ASKED, "text": ASKED["text"] + " Card 4111 1111 1111 1111 on file."}
+        sort = Sort()
+        run(sorted_by(Session(), sort), card)
+        self.assertNotIn("4111 1111 1111 1111", sort.prompts[0])
+        self.assertIn("Card", sort.prompts[0])
+        for answer, fail in (('{"reply": true}', None), ('{"reply": "false"}', None),
+                             ('{"what": "x"}', None), ("not json", None),
+                             ('{"reply": false}', subprocess.TimeoutExpired("claude", 60)),
+                             ('{"reply": false}', OSError("no binary"))):
+            with self.subTest(answer=answer, fail=fail):
+                session = Session()
+                got, why = run(sorted_by(session, Sort(answer, fail)))
+                self.assertEqual((why, got.reply), ("", "Yes, Nov 20 works for PO 77."))
+                self.assertEqual(len(session.runs), 1)
+
+    def test_no_sort_by_default_and_never_before_the_people_and_freightcom_screens(self):
+        session, sort = Session(), Sort()
+        quiet = ag.Assistant("opus", lookup=session, binary=BIN, home=HOME, per_cycle=100,
+                             checker=ck.Checker(binary=BIN, home=HOME, call=Check()), call=sort)
+        self.assertEqual(run(quiet)[1], "")
+        self.assertEqual((len(session.runs), sort.prompts), (1, []))
+        session = Session()
+        for event, people, why in (
+                (GATE, People(barred={"dev@plx.example"}), "not_cleared"),
+                ({**MAIL, "cleared": False}, People(), "not_cleared"),
+                ({**GATE, "text": PAYSTUB}, People(), "pay_or_hr"),
+                ({**MAIL, "sender": "billing@freightcom.com"}, People(), "freightcom")):
+            with self.subTest(why):
+                self.assertEqual(run(sorted_by(session, sort), event, people), (None, why))
+        self.assertEqual((session.runs, sort.prompts), ([], []))
+        # no session for the person: no sort either (nothing would be drafted)
+        self.assertEqual(run(sorted_by(None, sort)), (None, "agent_no_session"))
+        self.assertEqual(sort.prompts, [])
+
+    def test_a_time_look_is_never_sorted(self):
+        session, sort = Session(calls=[("plx.prepare_write", TASK)]), Sort()
+        got, why = sorted_by(session, sort).look("me", "Ana", People(),
+                                                 as_of="2026-04-07T13:00:00+00:00",
+                                                 changes=PLAN_CH)
+        self.assertEqual((why, len(got.proposals), sort.prompts), ("", 1, []))
+
+
+class Reads(Session):
+    """A session whose reads come back only when it may read (``reads``); ``answers``
+    the final answer of each run in turn."""
+
+    def __init__(self, looked, answers) -> None:
+        super().__init__(looked=looked)
+        self.finals = list(answers)
+
+    def run(self, owner, prompt, *, tools=(), job=False, agent=False, reads=True):
+        assert agent and not job
+        self.runs.append((owner, prompt))
+        self.reads.append(reads)
+        return self.finals[min(len(self.runs), len(self.finals)) - 1], \
+            (self.looked if reads else [])
+
+
+class ScreenedReads(unittest.TestCase):
+    """A message's session that read something the screens bar (people exclusion,
+    Freightcom) runs once more with no record tool, from the screened message and thread
+    alone; nothing of the screened session (its reads, its decision) reaches that run or
+    the check, and the retry is screened like any session (dev 11-21: 4 of 20 replies were
+    lost to a record a session looked up, none to the message)."""
+
+    BARRED = People(barred={"cos@plx.example"})
+    SEEN = "{'requested_by': 'cos@plx.example', 'note': 'secret plan B'}"
+
+    def test_a_screened_read_retries_from_the_thread_alone(self):
+        for looked, why in (([self.SEEN], "excluded_in_thread"),
+                            (["carrier: Freightcom, pickup 20 Nov"], "freightcom"),
+                            ([PAYSTUB], "pay_or_hr")):
+            with self.subTest(why):
+                session = Reads(looked, [final(reply="Plan B ships Friday, cos agreed."),
+                                         final(reply="Thanks, noted: Nov 20 works.")])
+                check = Check()
+                got, got_why = run(assistant(session, check), people=self.BARRED)
+                self.assertEqual((got_why, got.reply, got.looked),
+                                 ("", "Thanks, noted: Nov 20 works.", []))
+                self.assertEqual(session.reads, [True, False])
+                again = session.runs[1][1]
+                self.assertIn(ag.THREAD_ONLY.format(person="me@plx.example"), again)
+                self.assertIn(MAIL["text"], again)
+                self.assertNotIn("Plan B", again)
+                # the check sees only the retry: one call, none of the screened session
+                self.assertEqual(len(check.prompts), 1)
+                for gone in ("secret plan B", "cos@plx.example", "Plan B ships", "Freightcom",
+                             PAYSTUB[:40]):
+                    self.assertNotIn(gone, check.prompts[0])
+
+    def test_the_retry_is_screened_and_runs_once(self):
+        # the retry's own text names the barred person: dropped, no third run
+        session = Reads([self.SEEN], [final(reply="ok"),
+                                      final(reply="I asked cos@plx.example for it.")])
+        self.assertEqual(run(assistant(session), people=self.BARRED),
+                         (None, "excluded_in_thread"))
+        self.assertEqual(session.reads, [True, False])
+        # a screened message never reaches any session
+        session = Reads([], [final(reply="ok")])
+        self.assertEqual(run(assistant(session), {**ASKED, "text": "From: cos@plx.example"},
+                             self.BARRED), (None, "excluded_in_thread"))
+        self.assertEqual(session.runs, [])
+
+    def test_a_look_is_not_retried(self):
+        session = Reads([self.SEEN], [final(todos=[{"system": "Portal", "record": "PO 77",
+                                                    "what": "Enter the date"}])])
+        got = ag.Assistant("opus", lookup=session, binary=BIN, home=HOME, per_cycle=100,
+                           checker=ck.Checker(binary=BIN, home=HOME, call=Check())).look(
+            "me", "me@plx.example", self.BARRED,
+            changes=[{"record": "PO 77", "line": "PO 77: date due"}])
+        self.assertEqual(got, (None, "excluded_in_thread"))
+        self.assertEqual(session.reads, [True])
+
+    def test_an_address_without_a_name_part_names_nobody(self):
+        from operating.autopilot_drafter import thread_screen
+
+        class Directory:
+            # as the captured directory decides: an address of our domain it does not know
+            # is undecidable (withheld); another domain's is nobody of ours
+            def identity_clear(self, who):
+                return who == "me@plx.example" or not who.endswith("@plx.example")
+
+        query = "{'sql': \"SELECT 1 FROM emails WHERE sender LIKE '%' || '@plx.example'\"}"
+        self.assertIsNone(thread_screen(Directory(), query))
+        for text in ("From: ghost@plx.example", "{'to': 'ghost@plx.example'}"):
+            self.assertEqual(thread_screen(Directory(), text), "excluded_in_thread")
 
 
 class SecondCheck(unittest.TestCase):
@@ -287,6 +450,71 @@ class SecondCheck(unittest.TestCase):
         got, _ = run(assistant(work, Check(drop={"P1", "T1"})))
         self.assertEqual(([p["arguments"] for p in got.proposals], got.todos), ([PO_DATE], []))
 
+    def test_the_note_is_checked_as_the_reply_and_a_contradiction_is_unsupported(self):
+        note = {"question": "Do you hold Matt to 5,000?", "options": []}
+        session = Session(answer=final(reply="Hi, [yes or no] on 1,000.", ask=note))
+        check = Check()
+        got, _ = run(assistant(session, check))
+        prompt = check.prompts[0]
+        self.assertIn("[N] Note shown to the person beside the reply", prompt)
+        self.assertIn("Do you hold Matt to 5,000?", prompt)
+        self.assertIn("CONTRADICT", prompt)
+        self.assertEqual(got.note, "Do you hold Matt to 5,000?")
+        # unsupported: its repair stands (only taken out or blanked), else no note; the
+        # reply is judged on its own
+        for fixed, want in (("Do you hold Matt to [quantity]?", "Do you hold Matt to [quantity]?"),
+                            ("Do you hold Matt to 2,000?", ""), ("", "")):
+            with self.subTest(fixed=fixed):
+                answer = json.dumps({"items": [{"id": "R", "keep": "yes"},
+                                               {"id": "N", "keep": "no", "fixed": fixed}]})
+                got, why = run(assistant(session, Check(answer=answer)))
+                self.assertEqual((why, got.reply, got.note, got.warning),
+                                 ("", "Hi, [yes or no] on 1,000.", want, ""))
+        # a note the check does not name does not stand (fail closed)
+        got, _ = run(assistant(session, Check(answer='{"items": [{"id": "R", "keep": "yes"}]}')))
+        self.assertEqual((got.reply, got.note), ("Hi, [yes or no] on 1,000.", ""))
+
+    def test_an_unsupported_answer_is_repaired_with_placeholders_not_dropped(self):
+        card = Session(answer=final(ask=self.ASK))
+        for fixed, label, want in (
+                # repaired: the card keeps both ready replies
+                ("[day] at 3 works for us.", "Another day", [
+                    ("Yes", "Yes, Nov 20 works."), ("Another day", "[day] at 3 works for us.")]),
+                # a "repair" that adds a figure is no repair: dropped, one left -> none
+                ("Saturday at 4 works for us.", "Friday", []),
+                # a label naming a figure the repaired reply no longer carries: dropped
+                ("[day] at [time] works for us.", "Friday at 3", []),
+                # nor a word it no longer says (the button would claim what the reply dropped)
+                ("[day] works for us.", "Friday", [])):
+            with self.subTest(fixed=fixed, label=label):
+                ask = {**self.ASK, "options": [self.ASK["options"][0],
+                                               {**self.ASK["options"][1], "label": label}]}
+                answer = json.dumps({"items": [{"id": "Q", "keep": "yes"},
+                                               {"id": "O1", "keep": "yes"},
+                                               {"id": "O2", "keep": "no", "fixed": fixed}]})
+                got, why = run(assistant(Session(answer=final(ask=ask)), Check(answer=answer)))
+                self.assertEqual(why, "")
+                self.assertEqual([(o["label"], o["reply"]) for o in got.ask["options"]], want)
+        self.assertIn("[O1]..", ck.PROMPT)
+
+    def test_a_card_shows_each_ready_answer_once(self):
+        def card(options):
+            got, why = run(assistant(Session(answer=final(ask={
+                "question": "Can PO 77 take Nov 20?", "options": options}))))
+            return [(o["label"], o["reply"]) for o in got.ask["options"]]
+        yes, no = ("Yes", "Yes, Nov 20 works."), ("No", "Nov 20 is too late for us.")
+        both = [{"label": l, "reply": r} for l, r in (yes, no)]
+        # an answer that is only placeholders has nothing ready to send: no button
+        self.assertEqual(card([both[0], {"label": "Other", "reply": "[your answer]."}, both[1]]),
+                         [yes, no])
+        # the same reply twice, or two answers under one label: one button each
+        self.assertEqual(card([both[0], {"label": "Sure", "reply": " yes, nov 20 WORKS. "},
+                               both[1]]), [yes, no])
+        self.assertEqual(card([both[0], {"label": "yes ", "reply": "Fine by us."}, both[1]]),
+                         [yes, no])
+        # what is left after that is one answer: a guess, so none
+        self.assertEqual(card([both[0], {**both[0], "label": "Sure"}]), [])
+
     def test_no_verdict_a_bad_one_or_an_unnamed_item_fails_closed(self):
         session = Session(answer=final(reply="Yes, Nov 20 works.", ask=None),
                           calls=[("plx.prepare_write", PO_DATE)])
@@ -361,13 +589,18 @@ class SecondCheck(unittest.TestCase):
                                  ("", "Yes, Nov 20 works." if due == "reply" else "",
                                   {"question": ASK_PLAIN, "options": []} if due == "question"
                                   else None, 1 if due else 0, 1))
-        # on a turn, the model's own open question is kept, its offered answers are not
+        # on a turn as when asked, the person's call keeps the answers the check kept (a card
+        # with no ready answers is theirs to write); one kept answer is still none
         offered = Session(answer=final(ask={"question": "Which date suits you?", "options": [
             {"label": "Nov 20", "reply": "Nov 20 works."},
             {"label": "Nov 27", "reply": "Nov 27 works."}]}))
-        self.assertEqual(run(assistant(offered), TURN)[0].ask,
+        for event in (TURN, ASKED):
+            with self.subTest(due=event is TURN and "turn" or "asked"):
+                self.assertEqual(len(run(assistant(offered), event)[0].ask["options"]), 2)
+        self.assertEqual(run(assistant(offered, Check(drop={"O2"})), TURN)[0].ask,
                          {"question": "Which date suits you?", "options": []})
-        self.assertEqual(len(run(assistant(offered), ASKED)[0].ask["options"]), 2)
+        # not due at all: no card
+        self.assertEqual(run(assistant(offered), copied), (None, "nothing_to_do"))
         # the check's own say on whether a reply is due is not read
         ignored = Check(answer=json.dumps({"needed": "no", "items": [
             {"id": i, "keep": "yes"} for i in ("R", "P1", "T1")]}))

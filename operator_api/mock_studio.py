@@ -212,6 +212,17 @@ def seed(root: Path, now: Optional[datetime] = None) -> None:
     state.mkdir(parents=True, exist_ok=True)
     rules = aw.load_rules()
     aw.record_scores(run, state / aw.WRITE_GATE_FILE, rules)
+    # the demo categories' judged precision (what Auto rests on), demo data
+    from operating import autopilot_judged as aj
+    from operating.assist_switches import choice_of
+    judged = (root / "judged-run.json")
+    judged.write_text(json.dumps({"schema": aj.RUN_SCHEMA, "source": "demo data",
+                                  "measured_on": "2026-11-10", "items": [
+        {"item": f"{cat}-{k}", "category": cat, "at": f"2026-11-0{6 + k % 3}T15:{k:02d}:00Z",
+         "performed": True, "right": k < matched}
+        for cat, (n, matched) in {choice_of(f): c for flows in FRESH_SCORES.values()
+                                  for f, c in flows.items()}.items() for k in range(n)]}))
+    aj.record(judged, state, rules)
     aw.sync_gate(aw.Journal(state / aw.AUDIT_FILE),
                  aw.WriteGate(state / aw.WRITE_GATE_FILE, rules), now)
 

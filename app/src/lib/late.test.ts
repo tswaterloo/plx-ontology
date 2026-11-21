@@ -86,7 +86,7 @@ describe("readAllLate", () => {
 
 describe("chase facts and the supplier-date filter", () => {
   it("reads the date given, the last word and whom to ask from a follow-up, and says nothing it does not have", () => {
-    expect(chaseOf(null)).toEqual({ promised: null, promiseWords: null, lastWord: null, ask: null, holds: [], next: null });
+    expect(chaseOf(null)).toEqual({ promised: null, promiseWords: null, lastWord: null, ask: null, holds: [], next: null, rule: null });
     const c = chaseOf({ eta: { answer: "possibly", in_mail: true, text: "", when: "2026-11-04", source: { system: "Teams", handle: "h", label: "x", as_of: "2026-10-22T10:00:00Z" } }, action: { text: "Check", rule: "r", suggestion_only: true, contact: "a@x.example" }, impact: { orders_at_risk: 0 } } as never);
     expect(c).toMatchObject({ promised: "2026-11-04", promiseWords: "possible date, unconfirmed", lastWord: { at: "2026-10-22T10:00:00Z", system: "Teams" }, ask: "a@x.example", next: "Check" });
     expect(chaseOf({ eta: { answer: "conflicting", in_mail: false, text: "", when: "2026-11-04" }, action: { text: "x", rule: "r", suggestion_only: true } } as never)).toMatchObject({ promised: null, promiseWords: "dates on record disagree" });

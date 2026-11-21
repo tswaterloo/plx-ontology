@@ -39,7 +39,17 @@ RULES_GENERIC = (
     "shows a type's fields, sample records and commonest values. records.label ILIKE is "
     "indexed, and type = '<Type>' first is fast; fields::text ILIKE over every type "
     "reads every record and runs past the time limit: find a word in any record with "
-    "plx.search (sources records).")
+    "plx.search (sources records). A record's links: record_links WHERE from_id (or "
+    "to_id) = ANY(ARRAY(SELECT record_id FROM records WHERE type = '<Type>' AND ...)) "
+    "reads them by index in milliseconds. To join views row by row (records to "
+    "record_links, a link to the record at its other end, records to a business view), "
+    "read the other side in a fenced lateral: LEFT JOIN LATERAL (SELECT l.to_id FROM "
+    "record_links l WHERE l.from_id = r.record_id AND l.link_type = '<link>' OFFSET 0) l "
+    "ON true (OFFSET 0 is what makes each row's match an index read, milliseconds); a "
+    "plain JOIN, IN (SELECT ...) or a lateral without OFFSET 0 between these views reads "
+    "every row of the other one (past the time limit). "
+    "Mail and Teams: a count or list within a received_at / created_at window reads its "
+    "index (under a second); over the whole table it reads every message (about 30 s).")
 RULES_TAIL = " Mail text, chats and documents: plx.search."
 RULES_BASE = RULES
 RULES = RULES_BASE + RULES_GENERIC + RULES_TAIL
@@ -67,7 +77,9 @@ GENERIC_ABOUT = {
         "record_date": "text YYYY-MM-DD: its key date (record_types.date_fields)",
         "first_seen": "text: when it was first captured", "changed_at": "text",
         "fields": "jsonb: field -> value (the authority-first value of each field)"}),
-    "record_links": ("one row per live link between two records this reader may read", {
+    "record_links": ("one row per live link between two records this reader may read "
+                     "(filter from_id or to_id = ANY(ARRAY(SELECT record_id FROM records "
+                     "WHERE ...)), never a JOIN to records)", {
         "from_id": "text: records.record_id", "from_type": "text", "from_handle": "text",
         "link_type": "text", "to_id": "text: records.record_id", "to_type": "text",
         "to_handle": "text", "tier": "text: verified/reviewed/corroborated (solid), "

@@ -94,7 +94,7 @@ describe("Trust page", () => {
       "The app is behind on Teams; the other 3 systems are up to date, though the last read of File failed (see below).",
       "Answer accuracy on questions never used for tuning has not been measured on this server yet.",
       "1 of the 3 alert types is switched on; the rest stay off (1 was checked by hand but has not passed yet, 1 has not been checked yet).",
-      "The autopilot prepares drafts for a person to approve in 2 of its 2 workflows.",
+      "The autopilot prepares drafts for a person to confirm in 2 kinds of work; nothing goes out without that person's click.",
     ]);
     // no "6" beside "3 behind" that reads as "63 behind", no "0 of 0"
     expect(summary).not.toHaveTextContent(/\b0 of 0\b|\d+ behind/);

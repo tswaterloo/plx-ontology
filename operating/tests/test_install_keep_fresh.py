@@ -61,8 +61,10 @@ class AutopilotFollowUnit(unittest.TestCase):
                                str(env)], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('enable --now "$u.path"', text)
-        # the live feed, and the fast feed a captured message starts (operating/autopilot_fast)
-        for name, command in (("plx-autopilot-follow", "follow"), ("plx-autopilot-fast", "fast")):
+        # the live feed (the fast feed's per-signal units were retired: its consumer below)
+        self.assertIn('RETIRED_SYS_UNITS="plx-autopilot-fast"', text)
+        self.assertFalse((tmp / "out" / "plx-autopilot-fast.service").exists())
+        for name, command in (("plx-autopilot-follow", "follow"),):
             self.assertIn(name, text.split("SYS_UNITS=", 1)[1].splitlines()[0])
             self.assertIn(name, text.split("SYS_PATHS=", 1)[1].splitlines()[0])
             unit = (tmp / "out" / f"{name}.service").read_text()
@@ -93,13 +95,13 @@ class AutopilotFollowUnit(unittest.TestCase):
         self.assertIn("plx-autopilot-fast-serve", text.split("SYS_DAEMONS=", 1)[1].splitlines()[0])
         unit = (tmp / "out" / "plx-autopilot-fast-serve.service").read_text()
         lines = [ln for ln in unit.splitlines() if ln and not ln.startswith("#")]
-        # the consumer that runs drafts as the fast unit would: through
-        # operator_api.autopilot_context, with every drafting setting the fast unit has
-        # (2026-11-18: it had none, so the live queue never got a reply draft)
+        # the consumer drafts as the live feed does: through operator_api.autopilot_context,
+        # with every drafting setting the live feed has (2026-11-18: it had none, so the
+        # live queue never got a reply draft)
         self.assertEqual([ln for ln in lines if ln.startswith("ExecStart=")],
                          ["ExecStart=/data/venv/bin/python3 -m operator_api.autopilot_context"
                           " fast --serve --state-dir /data/plx-state"])
-        fast = [ln for ln in (tmp / "out" / "plx-autopilot-fast.service").read_text()
+        fast = [ln for ln in (tmp / "out" / "plx-autopilot-follow.service").read_text()
                 .splitlines() if ln.startswith("Environment")]
         self.assertIn("Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus", fast)
         self.assertEqual([ln for ln in fast if ln not in lines], [])

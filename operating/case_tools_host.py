@@ -847,6 +847,9 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
         composites = [k for k in self._reader_keys if str(k).startswith("mail-any:")]
         guard = getattr(self.runtime, "people_exclusion", None)
         usable = guard is not None and not getattr(guard, "unavailable", True)
+        if (mail_units or composites) and not usable:
+            # no mailbox granted while the exclusion cannot decide: transient, never kept
+            self._policy_doubts += 1
         opened = self._mail() if (mail_units or composites) and usable else None
         if opened is not None:
             stores, _audience = opened

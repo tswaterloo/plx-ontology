@@ -93,7 +93,6 @@ export function AlertsView() {
   const healthTypes = new Set((reg?.types ?? []).filter((t) => healthKinds.has(t.kind)).map((t) => t.type));
   const healthGroups = briefing?.status === "read" ? (briefing.groups ?? []).filter((g) => healthTypes.has(g.event_type)) : [];
   const healthCount = healthGroups.reduce((n, g) => n + g.count, 0);
-  const alertKinds = (reg?.kinds ?? []).filter((k) => !healthKinds.has(k.kind)).length;
   const panelError = kindsError ?? briefingError;
   const ruleInput = useRef<HTMLInputElement>(null);
 
@@ -162,7 +161,6 @@ export function AlertsView() {
             [
               ["Firing now", briefing?.status === "read" && reg ? briefing.count - healthCount : null, ""],
               ["New since your visit", briefing?.status === "read" && reg ? briefing.new_since_visit - healthGroups.reduce((n, g) => n + g.new_since_visit, 0) : null, "text-accent"],
-              ["Kinds firing", reg && briefing?.status === "read" ? (fired.length > 0 ? `${fired.length} of ${alertKinds}` : 0) : null, ""],
               ["From your rules and follows", data ? data.alerts.length : null, ""],
               ["Following", data ? data.follows.length : null, ""],
             ] as const

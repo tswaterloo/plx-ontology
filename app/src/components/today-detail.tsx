@@ -1,20 +1,18 @@
 "use client";
 
-import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ArrowUpRight, Bookmark, Check, Copy, MessageCircle, MoreHorizontal } from "lucide-react";
+import { ArrowUpRight, Bookmark, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { Related } from "@/components/related";
 import { useEffect, useState } from "react";
 import { bizPage, getObject, getObjectSection, mergeSection } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { draftText } from "@/components/proactive-suggestions";
 import { businessToday, doorKey, formatDate, money, objectHref, readable, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { factMap, receivedOf, recordHead } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { briefingKind } from "@/lib/status";
-import type { ActionResult, BizCell, BizPage, BriefingItem, CardActionOffer, LatePo, ObjectPage, ProactiveSuggestion, Source, SuggestionDraft, TrailStep } from "@/lib/types";
+import type { ActionResult, BizCell, BizPage, BriefingItem, LatePo, ObjectPage, ProactiveSuggestion, Source, TrailStep } from "@/lib/types";
 import { AlertFired } from "./alert-fired";
-import { ActionDialog } from "./card-actions";
+import { DraftSheet, SuggestionActions } from "./record/next-step";
 import { SourceChip } from "./source-chip";
 import { lateFigure, DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { RECORD_LIMIT_MS } from "./ui/skeleton";
@@ -140,49 +138,6 @@ function Figure({ label, value, unit, children }: { label: string; value: string
   );
 }
 
-function DraftSheet({ draft, who }: { draft: SuggestionDraft; who: string | null }) {
-  const [copied, setCopied] = useState(false);
-  const to = draft.to.address ? (draft.to.name ? `${draft.to.name} <${draft.to.address}>` : draft.to.address) : null;
-  return (
-    <div className="overflow-hidden rounded-xl bg-bg shadow-lift" data-testid="suggestion-draft">
-      <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-[13px]">
-        <span className="w-14 shrink-0 text-muted">To</span>
-        <span data-testid="draft-to" className="min-w-0 flex-1 truncate">
-          {to ?? (
-            <span className="inline-flex items-center gap-1.5 text-muted" title={`No address on record for ${who ?? "the supplier"}`}>
-              <OpenRing size={12} />
-              No address on record
-            </span>
-          )}
-        </span>
-        <button
-          type="button"
-          onClick={() =>
-            navigator.clipboard?.writeText(draftText(draft)).then(
-              () => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1600);
-              },
-              () => undefined,
-            )
-          }
-          className="-my-1 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-fg cursor-pointer"
-          data-testid="copy-draft"
-          title="Copy the draft"
-        >
-          {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-[13px]">
-        <span className="w-14 shrink-0 text-muted">Subject</span>
-        <span className="min-w-0 truncate font-medium">{draft.subject}</span>
-      </div>
-      <pre className="max-h-[240px] overflow-y-auto px-4 pt-3.5 pb-4 font-sans text-[13px] leading-[21px] whitespace-pre-wrap text-fg/90">{draft.body}</pre>
-    </div>
-  );
-}
-
 function stepDate(at: string | null | undefined) {
   if (!at) return "";
   return formatDate(at.slice(0, 10), { short: true });
@@ -248,67 +203,6 @@ export function stepWords(rule: string | null | undefined, text: string, who: st
   }
 }
 
-const MORE: CardActionOffer["kind"][] = ["snooze", "dismiss"];
-
-/** The card's actions: send first, then message, follow up and done, the rest under More. Each opens its preview; nothing happens before its confirm. */
-function Actions({ card, state, onDone }: { card: ProactiveSuggestion; state?: ActionResult | null; onDone: (r: ActionResult) => void }) {
-  const [open, setOpen] = useState<CardActionOffer | null>(null);
-  const offers = card.actions ?? [];
-  if (!offers.length) return null;
-  const rank = (k: string) => ["send_email", "teams_message", "create_follow_up", "mark_done"].indexOf(k);
-  const shown = offers.filter((o) => !MORE.includes(o.kind)).sort((a, b) => ((rank(a.kind) + 9) % 9) - ((rank(b.kind) + 9) % 9));
-  const more = offers.filter((o) => MORE.includes(o.kind));
-  // a phone has room for the first two (send and message); the rest go under More
-  const narrow = shown.slice(2);
-  return (
-    <div className="mt-3 flex items-center gap-1" data-testid="card-actions">
-      {shown.map((o) => (
-        <button
-          key={o.kind}
-          type="button"
-          onClick={() => setOpen(o)}
-          className={cn(
-            "h-8 shrink-0 rounded-lg px-3 text-[13px] cursor-pointer max-sm:min-w-0 max-sm:shrink max-sm:truncate",
-            narrow.includes(o) && "max-sm:hidden",
-            o.kind === "send_email" ? "mr-1.5 bg-accent font-medium text-accent-fg shadow-sm hover:brightness-110" : "text-muted hover:bg-hover hover:text-fg",
-          )}
-          data-testid={`action-${o.kind}`}
-        >
-          {o.kind === "send_email" ? "Review and send" : o.label}
-        </button>
-      ))}
-      {more.length + narrow.length > 0 && (
-        <Menu.Root>
-          <Menu.Trigger className="ml-auto flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer" aria-label="More actions">
-            <MoreHorizontal className="size-4" aria-hidden />
-          </Menu.Trigger>
-          <Menu.Portal>
-            <Menu.Content align="end" sideOffset={4} className="z-50 min-w-36 rounded-xl bg-raised p-1.5 shadow-pop">
-              {[...narrow, ...more].map((o) => (
-                <Menu.Item key={o.kind} onSelect={() => setOpen(o)} className={cn("flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover", narrow.includes(o) && "sm:hidden")} data-testid={`action-${o.kind}`}>
-                  {o.label}
-                </Menu.Item>
-              ))}
-            </Menu.Content>
-          </Menu.Portal>
-        </Menu.Root>
-      )}
-      {open && (
-        <ActionDialog
-          card={card}
-          offer={open}
-          state={state}
-          onClose={() => setOpen(null)}
-          onDone={(r) => {
-            setOpen(null);
-            onDone(r);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
 /** What the header says under the title: how late, and whether the supplier has given a date. Words and glyph in the status colour, as text, no pill. */
 function Facts({ row, trailEta, trailRead }: { row: QueueRow; trailEta?: string | null; trailRead: boolean }) {
   const out: React.ReactNode[] = [];
@@ -372,7 +266,9 @@ export function doorReceived(page: BizPage): { got: string; of: string; uom: str
   }
   const units = new Set(rows.map((x) => x.uom));
   const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 3 });
-  if (units.size > 1) {
+  // quantities add up only in one known unit: lines in several units, or in no stated unit
+  // (kilograms and pieces alike), are counted as lines short, never summed
+  if (units.size > 1 || (rows.length > 1 && units.has(""))) {
     const short = rows.filter((x) => x.a < x.b).length;
     return short ? { got: "Partly", of: "", uom: "", pct: null, lines: short } : { got: "All", of: "", uom: "", pct: 100 };
   }
@@ -572,7 +468,7 @@ export function TodayDetail({
                 <SectionTitle>Next step</SectionTitle>
                 {action && <p className="mb-4 text-[16px] leading-[22px] font-medium tracking-[-0.01em]">{action}</p>}
                 {s?.draft && <DraftSheet draft={s.draft} who={who} />}
-                {s && <Actions card={s} state={state} onDone={onDone} />}
+                {s && <SuggestionActions card={s} state={state} onDone={onDone} />}
               </section>
             )}
 

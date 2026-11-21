@@ -40,6 +40,11 @@ UNREADABLE = "*search-store-unreadable*"   # operating/pg/door.py's token: docum
 CHUNK = 20000   # rows resolved at a time (bounded memory over the largest view)
 
 
+def _code() -> Any:
+    from operating.pg import business_views_code
+    return business_views_code
+
+
 def _bv() -> Any:
     from operating.pg import business_views
     return business_views
@@ -306,6 +311,7 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
                 "seconds = excluded.seconds, notes = excluded.notes",
                 (name, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), digest,
                  rows, seconds, json.dumps({"as_of": as_of.isoformat(),
+                                                 "code": _code().fingerprint(v),
                                                  "people_excluded_rows":
                                                      notes["people_excluded_rows"],
                                                  "people_excluded_cells":
@@ -446,10 +452,12 @@ def stale_views(meta: Any, views: Mapping[str, Any], now: str, when: dt.date,
     Order: missing views first, then those of another day, then those whose inputs moved
     (a communications table after the business views of its rank, whose rows it names), so
     a run stopped part way (its time limit) never spends the next run rebuilding the views
-    it finished while a missing one waits."""
+    it finished while a missing one waits. A view whose own code changed since its build
+    (``business_views_code``) is rebuilt with the moved ones."""
     built = {r[0]: (r[1], r[2]) for r in meta.execute(
         f"SELECT view, digest, notes FROM {_bv().SCHEMA}.state")}
     feed = feed_head(meta) is not None
+    code = set(_code().code_changed(meta, _bv().SCHEMA, views))
     out = []
     for at, (name, v) in enumerate(views.items()):
         comms = getattr(v, "fill", None) is not None
@@ -460,6 +468,8 @@ def stale_views(meta: Any, views: Mapping[str, Any], now: str, when: dt.date,
         notes = notes if isinstance(notes, dict) else json.loads(notes or "{}")
         if notes.get("as_of") != when.isoformat():
             out.append((1, comms, at, name))
+        elif name in code:   # the view's own code changed since its build
+            out.append((2, comms, at, name))
         elif digest != now and (not feed or moved_since(meta, notes.get("feed"), v.reads)):
             out.append((2, comms, at, name))
     return [name for *_k, name in sorted(out)]

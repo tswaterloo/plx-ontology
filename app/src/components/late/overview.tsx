@@ -147,7 +147,9 @@ export function LateOverview({
             testId="late-oldest"
           />
         )}
-        <Figure label="No supplier date" glyph={<OpenRing size={12} tone="neutral" />} value={String(unconfirmed)} unit={`of ${items.length}`} />
+        {/* counted only where the supplier date state is known for some PO: "0 of 2" beside a
+            PO whose page says "No date from the supplier" reads as a contradiction */}
+        {items.some((p) => p.confirmation) && <Figure label="No supplier date" glyph={<OpenRing size={12} tone="neutral" />} value={String(unconfirmed)} unit={`of ${items.length}`} />}
         {money.length > 0 && (
           <Figure
             label="Value"

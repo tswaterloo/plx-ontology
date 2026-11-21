@@ -19,8 +19,122 @@ class OpenTest(unittest.TestCase):
             return {"status": "resolved", "text": {"untrusted_text": "Order 4411 ships Friday"}}
         got = s.open_one(read, {"citation": "original://m/1", "text_offset": 4000})
         self.assertEqual(got["status"], "resolved")
+        # the window asked for, then the item's text from its start (the Freightcom check)
         self.assertEqual(calls, [{"citation": "original://m/1", "text_offset": 4000,
-                                  "max_chars": s.OPEN_MAX_CHARS}])
+                                  "max_chars": s.OPEN_MAX_CHARS},
+                                 {"citation": "original://m/1",
+                                  "max_chars": s.CHECK_PAGE_CHARS}])
+
+    def test_freightcom_past_the_window_shown_is_found_in_the_whole_text(self):
+        def reader(text, fail_after=None):
+            def read(arguments):
+                start = arguments.get("text_offset", 0)
+                if fail_after is not None and start >= fail_after:
+                    return {"error": {"code": "timeout", "message": "x"}}
+                most = arguments["max_chars"]
+                window = text[start:start + most]
+                more = start + most < len(text)
+                return {"status": "resolved",
+                        "content": {"untrusted_text": window, **({"truncated": True}
+                                                                if more else {})},
+                        "text_window": {"offset": start,
+                                        **({"next_offset": start + most} if more else {})}}
+            return read
+        named = "assay " * 4000 + "carrier: Freight" + "com Inc."   # past char 20,000
+        self.assertGreater(named.lower().index("freight"), s.OPEN_MAX_CHARS)
+        for args in ({"citation": "original://m/4"},
+                     {"citation": "original://m/4", "text_offset": 0}):
+            got = s.open_one(reader(named), args)
+            self.assertEqual(got["error"]["code"], "egress_withheld", args)
+            self.assertNotIn("assay", str(got))
+        clean = "assay " * 4000 + "carrier: Purolator"
+        self.assertEqual(s.open_one(reader(clean), {"citation": "original://m/5"})["status"],
+                         "resolved")
+        # a later window that cannot be read: not known, not shown
+        got = s.open_one(reader(clean, fail_after=s.OPEN_MAX_CHARS),
+                         {"citation": "original://m/6"})
+        self.assertEqual(got["error"]["code"], "egress_unchecked")
+        # a field cut at its read limit cannot be checked past the cut: not shown
+        cut = {"status": "resolved", "fields": {"row.body": {
+            "untrusted_text": "x" * 100, "truncated": True}}}
+        self.assertEqual(s.open_one(lambda a: cut, {"citation": "calendar-event://b/e@g-1"})
+                         ["error"]["code"], "egress_unchecked")
+
+    def test_a_cut_field_is_paged_whole_before_its_head_is_shown(self):
+        def reader(text, fail_after=None, path="row.content_text"):
+            def read(arguments):
+                if "field_path" not in arguments:   # the whole read: the field cut
+                    return {"status": "resolved", "fields": {path: {
+                        "untrusted_text": text[:s.OPEN_MAX_CHARS], "truncated": True}}}
+                self.assertEqual(arguments["field_path"], path)
+                start = arguments["text_offset"]
+                if fail_after is not None and start >= fail_after:
+                    return {"error": {"code": "timeout", "message": "x"}}
+                end = min(len(text), start + arguments["max_chars"])
+                return {"status": "resolved",
+                        "fields": {path: {"untrusted_text": text[start:end],
+                                          **({"truncated": True} if end < len(text) else {})}},
+                        "text_window": {"offset": start,
+                                        "next_offset": end if end < len(text) else None}}
+            return read
+        handle = {"citation": "meeting-transcript://o/m/t@1"}
+        clean = "spoken line " * 4000
+        got = s.open_one(reader(clean), handle)
+        self.assertEqual(got["status"], "resolved")
+        self.assertTrue(got["fields"]["row.content_text"]["truncated"])
+        # the name split across two field windows (around char 20,000) is found
+        split = "x" * (s.CHECK_PAGE_CHARS - 5) + "Freightcom" + "y" * 30000
+        self.assertEqual(s.open_one(reader(split), handle)["error"]["code"],
+                         "egress_withheld")
+        # a later window of the field that cannot be read: not known, not shown
+        self.assertEqual(s.open_one(reader(clean, fail_after=s.CHECK_PAGE_CHARS), handle)
+                         ["error"]["code"], "egress_unchecked")
+        # a field longer than the check reads (past CHECK_MAX_CHARS): not known, not shown
+        self.assertEqual(s.open_one(reader("z" * (s.CHECK_MAX_CHARS + 10)), handle)
+                         ["error"]["code"], "egress_unchecked")
+        # a field answered with no window: not known, not shown
+        no_window = {"status": "resolved", "fields": {"row.cues": {
+            "untrusted_text": "x" * 100, "truncated": True}}}
+        self.assertEqual(s.open_one(lambda a: no_window, handle)["error"]["code"],
+                         "egress_unchecked")
+        # a cut text no field read can page (inside a list, a nested key): not shown
+        for odd in ({"status": "resolved", "attachments": [{"name": {
+                        "untrusted_text": "x", "truncated": True}}]},
+                    {"status": "resolved", "fields": {"row.a": {"b": {
+                        "untrusted_text": "x", "truncated": True}}}},
+                    {"status": "resolved", "fields": {"not a path!": {
+                        "untrusted_text": "x", "truncated": True}}}):
+            self.assertEqual(s.open_one(lambda a, odd=odd: odd, handle)["error"]["code"],
+                             "egress_unchecked", odd)
+
+    def test_a_long_mail_from_the_guarded_views_is_shown_in_windows(self):
+        # the comms door decided Freightcom on the whole text at build (ai_ok): a mail past
+        # OPEN_MAX_CHARS is shown window by window, with no read of the old path
+        def comms(arguments):
+            start = arguments.get("text_offset", 0)
+            return {"citation": "graph-mail://u/m1", "kind": "email",
+                    "text": {"untrusted_text": "assay " * 10, "truncated": True},
+                    "text_offset": start, "next_offset": start + s.OPEN_MAX_CHARS}
+
+        def read(arguments):
+            raise AssertionError("a guarded views' row is never read again")
+        for args in ({"citation": "graph-mail://u/m1"},
+                     {"citation": "graph-mail://u/m1", "text_offset": s.OPEN_MAX_CHARS}):
+            got = s.open_one(read, args, comms)
+            self.assertEqual(got["text"]["untrusted_text"], "assay " * 10, args)
+        # a window naming Freightcom is still withheld
+        named = s.open_one(read, {"citation": "graph-mail://u/m2"}, lambda a: {
+            "citation": "graph-mail://u/m2", "text": {"untrusted_text": "Freightcom rates",
+                                                      "truncated": True}})
+        self.assertEqual(named["error"]["code"], "egress_withheld")
+        # not a comms item (or the comms path not served): the old path and its whole-text
+        # check, as before
+        cut = {"status": "resolved", "fields": {"row.body": {
+            "untrusted_text": "x" * 100, "truncated": True}}}
+        for leg in ({"not_comms": True}, {"error": {"code": "not_served", "message": "x"}}):
+            self.assertEqual(s.open_one(lambda a: cut, {"citation": "original://m/7"},
+                                        lambda a, leg=leg: leg)["error"]["code"],
+                             "egress_unchecked", leg)
 
     def test_freightcom_is_never_shown(self):
         for body in ({"text": {"untrusted_text": "rates from FREIGHTCOM"}},

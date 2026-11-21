@@ -407,13 +407,13 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         deadline = time.monotonic() + seconds
         done = 0
         decided: list[tuple[Any, Reader]] = []
-        for oid, held in self.known_readers().items():
+        for oid, exp, ref in self.prewarm_people():
             if time.monotonic() >= deadline:
                 break
             try:
-                if self.revoked(str(held["ref"])):
+                if ref is not None and self.revoked(ref):
                     continue
-                session = self.identity_for(oid, int(held["exp"]))
+                session = self.identity_for(oid, exp)
                 view = (worker or self.reads)._workspace(session)
                 with page_scope(), view._request():
                     page_key(view, ("policy",))
@@ -451,12 +451,11 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             return 0
         until = time.monotonic() + seconds
         futures: list[Future] = []
-        for oid, held in self.known_readers().items():
+        for oid, exp, ref in self.prewarm_people():
             try:
-                if self.revoked(str(held["ref"])):
+                if ref is not None and self.revoked(ref):
                     continue
-                reader = Reader(self.identity_for(oid, int(held["exp"])),
-                                self.reader_mode, "", None)
+                reader = Reader(self.identity_for(oid, exp), self.reader_mode, "", None)
                 futures.append(worker.submit(
                     reader, lambda view, r=reader: self._prewarm_kept_checks(view, r, until),
                     priority=-1, deadline=until))
@@ -1888,6 +1887,21 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             if stale is not None and self._finish_later(reader, key, box, before, inputs):
                 return stale
             try:
+                if stale is None and first is not None:
+                    # a kept page whose access this API has not decided for the reader yet
+                    # (a fresh API after a deploy, a new session): never a blank wait for
+                    # the whole read (9-15 s at the 11-21 7:13 AM ET switch). The read gets
+                    # the rest of ``first_wait``, then goes on off the request (kept when
+                    # done) and the screen is answered as shown while it is read; the app
+                    # asks again
+                    done_, _ = wait_futures([box],
+                                          timeout=max(0.0, wait_first - SERVE_FAST_SECONDS))
+                    if not done_:
+                        if not started:
+                            before.cancel()   # the leader's read: it keeps its page
+                            return first()
+                        if self._finish_later(reader, key, box, before, inputs):
+                            return first()
                 value = box.result()   # no page that may be served: the read itself
             except (TimeoutError, errors.UserFacing) as error:
                 return self._refused(reader, key, held, before, read, error, refresh=started)

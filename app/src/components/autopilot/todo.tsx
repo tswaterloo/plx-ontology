@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ItemActions } from "@/components/autopilot/item-actions";
 import { ErrorNotice } from "@/components/ui/notice";
 import { decideAutopilotItem, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
@@ -49,7 +50,7 @@ export function TodoSteps({ todos }: { todos: TodoStep[] }) {
 export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const decide = async (decision: "accept" | "reject") => {
+  const decide = async (decision: "accept") => {
     setBusy(true);
     setError(null);
     try {
@@ -71,14 +72,16 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
       {item.summary && <p className="max-w-[46rem] text-[13px]">{item.summary}</p>}
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
       <TodoSteps todos={item.todos ?? []} />
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
-          Done
-        </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide("reject")}>
-          Not needed
-        </Button>
-      </div>
+      <ItemActions
+        item={item}
+        onGone={onGone}
+        busy={busy}
+        primary={
+          <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
+            Done
+          </Button>
+        }
+      />
       {error && <ErrorNotice message={error} />}
     </li>
   );

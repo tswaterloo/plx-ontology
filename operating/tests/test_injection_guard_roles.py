@@ -143,6 +143,9 @@ class ExternalDocumentNumberTests(unittest.TestCase):
         self.assertEqual(set_customer_po("4500-12", cited)["reason"], guard.REFUSAL_ROLE)
         self.assertFalse(guard.same_role(guard.AMBIGUOUS_ROLE, guard.AMBIGUOUS_ROLE))
         self.assertFalse(guard.same_role(None, guard.AMBIGUOUS_ROLE))
+        self.assertTrue(guard.same_role("timestamp", "date"))     # a date at midnight
+        self.assertFalse(guard.same_role("date", "timestamp"))    # never truncated
+        self.assertFalse(guard.same_role("timestamp", "text"))
 
     def test_a_written_so_number_is_not_written_as_a_customer_po(self):
         # The written field's role is decided for the value written: an SO-shaped value

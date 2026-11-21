@@ -144,7 +144,8 @@ PROOF_VIEW_AS = "owner_view_as"
 SERVICE_CANARY = "ops_canary"
 # The live page measure's service session (``console_ticket mint --service ops_measure``,
 # ``plx-mint-link --measure``): told apart and nobody's own exactly as the canary is (no
-# work log, memory, known reader or opened-page list; ``intent_identity`` refuses it), but
+# work log, memory or opened-page list; ``intent_identity`` refuses it; a known reader for
+# the read-ahead only while valid and while the reader holds no session of their own), but
 # served the app's page reads (GET only, ``operator_api.app.MEASURE_ROUTES``) so a screen's
 # live timings can be read as the reader the claims name without that reader's own link.
 SERVICE_MEASURE = "ops_measure"
@@ -346,6 +347,18 @@ class TicketReplayGuard:
               now: int | None = None) -> None:
         current = int(time.time()) if now is None else int(now)
         key = self._key(claims)
+        if not consume:
+            # every request's check: a read, never the write lock and an fsync (each
+            # request of a page took the lock in turn); expired rows count as gone, as the
+            # write path drops them first
+            db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            try:
+                if db.execute("SELECT 1 FROM ticket_jti WHERE jti_sha256=? AND kind='revoked' "
+                              "AND exp > ?", (key, current)).fetchone() is not None:
+                    raise SessionIdentityRefused("session_ticket_revoked")
+            finally:
+                db.close()
+            return
         with self._connect() as db:
             db.execute("DELETE FROM ticket_jti WHERE exp <= ?", (current,))
             found = {row[0] for row in db.execute(

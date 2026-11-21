@@ -304,13 +304,15 @@ def _full_text_checked(out: dict[str, Any], call_read: Callable[[dict[str, Any]]
     return out
 
 
-def _text_names_freightcom(call_read: Callable[[dict[str, Any]], Any], citation: str
-                           ) -> bool | None:
-    """Whether ``citation``'s text, read by ``call_read`` (plx.read as the reader) in windows
-    of ``CHECK_PAGE_CHARS`` from its start up to ``CHECK_MAX_CHARS``, names Freightcom: any
-    field of any window's answer, or the windows' text joined (a name split across two
-    windows is found). None: not known (a read refused, failed or answered no window; the
-    call's time nearly spent): the hit is never shown."""
+def _text_names_freightcom(call_read: Callable[[dict[str, Any]], Any], citation: str,
+                           field_path: str | None = None) -> bool | None:
+    """Whether ``citation``'s text (with ``field_path``: that one field's, paged as
+    plx.read pages a field: ``field_path`` with ``text_offset``), read by ``call_read``
+    (plx.read as the reader) in windows of ``CHECK_PAGE_CHARS`` from its start up to
+    ``CHECK_MAX_CHARS``, names Freightcom: any field of any window's answer, or the
+    windows' text joined (a name split across two windows is found). None: not known (a
+    read refused, failed or answered no window; the call's time nearly spent): the hit is
+    never shown."""
     from operating import call_limits
     pieces: list[str] = []
     offset = 0
@@ -319,7 +321,9 @@ def _text_names_freightcom(call_read: Callable[[dict[str, Any]], Any], citation:
         if left is not None and left < CHECK_RESERVE_S:
             return None
         wanted: dict[str, Any] = {"citation": citation, "max_chars": CHECK_PAGE_CHARS}
-        if offset:
+        if field_path is not None:
+            wanted["field_path"] = field_path
+        if offset or field_path is not None:
             wanted["text_offset"] = offset
         try:
             got = call_read(wanted)
@@ -330,13 +334,23 @@ def _text_names_freightcom(call_read: Callable[[dict[str, Any]], Any], citation:
         if _names_freightcom(got):
             return True
         window = got.get("text_window")
-        content = got.get("content")
-        text = content.get("untrusted_text") if isinstance(content, Mapping) else None
+        if field_path is None:
+            shown = got.get("content")
+        else:
+            fields = got.get("fields")
+            shown = fields.get(field_path) if isinstance(fields, Mapping) else None
+        text = shown.get("untrusted_text") if isinstance(shown, Mapping) else None
+        if field_path is not None and (not isinstance(window, Mapping)
+                                       or not isinstance(text, str)):
+            return None   # a field's window asked for and none answered: not known
         if isinstance(text, str):
             pieces.append(text)
         following = window.get("next_offset") if isinstance(window, Mapping) else None
         if offset and not isinstance(window, Mapping):
             return None   # a window asked for and none answered: not known
+        if (field_path is not None and isinstance(following, int)
+                and not isinstance(following, bool) and following >= CHECK_MAX_CHARS):
+            return None   # a field longer than the check reads: its rest is not known
         if (not isinstance(following, int) or isinstance(following, bool)
                 or following <= offset or following >= CHECK_MAX_CHARS):
             break
@@ -442,8 +456,9 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
     except read_ceiling.CeilingInvalid as exc:
         return _error("not_ready", str(exc))
     got = call_comms(dict(wanted)) if call_comms is not None else None
-    if not isinstance(got, Mapping) or got.get("not_comms") or (
-            got.get("error") or {}).get("code") in OPEN_FALLBACK:
+    via_comms = isinstance(got, Mapping) and not got.get("not_comms") and (
+        got.get("error") or {}).get("code") not in OPEN_FALLBACK
+    if not via_comms:
         got = call_read(wanted)
         if moment is not None and isinstance(got, Mapping) and "error" not in got \
                 and not _known_before(got, moment):
@@ -455,7 +470,81 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
     if _names_freightcom(got):
         return {"error": {"code": "egress_withheld",
                           "message": "this item is never shown to the assistant"}}
+    if via_comms:
+        # a mail, Teams or file row of the guarded views: Freightcom was decided on its
+        # whole text at build (``ai_ok``; a text not yet read is held back), so a long
+        # mail's window (its ``text`` cut, ``next_offset``) is shown, never read again
+        return dict(got)
+    cut = _cut_fields(got)
+    if cut is None:
+        # a text cut where no field read can page it: past the cut it cannot be checked
+        return {"error": {"code": "egress_unchecked", "message": UNCHECKED}}
+    for path in cut:
+        # a field longer than one read holds (a meeting's transcript, a long Teams or
+        # list item text): its whole text is paged and checked before its head is shown
+        verdict = _text_names_freightcom(call_read, citation, path)
+        if verdict:
+            return {"error": {"code": "egress_withheld",
+                              "message": "this item is never shown to the assistant"}}
+        if verdict is None:
+            return {"error": {"code": "egress_unchecked", "message": UNCHECKED}}
+    if offset or _content_cut(got):
+        # the item's whole text, not only the window shown, is checked as plx.search
+        # checks a hit's (from its start up to CHECK_MAX_CHARS); not known: not shown
+        verdict = _text_names_freightcom(call_read, citation)
+        if verdict:
+            return {"error": {"code": "egress_withheld",
+                              "message": "this item is never shown to the assistant"}}
+        if verdict is None:
+            return {"error": {"code": "egress_unchecked", "message": UNCHECKED}}
     return dict(got)
+
+
+UNCHECKED = ("this item's whole text could not be checked for a party the assistant may "
+             "not read, so it is not shown")
+
+
+def _content_cut(got: Mapping[str, Any]) -> bool:
+    """Whether ``got``'s text goes on past the window shown."""
+    window = got.get("text_window")
+    following = window.get("next_offset") if isinstance(window, Mapping) else None
+    content = got.get("content")
+    return (isinstance(following, int) and not isinstance(following, bool)) or (
+        isinstance(content, Mapping) and bool(content.get("truncated")))
+
+
+def _cut_fields(got: Mapping[str, Any]) -> list[str] | None:
+    """The paths of ``got``'s ``fields`` whose text was cut (an envelope saying
+    ``truncated``), each readable whole by plx.read's ``field_path`` with ``text_offset``.
+    None: a cut text elsewhere than its ``content`` or one such field (no read pages it)."""
+    from operating import ontology_tools as ot
+    cut: list[str] = []
+    for key, value in got.items():
+        if key == "content":
+            continue
+        if key == "fields" and isinstance(value, Mapping):
+            for path, field in value.items():
+                if isinstance(field, Mapping) and field.get("truncated") is True \
+                        and "untrusted_text" in field:
+                    if not (isinstance(path, str) and ot._FIELD_PATH.match(path)):
+                        return None
+                    cut.append(path)
+                elif _cut_text(field):
+                    return None
+        elif _cut_text(value):
+            return None
+    return cut
+
+
+def _cut_text(value: Any) -> bool:
+    """Whether any text in ``value`` was cut (an envelope saying ``truncated``)."""
+    if isinstance(value, Mapping):
+        if value.get("truncated") is True and "untrusted_text" in value:
+            return True
+        return any(_cut_text(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_cut_text(v) for v in value)
+    return False
 
 
 __all__ = ["OPEN_NAME", "OPEN_TOOL", "open_one", "TOOL", "TOOL_NAME", "TOOL_NAMES", "arguments_for_documents", "compact", "run"]

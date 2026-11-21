@@ -1161,7 +1161,7 @@ PILOT_DOC = ("true: a BC pilot record (Sage is the system of record); plx.busine
 INVOICE_PROPS = ("invoice_number", "bc_number", "order_number", "customer_number",
                  "customer_po", "status", "invoice_date", "due_date", "subtotal", "total_tax",
                  "total_amount", "remaining_amount", "currency", "exchange_rate",
-                 "home_currency")
+                 "home_currency", "invoice_discount")
 
 
 @view("sales_invoices", "Every customer invoice once, Sage first: Sage is the invoice system "
@@ -1225,9 +1225,92 @@ def _invoice_heads(rd: Reader) -> dict[str, Row]:
             money_of(row, thing, column, prop)
         row.values["pilot"] = all(pilot_binding(r.binding) for r in thing.members)
         row.fx = invoice_rate(row, thing)
+        row.discount = header_money(thing, "invoice_discount")
+        row.subtotal_stated = header_money(thing, "subtotal")
         for r in thing.members:
             out[r.object_id] = row
     return out
+
+
+def header_money(thing: Thing, prop: str) -> tuple[Decimal, str, tuple[Cell, Rec]] | None:
+    """An invoice header's own money cell ``prop`` (Sage ``invnetnotx`` subtotal,
+    ``invdiscamt`` discount) from the first copy stating it with a currency; None when
+    none states one."""
+    for rec in thing.members:
+        cell = rec.cell(prop)
+        amount = _amount(cell)
+        if amount is not None and cell is not None and to_currency(cell.currency):
+            return amount, to_currency(cell.currency), (cell, rec)
+    return None
+
+
+def over_subtotal(head: Any, revenues: Sequence[Any]) -> bool:
+    """Whether an invoice's lines (their ``line_economics`` revenue) must be reconciled to
+    its header (``reconcile_to_subtotal``): they sum to more than the header's subtotal in
+    its currency, or they cannot be summed in it (a line unpriced or in another currency)
+    while the header states a discount."""
+    sub = getattr(head, "subtotal_stated", None)
+    if sub is None or not revenues:
+        return False
+    if any(r is None or r[1] != sub[1] for r in revenues):
+        disc = getattr(head, "discount", None)
+        return disc is not None and disc[0] != 0
+    return sum((cents(r[0]) for r in revenues), Decimal(0)) > cents(sub[0])
+
+
+def reconcile_to_subtotal(head: Any, lines: Sequence[dict[str, Any]]) -> None:
+    """An invoice's line revenue made to add up to its header's subtotal, the figure its
+    source states before tax.
+
+    Sage's header subtotal (``invnetnotx``) is the lines' extended amounts less every
+    discount the invoice takes, and its tax is reckoned on it. A line states only its own
+    discount (``invdisc``): on 94 of 81,735 Sage invoices (11-21) the header took more
+    (``invdiscamt``) than its lines carry, so the lines summed above the subtotal (by
+    30.68 on IN1000180001, 95.47 on 1000105025, whose lines carry 100.51 of their own and
+    the header 95.47 more). What the lines hold above the subtotal is taken off them in
+    proportion to their revenue, to the cent (largest remainder), so they sum to it
+    exactly; lines at or below the subtotal stay as stated (nothing is added to a line).
+    Lines that cannot be summed in the subtotal's currency (one unpriced or in another
+    currency) under a header that states a discount are left without revenue
+    (``revenue_unknown``): the gross is never stated as the net. The header's subtotal
+    (and discount) cells join each changed line's revenue and margin citations and
+    markings."""
+    sub = getattr(head, "subtotal_stated", None)
+    if sub is None or not lines:
+        return
+    amount, currency, sub_cell = sub
+    revs = [x["got"]["revenue"] for x in lines]
+    if any(r is None or r[1] != currency for r in revs):
+        disc = getattr(head, "discount", None)
+        if disc is not None and disc[0] != 0:
+            for line in lines:
+                _unstate_revenue(line["got"])
+        return
+    base = sum((cents(r[0]) for r in revs), Decimal(0))
+    excess = base - cents(amount)
+    if excess <= 0 or base <= 0:
+        return
+    cited = [sub_cell]
+    disc = getattr(head, "discount", None)
+    if disc is not None and disc[0] != 0:
+        cited.append(disc[2])
+    raw = [excess * cents(r[0]) / base for r in revs]
+    parts = [q.quantize(Decimal("0.01"), rounding="ROUND_FLOOR") for q in raw]
+    left = int((excess - sum(parts, Decimal(0))) / Decimal("0.01"))
+    for i in sorted(range(len(raw)), key=lambda k: (parts[k] - raw[k], k))[:left]:
+        parts[i] += Decimal("0.01")
+    for line, part in zip(lines, parts):
+        economics = line["got"]
+        rev = economics["revenue"]
+        economics["revenue"] = (cents(rev[0]) - part, rev[1], rev[2] + cited)
+        margin = economics["margin"]
+        if margin is not None:
+            economics["margin"] = (margin[0] - part, margin[1], margin[2] + cited)
+
+
+def _unstate_revenue(economics: dict[str, Any]) -> None:
+    economics["revenue"] = economics["margin"] = None
+    economics["basis"] = "revenue_unknown"
 
 
 @dataclass(frozen=True)
@@ -1389,12 +1472,29 @@ def _sales_invoice_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     of = rd.linked(INVOICE_LINE_LINK, recs, heads)
     products, pthings = product_things(rd)
     item_of = rd.linked(INVOICE_ITEM_LINK, recs, products)
-    for thing in rd.clusters("SalesInvoiceLine", recs):
+    things = rd.clusters("SalesInvoiceLine", recs)
+
+    def head_of(thing: Thing) -> tuple[Any, list]:
         ends = [e for r in thing.members for e in of.get(r.object_id, ())]
         invoices = {id(heads[i]): heads[i] for i, _m in ends}
-        if len(invoices) != 1:
-            continue   # its invoice not held (removed), or two invoices: not this line's
-        head = next(iter(invoices.values()))
+        # its invoice not held (removed), or two invoices: not this line's
+        return (next(iter(invoices.values())) if len(invoices) == 1 else None), ends
+
+    # first the invoices whose lines must be reconciled to their subtotal: their lines
+    # are held until every line of the invoice is read, the rest go out as read
+    revenues: dict[int, tuple[Any, list]] = {}
+    for thing in things:
+        head, _ends = head_of(thing)
+        if head is not None:
+            revenues.setdefault(id(head), (head, []))[1].append(
+                line_economics(thing.rep, getattr(head, "fx", None))["revenue"])
+    over = {key for key, (head, revs) in revenues.items() if over_subtotal(head, revs)}
+    del revenues
+    held: dict[int, tuple[Row, list[dict[str, Any]]]] = {}
+    for thing in things:
+        head, ends = head_of(thing)
+        if head is None:
+            continue
         row = Row(thing)
         row.inherit(head, ((c, c) for c in ("invoice_number", "invoice_date", "customer",
                                              "customer_chain", "pilot", "customer_handle",
@@ -1420,25 +1520,39 @@ def _sales_invoice_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
             cell = rec.cell(prop)
             money(row, column, cell, rec if cell is not None else None)
         got = line_economics(rec, getattr(head, "fx", None))
-        for column in ("revenue", "cost", "margin"):
-            part = got[column]
-            if part is None:
-                _money_cell(row, column, None, None, ())
-            else:
-                _money_cell(row, column, part[0], part[1], part[2])
-        rev, margin = got["revenue"], got["margin"]
-        row.values["margin_pct"] = (cents(margin[0] / cents(rev[0]) * 100)
-                                    if margin is not None and cents(rev[0]) != 0 else None)
-        row.values["margin_basis"] = got["basis"]
-        # what the margin was read from guards its share and basis too (a finance-marked
-        # unit cost never shows through margin_pct)
-        guard = row.col_marks.get("margin") or row.col_marks.get("cost")
-        for column in ("margin_pct", "margin_basis"):
-            if guard:
-                row.col_marks[column] = guard
-            if "margin" in row.cites:
-                row.cites[column] = row.cites["margin"]
-        yield row
+        if id(head) in over:
+            held.setdefault(id(head), (head, []))[1].append({"row": row, "rec": rec,
+                                                             "got": got})
+            continue
+        yield _line_money(row, got)
+    for head, lines in held.values():
+        reconcile_to_subtotal(head, lines)
+        for line in lines:
+            yield _line_money(line["row"], line["got"])
+
+
+def _line_money(row: Row, got: dict[str, Any]) -> Row:
+    """A line's revenue, cost and margin columns from its economics (``line_economics``;
+    reconciled to its invoice's subtotal: ``reconcile_to_subtotal``)."""
+    for column in ("revenue", "cost", "margin"):
+        part = got[column]
+        if part is None:
+            _money_cell(row, column, None, None, ())
+        else:
+            _money_cell(row, column, part[0], part[1], part[2])
+    rev, margin = got["revenue"], got["margin"]
+    row.values["margin_pct"] = (cents(margin[0] / cents(rev[0]) * 100)
+                                if margin is not None and cents(rev[0]) != 0 else None)
+    row.values["margin_basis"] = got["basis"]
+    # what the margin was read from guards its share and basis too (a finance-marked
+    # unit cost never shows through margin_pct)
+    guard = row.col_marks.get("margin") or row.col_marks.get("cost")
+    for column in ("margin_pct", "margin_basis"):
+        if guard:
+            row.col_marks[column] = guard
+        if "margin" in row.cites:
+            row.cites[column] = row.cites["margin"]
+    return row
 
 
 # --------------------------------------------------------------------------- sales orders
@@ -1952,12 +2066,17 @@ def refresh(dsn: str, *, schema: Any = None, as_of: dt.date | None = None,
             finally:
                 conn.close()
             swept = sweep_leftovers(meta)
+            from operating.pg import business_views_code as code
+            adopted = code.adopt(meta, SCHEMA, VIEWS)   # built before fingerprints: no rebuild
+            recoded = code.code_changed(meta, SCHEMA, VIEWS)
             stale = stale_views(meta, VIEWS, now, when, force)
             # a comms table built before moves by its changed records only, in place
             marks = {row[0]: (row[1] if isinstance(row[1], dict) else json.loads(row[1] or
                                                                                "{}")).get("marks")
                      for row in meta.execute(f"SELECT view, notes FROM {SCHEMA}.state")}
-            changed = [n for n in stale if not force and VIEWS[n].fill and marks.get(n)]
+            # (a comms table whose code changed is built whole: its rows' rule moved)
+            changed = [n for n in stale if not force and VIEWS[n].fill and marks.get(n)
+                       and n not in recoded]
             stale = [n for n in stale if n not in changed]
             out: dict[str, Any] = {}
             if changed:
@@ -1968,6 +2087,10 @@ def refresh(dsn: str, *, schema: Any = None, as_of: dt.date | None = None,
                         write, n, marks[n], digest=now) for n in changed]
             if swept:
                 out["swept"] = swept
+            if adopted:
+                out["code_recorded"] = adopted
+            if recoded:
+                out["code_changed"] = recoded
             if stale:
                 # side by side (``business_views_parallel``): 29 min one after the other
                 from operating.pg import business_views_parallel as parallel

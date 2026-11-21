@@ -274,8 +274,13 @@ def approval_decided(st: Any, people: Any, who: set[str], since: str, until: str
     return out
 
 
-# an MC approval's decision is also a task event: ``approval_decided`` counts it once
-TASK_EVENTS_COUNTED_ELSEWHERE = frozenset({"approval.decided"})
+# an MC approval's decision is also a task event: ``approval_decided`` counts it once. An
+# ``*.owner_override`` is MC's audit mark beside the decision or answer itself (the owner
+# decided an approval they requested, or answered a question addressed to someone else:
+# reasonCode ``self_requested`` / ``not_addressee``); the work is the decision or answer
+# that comes with it, counted there, never a second action of its own
+TASK_EVENTS_COUNTED_ELSEWHERE = frozenset({"approval.decided", "approval.owner_override",
+                                           "question.owner_override"})
 
 
 def task_event(st: Any, people: Any, who: set[str], since: str, until: str
@@ -568,7 +573,7 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         # an entry keyed in a system: judged against what people entered there
         # (``receivables_score``), never against their mail
         end = data_end
-        source = SOURCE_OF.get(str(event.get("object_type") or ""))
+        source = _source_of(event)
         if source_end and source in source_end:
             end = min(end, source_end[source])
         close = answer_end(at, horizon) if at is not None else None
@@ -799,13 +804,35 @@ def data_end(st: Any, until: str) -> datetime:
 SOURCE_OF = {"MCApproval": "mc", "MCTaskEvent": "mc"}
 
 
-def source_ends(st: Any) -> dict[str, datetime]:
-    """Each such source's capture's last write (``MCQuestions.known_to``); no key when no
-    capture reader is attached or its end is unknown (the mail's end alone, as before)."""
+def source_ends(st: Any, mailboxes: Sequence[str] = ()) -> dict[str, datetime]:
+    """Each such source's capture's last write (``MCQuestions.known_to``) and each member's
+    mailbox's last capture read (``mail:<mailbox>``, ``CaptureTexts.mailbox_seen_to``: a
+    mailbox whose capture stopped while the others went on, its owner's replies unseen
+    after it); no key when no capture reader is attached or its end is unknown (the mail's
+    end alone, as before)."""
     reader = getattr(st, "autopilot_mc", None)
     known = getattr(reader, "known_to", None)
     end = known() if callable(known) else None
-    return {"mc": end} if end is not None else {}
+    out = {"mc": end} if end is not None else {}
+    seen_to = getattr(getattr(st, "autopilot_capture", None), "mailbox_seen_to", None)
+    if callable(seen_to):
+        for box in sorted({str(m).lower() for m in mailboxes}):
+            box_end = seen_to(box)
+            if box_end is not None:
+                out[f"mail:{box}"] = box_end
+    return out
+
+
+def _source_of(event: Mapping[str, Any]) -> str | None:
+    """The capture an item's answer is read from when it is not the store's mail as a
+    whole: an MC record's capture, or a mail's own mailbox (its owner's reply is the copy
+    in that mailbox)."""
+    otype = str(event.get("object_type") or "")
+    if otype in SOURCE_OF:
+        return SOURCE_OF[otype]
+    if otype == "Email" and event.get("mailbox"):
+        return f"mail:{str(event['mailbox']).lower()}"
+    return None
 
 
 TEXT_SAMPLE = 300          # Teams messages of the window probed for their body text
@@ -940,7 +967,7 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
         for provider in config["providers"]:
             actions += provider(st, people, who, ap._iso(since), a_until)
         anticipated: set[int] = set()
-        ends = source_ends(st)
+        ends = source_ends(st, sorted(who))
         flows = score(items, events, actions, horizon=config["horizon"], data_end=last,
                       since=since, until=until, anticipated=anticipated, source_end=ends)
         splits: dict[str, Any] = {}

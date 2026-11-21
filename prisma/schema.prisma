@@ -2,7 +2,7 @@
 // Source: the production structure (a structure-only dump restored into a
 // throwaway cluster), which equals operating/pg/migrations plus
 // PRODUCTION_ONLY_INDEXES in tools/gen_prisma.py.
-// Migrations: sha256 bf36c9e6bb0ff9c5f8057746d3f8ff5304dc493d0051c58cda6c30697dabad3a (operating/pg/migrations).
+// Migrations: sha256 d493a96d3468563c2b1d51fc31cdbff0dd71a4f7278fa17aaa12f259d08df98e (operating/pg/migrations).
 // The Workbench does not use Prisma Client: this file describes the database for
 // readers who know Prisma. Reads go through operating/ (docs/data-model.md).
 //

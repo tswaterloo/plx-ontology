@@ -519,6 +519,125 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
                 grant(sessions[0])
             self.assertEqual(policy_now.call_count, before + 4)
 
+    def test_a_tool_call_outside_an_answer_reads_under_the_sessions_kept_policy(self):
+        """A tool call made outside ``request()`` (a page's door read) is its own answer:
+        decided once and kept for the session like a request's, and a revoked grant still
+        applies to the very next call."""
+        from operating.case_tools_host import CaptureCaseHostTools
+
+        audience_path = self.tmp / "outside-call-audience.json"
+        shutil.copyfile(self.state / case_fixtures.MIRROR_AUDIENCE_FILE, audience_path)
+        runtime = CaseRuntime(self.state, client=None, audience=audience_path, tenant="plx")
+        self.addCleanup(runtime.close)
+        actor = Actor("plx", OPS)
+        access = objects.host_access(runtime, self.store, actor)
+        self.addCleanup(access.close)
+        access.bind(session_identity.fixture_session(
+            "plx", OPS, channel=session_identity.CHANNEL_CONSOLE))
+        find = access.tools()["plx.find"]["handler"]
+
+        def found():
+            got = find({"query": case_fixtures.PO_NUMBER, "limit": 5}, actor)
+            return any(c["object"]["object_type"] == "PurchaseOrder"
+                       for c in got.get("candidates") or ())
+        decided = mock.patch.object(CaptureCaseHostTools, "policy_now", autospec=True,
+                                    side_effect=CaptureCaseHostTools.policy_now)
+        with decided as policy_now:
+            self.assertTrue(found())
+            self.assertTrue(found())
+            self.assertEqual(policy_now.call_count, 1)   # once, and kept
+            audience = json.loads(audience_path.read_text("utf-8"))
+            audience["audiences"] = {r: [p for p in principals if p not in OPS]
+                                     for r, principals in audience["audiences"].items()}
+            audience_path.write_text(json.dumps(audience), "utf-8")
+            self.assertFalse(found())   # revoked: the next call reads without it
+            self.assertEqual(policy_now.call_count, 2)
+
+    def test_a_policy_that_never_asks_the_bc_listing_is_kept_beside_a_bc_lookup(self):
+        """With a live BC lookup that has listed nothing: a reader whose policy asks the
+        company listing and gets no answer (an outage) has it decided again on every
+        request, while a full reader's policy (which never asks it) is kept for the
+        session, the listing still never asked, and is decided again when revoked."""
+        from operating import ontology_host
+        from operating.case_tools_host import CaptureCaseHostTools
+        from integrations.live_source_guard import LiveSourceAudience
+        from operating.case_runtime import LiveReaders
+        from operating.ontology_tools_policy import ReadPolicy
+
+        runtime = CaseRuntime(self.state, client=None,
+                              audience=self.state / case_fixtures.MIRROR_AUDIENCE_FILE,
+                              tenant="plx", live=LiveReaders(LiveSourceAudience(
+                                  {}, tenant="plx")))
+        self.addCleanup(runtime.close)
+        access = objects.host_access(runtime, self.store, Actor("plx", OPS))
+        self.addCleanup(access.close)
+        session = session_identity.fixture_session("plx", OPS,
+                                                   channel=session_identity.CHANNEL_CONSOLE)
+        relation = "api:public.app_purchase_order"
+
+        class Lookup:   # the live BC lookup during an outage: no listing kept
+            asked = 0
+
+            def companies(self, actor):
+                Lookup.asked += 1
+                return ("unreadable", [], 0)
+
+            def listed(self, actor):
+                return False
+
+        def grant():
+            access.bind(session)
+            with access.request():
+                return access.grant()[0](relation)
+        self.assertTrue(grant())   # the host's tools built (they set its BC lookup)
+        access.host._bc_lookup = Lookup()
+        access._kept_policies.clear()   # the one kept before the lookup was set
+        decided = mock.patch.object(CaptureCaseHostTools, "policy_now", autospec=True,
+                                    side_effect=CaptureCaseHostTools.policy_now)
+        with decided as policy_now:
+            for _ in range(3):
+                self.assertTrue(grant())
+            self.assertEqual((policy_now.call_count, Lookup.asked), (3, 3))   # unsettled
+
+            granted = {"api:*": OPS}
+
+            def full_reader(runtime, actor, principals, *args, **kwargs):
+                return ReadPolicy(actor.tenant, {k: frozenset(principals) if v else frozenset()
+                                                 for k, v in granted.items()},
+                                  unrestricted=True)
+            with mock.patch.object(ontology_host, "_full_reader_policy", full_reader):
+                for _ in range(3):
+                    self.assertTrue(grant())
+                self.assertEqual((policy_now.call_count, Lookup.asked), (4, 3))   # kept
+                # revoked: the entitlement's fingerprint moves with it (here: the inputs)
+                granted["api:*"] = frozenset()
+                with mock.patch.object(type(access.host), "policy_inputs", autospec=True,
+                                       return_value=(("revoked",), ())):
+                    self.assertFalse(grant())
+                    self.assertFalse(grant())
+                self.assertEqual((policy_now.call_count, Lookup.asked), (5, 3))
+
+            # a staff reader: kept too (the listing never asked); a new staff unit set (a
+            # write generation that changed a unit) is decided again at once, and a grant
+            # it no longer holds is refused on that very request
+            units = {"now": object()}
+            staff = {"api:*": True}
+
+            def staff_policy(runtime, actor, principals, *args, **kwargs):
+                return ReadPolicy(actor.tenant, {k: frozenset(principals) if v else frozenset()
+                                                 for k, v in staff.items()}, staff=True)
+            with mock.patch.object(ontology_host, "_staff_policy", staff_policy), \
+                    mock.patch.object(type(access.host), "_staff_units", autospec=True,
+                                      side_effect=lambda _self: units["now"]):
+                for _ in range(3):
+                    self.assertTrue(grant())
+                self.assertEqual((policy_now.call_count, Lookup.asked), (6, 3))   # kept
+                staff["api:*"] = False
+                units["now"] = object()
+                self.assertFalse(grant())
+                self.assertFalse(grant())
+                self.assertEqual((policy_now.call_count, Lookup.asked), (7, 3))
+
     def test_a_kept_policy_outlives_capture_commits_that_change_no_grant(self):
         """A mail capture commits every few seconds (messages, folder cursors): a policy
         kept for the session stays while the mailboxes it is decided from (identities,
@@ -567,6 +686,22 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
             store.record_mailbox({**identity, "object_id": "mbx-2", "identities": ["mbx-2"]})
             grant()
             self.assertEqual(policy_now.call_count, 3)   # a mailbox added
+
+    def test_the_drives_stamp_names_every_drive_and_moves_with_a_new_one(self):
+        """The SharePoint grant stamp (a kept policy's input) is every drive the capture
+        holds, sorted, and a drive added since moves it."""
+        from operating.case_tools_host_calls import _drives_stamp
+
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE items (drive_id TEXT, item_id TEXT)")
+        db.execute("CREATE INDEX items_by_id ON items (drive_id, item_id)")
+        db.executemany("INSERT INTO items VALUES (?, ?)",
+                       [("d-b", "1"), ("d-a", "2"), ("d-b", "3"), ("d-a", "4")])
+        self.assertEqual(_drives_stamp(db), ("drives", ("d-a", "d-b")))
+        db.execute("INSERT INTO items VALUES ('d-0', '5')")
+        self.assertEqual(_drives_stamp(db), ("drives", ("d-0", "d-a", "d-b")))
+        db.execute("DELETE FROM items")
+        self.assertEqual(_drives_stamp(db), ("drives", ()))
 
     def test_the_mailbox_rows_are_read_again_only_after_a_commit(self):
         """The grant stamps' mailbox rows are read once per state of the store: requests

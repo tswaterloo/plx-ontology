@@ -202,6 +202,11 @@ def validate_registry(raw: Any) -> dict[str, Any]:
             raise RegistryInvalid(f"registry_draft:{ap['id']}")
         if ap["handler"] == "job" and ap.get("draft") not in ("job", "agent"):
             raise RegistryInvalid(f"registry_draft:{ap['id']}")
+        if "standing" in ap and (ap.get("draft") != "job" or ap["standing"] == "job"
+                                 or ap["standing"] not in HANDLERS):
+            # a job's standing work: the rule-based handler whose work the item keeps when
+            # the model proposes no change (``_prepare``, ``run_cycle``)
+            raise RegistryInvalid(f"registry_standing:{ap['id']}")
         if ap["on"] == "record.due" and not isinstance(ap.get("params") or {}, Mapping):
             raise RegistryInvalid(f"registry_params:{ap['id']}")
         marks = ap.get("markings") or []
@@ -567,6 +572,9 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                                landed_at=landed_at, outbound=outbound, now=now,
                                feed_lag=feed_lag,
                                base=st if discover_store is not None else None)
+    seeded = _seed_sent(st, queue, events, people, now, only_owners)
+    if seeded:
+        summary["sent_seeded"] = seeded
     with queue.conn:
         summary["sent_noted"] = queue.note_sent(outbound)
         queue.note_routine(outbound)
@@ -757,6 +765,42 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     return _plain(summary)
 
 
+# the days of a person's own sent mail read from the capture the first time the queue meets
+# their mailbox: ``Queue.engagement``'s contact window, so a person opted in today is a
+# correspondent of whoever they wrote to before (their queue holds no history yet)
+SENT_SEED_DAYS = 60
+
+
+def _seed_sent(st: Any, queue: Queue, events: Sequence[Mapping[str, Any]], people: Any,
+               now: datetime | None, only_owners: Iterable[str] | None) -> int:
+    """Note in the queue each new mailbox owner's captured sent mail of the
+    ``SENT_SEED_DAYS`` before ``now``, once per mailbox (meta ``sent_seeded:<mailbox>``);
+    the mailboxes of this cycle's received mail (of ``only_owners`` when given). Returns
+    how many notes were added."""
+    if now is None:
+        return 0
+    allowed = {str(o).lower() for o in only_owners} if only_owners is not None else None
+    boxes = sorted({str(e.get("mailbox") or "").lower() for e in events
+                    if e.get("event_type") == "message.received" and e.get("channel") == "mail"
+                    and e.get("mailbox")} - {""})
+    boxes = [b for b in boxes if (allowed is None or b in allowed)
+             and queue.meta(f"sent_seeded:{b}") is None]
+    if not boxes:
+        return 0
+    _directory, addresses_of, _domains = _people_maps(people)
+    lower = {str(k).lower(): v for k, v in addresses_of.items()}
+    since = _iso(now - timedelta(days=SENT_SEED_DAYS))
+    from . import autopilot_records
+    notes = autopilot_records.own_sent(st, {b: lower.get(b, set()) for b in boxes}, since,
+                                       _iso(now))
+    with queue.conn:
+        added = queue.note_sent(notes)
+        for b in boxes:
+            queue.set_meta(f"sent_seeded:{b}", {"days": SENT_SEED_DAYS, "until": _iso(now),
+                                                "notes": sum(n["owner"] == b for n in notes)})
+    return added
+
+
 def _engage(queue: Queue, event: dict[str, Any], window: Any) -> None:
     """What the rules read about a message's reader beside the message itself (the queue's
     history up to the message's time): how engaged they are in the thread, how they answer
@@ -904,7 +948,8 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             # every rule-matched autopilot of that kind; off: only the rules; on for listed
             # people only (``AGENT_PEOPLE_ENV``): each owner gets one or the other below
             continue
-        if ap.get("draft") in ("job", "agent") and queue.path.parent.name != "autopilot":
+        if ap.get("draft") in ("job", "agent") and queue.path.parent.name != "autopilot" \
+                and not ap.get("standing"):
             continue                       # a replay never starts a job session
         when = ap.get("when") or {}
         if event.get("unaddressed") and not {"after_own_post", "usual_answerer"} & \
@@ -1058,10 +1103,23 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 # the system work the model proposes (``autopilot_jobs``; live queue only);
                 # no change proposed, no item. The assistant (``autopilot_agent``): the
                 # reply, the question or the changes, all from one session
-                work, why = (_model_agent if ap["draft"] == "agent" else _model_job)(
-                    queue, drafting, summary, event, owner, work, people, addresses_of,
-                    checks=lambda: autopilot_handlers.Ctx(st, as_of, time.monotonic() + 30,
-                                                          domains))
+                if ap.get("standing") and queue.path.parent.name != "autopilot":
+                    # a replay never starts a job session: its standing work is the item
+                    work, why = {k: v for k, v in work.items() if k != "material"}, None
+                else:
+                    work, why = (_model_agent if ap["draft"] == "agent" else _model_job)(
+                        queue, drafting, summary, event, owner, work, people, addresses_of,
+                        checks=lambda: autopilot_handlers.Ctx(st, as_of,
+                                                              time.monotonic() + 30, domains))
+                if why == "job_failed" and ap.get("standing") and work.get("kind") != "job" \
+                        and queue.tries(event["event_id"]) + 1 >= HANDLER_TRIES:
+                    # the session's last try failed too: the standing work is the item,
+                    # so the event is never left without one
+                    why = "no_system_work"
+                if why in STANDING_WHEN and ap.get("standing") and work.get("kind") != "job":
+                    # the event is work for the person whatever the model proposes (an
+                    # approval to decide): the standing handler's work is the item
+                    why = None
                 if why == "job_model_off":
                     summary["skipped"][f"{ap['id']}:job_model_off"] += 1
                     continue
@@ -1197,6 +1255,12 @@ def _draft_running(held: Mapping[str, Any], event: Mapping[str, Any], owner: str
     writer = held.get("writer")
     return bool(held.get("parallel")) and writer is not None and \
         _draft_key(event, owner) in writer.pending()
+
+
+# a job autopilot's ``standing`` work stands as the item when the model proposes no
+# change: none is configured, or it found no system work to propose (or its session's
+# last try, ``HANDLER_TRIES``, failed too)
+STANDING_WHEN = frozenset({"job_model_off", "no_system_work"})
 
 
 def _job_key(event: Mapping[str, Any], owner: str) -> str:

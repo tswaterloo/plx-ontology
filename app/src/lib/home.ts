@@ -48,17 +48,24 @@ export function refreshingLine(checkedOn?: string | null): string {
   return `Nothing needs action as of the last checks${at ? ` (${at})` : ""}. Some run again on the newest data; what they find shows here.`;
 }
 
+/** A stale page younger than this says only that it is refreshing: the sidebar's "Data as of"
+ * is the one time on the screen (two clocks a few minutes apart read as a contradiction). */
+export const STALE_CLOCK_AFTER_MS = 60 * 60 * 1000;
+
 /**
- * A page served from the last good read because a fresh one did not come in time: "As of
- * 9:08 PM ET · refreshing". With only ``readAt`` (the reader's page read a moment ago,
- * served as kept): "As of 9:08 PM ET", as other people's decisions on it are as of then.
+ * A page served from the last good read because a fresh one did not come in time:
+ * "Refreshing" (the sidebar's "Data as of" says how new the data is); a read over an hour old
+ * also says when: "Showing the read from 9:08 PM ET · refreshing". With only ``readAt`` (the
+ * reader's page read a moment ago, served as kept): "As of 9:08 PM ET", as other people's
+ * decisions on it are as of then.
  */
-export function staleLine(staleSince?: string | null, readAt?: string | null): string | null {
+export function staleLine(staleSince?: string | null, readAt?: string | null, now: number = Date.now()): string | null {
   const at = staleSince || readAt;
   const t = at ? new Date(at) : null;
   if (!t || Number.isNaN(t.getTime())) return null;
   const clock = t.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
-  return staleSince ? `As of ${clock} ET · refreshing` : `As of ${clock} ET`;
+  if (!staleSince) return `As of ${clock} ET`;
+  return now - t.getTime() < STALE_CLOCK_AFTER_MS ? "Refreshing" : `Showing the read from ${clock} ET · refreshing`;
 }
 
 /** The local hour from which Home opens with its "Today" list. */

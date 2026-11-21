@@ -331,8 +331,9 @@ class AskMixin:
         """The request's attachments as read (``operating.ask_attachments``), their text
         cleaned of excluded people's addresses and ids; None without attachments. With
         the exclusion list unavailable none is read (fail closed). With the ``reader``,
-        each Word, Excel or PowerPoint file is kept as their own file to edit
-        (``_keep_attached``); no file's bytes outlive this call otherwise."""
+        each Word, Excel or PowerPoint file is kept as their own file to edit, and a PDF, CSV or
+        old .xls/.doc file whose text was cut for the question as their own file to read on
+        (``_keep_attached``); no other file's bytes outlive this call."""
         if not request.attachments:
             return None
         from operating import ask_attachments
@@ -351,10 +352,20 @@ class AskMixin:
         from .feedback import clean
         batch.files = [dataclasses.replace(f, text=clean(f.text, guard, len(f.text) + 1)
                                            or "") if f.text else f for f in batch.files]
-        batch.files = [dataclasses.replace(
-            f, data=None, kept=self._keep_attached(reader, f, guard)
-            if reader is not None and f.data else None) for f in batch.files]
+        batch.files = [_attached_kept(self, reader, f, guard)
+                       if reader is not None and f.data else
+                       dataclasses.replace(f, data=None, whole=None) for f in batch.files]
         return batch
+
+    def _ocr_rest(self, reader: Reader, citation: str) -> bool:
+        """The rest of a kept scan read by OCR in the background (``ocr_background``);
+        whether it is being read."""
+        from . import ocr_background
+        uploads = getattr(self, "_uploads", None)
+        if not callable(uploads) or not citation.startswith("file:"):
+            return False
+        return ocr_background.start(uploads(), citation[len("file:"):]) in (
+            "started", "running", "done")
 
     def _keep_attached(self, reader: Reader, f: "ask_attachments.Attached", guard: Any
                        ) -> Optional[str]:
@@ -371,6 +382,12 @@ class AskMixin:
         from .feedback import _ADDRESS
         session = getattr(reader, "session", None)
         kind = ask_attachments.EDITABLE.get(f.media_type or "")
+        if kind is None and f.cut:
+            # a file cut for the question, kept to be read to the end (not to be edited)
+            kind = "pdf" if f.kind == "pdf" else "csv" \
+                if (f.media_type or "").startswith("text/") else \
+                (("xls" if f.kind == "spreadsheet" else "doc") if not f.media_type
+                 else None)   # an old binary Excel or Word file: no media type, read by its bytes
         uploads = getattr(self, "_uploads", None)
         withheld = getattr(self, "_pw_withheld", None)
         if kind is None or not f.data or not callable(uploads) or not callable(withheld) \
@@ -378,7 +395,8 @@ class AskMixin:
             return None
         name = file_name(f.name, kind)
         try:
-            text = doc_edit.text_of(name, f.data)
+            text = doc_edit.text_of(name, f.data) if kind in \
+                ask_attachments.EDITABLE.values() else (f.whole or f.text)
             if withheld(" \n".join([name, text]), guard):
                 return None
             row = uploads().prepare(reader.key, name=name, kind=kind, data=f.data,
@@ -807,3 +825,31 @@ class AskMixin:
                 for v in found["values"]]
             out.append(m.Conflict(field=found["field"], subject=subject, values=items))
         return out
+
+
+def _attached_kept(backend: Any, reader: Reader, f: "ask_attachments.Attached", guard: Any
+                   ) -> "ask_attachments.Attached":
+    """``f`` once kept as the reader's own file (``_keep_attached``), its bytes and whole
+    text dropped. A file cut for the question says so first in its text, with the
+    ``file:`` citation ``plx.read_document`` reads the rest of it by; an editable one
+    also carries that citation as ``kept`` (``plx.edit_document`` edits it)."""
+    from operating import ask_attachments
+    kept = backend._keep_attached(reader, f, guard)
+    text = f.text
+    if kept and f.cut:
+        total = len(f.whole) if f.whole else None
+        text = ("[The question holds only the start of this file" + (
+            f" (its whole text is {total:,} characters)" if total else "")
+            + "; plx.read_document " + json.dumps({"citation": kept})
+            + " reads all of it: offset pages on, find searches it.]\n" + text)
+    if f.ocr_pending:
+        # a scan of more pages than one request reads: say how many were, and read on
+        started = kept and f.kind == "pdf" and backend._ocr_rest(reader, kept)
+        done = f.ocr_total - f.ocr_pending
+        text = (f"[Scanned pages: {done} of {f.ocr_total} were read by OCR for this answer; "
+                + (f"the other {f.ocr_pending} are still being read in the background: "
+                   "ask again in a few minutes and plx.read_document will have them.]\n"
+                   if started else f"the other {f.ocr_pending} were not read.]\n") + text)
+    editable = ask_attachments.EDITABLE.get(f.media_type or "") is not None
+    return dataclasses.replace(f, text=text, data=None, whole=None,
+                               kept=kept if editable else None)

@@ -18,7 +18,14 @@ other state stores:
   says so; ``ready`` (a reply, or a ``your_call`` question with its options' replies) or
   ``none`` (why: a screen, nothing worth sending) after. A ``drafting`` mark older than
   ``STALE_MINUTES`` (a run that died) is drafted again; a ``none`` is tried again after
-  ``RETRY_HOURS``.
+  ``RETRY_HOURS``, except a judgment on the message itself (``JUDGED``: the Assistant or
+  the reply sort found nothing to send), which stays like a ready draft: the line is one
+  message, so a new message is a new line. Measured on the live store, a second session on
+  10 lines judged nothing to do found the same on 9.
+* Before the session, a small model sorts out a message plainly owed no reply
+  (``autopilot_agent.REPLY_SCREEN``, ``SCREEN_ENV``, default ``SCREEN``; ``off``: none),
+  after the same people, pay/HR and Freightcom screens; a failed sort lets the session
+  decide.
 * ``/api/replies`` never waits on any of it: ``attach`` puts the kept draft on its line
   (the reply card's body then is the model's) or the state (``drafting``, ``queued``),
   and the holding sentence stays until a draft is ready.
@@ -39,6 +46,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from operating import declared_schema as _schemas
+from operating.declared_schema import reply_drafts as _REPLY_DRAFTS
+
 DIR = "reply-drafts"
 FILE = "reply-drafts.sqlite"
 PARALLEL_ENV = "PLX_REPLY_DRAFTS_PARALLEL"
@@ -54,16 +64,16 @@ RETRY_HOURS = 12
 # given a session gets drafts in the next runs
 SETUP_GAPS = ("agent_no_session", "draft_failed:HostListRefused")
 SETUP_RETRY_MINUTES = 30
+# a line's own message judged: nothing for the person to send (the Assistant's session, the
+# reply sort) or only changes kept on their queue; never drafted again on a timer
+JUDGED = ("nothing_to_do", "no_reply_wanted", "changes_prepared")
+SCREEN_ENV = "PLX_REPLY_DRAFTS_SCREEN_MODEL"
+SCREEN = "haiku"
 FORCE = "reply_prep"  # the drafting autopilot for a line no live rule matched
 KINDS = ("reply_owed", "needs_my_reply")   # ``inbox_triage.TRIAGE_KINDS``
 STATES = ("drafting", "ready", "none")
 
-SCHEMA = """CREATE TABLE IF NOT EXISTS drafts (
-  owner TEXT NOT NULL, object_id TEXT NOT NULL, state TEXT NOT NULL,
-  kind TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
-  ask TEXT NOT NULL DEFAULT '', options TEXT NOT NULL DEFAULT '[]',
-  why TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, seconds REAL,
-  PRIMARY KEY (owner, object_id))"""
+SCHEMA = _REPLY_DRAFTS._DDL
 
 
 def _now() -> datetime:
@@ -107,9 +117,14 @@ class Kept:
         self._lock = threading.Lock()
 
     def _open(self) -> sqlite3.Connection:
+        from .file_modes import keep_shared
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
-        conn.execute(SCHEMA)
+        _schemas.apply(conn, _REPLY_DRAFTS)
+        # the API's user reads it (``/api/replies``): in the shared state the store and its
+        # directory keep the group (``deploy/release/api_user_setup.sh`` R_DIRS)
+        keep_shared(self.path.parent, 0o700)
+        keep_shared(self.path, 0o600)
         return conn
 
     def mark(self, owner: str, object_id: str, state: str, **fields: Any) -> None:
@@ -178,6 +193,8 @@ def due(row: Optional[Mapping[str, Any]], now: datetime) -> bool:
     if row.get("state") == "none":
         if str(row.get("why") or "") in SETUP_GAPS:
             return now - at > timedelta(minutes=SETUP_RETRY_MINUTES)
+        if str(row.get("why") or "") in JUDGED:
+            return False
         return now - at > timedelta(hours=RETRY_HOURS)
     return False
 
@@ -325,6 +342,12 @@ def _int_env(name: str, default: int) -> int:
 ASSISTANT = "assistant"   # the registry entry whose prepare step gives a message's material
 
 
+def screen_model(environ: Mapping[str, str]) -> Optional[str]:
+    """The reply sort's model (``SCREEN_ENV``, else ``SCREEN``); None when it is off."""
+    name = str(environ.get(SCREEN_ENV) or SCREEN).strip()
+    return None if name.lower() in ("off", "none", "0", "") else name
+
+
 def keep_jobs(queue: Any, registry: Mapping[str, Any], spec: Mapping[str, Any],
               event: Mapping[str, Any], owner: str, summary: str,
               proposals: Sequence[Mapping[str, Any]], prepared: Mapping[str, Any],
@@ -464,6 +487,8 @@ def cli(a: Any, registry: Mapping[str, Any]) -> int:
     from . import autopilot_agent as ag
     maps = apm._people_maps(people)
     assistant = ag.from_environ(os.environ)
+    if assistant is not None:
+        assistant.reply_screen = screen_model(os.environ)
     held: dict[str, Any] = {}
     apm.prime_memory(state, held)
 

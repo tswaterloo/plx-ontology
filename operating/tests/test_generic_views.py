@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -1036,6 +1037,279 @@ class LinkProbePlan(Fixture, unittest.TestCase):
             self.assertEqual(seen(), ["on", "on"])
         out = gr.refresh(self.dsn)     # the whole refresh still runs with it
         self.assertIn("links_read", out)
+
+
+class LinkIdIndexes(Fixture, unittest.TestCase):
+    def test_links_are_indexed_by_the_ids_readers_filter_on_and_live_tables_get_them(self):
+        """11-21 live: ``record_links`` was indexed by its row ids only while the guarded
+        view shows the text ids, so a reader's ``from_id = ...`` or ``to_id = ...`` scanned
+        all 25M links (45-58 s) and a records join timed out. A build makes both id
+        indexes; ``ensure_indexes`` adds any the live tables lack (concurrently), makes an
+        invalid one again, does nothing when all are there and stops on a short disk."""
+        import psycopg
+        gb = 1024 ** 3
+
+        def shapes(c):
+            defs = [re.sub(r"\s+", "", d).lower() for (d,) in c.execute(
+                "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i WHERE i.indrelid = "
+                "'biz.record_links'::regclass AND i.indisvalid").fetchall()]
+            return {k for k in ("from_id, link_type", "to_id, link_type")
+                    if any(d.endswith(gr._index_shape("btree", k)) for d in defs)}
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self.assertEqual(len(shapes(c)), 2)          # the build made both
+            names = [n for (n,) in c.execute(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'biz' AND tablename = "
+                "'record_links' AND (indexdef LIKE '%(from_id, link_type)%' OR indexdef LIKE "
+                "'%(to_id, link_type)%')").fetchall()]
+            self.assertEqual(len(names), 2)
+            for name in names:
+                c.execute(f'DROP INDEX biz."{name}"')
+            # a concurrent build cancelled midway leaves an invalid index of the shape
+            with psycopg.connect(self.dsn) as writer:
+                writer.execute("UPDATE biz.record_links SET tier = tier WHERE false")
+                c.execute("SET statement_timeout = '300ms'")
+                with self.assertRaises(psycopg.errors.QueryCanceled):
+                    c.execute("CREATE INDEX CONCURRENTLY ON biz.record_links (to_id, link_type)")
+                c.execute("RESET statement_timeout")
+                writer.rollback()
+            self.assertTrue(c.execute(
+                "SELECT 1 FROM pg_index WHERE indrelid = 'biz.record_links'::regclass AND "
+                "NOT indisvalid").fetchone())
+            self.assertEqual(len(shapes(c)), 0)
+        with self.assertRaisesRegex(RuntimeError, "below"):
+            gr.ensure_indexes(self.dsn, free=lambda p: 1 * gb, wait=0)
+        made = gr.ensure_indexes(self.dsn, free=lambda p: 500 * gb)
+        self.assertEqual(sorted(made), ["record_links (from_id, link_type)",
+                                        "record_links (to_id, link_type)"])
+        self.assertEqual(gr.ensure_indexes(self.dsn, free=lambda p: 500 * gb), [])
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self.assertEqual(len(shapes(c)), 2)
+            self.assertFalse(c.execute(               # the invalid one is gone, not doubled
+                "SELECT 1 FROM pg_index WHERE indrelid = 'biz.record_links'::regclass AND "
+                "NOT indisvalid").fetchone())
+        # the shape the catalog tells the model to use reads the links by that index
+        # through the guarded view (a JOIN between the two security-barrier views cannot)
+        from operating import ontology_tools_sql_catalog as cat
+        self.assertIn("from_id (or to_id) = ANY(ARRAY(SELECT record_id FROM records",
+                      cat.RULES_GENERIC)
+        shape = ("SELECT link_type, count(*) FROM record_links WHERE from_id = ANY(ARRAY("
+                 "SELECT record_id FROM records WHERE type = 'Customer')) GROUP BY 1")
+        joined = ("SELECT l.link_type, count(*) FROM records r JOIN record_links l ON "
+                  "l.from_id = r.record_id WHERE r.type = 'Customer' GROUP BY 1")
+        self.assertEqual(sorted(self.rows(shape)), sorted(self.rows(joined)))
+        from operating.pg import door, sql_views
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            classes = c.execute("SELECT audience_keys, rec_marks FROM biz.access_classes "
+                                "WHERE NOT blocked").fetchall()
+            scope = door.reader_scope(
+                c, "biz", audience_keys={k for ks, _ in classes for k in ks},
+                marking_sets={m for _, ms in classes for m in ms}, held=(),
+                holds_every_doc=True)
+            with c.transaction():
+                for k, v in scope["settings"].items():
+                    c.execute("SELECT set_config(%s, %s, true)", (k, v))
+                c.execute("SET LOCAL enable_seqscan = off")
+                c.execute(f"SET LOCAL search_path = {sql_views.guarded_schema('biz')}, "
+                          "pg_catalog")
+                c.execute(f"SET LOCAL ROLE {sql_views.ROLE}")
+                plan = "\n".join(r[0] for r in c.execute("EXPLAIN " + shape).fetchall())
+        self.assertRegex(plan, r"Index (Only )?Scan using \S*from_id\S* on record_links|"
+                               r"Bitmap Index Scan on \S*from_id", plan)
+        # the fenced lateral the catalog tells the model for a row-by-row join (two hops:
+        # the link, then the record at its other end): the join's rows, each read by index
+        self.assertIn("LEFT JOIN LATERAL (SELECT l.to_id FROM record_links l WHERE l.from_id "
+                      "= r.record_id AND l.link_type = '<link>' OFFSET 0) l ON true",
+                      cat.RULES_GENERIC)
+        fenced = ("SELECT r.label, l.link_type, o.label FROM records r JOIN LATERAL (SELECT "
+                  "l.link_type, l.to_id FROM record_links l WHERE l.from_id = r.record_id "
+                  "OFFSET 0) l ON true JOIN LATERAL (SELECT o.label FROM records o WHERE "
+                  "o.record_id = l.to_id OFFSET 0) o ON true WHERE r.type = 'Customer'")
+        plain = ("SELECT r.label, l.link_type, o.label FROM records r JOIN record_links l ON "
+                 "l.from_id = r.record_id JOIN records o ON o.record_id = l.to_id WHERE "
+                 "r.type = 'Customer'")
+        self.assertTrue(self.rows(plain))
+        self.assertEqual(sorted(self.rows(fenced)), sorted(self.rows(plain)))
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            with c.transaction():
+                for k, v in scope["settings"].items():
+                    c.execute("SELECT set_config(%s, %s, true)", (k, v))
+                c.execute(f"SET LOCAL search_path = {sql_views.guarded_schema('biz')}, "
+                          "pg_catalog")
+                c.execute(f"SET LOCAL ROLE {sql_views.ROLE}")
+                c.execute("SET LOCAL enable_seqscan = off")   # the fixture is tiny
+                plan = "\n".join(r[0] for r in c.execute("EXPLAIN " + fenced).fetchall())
+        self.assertRegex(plan, r"Index (Only )?Scan using \S*from_id\S* on record_links", plan)
+        self.assertRegex(plan, r"Index (Only )?Scan using \S*record_id\S* on records", plan)
+        # the refresh makes a missing one after each run; a failure there (a role that
+        # does not own the table, a short disk) is reported, the refresh still done
+        import datetime as dt
+        with mock.patch.object(gr, "ensure_indexes",
+                               side_effect=RuntimeError("records: 1.0 GB free, below")):
+            out = gr.follow(self.dsn, dt.date(2026, 11, 21))
+        self.assertIn("links_read", out["records"])
+        self.assertIn("below", out["indexes_failed"])
+
+
+def _with_unlabelled():
+    """The fixture's store plus invoices no display field names: one numbered only by an
+    identifier, one whose only identifier is finance-marked, one with a padded number."""
+    s, ids = _plain_build()
+    bare = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "i7",
+               {"invoice_date": "2026-11-05", "total_amount": ("7.00", "CAD")})
+    s.ident(bare, "petra_invoice", "IN-7  ", role="alias", prop="sage_invoice_number")
+    marked = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "i8",
+                 {"invoice_date": "2026-11-06"})
+    handle, lineage, _ = s.handles[marked]
+    s.conn.execute("INSERT INTO identifiers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                   ("petra_invoice", "IN-8", "IN-8", "primary", marked, "number", handle,
+                    "row.number", lineage, '["finance"]', ev.T0, None))
+    obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "i9",
+        {"invoice_number": "  IN-9   ", "invoice_date": "2026-11-07"})
+    # list items whose columns came as one JSON text (SharePoint's ``fields``); one not JSON
+    obj(s, "SharePointListItem", "gen.sharepoint.list_items", "r2",
+        {"fields": json.dumps({"Title": " WH pick 42 ", "Status_x0020_": "Open"})},
+        handle="sharepoint://site1/list/r2")
+    obj(s, "SharePointListItem", "gen.sharepoint.list_items", "r3",
+        {"fields": "{not json"}, handle="sharepoint://site1/list/r3")
+    # a date column exported as an Excel serial is no title
+    obj(s, "SharePointListItem", "gen.sharepoint.list_items", "r4",
+        {"fields": json.dumps({"Title": "45678"})}, handle="sharepoint://site1/list/r4")
+    # 11-21 review: a FileMaker row id is the only primary identifier of many POs: never
+    # their label (5,669 live would have read "5292" for PO5267); the business number is
+    fm = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "f1", {})
+    s.ident(fm, "fm_id", "5292", role="primary", prop="fm_id")
+    fm_po = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "f2", {})
+    s.ident(fm_po, "fm_id", "5293", role="primary", prop="fm_id")
+    s.ident(fm_po, "petra_po", "PO#5267", role="alias", prop="po_number")
+    # a carrier's tracking number only when nothing else names it, said as one
+    tr = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "t1", {})
+    s.ident(tr, "tracking_number", "1Z999", role="primary", prop="tracking")
+    tr2 = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "t2", {})
+    s.ident(tr2, "tracking_number", "1Z998", role="primary", prop="tracking")
+    s.ident(tr2, "lot_number", "390373", role="alias", prop="lot")
+    # 11-21: a value that is not a name never labels the record: placeholders, a lone quote,
+    # too short; a date is allowed in a display field (a record's own SO number) and in an
+    # identifier, only free text (title, name, a list item's Title) refuses one
+    for key, junk in (("j1", "TBD"), ("j2", " NA "), ("j3", "'"), ("j4", "2026-11-05"),
+                      ("j5", "5/11/2026"), ("j6", "Nov 5, 2026"), ("j7", "x"), ("j8", "--")):
+        obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", key,
+            {"invoice_number": junk, "invoice_date": "2026-11-07"})
+    j9 = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "j9", {"invoice_number": "tbd"})
+    s.ident(j9, "petra_invoice", "N/A", role="primary", prop="sage_invoice_number")
+    obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "j10", {"invoice_number": "A1"})
+    # Sage shipment and receipt headers (live types Shipment / Receipt) carry only raw
+    # columns: named by their own number
+    obj(s, "Shipment", "portal.sage_oe_shipment_header", "sh1",
+        {"sage_shipment_number": "SHI0001", "customer_po": "P1"})
+    obj(s, "Shipment", "portal.sage_oe_shipment_header", "sh2",
+        {"sage_shipment_number": " 0042 "})
+    obj(s, "Receipt", "portal.sage_po_receipt_header", "rc1", {"sage_receipt_number": "RCP77"})
+    obj(s, "Shipment", "portal.sage_oe_shipment_header", "sh3",
+        {"sage_shipment_number": "n/a"})
+    # a record's own identifier is its name whatever it looks like (live 11-21: SO
+    # "17-06-2025", customer PO "12/11/2018", lot "09/08/22", CAS "9005-65-6"); a one-character
+    # code is kept; true junk (a placeholder) is not
+    for key, kind, raw in (("d1", "so_number", "17-06-2025"), ("d2", "customer_po", "12/11/2018"),
+                           ("d3", "lot_number", "09/08/22"), ("d4", "cas_number", "9005-65-6"),
+                           ("d5", "lot_number", "X"), ("d6", "cas_number", "9"),
+                           ("d7", "cas_number", "TBD")):
+        o = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", key, {})
+        s.ident(o, kind, raw, role="primary", prop=kind)
+    # 11-21 live: 107k RelSageApIbd rows have transnbr 0 (unset) and the real batch in
+    # cntbtch: a zero value is no name, the next label field names the record. A non-zero
+    # one-character value is kept.
+    obj(s, "RelSageApIbd", "gen.sage.ap_ibd", "a1", {"transnbr": "0", "cntbtch": "5884"})
+    obj(s, "RelSageApIbd", "gen.sage.ap_ibd", "a2", {"transnbr": "00.0", "cntbtch": "0"})
+    obj(s, "RelSageApIbd", "gen.sage.ap_ibd", "a3", {"transnbr": "7", "cntbtch": "5885"})
+    z = obj(s, "SalesInvoice", "portal.sage_oe_invoice_header", "z1", {})
+    s.ident(z, "lot_number", "0", role="primary", prop="lot")
+    # a list item's Title is free text: a date (any month name) is no title, "Foo 5, 2026" is
+    for key, title in (("r5", "5/11/2026"), ("r6", "Nov 5, 2026"), ("r7", "Foo 5, 2026"),
+                       ("r8", "March 3, 2026")):
+        obj(s, "SharePointListItem", "gen.sharepoint.list_items", key,
+            {"fields": json.dumps({"Title": title})}, handle=f"sharepoint://site1/list/{key}")
+    s.conn.commit()
+    return s, ids
+
+
+_plain_build = build
+
+
+class Labels(Fixture, unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with mock.patch(f"{__name__}.build", _with_unlabelled):
+            super().setUpClass()
+
+    def label_of(self, key, actor=FULL):
+        return self.rows("SELECT label FROM records WHERE record_id = "
+                         f"'SalesInvoice:portal.sage_oe_invoice_header:{key}'", actor)
+
+    def test_a_record_no_display_field_names_is_labelled_by_title_name_or_identifier(self):
+        """11-21 live: 3,735 expense receipts and 10,900 Sage/FileMaker POs had no label
+        (no display field, or none holding a value) and Sage labels were padded, so label
+        ILIKE and plx.search's records leg could not find them by name or number. A build labels them by their title or name field as
+        any reader of them reads it, else their first current unmarked identifier, trimmed;
+        ``relabel`` labels the served rows that have none in place."""
+        import psycopg
+        self.assertEqual(self.label_of("i7"), [["IN-7"]])        # its identifier, trimmed
+        self.assertEqual(self.label_of("i7", OPS), [["IN-7"]])
+        self.assertEqual(self.label_of("i8"), [[None]])          # a marked one never labels
+        self.assertEqual(self.label_of("i9"), [["IN-9"]])        # padded display value
+        self.assertEqual(self.label_of("f1"), [[None]])          # a row id names nothing
+        self.assertEqual(self.label_of("f2"), [["PO#5267"]])     # its PO number, not 5293
+        self.assertEqual(self.label_of("t1"), [["Tracking 1Z999"]])
+        self.assertEqual(self.label_of("t2"), [["Lot 390373"]])
+        for key in ("j1", "j2", "j3", "j7", "j8", "j9", "d7"):
+            self.assertEqual(self.label_of(key), [[None]], key)   # no name: no label
+        for key, label in (("j4", "2026-11-05"), ("j5", "5/11/2026"), ("j6", "Nov 5, 2026"),
+                           ("d1", "SO 17-06-2025"), ("d2", "Customer PO 12/11/2018"),
+                           ("d3", "Lot 09/08/22"), ("d4", "9005-65-6"), ("d5", "Lot X"),
+                           ("d6", "9")):       # own numbers and display values stay names
+            self.assertEqual(self.label_of(key), [[label]], key)
+        self.assertEqual(self.label_of("j10"), [["A1"]])
+        self.assertEqual(self.label_of("z1"), [[None]])             # a zero identifier names nothing
+        for typ, key, label in (("Shipment", "sh1", "Shipment SHI0001"),
+                                ("Shipment", "sh2", "Shipment 0042"),
+                                ("Receipt", "rc1", "Receipt RCP77"),
+                                ("Shipment", "sh3", None)):
+            self.assertEqual(self.rows("SELECT label FROM records WHERE record_id LIKE "
+                                       f"'{typ}:%:{key}'"), [[label]], key)
+        hit = self.search({"query": "IN-7", "sources": ["records"]})["documents"]
+        self.assertIn("IN-7", [d["title"]["untrusted_text"] for d in hit])
+        # the served rows as an older build left them: no display field, no label
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("UPDATE biz.record_types SET label_fields = '{}' WHERE type = "
+                      "'SharePointListItem'")
+            c.execute("UPDATE biz.records SET label = NULL WHERE type = 'SharePointListItem'")
+            self.assertEqual(c.execute("SELECT count(*) FROM biz.records WHERE type = "
+                                       "'SharePointListItem'").fetchone()[0], 8)
+            c.execute("UPDATE biz.records SET label = 'tbd' WHERE record_id LIKE "
+                      "'SalesInvoice:%:i7'")      # a junk label an older build wrote
+            # the AP batch lines as the live catalog declares them; their labels as stored
+            c.execute("UPDATE biz.record_types SET label_fields = '{transnbr,cntbtch,cntitem}' "
+                      "WHERE type = 'RelSageApIbd'")
+            c.execute("UPDATE biz.records SET label = NULL WHERE record_id LIKE "
+                      "'RelSageApIbd:%:a2' OR record_id LIKE 'RelSageApIbd:%:a3'")
+            c.execute("UPDATE biz.records SET label = '0' WHERE record_id LIKE "
+                      "'RelSageApIbd:%:a1'")      # the stored zero: the batch names it
+            c.execute("UPDATE biz.records SET label = '5/11/2026' WHERE record_id LIKE "
+                      "'SharePointListItem:%:r5'")   # a stored date title
+        got = gr.relabel(self.dsn, step=2)                       # many short batches
+        self.assertEqual(got, {"cleared": 3, "labelled": 6})
+        for key, label in (("a1", "5884"), ("a2", None), ("a3", "5885")):   # a2: all zero; a3: "7" is under two characters in a display field
+            self.assertEqual(self.rows("SELECT label FROM records WHERE record_id LIKE "
+                                       f"'RelSageApIbd:%:{key}'"), [[label]], key)
+        self.assertEqual(self.label_of("i7"), [["IN-7"]])
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self.assertEqual(sorted(c.execute(
+                "SELECT label FROM biz.records WHERE type = 'SharePointListItem'").fetchall(),
+                key=str), [("Foo 5, 2026",), ("List row",), ("WH pick 42",)]
+                + [(None,)] * 5)
+        self.assertEqual(gr.relabel(self.dsn), {"cleared": 0, "labelled": 0})
+        # the list row stays a full reader's only, labelled or not
+        self.assertEqual(self.rows("SELECT label FROM records WHERE type = "
+                                   "'SharePointListItem'", OPS), [])
 
 
 class BuildDuringRewrite(Fixture, unittest.TestCase):

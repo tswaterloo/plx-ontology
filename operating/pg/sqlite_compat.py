@@ -327,6 +327,16 @@ def match_parameters(sql: str) -> tuple[str | int, ...]:
     return tuple(out)
 
 
+_NOTHING = "SELECT NULL WHERE false"
+
+
+def _server_has_nothing(sql: Any) -> bool:
+    """A PRAGMA (but data_version) or EXPLAIN: Postgres has no rows for it. A reaped reader
+    logged in again for one alone, then held that login idle 60 s (~50 of the role's 100)."""
+    return (isinstance(sql, str) and sql.lstrip()[:7].upper() in ("PRAGMA ", "PRAGMA\t",
+            "PRAGMA\n", "EXPLAIN") and translate(sql) == _NOTHING)
+
+
 @functools.lru_cache(maxsize=4096)
 def translate(sql: str, functions: tuple[str, ...] = (),
               gated_schemes: tuple[str, ...] = (), words: Any = (),
@@ -346,9 +356,9 @@ def translate(sql: str, functions: tuple[str, ...] = (),
     if head.startswith("PRAGMA"):
         if re.match(r"(?is)^PRAGMA\s+data_version\s*$", stripped):
             return "SELECT ontology.sq_data_version()"
-        return "SELECT NULL WHERE false"
+        return _NOTHING
     if head.startswith("EXPLAIN"):
-        return "SELECT NULL WHERE false"
+        return _NOTHING
     tokens = _tokens(stripped)
     lowered = {f.lower() for f in functions}
     fast = {f.lower() for f in recorded} & lowered
@@ -1381,6 +1391,8 @@ class PgCompatConnection:
         with self._lock:
             if self._trace is not None:
                 self._trace(sql)
+            if _server_has_nothing(sql):   # no rows, no round trip, no new login (_reap)
+                return Cursor(("?column?",), [], 0, self.row_factory is None)
             retried = False
             while True:
                 conn = self.live()

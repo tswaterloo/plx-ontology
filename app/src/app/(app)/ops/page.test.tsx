@@ -77,9 +77,9 @@ describe("Reliability: pauses and mail", () => {
     };
     render(<OpsPage />);
     const paused = await screen.findByTestId("ops-paused");
-    expect(paused).toHaveTextContent("plx-delta.timer (system): stopped: no next run");
+    expect(paused).toHaveTextContent("Delta schedule: stopped: no next run");
     expect(paused).toHaveTextContent("migration window");
-    expect(screen.getByTestId("ops-open")).not.toHaveTextContent("plx-delta.timer");
+    expect(screen.getByTestId("ops-open")).not.toHaveTextContent("Delta schedule");
     expect(screen.getByTestId("ops-mail")).toHaveTextContent("Problems are not mailed (no sender set): they show only here.");
     expect(screen.queryByTestId("ops-maintenance")).toBeNull();
   });
@@ -96,12 +96,24 @@ describe("Reliability: pauses and mail", () => {
     const note = await screen.findByTestId("ops-maintenance");
     expect(note).toHaveTextContent("Paused for maintenance until");
     expect(note).toHaveTextContent("live data rebuild");
-    expect(screen.getByTestId("ops-paused")).toHaveTextContent("plx-proactive.timer");
+    expect(screen.getByTestId("ops-paused")).toHaveTextContent("Proactive schedule");
     unmount();
     api.body = { ...base, open: [{ key: "maintenance_window", line: "Planned maintenance: live data rebuild: past its planned end", opened_at: new Date().toISOString(), level: "high" }],
                  maintenance: { state: "overrun", reason: "live data rebuild", until } };
     render(<OpsPage />);
     expect(await screen.findByTestId("ops-open")).toHaveTextContent("past its planned end");
     expect(screen.queryByTestId("ops-maintenance")).toBeNull();
+  });
+});
+
+describe("Reliability: open problems in words", () => {
+  it("names a check or a service by what it does, never by its raw name", async () => {
+    const { opsLine } = await import("@/components/shell");
+    expect(opsLine("capture_undecided_list", "capture_undecided_list: 1 undecided address(es) since Nov 12")).toBe("Mail addresses the directory can't place: 1 undecided address(es) since Nov 12");
+    expect(opsLine("unit:plx-reply-drafts.timer", "plx-reply-drafts.timer (system): stopped: no next run")).toBe("Reply drafts schedule: stopped: no next run");
+    expect(opsLine("unit:plx-autopilot-fast-serve.service", "plx-autopilot-fast-serve.service (system): enabled but not running")).toBe("Autopilot fast serve job: enabled but not running");
+    expect(opsLine("some_check", "some_check_other: x")).toBe("some_check_other: x");
+    // a line the check already words is left alone
+    expect(opsLine("disk_forecast:/data", "Disk forecast: /data fills in about 11.8 days")).toBe("Disk forecast: /data fills in about 11.8 days");
   });
 });

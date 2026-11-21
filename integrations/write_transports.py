@@ -174,7 +174,7 @@ class BCWriteTransport(_Transport):
         return tenant if _TENANT.fullmatch(tenant) else None
 
     def missing(self, environment: str | None = None) -> list[str]:
-        from operating import write_intents as wi
+        from ontology import write_gate as wi
         out = super().missing()
         if self._tenant() is None:
             out.append("BC tenant id not configured (BC_TENANT_ID)")

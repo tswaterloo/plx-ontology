@@ -49,15 +49,13 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ontology.write_gate import (  # noqa: F401  (re-exported)
+    LIVE_FLAG, live_gate, PRODUCTION, SANDBOX_ENV, SANDBOX_FLAG, SCOPES_FLAG)
+
 from operating.card_actions import Journal, JournalBroken, in_flight
 
 SCHEMA = "plx-write-intent/v1"
-LIVE_FLAG = "PLX_WRITES_LIVE"                    # owner's switch for production writes
-SANDBOX_FLAG = "PLX_WRITES_SANDBOX_LIVE"         # owner's switch for sandbox writes
-SANDBOX_ENV = "PLX_BC_SANDBOX_ENVIRONMENT"       # the BC sandbox environment's name
-SCOPES_FLAG = "PLX_WRITES_SCOPES_GRANTED"        # "bc" once Vince granted BC write scopes
 GRANTS_FILE_ENV = "PLX_WRITE_GRANTS_FILE"        # JSON outside git: who may approve what
-PRODUCTION = "Production"
 API_ROOT = "/v2.0/{tenant}/{environment}/api/v2.0"
 
 _GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -528,26 +526,6 @@ class WriteContext:
 
     def granted(self) -> WriteGrants:
         return self.grants if self.grants is not None else WriteGrants.from_env(self.environ)
-
-
-def live_gate(environ: Mapping[str, str], environment: str, transport: Any) -> list[str]:
-    """What a live write to ``environment`` still lacks (empty: it may be sent). The
-    sandbox is only the environment ``SANDBOX_ENV`` names, never Production."""
-    missing = []
-    sandbox = (environ.get(SANDBOX_ENV) or "").strip()
-    is_sandbox = bool(sandbox) and sandbox.lower() == environment.lower() \
-        and environment.lower() != PRODUCTION.lower()
-    if is_sandbox:
-        if environ.get(SANDBOX_FLAG) != "1":
-            missing.append(f"Sandbox writing is off ({SANDBOX_FLAG}=1 not set)")
-    elif environ.get(LIVE_FLAG) != "1":
-        missing.append(f"Writing is off ({LIVE_FLAG}=1 not set)")
-    if "bc" not in (environ.get(SCOPES_FLAG) or "").replace(",", " ").split():
-        missing.append(f"BC write scopes are not granted ({SCOPES_FLAG})")
-    if transport is None:
-        missing.append("No BC write client exists in this build: the request is recorded, "
-                       "not sent")
-    return missing
 
 
 APPROVED_ENV = "PLX_APPROVED_WRITES"   # ``autopilot_write.APPROVED_ENV``: kinds opened

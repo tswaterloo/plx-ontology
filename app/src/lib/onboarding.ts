@@ -147,7 +147,7 @@ export function checklistFor(role: GuideRole | null): Step[] {
     { id: "my_work", label: "Read today's Home", hint: "Open an item to see why it is listed.", href: "/" },
     { id: "look_up", label: "Look up a record", hint: `Type ${g ? g.lookUp : "an order, PO, lot or invoice number"} into Search.` },
     { id: "ask", label: "Ask one question", hint: g ? `For example: ${g.asks[0]}` : "Ask in your own words. The answer lists its sources.", href: "/ask" },
-    { id: "autopilot", label: "Look at your autopilot switches", hint: "They are all off. Leave them off until you have used the Workbench for a few days.", href: "/autopilot" },
+    { id: "autopilot", label: "Look at your switches", hint: "They decide what is prepared for you on Home. Nothing goes out without your click.", href: "/autopilot" },
     { id: "feedback", label: "Send one feedback note", hint: "Tell us one thing that was wrong, missing or slow." },
   ];
 }

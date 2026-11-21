@@ -538,7 +538,7 @@ class LiveCheckTest(unittest.TestCase):
 
     def run_spec(self, *, fetch=None):
         from operating import connector_home_check as check
-        from operating.tests.test_proactive_engine import LiveCheckTest as Engine
+        from operating.tests.test_proactive_engine_pool import LiveCheckTest as Engine
 
         world = Engine(methodName="run_spec")
         world.spec, world.temp = self.spec, self.temp

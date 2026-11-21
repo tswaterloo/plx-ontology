@@ -28,6 +28,8 @@ from .autopilot_queue import (
     SO_LINE_ITEM,
     SO_LINE_OF,
     SUMMARY_CHARS,
+    lot_subject,
+    order_key,
 )
 from .autopilot_events import _parties
 
@@ -1065,21 +1067,33 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     product = next(iter(ctx.linked(oid, ("Batch.makes_bulk",))), None)
     prow = ctx.read([product], ("code", "name")).get(product) if product else None
     affected, drafts = [], []
+    noticed: dict[str, int] = {}          # order number -> its affected line
+    emailed: set[str] = set()             # order numbers a customer notice is drafted for
     for order in orders:
         r = ctx.read([order], ("order_number", "status", "required_date")).get(order)
         if not r or CLOSED.search(_v(r, "status")):
             continue
+        # one order is one line however many systems hold a copy of it (the Portal's and
+        # BC's records of one order share its number): the first open copy speaks for it,
+        # and the customer's address comes from whichever copy states one
+        number = order_key(_v(r, "order_number")) or order
         cust = ctx.linked(order, ("SalesOrder.ordered_by",))[:1]
         crow = ctx.read(cust, ("name", "email")).get(cust[0]) if cust else None
-        affected.append({"object_id": order, "order_number": _v(r, "order_number"),
-                         "required_date": _v(r, "required_date")[:10],
-                         "customer": _v(crow, "name")})
+        if number not in noticed:
+            noticed[number] = len(affected)
+            affected.append({"object_id": order, "order_number": _v(r, "order_number"),
+                             "required_date": _v(r, "required_date")[:10],
+                             "customer": _v(crow, "name")})
+        elif not affected[noticed[number]]["customer"] and _v(crow, "name"):
+            affected[noticed[number]]["customer"] = _v(crow, "name")
         email = (_addresses(_v(crow, "email")) or [None])[0]
-        if email:
+        if email and number not in emailed:
+            emailed.add(number)
+            shown = affected[noticed[number]]["order_number"]
             drafts.append({"channel": "email", "to": [{"address": email}], "source": cust[0],
-                           "subject": f"Update on your order {_v(r, 'order_number')}",
+                           "subject": f"Update on your order {shown}",
                            "body": "Hello,\n\nA quality check on a lot for your order "
-                                   f"{_v(r, 'order_number')} needs more time. We will "
+                                   f"{shown} needs more time. We will "
                                    "confirm the ship date shortly.\n\nBest regards,"})
     if not affected:
         # 11-18 owner walk: ten "Decide" items for lots holding up no open order, each
@@ -1093,6 +1107,9 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     return {"summary": f"Lot {lot}{what} is {status.lower()}; it holds up "
                        + ("1 open order" if n == 1 else f"{n} open orders") + ".",
             "lot": lot, "quality": event.get("quality"),
+            # one card per lot: a newer item about the same lot replaces the older one
+            # (``autopilot_queue.subject_of``), whichever batch record or run raised it
+            **({"subject": lot_subject(lot)} if lot_subject(lot) else {}),
             "results": {k: v for k, v in f.items() if k.startswith("qc_")},
             "affected": affected, "customer_notices": drafts[:5], "gaps": []}
 

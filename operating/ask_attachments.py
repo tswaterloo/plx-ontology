@@ -1,19 +1,22 @@
 """Files and images a person attaches to an Ask: read in memory for that one question.
 
 **What is read.** The kind is decided from the bytes, never from the name or the browser's
-type: a PDF (its text, ``pypdf``), a spreadsheet (an ``.xlsx`` workbook's cells, read with
-``zipfile`` and ``xml.etree``; a ``.csv``), plain text, a Word document or a PowerPoint deck
-(a ``.docx``'s paragraphs and tables, a ``.pptx``'s slides in order: read as text, kind
-``text``, the same way), or an image (PNG, JPEG, GIF, WebP: shown to the model as an
-image). Anything else, an old ``.xls``, an encrypted PDF, a PDF
-with no text layer, or a file over its limit is not read, and the answer says which and
-why (``Unread``). Fail closed: an error while reading is an unread file, never a guess.
+type: a PDF (every page's text; a scanned page read by local OCR where the server has
+poppler and tesseract), a workbook (every sheet and row of an ``.xlsx``, dates as dates; an
+old ``.xls``) and an old Word ``.doc``, all through ``operating.doc_read``; a ``.csv`` or
+plain text; a Word document or a PowerPoint deck (a ``.docx``'s paragraphs and tables, a
+``.pptx``'s slides in order: read as text, kind ``text``); or an image (PNG, JPEG, GIF,
+WebP: shown to the model as an image). Anything else, an encrypted PDF, a scan OCR cannot
+read, or a file over its limit is not read, and the answer says which and why
+(``Unread``). Fail closed: an error while reading is an unread file, never a guess.
 
 **Limits.** ``MAX_FILES`` files, each up to ``MAX_BYTES`` (an image up to
-``MAX_IMAGE_BYTES``, the model's own limit), together up to ``MAX_TOTAL``; a PDF's first
-``MAX_PDF_PAGES`` pages; a workbook's first ``MAX_SHEETS`` sheets and ``MAX_ROWS`` rows
-each, its parts unpacked only up to ``MAX_UNZIPPED`` (no zip bomb); ``MAX_TEXT``
-characters of text per file and ``MAX_TEXT_TOTAL`` together.
+``MAX_IMAGE_BYTES``, the model's own limit), together up to ``MAX_TOTAL``; an Office
+package unpacked only up to ``MAX_UNZIPPED`` (no zip bomb); ``MAX_TEXT`` characters of a
+file's text and ``MAX_TEXT_TOTAL`` together go into the question. A file whose text goes
+on past that keeps its whole text (``Attached.whole``) for the screens and its bytes for
+the caller to keep as the person's own file, which ``plx.read_document`` reads to the end
+(``operator_api.doc_read_tool``).
 
 **What is kept.** The text lives only for the question's own answer: no cache or log
 holds it, and the saved Ask keeps ``Attached.meta`` (name, kind, size, a digest, whether it
@@ -32,7 +35,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import csv
 from dataclasses import dataclass, field
 import hashlib
 import io
@@ -47,8 +49,6 @@ MAX_FILES = 5
 MAX_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_TOTAL = 10 * 1024 * 1024
-MAX_PDF_PAGES = 50
-MAX_SHEETS = 10
 MAX_ROWS = 2000
 MAX_UNZIPPED = 60 * 1024 * 1024
 MAX_TEXT = 60_000
@@ -58,7 +58,6 @@ IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "image/png", b"\xff\xd8\xff": "image/jpeg",
                b"GIF87a": "image/gif", b"GIF89a": "image/gif"}
 KINDS = ("pdf", "spreadsheet", "text", "image")
 
-_SPREADSHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -84,10 +83,16 @@ class Attached:
     media_type: Optional[str] = None
     unread: Optional[str] = None
     cut: bool = False
-    # a .docx/.xlsx/.pptx's own bytes, for the caller to keep as the person's file (never
-    # in ``meta``, never shown); ``kept``: that file's ``file:`` citation once kept
+    # a .docx/.xlsx/.pptx's own bytes (any file's when its text was cut), for the caller to
+    # keep as the person's file (never in ``meta``, never shown); ``kept``: that file's
+    # ``file:`` citation once kept (an editable one's); ``whole``: a cut file's whole text,
+    # for the screens only (Freightcom, the people exclusion), never shown
     data: Optional[bytes] = field(default=None, repr=False, compare=False)
     kept: Optional[str] = None
+    whole: Optional[str] = field(default=None, repr=False, compare=False)
+    # scanned pages the request's OCR cap left unread, and the scanned pages in all
+    ocr_pending: int = 0
+    ocr_total: int = 0
 
     @property
     def meta(self) -> dict[str, Any]:
@@ -143,7 +148,7 @@ def kind_of(data: bytes) -> tuple[Optional[str], Optional[str]]:
             return "text", _PPTX
         return "spreadsheet", _XLSX
     if data.startswith(CFB_MAGIC[:4]):
-        return None, None     # an old binary Office file (.xls, .doc): not read
+        return "legacy", None     # an old binary Office file (.xls, .doc): doc_read
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -158,26 +163,41 @@ def _clip(text: str) -> tuple[str, bool]:
     return (text, False) if len(text) <= MAX_TEXT else (text[:MAX_TEXT], True)
 
 
-def _pdf_text(data: bytes) -> tuple[str, bool]:
-    # The one reading of a PDF (document_understanding.read_pages: pypdf, else Portal's
-    # converter or poppler's text layer), on its first MAX_PDF_PAGES pages; no OCR.
-    from integrations import document_understanding as du
-    reading = du.read_pages(data, "pdf", max_pages=MAX_PDF_PAGES, max_text=None,
-                            first_pages=True)
-    if reading.failure == "encrypted":
-        raise _Unread("It is password-protected: attach an unlocked copy.")
-    if reading.status == "unsupported":
-        raise ValueError(reading.failure or "pdf_unread")   # not read: the generic reason
-    if reading.pages:
-        text = "\n\n".join(f"[page {page.number}]\n{page.text.strip()}"
-                           for page in reading.pages)
-    else:
-        text = reading.text.strip()
-    if not re.search(r"\w", re.sub(r"\[page \d+\]", "", text)):
-        raise _Unread("It has no text to read (a scan): attach a screenshot of the pages "
-                      "instead.")
-    text, cut = _clip(text)
-    return text, cut or reading.skipped_pages is not None
+def _whole(name: str, data: bytes, kind: str
+           ) -> tuple[str, bool, Optional[str], str, tuple[int, int]]:
+    """A PDF, workbook or old binary Office file read whole (``operating.doc_read``: every
+    page, a scanned page by local OCR when the server has it; every sheet and row, dates
+    as dates): (the text the question shows, cut at ``MAX_TEXT``; whether it was cut or
+    parts were not read; the whole text when cut; its kind; (scanned pages OCR left for
+    later, scanned pages in all): OCR reads at most ``doc_read.REQUEST_OCR_PAGES`` here)."""
+    from operating import doc_read
+    try:
+        reading = doc_read.read(name, data, ocr=True, unzipped=MAX_UNZIPPED,
+                                ocr_cap=doc_read.REQUEST_OCR_PAGES)
+    except doc_read.Unread as why:
+        said = str(why)
+        if kind == "legacy":
+            said = (said if "old Office file" in said else "It is not a file the Ask reads.") \
+                + (" The Ask reads PDFs, spreadsheets (.xlsx, .xls, .csv), Word (.docx, .doc) "
+                   "and PowerPoint (.pptx) files, text and images (PNG, JPEG, GIF, WebP); "
+                   "save it as one of those.")
+        elif "unpacks to more" in said:
+            said = "It unpacks to more than the Ask reads."
+        elif "not a file kind" in said:
+            said = ("It is not a spreadsheet, Word or PowerPoint file: attach a PDF, a "
+                    "spreadsheet, a .docx, a .pptx, text or an image.")
+        elif kind == "pdf" and "no text" in said:
+            said = ("It has no text to read (a scan OCR could not read): attach a screenshot "
+                    "of the pages instead.")
+        raise _Unread(said) from None
+    text = reading.text.replace("\r\n", "\n")
+    shown = text if len(text) <= MAX_TEXT else text[:MAX_TEXT]
+    kind = {"pdf": "pdf", "spreadsheet": "spreadsheet"}.get(reading.kind, "text")
+    cut = len(shown) < len(text)
+    if reading.unread:
+        shown += "\n[not read: " + "; ".join(reading.unread)[:400] + "]"
+    return (shown, cut or bool(reading.unread), text if cut else None, kind,
+            (len(reading.ocr_pending), reading.ocr_total))
 
 
 def _xml(archive: zipfile.ZipFile, name: str, budget: list[int]) -> Optional[ElementTree.Element]:
@@ -195,69 +215,6 @@ def _xml(archive: zipfile.ZipFile, name: str, budget: list[int]) -> Optional[Ele
     if b"<!DOCTYPE" in raw[:2048] or b"<!ENTITY" in raw:
         raise _Unread("It could not be read: it is damaged.")
     return ElementTree.fromstring(raw)
-
-
-def _column(ref: str) -> int:
-    letters = re.match(r"[A-Z]+", ref or "")
-    number = 0
-    for ch in letters.group(0) if letters else "A":
-        number = number * 26 + ord(ch) - 64
-    return number - 1
-
-
-def _xlsx_text(data: bytes) -> tuple[str, bool]:
-    budget = [MAX_UNZIPPED]
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
-        raise _Unread("It could not be read as a workbook.") from None
-    with archive:
-        names = set(archive.namelist())
-        if "xl/workbook.xml" not in names:
-            raise _Unread("It is not a spreadsheet, Word or PowerPoint file: attach a PDF, a "
-                          "spreadsheet, a .docx, a .pptx, text or an "
-                          "image.")
-        shared: list[str] = []
-        strings = _xml(archive, "xl/sharedStrings.xml", budget)
-        for item in strings.iter(f"{_SPREADSHEET_NS}si") if strings is not None else ():
-            shared.append("".join(t.text or "" for t in item.iter(f"{_SPREADSHEET_NS}t")))
-        book = _xml(archive, "xl/workbook.xml", budget)
-        rels = _xml(archive, "xl/_rels/workbook.xml.rels", budget)
-        target = {r.get("Id"): r.get("Target") for r in
-                  (rels.iter(f"{_PKG_REL_NS}Relationship") if rels is not None else ())}
-        parts, cut = [], False
-        sheets = list(book.iter(f"{_SPREADSHEET_NS}sheet")) if book is not None else []
-        if len(sheets) > MAX_SHEETS:
-            cut, sheets = True, sheets[:MAX_SHEETS]
-        for sheet in sheets:
-            path = str(target.get(sheet.get(f"{_REL_NS}id")) or "").lstrip("/")
-            path = path if path.startswith("xl/") else "xl/" + path
-            root = _xml(archive, path, budget)
-            if root is None:
-                continue
-            lines = [f"[sheet {_name(sheet.get('name'))}]"]
-            for count, row in enumerate(root.iter(f"{_SPREADSHEET_NS}row")):
-                if count >= MAX_ROWS:
-                    cut = True
-                    break
-                cells: dict[int, str] = {}
-                for cell in row.iter(f"{_SPREADSHEET_NS}c"):
-                    value = cell.find(f"{_SPREADSHEET_NS}v")
-                    inline = cell.find(f"{_SPREADSHEET_NS}is")
-                    text = (value.text or "") if value is not None else ""
-                    if cell.get("t") == "s" and text.isdigit() and int(text) < len(shared):
-                        text = shared[int(text)]
-                    elif cell.get("t") == "inlineStr" and inline is not None:
-                        text = "".join(t.text or "" for t in inline.iter(f"{_SPREADSHEET_NS}t"))
-                    if text != "":
-                        cells[_column(cell.get("r") or "")] = text
-                if cells:
-                    lines.append("\t".join(cells.get(i, "") for i in range(max(cells) + 1)))
-            parts.append("\n".join(lines))
-    text, clipped = _clip("\n\n".join(parts))
-    if not re.search(r"\w", re.sub(r"\[sheet [^\]]*\]", "", text)):
-        raise _Unread("Its sheets are empty.")
-    return text, cut or clipped
 
 
 def _package(data: bytes) -> zipfile.ZipFile:
@@ -325,20 +282,6 @@ def _pptx_text(data: bytes) -> tuple[str, bool]:
     return _clip(text)
 
 
-def _plain_text(data: bytes) -> tuple[str, bool]:
-    text = data.decode("utf-8-sig")
-    if not text.strip():
-        raise _Unread("It is empty.")
-    try:
-        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
-        if dialect.delimiter != "\t" and text.count("\n") >= 1:
-            rows = csv.reader(io.StringIO(text), dialect)
-            text = "\n".join("\t".join(row) for _, row in zip(range(MAX_ROWS * 5), rows))
-    except csv.Error:
-        pass     # plain text, as written
-    return _clip(text)
-
-
 class _Unread(Exception):
     """A file not read, with the words the answer says about it."""
 
@@ -382,16 +325,20 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
             batch.files.append(Attached(name, kind, len(data), digest, media_type=media,
                                         image=base64.b64encode(data).decode("ascii")))
             continue
+        whole: Optional[str] = None
+        pending = (0, 0)
         try:
-            read = {"pdf": _pdf_text, "spreadsheet": _xlsx_text, "text": _plain_text}[kind]
-            read = {_DOCX: _docx_text, _PPTX: _pptx_text}.get(media or "", read)
-            text, cut = read(data)
+            if media in (_DOCX, _PPTX):
+                text, cut = {_DOCX: _docx_text, _PPTX: _pptx_text}[media](data)
+            else:
+                text, cut, whole, kind, pending = _whole(name, data, kind)
         except _Unread as why:
-            batch.files.append(unread(str(why), kind))
+            # an old binary Office file it could not read has no kind the answer names
+            batch.files.append(unread(str(why), None if kind == "legacy" else kind))
             continue
         except Exception:  # noqa: BLE001 - a damaged or unusual file: not read, never a guess
             batch.files.append(unread("It could not be read: attach it again, or save it "
-                                      "as a PDF.", kind))
+                                      "as a PDF.", None if kind == "legacy" else kind))
             continue
         room = MAX_TEXT_TOTAL - text_total
         if room <= 0:
@@ -399,11 +346,14 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
                                       "at once.", kind))
             continue
         if len(text) > room:
+            whole = whole if whole is not None else text
             text, cut = text[:room], True
         text_total += len(text)
         batch.files.append(Attached(name, kind, len(data), digest, text=text, cut=cut,
                                     media_type=media,
-                                    data=data if media in EDITABLE else None))
+                                    data=data if media in EDITABLE or cut else None,
+                                    whole=whole if cut else None,
+                                    ocr_pending=pending[0], ocr_total=pending[1]))
     return batch
 
 
@@ -450,12 +400,12 @@ def screened(files: Sequence[Attached]) -> list[Attached]:
     out = []
     for f in files:
         try:
-            named = touches_freightcom(f.name or "", f.text or "",
+            named = touches_freightcom(f.name or "", f.whole or f.text or "",
                                        image_words(f.image) if f.image else "")
         except Exception:  # noqa: BLE001 - undecidable: withheld
             named = True
-        out.append(dataclasses.replace(f, text="", image=None, data=None, unread=WITHHELD)
-                   if named else f)
+        out.append(dataclasses.replace(f, text="", image=None, data=None, whole=None,
+                                       unread=WITHHELD) if named else f)
     return out
 
 

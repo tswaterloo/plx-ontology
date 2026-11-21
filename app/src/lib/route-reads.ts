@@ -1,11 +1,10 @@
-import { getAutopilot, getMyWork, getOpsAlarms, getTrust } from "./api";
+import { getAutopilot, getOpsAlarms, getTrust } from "./api";
 import { readAhead } from "./use-read";
 
 // A page's main read by its link, so hovering or focusing the link reads it ahead: the page
 // then paints its data on arrival. Keys match the pages' own `useRead` keys. The
 // reads are looked up when called, not when this module loads.
 const READS: Record<string, [string, (signal: AbortSignal) => Promise<unknown>]> = {
-  "/my-work": ["my-work", (s) => getMyWork(s)],
   "/autopilot": ["autopilot", (s) => getAutopilot(s)],
   "/ops": ["ops", (s) => getOpsAlarms(s)],
   "/trust": ["trust", (s) => getTrust(s)],

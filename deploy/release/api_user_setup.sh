@@ -51,7 +51,7 @@ W_FILES=(console-journal.sqlite console-ticket-audit.jsonl session-replay.sqlite
 # so they must be the API user's (a dev API run as the host user leaves them its own)
 API_OWNED=(app-sessions.json .app-sessions.json.lock app-sessions-health.json)
 R_DIRS=(bc-capture mail-capture sharepoint-capture sharepoint-list-capture teams-capture
-        meetings-capture mc-capture projection ai-watcher autopilot)
+        meetings-capture mc-capture projection ai-watcher autopilot reply-drafts)
 # the top-level SQLite files of an R directory (databases and their -wal/-shm/-journal)
 r_files() { find "$1" -maxdepth 1 -type f \( -name '*.sqlite' -o -name '*.sqlite-*' -o -name '*.db' \
               -o -name '*.db-*' \) ! -name '*.lock' "${@:2}" 2>/dev/null; }

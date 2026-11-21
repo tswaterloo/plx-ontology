@@ -205,6 +205,20 @@ class SharedMailboxTests(unittest.TestCase):
         self.assertFalse(policy.may_read(ACTOR, f"mail:{OTHER}"))
         self.assertFalse(policy.may_read(ACTOR, f"mail:{EXCLUDED}"))
 
+    def test_a_staff_policy_decided_while_the_exclusion_cannot_decide_is_never_kept(self):
+        """No mailbox is granted while the people exclusion is unavailable, and that
+        policy counts as a doubt (``policy_inputs`` moves), so it is decided again."""
+        from operating.case_tools_host import CaptureCaseHostTools
+        from operating.ontology_tools_policy import ReadPolicy
+        host = SimpleNamespace(
+            _reader_keys=[f"mail:{SHARED}"], _policy_doubts=0, _mail=lambda: None,
+            runtime=SimpleNamespace(people_exclusion=PeopleExclusion(
+                unavailable="excluded_people_file_unreadable")))
+        base = ReadPolicy("plx", {}, staff=True)
+        policy = CaptureCaseHostTools._staff_mail_policy(host, base, ACTOR)
+        self.assertFalse(policy.may_read(ACTOR, f"mail:{SHARED}"))
+        self.assertEqual(host._policy_doubts, 1)
+
     def test_staff_item_rule_on_mail(self):
         fake = SimpleNamespace(people_exclusion=PeopleExclusion([EXCLUDED]),
                                staff_shared_mailboxes=lambda: frozenset({SHARED, EXCLUDED}))

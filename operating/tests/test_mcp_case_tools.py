@@ -1115,10 +1115,17 @@ class ConfigurationTests(CaseToolsTestCase):
         self.assertEqual({tool["name"] for tool in listed["result"]["tools"]},
                          DEFAULT_AGENT_TOOLS)
         self.assertFalse(hasattr(server, "platform"))
+        # a case tool this agent's definition does not hold (plx.search is the Ask's) is
+        # refused before it is called; a name no host serves is an unknown tool
         refused = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                                  "params": {"name": "plx.search",
                                             "arguments": {"query": "AO-26006"}}})
-        self.assertEqual(refused["error"]["message"], "Unknown tool")
+        self.assertTrue(refused["result"]["isError"])
+        self.assertEqual(refused["result"]["content"][0]["text"],
+                         "tool_not_allowed_for_agent:plx.agent.act")
+        unknown = server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                 "params": {"name": "plx.no_such_tool", "arguments": {}}})
+        self.assertEqual(unknown["error"]["message"], "Unknown tool")
         with self.assertRaises(TypeError):
             MCPServer(actor=Actor("plx", OPS))  # no runtime: nothing to serve
         # A session always names its actor and takes no platform (deletion-6).

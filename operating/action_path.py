@@ -254,14 +254,22 @@ class Capability:
     status: str = "not_authorized"
 
 
-# The only capability a case tool proposes today (operating.customer_po_coverage).
+# The real capabilities a proposal may name (none enabled: RefusingDispatcher).
 REAL_CAPABILITIES: Mapping[str, Capability] = {
     "portal.sales_order.set_customer_po": Capability(
         "portal.sales_order.set_customer_po", "portal",
         "PATCH sales order header -> updateSalesOrderHeader (po_reference)",
         "plx-customer-portal service.ts:651 @ 6c9415973c19 (pack 03 section 3.3)"),
+    "portal.purchase_order.set_tracking_number": Capability(
+        "portal.purchase_order.set_tracking_number", "portal",
+        "PATCH purchase order -> purchase-order.update (trackingNumber)",
+        "operating/autopilot_write_adapters.py PORTAL_ROUTES @ plx-customer-portal a8b4b92"),
+    "planner.task.set_due_at": Capability(
+        "planner.task.set_due_at", "planner",
+        "PATCH /v1.0/planner/tasks/{id} (dueDateTime, If-Match the task's etag)",
+        "learn.microsoft.com/graph/api/plannertask-update; PlannerTask (meetings.json)"),
 }
-REAL_SYSTEMS = frozenset({"portal", "bc", "mc", "sharepoint", "mail"})
+REAL_SYSTEMS = frozenset({"portal", "bc", "mc", "sharepoint", "mail", "planner"})
 FIXTURE_CAPABILITY = "fixture.record.set_field"
 # Every capability the hard guard admits: the isolated owner's test-host types of the
 # action catalog (owner ``fixture``, ``target_relations: ["fixture.*"]``, ``hosts:

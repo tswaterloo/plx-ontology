@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 const { fail, ok, asked } = vi.hoisted(() => ({
   fail: () => Promise.reject(Object.assign(new Error("forced"), { code: "internal", message: "forced" })),
   // set by a test that reads successfully: what each read answers
-  ok: { on: false, briefing: null as unknown, home: null as unknown, replies: null as unknown, briefingPending: false, suggestionsPending: false },
+  ok: { on: false, briefing: null as unknown, home: null as unknown, replies: null as unknown, drafts: [] as unknown[], briefingPending: false, suggestionsPending: false },
   // how often a group's page and the seen mark were asked for
   asked: { items: 0, seen: 0 },
 }));
@@ -15,7 +15,7 @@ vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getBriefing: () => (ok.briefingPending ? new Promise(() => undefined) : ok.on ? Promise.resolve(ok.briefing) : fail()), getBriefingItems: () => (asked.items++, fail()), getBriefingPages: () => (asked.items++, fail()), getSuggestions: () => (ok.suggestionsPending ? new Promise(() => undefined) : fail()), getActionStates: fail, markBriefingSeen: () => (asked.seen++, fail()),
   getReplies: () => (ok.on && ok.replies ? Promise.resolve(ok.replies) : fail()),
-  getMyWork: () => (ok.on ? Promise.resolve({ status: "on", items: [], digest: { open: 0, due_today: 0, by_autopilot: {} } }) : fail()),
+  getAutopilotDrafts: () => (ok.on ? Promise.resolve({ items: ok.drafts, never_senders: [] }) : fail()),
   getAutopilot: fail,
 }));
 vi.mock("@/components/shell", async (orig) => ({ ...(await orig<typeof import("@/components/shell")>()), loadHome: () => (ok.on ? Promise.resolve(ok.home) : fail()), loadLateRead: () => (ok.on ? Promise.resolve({ items: [], total: 0 }) : fail()) }));
@@ -31,7 +31,7 @@ describe("Home's three tabs (simpler tabs, 11-18): what needs you, Alerts (was /
     try {
       nav.search = "show=alerts";
       const a = render(<HomePage />);
-      expect(within(tabs()).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Needs you", "/"], ["Alerts", "/?show=alerts"], ["Late POs", "/?show=late"]]);
+      expect(within(tabs()).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Needs you", "/"], ["Alerts", "/?show=alerts"], ["Late POs", "/?show=late"], ["Switches", "/autopilot"]]);
       expect(on()).toEqual(["Alerts"]);
       expect(screen.queryByTestId("needs-you")).toBeNull();
       a.unmount();
@@ -271,5 +271,37 @@ describe("Home while the alerts are still being read", () => {
     expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
     ok.briefingPending = false;
     ok.on = false;
+  });
+});
+
+describe("Home's counts add up", () => {
+  it("All is the sum of its chips: prepared work is its own chip and lists only under All and Confirm", async () => {
+    ok.on = true;
+    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
+    const item = (n: number) => ({ id: `h${n}`, event_type: "lot_on_hold", object_type: "Batch", object_id: `Batch:${n}`, subject_label: `BC-${n}`, summary: `Lot ${n} is on quality hold.`, home: true, rank: n });
+    ok.briefing = {
+      status: "read", count: 3, home_count: 3, items: [1, 2, 3].map(item),
+      groups: [{ event_type: "lot_on_hold", label: "Batch on quality hold", count: 3, in_top: 3, new_since_visit: 0, acknowledged: 0 }],
+    };
+    ok.replies = { total: 0, items: [] };
+    const alert = { item_id: "ap_q", sender: "", channel: "system", kind: "alert", subject: "QC hold or fail", message: "", body: "", to: [], cc: [], edited: false, ask: "", summary: "Lot L-1 is on-hold; it holds up 1 open order.", facts: ["OR-9, Three Ships"], note: "", links: [], created_at: "2026-11-18T14:00:00Z" };
+    ok.drafts = [alert, { ...alert, item_id: "ap_r", summary: "Lot L-2 is on-hold; it holds up 1 open order." }];
+    try {
+      render(<HomePage />);
+      const header = await screen.findByTestId("home-header");
+      const chip = (name: string) => within(header).getByRole("tab", { name: new RegExp(`^${name}`) });
+      await waitFor(() => expect(chip("All")).toHaveTextContent("All5"));
+      expect(chip("Confirm")).toHaveTextContent("Confirm2");
+      expect(chip("Decide")).toHaveTextContent("Decide3");
+      // under Decide only what Decide counts: the prepared cards are not listed
+      fireEvent.click(chip("Decide"));
+      expect(screen.getByTestId("assist-queue").closest("[hidden]")).not.toBeNull();
+      fireEvent.click(chip("Confirm"));
+      expect(screen.getByTestId("assist-queue").closest("[hidden]")).toBeNull();
+      expect(screen.queryByText("Lot 1 is on quality hold.", { exact: false })).toBeNull();
+    } finally {
+      ok.on = false;
+      ok.drafts = [];
+    }
   });
 });

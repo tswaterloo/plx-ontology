@@ -2,6 +2,7 @@
 // and the filter/split over prepared items (pure, so the views are tested without a page).
 import type { AutopilotActionResult, AutopilotArea, AutopilotAuditRow, AutopilotCountdown, AutopilotItem, AutopilotOptIn, AutopilotScoreBar, AutopilotWorkflowRow } from "./types";
 import type { Status } from "./status";
+import { formatDate } from "./format";
 
 const ROLE: Record<string, string> = {
   purchasing: "Purchasing",
@@ -215,8 +216,13 @@ const pctOf = (p: number) => `${p % 1 === 0 ? p.toFixed(0) : p}%`;
 export function optInScore(o: Pick<AutopilotOptIn, "eligible" | "score">): string {
   const s = o.score;
   if (!s) return o.eligible ? "Eligible." : "Not eligible: no score on record.";
-  const got = `${num(s.matched)} of ${num(s.judged)} past items matched what you did${s.percent == null ? "" : ` (${s.percent.toFixed(1)}%)`}`;
-  return `${o.eligible ? "Eligible" : "Not eligible"}: ${got}. It needs ${pctOf(s.need_percent)} on at least ${num(s.need_judged)}.`;
+  const team = !o.eligible && s.scope === "team";
+  const got = team
+    ? `team score ${num(s.matched)}/${num(s.judged)}${s.percent == null ? "" : ` (${s.percent.toFixed(1)}%)`}`
+    : `${num(s.matched)} of ${num(s.judged)} past items it would have done were right${s.percent == null ? "" : ` (${s.percent.toFixed(1)}%)`}`;
+  const days = s.window && s.window.length === 2 ? ` on items of ${formatDate(s.window[0].slice(0, 10))} to ${formatDate(s.window[1].slice(0, 10))}` : "";
+  const where = s.measured_on ? ` Checked${days} on ${formatDate(s.measured_on)}${s.source ? ` (${s.source})` : ""}.` : "";
+  return `${o.eligible ? "Eligible" : "Not eligible"}: ${got}. It needs ${pctOf(s.need_percent)} on at least ${num(s.need_judged)}.${where}`;
 }
 
 /** Why an opt-in was switched off by itself, in plain words. */

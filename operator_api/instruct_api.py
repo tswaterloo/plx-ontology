@@ -831,7 +831,8 @@ class InstructMixin(ia.InstructAssistMixin):
 
     def _prepare_document(self, reader: Reader, doc: Mapping[str, str],
                           folders: list[ins.Folder], guard: Any,
-                          charts: Sequence[Mapping[str, Any]] = ()) -> m.InstructDocument:
+                          charts: Sequence[Mapping[str, Any]] = (),
+                          tables: Sequence[Mapping[str, Any]] = ()) -> m.InstructDocument:
         from .feedback import clean
         kind = doc["kind"]
         raw = str(doc.get("content") or "")
@@ -841,14 +842,19 @@ class InstructMixin(ia.InstructAssistMixin):
         content = clean(raw, guard, max(len(raw), 1)) or ""
         charts = [_clean_chart(c, lambda t: clean(t, guard, max(len(t), 1)) or "")
                   for c in charts]
-        if not content and not charts:
+        # a table's rows (read as the person, ``doc_tables``) cleaned as the words are
+        tables = [dict(t, title=clean(str(t.get("title") or ""), guard, 300) or "",
+                       lines=clean(str(t.get("lines") or ""), guard,
+                                   max(len(str(t.get("lines") or "")), 1)) or "")
+                  for t in tables]
+        if not content and not charts and not tables:
             raise _refuse("no_draft")
         try:
-            data = files.make(kind, content, charts)
+            data = files.make(kind, content, charts, tables)
         except files.FileRefused as refused:
             if refused.code != "pdf_unavailable":
                 raise _refuse("no_draft") from None
-            kind, data = "docx", files.make("docx", content, charts)
+            kind, data = "docx", files.make("docx", content, charts, tables)
         folder = next((f for f in folders if f.key == doc.get("folder")), None)
         target = None
         if folder is not None:
@@ -861,7 +867,8 @@ class InstructMixin(ia.InstructAssistMixin):
         # the people the file names (an excluded one is already withheld from it, so
         # nothing of them is kept here): cleared by the people exclusion again before an
         # upload and before a download, for a person excluded since the draft
-        people = sorted({a.lower() for a in _ADDRESS.findall(content)})
+        people = sorted({a.lower() for a in _ADDRESS.findall(
+            "\n".join([content, *(str(t.get("lines") or "") for t in tables)]))})
         row = self._uploads().prepare(reader.key, name=name, kind=kind, data=data,
                                       target=target, people=people)
         return m.InstructDocument(name=name, kind=kind, size=row["size"],

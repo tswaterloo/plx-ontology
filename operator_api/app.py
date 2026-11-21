@@ -1549,6 +1549,28 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         earned it: 409 otherwise). Always your own; recorded on the audit log."""
         return backend.autopilot_mode(who, body)
 
+    @app.post("/api/autopilot/conditions", response_model=m.AutopilotArea, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def autopilot_conditions(body: m.AutopilotConditionsRequest,
+                             who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Set your own limits on one category's auto: only these senders, these days,
+        these hours (US Eastern), your own stricter bar. Limits only narrow auto."""
+        return backend.autopilot_conditions(who, body)
+
+    @app.post("/api/autopilot/items/{item_id}/always", response_model=m.AutopilotArea,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           403: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def autopilot_always(item_id: str, body: m.AutopilotAlwaysRequest,
+                         who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Always do this: auto for this item's sender, or its whole category, where your
+        replay score earned auto (409 otherwise). Money and unclear items still wait."""
+        return backend.autopilot_always(who, item_id, body)
+
     @app.post("/api/autopilot/pause", response_model=m.AutopilotArea, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
                          409: {"model": m.ErrorResponse}})

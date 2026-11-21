@@ -2626,8 +2626,12 @@ class HostAccess:
             def call(arguments: dict[str, Any], actor: Actor) -> dict[str, Any]:
                 if actor != self.actor:
                     raise PermissionError("tool_call_for_another_reader")
-                gated, _, _ = self._state()
-                return self.host.call(name, arguments, gated)
+                # a call outside an answer (a page's door read) is its own answer: the
+                # session's kept policy, pinned for the host's own policy question,
+                # instead of two fresh decisions per call (a full reader's: 0.1-0.5 s each)
+                with self.request():
+                    gated, _, _ = self._state()
+                    return self.host.call(name, arguments, gated)
             return call
         return {name: {"handler": handler(name)} for name in SERVED_TOOLS + self.registered}
 

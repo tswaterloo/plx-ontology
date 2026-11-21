@@ -519,6 +519,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                           "reason": error.code}))
         return 2
     people = pe._people(store)
+    if a.cache:
+        Path(a.cache).mkdir(parents=True, exist_ok=True)
     if a.capture_state and (Path(a.capture_state) / "mc-capture" / "capture.sqlite").exists():
         from . import autopilot_work as aw
         st.autopilot_mc = aw.MCQuestions(a.capture_state)

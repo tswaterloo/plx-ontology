@@ -117,6 +117,14 @@ API_ROLE=${PLX_API_PG_ROLE:-plx_api}
 MEMINFO=${PLX_MEMINFO:-/proc/meminfo}
 PROC=${PLX_PROC:-/proc}                          # prune skips releases a process runs in
 CGROUP_ROOT=${PLX_CGROUP_ROOT:-/sys/fs/cgroup}
+# While plx-api warms again beside the standby serving alone, its cgroup's CPU and IO weight are this
+# (the units' own: 1000), so the serving API keeps the cores: at equal weight the warm-up took
+# half the box and the serving API's reads took 14-17 s (11-21, 90 s into a deploy). Its own
+# weight again once ready, before it takes a reader, and at the latest after WARM_LOW_S, so
+# a warm-up starved by a loaded box still ends within the deploy's wait.
+WARM_CPU_WEIGHT=${PLX_API_WARM_CPU_WEIGHT:-100}
+WARM_IO_WEIGHT=${PLX_API_WARM_IO_WEIGHT:-100}
+WARM_LOW_S=${PLX_API_WARM_LOW_S:-240}
 
 die() { echo "plx-release: $*" >&2; exit 1; }
 sealed() { [ -n "${PLX_RELEASE_OWNER:-}" ]; }
@@ -967,6 +975,7 @@ wait_ready() {  # wait_ready <port> <code version>: 0 once ready on that code, e
     if [ "$healthy" = 0 ]; then
       [ "$(api_health "$port")" = 200 ] && healthy=1
     fi
+    warm_restore due
     if [ "$healthy" = 1 ]; then
       body=$(api_get "$port" /api/ready || true)
       if [[ $body =~ \"ready\":\ *true ]]; then
@@ -980,20 +989,73 @@ wait_ready() {  # wait_ready <port> <code version>: 0 once ready on that code, e
   return 1
 }
 
+LOWERED=""   # "<cgroup dir>|<cpu.weight>|<io.weight>|<since>" while a warming unit is lowered
+
+cg_write() {  # cg_write <file> <value>: as the caller when it may write it, else sudo -n
+  if [ -w "$1" ]; then printf '%s\n' "$2" > "$1"; else printf '%s\n' "$2" | sudo -n tee "$1" >/dev/null; fi
+}
+
+warm_low() {  # warm_low <unit>: its cgroup's weights lowered while it warms (WARM_CPU_WEIGHT)
+  local cg="$CGROUP_ROOT/system.slice/$1.service" cpu io
+  LOWERED=""
+  cpu=$(cat "$cg/cpu.weight" 2>/dev/null) || return 0   # no cgroup (stopped, or none here)
+  [[ $cpu =~ ^[0-9]+$ ]] && [ "$cpu" -gt "$WARM_CPU_WEIGHT" ] || return 0
+  io=$(sed -n 's/^default \([0-9][0-9]*\)$/\1/p' "$cg/io.weight" 2>/dev/null || true)
+  cg_write "$cg/cpu.weight" "$WARM_CPU_WEIGHT" || return 0
+  LOWERED="$cg|$cpu|$io|$SECONDS"
+  if [ -n "$io" ] && [ "$io" -gt "$WARM_IO_WEIGHT" ]; then
+    cg_write "$cg/io.weight" "default $WARM_IO_WEIGHT" || true
+  fi
+}
+
+warm_restore() {  # the lowered unit's own weights again (also once WARM_LOW_S passed: "due")
+  [ -n "$LOWERED" ] || return 0
+  local cg cpu io since; IFS='|' read -r cg cpu io since <<<"$LOWERED"
+  [ "${1:-}" = due ] && [ $((SECONDS - since)) -lt "$WARM_LOW_S" ] && return 0
+  LOWERED=""
+  [ -e "$cg/cpu.weight" ] || return 0   # the unit stopped: its next start has its own
+  cg_write "$cg/cpu.weight" "$cpu" || true
+  [ -z "$io" ] || cg_write "$cg/io.weight" "default $io" || true
+}
+
+warm_heal() {  # each API unit's cgroup back at its own weights (a deploy killed mid-warm-up)
+  local unit cg own io
+  for unit in "$API_UNIT" "$(slot_unit "$STANDBY")"; do
+    cg="$CGROUP_ROOT/system.slice/$unit.service"
+    [ -e "$cg/cpu.weight" ] || continue
+    own=$(systemctl show -p CPUWeight --value "$unit" 2>/dev/null || true)
+    [[ $own =~ ^[0-9]+$ ]] || own=100   # systemd's default when the unit sets none
+    [ "$(cat "$cg/cpu.weight")" = "$own" ] || { cg_write "$cg/cpu.weight" "$own" || true; echo "$(plx_now) $unit cpu.weight back at $own" >&2; }
+    io=$(systemctl show -p IOWeight --value "$unit" 2>/dev/null || true)
+    [[ $io =~ ^[0-9]+$ ]] || io=100
+    if [ -e "$cg/io.weight" ] && [ "$(sed -n 's/^default //p' "$cg/io.weight")" != "$io" ]; then
+      cg_write "$cg/io.weight" "default $io" || true
+    fi
+  done
+}
+
 hold_of() { if [ "$1" = "$API_PORT" ]; then echo "$API_PORT"; else echo "$STANDBY_HOLD"; fi; }
 
-start_held() {  # start_held <port|standby> <code>: its unit (re)started on current, its port or
+start_held() {  # start_held <port|standby> <code> [low]: its unit (re)started on current, its port or
   # socket opened only once warm (the hold file), and ready on that code; 1 (says why) otherwise
   local unit name; unit=$(slot_unit "$1"); name=$(hold_of "$1")
   local t0=$SECONDS
   hold "$name" || { echo "no hold file in $HOLD_DIR" >&2; return 1; }
   # interrupted: no hold file outlives this run (a later start would hold; server.py also
   # ignores one older than 15 min)
-  trap "unhold '$name'; exit 130" INT TERM HUP
-  if ! sudo systemctl restart "$unit" || ! wait_ready "$1" "$2"; then
+  trap "warm_restore; unhold '$name'; exit 130" INT TERM HUP
+  if ! sudo systemctl restart "$unit"; then
     unhold "$name"; trap - INT TERM HUP; return 1
   fi
-  unhold "$name"; trap - INT TERM HUP
+  # lowered only when asked (plx-api's restart, while the standby serves alone): the
+  # standby's own warm-up beside the old, warm API runs at its own weight, since at 100
+  # it hit the first pass's 420 s cut with 23 of 59 reads not done and then served them
+  # cold (11-21 7:03 AM ET deploy: 10.5 min, Home not done in 30 s after the switch)
+  [ "${3:-}" = low ] && warm_low "$unit"
+  if ! wait_ready "$1" "$2"; then
+    warm_restore; unhold "$name"; trap - INT TERM HUP; return 1
+  fi
+  warm_restore; unhold "$name"; trap - INT TERM HUP
   echo "$(plx_now) $unit warm on $(current_id) in $((SECONDS - t0)) s"
 }
 
@@ -1012,6 +1074,7 @@ warm_switch() {  # 0: plx-api.service serves current, warm; 1: the API that serv
 warm_switch_locked() {
   local want standby; standby=$(slot_unit "$STANDBY")
   unhold "$API_PORT"; unhold "$STANDBY_HOLD"   # an interrupted run's, if any
+  warm_heal                                    # and its lowered weights
   want=$(release_code) && [ -n "$want" ] \
     || { echo "the code version of $(current_id) could not be read" >&2; return 1; }
   if systemctl is-active -q "$API_UNIT"; then
@@ -1024,7 +1087,7 @@ warm_switch_locked() {
   fi
   # plx-api.service: SIGTERM closes 8780 and ends what is under way (Caddy sends the next
   # request to the standby), then it starts on current and opens 8780 once warm
-  if ! start_held "$API_PORT" "$want"; then
+  if ! start_held "$API_PORT" "$want" low; then
     sudo systemctl stop "$API_UNIT" || true
     echo "$API_UNIT was not ready on $(current_id): $standby keeps serving it" >&2
     return 1
@@ -1040,6 +1103,7 @@ slots() {
   if [ "${1:-}" = sync ]; then slots_sync || true; else SYNC_DRY=1; fi
   local why; why=$(warm_refusal)
   echo "warm switch: ${why:-on}"
+  warm_heal
 }
 
 status() {

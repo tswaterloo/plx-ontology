@@ -17,7 +17,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from .autopilot_records import _addresses, _digest, _instant, _internal, _iso, _read, _types, _v
-from .autopilot_queue import HandlerTimeout, Queue, TASK_DONE
+from .autopilot_queue import SUPERSEDED_BY, HandlerTimeout, Queue, TASK_DONE, superseded
 from .autopilot_events import (
     TEAMS_TYPES,
     _mail_events,
@@ -685,7 +685,8 @@ def _prepare(st: Any, ap: Mapping[str, Any], event: Mapping[str, Any], as_of: da
     began = time.monotonic()
     st.watch(lambda: 1 if time.monotonic() > deadline else 0)
     try:
-        work = HANDLERS[ap["handler"]](ctx, event)
+        # a job with standing work: the rule-based handler prepares it, the model adds
+        work = HANDLERS[ap.get("standing") or ap["handler"]](ctx, event)
         if ap.get("draft") == "model" and isinstance(work, Mapping) \
                 and work.get("skip") in MODEL_DECIDES:
             # the handler's rules found nothing to state; the model reads the thread and
@@ -813,6 +814,10 @@ def _owner_mailed_in_thread(st: Any, queue: Queue, item: Mapping[str, Any],
                and (_instant(_v(r, "sent_at")) or after) > after for r in rows.values())
 
 
+# the trigger records of approval requests (an MC approval's object id)
+APPROVAL_PREFIX = "MCApproval:"
+
+
 def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
            now: datetime, decided: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Counter:
     """Mark open items done from evidence (module doc). A check that fails leaves its item
@@ -834,7 +839,16 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
         reason = None
         checked += 1
         try:
-            if rule == "owner_replied" and happened.get("channel") == "mail":
+            if oid and rule != "approval_decided" and str(oid).startswith(APPROVAL_PREFIX):
+                # an item about an approval request is done once the approval is decided,
+                # whatever its own rule: a decision made in MC (by anyone) leaves nothing
+                # the item could still offer (a job item's proposals included)
+                r = _read(st, [oid], ("status",)).get(oid)
+                if r and _v(r, "status").lower() not in ("", "pending"):
+                    reason = "approval_decided"
+            if reason:
+                pass
+            elif rule == "owner_replied" and happened.get("channel") == "mail":
                 if _owner_mailed_in_thread(st, queue, item, addresses_of):
                     reason = "owner_replied"
             elif rule == "owner_replied" and happened.get("channel") == "teams":
@@ -902,6 +916,20 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
             with queue.conn:
                 queue.settle_item(item["item_id"], "done", reason, stamp)
             done[reason] += 1
+    # one open card per real-world thing: an older item about the subject a newer item of
+    # the same owner is about (the same lot raised by another batch record or run) is set
+    # aside as ``superseded`` (a state, never a delete; no verdict on what it prepared)
+    gone = superseded(queue.items())
+    if gone:
+        # which item replaced which is kept, so a pass to a colleague or a snooze taken on
+        # the older item carries to the newer one (the Workbench reads ``SUPERSEDED_BY``)
+        with queue.conn:
+            kept = dict(queue.meta(SUPERSEDED_BY) or {})
+            kept.update(gone)
+            queue.set_meta(SUPERSEDED_BY, kept)
+            for item_id in sorted(gone):
+                queue.settle_item(item_id, "superseded", "same_subject", stamp)
+        done["same_subject"] += len(gone)
     note = {"at": stamp, "checked": checked, "errors": sum(errors.values()),
             "by_rule": dict(sorted(errors.items())), "last_error": last_error}
     with queue.conn:

@@ -91,3 +91,36 @@ OWN_POSTS_DAYS = 14
 
 def _iso(at: datetime) -> str:
     return at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def own_sent(st: Any, boxes: Mapping[str, Iterable[str]], since: str, until: str
+             ) -> list[dict[str, Any]]:
+    """The mail each mailbox's owner sent in [since, until), read from the captured mail in
+    the store (the copy in their own mailbox: audience ``mail:<mailbox>``, sent from one of
+    their addresses), as ``Queue.note_sent`` notes (owner, conversation, message id,
+    recipients, time). ``boxes``: mailbox -> its owner's addresses."""
+    own = {f"mail:{str(b).lower()}": (str(b), {str(a).lower() for a in addrs})
+           for b, addrs in boxes.items()}
+    if not own:
+        return []
+    ids = sorted({r[0] for r in st.conn.execute(
+        "SELECT DISTINCT eo.object_id FROM events e CROSS JOIN event_objects eo ON "
+        "eo.event_id = e.event_id WHERE e.event_type = 'Email.received' AND e.time >= ? AND "
+        "e.time < ?", (since, until)).fetchall() if str(r[0]).startswith("Email:")})
+    out: list[dict[str, Any]] = []
+    for start in range(0, len(ids), 2000):
+        typed = _types(st, ids[start:start + 2000])
+        mine = {o: own[aud.lower()] for o, (_t, aud) in typed.items() if aud.lower() in own}
+        rows = _read(st, mine, ("sender", "to_addresses", "cc_addresses", "conversation_id",
+                                "internet_message_id", "sent_at", "received_at"))
+        for oid, r in rows.items():
+            box, addrs = mine[oid]
+            sender = (_addresses(_v(r, "sender")) or [""])[0]
+            at = _v(r, "sent_at") or _v(r, "received_at")
+            if sender not in addrs or not at or not since <= at < until:
+                continue
+            out.append({"owner": box, "conversation": _v(r, "conversation_id") or None,
+                        "message_id": _v(r, "internet_message_id") or oid, "at": at,
+                        "to": _addresses(_v(r, "to_addresses")) +
+                        _addresses(_v(r, "cc_addresses"))})
+    return out

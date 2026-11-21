@@ -528,6 +528,10 @@ def thread_screen(people: Any, text: str) -> Optional[str]:
         # job naming a colleague was withheld as undecidable (fresh job grade 11-18)
         for address in dict.fromkeys(a.lower().rstrip(".").lstrip("'")
                                      for a in _ADDRESS.findall(text)):
+            if address.startswith("@"):
+                # quotes and a domain ('@plx.example' in a looked-up query's text): no
+                # address names anyone
+                continue
             if not people.identity_clear(address):
                 return "excluded_in_thread"
     except Exception:  # noqa: BLE001 - undecidable: never read (fail closed)

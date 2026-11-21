@@ -27,6 +27,36 @@ HIDDEN = "hidden@plx.example"
 HIDDEN_OID = "22222222-2222-4222-8222-222222222222"
 NOW = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)
 ROLE = f"person:{OWNER}"
+CLEAN = {"id": "past-fixture", "from": "2026-05-04T07:00:00Z", "until": "2026-07-08T00:00:00Z",
+         "evidence": "fixture: days no lane read"}
+
+
+def admit_judged(state: Path, folder: Path, judged: int = 15, matched: int = 14, *,
+                 categories=("approvals", "customer_replies"),
+                 at: str = "2026-11-06T15:00:00Z", person: str = OWNER) -> dict:
+    """A judged run (``autopilot_judged``) of ``judged`` performed items per category on
+    fresh days, ``matched`` of them right, admitted beside the write gate in ``state``."""
+    from operating import autopilot_judged as aj
+    start = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    items = [{"item": f"{c}-{k}", "category": c, "person": person,
+              "at": (start + timedelta(minutes=k)).isoformat(), "performed": True,
+              "right": k < matched}
+             for c in categories for k in range(judged)]
+    run = folder / f"judged-{time.monotonic_ns()}.json"
+    run.write_text(json.dumps({"schema": aj.RUN_SCHEMA, "source": "fixture set",
+                               "measured_on": "2026-11-12", "items": items}))
+    return aj.record(run, state, aw.load_rules())
+
+
+def with_clean(folder: Path) -> dict:
+    """The product rules with ``CLEAN`` as their clean window (tuned windows over it out)."""
+    raw = json.loads(aw.RULES_FILE.read_text())
+    raw["tuned_windows"] = [w for w in raw["tuned_windows"]
+                            if not (w["from"] < CLEAN["until"] and CLEAN["from"] < w["until"])]
+    raw["clean_windows"] = [CLEAN]
+    path = folder / "rules-clean.json"
+    path.write_text(json.dumps(raw))
+    return aw.load_rules(path)
 BC_COMPANY = "33333333-3333-4333-8333-333333333333"
 NEW_ID = "44444444-4444-4444-8444-444444444444"
 
@@ -141,10 +171,14 @@ class Base(unittest.TestCase):
             {"role": ROLE, "status": status, "window": [start, end]}))
         return run
 
+    def judge(self, judged: int = 15, matched: int = 14, **kw) -> dict:
+        return admit_judged(self.state, Path(self.tmp.name), judged, matched, **kw)
+
     def pass_gate(self, **kw) -> None:
         rules = aw.load_rules()
         out = aw.record_scores(self.fresh_run(**kw), self.state / aw.WRITE_GATE_FILE, rules)
         self.assertIn(ROLE, out["admitted"])
+        self.judge()
         aw.sync_gate(aw.Journal(self.state / aw.AUDIT_FILE),
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules), NOW)
 
@@ -215,6 +249,7 @@ class GateAndFlags(Base):
     def test_gate_needs_fresh_complete_and_90_on_15(self):
         rules = aw.load_rules()
         path = self.state / aw.WRITE_GATE_FILE
+        self.judge()        # the judged scores pass: the replay counts decide here
         out = aw.record_scores(self.fresh_run(start="2026-10-27T07:00:00Z"), path, rules)
         self.assertEqual(out["refused"], {ROLE: "not_held_out"})
         out = aw.record_scores(self.fresh_run(status="partial"), path, rules)
@@ -240,7 +275,8 @@ class GateAndFlags(Base):
     def test_past_days_never_tuned_on_count_like_fresh_days(self):
         """A window
         touching tuned days never counts; the rules' windows are re-checked at every read."""
-        rules = aw.load_rules()
+        rules = with_clean(Path(self.tmp.name))
+        self.judge()
         path = self.state / aw.WRITE_GATE_FILE
         flow = "internal_approval"
 
@@ -287,7 +323,7 @@ class GateAndFlags(Base):
 
     def test_rules_refuse_a_past_window_that_was_tuned_on(self):
         raw = json.loads(aw.RULES_FILE.read_text())
-        clean = raw["clean_windows"][0]
+        clean = CLEAN
         for bad in ({**clean, "until": "2026-08-01T00:00:00Z"},          # into tuned days
                     {**clean, "from": "2026-11-01T00:00:00Z", "until": "2026-11-20T00:00:00Z"},
                     {**clean, "evidence": " "},
@@ -310,6 +346,33 @@ class GateAndFlags(Base):
         self.assertEqual(self.executor(env).run(mc_item(), NOW)[0]["reasons"],
                          ["opt_in_suspended:below_bar"])
         self.assertEqual(self.mc.calls, [])
+
+    def test_a_persons_own_failing_judged_score_stops_the_executor_by_id_or_address(self):
+        """Everyone's judged score passes, the item's person's own does not: the executor
+        performs nothing for them, whether their own score is on record under their
+        address or only under their directory id (the guard maps one to the other)."""
+        from operating import autopilot_judged as aj
+        for key in ("person", "person_id"):
+            self.tearDown()
+            self.setUp()                                # each case from a fresh state
+            env = self.go_live()
+            self.assertEqual(self.executor(env).run(mc_item(1), NOW)[0]["status"], "done")
+            own = {"person": "", "person_id": ""}
+            own[key] = OWNER if key == "person" else OWNER_OID
+            rows = [{"item": f"b{k}", "category": "approvals", "person": "b@plx.example",
+                     "at": f"2026-11-09T15:{k:02d}:00Z", "performed": True, "right": True}
+                    for k in range(40)] + \
+                   [{"item": f"o{k}", "category": "approvals", **own,
+                     "at": f"2026-11-09T16:{k:02d}:00Z", "performed": True, "right": k < 10}
+                    for k in range(15)]                 # everyone 50/55 passes, own 10/15
+            run = Path(self.tmp.name) / f"own-{key}.json"
+            run.write_text(json.dumps({"schema": aj.RUN_SCHEMA, "source": "fixture",
+                                       "measured_on": "2026-11-12", "items": rows}))
+            (self.state / aj.JUDGED_FILE).unlink()
+            aj.record(run, self.state, aw.load_rules())
+            r = self.executor(env).run(mc_item(2), NOW)[0]
+            self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["gate_not_passed"]), key)
+            self.assertEqual(len(self.mc.calls), 1, key)
 
     def test_invalid_or_looser_rules_refuse_everything(self):
         env = self.go_live()
@@ -529,6 +592,49 @@ class Routine(Base):
         item["body"]["prepared"]["draft"]["to"] = [
             {"address": f"p{n}@customer.example"} for n in range(4)]
         self.assertEqual(self.status_of(item, env)[0], ("not_routine", ["recipients:4"]))
+
+    def test_a_draft_with_a_blank_for_the_person_is_never_sent_by_itself(self):
+        """A reply drafted with a [blank] only the person can fill (the Assist drafter's
+        rule) waits for their click; replay 11-21: an unfilled bracket was graded wrong."""
+        env = self.go_live(("customer_order_intake",))
+        item = po_item()
+        item["body"]["prepared"]["write"] = None
+        item["body"]["prepared"]["draft"]["body"] = "Hi, it ships on [date you confirm]."
+        self.assertEqual(self.status_of(item, env)[0], ("not_routine", ["incomplete:placeholder"]))
+        item["body"]["prepared"]["draft"]["body"] = "Hi, it ships on Friday."
+        self.assertNotEqual(self.status_of(item, env)[0][0], "not_routine")
+
+    def test_a_blank_holds_back_every_kind_and_a_mail_tag_holds_back_none(self):
+        """The drafter's blank shape ([ship date], [yes or no]) holds back a send, an MC
+        task note, a Planner, BC or Portal entry alike; a mail tag ("[EXTERNAL]"), a
+        footnote, an address, a link or an inline image in the text is no blank."""
+        rules = aw.load_rules()
+        item = {"title": "", "body": {"prepared": {}, "happened": {"sender": "a@customer.example"}}}
+        blank = "Ships on [ship date], confirm [yes or no]"
+        actions = [
+            {"kind": "send_mail", "payload": {"to": ["a@customer.example"], "subject": "Re: lot",
+                                              "body": blank}},
+            {"kind": "send_teams", "payload": {"body": blank}},
+            {"kind": "mc_task", "operation": "task_note", "payload": {"note": blank}},
+            {"kind": "planner_write", "operation": "task_create", "payload": {"title": blank}},
+            {"kind": "bc_write", "operation": "sales_order_comment",
+             "precondition": {"document": "x"}, "payload": {"comment": blank}},
+            {"kind": "portal_write", "operation": "activity.note", "payload": {"note": blank}},
+        ]
+        for action in actions:
+            self.assertIn("incomplete:placeholder", aw.routine(rules, item, action, "x"),
+                          action["kind"])
+            clean = json.loads(json.dumps(action).replace(blank, "Ships on Friday"))
+            self.assertNotIn("incomplete:placeholder", aw.routine(rules, item, clean, "x"),
+                             action["kind"])
+        for text in ("[EXTERNAL] Re: lot 2231", "Re: [External] lot", "see [1]", "[SPAM] offer",
+                     "[cid:image001.png@01DA]", "[mailto:a@customer.example]",
+                     "[https://portal.example/x]", "[image: logo]", "[a@customer.example]"):
+            self.assertEqual(aw.placeholders(text), [], text)
+        self.assertEqual(aw.placeholders("on [Ship date] and [qty]"), ["Ship date", "qty"])
+        # replay 11-21: a nine-word choice left in brackets is still a blank
+        self.assertEqual(len(aw.placeholders(
+            "[go ahead with raised test limits or lighter test]")), 1)
 
     def test_unknown_prepared_shape_is_refused(self):
         env = self.go_live()

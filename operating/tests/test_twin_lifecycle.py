@@ -28,7 +28,8 @@ from operating.action_catalog import ActionCatalog
 from twin import mode
 from twin.portal import PortalTwin, TwinError
 from twin.transport import TwinTransport
-from twin.world import (ACTOR, ORDER_RELATION, PORTAL_CAPABILITY, SESSION, TwinWorld,
+from twin.world import (ACTOR, NOTICE_RELATION, ORDER_RELATION, PO_RELATION,
+                        PORTAL_CAPABILITY, SESSION, TRACKING_CAPABILITY, TwinWorld,
                         run_lifecycle)
 
 RUNNABLE_END = {"verified", "executed"}
@@ -123,7 +124,12 @@ class LifecycleTests(TwinTestCase):
                     self.assertEqual(row["outcome"], "verified", row)
         self.assertEqual(rows[PORTAL_CAPABILITY]["evidence"], ["twin-transport"])
         # The MC twin itself refused the agent's and the member's decisions.
-        self.assertEqual(report["mc_refusals"], {"context_denied": 6, "forbidden": 6})
+        self.assertEqual(report["mc_refusals"], {"context_denied": 8, "forbidden": 8})
+        # Planner: one PATCH with the etag just read, the task holding the order's date.
+        planner = rows["planner.task.set_due_at"]
+        self.assertEqual((planner["first_dispatch"], planner["twin_writes"], planner["read_back"],
+                          planner["evidence"]),
+                         ("dispatched", 1, ["effect_observed"], ["twin-transport"]))
 
         scenarios = {item["scenario"]: item for item in report["portal_scenarios"]}
         lost, conflict, unknown = (scenarios[name] for name in
@@ -624,6 +630,61 @@ class CustomerPoReuseTests(TwinTestCase):
                 self.assertEqual([item["orderNumber"] for item in warning["orders"]],
                                  sorted(f"SO-N{count}-{index}" for index in
                                         range(count))[:10])
+
+
+class TrackingNumberNoOverwriteTests(TwinTestCase):
+    """``set_tracking_number`` never overwrites a tracking number the PO already holds,
+    even when the proposer leaves out its own ``field_empty`` check."""
+
+    def attempt(self, held):
+        context = mode.test_mode(allow={TRACKING_CAPABILITY})
+        context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        world = TwinWorld(self.dir / "world")
+        row = dict(world.portal.resolve(PortalTwin.citation(PO_RELATION, "po-twin-1"),
+                                        ACTOR)["row"])
+        world.portal.seed(PO_RELATION, {**row, "tracking_number": held})
+        value = "1Z999AA10123456784"
+        target = PortalTwin.citation(PO_RELATION, "po-twin-1")
+        notice = world.owner.seed(NOTICE_RELATION, {"id": 202},
+                                  {"id": 202, "tracking_number": value,
+                                   "po_number": "PO-T0001", "order_number": "SN-T0202"})
+        case_id = world.path.open_case(
+            ACTOR, "Does PO-T0001 carry the tracking number its ship notice states?",
+            roots=["twin-po-1"], objective_author_kind="human", session=SESSION)
+        writes = world.portal.writes
+        try:
+            proposal = world.path.record_proposal(
+                ACTOR, case_id, TRACKING_CAPABILITY,
+                {"proposed_tracking_number": value, "evidence_citation": notice,
+                 "evidence_field": "tracking_number"},
+                # a checkable precondition on another field: none on the written one
+                [{"check": "field_empty", "citation": target, "field": "shipping_method"},
+                 "a person at PLX confirms the cited shipment is for this purchase order"],
+                citations=[target, notice], session=SESSION,
+                expected_effect={"relation": PO_RELATION, "key": {"id": "po-twin-1"},
+                                 "fields": ["tracking_number"], "equals": value})
+            iid = world.path.register(ACTOR, case_id, proposal["proposal_id"],
+                                      session=SESSION)["intent_id"]
+            world.authorize(iid, "TASK-TWIN-PO-NO")
+            state = world.path.dispatch(ACTOR, iid, world.registry, world.mc_client,
+                                        session=SESSION)["state"]
+        except ap.ActionPathError as exc:
+            state = "refused:" + str(exc)
+        return state, world.portal.writes - writes
+
+    def test_a_po_holding_a_tracking_number_is_never_written(self):
+        # the PO number echoed into the field too: registration lets it count as empty,
+        # but the send needs the owner's field to hold nothing (no_overwrite_failures)
+        for held in ("1Z999AA10000000001", "PO-T0001"):
+            with self.subTest(held=held):
+                self.dir = Path(tempfile.mkdtemp(dir=self.dir))
+                state, writes = self.attempt(held)
+                self.assertEqual(writes, 0, state)
+                self.assertNotIn(state, ("dispatched", "dispatched_unknown", "verified"))
+
+    def test_an_empty_field_is_written_once(self):
+        self.assertEqual(self.attempt(None), ("dispatched", 1))
 
 
 if __name__ == "__main__":

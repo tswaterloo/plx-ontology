@@ -90,8 +90,21 @@ describe("an alert type whose check is not current", () => {
     expect(fired).toHaveLength(1);
     render(<FiredKind f={fired[0]} />);
     expect(screen.getByTestId("unavailable-po_late")).toHaveTextContent(/^Late purchase order: unavailable since 18 Nov/);
-    expect(screen.getByTestId("fired-as-of")).toHaveTextContent(/^as of 18 Nov/);
+    // the check ran days ago: its own time is said (a current check leaves the sidebar's time alone)
+    expect(screen.getByTestId("fired-as-of")).toHaveTextContent(/^checked 18 Nov/);
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+  it("shows no time beside a kind checked within the hour, and no 0 beside unavailable", () => {
+    const now = new Date().toISOString();
+    const briefing = { status: "read", count: 1, items: [item({ event_type: "lot_on_hold", alert_kind: "late_po" })], groups: [
+      group({ event_type: "lot_on_hold", label: "Batch on quality hold", count: 1, in_top: 1, as_of: now }),
+    ] } as unknown as Briefing;
+    const { unmount } = render(<FiredKind f={firedKinds(reg, briefing)[0]} />);
+    expect(screen.queryByTestId("fired-as-of")).toBeNull();
+    unmount();
+    const none = { status: "read", count: 0, items: [], groups: [group({ unavailable: true, unavailable_since: null })] } as unknown as Briefing;
+    render(<FiredKind f={firedKinds(reg, none)[0]} />);
+    expect(screen.getByRole("heading").textContent).not.toMatch(/\b0\b/);
   });
   it("lists a kind whose only type is unavailable, never as nothing fired", () => {
     const briefing = { status: "read", count: 0, items: [], groups: [group({ unavailable: true, unavailable_since: null })] } as unknown as Briefing;

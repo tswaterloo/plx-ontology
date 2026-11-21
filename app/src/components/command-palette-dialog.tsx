@@ -39,7 +39,7 @@ const PLACES: { label: string; href: string; hint: string; words: string }[] = [
   { label: "Messages and tasks", href: "/activity", hint: "Work log: each message and task you started, and whether it went out", words: "activity actions messages tasks sent log journal" },
   { label: "Data health", href: "/?show=alerts#data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po" },
   { label: "Records", href: "/records", hint: "Find a customer, order, supplier or product", words: "records customers orders suppliers products items find" },
-  { label: "Autopilot", href: "/autopilot", hint: "Workflows, what they prepared and their run log", words: "autopilot approvals workflows runs audit" },
+  { label: "Switches", href: "/autopilot", hint: "What gets prepared for you, and Auto", words: "autopilot switches auto assist prepare" },
   { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
   { label: "Work log", href: "/work-log", hint: "What you did, day by day", words: "work log history time saved" },
   { label: "Memory", href: "/memory", hint: "What the Workbench remembers for you", words: "memory remember notes facts" },

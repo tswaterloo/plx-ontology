@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
 import { PreparedChange } from "@/components/prepared-change";
 import { TodoSteps } from "@/components/autopilot/todo";
-import { decideAutopilotItem, prepareAutopilotJob, setNeverSender, type PreparedItem, type ProposedJob } from "@/lib/api";
+import { prepareAutopilotJob, type PreparedItem, type ProposedJob } from "@/lib/api";
+import { ItemActions } from "@/components/autopilot/item-actions";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 
@@ -28,52 +29,7 @@ function fields(change: Record<string, unknown>): string {
     .join(", ");
 }
 
-/** 8 AM tomorrow, the person's own time: when a "Later" item comes back. */
-export function tomorrowMorning(now: Date = new Date()): Date {
-  const d = new Date(now);
-  d.setDate(d.getDate() + 1);
-  d.setHours(8, 0, 0, 0);
-  return d;
-}
-
-/** Later (snoozed to tomorrow 8 AM) or Not needed (rejected): either takes the item off the list.
- * Never from this sender (given a sender and onNever): nothing more from them until undone. */
-export function SetAside({ itemId, disabled, onGone, sender, onNever }: { itemId: string; disabled?: boolean; onGone: (id: string) => void; sender?: string; onNever?: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const run = async (act: () => Promise<unknown>, then: () => void) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await act();
-      then();
-    } catch (e) {
-      setError(plainError(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const drop = (decision: "reject" | "snooze") =>
-    run(() => decideAutopilotItem(itemId, decision === "snooze" ? { decision, until: tomorrowMorning().toISOString() } : { decision }), () => onGone(itemId));
-  return (
-    <>
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" disabled={busy || disabled} onClick={() => void drop("snooze")}>
-          Later: tomorrow 8 AM
-        </Button>
-        <Button size="sm" variant="outline" disabled={busy || disabled} onClick={() => void drop("reject")}>
-          Not needed
-        </Button>
-        {sender && onNever && (
-          <Button size="sm" variant="outline" disabled={busy || disabled} onClick={() => void run(() => setNeverSender(sender, true), onNever)}>
-            Never from this sender
-          </Button>
-        )}
-      </div>
-      {error && <ErrorNotice message={error} />}
-    </>
-  );
-}
+export { tomorrowMorning } from "@/components/autopilot/item-actions";
 
 function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
   const [pid, setPid] = useState<string | null>(job.prepared_id ?? null);
@@ -120,13 +76,30 @@ export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?:
       </div>
       {item.summary && <p className="max-w-[46rem] text-[13px]">{item.summary}</p>}
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
+      {(item.facts ?? []).length > 0 && (
+        <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted" aria-label="Why">
+          {item.facts.map((f, n) => (
+            <li key={n}>{f}</li>
+          ))}
+        </ul>
+      )}
+      {item.note && <p className="text-[12px] text-muted">{item.note}</p>}
+      {(item.links ?? []).length > 0 && (
+        <div className="flex flex-wrap gap-3 text-[13px]">
+          {(item.links ?? []).map((l) => (
+            <a key={l.href} href={l.href} {...(l.href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="text-accent underline-offset-2 hover:underline">
+              {l.label}
+            </a>
+          ))}
+        </div>
+      )}
       <ul className="max-w-[46rem] divide-y divide-border" aria-label="Changes to review">
         {(item.jobs ?? []).map((j) => (
           <Proposed key={j.index} itemId={item.item_id} job={j} />
         ))}
       </ul>
       <TodoSteps todos={item.todos ?? []} />
-      <SetAside itemId={item.item_id} onGone={onGone} />
+      <ItemActions item={item} onGone={onGone} />
     </li>
   );
 }

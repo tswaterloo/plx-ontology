@@ -34,11 +34,13 @@
 #     plx-autopilot-follow.timer 5 min after the last cycle, and .path on each delta publish:
 #                                the autopilot's live feed; prepares My work items only (never
 #                                sends, writes or approves), ordered event queue on (EVQ=1)
-#     plx-autopilot-fast.timer   1 min after the last start, and .path on each captured Teams or
-#                                mail message: the fast feed (operating/autopilot_fast.py), the
-#                                same guards; prepares My work items only
-#     plx-autopilot-fast-serve   continuous: the fast feed as one consumer (a signal read within
-#                                1 s; the .path/.timer starts above stand down while it runs)
+#     plx-autopilot-fast-serve   continuous: the fast feed (operating/autopilot_fast.py) as one
+#                                consumer, a captured message read within 1 s, the same
+#                                guards; prepares My work items only. While it is down
+#                                plx-autopilot-follow is its backstop. Its old per-signal
+#                                plx-autopilot-fast .path/.timer (RETIRED_SYS_UNITS) are removed:
+#                                in a day they started 2855 times, 2837 found the consumer
+#                                running and the other 18 prepared nothing.
 #   and ~/.local/bin/plx-release -> $PLX_REPO/deploy/release/plx-release
 #
 #Nothing here writes to a business system or reads a secret; the units name env files, not
@@ -51,8 +53,9 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh"
-SYS_PATHS="plx-autopilot-follow plx-autopilot-fast"   # also started by a .path unit
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh"
+SYS_PATHS="plx-autopilot-follow"                       # also started by a .path unit
+RETIRED_SYS_UNITS="plx-autopilot-fast"                 # no longer shipped: stopped and removed
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously
 SYS_AFTER=""                                           # started only by another unit (OnSuccess=)
 
@@ -73,7 +76,7 @@ verify_unit() {  # verify_unit [--user] service timer
 for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
 for u in $SYS_PATHS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.path"; done
 for u in $SYS_DAEMONS $SYS_AFTER; do verify_unit "$tmp/sys/$u.service"; done
-for f in "$tmp"/sys/plx-{sheet-readings,system-activity,team-activity,work-graph,proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast,autopilot-fast-serve,reply-drafts,labour,write-readiness,spark-health}.*; do
+for f in "$tmp"/sys/plx-{sheet-readings,system-activity,team-activity,work-graph,proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast-serve,reply-drafts,labour,write-readiness,spark-health}.*; do
   # <unit>.d/ drop-in folders (deploy/systemd/host) are installed by deploy/ops/host/install.py,
   # not here; the unit file itself must carry MemoryMax and Nice
   [ -d "$f" ] && continue
@@ -97,7 +100,17 @@ for u in $MOVED_USER_UNITS; do
 done
 [ $changed = 0 ] || systemctl --user daemon-reload
 
+# system units no longer shipped: stopped, disabled and removed (their files only)
 schanged=0
+for u in $RETIRED_SYS_UNITS; do
+  if ls /etc/systemd/system/"$u".{service,timer,path} >/dev/null 2>&1; then
+    sudo -n systemctl disable --now "$u.timer" "$u.path" 2>/dev/null || true
+    sudo -n rm -f /etc/systemd/system/"$u".service /etc/systemd/system/"$u".timer /etc/systemd/system/"$u".path
+    sudo -n systemctl reset-failed "$u.service" 2>/dev/null || true
+    schanged=1
+  fi
+done
+
 for u in $SYS_UNITS; do for ext in service timer; do
   dst=/etc/systemd/system/$u.$ext
   cmp -s "$tmp/sys/$u.$ext" "$dst" || { sudo -n install -m 644 "$tmp/sys/$u.$ext" "$dst"; schanged=1; }
