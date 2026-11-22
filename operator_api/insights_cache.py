@@ -58,6 +58,12 @@ MOST_READERS = 200
 # a kept answer under the same door stamp is served this long (read again behind it); the
 # file keeps it as long
 STALE_MOST_SECONDS = 30 * 60.0   # a policy change moves neither reader key nor door stamp
+# a read that cannot finish (too slow, busy, tables being rebuilt, unreadable) is answered by
+# the reader's last good answer for the statement of this age or younger, whatever the door's
+# stamp has moved to since (a refresh of the business tables moves it for everyone), shown
+# with the time it was read; nothing older, and never after a refusal about access
+LAST_GOOD_SECONDS = 30 * 60.0
+UNFINISHED = frozenset({"insight_too_slow", "insight_not_ready", "insight_unreadable", "busy"})
 AHEAD_SECONDS = 120.0     # one read ahead or in the background (no person waits on it)
 
 
@@ -170,6 +176,16 @@ class Kept:
                     pass
         flying.set_result(got)
         return got
+
+    def last_good(self, key: tuple, most: float = LAST_GOOD_SECONDS) -> Any:
+        """``key``'s last answer read for this reader in this process, of ``most`` seconds
+        or younger, whatever door stamp it was read under (None: none). Served only for a
+        read that could not finish (``UNFINISHED``), never as a kept answer."""
+        with self._lock:
+            hit = self._kept.get(key)
+        if hit is None or self.clock() - hit[2] > most:
+            return None
+        return hit[0]
 
     def drop(self, key: tuple) -> None:
         """Forget ``key``'s kept answer, in memory and on disk (under every door stamp the
@@ -325,10 +341,12 @@ class Keeper:
         try:
             # read again (joining one in flight): a kept answer this old is replaced
             self.kept.get((key, sql), lambda: self.read(reader, sql), again=True)
-        except Exception:  # noqa: BLE001 - the tile's own request reads it and says why
-            # a read that now fails (refused: the reader's access narrowed) leaves no old
-            # answer to be served again from memory or disk
-            self.kept.drop((key, sql))
+        except Exception as exc:  # noqa: BLE001 - the tile's own request reads it and says why
+            # a read that now fails because the reader's access narrowed leaves no old
+            # answer to be served again from memory or disk; one that could not finish
+            # keeps the last good one (``Kept.last_good``)
+            if getattr(exc, "code", None) not in UNFINISHED:
+                self.kept.drop((key, sql))
 
     def tick(self) -> list[Future]:
         """Read again, as each recent reader whose session is still valid, the statements

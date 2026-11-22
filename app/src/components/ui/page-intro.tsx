@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
  */
 export const PAGE_INTROS = {
   "/": "What needs you today: what was prepared for you to confirm, replies to send, late orders to chase and alerts to decide.",
-  "/ask": "Ask about any order, supplier, customer or lot. Answers come only from the records and mail you may open.",
+  "/ask": "Ask about anything in the records and mail you may open, or ask for a chart, a document or a quote. Answers come only from what you may open.",
   "/?show=alerts": "Alerts from the rules you set and the records you follow.",
   "/?show=late": "Every purchase order past its due date, with the date the supplier gave, if any.",
   "/autopilot": "What gets prepared for you, and what may go without your click. Each person sets their own.",

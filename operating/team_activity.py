@@ -431,6 +431,8 @@ def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[st
             "name": name, "name_from": source, "department": depts.get(oid),
             "roles": list(roles.get(oid, ())),
             "addresses": sorted(by_address.get(oid, ()))[:10],
+            # a distribution list the directory types as a group is a mailbox, never a person
+            "group_address": any(a in groups for a in by_address.get(oid, ())),
             "days": {d: dict(c) for d, c in sorted(days.get(oid, {}).items())},
             "hours": hours.get(oid, [0] * 24),
             "reply": {str(p): _median([m for d, m in mine
@@ -451,7 +453,9 @@ def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[st
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "window": {"from": start.isoformat(), "to": until.isoformat()},
             "systems_as_of": (system or {}).get("generated_at") if fresh else None,
-            "coverage": coverage, "withheld": dict(withheld), "people": people}
+            "coverage": coverage, "withheld": dict(withheld), "people": people,
+            # the directory's own domains: the Team view joins rows only inside these
+            "domains": sorted(own)}
 
 
 def build(state: Path, *, until: date, system: Optional[Mapping[str, Any]],

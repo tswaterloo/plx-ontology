@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useProblem, useProblemSlot } from "@/components/ui/notice";
 import { getAutopilotColleagues, handAutopilotItem, setFollowing, takeAutopilotItem, type PreparedItem } from "@/lib/api";
 import { plainError } from "@/lib/errors";
-import { formatDateTime } from "@/lib/format";
+import { countedWords, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
 export function AlertCard({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged?: () => void }) {
@@ -24,16 +24,16 @@ export function AlertCard({ item, linked, onGone, onChanged }: { item: PreparedI
         <span className="text-[13px] font-medium">{item.subject || "From the records"}</span>
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
-      <p className="max-w-[46rem] text-[13px]">{item.summary}</p>
+      <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary ?? "")}</p>
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
       {item.facts.length > 0 && (
         <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted">
           {item.facts.map((f, n) => (
-            <li key={n}>{f}</li>
+            <li key={n}>{countedWords(f)}</li>
           ))}
         </ul>
       )}
-      {item.note && <p className="text-[12px] text-muted">{item.note}</p>}
+      {item.note && <p className="text-[12px] text-muted">{countedWords(item.note)}</p>}
       {(item.links ?? []).length > 0 && (
         <div className="flex flex-wrap gap-3 text-[13px]">
           {(item.links ?? []).map((l) => (

@@ -29,7 +29,7 @@ What every build holds to:
   the handle names Freightcom, ``image_ocr_gpu.FREIGHTCOM``: no Freightcom row reaches a
   model). Lineage (object ids, per-column cites [handle, field_path], systems, copies) is
   in ``<schema>.lineage`` by (view, handle). A row made from an object of
-  ``ontology.people_excluded_objects`` (an excluded person's own data) is not built.
+  ``ontology.people_excluded_objects`` (an excluded person's own data): the owner's alone.
 
 Build: ``python3 -m operating.pg.business_views build [--view NAME]...`` (niced; read-only
 reads, one write transaction per view); ``refresh`` rebuilds only the views whose input
@@ -606,6 +606,24 @@ def fill(row: Row, thing: Thing, column: str, prop: str,
     return value
 
 
+CATEGORY_DOC = ("the item's category, read from Sage's item master first (Sage is the system "
+                "of record for items sold and invoiced: its codes are product lines such as "
+                "PLABEL, LIQUID, VCARE; no Sage category table is captured, so the code stands), "
+                "else from BC's item category (PACK, FG, DIST, RAW: a different, coarser list)")
+
+
+def fill_category(row: Row, thing: Thing, column: str = "category") -> str | None:
+    """``column`` from the item's category: the Sage copy's when it states one, else the
+    first copy that does (``CATEGORY_DOC``)."""
+    sage = [r for r in thing.members if "sage" in (r.binding or "")]
+    for rec in sage:
+        cell = rec.cell("item_category")
+        if cell is not None and _text(cell.value) is not None:
+            row.read(cell, column, _text(cell.value), rec=rec)
+            return row.values[column]
+    return fill(row, thing, column, "item_category")
+
+
 # Business Central's OData escapes a character an XML name cannot hold as ``_xHHHH_``
 # (a blank option value is ``_x0020_``, "Sales_x0020_Shipment"): decoded, never shown
 _XML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
@@ -734,7 +752,11 @@ SYSTEMS_COL = "source_systems"
 SYSTEMS_DOC = ("the systems holding a copy of this row, sorted and comma separated: bc "
                "(Business Central), filemaker, portal (the Portal app), sage; e.g. "
                "'bc,filemaker,portal'. A question about one system's records filters on it "
-               "(source_systems LIKE '%bc%'); the row's other columns are the joined thing's")
+               "(source_systems LIKE '%bc%'); the row's other columns are the joined thing's. "
+               "Business Central is still a pilot: a row held only in bc (or bc,portal, the "
+               "Portal's mirror of BC) is pilot data, not the system of record (Sage, "
+               "FileMaker and the Portal are); an answer resting on such a row says so, and "
+               "looks for the same business in the systems of record and in mail")
 
 
 def view(name: str, doc: str, cols: Sequence[tuple[str, str, str]], reads: Sequence[str],
@@ -1435,6 +1457,7 @@ def line_economics(rec: Rec, fx: Rate | None = None) -> dict[str, Any]:
        ("customer", "text", "the billed customer"), CHAIN_COL,
        ("item_code", "text", "the product's item code"),
        ("item_name", "text", "the product's name"),
+       ("category", "text", "the product's category: " + CATEGORY_DOC),
        ("description", "text", "line description"),
        ("line_type", "text", "item or misc (a miscellaneous charge); BC states its own"),
        ("quantity", "numeric", "quantity invoiced"),
@@ -1498,6 +1521,10 @@ def _sales_invoice_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         if fill(row, thing, "item_code", "sage_item_code") is None and product is not None:
             if fill(row, product, "item_code", "code") is None:
                 fill(row, product, "item_code", "erp_code")
+        if product is not None:
+            fill_category(row, product)
+        else:
+            row.values["category"] = None
         fill(row, thing, "description", "description")
         kind = fill(row, thing, "line_type", "line_type")
         if kind is not None:
@@ -2101,6 +2128,8 @@ def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
 # The products, batches, stock and purchasing views (their own module, registered here in
 # this order after the sales views); their names stay readable as this module's.
 from operating.pg import business_views_supply as _supply  # noqa: E402,F401
+# every Sage AR document with its paid date (receivables of a past day)
+from operating.pg import business_views_ar as _ar  # noqa: E402,F401
 # the org chart (staff), read from the org capture's store beside the staff Persons
 from operating.pg import business_staff as _staff  # noqa: E402,F401
 # registered last, after the business views of their rank (stale_views orders them so):
@@ -2308,7 +2337,11 @@ def build(dsn: str, names: Sequence[str] | None = None, *, schema: Any = None,
                     write.execute(f"UPDATE {SCHEMA}.state SET notes = notes || %s::jsonb "
                                   "WHERE view = %s", (json.dumps({"feed": seen}), n))
                 except Exception as exc:  # noqa: BLE001 - reported below, the build fails
-                    failed.append(f"{n}: {type(exc).__name__}: {str(exc)[:200]}")
+                    from operating.pg.build_pause import BuildPaused   # a quiet retry
+                    if isinstance(exc, BuildPaused):
+                        out.append({"view": n, "paused": str(exc)[:200]})
+                    else:
+                        failed.append(f"{n}: {type(exc).__name__}: {str(exc)[:200]}")
                 # what no later view shares is let go (bounded memory over a whole build)
                 later = {k for m in todo[i + 1:] for k in VIEWS[m].memos}
                 for key in [k for k in reader._memo if k not in later]:

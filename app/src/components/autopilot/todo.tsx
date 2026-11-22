@@ -10,7 +10,7 @@ import { ItemActions } from "@/components/autopilot/item-actions";
 import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
-import { formatDateTime } from "@/lib/format";
+import { countedWords, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
 const SYSTEMS: Record<string, string> = {
@@ -70,7 +70,7 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
         {item.subject && <span className="text-[12px] text-muted">{item.subject}</span>}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
-      {item.summary && <p className="max-w-[46rem] text-[13px]">{item.summary}</p>}
+      {item.summary && <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary)}</p>}
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
       <TodoSteps todos={item.todos ?? []} />
       {card.provide(<ItemActions

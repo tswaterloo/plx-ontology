@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CardActions } from "@/components/card-actions";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { getAlertKinds, getBriefing, getBriefingItems, getDataHealth } from "@/lib/api";
+import { dataHealthExportHref, getAlertKinds, getBriefing, getBriefingItems, getDataHealth, getDataHealthPage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { noticeKind, plainError } from "@/lib/errors";
@@ -58,6 +59,11 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
     <section aria-labelledby="data-health-title" id="data-health" className="scroll-mt-16" data-testid="data-health">
       {/* on its own Admin page the page title and its one sentence say this already */}
       <h2 id="data-health-title" className={titled ? "text-[15px] font-semibold" : "sr-only"}>Data health</h2>
+      {data?.status === "read" && on.some((c) => (c.read !== false ? c.count : c.open ?? 0) > 0) && (
+        <p className="mt-1 text-[12px]">
+          <a href={dataHealthExportHref()} className="text-accent hover:underline" download>Download all as a spreadsheet</a>
+        </p>
+      )}
       {titled && <p className="mt-0.5 text-[12px] text-muted">Records entered twice, missing a key field or out of step with their other system, as you may read them.</p>}
       {error ? (
         <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} className="mt-2" />
@@ -76,7 +82,7 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
               <div className="flex items-baseline gap-3">
                 <span className="min-w-0 flex-1 font-medium">{c.label}</span>
                 <span className="shrink-0 tabular-nums text-muted" data-testid={`data-health-count-${c.type}`}>
-                  {c.count > 0 ? `${c.count}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
+                  {c.read === false ? (c.open ? `${c.open}` : "None") : c.count > 0 ? `${c.count}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
                 </span>
               </div>
               {c.hidden > 0 && (
@@ -84,21 +90,7 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
                   {c.count > 0 ? "Also " : ""}{c.hidden} on records your access doesn&rsquo;t open.
                 </p>
               )}
-              {(c.items ?? []).length > 0 && (
-                <details className="mt-1 text-[12px]">
-                  <summary className="cursor-pointer font-medium">{c.count === 1 ? "Show it" : `Show ${c.more > 0 ? `the first ${(c.items ?? []).length}` : `the ${c.count}`}`}</summary>
-                  <ul className="mt-1 space-y-1">
-                    {(c.items ?? []).map((it) => (
-                      <li key={it.id} className="min-w-0">
-                        <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block truncate text-fg hover:underline" title={it.summary}>
-                          {readable(it.summary)}
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                  {c.more > 0 && <p className="mt-1 text-muted">{c.more} more; ask about them in Ask.</p>}
-                </details>
-              )}
+              {(c.read !== false ? (c.items ?? []).length > 0 : (c.open ?? 0) > 0) && <CheckItems check={c} />}
             </li>
           ))}
         </ul>
@@ -109,6 +101,75 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
         </p>
       )}
     </section>
+  );
+}
+
+/** A check's findings: the first read's, then a page at a time while there are more (each page
+ * is the next findings of that check only, as this reader may see them); the check downloads
+ * as a spreadsheet. Nothing is listed twice and a failed page says so and can be retried. */
+type Check = NonNullable<DataHealth["checks"]>[number];
+type Finding = NonNullable<Check["items"]>[number];
+function CheckItems({ check, onRead }: { check: Check; onRead?: (c: Check) => void }) {
+  const [items, setItems] = useState<Finding[]>(check.items ?? []);
+  const [more, setMore] = useState(check.more);
+  const [read, setRead] = useState(check.read !== false);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [assigned, setAssigned] = useState<Record<string, string>>({});
+  // the page's first read counts only; a check's findings are read when it is opened
+  const load = (from: number) => {
+    setBusy(true);
+    setFailed(false);
+    getDataHealthPage(check.type, from).then(
+      (r) => {
+        const c = (r.checks ?? []).find((x) => x.type === check.type);
+        const seen = new Set(from === 0 ? [] : items.map((i) => i.id));
+        const fresh = (c?.items ?? []).filter((i) => !seen.has(i.id));
+        setItems(from === 0 ? fresh : [...items, ...fresh]);
+        setMore(fresh.length === 0 ? 0 : (c?.more ?? 0));
+        if (c) {
+          setRead(true);
+          onRead?.(c);
+        }
+      },
+      () => setFailed(true),
+    ).finally(() => setBusy(false));
+  };
+  const seen = check.read !== false ? check.count : null;
+  return (
+    <details className="mt-1 text-[12px]" onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open && !read && !busy) load(0); }}>
+      <summary className="cursor-pointer font-medium">{!read ? "Show them" : check.count === 1 ? "Show it" : `Show ${more > 0 ? `the first ${items.length}` : `the ${seen ?? items.length}`}`}</summary>
+      {busy && !read && <p className="mt-1 text-muted">Reading</p>}
+      <ul className="mt-1 space-y-1">
+        {items.map((it) => (
+          <li key={it.id} className="flex min-w-0 items-baseline gap-2">
+            <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block min-w-0 flex-1 truncate text-fg hover:underline" title={it.summary}>
+              {readable(it.summary)}
+            </Link>
+            {assigned[it.id] ? (
+              <span className="shrink-0 text-muted" data-testid={`finding-assigned-${it.id}`}>{assigned[it.id]}</span>
+            ) : (
+              <CardActions
+                card={{ id: `dh:${check.type}:${it.id}`, subject: { label: it.summary }, actions: [{ kind: "assign", label: "Assign", outbound: false }] }}
+                onDone={(r) => setAssigned((a) => ({ ...a, [it.id]: r.status === "assigned" ? "Assigned" : "Done" }))}
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+      {more > 0 && (
+        <p className="mt-1 text-muted">
+          <button type="button" className="cursor-pointer font-medium text-fg underline decoration-border-strong underline-offset-2 disabled:cursor-default disabled:opacity-60" disabled={busy} onClick={() => load(items.length)}>
+            {busy ? "Reading" : `Show ${Math.min(50, more)} more`}
+          </button>{" "}
+          · {more} not shown
+        </p>
+      )}
+      {failed && <p role="alert" className="mt-1 text-late">That page couldn&rsquo;t be read. Try again.</p>}
+      <p className="mt-1">
+        <a href={dataHealthExportHref(check.type)} className="text-accent hover:underline" download>Download this check as a spreadsheet</a>
+      </p>
+    </details>
   );
 }
 

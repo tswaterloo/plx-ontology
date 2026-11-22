@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from operating.po_pilot import is_bc_pilot_object
+
 from . import models as m
 from .errors import RecordNotFound
 from .serving import (object_url, plain)
@@ -24,8 +26,14 @@ SUGGEST_WORDS = 4       # the longest trailing phrase looked up
 # person names first, places and people last.
 SUGGEST_TYPE_RANK = {"customer": 0, "supplier": 0, "purchase_order": 1, "sales_order": 1,
                      "item": 2, "manufacturer": 3, "customer_po": 3, "assembly_order": 3,
-                     "lot": 4, "batch": 4, "person": 5, "customer_location": 6}
+                     "lot": 4, "batch": 4, "person": 5, "customer_location": 6,
+                     # a document found by its number (an exact number ranks first before
+                     # these; among equal matches the systems of record's before BC's pilot)
+                     "sales_invoice": 1, "shipment": 1, "receipt": 1, "supplier_invoice": 2,
+                     "packing_slip": 3, "certificate_of_analysis": 3}
 SYSTEM_WORDS = {"portal": "Portal", "bc": "BC", "gen": "Sage"}
+NUMBERED_DOCUMENTS = frozenset({"sales_invoice", "shipment", "receipt", "supplier_invoice",
+                                "packing_slip", "certificate_of_analysis"})
 # A copy of a record to open first: the Portal's own app record, then Business Central.
 OPEN_FIRST = ("portal.app_", "bc.")
 
@@ -173,6 +181,9 @@ def suggestions(rows: Sequence[tuple], limit: int, *,
     for words, oid, kind, name, alias, exact, code, prefix, word, sim in rows:
         match = 0 if exact or code else 1 if prefix else 2 if word else 3
         rank = (match == 3, -words, match, SUGGEST_TYPE_RANK.get(str(kind), 7),
+                # a document's BC copy after the system of record's (parties' copies keep
+                # their order: they are one record, ``OPEN_FIRST``)
+                str(kind) in NUMBERED_DOCUMENTS and is_bc_pilot_object(str(oid)),
                 -float(sim or 0), len(str(name or "")), str(name or ""))
         if oid not in best or rank < best[oid][0]:
             best[oid] = (rank, oid, str(kind or "object"), str(name or oid), alias,

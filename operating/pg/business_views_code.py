@@ -32,7 +32,7 @@ import os
 import threading
 from typing import Any, Iterable, Mapping
 
-MODULES = ("business_views", "business_views_supply", "business_views_access",
+MODULES = ("business_views", "business_views_supply", "business_views_ar", "business_views_access",
            "business_comms", "business_staff")
 ENGINE_ROOTS = ("Reader", "Row", "Cell", "Col", "View", "columns", "build_view",
                 "_resolved_rows", "_ddl", "freightcom")
@@ -54,6 +54,7 @@ EXTERNAL: dict[str, tuple[str, ...]] = {
     "meetings": _COMMS,
     "meeting_transcripts": _COMMS + ("operating.employee_permissions",),
     "sharepoint_files": ("ontology.sender_parties", "ontology.mentions"),
+    "attachments": ("ontology.sender_parties", "ontology.mentions"),
 }
 _MODTEXT: dict[str, str] = {}
 

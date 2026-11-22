@@ -167,7 +167,8 @@ Documented limitations (accepted for now, not yet live-verified):
   every pre-authenticated download through this guard (closed grammar,
   pinned SharePoint download host). Its single larger bound: a file
   attachment GET (``graph.message_attachment``) may return up to
-  ``MAX_ATTACHMENT_RESPONSE_BYTES`` of base64 JSON (a 20 MB file).
+  ``MAX_ATTACHMENT_RESPONSE_BYTES`` of base64 JSON (a 20 MB file), and an attached email's
+  raw message (``graph.message_attachment_raw``, a GET of the document) up to the same bound.
 """
 
 from __future__ import annotations
@@ -269,12 +270,14 @@ MAX_RESPONSE_BYTES = 8_000_000
 # one media type each is requested as: BC's schema document and a Teams meeting
 # transcript's WebVTT text.
 DOCUMENT_ACCEPT: Mapping[str, str] = {"bc.metadata": "application/xml",
-                                      "graph.online_meeting_transcript_content": "text/vtt"}
+                                      "graph.online_meeting_transcript_content": "text/vtt",
+                                      "graph.message_attachment_raw": "message/rfc822"}
 DOCUMENT_OPERATIONS = frozenset(DOCUMENT_ACCEPT)
 # Only a single file-attachment GET may exceed MAX_RESPONSE_BYTES: Graph returns
 # the file as base64 contentBytes inside JSON (20 MB file -> < 28 MB response).
 MAX_ATTACHMENT_RESPONSE_BYTES = 28_000_000
-_LARGE_RESPONSE_OPERATIONS = frozenset({"graph.message_attachment"})
+_LARGE_RESPONSE_OPERATIONS = frozenset({"graph.message_attachment",
+                                        "graph.message_attachment_raw"})
 # Bound of one credential-free pre-authenticated SharePoint download (one original,
 # held in memory once). Delivered use-case originals exceed 25 MB (a 31 MB zip of
 # case mails and PDFs, 02-CASES-AND-ARTIFACTS 1.11); callers pass their own lower cap.

@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Petra tailnet: network namespace tsp (veth, NAT, BBR inside only)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/plx-ops/ts_petra_netns/netns_ensure.sh
+[Install]
+WantedBy=multi-user.target

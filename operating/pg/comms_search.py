@@ -297,9 +297,15 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                "fd.version_handle = b.handle AND fd.object_id = b.object_ids[1] AND "
                f"w.words @@ %(q)s::tsquery AND fd.markings = '[]'{checked} LIMIT 1) IS NOT "
                f"NULL{window}") if view in OWN_TEXT_VIEWS else None
+        # the word index's whole match read once for every view (``wm``): the same chunks
+        # for each, and each view's scan of the index took 0.5 s (a stem query, 3 views)
+        shared = ("FROM ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = "
+                  "fd.field_id JOIN wm ON wm.chunk_id = c.chunk_id JOIN "
+                  f"{biz}.{view} b ON b.handle = fd.version_handle AND b.object_ids[1] = "
+                  f"fd.object_id WHERE fd.markings = '[]'{checked}")
         tiers.append((0, conds + ([after] if dated else []),
                       f"{own_header} IS NULL AND {own_text} IS NOT NULL",
-                      f"SELECT b.handle {text}{window}", [f"{own_header} IS NULL"]))
+                      f"SELECT b.handle {shared}{window}", [f"{own_header} IS NULL"]))
         # the walk's floors: the ``walk``-th newest row of the table itself in the dates
         # (the index on the date column read in order, ``walk`` rows), then (``STAGES``)
         # the ``walk * DEEPER``-th: each stage walks the reader's rows between its floor and
@@ -345,6 +351,9 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                                    when=when, match=mine, keep=keep, kk=kk))
     if not parts:
         return ""
+    if query:   # read only when a view's fallback runs (a materialized CTE is lazy)
+        ctes.insert(0, "wm AS MATERIALIZED (SELECT w.chunk_id FROM ontology.chunk_words w "
+                       "WHERE w.words @@ %(q)s::tsquery)")
     return (("WITH " + ", ".join(ctes) + " " if ctes else "")
             + _quoted(" UNION ALL ".join(parts), views, biz, query=query))
 
@@ -448,8 +457,16 @@ def attachment_blocked_sql() -> str:
     the reader's hidden documents (``plx.reader_hidden``)."""
     # EXISTS, not IN: inside the OR an IN reads all of the exclusion (1.37M rows, 9.6 s
     # for 40 ids on 11-20); EXISTS looks each id up by its index (4 ms)
-    return ("SELECT x FROM unnest(%(ids)s::text[]) x WHERE EXISTS (SELECT 1 FROM "
-            "ontology.people_excluded_objects p WHERE p.object_id = x) OR x IN (SELECT "
+    # the people set's attachments: the owner's alone (``OWNER_KEY`` in the reader's
+    # audience setting, as the guarded views decide it); the company's own-issued documents
+    # are blocked for every reader
+    from operating.pg.access_classes import OWNER_KEY
+    owner = ("(SELECT '" + OWNER_KEY + "' = ANY(ARRAY(SELECT json_array_elements_text("
+             "coalesce(nullif(current_setting('plx.reader_audience', true), ''), '[]')::json))))")
+    return ("SELECT x FROM unnest(%(ids)s::text[]) x WHERE (EXISTS (SELECT 1 FROM "
+            "ontology.people_excluded_objects p WHERE p.object_id = x) AND NOT " + owner + ")"
+            " OR EXISTS (SELECT 1 FROM ontology.own_issued_documents oi WHERE oi.object_id = x)"
+            " OR x IN (SELECT "
             "json_array_elements_text("
             "coalesce(nullif(current_setting('plx.reader_hidden', true), ''), '[]')::json))")
 

@@ -1599,7 +1599,7 @@ def build_api(environ: Mapping[str, str] | None, *, sender: Any = None, retry: A
 
     credential_prefix(env)   # an unknown prefix refuses before anything is read
     return build_graph(env, sender=sender, retry=retry,
-                       credentials=meetings_read_credentials(env))
+                       credentials=meetings_read_credentials(env), capture=True)
 
 
 def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,

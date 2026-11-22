@@ -7,6 +7,7 @@ import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
+import { RecordList } from "@/components/record-list";
 import { suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
@@ -16,11 +17,13 @@ import type { SuggestResponse } from "@/lib/types";
 
 /** Every record ("All", the first tab), then the four kinds people look for and the record types each one holds. */
 const RECORD_KINDS = [
-  { key: "all", label: "All", types: [], hint: "a name or any number: customer, supplier, order, PO, item or batch" },
+  { key: "all", label: "All", types: [], hint: "a name or any number: customer, supplier, order, PO, invoice, shipment, receipt, credit note, lot, item or batch" },
   { key: "customers", label: "Customers", types: ["Customer", "customer", "Chain"], hint: "a customer's name or number" },
   { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number" },
   { key: "suppliers", label: "Suppliers", types: ["Supplier", "Vendor", "supplier"], hint: "a supplier's name or number" },
+  { key: "documents", label: "Documents", types: ["SalesInvoice", "SupplierInvoice", "Shipment", "Receipt", "SalesCreditMemo", "PurchaseInvoice"], hint: "an invoice, shipment, receipt or credit note number" },
   { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot", "Product", "Batch"], hint: "an item number, name or lot" },
+  { key: "production", label: "Production", types: ["Batch"], hint: "a batch code, lot or product", list: "production" },
 ] as const;
 type Kind = (typeof RECORD_KINDS)[number];
 
@@ -141,6 +144,7 @@ function Records() {
             )
           ) : (
             <>
+            {"list" in kind && <div className="mb-6"><RecordList view={kind.list} query="" /></div>}
             {recent.length > 0 && (
               <section aria-labelledby="records-recent" className="mb-6">
                 <h2 id="records-recent" className="text-[13px] font-semibold">

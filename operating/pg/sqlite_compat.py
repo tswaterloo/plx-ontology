@@ -1740,7 +1740,7 @@ class PgCompatConnection:
         reader's key (``full:<exclusion tag>``, ``people_excluded.reader_key``) is held
         with no roster: ``sq_item_gate`` decides its mail, Teams and meetings handles from
         the people exclusion's set while that set is of this very list, else as before."""
-        if len(keys) == 1 and keys[0].startswith("full:"):
+        if len(keys) == 1 and keys[0].startswith(("full:", "owner:")):
             if self.stateless:
                 reader_settings.hold_gate(cur, self._sq_gates, name, keys, ())
                 return True

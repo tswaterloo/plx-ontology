@@ -1,4 +1,6 @@
-"""The excluded people's own data as one precomputed set (business rule 2026-11-17).
+"""The excluded people's own data as one precomputed set (business rule 2026-11-17), the
+owner's alone (Never removed, shown to the owner only:
+``EmployeeEntitlement.owner``, ``access_classes.OWNER_KEY``, :class:`OwnerView`).
 
 A full reader (the owner and the configured full readers, ``EmployeeEntitlement.
 unrestricted``) has no runtime permission check: no audience list, no marking, no per-item
@@ -58,6 +60,7 @@ import datetime as dt
 import json
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -143,6 +146,20 @@ class Excluded:
             if held is None:
                 return None
         return any(n in held for n in names)
+
+
+@dataclass(frozen=True)
+class OwnerView(Excluded):
+    """The set as the owner reads it (The two people's data is
+    the owner's alone, never removed): the same coverage (a version recorded since the set
+    was computed still goes through the gate, fail closed), nothing withheld by it."""
+
+    def withheld(self, names: Iterable[str]) -> frozenset[str] | None:
+        return None if self.covered_ver is None else frozenset()
+
+    def withholds(self, handle: str, container: str | None = None,
+                  held: frozenset[str] | None = None) -> bool | None:
+        return None if self.covered_ver is None else False
 
 
 def withhold_names(handle: str, container: str | None = None) -> tuple[str, ...]:
@@ -286,16 +303,41 @@ def decides(handle: Any) -> bool:
     return (isinstance(handle, str) and handle.partition("://")[0] in COVERED_SCHEMES
             and _DECIDED.match(handle) is not None and _PERSON.match(handle) is None)
 FULL_KEY = "full:"
+# ``Ontology.sq_item_gate`` decides
+# its covered mail, Teams and meetings handles served, the set withholding none of them.
+OWNER_GATE_KEY = "owner:"
 
 
 def reader_key(material: Any) -> str | None:
     """The full reader's item-gate key (``full:<exclusion tag>``) for the gate key
-    material ``("people-excluded", tag)``, else None."""
+    material ``("people-excluded", tag)``, the owner's (``owner:<tag>``) for
+    ``("people-excluded-owner", tag)``, else None."""
     if isinstance(material, tuple) and len(material) == 2 \
-            and material[0] == "people-excluded" and isinstance(material[1], str) \
-            and material[1]:
-        return FULL_KEY + material[1]
+            and material[0] in ("people-excluded", "people-excluded-owner") \
+            and isinstance(material[1], str) and material[1]:
+        return (FULL_KEY if material[0] == "people-excluded" else OWNER_GATE_KEY) \
+            + material[1]
     return None
+
+
+def owner_reader(base: Any, actor: Any) -> bool:
+    """Whether ``actor`` is THE owner under ``base``'s item gate (its ``owner_reader``
+    hook: ``EmployeeEntitlement.owner``), the one reader the set withholds nothing from.
+    No hook, or anything undecidable: False."""
+    hook = getattr(getattr(base, "item_gate", None), "owner_reader", None)
+    if not callable(hook):
+        return False
+    try:
+        return hook(actor) is True
+    except Exception:  # noqa: BLE001 - undecidable: not the owner
+        return False
+
+
+def filter_tag(base: Any, actor: Any) -> str:
+    """The tag ``document_marks``' object filter applies the set by: a full reader's
+    (``full_reader``), "" for the owner (the set withholds nothing from the owner) and for
+    staff (their gates decide)."""
+    return "" if owner_reader(base, actor) else full_reader(base, actor)
 
 
 def full_reader(base: Any, actor: Any) -> str:
@@ -636,11 +678,12 @@ def _mail_reason(mailbox: Any, named: Any, readable: Any, boxes: frozenset,
         return "participant"
     values = json.loads(named) if named is not None else [None] * 5
     sent, to = (values[0], values[1]), tuple(values[2:5])
-    key = (json.dumps(sent, sort_keys=True), json.dumps(to, sort_keys=True))
+    key = (json.dumps(sent, sort_keys=True), json.dumps(to, sort_keys=True), mailbox)
     if key not in memo:
         try:
             memo[key] = participants_withheld(directory, [list(to)], sender=list(sent),
-                                              sender_required=True) is not False
+                                              sender_required=True,
+                                              mailbox=mailbox) is not False
         except Exception:  # noqa: BLE001 - undecidable: withheld
             memo[key] = True
     return "participant" if memo[key] else "-"
@@ -938,6 +981,27 @@ def internal_domains() -> tuple[str, ...]:
     return tuple(sorted(MailScope.builtin().internal_domains))
 
 
+def open_stores(state_dir: Any) -> tuple[dict[str, Any], list[str]]:
+    """The Teams and meetings capture stores open read-only, and the families not covered: a
+    store this user cannot read (a live store's WAL, a missing grant) or that is not a
+    database. Its served versions are then ``uncaptured`` (withheld from everyone but the
+    owner: fail closed), never a crash. A family with no store file is absent, not listed."""
+    from pathlib import Path
+    stores: dict[str, Any] = {}
+    not_covered: list[str] = []
+    for family, sub in (("teams", "teams-capture"), ("meetings", "meetings-capture")):
+        path = Path(state_dir) / sub / "capture.db"
+        if not path.is_file():
+            continue
+        try:
+            stores[family] = _ro(path)
+        except sqlite3.DatabaseError as exc:
+            not_covered.append(family)
+            print(f"people_excluded: {family} capture not read ({type(exc).__name__}): "
+                  "its rows stay withheld", file=sys.stderr)
+    return stores, not_covered
+
+
 class _Inputs:
     """What every decision reads: the list's tag, the guard and people directory over what
     the mail capture recorded, and the Teams and meetings capture stores (read-only)."""
@@ -960,17 +1024,15 @@ class _Inputs:
                 "SELECT mailbox_id, upn, identities FROM mailboxes ORDER BY mailbox_id")]
         finally:
             store.db.close()
+        from integrations.people_exclusion import mail_capture_tenant_withheld
         self.directory = PeopleDirectory(self.guard, boxes, withheld=withheld,
-                                         internal_domains=internal_domains())
+                                         internal_domains=internal_domains(),
+                                         tenant_withheld=mail_capture_tenant_withheld(state_dir))
         if self.directory.unavailable:
             raise RuntimeError("exclusion_undecided")
         if not byte_ordered(conn):
             raise RuntimeError("collation_not_byte_ordered")
-        self.stores: dict[str, Any] = {}
-        for family, sub in (("teams", "teams-capture"), ("meetings", "meetings-capture")):
-            path = Path(state_dir) / sub / "capture.db"
-            if path.is_file():
-                self.stores[family] = _ro(path)
+        self.stores, self.not_covered = open_stores(state_dir)
 
     def close(self) -> None:
         for db in self.stores.values():
@@ -1020,7 +1082,38 @@ def build(conn: Any, state_dir: Any, *,
               if dry_run else _commit_then(conn, write, conn, rows, inputs.tag, top))
     if not dry_run:
         counts = {**counts, "door": _door_follows(conn)}
-    return {**counts, "by_reason": _by_reason(rows)}
+    return {**counts, "by_reason": _by_reason(rows), "stores_not_covered": inputs.not_covered}
+
+
+def flag_comms(conn: Any, among: Sequence[str] | None = None) -> dict[str, int]:
+    """The set's objects flagged ``excluded`` in every communications table (mail, Teams,
+    attachments, meetings, files, transcripts), the moment the set changed. Those tables'
+    flags are otherwise written only when a table is built or refreshed, so a row refreshed
+    before the set grew (11-22: one mail of a partner, refreshed at 13:08, in the set at
+    13:32) stayed unflagged until that table's next refresh; the guarded views withheld it
+    meanwhile only through their stamp check (``business_comms.view_ddl``: a table not of the
+    set's present stamp serves no row of the set to a non-owner), never through the flag the
+    leak scan counts. Flag-on only (a flag that is too much fails closed; a refresh clears
+    it). ``among``: only those objects (an update's grown set). Counts rows flagged by table."""
+    from operating.pg import business_comms as bc
+    from operating.pg import business_views as bv
+    out: dict[str, int] = {}
+    for view in sorted(bc.SPECS):
+        table = f"{bv.SCHEMA}.{view}"
+        if conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0] is None:
+            continue
+        if among is None:
+            hit = f"t.object_ids[1] IN (SELECT p.object_id FROM {TABLE} p)"
+            params: tuple = ()
+        else:
+            hit = "t.object_ids[1] = ANY(%s::text[])"
+            params = (list(among),)
+        with conn.transaction():
+            n = conn.execute(f"UPDATE {table} t SET excluded = true WHERE {hit} AND "
+                             "t.excluded IS NOT TRUE", params).rowcount
+        if n:
+            out[view] = n
+    return out
 
 
 def _door_follows(conn: Any, *, stale_only: bool = False) -> dict[str, Any]:
@@ -1029,6 +1122,8 @@ def _door_follows(conn: Any, *, stale_only: bool = False) -> dict[str, Any]:
     from operating.pg import door
     conn.commit()
     out = door.exclude_everywhere(conn, stale_only=stale_only)
+    conn.commit()
+    out["comms_flagged"] = sum(flag_comms(conn).values())
     conn.commit()
     return out
 
@@ -1133,13 +1228,139 @@ def update(conn: Any, state_dir: Any, *, environ: Mapping[str, str] | None = Non
     if any(not isinstance(v, int) for v in followed.values()):
         # a schema that was behind or failed: decided whole now (refused until then)
         followed = {**followed, **_door_follows(conn, stale_only=True)}
+    conn.commit()
+    followed = {**followed, "comms_flagged": sum(flag_comms(conn, grown).values())}
+    conn.commit()
     return {"covered_ver": top, "versions": len(ordered), "handles": len(handles),
             "objects_added": len(grown), "by_reason": _by_reason(rows), "door": followed}
 
 
+# ``split``: why each message of the set is in it, decided again with the directory every
+# build reads now (counts only, names nobody). Per identity of the message's From/Sender
+# and To/Cc/Bcc: ``partner`` (one the exclusion names), ``undecided`` (a tenant address
+# nothing recorded decides, a malformed one, an id two mailboxes share), ``withheld`` (any
+# other withheld identity: a mailbox the capture withholds); per message ``no_sender``
+# (no identity in From/Sender and no mailbox owner to stand for it) and ``unreadable`` (the
+# capture holds it undecided). A message none of these names leaves the set at the next
+# build (``now_clear``).
+SPLIT_CAUSES = ("partner", "undecided", "withheld", "no_sender", "unreadable")
+
+
+def _split_identity(directory: Any, value: str) -> str | None:
+    from operating.excluded_people import _GUID, EXTERNAL, PERSON
+    from operating.people_graph import UNDECIDED
+    found = directory.object_id(value) if _GUID.match(value) else directory.address(value)
+    state = getattr(found, "state", None)
+    if state in (PERSON, EXTERNAL):
+        return None
+    try:
+        named = directory.guard.decides(value) and directory.guard.is_excluded(value)
+    except Exception:  # noqa: BLE001 - undecidable: not named
+        named = False
+    recorded = getattr(directory, "_tenant_withheld", None) or {}
+    if not named and "@" in value:
+        from integrations.people_exclusion import address_digest
+        named = recorded.get(address_digest(value)) == "excluded"
+    if named:
+        return "partner"
+    return "undecided" if state == UNDECIDED else "withheld"
+
+
+def _split_message(directory: Any, mailbox: Any, named: Any, readable: Any) -> str:
+    from operating.excluded_people import _GUID, strings
+    if not readable:
+        return "unreadable"
+    values = json.loads(named) if named is not None else [None] * 5
+    senders = [v.strip().lower() for v in strings(values[:2]) if v.strip()]
+    ids = [v.strip().lower() for v in strings(values) if v.strip()]
+    ids = [v for v in dict.fromkeys(ids) if _GUID.match(v) or "@" in v]
+    causes: set[str] = set()
+    if not any("@" in v or _GUID.match(v) for v in senders):
+        owner = mailbox.strip().lower() if isinstance(mailbox, str) else ""
+        if _GUID.match(owner) and not senders:   # a sender that is there stays undecided
+            ids.insert(0, owner)
+        else:
+            causes.add("no_sender")
+    for value in ids:
+        cause = _split_identity(directory, value)
+        if cause:
+            causes.add(cause)
+    for cause in SPLIT_CAUSES:   # the first (most decisive) cause names the message
+        if cause in causes:
+            return cause
+    return "now_clear"
+
+
+def _split_chunk(handles: Sequence[str]) -> dict[str, int]:
+    import sqlite3
+    from integrations.capture_mail import undecided_free_sql
+    work = _WORK
+    db = _ro(work["mail_db"])
+    db.row_factory = sqlite3.Row
+    out: dict[str, int] = {}
+    try:
+        free = undecided_free_sql(db, "m")
+        seen = 0
+        for lo in range(0, len(handles), CARRIED_BATCH):
+            batch = list(handles[lo:lo + CARRIED_BATCH])
+            marks = ",".join("?" * len(batch))
+            for _h, mailbox, named, readable in db.execute(_MAIL_SQL.format(
+                    free=free, where=f"m.l1_handle IN ({marks})"), batch):
+                seen += 1
+                cause = _split_message(work["directory"], mailbox, named, readable)
+                out[cause] = out.get(cause, 0) + 1
+        out["not_captured"] = len(handles) - seen
+    finally:
+        db.close()
+    return out
+
+
+def split(conn: Any, state_dir: Any, *, environ: Mapping[str, str] | None = None,
+          workers: int | None = None) -> dict[str, Any]:
+    """Counts only: the set's rows by scheme and reason, and its mail messages by why they
+    are in it now (``SPLIT_CAUSES``, ``now_clear``: in it no longer once rebuilt). Reads
+    the set and the capture stores; writes nothing."""
+    import multiprocessing
+    from integrations.capture_mail import MailCaptureStore
+    from ontology import parent_watch
+    from integrations.people_exclusion import environ_with_exclusion
+    environ = environ_with_exclusion(os.environ if environ is None else environ)
+    inputs = _Inputs(conn, state_dir, environ)
+    inputs.close()
+    by_scheme = [list(r) for r in conn.execute(
+        f"SELECT split_part(l1_handle, '://', 1), reason, count(*) FROM {TABLE} "
+        "GROUP BY 1, 2 ORDER BY 1, 2").fetchall()]
+    messages = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT split_part(l1_handle, '#', 1) FROM {TABLE} "
+        "WHERE l1_handle >= 'graph-mail://' AND l1_handle < 'graph-mail:/0' "
+        "AND l1_handle !~ %s", (PERSON_FORM,)).fetchall()]
+    conn.rollback()
+    store = MailCaptureStore(state_dir, people=inputs.guard)
+    mail_db = str(store.path)
+    store.db.close()
+    workers = max(1, workers or BUILD_WORKERS)
+    step = max(1, len(messages) // (workers * 8) + 1)
+    chunks = [messages[i:i + step] for i in range(0, len(messages), step)]
+    totals: dict[str, int] = {}
+    try:
+        _WORK.update(directory=inputs.directory, mail_db=mail_db)
+        ctx = multiprocessing.get_context("fork")
+        with ctx.Pool(workers, **parent_watch.pool_init()) as pool:
+            for part in pool.imap_unordered(_split_chunk, chunks):
+                for cause, n in part.items():
+                    totals[cause] = totals.get(cause, 0) + n
+    finally:
+        _WORK.clear()
+    return {"rows_by_scheme_reason": by_scheme, "mail_messages": len(messages),
+            "mail_by_cause": dict(sorted(totals.items())),
+            "stores_not_covered": inputs.not_covered,
+            "tenant_withheld_recorded": getattr(inputs.directory, "_tenant_withheld",
+                                                None) is not None}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m operating.pg.people_excluded")
-    parser.add_argument("command", choices=("build", "update", "verify"))
+    parser.add_argument("command", choices=("build", "update", "verify", "split"))
     parser.add_argument("--state-dir", default="/data/plx-state")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true",
@@ -1150,6 +1371,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     with psycopg.connect(config.dsn(), connect_timeout=10) as conn:
         if args.command == "verify":
             print(json.dumps(verify(conn), sort_keys=True))
+            return 0
+        if args.command == "split":
+            try:
+                print(json.dumps(split(conn, args.state_dir, workers=args.workers),
+                                 sort_keys=True))
+            except RuntimeError as exc:
+                print(json.dumps({"refused": str(exc)}))
+                return 1
             return 0
         if not conn.execute(BUILD_LOCK_SQL).fetchone()[0]:
             print(json.dumps({"skipped": "busy"}))

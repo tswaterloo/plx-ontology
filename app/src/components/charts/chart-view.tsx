@@ -7,6 +7,7 @@
 import { useTheme } from "next-themes";
 import { useRef, useState, type ReactNode } from "react";
 import type { Answer } from "@/lib/types";
+import { cn } from "@/lib/cn";
 import {
   INK, MOVE, clip, colour, conversion, extent, full, human, inkOn, ramp, short, ticks, waterfall, type Theme,
   dateLabel, axisLabels,
@@ -116,7 +117,7 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   const at = (v: number) => 8 + ph - pos(v);
   const zero = pos(Math.min(Math.max(0, lo), hi));
   // slanted labels need ~18 px apart along the axis to stay clear of each other
-  const every = Math.max(1, rotate && !compact ? Math.ceil(18 / band) : Math.ceil(n / (horizontal ? 24 : compact ? 6 : 16)));
+  const every = Math.max(1, rotate && !compact ? Math.ceil(18 / band) : (horizontal ? Math.ceil(13 / band) : Math.ceil(n / (compact ? 6 : 16))));
   const rAxis = right.length ? ticks(...extent(right), compact ? 3 : 5) : null;
   const rpos = (v: number) => (rAxis ? ((v - rAxis[0]) / (rAxis[rAxis.length - 1] - rAxis[0] || 1)) * ph : 0);
 
@@ -555,6 +556,7 @@ export function chartNotes(chart: AskChart): string[] {
 
 // a panel of a facet by the currency column (as charts._CURRENCY_COL names it) is in the
 // currency its title codes; any other facet (a site or country code) keeps the chart's own
+const ROW_PX = 20; // a horizontal bar's row, in the drawing's own units
 const CURRENCY_COL = /(^|_)(currency|currency_code|ccy)$/i;
 function panelCurrency(chart: AskChart, title: string) {
   return CURRENCY_COL.test(chart.spec?.facet ?? "") && /^[A-Z]{3}$/.test(title) ? title : chart.currency;
@@ -588,12 +590,26 @@ function Multiples({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onT
     ? panels.flatMap((p) => waterfall(p.series[0]?.values ?? [])).reduce<[number, number]>(
         ([lo, hi], s) => [Math.min(lo, s.from, s.to), Math.max(hi, s.from, s.to)], [0, 0])
     : extent(panels.flatMap((p) => p.series));
+  // panels by currency are never on one axis (400,000 USD would flatten 40,000 CAD); a
+  // horizontal bar chart gives each label a row of its own, so names never overlap
+  const byCurrency = CURRENCY_COL.test(chart.spec?.facet ?? "");
+  const rows = !!chart.spec?.horizontal;
   return (
-    <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+    <div className={cn("grid grid-cols-1 gap-x-6 gap-y-6", !rows && "sm:grid-cols-2")}>
       {panels.map((p) => (
         <div key={p.title}>
           <div className="text-[12px] font-medium">{p.title}</div>
-          <Cartesian chart={chart} labels={p.labels} series={p.series} theme={theme} width={320} height={170} range={range} compact onTip={onTip} />
+          <Cartesian
+            chart={{ ...chart, currency: panelCurrency(chart, p.title) }}
+            labels={p.labels}
+            series={p.series}
+            theme={theme}
+            width={rows ? 560 : 320}
+            height={rows ? Math.max(170, 36 + p.labels.length * ROW_PX) : 170}
+            range={byCurrency ? extent(p.series) : range}
+            compact={!rows}
+            onTip={onTip}
+          />
         </div>
       ))}
     </div>

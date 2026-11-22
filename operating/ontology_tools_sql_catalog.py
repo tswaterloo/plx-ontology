@@ -115,6 +115,20 @@ COMMS_DERIVED_ABOUT = {
             "customers": "text[]: handles of customers rows the message is about (join "
                          "customers ON handle = ANY(customers))",
             "suppliers": "text[]: handles of suppliers rows it is about"}),
+    "teams_message_files": (
+        "the file a Teams message shares, linked to the captured SharePoint file it is (one "
+        "row per message and file; exact address match, no name guessing: a shared file not "
+        "captured has no row). A row shows only when this reader may read the message AND "
+        "the file (files: full readers only). Join teams_messages ON handle = message_handle "
+        "and sharepoint_files ON handle = file_handle; open file_handle with plx.open or "
+        "read it with plx.read_document", {
+            "message_handle": "text: the Teams message's handle (teams_messages.handle)",
+            "file_handle": "text: the file's handle (sharepoint_files.handle)",
+            "file_name": "text: the file's name", "file_path": "text: the file's path",
+            "mime_type": "text: the file's type", "size": "numeric: bytes",
+            "url": "text: the address the message names (the file's SharePoint address)",
+            "via": "text: url_exact (the message's address is the file's) or url_owner_path "
+                   "(the file in that person's OneDrive at that path)"}),
 }
 COMMS_DERIVED = tuple(COMMS_DERIVED_ABOUT)
 GENERIC_TABLES = ("records", "record_links")

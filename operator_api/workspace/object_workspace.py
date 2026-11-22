@@ -808,6 +808,23 @@ class ObjectWorkspace:
                                       decide=self.access.decide)
         return {**found, "hidden": hidden}
 
+    def data_health_counts(self, kinds: Sequence[str]) -> dict[str, Any]:
+        """Every open finding per check (what the reader may see plus what is hidden from
+        them), counted with no per-item decision: the page's first read. The findings
+        themselves are ``data_health_gaps`` (one check at a time, on demand)."""
+        from operating import proactive_engine as pe
+
+        with self._request():
+            base = self._base()
+            grant = getattr(self.access, "grant", None)
+            path = getattr(self.store_status, "store_path", None)
+            if grant is None or path is None:
+                return {**base, "status": "not_configured", "counts": {}}
+            counts = pe.open_counts(pe.inbox_path(path), path, kinds=list(kinds))
+        if counts is None:
+            return {**base, "status": "unavailable", "counts": {}}
+        return {**base, "status": "read", "counts": counts}
+
     def unjudged(self, rule: str, reason: str | None = None, *, offset: int = 0,
                  limit: int = 50) -> dict[str, Any]:
         """The records one check left unjudged that this reader is counted on its briefing
@@ -2840,7 +2857,7 @@ def host_access(runtime: Any, store_path: Any, actor: Actor, *, markings: Iterab
             for marking in held:
                 markings[marking] = markings.get(marking, frozenset()) | principals
             return ReadPolicy(policy.tenant, policy.audiences, markings, policy.units,
-                              unrestricted=policy.unrestricted)
+                              unrestricted=policy.unrestricted, owner=policy.owner)
 
     host = ConsoleHost(runtime, actor, store_path=store_path,
                        mail_capture_dir=mail_capture_dir,

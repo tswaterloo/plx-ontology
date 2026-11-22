@@ -191,9 +191,15 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
     ``timeout_ms``: this list's own statement timeout (the connection's otherwise)."""
     if not vectors:
         return []
+    from operating.pg import chunk_vectors
     from operating.pg import dense as pgd
     dim = column_dim(conn)
     deep = limit * DEEP
+    if chunk_vectors.narrow(conn):
+        # the narrow table: one HNSW per kind partition, walked together (the bit index
+        # and the per-kind partials are search.chunks' own)
+        return _dense_run(conn, scope, vectors, model, limit, dim, deep, False, "vectors",
+                          ef_search, timeout_ms=timeout_ms)
     bq = dim is not None and pgd.bq_enabled()
     shape = _kinds_shape(conn, scope) if pgd.kinds_enabled() else None
     if shape == "exact":
@@ -221,7 +227,21 @@ def _dense_run(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[floa
     from operating.pg import dense as pgd
     from operating.pg.dense import BQ_EF_CAP, bq_candidates, bq_order
     rest: list[str] = []
-    if shape == "exact":
+    if shape == "vectors":
+        # 'narrow' mode (operating.pg.chunk_vectors): the vectors' partitioned HNSW in
+        # distance order, each joined to the chunks holding its text, the reader's
+        # permission predicate on the chunk row (a vector alone names no chunk); the walk
+        # goes on (iterative scan) until ``deep`` visible chunks or max_scan_tuples
+        cand = 0
+        inner = f"""SELECT c.chunk_id, 1 - (v.embedding <=> %(v)s::halfvec) AS s
+                    FROM search.chunk_vectors v
+                    JOIN search.chunks c ON c.kind = v.kind AND c.content_sha = v.content_sha
+                    WHERE v.embed_model = %(model)s AND {PERM} {KINDS}
+                      AND (%(kinds)s::text[] IS NULL OR v.kind = ANY(%(kinds)s::text[]))
+                    ORDER BY v.embedding <=> %(v)s::halfvec
+                    LIMIT %(deep)s"""
+        ef = min(max(int(ef_search), deep, pgd.NARROW_EF_SEARCH), 1000)
+    elif shape == "exact":
         # PLX_SEARCH_KINDS, a narrow reader: the exact nearest of the visible rows ("+ 0"
         # keeps the planner off the HNSW indexes; the audience btree finds the rows).
         cand = 0
@@ -277,7 +297,9 @@ def _dense_run(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[floa
             # release would keep it, so the old value is put back after the list.
             before = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
             conn.execute(f"SET LOCAL statement_timeout = {max(int(timeout_ms), 1)}")
-        conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        # the narrow table's partitions merge their walks, which must come sorted
+        conn.execute("SET LOCAL hnsw.iterative_scan = "
+                     + ("strict_order" if shape == "vectors" else "relaxed_order"))
         conn.execute(f"SET LOCAL hnsw.ef_search = {ef}")
         conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {MAX_SCAN_TUPLES}")
         for vector in vectors:

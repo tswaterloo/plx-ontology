@@ -156,6 +156,17 @@ def load_parties(conn: Any) -> tuple[list[dict], list[str]]:
                 f"SELECT name, email, {website}, handle, {active} FROM biz.{view} p"):
             rows.append({"kind": kind, "name": name, "email": email, "website": site,
                          "handle": handle, "active": bool(ok)})
+    # the addresses party records and BC contacts hold (comm_links.identities) are the party's
+    # too: its domain rule reads them as it reads the party row's own email
+    from operating.pg import comm_links
+    held: dict[str, set] = {}
+    for addr, owners in comm_links.identities(conn).items():
+        for kind, handle, _ in owners:
+            held.setdefault(handle, set()).add(addr)
+    for r in rows:
+        extra = held.get(r["handle"])
+        if extra:
+            r["email"] = " ".join(filter(None, [r["email"], *sorted(extra)]))
     own = [r[0] for r in conn.execute(
         "SELECT DISTINCT split_part(lower(email), '@', 2) FROM biz.staff WHERE email LIKE '%@%'")]
     people = [r[0] for r in conn.execute("SELECT name FROM biz.staff WHERE name IS NOT NULL")]
@@ -294,9 +305,16 @@ def infer(conn: Any, view: str, table: str, where: str = "true", index: PartyInd
     got = domain_hits(conn, index, table, where) if view == "emails" else {}
     by_name, dropped = name_hits(conn, index, view, table, where)
     n_dom = len(got)
+    basis: dict[tuple, tuple] = {}
+    for via, found in (("domain", got), ("name", by_name)):
+        for oid, ps in found.items():
+            for k, h in ps:
+                basis.setdefault((oid, k, h), (via, "medium"))
     for oid, parties_ in by_name.items():
         got.setdefault(oid, set()).update(parties_)
-    return got, {"by_domain": n_dom, "by_name": len(by_name), "union": len(got),
+    from operating.pg import comm_links
+    comm = comm_links.infer(conn, view, table, where, got, basis)
+    return got, {"basis": basis, "comm_links": comm, "by_domain": n_dom, "by_name": len(by_name), "union": len(got),
                  "names_dropped": dropped, "common_names": list(common), "usable_names": len(index.names),
                  "usable_domains": len(index.domains),
                  "ambiguous_domains": index.ambiguous_domains}
@@ -338,6 +356,7 @@ def apply(conn: Any, view: str, table: str, where: str = "true", *, write: bool 
                 "t.object_ids[1] = a.oid AND (" + " OR ".join(
                     gain(c) for c in _TABLES.values()) + ")").rowcount
     stats["rows_updated"] = changed
+    stats.pop("basis", None)   # the derived links' basis goes to ``derive``, never a wide update
     return stats
 
 
@@ -425,6 +444,7 @@ def redo_batched(write: Any, view: str, *, batch: int = 20000, min_free_gb: floa
     with write.transaction():
         _stage_links(write, view)
     got, stats = infer(write, view, t)
+    stats.pop("basis", None)
     write.execute("DROP TABLE IF EXISTS pg_temp.mp_add")
     write.execute("CREATE TEMP TABLE mp_add (oid text PRIMARY KEY, customers text[], "
                   "suppliers text[])")
@@ -489,13 +509,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     import argparse
     import psycopg
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("mode", choices=("measure", "apply", "relink", "relink-dry", "redo"))
+    ap.add_argument("mode", choices=("measure", "apply", "relink", "relink-dry", "redo", "derive"))
     ap.add_argument("--view", choices=("emails", "teams_messages"), required=True)
     ap.add_argument("--dsn", default="dbname=plx")
     ap.add_argument("--where", default="true", help="SQL over the table (default every row)")
     ap.add_argument("--batch", type=int, default=20000, help="rows per transaction (redo)")
     ap.add_argument("--min-free-gb", type=float, default=40.0, help="redo stops below this")
     args = ap.parse_args(argv)
+    if args.mode == "derive":
+        # the derived links into the narrow table only (no update of the message table)
+        from operating.pg import comm_links
+        with psycopg.connect(args.dsn, autocommit=True) as conn:
+            got, stats = infer(conn, args.view, f"biz.{args.view}")
+            n = comm_links.write_links(conn, args.view, stats.pop("basis"))
+            print(json.dumps({"view": args.view, "links_written": n,
+                              "comm_links": stats["comm_links"]}))
+        return 0
     if args.mode in ("relink", "relink-dry", "redo"):
         with psycopg.connect(args.dsn, autocommit=True) as conn:
             w = _Write(conn)

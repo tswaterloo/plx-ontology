@@ -216,6 +216,14 @@ _UNDECIDED_ADDRESSES_DDL = """CREATE TABLE IF NOT EXISTS undecided_addresses (
     address TEXT PRIMARY KEY,
     since TEXT NOT NULL,
     checked_at TEXT NOT NULL)"""
+# The tenant's addresses its last complete listing does not clear as one listed person's
+# (``people_exclusion.tenant_withheld_rows``): one-way digests only, ``kind`` excluded (an
+# excluded person's address) or uncleared (a group's, or one two users share), replaced
+# whole with the tenant listing, its read time meta ``tenant_withheld_at``. Made with the
+# first record.
+_TENANT_WITHHELD_DDL = """CREATE TABLE IF NOT EXISTS tenant_withheld (
+    digest TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('excluded', 'uncleared')))"""
 _PRIORITY_DDL = (
     "CREATE TABLE IF NOT EXISTS priority_folders (mailbox_id TEXT NOT NULL, folder_id TEXT "
     "NOT NULL, oldest TEXT, newest TEXT, PRIMARY KEY (mailbox_id, folder_id))",

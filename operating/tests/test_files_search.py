@@ -42,7 +42,7 @@ def _ddl(scope: str | None = None) -> str:
 class TheRule(unittest.TestCase):
     def test_only_a_search_statement_reads_files(self):
         sql = _ddl()
-        self.assertIn("current_setting('plx.reader_files', true) = 'search'", sql)
+        self.assertIn("current_setting('plx.reader_files', true) IN ('search', 'full')", sql)
         self.assertIn("(t.ai_ok OR (t.ai_ok IS NULL AND t.cells_ok))", sql)
         for held in ("t.unit = ANY(", "t.excluded IS FALSE", "plx.reader_hidden"):
             self.assertIn(held, sql)
@@ -57,12 +57,34 @@ class TheRule(unittest.TestCase):
     def test_the_setting_is_never_one_a_reader_query_carries(self):
         self.assertNotIn(bc.FILES_SETTING, ts.COMMS_SETTINGS)
 
-    def test_no_reader_query_names_the_table(self):
-        self.assertIn("sharepoint_files", bv.VIEWS)
-        self.assertNotIn("sharepoint_files", bv.listed())
-        self.assertNotIn("sharepoint_files", bv.dictionary())
-        self.assertNotIn("sharepoint_files", ts._dictionary())
+    def test_a_full_reader_names_the_table_through_the_door_alone(self):
+        """11-22 (A full reader sees every business record): the table is listed
+        and described, and the door admits it for ``plx.reader_files`` search (every row
+        re-gated afterwards) or full (listed and counted by plx.sql, set only for a full
+        reader); it is still not a generic record table."""
+        self.assertIn("sharepoint_files", bv.listed())
+        self.assertIn("sharepoint_files", bv.dictionary())
         self.assertFalse(bv.VIEWS["sharepoint_files"].covers)
+        ddl = _ddl()
+        self.assertIn(f"current_setting('{bc.FILES_SETTING}', true) IN ('{bc.FILES_SEARCH}', "
+                      f"'{bc.FILES_FULL}')", ddl)
+        # no other value of the setting admits a row
+        self.assertEqual(ddl.count(bc.FILES_SETTING), 1)
+
+    def test_the_word_index_is_scanned_once_for_every_view(self):
+        """11-22: each view's fallback scanned the word index's whole match on its own (0.5 s
+        a scan for a stem query, three views). One materialized match serves them all; a
+        statement without query words has none."""
+        views = ["emails", "teams_messages", "sharepoint_files"]
+        sql = cs.search_sql(views, guarded="g", biz="biz", query=True, party_kind=None,
+                            since=False, until=False, cursor=False)
+        self.assertEqual(sql.count("wm AS MATERIALIZED"), 1)
+        self.assertEqual(sql.count("FROM ontology.chunk_words w WHERE w.words @@"), 1)
+        # each view's fallback joins that one match (the per-row checks keep the index)
+        self.assertGreaterEqual(sql.count("JOIN wm ON wm.chunk_id = c.chunk_id"), len(views))
+        plain = cs.search_sql(views, guarded="g", biz="biz", query=False, party_kind=None,
+                              since=False, until=False, cursor=False)
+        self.assertNotIn("wm", plain.replace("with", ""))
 
     def test_files_are_searched_never_opened_through_the_table(self):
         sql = cs.search_sql(["emails", "sharepoint_files"], guarded="g", biz="biz",

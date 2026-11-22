@@ -107,6 +107,15 @@ THREAD_LINKS = {"Customer": ("Email.sent_by_customer", "Email.mentions_customer"
                              "TeamsChatMessage.mentions_supplier",
                              "TeamsChannelMessage.mentions_supplier")}
 THREAD_PROPS = ("subject", "received_at", "sent_at", "created_at")
+# A meeting with no customer or supplier linked (an internal meeting, a call with a new
+# contact) is prepared from the people invited: their recent mail and Teams and the earlier
+# meetings they were invited to with the reader's access, never a party's records.
+INVITE_LINK = {"CalendarEvent": "CalendarEvent.with_person", "Meeting": "Meeting.with_person"}
+INVITEE_THREAD_LINKS = ("Email.sent_by_person", "Email.addressed_to_person",
+                        "TeamsChatMessage.sent_by_person", "TeamsChannelMessage.sent_by_person")
+MAX_INVITEES = 5          # people invited whose mail and meetings one brief reads
+INVITEE_READS = 40        # newest threads kept per invited person (every record up to MAX_READS is dated first; the time budget bounds the reads)
+EARLIER_MEETINGS = 6      # earlier meetings listed
 PAYMENT_LINKS = {"Customer": "Payment.received_from", "Supplier": "Payment.paid_to"}
 BALANCE_LINKS = {"Customer": ("AgedReceivable.of_customer", "AgedReceivable.customer_record"),
                  "Supplier": ("AgedPayable.of_supplier", "AgedPayable.supplier_record")}
@@ -518,6 +527,52 @@ def _sender(reads: "Reads", oid: str, people: Any, *, name: bool = True
 
 # ------------------------------------------------------------------------- meeting brief
 
+def _invited_people(reads: "Reads", object_id: str, otype: str, people: Any) -> list[str]:
+    """The people invited whom the exclusion clears (one it names or cannot decide is
+    dropped, as a thread's sender is), at most ``MAX_INVITEES``."""
+    out: list[str] = []
+    for person in reads.linked(object_id, INVITE_LINK[otype], "forward")[:MAX_INVITEES * 3]:
+        record = reads.read(person, ("object_id", "upn"))
+        ident, _ = reads.cell(record, "object_id", "upn")
+        try:
+            if ident is None or people.is_excluded(str(text_of(ident) or "")):
+                continue
+        except Exception:  # noqa: BLE001 - undecidable: never shown
+            continue
+        out.append(person)
+        if len(out) >= MAX_INVITEES:
+            break
+    return out
+
+
+def _earlier_meetings(reads: "Reads", invited: list[str], names: Mapping[str, str],
+                      exclude: set[str], now: datetime
+                      ) -> tuple[list[dict[str, Any]], bool]:
+    """The meetings before ``now`` those invited were invited to, newest first, each said
+    with the invited person it is shared with (the reader reads each as their access allows)."""
+    seen: dict[str, dict[str, Any]] = {}
+    partial = False
+    for person in invited:
+        ids = [i for i in reads.linked(person, "CalendarEvent.with_person")
+               if i not in exclude and i not in seen]
+        partial = partial or len(ids) > MAX_READS
+        for oid in ids[:MAX_READS]:
+            record = reads.read(oid, ("subject", "start"))
+            if record is None:
+                partial = partial or reads.cited.over() is not None
+                continue
+            start, s_handle = reads.cell(record, "start")
+            day = _day(start)
+            if day is None or day >= now.date():
+                continue
+            subject, h_handle = reads.cell(record, "subject")
+            seen[oid] = _row(f"Meeting: {_clip(subject) or '(no subject)'}", day=day,
+                             detail=f"With {names.get(person, 'an invited person')}",
+                             object_id=oid, sources=[h_handle, s_handle])
+    rows = sorted(seen.values(), key=lambda r: r["date"] or "", reverse=True)
+    return rows[:EARLIER_MEETINGS * 3], partial or len(rows) > EARLIER_MEETINGS * 3
+
+
 def _open(reads: Reads, record: Any) -> bool | None:
     """True open, False closed by its own cited status or a done flag; None unknown."""
     for flag in DONE_FLAGS:
@@ -578,14 +633,16 @@ def _order_rows(reads: Reads, party: str, ptype: str, ids: list[str]
     return rows, partial
 
 
-def _thread_rows(reads: Reads, ptype: str, party: str, today: date, people: Any = None
+def _thread_rows(reads: Reads, ptype: str, party: str, today: date, people: Any = None,
+                 *, cap: int = MAX_READS, keep: int | None = None,
+                 links: Sequence[str] | None = None
                  ) -> tuple[list[dict[str, Any]], bool]:
     ids: list[str] = []
-    for link in THREAD_LINKS[ptype]:
+    for link in links or THREAD_LINKS[ptype]:
         ids.extend(i for i in reads.linked(party, link) if i not in ids)
     rows, since = [], today - timedelta(days=THREAD_DAYS)
-    partial = len(ids) > MAX_READS
-    for oid in ids[:MAX_READS]:
+    partial = len(ids) > cap
+    for oid in ids[:cap]:
         record = reads.read(oid, THREAD_PROPS)
         if record is None:
             partial = partial or reads.cited.over() is not None
@@ -599,6 +656,9 @@ def _thread_rows(reads: Reads, ptype: str, party: str, today: date, people: Any 
         rows.append(_row(f"{channel}: {_clip(subject) or '(no subject)'}", day=day,
                          object_id=oid, sources=[s_handle, w_handle]))
     rows.sort(key=lambda r: r["date"] or "", reverse=True)
+    if keep is not None:   # the newest ``keep``, chosen by date before any sender is checked
+        partial = partial or len(rows) > keep
+        rows = rows[:keep]
     named: list[dict[str, Any]] = []
     for row in rows:
         # every row's sender is decided by the exclusion before it is shown or counted;
@@ -806,6 +866,29 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
             partial["money"] |= cut
         if not blocked:
             notes += tagged(_last_notes(reads, ptype, party, now, exclude, last), party)
+    # no customer or supplier is linked: prepared from the people invited (their recent mail
+    # and Teams, the meetings they shared earlier), each line the reader's own to read
+    invited_note = None
+    earlier: list[dict[str, Any]] = []
+    earlier_cut = False
+    if not parties and otype in MEETING_TYPES and not blocked:
+        invited = _invited_people(reads, object_id, otype, people)
+        inames = {p: reads.label(p)[0] for p in invited}
+        seen_threads: set[str] = set()
+        for person in invited:
+            rows, cut = _thread_rows(reads, "Person", person, today, people,
+                                     keep=INVITEE_READS, links=INVITEE_THREAD_LINKS)
+            for row in rows:
+                if row["object_id"] in seen_threads:
+                    continue
+                seen_threads.add(row["object_id"])
+                row["detail"] = f"With {inames[person]}" + (f": {row['detail']}" if row["detail"] else "")
+                threads.append(row)
+            partial["threads"] |= cut
+        threads.sort(key=lambda r: r["date"] or "", reverse=True)
+        earlier, earlier_cut = _earlier_meetings(reads, invited, inames, exclude, now)
+        invited_note = ("From the people invited: " + ", ".join(inames[p] for p in invited[:MAX_INVITEES])
+                        if invited else "No one invited could be read for you.")
     inbox = alerts_read(alerts, reads)
     gated = gate_alerts(visible_alerts(alerts), decide)
     if gated is None:
@@ -831,7 +914,12 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
         (_withheld("threads", "Recent mail and Teams threads") if blocked else
          _section("threads", "Recent mail and Teams threads", threads,
                   partial=partial["threads"] or over,
-                  note=f"Subjects, who and when only, the last {THREAD_DAYS} days.")),
+                  note=f"Subjects, who and when only, the last {THREAD_DAYS} days."
+                       + (f" {invited_note}." if invited_note else ""))),
+        *([_section("earlier", "Earlier meetings with the people invited", earlier,
+                    partial=earlier_cut or over,
+                    note="Meetings before this one that they were invited to, as your access shows them.")]
+          if invited_note is not None else []),
         (_section("money", "Payments and balance", money, partial=partial["money"] or over)
          if reads.finance() else _finance_marked("money", "Payments and balance")),
         (_withheld("promises", "Open promises") if blocked else

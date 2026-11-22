@@ -13,7 +13,7 @@ import { TodoCard, TodoSteps } from "@/components/autopilot/todo";
 import { AlertCard } from "@/components/autopilot/alert";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { formatDateTime } from "@/lib/format";
+import { countedWords, formatDateTime } from "@/lib/format";
 import { personName, workflowLabel } from "@/lib/autopilot";
 import type { AutopilotArea as Area } from "@/lib/types";
 
@@ -94,14 +94,14 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
         {item.subject && <span className="text-[12px] text-muted">{item.subject}</span>}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
-      {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[13px] text-muted">{item.message}</p>}
+      {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[13px] text-muted">{countedWords(item.message)}</p>}
       {!haveReply && (
         <div className="max-w-[46rem] space-y-2 border-l-2 border-border pl-3">
-          <p className="text-[13px]">{item.ask}</p>
+          <p className="text-[13px]">{countedWords(item.ask)}</p>
           {item.facts.length > 0 && (
             <ul className="list-disc pl-4 text-[12px] text-muted">
               {item.facts.map((f) => (
-                <li key={f}>{f}</li>
+                <li key={f}>{countedWords(f)}</li>
               ))}
             </ul>
           )}

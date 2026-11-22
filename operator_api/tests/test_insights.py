@@ -450,6 +450,12 @@ class Backend(ins.InsightsMixin):
         self.reads = FakeWorker(out)
         self.scope = (everyone, me, lambda p: p == HIDDEN, True)
         self.memory = memory
+        self.access = ("policy-1", False, "excl-1", "marks-1")   # the reader's access state
+
+    def _access_now(self, reader, screen=None):
+        if isinstance(self.access, Exception):
+            raise self.access
+        return self.access
 
     def _team_scope(self, reader):
         return self.scope
@@ -836,6 +842,65 @@ class KeptAnswers(unittest.TestCase):
         other = person("employee:other")
         b.insight_result(other, "team_output")
         self.assertEqual(len(b.reads.sql), n + 1)                   # never the owner's
+
+    def test_a_tile_whose_fresh_read_cannot_finish_serves_its_last_good_answer(self):
+        """11-21 live: six tiles 504 together after 30 s while the business tables were being
+        refreshed (the door stamp moved, so nothing kept was current). The reader's own last
+        good answer is served with the time it was read; another reader, a refusal about
+        access, and an answer older than ``LAST_GOOD_SECONDS`` still get the error."""
+        b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
+        b._insight_keep = self.ic.Keeper(self.kept(), lambda r, sql: ins.read_now(b, r, sql))
+        owner, other = person("employee:owner"), person("employee:other")
+        first = b.insight_result(owner, "team_output")
+        self.assertEqual([r[0] for r in first.rows], ["Me", "Other"])
+        self.stamp[0] = 8                       # the views refresh moved every reader's stamp
+
+        def refuse(code):
+            def run(reader, job, timeout=0, priority=0, long=False):
+                if code == "timeout":
+                    raise TimeoutError("30 s")
+                view = type("V", (), {})()
+                view._call = lambda tool, args: {"error": {"code": code, "message": "m"}}
+                return job(view)
+            return run
+        real = b.reads.run
+        b.reads.run = refuse("timeout")
+        got = b.insight_result(owner, "team_output")
+        self.assertEqual(got.rows, first.rows)
+        self.assertEqual(got.read_at, first.read_at)           # says when it was read
+        for again in (False, True):                             # a person's Refresh too
+            self.assertEqual(b.insight_result(owner, "team_output", again=again).rows,
+                             first.rows)
+        b.reads.run = refuse("not_ready")
+        self.assertEqual(b.insight_result(owner, "team_output").rows, first.rows)
+        with self.assertRaises(UserFacing) as e:                # never another reader's
+            b.insight_result(other, "team_output")
+        self.assertEqual(e.exception.code, "insight_not_ready")
+        # a grant revoked, a source re-marked or an exclusion added since the read (the
+        # access state moved), or a state that cannot be read now: the error stands
+        for moved in (("policy-2", False, "excl-1", "marks-1"),       # a grant revoked
+                      ("policy-1", False, "excl-1", "marks-2"),       # a source re-marked
+                      ("policy-1", False, "excl-2", "marks-1"),       # an exclusion added
+                      None, RuntimeError("undecided")):
+            with self.subTest(access=moved):
+                b.access = moved
+                b.reads.run = refuse("timeout")
+                with self.assertRaises(UserFacing) as e:
+                    b.insight_result(owner, "team_output")
+                self.assertEqual(e.exception.code, "insight_too_slow")
+        b.access = ("policy-1", False, "excl-1", "marks-1")
+        b.reads.run = refuse("timeout")
+        self.assertEqual(b.insight_result(owner, "team_output").rows, first.rows)   # same again
+        b.reads.run = refuse("not_readable")                    # access refused: no old tile
+        with self.assertRaises(UserFacing) as e:
+            b.insight_result(owner, "team_output")
+        self.assertEqual(e.exception.code, "insight_withheld")
+        b.reads.run = refuse("timeout")
+        self.now[0] += self.ic.LAST_GOOD_SECONDS + 1            # too old to stand for a read
+        with self.assertRaises(UserFacing) as e:
+            b.insight_result(owner, "team_output")
+        self.assertEqual(e.exception.code, "insight_too_slow")
+        b.reads.run = real
 
     def test_the_warm_ups_read_ahead_is_kept_where_the_tile_asks_for_it(self):
         # the warm-up keeps each tile under its ref (a built-in by its id), the key the
@@ -1520,6 +1585,87 @@ class WatchTool(unittest.TestCase):
         with psycopg.connect(self.dsn) as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM insights.run").fetchone()[0], 0)
         self.assertEqual(self.b.insight_store().list(ben.key), [])
+
+    MONTHS = [["2026-09", "USD", "350992.64"], ["2026-10", "USD", "688513.34"],
+              ["2026-11", "USD", "164001.36"], ["2026-09", "CAD", "472011.04"],
+              ["2026-10", "CAD", "637051.47"], ["2026-11", "CAD", "428191.22"]]
+
+    def pinned(self, who, rows=None):
+        self.b.reads = FakeWorker(sql_out(rows or self.MONTHS,
+                                          ("month", "revenue_currency", "revenue")))
+        return self.b.insight_store().save(who, ins.Spec(
+            id="", title="Revenue by month", about="", question="Why did revenue move?",
+            sql="SELECT month, revenue_currency, revenue FROM sales_invoice_lines",
+            chart={"kind": "line", "x": "month", "y": ["revenue"],
+                   "facet": "revenue_currency"})).id
+
+    def test_a_pinned_chart_is_watched_from_words_read_back_first_and_kept_only_on_yes(self):
+        ana = reader("ana")
+        sid = self.pinned(ana)
+        tool = self.tools(ana)["plx.watch_measure"]
+        shape = tool.call({"insight": sid})
+        self.assertEqual((shape["axis"], shape["columns"], shape["currency_columns"]),
+                         ("month", ["month", "revenue_currency", "revenue"],
+                          ["revenue_currency"]))
+        line = {"insight": sid, "column": "revenue", "op": "below", "value": 400000}
+        # per currency: a line in one currency is never set against the other
+        self.assertIn("more than one currency", tool.call(line)["not_kept"])
+        # a chart along time is never watched on any row: earlier months would fire
+        self.assertIn("along time", tool.call({**line, "row": "any", "where": {
+            "column": "revenue_currency", "value": "USD"}})["not_kept"])
+        usd = {**line, "where": {"column": "revenue_currency", "value": "USD"}}
+        back = tool.call(usd)
+        self.assertFalse(back["kept"])
+        self.assertEqual(back["read_back"], 'On "Revenue by month", tell you on Home when the '
+                         'latest revenue in USD (along month) goes below 400,000; checked '
+                         'every morning.')
+        self.assertEqual(back["now"], [{"at": "2026-11", "currency": "USD", "value": "164001.36",
+                                        "past_the_line_now": True}])
+        self.assertEqual([r[4:6] for r in self.saved()], [("", "never")])   # nothing set yet
+        # the save is the server's: confirmed alone, another line's, another person's, another
+        # chart's or a stale token keeps nothing
+        token = back["token"]
+        other = self.pinned(ana)
+        stale = self.b._watch_token(ana.key, sid, "daily", ins.watch_of(
+            {"column": "revenue", "op": "below", "value": 400000, "row": "latest",
+             "where": usd["where"], "order": "month"}), now=0)
+        for bad in ({**usd, "confirmed": True}, {**usd, "confirmed": True, "token": "x"},
+                    {**usd, "value": 1, "confirmed": True, "token": token},
+                    {**usd, "schedule": "hourly", "confirmed": True, "token": token},
+                    {**usd, "insight": other, "confirmed": True, "token": token},
+                    {**usd, "confirmed": True, "token": stale}):
+            self.assertIn("Nothing was set", tool.call(bad)["not_kept"], bad)
+        self.assertIn("not_kept", self.tools(reader("ben"))["plx.watch_measure"].call(
+            {**usd, "confirmed": True, "token": token}))
+        self.assertEqual([r[4:6] for r in self.saved()], [("", "never")] * 2)
+        kept = tool.call({**usd, "confirmed": True, "token": token})
+        self.assertEqual(kept["watching"], back["read_back"])
+        (_o, _t, _q, _s, schedule, notify, watch), _other = self.saved()
+        self.assertEqual((schedule, notify, watch), ("daily", "crosses", {
+            "column": "revenue", "op": "below", "value": 400000.0, "row": "latest",
+            "where": {"column": "revenue_currency", "value": "USD"}, "order": "month"}))
+
+    def test_a_chart_watch_refuses_what_it_cannot_read_and_keeps_nothing(self):
+        ana, ben = reader("ana"), reader("ben")
+        sid = self.pinned(ana)
+        tool = self.tools(ben)["plx.watch_measure"]
+        self.assertIn("not one of their pinned charts", tool.call({"insight": sid})["not_kept"])
+        mine = self.tools(ana)["plx.watch_measure"]
+        usd = {"column": "revenue_currency", "value": "USD"}
+        for args in ({"insight": sid, "measure": "revenue"},
+                     {"insight": sid, "column": "revenue", "op": "near", "value": 1},
+                     {"insight": sid, "column": "margin", "op": "above", "value": 1,
+                      "where": usd},
+                     {"insight": sid, "column": "revenue", "op": "above", "value": 1,
+                      "row": "total"},
+                     {"insight": sid, "column": "revenue", "op": "above", "value": 1,
+                      "where": {"column": "region", "value": "USD"}, "confirmed": True}):
+            self.assertIn("not_kept", mine.call(args), args)
+        self.assertEqual([r[4:6] for r in self.saved()], [("", "never")])
+        # a total of one currency is a number to watch
+        total = mine.call({"insight": sid, "column": "revenue", "op": "above", "value": 1e6,
+                           "row": "total", "where": usd})
+        self.assertEqual(total["now"][0]["value"], "1203507.34")
 
     def test_a_refusal_says_why_and_keeps_nothing(self):
         tool = self.tools(reader("ana"))["plx.watch_measure"]

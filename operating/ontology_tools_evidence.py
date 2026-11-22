@@ -694,6 +694,16 @@ class RuntimeCitations(CitationReader):
         return not self.runtime._employee_acl_denial(
             gated, "graph-mail", {"source_acl": json.loads(row["source_acl"])})
 
+    def _owner(self, gated: Any) -> bool:
+        """Whether ``gated`` is THE owner (``EmployeeEntitlement.owner``): the one reader the
+        people exclusion withholds nothing from (The two people's
+        data is the owner's alone). Anything undecidable, and a guard that cannot decide at
+        all (``_exclusion_refusal``): not the owner, so the record stays withheld."""
+        from .employee_permissions import reader_owner
+        if self._exclusion_refusal():
+            return False
+        return reader_owner(getattr(self.runtime, "employee_gate", None), gated)
+
     def _visible_mailbox(self, store: Any, mailbox: str, gated: Actor, audience: Any
                          ) -> dict[str, Any] | None:
         """The captured row of ``mailbox`` when the capture serves it to this reader (the
@@ -701,8 +711,9 @@ class RuntimeCitations(CitationReader):
         exclusion over the owner's identities, then ``_mailbox_admits``), else None: one
         it does not hold reads the same."""
         row = store._visible(gated, audience).get(mailbox)
-        if row is None or people_excluded(self._people(), [
-                mailbox, row["upn"], *json.loads(row["identities"])]):
+        if row is None or (people_excluded(self._people(), [
+                mailbox, row["upn"], *json.loads(row["identities"])])
+                and not self._owner(gated)):
             return None
         return row if self._mailbox_admits(gated, mailbox, row) else None
 
@@ -714,10 +725,11 @@ class RuntimeCitations(CitationReader):
         if self._exclusion_refusal():
             return frozenset()
         guard = self._people()
+        owner = self._owner(gated)
         return frozenset(
             mailbox for mailbox, row in store._visible(gated, audience).items()
-            if not people_excluded(guard, [mailbox, row["upn"],
-                                           *json.loads(row["identities"])])
+            if (owner or not people_excluded(guard, [mailbox, row["upn"],
+                                                     *json.loads(row["identities"])]))
             and self._mailbox_admits(gated, mailbox, row))
 
     def _exclusion_refusal(self) -> str | None:
@@ -752,7 +764,8 @@ class RuntimeCitations(CitationReader):
         return directory
 
     def participants_withheld(self, store: Any, senders: Sequence[Any],
-                              recipients: Sequence[Any], memo: dict | None = None) -> bool:
+                              recipients: Sequence[Any], memo: dict | None = None,
+                              mailbox: Any = None, gated: Any = None) -> bool:
         """Whether a captured message is withheld from every reader now by the people
         exclusion: unless its sender and every To/Cc/Bcc recipient is cleared
         (``operating.excluded_people.participants_withheld``: the rule of the people graph
@@ -768,14 +781,16 @@ class RuntimeCitations(CitationReader):
             memo = call_memo()
         if self._exclusion_refusal():
             return True
+        if gated is not None and self._owner(gated):
+            return False   # the owner reads what the set holds for no one else
         sent = tuple(strings(list(senders)))
         named = tuple(strings(list(recipients)))
         decided = ("participants_withheld", str(getattr(store, "path", id(store))),
-                   frozenset(sent), frozenset(named))
+                   frozenset(sent), frozenset(named), mailbox)
         if memo is not None and decided in memo:
             return memo[decided]
         result = participants_withheld(self.people_directory(store, memo), named,
-                                       sender=sent, sender_required=True)
+                                       sender=sent, sender_required=True, mailbox=mailbox)
         if memo is not None:
             memo[decided] = result
         return result
@@ -900,7 +915,8 @@ class RuntimeCitations(CitationReader):
             if self._visible_mailbox(store, mailbox, gated, audience) is None:
                 return None
             if self.participants_withheld(store, [record.get("from"), record.get("sender")],
-                                          [record.get(k) for k in MAIL_RECIPIENT_FIELDS]):
+                                          [record.get(k) for k in MAIL_RECIPIENT_FIELDS],
+                                          mailbox=mailbox, gated=gated):
                 # held, and withheld: never None, which would send the read live
                 raise MailWithheld("participants_not_cleared")
             current = None

@@ -108,14 +108,18 @@ def listing(full: bool = False) -> dict[str, Any]:
 
 
 def lines(full: bool = False) -> list[str]:
-    """One line per entry, for a prompt: id (owner): name; dimensions. The reports for
-    full readers only when ``full`` (as ``listing``): a prompt every reader is given
-    names only what every reader may run."""
+    """One line per entry, for a prompt: id (owner): name; dimensions; then its agreed
+    definition (what the figure means: the semantics an answer must follow even when it
+    writes its own SQL instead of running the measure; x10 11-21 led with gross invoices
+    because only the name was in the prompt). The reports for full readers only when
+    ``full`` (as ``listing``): a prompt every reader is given names only what every
+    reader may run."""
     out = []
     for m in measures().values():
         dims = ", ".join(m["dimensions"]) + (", week, month" if m["date"] else "")
         when = f"by {m['date']}" if m["date"] else "now"
-        out.append(f"- {m['id']} ({m['owner']}, {m['view']}, {when}): {m['name']}; by {dims}")
+        out.append(f"- {m['id']} ({m['owner']}, {m['view']}, {when}): {m['name']}; by {dims}. "
+                   f"Means: {m['definition']}")
     for r in reports().values():
         if not full and r.get("scope") != "everyone":
             continue
@@ -142,8 +146,21 @@ _MONTH = re.compile(r"^(\d{4})-(\d{2})$")
 _QUARTER = re.compile(r"^(\d{4})-Q([1-4])$")
 _YEAR = re.compile(r"^(\d{4})$")
 _RANGE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\.\.(\d{4}-\d{2}-\d{2}))?$")
-PERIOD_FORMS = ('"2026-09" (a month), "2026-Q3" (a quarter), "2026" (a year) or '
-                '"2026-08-04..2026-08-17" (days, both ends included)')
+PERIOD_FORMS = ('"2026-09" (a month), "2026-Q3" (a quarter), "2026" (a year), '
+                '"2026-08-04..2026-08-17" (days, both ends included), or one that moves with '
+                'the date (a pinned chart of it stays current): "this_month", "last_month", '
+                '"this_week", "last_week", "this_quarter", "last_quarter", "this_year", '
+                '"last_year", "year_to_date", "last_12_months" (the 12 full months before '
+                'this one)')
+# A period that moves with the date: (calendar unit, periods back from the current one).
+# Its edges are statements on now() in the company's time zone, never the dates of the day
+# it was asked, so a pinned chart of "this month" reads this month whenever it is opened.
+RELATIVE = {"this_week": ("week", 0), "last_week": ("week", -1),
+            "this_month": ("month", 0), "last_month": ("month", -1),
+            "this_quarter": ("quarter", 0), "last_quarter": ("quarter", -1),
+            "this_year": ("year", 0), "last_year": ("year", -1),
+            "year_to_date": ("ytd", 0), "last_12_months": ("month12", -1)}
+_UNIT_MONTHS = {"month": 1, "quarter": 3, "year": 12, "month12": 12}
 
 
 def _months_on(day: dt.date, months: int) -> dt.date:
@@ -151,40 +168,104 @@ def _months_on(day: dt.date, months: int) -> dt.date:
     return dt.date(n // 12, n % 12 + 1, 1)
 
 
-def _period(text: Any, field: str) -> tuple[dt.date, dt.date, str, int]:
-    """(first day, the day after the last, kind, length in months or days) of a named
-    calendar period; anything else is refused, never guessed."""
+def business_today() -> dt.date:
+    """Today in the company's time zone (what a moving period is read from here; the
+    statement reads it again from now() whenever it runs)."""
+    from zoneinfo import ZoneInfo
+    return dt.datetime.now(ZoneInfo(ZONE)).date()
+
+
+def _shift_year(day: dt.date, years: int) -> dt.date:
+    """``day`` ``years`` earlier or later; 29 February on a year without one is the 28th
+    (as Postgres's ``- interval '12 months'``)."""
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:
+        return day.replace(year=day.year + years, day=28)
+
+
+# (first day, the day after the last, kind, length in months or days, moving edges):
+# moving edges are None for a fixed period, else (first, after-last) as statements of the
+# company's wall-clock time (``_LOCAL_NOW``), read again whenever the statement runs
+Period = tuple
+_LOCAL_NOW = "(now() AT TIME ZONE 'America/New_York')"
+
+
+def _relative(t: str) -> Optional[Period]:
+    """A period that moves with the date (``RELATIVE``), its edges as of today and as
+    statements on now(); None for any other text."""
+    key = re.sub(r"[\s-]+", "_", t.strip().lower())
+    if key not in RELATIVE:
+        return None
+    unit, back = RELATIVE[key]
+    today, now = business_today(), _LOCAL_NOW
+    if unit == "ytd":
+        start = dt.date(today.year, 1, 1)
+        return (start, today + dt.timedelta(days=1), "ytd", 0,
+                (f"date_trunc('year', {now})", f"date_trunc('day', {now}) + interval '1 day'"))
+    if unit == "week":
+        start = today - dt.timedelta(days=today.weekday()) + dt.timedelta(days=7 * back)
+        first = f"date_trunc('week', {now}) + interval '{7 * back} days'"
+        return (start, start + dt.timedelta(days=7), "day", 7,
+                (first, f"{first} + interval '7 days'"))
+    months = _UNIT_MONTHS[unit]
+    trunc = "month" if unit == "month12" else unit
+    here = dt.date(today.year, today.month, 1)
+    here = _months_on(here, -((here.month - 1) % months)) if trunc != "month" else here
+    start = _months_on(here, back * months)
+    first = f"date_trunc('{trunc}', {now}) + interval '{back * months} months'"
+    return (start, _months_on(start, months), "month", months,
+            (first, f"{first} + interval '{months} months'"))
+
+
+def _period(text: Any, field: str) -> Period:
+    """(first day, the day after the last, kind, length in months or days, moving edges)
+    of a named calendar period or one that moves with the date (``RELATIVE``); anything
+    else is refused, never guessed."""
     if not isinstance(text, str) or len(text) > 32:
         raise _bad(f"{field} is {PERIOD_FORMS}")
     t = text.strip()
+    moving = _relative(t)
+    if moving is not None:
+        return moving
     try:
         if m := _MONTH.match(t):
             start = dt.date(int(m.group(1)), int(m.group(2)), 1)
-            return start, _months_on(start, 1), "month", 1
+            return start, _months_on(start, 1), "month", 1, None
         if m := _QUARTER.match(t):
             start = dt.date(int(m.group(1)), 3 * int(m.group(2)) - 2, 1)
-            return start, _months_on(start, 3), "month", 3
+            return start, _months_on(start, 3), "month", 3, None
         if m := _YEAR.match(t):
             start = dt.date(int(m.group(1)), 1, 1)
-            return start, _months_on(start, 12), "month", 12
+            return start, _months_on(start, 12), "month", 12, None
         if m := _RANGE.match(t):
             start = dt.date.fromisoformat(m.group(1))
             last = dt.date.fromisoformat(m.group(2) or m.group(1))
             if last < start:
                 raise _bad(f"{field} ends before it starts")
-            return start, last + dt.timedelta(days=1), "day", (last - start).days + 1
+            return start, last + dt.timedelta(days=1), "day", (last - start).days + 1, None
     except ValueError:
         raise _bad(f"{field} {t!r} is not a calendar date") from None
     raise _bad(f"{field} is {PERIOD_FORMS}")
 
 
-def _before(period: tuple[dt.date, dt.date, str, int]) -> tuple[dt.date, dt.date, str, int]:
+def _before(period: Period) -> Period:
     """The same kind and length of period just before (September -> August, Q3 -> Q2, a
-    run of 14 days -> the 14 days before it)."""
-    start, _end, kind, n = period
+    run of 14 days -> the 14 days before it, this month -> last month, the year to date ->
+    the same days of last year); a moving period's is moving too."""
+    start, end, kind, n, moving = period
+    if kind == "ytd":
+        return (_shift_year(start, -1), _shift_year(end, -1), kind, n,
+                None if moving is None else tuple(f"({e}) - interval '12 months'"
+                                                  for e in moving))
     if kind == "month":
-        return _months_on(start, -n), start, kind, n
-    return start - dt.timedelta(days=n), start, kind, n
+        back = (_months_on(start, -n), start)
+        step = f"interval '{n} months'"
+    else:
+        back = (start - dt.timedelta(days=n), start)
+        step = f"interval '{n} days'"
+    return (*back, kind, n,
+            None if moving is None else (f"({moving[0]}) - {step}", moving[0]))
 
 
 ZONE = "America/New_York"
@@ -197,9 +278,36 @@ def _edge(day: dt.date) -> str:
     return f"'{day.isoformat()} 00:00 {ZONE}'"
 
 
-def _said(p: tuple[dt.date, dt.date, str, int]) -> str:
+@lru_cache(maxsize=64)
+def _is_day_column(view: str, column: str) -> bool:
+    """Whether ``view.column`` holds dates (True) or timestamps (False), from plx.sql's
+    data dictionary; a column it does not type is refused: a moving edge compared with the
+    wrong type would shift the period by the time zone's hours."""
+    from operating.ontology_tools_sql import _dictionary
+    kind = str((_dictionary().get(view) or {}).get("columns", {}).get(column) or "")
+    kind = kind.split(":", 1)[0].strip().lower()
+    if kind == "date":
+        return True
+    if kind.startswith("timestamp"):
+        return False
+    raise _bad(f"{view}.{column} has no date type known here: name a fixed period instead")
+
+
+def _edges(p: Period, view: str, column: str) -> tuple[str, str]:
+    """(first edge, after-last edge) of ``p`` for ``view.column``: literals of a fixed
+    period's days, or a moving period's statements on now() (a date column compares with
+    the company's calendar day, a timestamp column with that day's midnight in Toronto)."""
+    if p[4] is None:
+        return _edge(p[0]), _edge(p[1])
+    if _is_day_column(view, column):
+        return tuple(f"({e})::date" for e in p[4])
+    return tuple(f"(({e}) AT TIME ZONE '{ZONE}')" for e in p[4])
+
+
+def _said(p: Period) -> str:
     last = p[1] - dt.timedelta(days=1)
-    return f"{p[0].isoformat()} to {last.isoformat()}"
+    return (f"{p[0].isoformat()} to {last.isoformat()}"
+            + ("" if p[4] is None else " as of today; it moves with the date"))
 
 
 SCAN = "*"                # with unusual: every dated measure at once
@@ -512,10 +620,15 @@ def statement(name: Any, by: Any = None, days: Any = None,
         col = _VALUE.match(value).group(3)
         if named:
             def within(p):
-                return f"{d} >= {_edge(p[0])} AND {d} < {_edge(p[1])}"
+                first, after = _edges(p, view, d)
+                return f"{d} >= {first} AND {d} < {after}"
             cur, prev = within(named), within(earlier)
             where.append(f"(({cur}) OR ({prev}))")
-            start = _edge(min(named[0], earlier[0]))
+            if named[4] is None and earlier[4] is None:
+                start = _edge(min(named[0], earlier[0]))
+            else:
+                start = (f"LEAST({_edges(named, view, d)[0]}, "
+                         f"{_edges(earlier, view, d)[0]})")
         else:
             where.append(f"{d} >= now() - interval '{2 * n} days'")
             cur, prev = f"{d} >= {since}", f"{d} < {since}"
@@ -606,6 +719,8 @@ def statement(name: Any, by: Any = None, days: Any = None,
             sql = f"WITH p AS ({inner}) {shown} FROM p"
         said = (f"{period} ({_said(named)}) against "
                 + (f"{against} ({_said(earlier)})" if against is not None
+                   else f"the same days of last year ({_said(earlier)})"
+                   if earlier[2] == "ytd"
                    else f"the {earlier[3]} {earlier[2]}{'s' if earlier[3] > 1 else ''} just "
                    f"before ({_said(earlier)})") + f", by {m['date']}"
                 if named else f"last {n} days against the {n} days before, by {m['date']}")
@@ -622,7 +737,8 @@ def statement(name: Any, by: Any = None, days: Any = None,
                   f"never 0, and the row is incomplete")
     else:
         if named:
-            where.append(f"{d} >= {_edge(named[0])} AND {d} < {_edge(named[1])}")
+            first, after = _edges(named, view, d)
+            where.append(f"{d} >= {first} AND {d} < {after}")
         elif dated:
             where.append(f"{m['date']} >= {since}")
         vcol = _VALUE.match(value).group(3)

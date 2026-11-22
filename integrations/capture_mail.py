@@ -232,7 +232,7 @@ from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED, OCR
 from .capture_store import keep_store_modes, private_mode  # noqa: F401 (re-exported)
 from .capture_store import (SourceKind, register_source_kind, signal_new, sqlite_bytes,
                             checkpoint, wal_journal)
-from .graph_evidence import (FILE_ATTACHMENT_TYPE, MAX_ATTACHMENT_BYTES,
+from .graph_evidence import (FILE_ATTACHMENT_TYPE, ITEM_ATTACHMENT_TYPE, MAX_ATTACHMENT_BYTES,
                              is_mail_attachment_citation, mail_attachment_citation)
 from .graph_read import (BCC_UNREAD, MAX_ATTACHMENTS_LISTED, MailboxAbsent,
                          withheld_message_key)
@@ -248,7 +248,8 @@ from operating.declared_schema.capture_mail import (_CARRIED_DDL, _FOLDER_COVERA
                                                     _MESSAGE_KEYS_DDL, _MESSAGE_KEYS_INDEX,
                                                     _PRIORITY_DDL, _PURGED_DDL,
                                                     _UNDECIDED_ADDRESSES_DDL,
-                                                    _UNDECIDED_DDL, _WITHHELD_DDL)
+                                                    _TENANT_WITHHELD_DDL, _UNDECIDED_DDL,
+                                                    _WITHHELD_DDL)
 from .capture_mail_scope import (
     ALL_FOLDERS, assert_outside_git, CaptureError, CaptureScope, CHECK_STATE, check_state_dir,
     DEFAULT_SCOPE, _normal_time, _now, _stamp)
@@ -1277,6 +1278,29 @@ class MailCaptureStore:
                                 (message_handle, "attachment_excluded", self.now()))
         return bool(done)
 
+    def reopen_item_attachments(self, limit: int | None = None) -> int:
+        """Attached emails (Graph item attachments) that were left as ``not_file_attachment``
+        listed again as deferred, so the attachment fast path (``integrations.attach_fetch``:
+        plan, download as ``<subject>.eml``, read, apply through the capture's own write path,
+        its carried-mail exclusion included) fetches them. Only rows of a current message
+        version. How many were reopened."""
+        from .graph_evidence import ITEM_ATTACHMENT_TYPE
+        cap = "" if limit is None else f" LIMIT {int(limit)}"
+        with self.db:
+            rows = self.db.execute(
+                "SELECT a.message_handle, a.attachment_id FROM attachments a JOIN messages m ON "
+                "m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+                "a.content_status='not_file_attachment' AND "
+                f"json_extract(a.metadata,'$.kind')=?{cap}", (ITEM_ATTACHMENT_TYPE,)).fetchall()
+            for row in rows:
+                self.db.execute("UPDATE attachments SET content_status=? WHERE "
+                                "message_handle=? AND attachment_id=?",
+                                (ATTACHMENT_DEFERRED, row["message_handle"],
+                                 row["attachment_id"]))
+                self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
+                                (row["message_handle"], "attachment_reopened", self.now()))
+        return len(rows)
+
     def fill_attachment(self, message_handle: str, entry: Mapping[str, Any]) -> None:
         with self.db:
             self.db.execute("UPDATE attachments SET l1_handle=?, metadata=?, content_sha256=?, "
@@ -2123,7 +2147,52 @@ class MailCaptureStore:
             if domains is not None:
                 self.db.execute("INSERT INTO meta VALUES ('group_domains', ?) ON "
                                 "CONFLICT(key) DO UPDATE SET value=excluded.value", (domains,))
+            # beside it, the tenant's addresses it does not clear (digests only), with the
+            # same read time: absent (no complete groups listing), the old record no
+            # longer matches the listing's time and decides nothing
+            withheld = pe.tenant_withheld_rows(people)
+            if withheld is not None:
+                self.db.execute(_TENANT_WITHHELD_DDL)
+                # the excluded people's alias history (review 11-22): an address once
+                # theirs stays theirs; with every address they sent from in their own
+                # captured mailbox (its sent items and drafts)
+                history, complete = self._alias_history(people)
+                self.db.execute("DELETE FROM tenant_withheld WHERE kind <> 'excluded'")
+                self.db.executemany("INSERT INTO tenant_withheld VALUES (?, ?) ON CONFLICT"
+                                    "(digest) DO UPDATE SET kind = CASE WHEN tenant_withheld."
+                                    "kind = 'excluded' THEN 'excluded' ELSE excluded.kind END",
+                                    [*withheld[1], *((d, "excluded") for d in history)])
+                self.db.execute("INSERT INTO meta VALUES ('tenant_withheld_at', ?) ON "
+                                "CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                (withheld[0],))
+                self.db.execute("INSERT INTO meta VALUES ('tenant_alias_history', ?) ON "
+                                "CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                ("complete" if complete else "partial",))
         return len(rows)
+
+    def _alias_history(self, people: Any) -> tuple[set[str], bool]:
+        """(digests of every address an excluded person sent from in their own captured
+        mailbox: its ``sentitems`` and ``drafts`` messages, any version, whether the
+        history is complete): complete only when every excluded person's mailbox is
+        captured with its sent items folder listed (until then an address no listing
+        holds decides nothing offline, ``people_exclusion.mail_capture_tenant_withheld``)."""
+        from . import people_exclusion as pe
+        ids = sorted(getattr(people, "_ids", ()) or ())
+        out: set[str] = set()
+        complete = bool(ids)
+        for oid in ids:
+            listed = self.db.execute(
+                "SELECT 1 FROM folders WHERE mailbox_id = ? AND folder_key = 'sentitems' "
+                "AND folder_id IS NOT NULL", (oid,)).fetchone()
+            complete = complete and listed is not None
+            for (sender,) in self.db.execute(
+                    "SELECT DISTINCT lower(json_extract(m.record, '$.from')) FROM messages m "
+                    "JOIN folders f ON f.mailbox_id = m.mailbox_id AND f.folder_id = "
+                    "m.folder_id WHERE m.mailbox_id = ? AND f.folder_key IN ('sentitems', "
+                    "'drafts')", (oid,)):
+                if isinstance(sender, str) and sender.count("@") == 1:
+                    out.add(pe.address_digest(sender))
+        return out, complete
 
     def group_domains(self) -> list[str]:
         """The mail domains complete groups listings held list addresses in (domains only),
@@ -4763,7 +4832,8 @@ def image_ocr_cli(argv: Sequence[str] | None = None, *,
     if not local_image_ocr_available():
         print(json.dumps({"ok": False, "error": "ocr_engine_unavailable"}))
         return 2
-    guard = PeopleExclusion.from_env(os.environ if environ is None else environ)
+    from .people_capture import capture_guard
+    guard = capture_guard(os.environ if environ is None else environ)
     if guard.unavailable:
         print(json.dumps({"ok": False, "error": "people_exclusion_unavailable"}))
         return 2
@@ -5037,8 +5107,9 @@ class MailCapture:
         ``known``, so a message whose changeKey moved re-downloads nothing), or why not."""
         entry: dict[str, Any] = {"id": meta["id"], "metadata": dict(meta)}
         size = meta.get("size")
-        if meta.get("kind") not in (None, FILE_ATTACHMENT_TYPE):
-            entry["content_status"] = "not_file_attachment"
+        item = meta.get("kind") == ITEM_ATTACHMENT_TYPE
+        if meta.get("kind") not in (None, FILE_ATTACHMENT_TYPE) and not item:
+            entry["content_status"] = "not_file_attachment"   # a link (reference attachment)
             return entry
         if isinstance(size, int) and size > self.max_attachment_bytes + 1_000_000:
             entry["content_status"] = "exceeds_cap"
@@ -5060,9 +5131,12 @@ class MailCapture:
         hold = self._backlog_full and is_paged_file({"mime_type": meta.get("content_type"),
                                                      "name": meta.get("name")})
         try:
-            read = self.reader.get_attachment(
+            read = (self.reader.get_item_attachment(
+                        self.actor, mailbox_id, message["id"], meta["id"],
+                        max_bytes=self.max_attachment_bytes, name=meta.get("name"),
+                        message=message) if item else self.reader.get_attachment(
                 self.actor, mailbox_id, message["id"], meta["id"],
-                max_bytes=self.max_attachment_bytes, message=message)
+                max_bytes=self.max_attachment_bytes, message=message))
         except SourceUnavailable as exc:
             if _transient(unavailable_detail(exc)):
                 raise
@@ -5073,7 +5147,8 @@ class MailCapture:
                 else "exceeds_cap" if "byte bound" in text else "unavailable")
             return entry
         listed, reported = meta.get("size"), read["attachment"].get("size")
-        if listed is not None and reported is not None and listed != reported:
+        # (an attached email's listed size is Graph's estimate of the item, not its MIME's)
+        if not item and listed is not None and reported is not None and listed != reported:
             entry["content_status"] = MISMATCH_SIZE   # not the attachment listed
             return entry
         status, text, readings = self._extract(read["content"], read["attachment"],
@@ -7079,7 +7154,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     store = MailCaptureStore(state_dir, max_store_bytes=args.max_store_bytes)
     try:
         api, transport = build_graph(environ, sender=sender,
-                                     retry=BoundedBackoff(sleep=sleep, budget_seconds=60))
+                                     retry=BoundedBackoff(sleep=sleep, budget_seconds=60),
+                                     capture=True)
         reader = GraphMailReader(api, audience)
         store.people = reader.people   # every read below applies this run's exclusion
         actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")

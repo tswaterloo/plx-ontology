@@ -56,6 +56,30 @@ def home(event_type: str) -> bool:
     return bool(found and found["default"] == "on" and found["home"])
 
 
+def section(event_type: str) -> str | None:
+    """The Home section a type is gathered into instead of "needs you" (a count and its
+    biggest few, each opening the full list): None for one a person must act on one by
+    one. Registry-stated (``section``), never decided where it is shown."""
+    found = entry(event_type)
+    named = found.get("section") if found else None
+    return named if isinstance(named, str) and named else None
+
+
+def kind_prepared_by(autopilot_id: str) -> str | None:
+    """The alert kind whose items an autopilot's cards are the same holds as (registry
+    ``prepared_by`` on the alert type): Home lists them in that kind's one section, the
+    ones that block an order first. None for an autopilot no alert type names."""
+    for found in _types().values():
+        if autopilot_id in (found.get("prepared_by") or ()):
+            return kind_of(found["type"])
+    return None
+
+
+def needs_you(event_type: str) -> bool:
+    """On Home as an item a person must act on: ``home`` and not gathered into a section."""
+    return home(event_type) and section(event_type) is None
+
+
 def suggested(event_type: str) -> bool:
     """Shown on the suggestion cards to every reader the type is routed to, switched on or
     not: the kinds the old engine's suggestions always showed (no regression while their

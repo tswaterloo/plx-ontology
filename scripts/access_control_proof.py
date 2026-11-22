@@ -739,7 +739,8 @@ def _summary(environ: Mapping[str, str], config_text: str | None, directory: Any
     items = stored_items(held_cases)
     projection = host_module.projection_path(state)
     values = po_reference_values(projection)
-    resolver = EmployeePermissionResolver(policy, portal, directory=directory)
+    resolver = EmployeePermissionResolver(policy, portal, directory=directory,
+                                          people_exclusion=exclusion)
     with tempfile.TemporaryDirectory() as tmp:
         own = Path(tmp)
         if (state / "teams-capture").is_dir():

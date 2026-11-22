@@ -41,7 +41,7 @@ def tools(backend: Any, reader: Any) -> list[Any]:
 def read(backend: Any, reader: Any, arguments: Mapping[str, Any]) -> dict[str, Any]:
     from . import insights
     iid = str((arguments or {}).get("id") or "")
-    ids = sorted(s.id for s in insights.builtin())
+    ids = sorted(s.id for s in insights.declared())
     if iid not in ids:
         return {"ok": False, "error": "not_found",
                 "detail": "a built-in Insights tile id: " + ", ".join(ids)}

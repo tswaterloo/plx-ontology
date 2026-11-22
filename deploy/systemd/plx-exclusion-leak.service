@@ -1,6 +1,7 @@
-# The people-exclusion leak scan (operating.exclusion_leak): counts what is still served or
-# in the search index of an excluded person's mail and 1:1 chats, and of the mail the
-# capture withholds (the daily purge's own dry run, a transaction rolled back). Counts only
+# The people-set leak scan (operating.exclusion_leak): counts what of the two excluded
+# people's data (the owner's alone) a reader other than the
+# owner can reach: business rows without the owner's class, unflagged mail and chat rows,
+# their own mailbox or chats outside the set. Counts only
 # to <state>/exclusion-leak/status.json; the reliability alarms raise exclusion_leak
 # (critical) on more than 0, a scan that could not run or one over 3 h old. Reads no
 # business system: the exclusion list comes from plx.env, every credential is dropped.

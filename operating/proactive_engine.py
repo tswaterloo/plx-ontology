@@ -2337,6 +2337,26 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
             if total[kind] - seen[kind] > 0}
 
 
+def open_counts(inbox: Any, store: Any, *, kinds: Sequence[str]) -> dict[str, int] | None:
+    """Per kind, every open gap of the store as it was served (what a reader sees plus what
+    is hidden from them: the sum ``hidden_counts`` and the trimmed read split), one cheap
+    count with no per-item decision. A person's own mail kinds are not counted (nobody's but
+    its owner's), nor an off type. None: no inbox (nothing known, never zeros)."""
+    off = alert_kinds.off_gap_kinds()
+    kinds = [k for k in kinds if k not in off]
+    path = Path(inbox)
+    if not path.is_file():
+        return None
+    with closing(_attach(path, Path(store))) as conn:
+        served = _served_digest(conn, store)
+        current, _ = _current_since(conn, served[0] if served else None)
+        total = Counter(row["kind"] for row in conn.execute(
+            "SELECT kind, detector, last_seen FROM gaps WHERE state = 'open' AND kind IN "
+            "(SELECT value FROM json_each(:kinds))", {"kinds": json.dumps(list(kinds))})
+            if _of_served(row, current) and row["kind"] not in _OWNER_KINDS)
+    return {k: total[k] for k in kinds}
+
+
 def unjudged_records(inbox: Any, store: Any, *, rule: str, reason: str | None = None,
                      may_read: Callable[[str], bool], held: Iterable[str],
                      offset: int = 0, limit: int = 50) -> dict[str, Any]:

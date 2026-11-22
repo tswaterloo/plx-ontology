@@ -427,6 +427,14 @@ export function plainReasons(text: string): string {
 /** "PurchaseOrderLine:bc.purchase_order_lines:{...}" (an object key) -> "Purchase order line". */
 const OBJECT_KEY = /\b([A-Z][A-Za-z]+):[a-z][\w]*\.[\w.]+:\{[^}]*\}/g;
 
+/** "1 open order(s) affected" (a source's own wording): the plural the count calls for. */
+export function countedWords(text: string): string {
+  return text.replace(/\b(?:(\d[\d,]*)(\s+(?:[A-Za-z]+\s+){0,2}?))?([A-Za-z]+)\(s\)/g, (_m, n: string | undefined, between: string | undefined, word: string) => {
+    const one = n !== undefined && n.replace(/,/g, "") === "1";
+    return `${n ?? ""}${between ?? ""}${one ? word : /(?:s|x|z|ch|sh)$/.test(word) ? `${word}es` : `${word}s`}`;
+  });
+}
+
 /**
  * A server sentence as a business reader reads it: escapes decoded (_x0020_), object keys
  * as their kind, codes (LINE_NOT_INVOICED) as words, ISO dates as dates. Display only.
@@ -434,7 +442,7 @@ const OBJECT_KEY = /\b([A-Z][A-Za-z]+):[a-z][\w]*\.[\w.]+:\{[^}]*\}/g;
 export function readable(text: string | null | undefined): string {
   if (!text) return "";
   return plainDates(
-    plainReasons(withoutFloatNoise(text))
+    plainReasons(withoutFloatNoise(countedWords(text)))
       .replace(/_x([0-9A-Fa-f]{4})_/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
       // "PO PO100109": the number already says what it is
       .replace(/\b(PO|SO) (?=\1-?\d)/g, "")

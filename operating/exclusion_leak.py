@@ -1,31 +1,27 @@
-"""The people-exclusion leak scan: counts what is still held of an excluded person's mail
-and chats where readers reach it (Postgres's served ontology and the search index), so a
-leak raises an alarm (``ops_alarms`` check ``exclusion_leak``, critical) instead of
-waiting for the daily purge (audit 11-15 row 17).
+"""The people-set leak scan (The two excluded people's data
+is kept and shown to the owner alone): counts what of the people set
+(``ontology.people_excluded_objects``) a reader other than the owner can reach, so a leak
+raises an alarm (``ops_alarms`` check ``exclusion_leak``, critical) at once.
 
     python3 -m operating.exclusion_leak run --state-dir STATE [--dsn DSN]
 
 Run hourly (``plx-exclusion-leak.timer``). Read-only. It counts:
 
-* **withheld mail still served**: the handles the mail capture knows it must not serve
-  (every stored copy of a message it remembered as withheld, the handles a capture purge
-  journalled, the Graph re-read's matches and the carried-mail scan's attachments: what
-  ``operating.mail_exclusion_purge purge`` removes) and the Postgres rows, search chunks
-  and entities citing them, through that purge's own dry run (a transaction rolled
-  back);
-* **an excluded person's mailbox**: served versions whose handle names an excluded
-  object id as its mailbox (``graph-mail://<id>/``) and the search chunks of those
-  records;
-* **an excluded person's 1:1 chats**: served Teams chat versions whose chat id holds an
-  excluded object id, and their search chunks;
-* beside them, **the capture store** (not served): its messages of an excluded mailbox and
-  the withheld copies the next purge removes; reported, not the alarm's count.
+* **business rows not the owner's**: rows of every DOOR v2 schema whose lineage names an
+  object of the set (its own or a read record) while their access class does not hold
+  ``access_classes.OWNER_KEY`` (``door.exclude`` moves them; a row it missed is a leak);
+* **communications rows not flagged**: rows of the communications tables
+  (``business_comms``) of an object of the set whose ``excluded`` flag reads false
+  (every reader but the owner reads exactly the rows flagged false);
+* **an excluded person's own items outside the set**: served versions of their mailbox
+  (``graph-mail://<id>/``) or a Teams chat whose id holds their object id, at or below the
+  set's ``covered_ver`` (decided), that the set does not hold.
 
-The excluded ids come from the environment, as the capture's (``PeopleExclusion
-.from_env``); an unavailable list fails closed (the status says so and the alarm fires).
-Writes ``STATE/exclusion-leak/status.json`` (0600): counts per table and when; never an
-id, address or handle. Exit 0 after a scan whatever it found, 1 when it could not scan
-(the status records why), 2 on an unreadable state dir.
+No set state, or one of another exclusion list, is the finding itself (fails closed). The
+excluded ids come from the environment (``PeopleExclusion.from_env``); an unavailable list
+fails closed. Writes ``STATE/exclusion-leak/status.json`` (0600): counts per kind and
+when; never an id, address or handle. Exit 0 after a scan whatever it found, 1 when it
+could not scan (the status records why), 2 on an unreadable state dir.
 """
 
 from __future__ import annotations
@@ -50,103 +46,71 @@ def _prefix_range(prefix: str) -> tuple[str, str]:
     return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
 
-def served_by_id(conn: Any, ids: Sequence[str]) -> dict[str, int]:
-    """Served versions (and their search chunks) of an excluded mailbox or 1:1 chat."""
-    out = {"mailbox_versions": 0, "mailbox_chunks": 0, "chat_versions": 0, "chat_chunks": 0}
-    if not ids:
-        return out
-    with conn.cursor() as cur:
-        cur.execute("SELECT datcollate FROM pg_database WHERE datname = current_database()")
-        byte_order = str(cur.fetchone()[0]).split(".")[0] in ("C", "POSIX")
-        for oid in ids:
-            low, high = _prefix_range(f"graph-mail://{oid}/")
-            # a range read on the handle index where text sorts by bytes; else every
-            # handle is compared (slow, never a missed row)
-            where = ("l1_handle >= %s AND l1_handle < %s" if byte_order
-                     else "starts_with(l1_handle, %s) AND %s IS NOT NULL")
-            cur.execute("SELECT count(*), count(DISTINCT object_id) FROM ontology.object_versions "
-                        "WHERE " + where, (low, high))
-            versions, objects = cur.fetchone()
-            out["mailbox_versions"] += versions
-            if objects:
-                cur.execute("SELECT count(*) FROM search.chunks WHERE object_id IN (SELECT "
-                            "object_id FROM ontology.object_versions WHERE " + where + ")",
-                            (low, high))
-                out["mailbox_chunks"] += cur.fetchone()[0]
-        pattern = "(" + "|".join(sorted(ids)) + ")"
-        chat = ("FROM ontology.object_versions WHERE "
-                + ("l1_handle >= 'teams-chat://' AND l1_handle < 'teams-chat:/0' AND "
-                   if byte_order else "starts_with(l1_handle, 'teams-chat://') AND ")
-                + "l1_handle ~* %s")
-        cur.execute("SELECT count(*), count(DISTINCT object_id) " + chat, (pattern,))
-        versions, objects = cur.fetchone()
-        out["chat_versions"] = versions
-        if objects:
-            cur.execute("SELECT count(*) FROM search.chunks WHERE object_id IN (SELECT "
-                        "object_id " + chat + ")", (pattern,))
-            out["chat_chunks"] = cur.fetchone()[0]
+def _tables(cur: Any, schema: str) -> list[str]:
+    cur.execute("SELECT table_name FROM information_schema.columns WHERE table_schema = %s "
+                "AND column_name IN ('access_class', 'handle') GROUP BY 1 "
+                "HAVING count(*) = 2 ORDER BY 1", (schema,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def business_unmarked(cur: Any) -> int:
+    """Rows of the DOOR v2 schemas built from the set whose class is not the owner's."""
+    from operating.pg import door
+    from operating.pg.access_classes import OWNER_KEY
+    total = 0
+    for schema in door.schemas(cur.connection if hasattr(cur, "connection") else cur):
+        for view in _tables(cur, schema):
+            cur.execute(
+                f"SELECT count(*) FROM {schema}.{view} t JOIN {schema}.lineage l "
+                "ON l.view = %s AND l.handle = t.handle JOIN "
+                f"{schema}.access_classes a ON a.id = t.access_class "
+                "WHERE NOT (%s = ANY(a.audience_keys)) AND EXISTS (SELECT 1 FROM "
+                "unnest(l.object_ids || l.read_ids) o JOIN ontology.people_excluded_objects p "
+                "ON p.object_id = o)", (view, OWNER_KEY))
+            total += int(cur.fetchone()[0])
+    return total
+
+
+def comms_unflagged(cur: Any) -> int:
+    """Rows of the communications tables of an object of the set flagged as not in it."""
+    from operating.pg import business_comms as bc
+    from operating.pg import business_views as bv
+    total = 0
+    for view in sorted(bc.SPECS):
+        cur.execute("SELECT to_regclass(%s)", (f"{bv.SCHEMA}.{view}",))
+        if cur.fetchone()[0] is None:
+            continue
+        cur.execute(f"SELECT count(*) FROM {bv.SCHEMA}.{view} t JOIN "
+                    "ontology.people_excluded_objects p ON p.object_id = t.object_ids[1] "
+                    "WHERE t.excluded IS FALSE")
+        total += int(cur.fetchone()[0])
+    return total
+
+
+def own_outside_set(cur: Any, ids: Sequence[str], covered: int) -> dict[str, int]:
+    """Decided versions of an excluded person's mailbox or 1:1 chats the set lacks."""
+    out = {"mailbox_versions": 0, "chat_versions": 0}
+    missing = ("AND v.ver <= %s AND NOT EXISTS (SELECT 1 FROM "
+               "ontology.people_excluded_objects p WHERE p.l1_handle = v.l1_handle)")
+    for oid in ids:
+        low, high = _prefix_range(f"graph-mail://{oid}/")
+        cur.execute("SELECT count(*) FROM ontology.object_versions v WHERE "
+                    "v.l1_handle >= %s AND v.l1_handle < %s " + missing, (low, high, covered))
+        out["mailbox_versions"] += int(cur.fetchone()[0])
+    if ids:
+        cur.execute("SELECT count(*) FROM ontology.object_versions v WHERE v.l1_handle >= "
+                    "'teams-chat://' AND v.l1_handle < 'teams-chat:/0' AND v.l1_handle ~* %s "
+                    + missing, ("(" + "|".join(sorted(ids)) + ")", covered))
+        out["chat_versions"] = int(cur.fetchone()[0])
     return out
-
-
-def capture_by_id(state: Path, ids: Sequence[str]) -> Optional[int]:
-    """The capture store's messages of an excluded mailbox (not served); None when the
-    store is absent or unreadable."""
-    import sqlite3
-    path = state / "mail-capture" / "capture.db"
-    if not path.is_file():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
-        try:
-            return sum(conn.execute("SELECT count(*) FROM messages WHERE mailbox_id = ?",
-                                    (oid,)).fetchone()[0] for oid in ids)
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-
-
-def withheld_served(state: Path, dsn: str) -> dict[str, Any]:
-    """The purge's own dry run over what the capture knows it withholds: Postgres counts
-    of rows still citing those handles, and how many stored copies the purge removes."""
-    from integrations.capture_mail import MailCaptureStore
-    from operating import mail_exclusion_purge as mp
-
-    scan = mp._load(state / "mail-capture" / mp.SCAN_FILE)
-    pairs = [(str(b), str(m)) for b, m in scan.get("matches") or ()]
-    carried = mp._load_carried(state / "mail-capture" / mp.CARRIED_FILE)
-    store = MailCaptureStore.open_read_only(state, timeout=60)
-    try:
-        # as ``mail_exclusion_purge.captured``, with the remembered copies read through
-        # the message-key index each capture run completes (the purge's own read of every
-        # record takes many minutes; the daily purge still does it)
-        every = sorted({*(store.copies_of(pairs) if pairs else ()),
-                        *store.remembered_copies(indexed=True)})
-        found: set[str] = set()
-        for box, mid in every:
-            found.update(h for (h,) in store.db.execute(
-                "SELECT l1_handle FROM messages WHERE mailbox_id=? AND message_id=?",
-                (box, mid)))
-        for h in sorted(found):
-            found.update(a for (a,) in store.db.execute(
-                "SELECT l1_handle FROM attachments WHERE message_handle=? AND l1_handle "
-                "IS NOT NULL", (h,)))
-        found.update(store.purged_handles())
-    finally:
-        store.close()
-    handles = sorted({*(h for h in found if h), *carried})
-    report: dict[str, Any] = {"handles": len(handles), "capture_copies": len(every)}
-    if handles:
-        report["postgres"] = mp.purge_pg(dsn, handles, apply=False,
-                                         statement_timeout_ms=STATEMENT_TIMEOUT_MS)
-    return report
 
 
 def scan(state: Path, dsn: str, environ: Mapping[str, str], *,
          connect: Optional[Callable[[str], Any]] = None) -> dict[str, Any]:
-    """Counts only. ``served`` sums what readers can reach; ``capture`` what the store
-    still holds that the next purge removes."""
+    """Counts only (module docstring): ``served`` sums what a reader other than the owner
+    can reach of the set."""
     from integrations.people_exclusion import PeopleExclusion
+    from operating.pg import people_excluded as pe
     guard = PeopleExclusion.from_env(environ)
     if guard.unavailable:
         return {"ok": False, "error": f"exclusion unavailable ({guard.unavailable})"}
@@ -154,6 +118,7 @@ def scan(state: Path, dsn: str, environ: Mapping[str, str], *,
     # integrations/people_exclusion.py is step code (its bytes feed the steps digest).
     guard.require()
     ids = sorted(frozenset(getattr(guard, "_ids")))
+    tag = pe.current_exclusion(environ)
     if connect is None:
         import psycopg
 
@@ -165,22 +130,18 @@ def scan(state: Path, dsn: str, environ: Mapping[str, str], *,
             return conn
     conn = connect(dsn)
     try:
-        by_id = served_by_id(conn, ids)
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT exclusion, covered_ver FROM {pe.STATE}")
+            state_row = cur.fetchone()
+            if state_row is None or state_row[0] != tag or state_row[1] is None:
+                return {"ok": False, "error": "people set not built for this list"}
+            served = {"business_rows_not_owners": business_unmarked(cur),
+                      "comms_rows_unflagged": comms_unflagged(cur),
+                      **own_outside_set(cur, ids, int(state_row[1]))}
     finally:
         conn.close()
-    withheld = withheld_served(state, dsn)
-    pg = withheld.get("postgres") or {}
-    served = dict(by_id)
-    served["withheld_objects"] = int(pg.get("objects") or 0)
-    served["withheld_search_chunks"] = int(pg.get("search.chunks") or 0)
-    served["withheld_search_entities"] = int(pg.get("search.entities") or 0)
-    served["withheld_rows"] = sum(int(v) for k, v in pg.items()
-                                  if k != "objects" and not k.startswith("search."))
     return {"ok": True, "excluded_people": len(ids), "served": served,
-            "served_total": sum(served.values()),
-            "capture": {"excluded_mailbox_messages": capture_by_id(state, ids),
-                        "withheld_copies": withheld["capture_copies"],
-                        "withheld_handles": withheld["handles"]}}
+            "served_total": sum(served.values())}
 
 
 def run(state: Path, dsn: str, environ: Mapping[str, str] = os.environ, *,

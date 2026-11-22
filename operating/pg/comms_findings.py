@@ -655,6 +655,18 @@ def _run_row(pg: Any, s: str, when: dt.datetime, out: Mapping[str, Any], started
                 round(time.monotonic() - started, 2)))
 
 
+def _link_new_files(dsn: str) -> None:
+    """After a comms refresh: link the files new Teams messages share (``teams_file_links``,
+    new messages only; its own failure is logged and never fails this run)."""
+    try:
+        from operating.pg import teams_file_links
+        print(json.dumps({"teams_file_links": teams_file_links.run(dsn, new=True)},
+                         sort_keys=True))
+    except Exception as exc:  # noqa: BLE001 - no links this pass; the findings run stands
+        print(f"teams file links not made: {type(exc).__name__}: {str(exc)[:160]}",
+              file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m operating.pg.comms_findings")
     ap.add_argument("command", choices=("run", "install"))
@@ -673,6 +685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     got = run(dsn, days=args.days, most=args.most, parallel=args.parallel)
     print(json.dumps(got, sort_keys=True))
+    _link_new_files(dsn)
     return 0 if got["status"] in ("ok", "off", "skipped") else 1
 
 

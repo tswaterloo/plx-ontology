@@ -257,7 +257,7 @@ class EmailsNameTheirParties(SenderFixture):
         from operating.pg import business_views as bv
         from operating.pg.migrate import MIGRATIONS_DIR
         with psycopg.connect(self.dsn, autocommit=True) as pg:
-            for name in ("0027_item_audiences.sql", "0040_people_excluded_objects.sql",
+            for name in ("0027_item_audiences.sql", "0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
                          "0041_business_views.sql"):
                 pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
         with mock.patch.dict("os.environ", {"PLX_BIZ_MIN_FREE_GB": "0"}):

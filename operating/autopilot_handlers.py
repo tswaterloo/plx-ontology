@@ -1238,6 +1238,14 @@ def _work(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
     return run
 
 
+def _message_work(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
+    def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+        from . import autopilot_message_work as mw
+        return getattr(mw, name)(ctx, event)
+    run.__name__ = name
+    return run
+
+
 def _receivables(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
     def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         from . import autopilot_receivables as ar
@@ -1284,7 +1292,8 @@ HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "delay_impact": h_delay_impact, "approval_recommendation": h_approval,
     "task_prepare": h_task, "ledger_answer": h_ledger, "qc_impact": h_qc,
     "question_prepare": h_question,
-    "meeting_followup": h_meeting, "job": h_job}
+    "meeting_followup": h_meeting, "job": h_job,
+    "message_work": _message_work("h_message_work")}
 
 
 def meeting_cleared(event: Mapping[str, Any], people: Any) -> Optional[str]:

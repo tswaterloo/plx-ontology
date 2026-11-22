@@ -2,7 +2,7 @@
 // Source: the production structure (a structure-only dump restored into a
 // throwaway cluster), which equals operating/pg/migrations plus
 // PRODUCTION_ONLY_INDEXES in tools/gen_prisma.py.
-// Migrations: sha256 d493a96d3468563c2b1d51fc31cdbff0dd71a4f7278fa17aaa12f259d08df98e (operating/pg/migrations).
+// Migrations: sha256 45342e18c93c58bf0cdf34b7e67a7328b901c6c951ef8b0036d44fe4f5e0370c (operating/pg/migrations).
 // The Workbench does not use Prisma Client: this file describes the database for
 // readers who know Prisma. Reads go through operating/ (docs/data-model.md).
 //
@@ -703,6 +703,32 @@ model chunk_groups {
   @@schema("search")
 }
 
+/// index chunk_vectors_hnsw: method hnsw; embedding halfvec_cosine_ops (not expressible in Prisma)
+model chunk_vectors {
+  kind        String
+  content_sha String
+  embed_model String
+  /// halfvec(1024)
+  embedding   Unsupported("halfvec")
+
+  @@id([kind, content_sha, embed_model])
+  @@index([embedding], map: "chunk_vectors_hnsw")
+  @@schema("search")
+}
+
+/// index chunk_vectors_other_embedding_idx: method hnsw; embedding halfvec_cosine_ops (not expressible in Prisma)
+model chunk_vectors_other {
+  kind        String
+  content_sha String
+  embed_model String
+  /// halfvec(1024)
+  embedding   Unsupported("halfvec")
+
+  @@id([kind, content_sha, embed_model])
+  @@index([embedding])
+  @@schema("search")
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 /// check chunks_audience_key_check: CHECK (((audience_key ~ '^[a-z][a-z0-9-]*:.+$'::text) AND (POSITION(('*'::text) IN (audience_key)) = 0)))
@@ -835,6 +861,17 @@ model query_log {
   timings  Json?
 
   @@index([at], map: "query_log_at")
+  @@schema("search")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// check vector_mode_mode_check: CHECK ((mode = ANY (ARRAY['chunks'::text, 'narrow'::text])))
+/// check vector_mode_singleton_check: CHECK (singleton)
+model vector_mode {
+  singleton  Boolean  @id @default(true)
+  mode       String   @default("chunks")
+  changed_at DateTime @default(now()) @db.Timestamptz(6)
+
   @@schema("search")
 }
 

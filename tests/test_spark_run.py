@@ -63,6 +63,48 @@ class StatePlan(unittest.TestCase):
         self.assertEqual({r["rel"] for r in sync.plan(self.root, only=("mail-capture",))},
                          {"mail-capture/capture.db"})
 
+    def test_text_blobs_go_alone_only_the_text_a_store_still_holds(self):
+        """HARD20 h07 (11-21): a Spark run had no text of any captured file (its blob folder
+        is never copied), so plx.open said "no text was extracted" for files the box reads.
+        --text-blobs adds the blobs of kind text a store still holds, never a file body, a
+        dropped blob, a name that is not a digest or one missing on disk."""
+        db = self.root / "sharepoint-capture" / "capture.db"
+        _db(db, wal=True)
+        shas = {k: (f"{i:x}" * 64)[:64] for i, k in enumerate(
+            ("text", "content", "dropped", "missing", "unknown"), start=1)}
+        c = sqlite3.connect(db)
+        c.execute("CREATE TABLE blobs (sha256 TEXT PRIMARY KEY, kind TEXT, bytes INTEGER, "
+                  "stored_at TEXT, dropped_at TEXT, stored_bytes INTEGER)")
+        for k, sha in shas.items():
+            c.execute("INSERT INTO blobs VALUES (?, ?, 1, 'x', ?, 1)",
+                      (sha, "text" if k in ("text", "dropped", "missing") else "content",
+                       "2026-11-16" if k == "dropped" else None))
+        c.execute("INSERT INTO blobs VALUES ('../../etc/passwd', 'text', 1, 'x', NULL, 1)")
+        c.commit()
+        c.close()
+        for k in ("text", "content", "dropped"):
+            self.put(f"sharepoint-capture/blobs/sha256/{shas[k][:2]}/{shas[k]}")
+        # a mail capture: its attachment text is a loose compressed file (a symlinked blob folder)
+        mail = self.root / "mail-capture"
+        _db(mail / "capture.db", wal=True)
+        c = sqlite3.connect(mail / "capture.db")
+        c.execute("CREATE TABLE blobs (sha256 TEXT PRIMARY KEY, kind TEXT, bytes INTEGER, "
+                  "stored_at TEXT, dropped_at TEXT, stored_bytes INTEGER)")
+        mtext, mbody = "e" * 64, "f" * 64
+        c.execute("INSERT INTO blobs VALUES (?, 'text', 1, 'x', NULL, 1)", (mtext,))
+        c.execute("INSERT INTO blobs VALUES (?, 'body', 1, 'x', NULL, 1)", (mbody,))
+        c.commit()
+        c.close()
+        self.put(f"mail-capture/blobs.nvme/sha256/ee/{mtext}.z")
+        (mail / "blobs").symlink_to("blobs.nvme")
+        base = {r["rel"] for r in sync.plan(self.root)}
+        got = {r["rel"]: r["kind"] for r in sync.plan(self.root, text_blobs=True)}
+        extra = set(got) - base
+        self.assertEqual(extra, {f"sharepoint-capture/blobs/sha256/{shas['text'][:2]}/"
+                                 f"{shas['text']}", f"mail-capture/blobs/sha256/ee/{mtext}.z"})
+        self.assertEqual({got[r] for r in extra}, {"file"})
+        self.assertEqual(base, {r["rel"] for r in sync.plan(self.root)})   # off by default
+
     def test_a_folder_outside_the_list_never_goes_whatever_it_holds(self):
         _db(self.root / "spark" / "x.sqlite", wal=True)
         self.put("unknown-new-dir/data.json")

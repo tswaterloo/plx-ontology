@@ -25,6 +25,8 @@ export interface QueueRow {
   title: string;
   counterpart: string | null;
   line: string;
+  /** A money figure for the row's right edge (Financials: what the alert is worth). */
+  figure?: string | null;
   days: number | null;
   status: "late" | "risk" | "neutral" | "suspect" | "ok";
   href: string;

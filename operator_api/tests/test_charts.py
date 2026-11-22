@@ -91,6 +91,27 @@ class KindsTest(unittest.TestCase):
                        ("month", "status", "value"), rows[:2] + [["2026-11", "Open", "5"]])
         self.assertEqual(len(one["series"]), 2)
 
+    def test_an_amount_column_never_names_the_series_of_a_repeated_label(self):
+        # live 11-21 receivables tile: one customer twice in a currency, and the legend read
+        # "70939.14", "27768.99" (the owed-in-total column): an amount tells no rows apart
+        cols = ["customer", "currency", "overdue", "owed_in_total"]
+        rows = [["A", "CAD", "40737.63", "70939.14"], ["B", "CAD", "27768.99", "27768.99"],
+                ["A", "CAD", "1110.57", "2000.25"], ["C", "USD", "328616.98", "400000.50"]]
+        with self.assertRaisesRegex(ch.NotDrawn, "Two rows are for customer A"):
+            ch.build({"kind": "bar", "x": "customer", "y": ["overdue"], "facet": "currency",
+                      "horizontal": True}, cols, rows)
+        # one row per customer and currency: one series, named for the value, per panel
+        one = [["A", "CAD", "41848.20", "72939.39"], ["B", "CAD", "27768.99", "27768.99"],
+               ["C", "USD", "328616.98", "400000.50"]]
+        out = ch.build({"kind": "bar", "x": "customer", "y": ["overdue"], "facet": "currency",
+                        "horizontal": True}, cols, one)
+        self.assertEqual([(p["title"], [s["name"] for s in p["series"]]) for p in out["panels"]],
+                         [("CAD", ["overdue"]), ("USD", ["overdue"])])
+        # a column of whole numbers (a year) still can split
+        out = ch.build({"kind": "bar", "x": "month", "y": ["orders"]}, ["month", "year", "orders"],
+                       [["04", 2025, 3], ["04", 2026, 5]])
+        self.assertEqual({s["name"] for s in out["series"]}, {"2025", "2026"})
+
     def test_a_pivot_cell_read_twice_is_refused_never_added(self):
         self.assertEqual(drawn({"type": "bar", "x": "week", "split": "dept", "y": ["n"]},
                                ("week", "dept", "n"), LONG + [LONG[0]]), [])
@@ -177,6 +198,59 @@ class KindsTest(unittest.TestCase):
                 ch.build({"kind": "waterfall", "x": "customer", "y": ["change"],
                           "facet": "currency", **split}, cols + ["region"],
                          [r + [f"R{i}"] for i, r in enumerate(twice)])
+
+    def test_a_waterfall_s_parts_add_up_to_the_whole_change_or_it_is_not_drawn(self):
+        from operating import measures
+        spec = {"kind": "waterfall", "x": "customer", "y": ["change"], "facet": "currency"}
+        cols = ["customer", "currency", "current", "previous", "change"]
+        rows = [["A", "CAD", "110.00", "100.00", "10.00"], ["B", "CAD", "6", "10", "-4"],
+                ["All others (3)", "CAD", "52", "50", "2"], ["C", "USD", "3", "10", "-7"]]
+        # a measure's comparison by a part: the rest is one "All others" row, drawn
+        by, _ = measures.statement("revenue", "customer", None, True, "2026-10")
+        self.assertIsNotNone(ch.build(spec, cols, rows, sql=by))
+        # a part whose change is not its current minus its previous
+        wrong = [r[:] for r in rows]
+        wrong[1][4] = "-3"
+        with self.assertRaisesRegex(ch.NotDrawn, "add up"):
+            ch.build(spec, cols, wrong, sql=by)
+        # the first rows of a statement only: its last bar would not be the whole change
+        top = "SELECT customer, currency, current, previous, change FROM c ORDER BY 5 LIMIT 3"
+        with self.assertRaisesRegex(ch.NotDrawn, "All others"):
+            ch.build(spec, cols, [r for r in rows if not r[0].startswith("All")], sql=top)
+        self.assertIsNotNone(ch.build(spec, cols, rows, sql=top))   # the rest folded in
+        # fewer rows than the limit: the statement returned every part
+        self.assertIsNotNone(ch.build(spec, cols, rows, sql=top.replace("LIMIT 3", "LIMIT 50")))
+        # current, previous and change each rounded to cents by the statement: a cent apart
+        # is the rounding, more is not
+        cents = [["A", "CAD", "110.01", "100.00", "10.00"], ["B", "CAD", "6.00", "10.00",
+                                                             "-4.01"]]
+        self.assertIsNotNone(ch.build(spec, cols, cents, sql=by))
+        cents[1][4] = "-4.02"
+        with self.assertRaisesRegex(ch.NotDrawn, "add up"):
+            ch.build(spec, cols, cents, sql=by)
+        # a bar of the same rows is no sum: drawn as it is
+        self.assertIsNotNone(ch.build({**spec, "kind": "bar"}, cols, wrong, sql=top))
+
+    def test_a_panel_with_no_number_is_left_out_and_a_chart_with_none_is_not_drawn(self):
+        """HARD20 h05 (11-21): a waterfall faceted by currency drew a panel for the rows
+        whose currency is unstated, every bar unknown (null): an empty chart beside the
+        two that held figures. Such a panel is not drawn (counted in ``omitted``); every
+        panel shown holds a series with a number, and a chart whose panels hold none is
+        not drawn at all."""
+        spec = {"kind": "waterfall", "x": "customer", "y": ["change"], "facet": "currency"}
+        cols = ["customer", "currency", "current", "previous", "change"]
+        rows = [["A", "CAD", "110", "100", "10"], ["B", "CAD", "6", "10", "-4"],
+                ["C", "USD", "3", "10", "-7"],
+                ["D", None, None, None, None], ["E", None, None, None, None]]
+        out = ch.build(spec, cols, rows)
+        self.assertEqual([p["title"] for p in out["panels"]], ["CAD", "USD"])
+        self.assertEqual(out["omitted"], 1)
+        for panel in out["panels"]:
+            self.assertTrue(panel["series"])
+            self.assertTrue(any(v is not None for v in panel["series"][0]["values"]))
+        self.assertEqual(out["rows"], 5)
+        with self.assertRaises(ch.NotDrawn):
+            ch.build(spec, cols, rows[3:])
 
     def test_the_split_is_a_column_whose_values_tell_the_repeated_rows_apart(self):
         # region is the same on both April rows: it cannot be the split; customer can

@@ -145,9 +145,14 @@ WEEKLY_FILE = "weekly-reviews.sqlite"
 # A read-ahead cut by its budget keeps nothing (``WeeklyArchive.put``), so the same reader's
 # same week is not read ahead again for ``WEEKLY_CUT_SECONDS``: on the live box 345 of 382
 # read-aheads in two days ran their whole 300 s of Postgres aggregates and were cut (11-19),
-# beside the readers' live requests. Opening the weekly view reads it as before.
+# beside the readers' live requests. Opening the weekly view reads it as before. The week a
+# mark names is a closed week (its data stays as it was), so a read cut once is cut again: the
+# mark holds for as long as that week is "last week" (11-21: with a 6 h mark all 91 readers'
+# read-aheads were each cut at 300 s again every 6 h, 1.3-1.5 of the warm-up's 3 read
+# workers busy all day on reads that never kept anything, and every screen read behind them
+# ran into its 60-90 s limit).
 WEEKLY_CUT_FILE = "weekly-cut.json"
-WEEKLY_CUT_SECONDS = 6 * 3600.0
+WEEKLY_CUT_SECONDS = 7 * 24 * 3600.0
 
 
 class WeeklyCuts:

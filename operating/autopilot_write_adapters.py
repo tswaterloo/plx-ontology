@@ -202,6 +202,11 @@ class Adapter:
     # card and be ignored by the write (a company or file named one way, written another),
     # so ``_operation`` refuses it
     TARGET_KEYS: frozenset[str] = frozenset()
+    # operations a job may propose and a person may review (the request is built and
+    # checked like any other) that this build never performs: operation -> why. The
+    # request carries ``proposal_only``; the executor keeps it a dry run and ``perform``
+    # refuses it (``autopilot_write``)
+    PROPOSAL_ONLY: Mapping[str, str] = {}
 
     def __init__(self, transport: Transport | None = None, *,
                  environ: Mapping[str, str] | None = None) -> None:
@@ -248,6 +253,9 @@ class Adapter:
         return "The system has no undo for this action."
 
     def perform(self, request: Mapping[str, Any], key: str) -> dict[str, Any]:
+        if request.get("proposal_only"):
+            return {"status": "not_performed",
+                    "missing": [f"proposal_only: {request['proposal_only']}"]}
         why = self.unavailable()
         if why:
             return {"status": "not_performed", "missing": [why]}
@@ -492,7 +500,35 @@ class BCAdapter(Adapter):
                        "unitOfMeasureCode", "locationId", "expectedReceiptDate"),
             "fixed": {}},
     }
+    # proposed only (``PROPOSAL_ONLY``): a charge line (freight, handling, a fee) on an
+    # open sales order or a draft invoice, a G/L account (lineType Account: how the Portal
+    # posts freight) or an item charge (Charge) by its number, with its price
+    CHARGE_LINES: Mapping[str, Mapping[str, Any]] = {
+        "sales_order_charge_line": {"parent": "salesOrders", "lines": "salesOrderLines",
+                                    "fields": ("lineType", "lineObjectNumber", "description",
+                                               "quantity", "unitPrice")},
+        "sales_invoice_charge_line": {"parent": "salesInvoices", "lines": "salesInvoiceLines",
+                                      "fields": ("lineType", "lineObjectNumber", "description",
+                                                 "quantity", "unitPrice")},
+    }
+    CHARGE_TYPES = frozenset({"Account", "Charge"})
+    # proposed only: a file the store holds (its Attachment record, a POD, a supplier's
+    # invoice, a COA) attached to a BC document (API v2.0 documentAttachments: the record,
+    # then its bytes)
+    ATTACHES: Mapping[str, str] = {
+        "purchase_order_attach": "Purchase Order", "sales_order_attach": "Sales Order",
+        "sales_invoice_attach": "Sales Invoice"}
+    PROPOSAL_ONLY = {
+        **{op: "a charge is money: a person keys it in BC after review (no autopilot money "
+               "write)" for op in CHARGE_LINES},
+        **{op: "documentAttachments is not in the pinned BC $metadata and a file's bytes are "
+               "no job write: a person attaches it after review" for op in ATTACHES}}
     operations = {
+        "sales_order_charge_line": "charge line on an open sales order (proposed only)",
+        "sales_invoice_charge_line": "charge line on a draft sales invoice (proposed only)",
+        "purchase_order_attach": "attach a file to a purchase order (proposed only)",
+        "sales_order_attach": "attach a file to a sales order (proposed only)",
+        "sales_invoice_attach": "attach a file to a sales invoice (proposed only)",
         "purchase_order_create": "new purchase order; undo: DELETE with etag while open",
         "sales_order_create": "new sales order; undo: DELETE with etag while unshipped",
         "purchase_order_line_update": "PO line change; undo: PATCH back to the prior values",
@@ -582,6 +618,10 @@ class BCAdapter(Adapter):
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
         from operating import write_intents as wi
         operation = self._operation(action)
+        if operation in self.CHARGE_LINES:
+            return self._charge(action, operation)
+        if operation in self.ATTACHES:
+            return self._attach(action, operation)
         if operation in self.LINE_OPERATIONS:
             return self._line(action, operation)
         if operation in self.DOC_UPDATES or operation in self.LINE_UPDATES:
@@ -658,6 +698,73 @@ class BCAdapter(Adapter):
                        f"{op['lines']}",
                 "headers": {"Content-Type": "application/json"},
                 "body": wi._plain(typed), "body_json": wi._json(typed)}
+
+    def _charge(self, action: Mapping[str, Any], operation: str) -> dict[str, Any]:
+        """A charge line, checked against the $metadata pin; proposed only."""
+        from operating import write_intents as wi
+        op = self.CHARGE_LINES[operation]
+        payload = dict(action.get("payload") or {})
+        _only(payload, op["fields"], "bc", operation)
+        problems: list[str] = []
+        document = str((action.get("target") or {}).get("document_id") or "")
+        if not _GUID.fullmatch(document):
+            problems.append("bc: target.document_id must be the GUID of the open document")
+        if payload.get("lineType") not in self.CHARGE_TYPES:
+            problems.append("bc: a charge line is lineType Account or Charge")
+        if _text(payload.get("lineObjectNumber"), 20) is None:
+            problems.append("bc: the charge names its G/L account or item charge number")
+        for key in ("quantity", "unitPrice"):
+            amount = wi._decimal(payload.get(key))
+            if amount is None or amount <= 0:
+                problems.append(f"bc: {key} must be above zero")
+        if "description" in payload and _text(payload["description"], 100) is None:
+            problems.append("bc: description must be 1..100 characters")
+        try:
+            company = self._company(action)
+        except AdapterRefused as error:
+            problems += error.problems
+        if problems:
+            raise AdapterRefused(problems)
+        meta = wi.default_metadata()
+        props = meta[0].properties(op["lines"]) if meta else {}
+        typed = {k: (wi._decimal(v) if (props.get(k) or {}).get("type") == "Edm.Decimal"
+                     else v) for k, v in payload.items()}
+        found = wi.validate_request({"entity_set": op["lines"], "body": typed}, meta)
+        if found:
+            raise AdapterRefused([str(p) for p in found])
+        return {"method": "POST",
+                "url": f"{self._root(company)}/{op['parent']}({document.lower()})/{op['lines']}",
+                "headers": {"Content-Type": "application/json"},
+                "body": wi._plain(typed), "body_json": wi._json(typed),
+                "proposal_only": self.PROPOSAL_ONLY[operation]}
+
+    def _attach(self, action: Mapping[str, Any], operation: str) -> dict[str, Any]:
+        """A file the store holds attached to a BC document; proposed only."""
+        payload = dict(action.get("payload") or {})
+        _only(payload, ("attachment", "fileName"), "bc", operation)
+        problems: list[str] = []
+        document = str((action.get("target") or {}).get("document_id") or "")
+        if not _GUID.fullmatch(document):
+            problems.append("bc: target.document_id must be the GUID of the document")
+        if not re.fullmatch(r"Attachment:[A-Za-z0-9._:-]{1,200}", str(payload.get("attachment")
+                                                                      or "")):
+            problems.append("bc: attachment must be the Attachment record the file is")
+        name = _text(payload.get("fileName"), 250)
+        if name is None or re.search(r"[\\/\x00-\x1f]", name):
+            problems.append("bc: fileName must be a plain file name of 1..250 characters")
+        try:
+            company = self._company(action)
+        except AdapterRefused as error:
+            problems += error.problems
+        if problems:
+            raise AdapterRefused(problems)
+        body = {"parentType": self.ATTACHES[operation], "parentId": document.lower(),
+                "fileName": name}
+        return {"method": "POST", "url": f"{self._root(company)}/documentAttachments",
+                "headers": {"Content-Type": "application/json"}, "body": body,
+                "body_json": json.dumps(body, sort_keys=True),
+                "file_from": payload["attachment"],
+                "proposal_only": self.PROPOSAL_ONLY[operation]}
 
     def _root(self, company: str) -> str:
         from operating import write_intents as wi

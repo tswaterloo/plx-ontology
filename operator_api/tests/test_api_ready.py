@@ -273,7 +273,7 @@ class FirstPass(unittest.TestCase):
         backend._upcoming_cached = done
         backend._briefing_ahead = lambda reader: done
         backend._weekly_ahead = lambda reader: done
-        backend._screens_ahead = lambda reader, screens=(), until=None: gate.wait(10)
+        backend._screens_ahead = lambda reader, *args, **kw: gate.wait(10)
         readers = []
         for key in ("r1", "r2"):
             reader = mock.Mock(key=key)
@@ -334,8 +334,12 @@ class FirstPassDirectory(unittest.TestCase):
         backend = self.backend(gate)
         stuck = threading.Event()
         self.addCleanup(stuck.set)
-        backend._screens_ahead = lambda reader, screens=(), until=None: (
-            stuck.wait(10) if reader.key == "d1" else None)
+        later: dict[str, bool] = {}
+
+        def screens(reader, screens=(), until=None, behind=False):
+            later[reader.key] = behind
+            return stuck.wait(10) if reader.key == "d1" else None
+        backend._screens_ahead = screens
         today: list[str] = []
         backend._upcoming_cached = lambda view, reader: today.append(reader.key)
         session = mock.Mock(view_as=False, principals=["d1"])
@@ -355,6 +359,8 @@ class FirstPassDirectory(unittest.TestCase):
         self.assertEqual(sorted(today), ["d1", "r1", "r2"])   # every reader's Today
         self.assertFalse(stuck.is_set())                 # d1's screens still running
         self.assertFalse(getattr(be.DIRECTORY_ROUND, "on", False))
+        # the directory employee's screens queue behind every session reader's
+        self.assertEqual(later, {"r1": False, "r2": False, "d1": True})
 
 
 class FirstPassBounded(unittest.TestCase):

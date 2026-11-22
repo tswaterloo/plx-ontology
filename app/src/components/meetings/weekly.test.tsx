@@ -10,6 +10,8 @@ vi.mock("@/lib/api", () => ({
     sections: [
       { key: "late_pos", title: "Late purchase orders (open now)", state: "unread", note: "Still reading the late purchase orders; open the review again in a moment.", rows: [], figures: [], more: 0 },
       { key: "complaints", title: "Customer complaints", state: "empty", rows: [], figures: [], more: 0 },
+      { key: "cash", title: "Cash position", state: "unread", rows: [], figures: [], more: 0 },
+      { key: "ap", title: "Payables", state: "blocked", rows: [], figures: [], more: 0 },
     ],
   }) as unknown as Brief,
 }));
@@ -22,5 +24,16 @@ describe("weekly review", () => {
     const late = await screen.findByTestId("brief-section-late_pos");
     expect(within(late).getByText(/Still reading the late purchase orders/)).toBeTruthy();
     expect(screen.getByTestId("weekly-quiet").textContent).not.toMatch(/late purchase orders/i);
+  });
+
+  it("cash and payables that could not be read are named as not read, never counted as quiet (11-22 audit)", async () => {
+    render(<WeeklyReview />);
+    await screen.findByTestId("brief-section-late_pos");
+    const quiet = screen.getAllByTestId("weekly-quiet").map((n) => n.textContent).join(" ");
+    expect(quiet).toMatch(/customer complaints/i);
+    expect(quiet).not.toMatch(/cash|payables/i);
+    const unread = screen.getAllByTestId("weekly-unread").map((n) => n.textContent).join(" ");
+    expect(unread).toMatch(/cash position/);
+    expect(unread).toMatch(/payables/);
   });
 });

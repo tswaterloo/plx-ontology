@@ -38,10 +38,10 @@ function Score({ s, label }: { s: TrustAnswerScore | null | undefined; label: st
   if (!s) return <td className="py-1.5 pr-3 text-[12px] text-faint">Not measured yet</td>;
   return (
     <td className="py-1.5 pr-3" aria-label={`${label} score`}>
-      <span className="num text-[14px] font-semibold">{pctText(s.accuracy)}</span>
-      <span className="num ml-2 text-[12px] text-muted">answered {pctText(s.coverage)}</span>
+      <span className="num text-[14px] font-semibold">{s.correct} of {s.answered} right</span>
+      <span className="num ml-2 text-[12px] text-muted">{pctText(s.accuracy)} · answered {s.answered} of {s.runs}</span>
       <span className="num block text-[11px] text-faint">
-        {s.correct} of {s.answered} right · {s.items} questions, {s.runs} runs · {dayText(s.at)} · {s.evidence_label}
+        {s.items} questions, {s.runs} runs · {dayText(s.at)} · {s.evidence_label}
       </span>
     </td>
   );

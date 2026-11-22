@@ -27,7 +27,8 @@ Evidence: isolated-fixture (``operator_api/tests/test_assistant_tools.py``).
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+import re
+from typing import Any, Mapping, Optional, Sequence
 
 from operating import learning
 
@@ -168,20 +169,29 @@ RUNS = {"hourly": "every hour", "daily": "every morning", "weekly": "Monday morn
 WATCH_SPEC = {
     "name": WATCH,
     "description": (
-        "Watch a measure of the catalogue for the person (plx.sql's measures: use its id or "
-        "name) and tell them on their Home when it moves. It runs by itself as them, on "
-        "their own access, at the schedule given (default daily), and the alert offers the "
-        "why question so the reason is read when it fires. Default: tell them when the "
-        "latest days (default 7) are unusual, 2 spreads or more from the usual level of the "
-        "12 periods before. move_pct: when it moves by that percent or more against the "
-        "same days just before instead. above / below: a number the measure's value "
-        "crosses (the only way for a snapshot measure like open or late orders; read its "
-        "value first to propose a line). Use it when they ask to watch, monitor, track or "
-        "be alerted on a number; never for a record (a customer, an order). The result "
-        "says what was set up and where to see it, or why nothing was kept: tell them "
-        "exactly that."),
+        "Watch a number for the person and tell them on their Home when it crosses a line "
+        "or moves. It runs by itself as them, on their own access, at the schedule given "
+        "(default daily), and the alert offers the why question so the reason is read when "
+        "it fires. Either a measure of the catalogue (plx.sql's measures: its id or name): "
+        "default, tell them when the latest days (default 7) are unusual, 2 spreads or more "
+        "from the usual level of the 12 periods before; move_pct: when it moves by that "
+        "percent or more against the same days just before; above / below: a number the "
+        "measure's value crosses (the only way for a snapshot measure like open or late "
+        "orders; read its value first to propose a line). Or one of their pinned charts "
+        "(insight: its id, s<n>; a question asked on the page /insights#insight-s<n> is "
+        "about that chart): call with insight alone first to see its columns and latest "
+        "rows, then with column, op (above/below), value, row (latest: the last row along "
+        "the chart's axis, the usual choice for a chart over time, earlier periods never "
+        "fire; total: the column's sum; any: some row, never for a chart over time) and "
+        "where (column and value: one currency when the rows hold more than one). That "
+        "call keeps nothing: it returns the watch read back as a sentence with its number "
+        "now and a token; tell them that sentence and, only once they say yes, set it with "
+        "the same line, confirmed: true and that token. "
+        "Use it when they ask to watch, monitor, track or be alerted on a number; never "
+        "for a record (a customer, an order). The result says what was set up and where to "
+        "see it, or why nothing was kept: tell them exactly that."),
     "inputSchema": {
-        "type": "object", "additionalProperties": False, "required": ["measure"],
+        "type": "object", "additionalProperties": False,
         "properties": {
             "measure": {"type": "string"},
             "days": {"type": "integer", "minimum": 1, "maximum": 365},
@@ -189,9 +199,50 @@ WATCH_SPEC = {
             "above": {"type": "number"},
             "below": {"type": "number"},
             "schedule": {"type": "string", "enum": ["hourly", "daily", "weekly"]},
+            "insight": {"type": "string", "pattern": "^s[0-9]{1,18}$"},
+            "column": {"type": "string", "maxLength": 63},
+            "op": {"type": "string", "enum": ["above", "below"]},
+            "value": {"type": "number"},
+            "row": {"type": "string", "enum": ["latest", "total", "any"]},
+            "where": {"type": "object", "additionalProperties": False,
+                      "required": ["column", "value"],
+                      "properties": {"column": {"type": "string", "maxLength": 63},
+                                     "value": {"type": "string", "maxLength": 200}}},
+            "confirmed": {"type": "boolean"},
+            "token": {"type": "string", "maxLength": 200},
         },
     },
 }
+CHART_ONLY = ("insight", "column", "op", "value", "row", "where", "confirmed", "token")
+MEASURE_ONLY = ("measure", "days", "move_pct", "above", "below")
+SHOWN_ROWS = 6     # a pinned chart's last rows shown to choose a line from
+
+
+WATCH_TOKEN_SECONDS = 1800    # a read-back's token is good this long
+_PROCESS_KEY = __import__("secrets").token_bytes(32)
+
+
+def _watch_mac(key: bytes, owner: str, sid: str, schedule: str, line: Mapping[str, Any],
+               until: int) -> str:
+    import hashlib
+    import hmac
+    import json
+    said = json.dumps([owner, sid, schedule, dict(line), until], sort_keys=True,
+                      separators=(",", ":"))
+    return hmac.new(key, b"watch-read-back|" + said.encode(), hashlib.sha256).hexdigest()
+
+
+def sentence(title: str, line: Mapping[str, Any], runs: str) -> str:
+    """A chart's watched line read back in plain words."""
+    col = line["column"].replace("_", " ")
+    of = f" in {line['where']['value']}" if line.get("where") else ""
+    what = {"latest": f"the latest {col}{of}" + (f" (along {line['order'].replace('_', ' ')})"
+                                                  if line.get("order") else ""),
+            "total": f"the total {col}{of}"}.get(line.get("row") or "any",
+                                                  f"any row's {col}{of}")
+    value = f"{line['value']:,.2f}".rstrip("0").rstrip(".")
+    return (f"On \"{title}\", tell you on Home when {what} goes {line['op']} {value}; "
+            f"checked {runs}.")
 
 
 class AssistantToolsMixin:
@@ -261,6 +312,13 @@ class AssistantToolsMixin:
         schedule = args.get("schedule") or "daily"
         if schedule not in ("hourly", "daily", "weekly"):
             return {"not_kept": "schedule is hourly, daily or weekly"}
+        chart = [k for k in CHART_ONLY if args.get(k) is not None]
+        if chart or args.get("insight") is not None:
+            if any(args.get(k) is not None for k in MEASURE_ONLY):
+                return {"not_kept": "watch a measure or a pinned chart (insight), not both"}
+            return self._watch_chart(reader, store, args, schedule)
+        if args.get("measure") is None:
+            return {"not_kept": "name a measure, or a pinned chart (insight: s<n>)"}
         try:
             spec = ins.measure_watch(args.get("measure"), args.get("days"),
                                      args.get("move_pct"), args.get("above"),
@@ -275,6 +333,115 @@ class AssistantToolsMixin:
                 "tells_them": "on their Home when it crosses the line, with the why "
                               f"question to ask: {got.question}",
                 "definition": spec.about, "open": f"/insights#insight-{got.id}"}
+
+    def _watch_chart(self, reader: Any, store: Any, args: Mapping[str, Any],
+                     schedule: str) -> Any:
+        """A line on one of ``reader``'s pinned charts (``insights_runs.reading``): its
+        columns and latest rows (insight alone), the line read back with its number now
+        (kept only with ``confirmed``), or why it cannot be watched. The chart is read now
+        through their own door (``insights.read_sql``), as its runs will be."""
+        from . import insights as ins
+        from . import insights_runs as runs
+        from .charts import _period, _text
+        from .errors import UserFacing
+        from .simple_ask import _redacted
+        spec = store.get(reader.key, str(args.get("insight") or ""))
+        if spec is None:
+            return {"not_kept": "That is not one of their pinned charts (its id is s<n>, "
+                                "in its Insights address /insights#insight-s<n>)."}
+        try:
+            got = ins.read_sql(self, reader, spec.sql)
+        except UserFacing as why:
+            return {"not_kept": why.message}
+        columns = [str(c) for c in got.get("columns") or ()]
+        rows = [r.get("cells", []) for r in got.get("rows") or () if isinstance(r, Mapping)]
+        x = str((spec.chart or {}).get("x") or "") or None
+        x = x if x in columns else None
+        title = _redacted(spec.title)
+        if args.get("column") is None:
+            return {"chart": title, "columns": columns, "axis": x,
+                    "currency_columns": runs.currency_columns(columns),
+                    "last_rows": [[_redacted(_text(c) or "") if isinstance(c, str) else c
+                                   for c in r] for r in rows[-SHOWN_ROWS:]],
+                    "row_count": len(rows), "next": "send column, op, value, row and, for "
+                    "one currency, where; nothing is kept until they say yes"}
+        row = args.get("row") or ("latest" if x else "any")
+        line = ins.watch_of({"column": args.get("column"), "op": args.get("op"),
+                             "value": args.get("value"), "row": row,
+                             "where": args.get("where"), "order": x})
+        if not line:
+            return {"not_kept": "name the column, above or below, and a number"}
+        def timed(cell: Any) -> bool:
+            t = (_text(cell) or "").strip()
+            return _period(t) is not None or re.match(r"^\d{4}-\d{2}-\d{2}", t) is not None
+        at_x = columns.index(x) if x else -1
+        if row == "any" and x is not None and rows and all(
+                timed(r[at_x] if at_x < len(r) else None) for r in rows):
+            return {"not_kept": "This chart runs along time: any row would bring back "
+                                "earlier periods. Watch its latest row (or the total)."}
+        try:
+            now = runs.reading(line, columns, rows)
+        except runs.WatchUnread as why:
+            return {"not_kept": f"It cannot be watched: {why}."}
+        if row == "latest" and len({e["group"] for e in now}) > 1:
+            return {"not_kept": "The rows hold more than one currency: name one (where)."}
+        said = sentence(title, line, RUNS[schedule])
+        state = [{"at": e["at"], "currency": e["group"] or (line.get("where") or {}).get(
+                      "value", ""), "value": str(e["value"]),
+                  "past_the_line_now": e["past"]} for e in now[:SHOWN_ROWS]]
+        bound = (reader.key, spec.id, schedule, line)
+        if args.get("confirmed") is not True:
+            return {"read_back": said, "now": state, "kept": False,
+                    "token": self._watch_token(*bound),
+                    "next": "tell them this sentence; once they say yes, call again with "
+                            "the same line, confirmed: true and this token"}
+        if not self._watch_token_ok(str(args.get("token") or ""), *bound):
+            return {"not_kept": "Nothing was set: a monitor is kept only with the token its "
+                                "read-back gave, for that same line, within "
+                                f"{WATCH_TOKEN_SECONDS // 60} minutes. Read it back again."}
+        try:
+            kept = store.set_schedule(reader, spec.id, schedule, "crosses", line)
+        except UserFacing as why:
+            return {"not_kept": why.message}
+        if kept is None:
+            return {"not_kept": "The monitor could not be scheduled."}
+        return {"watching": said, "now": state, "runs": RUNS[schedule],
+                "tells_them": "on their Home when it crosses the line"
+                              + (f", with the why question to ask: {kept.question}"
+                                 if kept.question else ""),
+                "open": f"/insights#insight-{kept.id}"}
+
+    def _watch_key(self) -> bytes:
+        """The read-back tokens' key: the app's run key (the same for every process of this
+        server), else one made for this process."""
+        from pathlib import Path
+        from .insights_runs import run_key
+        data_dir = getattr(self, "data_dir", None)
+        if data_dir:
+            try:
+                return run_key(Path(data_dir))
+            except (OSError, ValueError):
+                pass
+        return _PROCESS_KEY
+
+    def _watch_token(self, owner: str, sid: str, schedule: str, line: Mapping[str, Any],
+                     now: Optional[float] = None) -> str:
+        """A read-back's token: bound to the person, the chart, the schedule and the exact
+        line, good for ``WATCH_TOKEN_SECONDS``."""
+        import time
+        until = int((time.time() if now is None else now) + WATCH_TOKEN_SECONDS)
+        return f"{until}.{_watch_mac(self._watch_key(), owner, sid, schedule, line, until)}"
+
+    def _watch_token_ok(self, token: str, owner: str, sid: str, schedule: str,
+                        line: Mapping[str, Any]) -> bool:
+        import hmac
+        import time
+        until, _, mac = token.partition(".")
+        if not until.isdigit() or int(until) < time.time() \
+                or int(until) > time.time() + WATCH_TOKEN_SECONDS:
+            return False
+        return hmac.compare_digest(mac, _watch_mac(self._watch_key(), owner, sid, schedule,
+                                                   line, int(until)))
 
     # -- plx.remember -------------------------------------------------------------------
 
@@ -491,7 +658,8 @@ def documents(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The files the session made (``plx.make_document`` results, and the edited copy a
     ``plx.edit_document`` kept, in order, each once): name, kind, size and download link,
     for the answer to show. A copy edited again (``edited_from`` names it) gives its place
-    to the newer copy: the person gets the file with every change, once."""
+    to the newer copy: the person gets the file with every change, once; so does a file
+    made again under the same name and kind (the session's revision of it)."""
     from .simple_ask import _parsed
     out: list[dict[str, Any]] = []
     for event in events:
@@ -516,8 +684,13 @@ def documents(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(url, str) or not url.startswith("/api/instruct/files/f_") \
                 or any(d["download_url"] == url for d in out):
             continue
-        out.append({"name": str(result.get("name") or "Document")[:200],
-                    "kind": result.get("kind") if result.get("kind") in KINDS else "docx",
+        shown = str(result.get("name") or "Document")[:200]
+        kind = result.get("kind") if result.get("kind") in KINDS else "docx"
+        if name == DOCUMENT.replace(".", "_"):
+            # a file made again under the same name and kind is the session's revision of
+            # it: the newer copy takes the older one's place (the person gets it once)
+            out = [d for d in out if (d["name"], d["kind"]) != (shown, kind)]
+        out.append({"name": shown, "kind": kind,
                     "size": int(result.get("size") or 0), "download_url": url,
                     "changes": changes[:MOST_CHANGES]})
     return out

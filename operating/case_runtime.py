@@ -958,7 +958,7 @@ class CaseRuntime:
             except (CaptureError, sqlite3.Error, OSError):
                 self._drop_capture_read(path)
                 raise CitationUnresolvable("capture_citation_unresolvable") from None
-        state = self._capture_denial(source, kind, result)
+        state = self._capture_denial(source, kind, result, actor)
         if state is not None:
             raise gate_refusal("capture_citation_unresolvable", state)
         stale_at = getattr(audience, "stale_opened_at", None)
@@ -1004,7 +1004,7 @@ class CaseRuntime:
                         results = [None] * len(chunk)
                 for handle, result in zip(chunk, results):
                     out[handle] = (result if result is not None and self._capture_denial(
-                        source, kind, result) is None else None)
+                        source, kind, result, actor) is None else None)
         return out
 
     def teams_chat_units(self, actor: Actor) -> frozenset[str]:
@@ -1059,12 +1059,24 @@ class CaseRuntime:
                            self._staff_item_allows(entitlement, source, acl, {})))
         return audience
 
-    def _capture_denial(self, source: str, kind: str, result: Mapping[str, Any]) -> Any:
+    def _owner_reads(self, actor: Any) -> bool:
+        """THE owner (``EmployeeEntitlement.owner``) under a usable people guard: the people
+        exclusion withholds nothing from the owner. Anything
+        undecidable: False (withheld)."""
+        from .employee_permissions import reader_owner
+        if actor is None or self.exclusion_refusal():
+            return False
+        return reader_owner(getattr(self, "employee_gate", None), actor)
+
+    def _capture_denial(self, source: str, kind: str, result: Mapping[str, Any],
+                        actor: Any = None) -> Any:
         """None when a capture store's ``result`` is served, else the refusal state
         (``REFUSED``: the audience, the record's own check or the people rule refused this
         reader; ``FAILED``: any other error). Both read alike to the caller."""
         if not result.get("ok") or result.get("kind") != kind:
             return REFUSED if result.get("error") == "not_visible" else FAILED
+        if self._owner_reads(actor):
+            return None   # the people set is the owner's alone: the owner's own gates still ran
         if source in ("teams-channel", "teams-chat"):
             from .ontology_tools_evidence import people_excluded
             # A message an excluded person sent, or of a chat they are in, is withheld from

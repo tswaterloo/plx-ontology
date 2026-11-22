@@ -361,7 +361,12 @@ def purge_objects(conn: Any, object_ids: Iterable[str]) -> int:
 
 
 def reuse_embeddings(conn: Any, model: str) -> int:
-    """Rows whose content another row already embedded with ``model`` take that vector."""
+    """Rows whose content another row already embedded with ``model`` take that vector
+    (in 'narrow' mode a vector is per kind and hash already: nothing to copy)."""
+    from operating.pg import chunk_vectors
+    if chunk_vectors.narrow(conn):
+        conn.commit()
+        return 0
     n = conn.execute(
         "UPDATE search.chunks c SET embedding = d.embedding, embed_model = d.embed_model "
         "FROM (SELECT DISTINCT ON (content_sha) content_sha, embedding, embed_model FROM "
@@ -390,8 +395,8 @@ def pending(conn: Any, model: str, kinds: Sequence[str] | None = None,
     every text dated in the last ``recent_days`` and every undated record text first
     (newest first, the undated after), then the rest, newest first; ``recent_only``: the
     first part alone."""
-    where = ("(embedding IS NULL OR embed_model IS DISTINCT FROM %s) "
-             "AND kind <> ALL(%s::text[])")
+    from operating.pg import chunk_vectors
+    where = chunk_vectors.pending_predicate(conn) + " AND kind <> ALL(%s::text[])"
     params: list[Any] = [model, list(WORDS_ONLY_KINDS)]
     if kinds:
         where += " AND kind = ANY(%s)"
@@ -432,7 +437,13 @@ def texts_for(conn: Any, shas: Sequence[str]) -> list[tuple[str, str]]:
 
 def store_embeddings(conn: Any, model: str, dim: int, shas: Sequence[str],
                      vectors: np.ndarray) -> int:
+    """Store each hash's vector for every chunk holding it: appended to the narrow table
+    in 'narrow' mode (``operating.pg.chunk_vectors``: no UPDATE of the wide row), else
+    into ``search.chunks.embedding``. The chunk rows served."""
+    from operating.pg import chunk_vectors
     texts = [vector_text(v, dim) for v in vectors]
+    if chunk_vectors.narrow(conn):
+        return chunk_vectors.store(conn, model, dim, shas, texts)
     n = conn.execute(
         f"UPDATE search.chunks c SET embedding = u.vec::halfvec({dim}), embed_model = %s "
         "FROM unnest(%s::text[], %s::text[]) AS u(sha, vec) WHERE c.content_sha = u.sha",

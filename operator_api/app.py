@@ -59,8 +59,8 @@ MEASURE_ROUTES = frozenset({
     "/api/me", "/api/home", "/api/sidebar", "/api/briefing", "/api/briefing/items",
     "/api/briefing/pages", "/api/briefing/unjudged", "/api/suggestions", "/api/insights",
     "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/data-health", "/api/labour",
-    "/api/my-work",
-    "/api/biz/page", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
+    "/api/my-work", "/api/suggest",
+    "/api/biz/page", "/api/records/list", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
     "/api/workload/grants", "/api/approvals", "/api/replies", "/api/autopilot",
     "/api/autopilot/catalog", "/api/autopilot/schedules", "/api/autopilot/drafts",
     "/api/trust", "/api/ops/status", "/api/watch", "/api/actions/state", "/api/prepared",
@@ -716,6 +716,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 out["employee_policy"] = None
         return out
 
+    @app.get("/api/feeds", response_model=m.FeedStates, tags=["trust"],
+             responses={401: {"model": m.ErrorResponse}})
+    def feed_states(who: Reader = Depends(reader)) -> m.FeedStates:
+        """Whether the background jobs behind Home's lists (reply drafts, autopilot entries,
+        findings, late purchase orders and alerts) are running, from the reliability alarms'
+        last pass: a stopped job is said, never shown as an empty list. The same for every
+        signed-in reader; unit state only, never a record."""
+        from . import feed_state
+        return m.FeedStates(**feed_state.build(state_dir))
+
     @app.get("/api/trust", response_model=m.TrustPage, tags=["trust"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
     def trust_page(who: Reader = Depends(reader)) -> Response:
@@ -956,7 +966,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
                         503: {"model": m.ErrorResponse}})
     def biz_page(kind: Literal["customer", "chain", "supplier", "purchase_order",
-                               "sales_order"],
+                               "sales_order", "product", "batch"],
                  h: str = Query("", max_length=600), chain: str = Query("", max_length=200),
                  record: str = Query("", max_length=700),
                  who: Reader = Depends(reader)) -> m.BizPage:
@@ -965,6 +975,18 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         them, in one read. ``record``: a record id (object id) instead of ``h``: the page
         of the row it was read into."""
         return backend.biz_page(who, kind, handle=h, chain=chain, record=record)
+
+    @app.get("/api/records/list", response_model=m.RecordList, tags=["search"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                        503: {"model": m.ErrorResponse}})
+    def records_list(view: Literal["production"], status: str = Query("", max_length=80),
+                     hold: Literal["", "yes", "no"] = Query(""),
+                     q: str = Query("", max_length=80),
+                     offset: int = Query(0, ge=0, le=20000), limit: int = Query(25, ge=1, le=100),
+                     who: Reader = Depends(reader)) -> m.RecordList:
+        """A list of records from the business tables, as you may see them, with its
+        filters: ``production`` is the batches (status, QC hold, text)."""
+        return backend.records_list(who, view, status, hold, q, offset, limit)
 
     @app.get("/api/home", response_model=m.Home, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -983,14 +1005,45 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/data-health", response_model=m.DataHealth, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
-    def data_health(who: Reader = Depends(reader)) -> m.DataHealth:
+    def data_health(who: Reader = Depends(reader),
+                    check: Optional[str] = Query(None, max_length=80),
+                    offset: int = Query(0, ge=0, le=20000),
+                    limit: int = Query(25, ge=1, le=100)) -> m.DataHealth:
         """Every data-health check: the findings you may see, and how many more it found on
         records you may not open (counted, never named). An Admin page: the owner and the
-        Team readers only, as its menu entry (403 for every other reader)."""
+        Team readers only, as its menu entry (403 for every other reader). ``check``: one
+        check's findings from ``offset`` (a page of them), cut from the page's one read."""
         if not ops_reader(who):
             raise UserFacing("forbidden", "Only the owner and the Team readers see data "
                              "health.", 403)
-        return backend.data_health(who)
+        from . import data_health as dh
+        if check is None:
+            return backend.data_health(who)   # open counts only: findings are read per check
+        return dh.window(backend.data_health(who, check), check, offset, limit)
+
+    @app.get("/api/data-health/export", tags=["home"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def data_health_export(who: Reader = Depends(reader),
+                           check: Optional[str] = Query(None, max_length=80)) -> Response:
+        """The findings you may see, one check's or all, as a spreadsheet (CSV): the same
+        rows the page lists, never more."""
+        if not ops_reader(who):
+            raise UserFacing("forbidden", "Only the owner and the Team readers see data "
+                             "health.", 403)
+        import csv
+        import io
+        from . import data_health as dh
+        full = backend.data_health(who, check) if check else (
+            backend.data_health_all(who) if hasattr(backend, "data_health_all")
+            else backend.data_health(who))
+        if full.status != "read":
+            raise UserFacing("page_unavailable", "The checks couldn't be read just now.", 503)
+        buf = io.StringIO()
+        csv.writer(buf).writerows(dh.export_rows(full, check))
+        name = "data-health" + (f"-{re.sub(r'[^a-z0-9_-]', '', check.lower())}" if check else "")
+        return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.csv"',
+                                 "Cache-Control": "no-store"})
 
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
@@ -1336,6 +1389,21 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Stop one of yours: it is deleted and never runs again."""
         backend.recurring_stop(who, rid)
         return Response(status_code=204)
+
+    @app.get("/api/digests", response_model=m.Digests, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def digests_list(who: Reader = Depends(reader)) -> m.Digests:
+        """The digests on offer (morning briefing; decisions, customer feedback and waiting
+        requests): all off until you switch one on; each report is yours alone."""
+        return m.Digests(digests=backend.digest_list(who))
+
+    @app.put("/api/digests/{digest_id}", response_model=m.Digests, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                        422: {"model": m.ErrorResponse}})
+    def digests_set(digest_id: str, body: m.DigestSet,
+                    who: Reader = Depends(reader)) -> m.Digests:
+        """Switch one of your digests on (at an hour, US Eastern) or off. It runs as you."""
+        return m.Digests(digests=backend.digest_set(who, digest_id, body.on, body.hour))
 
     @app.get("/api/instruct/files/{file_id}", tags=["actions"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})

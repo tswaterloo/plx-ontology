@@ -189,6 +189,22 @@ describe("answer charts", () => {
     expect(notes).toContain("2 smaller series are not drawn");
   });
 
+  it("panels by currency each get their own axis, and a horizontal bar chart names every row", () => {
+    // 40,000 CAD beside 400,000 USD: on one axis the CAD bars would be a sliver
+    const names = Array.from({ length: 30 }, (_, i) => `Customer ${i + 1}`);
+    const chart: AskChart = { x: "customer", title: "Owed", kind: "bar", labels: [], series: [], spec: { kind: "bar", x: "customer", y: ["overdue"], facet: "currency", horizontal: true },
+      panels: [{ title: "CAD", labels: names, series: [{ name: "overdue", values: names.map((_, i) => 40000 - i * 1000) }] },
+        { title: "USD", labels: ["A", "B"], series: [{ name: "overdue", values: [400000, 300000] }] }] };
+    render(<AnswerCharts charts={[chart]} />);
+    const [cad] = screen.getAllByRole("img", { name: "Owed" });
+    // every one of the 30 names is drawn, not every other
+    for (const n of names) expect(cad.textContent).toContain(n);
+    // the CAD panel's axis ends near its own 40,000, not the USD 400,000
+    const ticksText = Array.from(cad.querySelectorAll("text")).map((t) => t.textContent);
+    expect(ticksText).toContain("40k");
+    expect(ticksText).not.toContain("400k");
+  });
+
   it("offers the files and PNG under a chart in one Save menu", () => {
     render(<AnswerCharts charts={[bars]} />);
     // one control under the chart, not five

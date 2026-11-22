@@ -1,0 +1,19 @@
+[Unit]
+Description=PLX old-mail search store (Postgres 17, socket only, ~/oldmail-store)
+After=default.target
+
+[Service]
+Type=simple
+Environment=LD_LIBRARY_PATH=%h/plx-replica/pg17/lib
+ExecStart=%h/plx-replica/pg17/bin/postgres -D %h/oldmail-store/pg -c config_file=%h/oldmail-store/postgresql.conf
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=300
+TimeoutStartSec=600
+Restart=on-failure
+RestartSec=15
+MemoryLow=10G
+
+[Install]
+WantedBy=default.target

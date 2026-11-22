@@ -1,0 +1,73 @@
+{
+  "tool": "plx.search",
+  "examples": [
+    {
+      "name": "mail about a late shipment, widened to near matches",
+      "input": {
+        "query": "late shipment croda",
+        "sources": [
+          "graph_mail",
+          "teams"
+        ],
+        "since": "2098-10-01"
+      },
+      "output": {
+        "documents": [
+          {
+            "citation": "graph-mail://mailbox-example/messages/AAMkExample02@capture-7",
+            "kind": "email",
+            "title": {
+              "untrusted_text": "RE: Croda shipment delayed",
+              "origin": {
+                "citation": "graph-mail://mailbox-example/messages/AAMkExample02@capture-7",
+                "field_path": "row.subject",
+                "sender_class": "external"
+              }
+            },
+            "sender": {
+              "address": {
+                "untrusted_text": "logistics@example.invalid",
+                "origin": {
+                  "citation": "graph-mail://mailbox-example/messages/AAMkExample02@capture-7",
+                  "field_path": "row.from",
+                  "sender_class": "external"
+                }
+              },
+              "sender_class": "external"
+            },
+            "date": "2098-12-20T14:00:00Z",
+            "snippet": {
+              "untrusted_text": "The shipment is late by two days; new ETA Friday.",
+              "origin": {
+                "citation": "graph-mail://mailbox-example/messages/AAMkExample02@capture-7",
+                "field_path": "row.body",
+                "sender_class": "external"
+              }
+            },
+            "match": "2 of 3 words"
+          }
+        ],
+        "searched": {
+          "sources": [
+            "graph_mail",
+            "teams"
+          ],
+          "since": "2098-10-01",
+          "until": "2099-01-02",
+          "queries": [
+            "late shipment croda"
+          ],
+          "widened": "fewer items held every query word than were asked for: the list also holds items with some of the words"
+        },
+        "gaps": [],
+        "completeness": {
+          "complete": true,
+          "truncated": false,
+          "returned": 1,
+          "total": 1,
+          "next_cursor": null
+        }
+      }
+    }
+  ]
+}

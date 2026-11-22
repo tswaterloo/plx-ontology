@@ -204,8 +204,9 @@ def system_prompt() -> str:
     # this prompt is every reader's; plx.sql {"measure": true} lists the reader's own
     from operating import measures
     lines += ["", "Named business measures (plx.sql {\"measure\": \"<id>\"}; agreed "
-              "definitions, use them first; plx.sql {\"measure\": true} lists each "
-              "definition and any more this reader may run):"]
+              "definitions, use them first; a figure you compute with your own SQL follows "
+              "the same definition; plx.sql {\"measure\": true} lists any more this "
+              "reader may run):"]
     lines += measures.lines()
     rules = sql.RULES if generic else sql.RULES_BASE + sql.RULES_TAIL
     method = METHOD.replace("{search}", search_line()).replace("{chart_line}", _CHART_LINE)

@@ -91,7 +91,8 @@ def mail_documents(state: Path, guard: Any, kinds: Sequence[Any], *,
             continue
         seen.add(key)
         if guard.is_excluded(mailbox) or _excluded(
-                guard, [sender, *(rec.get("to") or []), *(rec.get("cc") or [])]):
+                guard, [sender, *(rec.get("to") or []), *(rec.get("cc") or []),
+                        *(rec.get("bcc") or [])]):
             continue
         to = [str(a) for a in [*(rec.get("to") or []), *(rec.get("cc") or [])]]
         yield {"author": sender, "kind": kind, "source": handle, "sent": sent,

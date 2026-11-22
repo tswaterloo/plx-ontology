@@ -83,6 +83,8 @@ type Watch = NonNullable<InsightInfo["watch"]>;
  * comes to you on Home; with its last run in plain words. "When a number crosses a line":
  * a column of what it reads, above or below a number; it tells you when a row goes past it. */
 export function ScheduleControl({ item, columns = [] }: { item: InsightInfo; columns?: string[] }) {
+  // a chart along an axis is watched on its latest row (per currency), so an earlier month never comes back
+  const axis = item.chart?.x || null;
   const [now, setNow] = useState({ schedule: item.schedule, notify: item.notify, watch: item.watch ?? null });
   const [line, setLine] = useState<{ column: string; op: Watch["op"]; value: string }>({
     column: item.watch?.column ?? "", op: item.watch?.op ?? "above", value: item.watch ? String(item.watch.value) : "" });
@@ -102,7 +104,7 @@ export function ScheduleControl({ item, columns = [] }: { item: InsightInfo; col
   };
   const value = Number(line.value);
   const ready = line.column !== "" && line.value.trim() !== "" && Number.isFinite(value);
-  const saveLine = () => ready && save({ schedule: now.schedule, notify: "crosses", watch: { column: line.column, op: line.op, value } });
+  const saveLine = () => ready && save({ schedule: now.schedule, notify: "crosses", watch: { column: line.column, op: line.op, value, ...(axis ? { row: "latest" as const, order: axis } : { row: "any" as const }) } });
   const choose = (notify: InsightInfo["notify"]) => {
     if (notify === "crosses") {
       setNow({ ...now, notify });   // saved once the line is complete
@@ -141,12 +143,52 @@ export function ScheduleControl({ item, columns = [] }: { item: InsightInfo; col
           </select>
           <input className={`${field} w-20`} aria-label="Line" inputMode="decimal" value={line.value} disabled={busy} onChange={(e) => setLine({ ...line, value: e.target.value })} />
           <button type="button" className={field} disabled={busy || !ready} onClick={saveLine}>Watch</button>
-          {now.watch && <span>Watching {human(now.watch.column).toLowerCase()} {now.watch.op} {now.watch.value}</span>}
+          {now.watch && <span>Watching {watchWords(now.watch)}</span>}
         </span>
       )}
       {now.schedule && item.last_run && <span>{item.last_run}</span>}
+      <TellMeWhen item={item} />
       {problem && <span role="alert" className="text-fg">{problem}</span>}
     </div>
+  );
+}
+
+/** What a watched line reads: "the latest revenue in USD" (latest: along the chart's axis; total: the column's sum). */
+function watchSubject(w: Watch): string {
+  const col = human(w.column).toLowerCase();
+  const of = w.where ? ` in ${w.where.value}` : "";
+  return w.row === "latest" ? `the latest ${col}${of}` : w.row === "total" ? `the total ${col}${of}` : `${col}${of}`;
+}
+
+/** A watched line in words: "the latest revenue in USD below 400000". */
+export function watchWords(w: Watch): string {
+  return `${watchSubject(w)} ${w.op} ${w.value}`;
+}
+
+/** The Ask's question for "Tell me when ..." on a pinned chart: the person's words with the chart they are about. */
+export function tellMeWhenHref(item: InsightInfo, words: string): string {
+  const q = `Tell me when ${words.trim()} (my pinned chart "${item.title}")`;
+  return `/ask?q=${encodeURIComponent(q)}&page=${encodeURIComponent(`/insights#insight-${item.id}`)}`;
+}
+
+/** "Tell me when ...": the person's words go to the Ask with this chart, which reads the
+ * line back as a sentence and sets the monitor only once they say yes. */
+function TellMeWhen({ item }: { item: InsightInfo }) {
+  const [words, setWords] = useState("");
+  const go = useRef<HTMLAnchorElement>(null);
+  const ready = words.trim().length > 2;
+  return (
+    <span className="flex items-center gap-1" data-testid={`tell-${item.id}`}>
+      <label className="flex items-center gap-1">
+        Tell me when
+        <input className="h-7 w-56 rounded-md border border-border bg-bg px-1 text-[12px]" value={words} maxLength={300}
+          placeholder="USD revenue drops under 400k" onChange={(e) => setWords(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && ready) go.current?.click(); }} />
+      </label>
+      {ready
+        ? <Link ref={go} href={tellMeWhenHref(item, words)} className={`${quiet} inline-flex items-center`}>Set up</Link>
+        : <span className={`${quiet} inline-flex items-center opacity-50`} aria-disabled="true">Set up</span>}
+    </span>
   );
 }
 
@@ -196,6 +238,7 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
         <>
           {data.drawn ? <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} /> : <Rows data={data} />}
           <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
+            {item.fixed_dates && <span data-testid={`fixed-${item.id}`}>Dates fixed when pinned: {item.fixed_dates}</span>}
             <span>
               {data.drawn && !all && topOf(data.drawn) !== data.drawn ? `Top ${TOP} of ${data.drawn.labels.length}` : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`}
               {data.drawn?.as_of ? "" : data.as_of ? `, data as of ${formatDate(data.as_of)}` : `, read ${formatDateTime(data.read_at)}`}
@@ -223,7 +266,7 @@ export function monitorLine(item: InsightInfo): string {
   const when = SCHEDULES.find(([v]) => v === item.schedule)?.[1] ?? "";
   const w = item.watch;
   const tell = item.notify === "crosses" && w
-    ? `tells you when ${human(w.column).toLowerCase()} goes ${w.op} ${w.value}`
+    ? `tells you when ${watchSubject(w)} goes ${w.op} ${w.value}`
     : item.notify === "never" ? "nothing comes to Home" : `tells you ${(NOTIFY.find(([v]) => v === item.notify)?.[1] ?? "").toLowerCase()}`;
   return `${when}, ${tell}`;
 }

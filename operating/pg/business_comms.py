@@ -37,6 +37,7 @@ from typing import Any, Mapping, Sequence
 
 from operating.pg import business_views as bv
 from operating.pg import swap_lock
+from operating.pg.build_pause import before_build, check_write
 
 CHUNK = 200_000   # versions per insert statement (bounded statement and memory)
 WRITE_CHUNK = 250_000   # stage rows per statement of the build's write of its table
@@ -80,6 +81,9 @@ class Spec:
     cells_ok: bool = False
     # False: a search-only table (``business_views.View.listed``)
     listed: bool = True
+    # False: its types are still rows of ``records`` (``business_views.View.covers``): files
+    # are listed here but are never a generic record table
+    covers: bool = True
 
 
 def _addresses(*exprs: str) -> str:
@@ -176,6 +180,7 @@ def build_view(v: Any, write: Any, *, as_of: dt.date, digest: str | None = None
     started = time.monotonic()
     nxt, old = f"{name}_next", f"{name}_old"
     cols = ", ".join(f'"{n}" {t}' for n, t in columns(v))
+    before_build(write, name)
     try:
         with write.transaction():
             write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{nxt}")
@@ -247,7 +252,7 @@ def _register(spec: Spec, doc: str, cols: Sequence[tuple[str, str, str]]) -> Non
         + ((("cells_ok", "boolean"),) if spec.cells_ok else ())
     bv.VIEWS[spec.view] = bv.View(spec.view, doc, made, lambda rd, as_of: iter(()),
                                   spec.types, fill=lambda w, t, a: fill(spec, w, t),
-                                  internal=internal, covers=spec.listed,
+                                  internal=internal, covers=spec.listed and spec.covers,
                                   listed=spec.listed)
 
 
@@ -370,8 +375,10 @@ _register(TRANSCRIPT, "Teams meeting transcripts you may read (meetings you took
 # SharePoint files: one row
 # per captured drive item, so ``plx.search`` finds a file by its name, folder or text in the
 # same ranked statement as mail and Teams (``comms_search``) instead of the documents
-# engine's whole-store scan. SEARCH ONLY (``listed`` False: no reader query names it): the
-# row rule here is the drive (unit: the item's audience key, its marks), Freightcom (the
+# engine's whole-store scan. Searched (rows re-gated by the item gate, ``plx.search``) and, for a
+# FULL reader, listed and counted by ``plx.sql`` (``FILES_FULL``, the door alone: 11-22 owner
+# rule, a full reader sees every business record); any other reader searches files the old
+# way and reads none here. The row rule here is the drive (unit: the item's audience key, its marks), Freightcom (the
 # text, else the cells: ``cells_ok``), hidden ids and the people flag, admitting only a
 # full reader inside a search statement (``plx.reader_files`` = 'search', which only
 # ``SqlTool._comms_search`` sets, for a full reader); the file's own item rule (file class,
@@ -386,7 +393,7 @@ FILES = Spec(
     "CASE WHEN btrim(p.size) ~ '^[0-9]{1,18}$' THEN btrim(p.size)::numeric END, "
     "p.mime_type, p.content_status",
     (), text_in_fields=True, header="name, path", scope="files", cells_ok=True,
-    listed=False)
+    listed=True, covers=False)
 FILES_COLS = (
     ("modified_at", "timestamp", "when the file was last modified"),
     ("modified_date", "date", "the day it was last modified (business time zone)"),
@@ -396,8 +403,49 @@ FILES_COLS = (
     ("mime_type", "text", "its content type"),
     ("content_status", "text", "whether its content was captured"),
 )
-_register(FILES, "SharePoint and OneDrive files (search only): name, folder, size, type, "
-          "when modified, and the customers, suppliers and records they name.", FILES_COLS)
+_register(FILES, "SharePoint and OneDrive files as captured (full readers only; any other "
+          "reader reads none here: plx.search finds files by name or text): name, folder, size, "
+          "type, when modified, and the customers, suppliers and records they name. Count or "
+          "list by folder, type, size or date; open a file with its handle.", FILES_COLS)
+
+
+# Mail attachments (QUEUE-COVERAGE 6): one row per captured attachment, so "how many PDFs came
+# in last month", "attachments over 5 MB" or "the files named like a COA" are a count or a list
+# through ``plx.sql``, never a crawl. The row rule is the mail's: the unit is the attachment's
+# own audience key (its message's mailbox) and marks, so a reader holds exactly the attachments
+# of the mailboxes they hold; Freightcom is decided on the attachment's text only (``cells_ok``
+# is not set: an attachment with no extracted text yet is withheld from the AI until its text is
+# read, never listed on its name alone); the people exclusion and hidden ids as for mail; and
+# the message's own guarded row must be readable too (``view_ddl``: the parent's marks, hidden id,
+# exclusion and Freightcom decision count as well as the attachment's own).
+# Bytes and text are opened by handle (``plx.open`` / ``plx.read_document``), not stored here.
+ATTACHMENT = Spec(
+    "attachments", ("Attachment",),
+    ("name", "content_type", "size", "message_id", "mailbox"),
+    "seen_at",
+    "NULL::timestamptz, p.name, "
+    "CASE WHEN lower(btrim(p.name)) ~ '[.][a-z0-9]{1,8}$' THEN "
+    "substring(lower(btrim(p.name)) from '[.]([a-z0-9]{1,8})$') END, "
+    "lower(btrim(p.content_type)), "
+    "CASE WHEN btrim(p.size) ~ '^[0-9]{1,18}$' THEN btrim(p.size)::numeric END, "
+    "p.message_id, lower(btrim(p.mailbox))",
+    (), text_in_fields=True, header="name")
+ATTACHMENT_COLS = (
+    ("seen_at", "timestamp", "not known for an attachment itself: join the message by "
+                             "message_ref to date it"),
+    ("name", "text", "the file name (untrusted text)"),
+    ("extension", "text", "the file name's extension, lower-case (pdf, xlsx, png ...)"),
+    ("content_type", "text", "its content type, lower-case"),
+    ("size", "numeric", "its size in bytes"),
+    ("message_ref", "text", "the mail provider's id of the message it came with"),
+    ("mailbox", "text", "the mailbox's owner id (one row per mailbox copy)"),
+)
+_register(ATTACHMENT, "Every captured mail attachment, one row per mailbox copy: its name, "
+          "extension, type, size and the mailbox it came to, and the customers, suppliers and "
+          "records it names. Count or list by type, size or mailbox; open the file or its text "
+          "with its handle (plx.open, plx.read_document). A count or list here leaves out "
+          "attachments whose text is not read yet (images, scans): when you give a count, say "
+          "it does not include those.", ATTACHMENT_COLS)
 
 
 # --------------------------------------------------------------------------- build
@@ -975,10 +1023,11 @@ def links_rule(spec: Spec) -> str:
     are decided again (``message_parties.relink`` and ``apply``)."""
     import hashlib
     import inspect
-    from operating.pg import message_parties
+    from operating.pg import comm_links, message_parties
     parts = [_links_sql(spec, "x"), repr(_sender_link_types()), PARTY_LINK_MARKS,
              inspect.getsource(domain_spells_name), inspect.getsource(fit_pairs),
-             inspect.getsource(message_parties.PartyIndex), repr(message_parties.RULES)]
+             inspect.getsource(message_parties.PartyIndex), repr(message_parties.RULES),
+             inspect.getsource(comm_links)]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
 
 
@@ -998,7 +1047,7 @@ def marks(write: Any) -> dict[str, int]:
 # above the host's own disk guard (20 GB), checked per chunk and before the table write
 # with its size; 45 was set while that build rewrote its table, and with /data at 44.6 GB
 # free it refused even the meetings tables (a few thousand rows) on every refresh, 11-18.
-MIN_FREE_GB_DEFAULT = 25.0
+MIN_FREE_GB_DEFAULT = 65.0   # above the 60 GB slot-guard line (``build_pause``)
 
 
 def _min_free_bytes() -> int:
@@ -1222,9 +1271,14 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
                               f"coalesce(max(sn), 0) FROM {stage}", (stage,)).fetchone()
     _disk_guard(write, disk, "writing the table", need=int(size))
     # the stage's rows in ranges of its row number: each row written once, each statement
-    # bounded (the build's statement cap), the disk checked between them
+    # bounded (the build's statement cap), the disk and the WAL budget checked between
+    # them (``wal_budget``: the standby too far behind pauses the write; the new table is
+    # not yet visible, so a pause blocks no reader)
+    from operating.pg import wal_budget
+    budget = wal_budget.Budget.for_conn(write, job=f"views:{table}")
     for lo in range(0, int(top), WRITE_CHUNK):
         _disk_guard(write, disk, f"writing the table (row {lo})")
+        check_write(budget, table, lo)   # never a wait inside this transaction
         write.execute(_compose(spec, stage, t, people=got["people"] is not None,
                                rows=(lo, lo + WRITE_CHUNK)))
     write.execute(f"DROP TABLE {stage}" + (f", {text}" if spec.mail else ""))
@@ -1288,7 +1342,8 @@ def _compose(spec: Spec, stage: str, table: str, *, people: bool,
             f"{int(rows[1])}) s " + " ".join(joins))
 
 
-SPECS: dict[str, Spec] = {s.view: s for s in (EMAIL, TEAMS, MEETING, TRANSCRIPT, FILES)}
+SPECS: dict[str, Spec] = {s.view: s for s in (EMAIL, TEAMS, MEETING, TRANSCRIPT, FILES,
+                                               ATTACHMENT)}
 
 
 def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
@@ -1663,8 +1718,60 @@ def recheck(write: Any, view: str) -> dict[str, Any]:
     return {"view": view, "undecided_before": before, "undecided": after}
 
 
+# Whether the installed guarded comms views check PLX's own sales documents in the table
+# (``ontology.own_issued_documents``) themselves. A release's view definitions are applied by
+# ``sql_views.install``, not by the deploy: until then the live views read only
+# ``plx.reader_hidden``, so the code keeps sending the own-issued ids in that setting until
+# every comms view it serves carries the table check (11-22 review: no window in which PLX's own
+# documents show). Unreadable or missing: not carried (the ids are sent).
+_OWN_VIEWS: list[Any] = [0.0, False]
+OWN_VIEWS_RECHECK_S = 120.0
+
+
+def views_check_own_issued(pg: Any, schema: str | None = None) -> bool:
+    """Whether every comms view in the guarded and the page schema names the table."""
+    from operating.pg import sql_views
+    for where in (sql_views.guarded_schema(schema), sql_views.page_schema(schema)):
+        for name in SPECS:
+            found = pg.execute("SELECT to_regclass(%s)", (f"{where}.{name}",)).fetchone()[0]
+            if found is None:
+                continue   # not built here: nothing it could show
+            text = pg.execute("SELECT pg_get_viewdef(%s::regclass)", (f"{where}.{name}",)
+                              ).fetchone()[0]
+            if "own_issued_documents" not in (text or ""):
+                return False
+    return True
+
+
+def own_issued_in_views(*, now: float | None = None) -> bool:
+    """:func:`views_check_own_issued` on the live store, kept ``OWN_VIEWS_RECHECK_S``; any
+    failure is False."""
+    import time
+    at = time.monotonic() if now is None else now
+    if _OWN_VIEWS[0] and at - _OWN_VIEWS[0] < OWN_VIEWS_RECHECK_S:
+        return bool(_OWN_VIEWS[1])
+    try:
+        import psycopg
+        from operating.pg import config
+        from operating.pg.pool import when_free
+        with when_free(lambda: psycopg.connect(config.dsn(), connect_timeout=5)) as pg:
+            found = views_check_own_issued(pg)
+    except Exception:  # noqa: BLE001 - not read: not carried
+        found = False
+    _OWN_VIEWS[0], _OWN_VIEWS[1] = at, found
+    return found
+
+
 # the setting a search statement admits ``FILES`` rows by (``SqlTool._comms_search`` only)
 FILES_SETTING, FILES_SEARCH = "plx.reader_files", "search"
+# the setting ``plx.sql`` sets, for a full reader only, on a statement naming ``sharepoint_files``:
+# the rows the door admits (business rule 11-22: a full reader sees every business record), listed
+# and counted as captured, never re-gated by the item gate as a search's are
+FILES_FULL = "full"
+
+
+def _literal_text(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
 
 
 def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
@@ -1688,25 +1795,43 @@ def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
                "pes.built_at, coalesce(pes.updated_at, ''), pes.covered_ver) FROM "
                f"{src}.state s, ontology.people_excluded_state pes WHERE s.view = "
                f"'{v.name}')")
+    # the reader's own withheld documents (the setting: empty for a full reader) and PLX's own
+    # sales documents held as a supplier's (every reader: read from their table by its key,
+    # not sent as a 10 MB list with every statement, 11-22)
     hidden = ("t.object_ids[1] NOT IN (SELECT json_array_elements_text(current_setting("
-              "'plx.reader_hidden', true)::json))")
+              "'plx.reader_hidden', true)::json)) AND NOT EXISTS (SELECT 1 FROM "
+              "ontology.own_issued_documents oi WHERE oi.object_id = t.object_ids[1])")
     # Freightcom: decided on the text; a files row with no text yet, on its cells
     fc = ("(t.ai_ok OR (t.ai_ok IS NULL AND t.cells_ok))" if spec is not None
           and spec.cells_ok else "t.ai_ok")
-    where = [f"t.unit = ANY({units})", *([fc] if ai else []), "t.excluded IS FALSE",
-             f"t.ver <= {covered}", f"(coalesce({current}, false) OR NOT EXISTS (SELECT 1 FROM "
-             "ontology.people_excluded_objects peo WHERE peo.object_id = t.object_ids[1]))",
+    # the people set: the owner's alone (The owner's audience
+    # holds ``OWNER_KEY``, no other reader's does); for every other reader a row of the set
+    # is out, and so is one the set has not decided yet (fail closed)
+    from operating.pg.access_classes import OWNER_KEY
+    owner = f"(SELECT {_literal_text(OWNER_KEY)} = ANY({aud}))"
+    people = (f"(t.excluded IS FALSE AND t.ver <= {covered} AND (coalesce({current}, false) "
+              "OR NOT EXISTS (SELECT 1 FROM ontology.people_excluded_objects peo WHERE "
+              "peo.object_id = t.object_ids[1])))")
+    where = [f"t.unit = ANY({units})", *([fc] if ai else []), f"({owner} OR {people})",
              "t.handle IS NOT NULL", hidden,
              # each setting checked once per statement (an InitPlan): bare, the check ran on
              # every rescan of the view, copying the setting each time (the hidden ids are
              # megabytes for a full reader: ~3 ms per row of a lateral lookup)
              *(f"(SELECT current_setting('{n}', true) IS NOT NULL)" for n in SETTINGS)]
     join = ""
+    if spec is not None and spec.view == "attachments":
+        # an attachment is read only where its message is: the version handle of an
+        # attachment is its message's plus ``#attachment=...``, so the message's own guarded
+        # row (its unit and marks, hidden id, people exclusion and Freightcom decision, as
+        # this reader reads them) must be there too, never the attachment's own rule alone
+        where.append(f"EXISTS (SELECT 1 FROM {dst}.emails pm WHERE pm.handle = "
+                     "split_part(t.handle, '#attachment=', 1))")
     if spec is None or spec.scope not in ("audience", "teams", "participants", "files"):
         where.append("false")   # an unknown rule: nothing (fail closed)
     elif spec.scope == "files":
         # only inside a search statement that re-gates every row (``FILES``' comment)
-        where.append(f"current_setting('{FILES_SETTING}', true) = '{FILES_SEARCH}'")
+        where.append(f"current_setting('{FILES_SETTING}', true) IN ('{FILES_SEARCH}', "
+                     f"'{FILES_FULL}')")
     elif spec.scope == "participants":
         # the item rule: a full reader, or one of the reader's identities a participant;
         # an unset or malformed setting reads as neither (fail closed)

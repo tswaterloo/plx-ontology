@@ -1003,6 +1003,24 @@ class AlertRules(unittest.TestCase):
             reply_eval.measure(self.conn, ME, dt.date(2026, 10, 1), dt.date(2026, 11, 17),
                                owners=OWNERS, schema="biz; DROP")
 
+    def test_reply_eval_never_measures_mail_of_the_people_set(self):
+        """The excluded people's mail never feeds an eval. A
+        message of the people set (``excluded`` true) or one the set has not decided yet
+        (NULL) counts nowhere and shows in no sample; the rest is measured as before."""
+        from operating.pg import reply_eval
+        H = 24
+        self.mail("a", hours_ago=10 * H, thread="A")
+        self.sent("a_re", to=["bo@client.example"], thread="A", days_ago=9)
+        for name, flag in (("x", True), ("u", None)):
+            self.mail(name, hours_ago=10 * H, thread=name.upper(), excluded=flag,
+                      known=False, sender=f"{name}@set.example", subject=f"set {name}")
+            self.sent(f"{name}_re", to=[f"{name}@set.example"], thread=name.upper(),
+                      days_ago=9)
+        got = reply_eval.measure(self.conn, ME, dt.date(2026, 10, 1),
+                                 dt.date(2026, 11, 17), owners=OWNERS, schema=S)
+        self.assertEqual((got["answered"], got["flagged"]), (1, 1), got)
+        self.assertNotIn("set.example", json.dumps(got))
+
     def test_one_alert_per_thread_keeps_since_and_resolves_on_reply(self):
         self.mail("a1", hours_ago=30, thread="t1")
         self.mail("a2", hours_ago=3, thread="t1")

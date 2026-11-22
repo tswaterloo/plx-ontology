@@ -352,6 +352,102 @@ class EndToEnd(Wired):
         self.assertEqual([r["arguments"]["taskId"] for r in self.mc_fake.requests], ["TASK-8"])
 
 
+DOC_ID = "77777777-7777-4777-8777-777777777777"
+CHARGE = {"lineType": "Account", "lineObjectNumber": "40100", "description": "Freight",
+          "quantity": 1, "unitPrice": "185.00"}
+PROPOSED = {"sales_order_charge_line": CHARGE, "sales_invoice_charge_line": CHARGE,
+            "purchase_order_attach": {"attachment": "Attachment:pod-1", "fileName": "POD 1.pdf"},
+            "sales_order_attach": {"attachment": "Attachment:coa-2", "fileName": "COA.pdf"},
+            "sales_invoice_attach": {"attachment": "Attachment:inv-3", "fileName": "Inv.pdf"}}
+
+
+def proposed_item(n: int, operation: str, payload: dict) -> dict:
+    found = item(900 + n, write={"system": "bc", "operation": operation,
+                                 "target": {"company_id": BC_COMPANY, "document_id": DOC_ID},
+                                 "payload": payload})
+    found["autopilot"] = "customer_po"
+    return found
+
+
+class ProposalOnly(Wired):
+    """A charge line and a file attached to a BC document are proposed for a person to do
+    and never performed (``Adapter.PROPOSAL_ONLY``): with BC live, the gate passed and the
+    owner's confirmed approval, the same path that writes a new order writes none of them."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.env[aw.APPROVED_ENV] = "bc_write"
+
+    def test_live_approved_and_confirmed_still_performs_nothing(self):
+        from operating import autopilot_jobs as aj
+        self.all_live()
+        ex = self.executor_e2e()
+        mine = aw.Approval(by=(OWNER,), confirmed_live=True)
+        control = ex.run(po_item(draft=False), NOW, mine)[0]
+        self.assertEqual((control["status"], control["mode"]), ("done", "live"), control)
+        sent = len(self.fake.requests)
+        rules = json.loads(Path(aw.__file__).with_name("autopilot_write_rules.json").read_text())
+        rules["actions"]["bc_write"]["operations"].update({op: {} for op in PROPOSED})
+        listed = Path(self.tmp.name) / "rules-listed.json"
+        listed.write_text(json.dumps(rules))
+        for n, (operation, payload) in enumerate(PROPOSED.items()):
+            with self.subTest(operation):
+                # the gate alone: never routine (an operation the rules do not list)
+                gated = ex.run(proposed_item(n, operation, payload), NOW)[0]
+                self.assertEqual(gated["status"], "not_routine", gated)
+                # rules that listed it as routine, the owner's confirmed approval: a dry
+                # run saying why, nothing performed
+                ex.rules_path = listed
+                row = ex.run(proposed_item(n, operation, payload),
+                             NOW + timedelta(minutes=n), mine)[0]
+                ex.rules_path = None
+                if "unitPrice" in payload:     # a price field: never routine either
+                    self.assertEqual((row["status"], row["reasons"]),
+                                     ("not_routine", ["field:unitPrice"]), row)
+                else:
+                    self.assertEqual((row["status"], row["mode"], row["reasons"][0]),
+                                     ("dry_run", "dry_run", f"proposal_only:{operation}"), row)
+                    self.assertEqual(row["request"]["proposal_only"],
+                                     wa.BCAdapter.PROPOSAL_ONLY[operation])
+                # a job may propose it, its shape checked like any write
+                self.assertEqual(aj.check("plx.prepare_write", {
+                    "system": "bc", "operation": operation,
+                    "target": {"company_name": "PLX", "document_id": DOC_ID},
+                    "change": payload, "reason": "The POD came in for this order."}), [])
+        self.assertEqual(len(self.fake.requests), sent)
+        self.assertFalse(any(r.get("event") == "attempt" and "proposal_only" in
+                             json.dumps(r.get("request")) for r in ex.journal.rows()))
+        # the adapter itself refuses one, whatever called it
+        bc = ex.adapters["bc_write"]
+        req = bc.request({"operation": "sales_order_charge_line",
+                          "target": {"company_id": BC_COMPANY, "document_id": DOC_ID},
+                          "payload": CHARGE})
+        self.assertEqual(bc.perform(req, "k1")["status"], "not_performed")
+        self.assertEqual(len(self.fake.requests), sent)
+
+    def test_a_malformed_proposal_is_refused(self):
+        from operating import autopilot_jobs as aj
+        bad = [("sales_order_charge_line", {**CHARGE, "lineType": "Item"}),
+               ("sales_order_charge_line", {**CHARGE, "unitPrice": "0"}),
+               ("sales_order_charge_line", {**CHARGE, "unitPrice": "-5"}),
+               ("sales_invoice_charge_line", {**CHARGE, "discountPercent": 10}),
+               ("sales_order_charge_line", {k: v for k, v in CHARGE.items()
+                                            if k != "lineObjectNumber"}),
+               ("purchase_order_attach", {"attachment": "Email:m1", "fileName": "a.pdf"}),
+               ("purchase_order_attach", {"attachment": "Attachment:a", "fileName": "../a.pdf"}),
+               ("purchase_order_attach", {"attachment": "Attachment:a", "fileName": "a.pdf",
+                                          "content_b64": "AAAA"})]
+        for operation, payload in bad:
+            with self.subTest(operation=operation, payload=payload):
+                self.assertTrue(aj.check("plx.prepare_write", {
+                    "system": "bc", "operation": operation,
+                    "target": {"company_name": "PLX", "document_id": DOC_ID},
+                    "change": payload, "reason": "x"}))
+        lines = [l for l in aj.catalogue() if "_charge_line" in l or "_attach" in l]
+        self.assertEqual(len(lines), len(PROPOSED))
+        self.assertTrue(all("never performed" in l for l in lines))
+
+
 class BcProduction(Wired):
     """AUDIT2-07/V-21 (owner 11-11: BC writes go to the real company, no sandbox): the
     executor writes BC Production behind ``live-bc`` and ``live-bc-production``, a probe

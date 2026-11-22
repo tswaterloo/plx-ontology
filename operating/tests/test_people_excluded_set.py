@@ -331,5 +331,33 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("covered_ver bigint NOT NULL", text)
 
 
+
+
+
+class UnreadableStoreTest(unittest.TestCase):
+    def test_a_capture_store_this_user_cannot_open_is_not_covered_never_a_crash(self):
+        """11-22 live: split raised "unable to open database file" on the Teams store (its
+        live WAL unreadable to the build's user). Now that family is named as not covered
+        (its served versions stay ``uncaptured``: withheld), a readable one still opens and
+        a family with no store is simply absent."""
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "teams-capture").mkdir()
+            (Path(tmp) / "teams-capture" / "capture.db").write_bytes(b"not a database" * 100)
+            (Path(tmp) / "meetings-capture").mkdir()
+            good = sqlite3.connect(Path(tmp) / "meetings-capture" / "capture.db")
+            good.execute("CREATE TABLE t (x)")
+            good.commit()
+            good.close()
+            stores, not_covered = people_excluded.open_stores(tmp)
+            self.assertEqual(not_covered, ["teams"])
+            self.assertEqual(list(stores), ["meetings"])
+            stores["meetings"].close()
+            (Path(tmp) / "meetings-capture" / "capture.db").unlink()
+            self.assertEqual(people_excluded.open_stores(tmp)[1], ["teams"])
+            self.assertEqual(people_excluded.open_stores(tmp)[0], {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -318,6 +318,8 @@ export interface NavPlace {
   late?: boolean;
   ops?: boolean;
   admin?: boolean;
+  /** The owner only (a page whose API refuses everyone else: the Autopilot log). */
+  owner?: boolean;
   /** Only for a reader with a team grant (hasTeamGrant, an ops reader or the owner): Team. */
   grant?: boolean;
 }
@@ -386,7 +388,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { href: "/ops", label: "Reliability", ops: true },
       { href: "/data-health", label: "Data health", ops: true },
       { href: "/trust", label: "Trust", ops: true },
-      { href: "/autopilot-log", label: "Autopilot log", ops: true },
+      { href: "/autopilot-log", label: "Autopilot log", ops: true, owner: true },
       { href: "/feedback", label: "Feedback triage", admin: true },
     ],
   },
@@ -398,6 +400,7 @@ export const HELP: NavPlace = { href: "/help", label: "Help" };
 type NavReader = (Parameters<typeof hasTeamGrant>[0] & { ops_reader?: boolean; feedback_admin?: boolean; owner?: boolean; roles?: string[] | null }) | null | undefined;
 
 function placeFor(p: NavPlace, me: NavReader): boolean {
+  if (p.owner) return !!me?.owner;
   if (p.ops && p.admin) return isOpsReader(me) || !!me?.feedback_admin;
   if (p.ops) return isOpsReader(me);
   if (p.admin) return !!me?.feedback_admin;

@@ -206,6 +206,11 @@ class PeopleExcludedParityTests(_Answers, unittest.TestCase):
         assert run["complete"], run
         messages = list(store.db.execute("SELECT l1_handle, mailbox_id FROM messages"))
         attachments = [r[0] for r in store.db.execute("SELECT l1_handle FROM attachments")]
+        # without the capture's record of the tenant's uncleared addresses (a store
+        # recorded before it, or one aged out), the tenant address stays undecided
+        # (``tests.test_mail_participants_cleared.TenantRecordTests`` covers the record)
+        with store.db:
+            store.db.execute("DELETE FROM meta WHERE key='tenant_withheld_at'")
         store.close()
         assert len(messages) == 4 + MORE and len(attachments) == 2, (messages, attachments)
         box_of = dict(messages)

@@ -118,7 +118,8 @@ class NameRules(unittest.TestCase):
         idx = self.ix
         with mock.patch.object(mp, "name_hits", return_value=({}, {})) as nh, \
                 mock.patch.object(mp, "load_parties", return_value=(PARTIES, ["ourco.com"])), \
-                mock.patch.object(mp, "common_names", return_value=frozenset()):
+                mock.patch.object(mp, "common_names", return_value=frozenset()), \
+                mock.patch("operating.pg.comm_links.infer", return_value={}):
             mp.infer(mock.Mock(), "teams_messages", "t", "true", drop_names=["zorbex"])
         self.assertNotIn("zorbex", nh.call_args[0][1].names)
         self.assertIn("zorbex", idx.names)

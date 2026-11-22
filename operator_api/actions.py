@@ -164,6 +164,13 @@ class ActionsMixin:
             if built is None:
                 raise UserFacing("not_found", "That meeting is not one you attended.", 404)
             return built
+        if card_id.startswith("dh:"):
+            # a data-health finding, rebuilt now from this reader's own trimmed read: it can
+            # be assigned (kept in the Workbench, nobody messaged), never sent or written
+            built = self.finding_card(reader, card_id[3:])
+            if built is None:
+                raise UserFacing("not_found", "That finding is no longer on your list.", 404)
+            return built
         found = self.suggestions(reader)
         card = ca.card_dict(found.items, card_id) if found.status == "read" else None
         if card is None:
@@ -198,6 +205,10 @@ class ActionsMixin:
 
     def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
         """The playbook of one alert this reader may see (None: not theirs to see)."""
+        raise NotImplementedError
+
+    def finding_card(self, reader: Reader, ref: str) -> Optional[dict[str, Any]]:
+        """The card of one data-health finding (``<check>:<id>``) this reader may see."""
         raise NotImplementedError
 
     def alert_playbook(self, reader: Reader, alert_id: str) -> m.AlertPlaybook:

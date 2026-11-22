@@ -36,6 +36,7 @@ from typing import Any, Sequence
 from operating.chunking import KINDS
 from operating.chunking import dedup as dd
 from operating.chunking.entities import ENTITY_TYPES, entities, participants
+from operating.chunking.pg_source import PG_PROJECTION, open_projection
 from operating.chunking.permissions import unit_row
 from operating.chunking.projection import (Counts, open_ro,
                                            withheld_messages)
@@ -235,8 +236,11 @@ def entity_rows(args: argparse.Namespace) -> dict[str, Any]:
     ecounts = Counts()
     batch: list[Any] = []
     n = 0
-    for entity in entities(open_ro(_projection_path(state, args.projection)), ecounts,
-                           types=types, exclusion=exclusion):
+    # the Postgres ontology (``--projection postgres``) once the SQLite store is retired
+    dsn = values.get("PLX_PG_DSN") or config.DEFAULT_DSN
+    source = open_projection(args.projection if args.projection == PG_PROJECTION
+                             else _projection_path(state, args.projection), dsn)
+    for entity in entities(source, ecounts, types=types, exclusion=exclusion):
         n += 1
         if writer is not None:
             batch.append(entity)

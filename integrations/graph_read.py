@@ -156,6 +156,38 @@ AUTOMATION_SIGNALS = ("list", "bulk", "auto_submitted", "auto_suppress", "feedba
                       "bounce_path", "report")
 
 
+def _meeting(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    """What marks a message as a meeting notice, from what the capture already reads (no new
+    Graph request, so no new failure on a live listing): Graph's own ``@odata.type``
+    (``#microsoft.graph.eventMessage*``), or the headers' ``Content-Class:
+    urn:content-classes:calendarmessage``. When Graph also returned the notice's
+    ``meetingMessageType`` or its ``event`` (start, end, location, id), those are kept as
+    sent. None for any other message (its content hash does not move). The start, end and
+    place of an invitation arrive only when a later read selects them (live-unverified:
+    open-backlog3-a13)."""
+    kind = raw.get("@odata.type")
+    by_type = isinstance(kind, str) and "eventmessage" in kind.lower()
+    headers = raw.get("internetMessageHeaders")
+    by_header = isinstance(headers, list) and any(
+        isinstance(h, Mapping) and isinstance(h.get("name"), str)
+        and isinstance(h.get("value"), str) and h["name"].strip().lower() == "content-class"
+        and "calendarmessage" in h["value"].lower() for h in headers)
+    if not (by_type or by_header):
+        return None
+    out: dict[str, Any] = {"marked_by": [w for w, hit in (("odata_type", by_type),
+                                                          ("content_class", by_header)) if hit]}
+    if isinstance(raw.get("meetingMessageType"), str):
+        out["message_type"] = raw["meetingMessageType"]
+    event = raw.get("event")
+    if isinstance(event, Mapping):
+        for key, name in (("id", "event_id"), ("start", "start"), ("end", "end"),
+                          ("location", "location"), ("isAllDay", "all_day"),
+                          ("webLink", "event_link")):
+            if event.get(key) not in (None, ""):
+                out[name] = event[key]
+    return out
+
+
 def _automation(headers: Any) -> list[str] | None:
     """The automation signals of a message's ``internetMessageHeaders`` (sorted enum words of
     ``AUTOMATION_SIGNALS``, empty when a person's mail shows none), or None when Graph
@@ -732,6 +764,9 @@ class GraphMailReader:
         automation = _automation(raw.get("internetMessageHeaders"))
         if automation:
             record["automation"] = automation
+        meeting = _meeting(raw)
+        if meeting:
+            record["meeting"] = meeting
         if body is not None:
             record["body_text"] = body
             record["body_truncated"] = body_truncated
@@ -1037,6 +1072,51 @@ class GraphMailReader:
         return {"message": message, "attachment": jsonable(metadata), "content": content,
                 "citation": mail_attachment_citation(message["citation"], attachment_id,
                                                      metadata["content_sha256"])}
+
+    def get_item_attachment(self, actor: Actor, mailbox: str, message_id: str,
+                            attachment_id: str, *, max_bytes: int | None = None,
+                            name: str | None = None,
+                            message: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """One attached email's raw message (an item attachment, ``message/rfc822``), after
+        the same gate as ``get_attachment`` (directory, audience, owner ACL, the message's
+        own read). One GET of ``/users/{id}/messages/{m}/attachments/{a}/$value`` (the
+        guard's document read: GET only, bounded), no JSON wrapper. Returns the same shape
+        as ``get_attachment``: ``attachment`` (metadata named ``<subject>.eml``, type
+        ``message/rfc822``, its size and ``content_sha256``), ``content`` and ``citation``.
+        Live-unverified until live check ``mail.item_attachment`` passes."""
+        import hashlib
+        from .graph_evidence import MAX_ATTACHMENT_BYTES, mail_attachment_citation
+        if not grammar.TYPES["mail_id"].valid(attachment_id):
+            raise NotVisible()
+        cap = MAX_ATTACHMENT_BYTES if max_bytes is None else max_bytes
+        if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= MAX_ATTACHMENT_BYTES:
+            raise ValueError(f"max_bytes must be 1..{MAX_ATTACHMENT_BYTES}")
+        if message is None:
+            message = self.get_message(actor, mailbox, message_id)
+        else:
+            box = self._gate(actor, mailbox)
+            if (not isinstance(message, Mapping) or message.get("mailbox") != box.object_id
+                    or message.get("id") != message_id
+                    or not isinstance(message.get("citation"), str)):
+                raise ValueError("message record does not name this mailbox and message")
+            message = {key: value for key, value in message.items()
+                       if key not in ("body_text", "body_truncated")}
+            message["citation"] = mail_citation(box.object_id, message_id,
+                                                message["change_key"])
+        try:
+            content = self._api.get_document(
+                grammar.url("graph.message_attachment_raw", None, user=message["mailbox"],
+                            message=message_id, attachment=attachment_id), max_bytes=cap)
+        except SourceNotFound as exc:
+            raise hidden(exc) from None
+        digest = hashlib.sha256(content).hexdigest()
+        label = (name or "attached message").strip()[:200] or "attached message"
+        metadata = {"id": attachment_id, "name": label if label.lower().endswith(".eml")
+                    else label + ".eml", "content_type": "message/rfc822",
+                    "size": len(content), "bytes": len(content), "content_sha256": digest,
+                    "is_inline": False, "kind": "#microsoft.graph.itemAttachment"}
+        return {"message": message, "attachment": jsonable(metadata), "content": content,
+                "citation": mail_attachment_citation(message["citation"], attachment_id, digest)}
 
     def resolve_citation(self, handle: str, actor: Actor) -> dict[str, Any]:
         (mailbox, message_id), change_key, _extra = parse_handle(handle, MAIL_SCHEME, 2)
@@ -2209,7 +2289,7 @@ class SharePointSites:
 
 def build_graph(environ: Mapping[str, str] | None = None, *, sender=None,
                 clock=None, retry: BoundedBackoff | None = None,
-                credentials: ClientCredentials | None = None
+                credentials: ClientCredentials | None = None, capture: bool = False
                 ) -> tuple[SourceApi, GuardedTransport]:
     """The Graph ``SourceApi`` over one ``GuardedTransport``. ``retry`` opts
     into the bounded GET retry (429/502/503/504 and transport failures,
@@ -2230,7 +2310,13 @@ def build_graph(environ: Mapping[str, str] | None = None, *, sender=None,
     api = SourceApi("graph", tokens, transport, retry=retry)
     # The people-exclusion guard every Graph capture shares (mail, chats, OneDrive):
     # from PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE; absent, it fails closed.
-    api.people = people_exclusion.PeopleExclusion.from_env(env)
+    # ``capture``: a mail, Teams or meetings capture, which includes the excluded people
+    # once ``people_capture.ENV`` says so.
+    if capture:
+        from . import people_capture
+        api.people = people_capture.capture_guard(env)
+    else:
+        api.people = people_exclusion.PeopleExclusion.from_env(env)
     return api, transport
 
 

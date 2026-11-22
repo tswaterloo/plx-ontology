@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { shortSummary } from "@/components/briefing";
 import { ShowMore } from "@/components/ui/show-more";
 import { cn } from "@/lib/cn";
@@ -98,8 +98,13 @@ export function checkBehind(asOf: string, now: number = Date.now()): boolean {
 
 /** One kind that fired: its count and new count, its top items, the rest a click away. */
 export function FiredKind({ f }: { f: Fired }) {
+  // a link from Home's Financials (#kind-<kind>) lands on its kind once the list is read
+  const at = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (window.location.hash === `#kind-${f.kind}`) at.current?.scrollIntoView({ block: "start" });
+  }, [f.kind]);
   return (
-    <section className="py-3" data-testid={`fired-${f.kind}`} aria-label={f.label}>
+    <section ref={at} id={`kind-${f.kind}`} className="py-3 scroll-mt-16" data-testid={`fired-${f.kind}`} aria-label={f.label}>
       <h3 className="flex items-baseline gap-3 text-[13px]">
         <span className="font-semibold">{f.label}</span>
         {/* a kind that could not be read has no count: never a 0 beside "unavailable" */}

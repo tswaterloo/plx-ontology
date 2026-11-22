@@ -1101,6 +1101,12 @@ class TodoItems(unittest.TestCase):
             for item_id, owner, prepared in (
                     ("ap_todo", OWNER[1], todo), ("ap_todo2", OWNER[1], todo),
                     ("ap_todo_sam", COLLEAGUE[1], todo),
+                    # the work a message left the person (``autopilot_message_work``)
+                    ("ap_msg_work", OWNER[1], {"kind": "todo", "summary": "File the BOL (from Ann).",
+                                               "todos": [{"system": "", "record": "",
+                                                          "what": "file the BOL"}]}),
+                    ("ap_msg_work_sam", COLLEAGUE[1], {"kind": "todo", "summary": "x",
+                                                       "todos": [{"what": "file it"}]}),
                     ("ap_blank", OWNER[1], {**todo, "todos": [{"system": "bc", "what": " "}]})):
                 item = queued(item_id, OWNER[1] if owner == OWNER[1] else owner)
                 item["body"]["prepared"] = prepared
@@ -1126,6 +1132,9 @@ class TodoItems(unittest.TestCase):
         self.assertEqual(items["ap_todo"]["todos"][0]["record"], "PO 5416")
         self.assertNotIn("ap_todo_sam", items)                   # another person's
         self.assertNotIn("ap_blank", items)                      # no text: no to-do
+        self.assertEqual((items["ap_msg_work"]["kind"], items["ap_msg_work"]["summary"]),
+                         ("todo", "File the BOL (from Ann)."))
+        self.assertNotIn("ap_msg_work_sam", items)
         self.assertEqual(items["ap_card_todo"]["kind"], "your_call")
         self.assertEqual(items["ap_card_todo"]["todos"][0]["what"], "Note the new date")
         self.assertNotIn("ap_todo", self.listed(sam))

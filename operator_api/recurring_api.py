@@ -115,7 +115,10 @@ class RecurringMixin:
             # another process took first is left to it
             if not store.claim(row, now):
                 continue
+            digest = row["params"].get("digest")
             store.result(row["owner"], row["id"],
+                         self._digest_once(readers.get(row["owner"]), row)
+                         if digest else
                          self._recurring_once(readers.get(row["owner"]), row["text"]))
         return len(rows) + self._recurring_fired(store, readers)
 
@@ -167,6 +170,91 @@ class RecurringMixin:
         if made:
             return f"Prepared {made} for you to confirm"
         return "Ran; nothing to prepare" if answer is not None else "Not run: no answer."
+
+    # ---- digests: a switched-on digest is a recurring row with params.digest ----------------
+
+    def _digest_store(self) -> Any:
+        from operating import digests
+        data_dir = getattr(self, "data_dir", None)
+        if data_dir is None:
+            raise UserFacing("busy", "Digests are not kept on this server.", 503)
+        return digests.ReportStore(data_dir)
+
+    def digest_list(self, reader: Reader) -> list[dict[str, Any]]:
+        """Every digest on offer with whether it is on for you, its hour and its latest report
+        (yours alone). Off unless you switched it on."""
+        from operating import digests
+        mine = {r["params"].get("digest"): r for r in self._recurring_store().list(reader.key)
+                if r["params"].get("digest")}
+        out = []
+        for spec in digests.CATALOG:
+            row = mine.get(spec["id"])
+            report = self._digest_store().get(reader.key, row["id"]) if row else None
+            out.append({"id": spec["id"], "title": spec["title"], "when": spec["when"],
+                        "on": bool(row and row["state"] == "active"),
+                        "hour": row["hour"] if row else spec["hour"],
+                        "last_run": row["last_run"] if row else None,
+                        "next_run": row["next_run"] if row else None,
+                        "last_result": row["last_result"] if row else None,
+                        "report": report["text"] if report else None,
+                        "report_at": report["ran_at"] if report else None})
+        return out
+
+    def digest_set(self, reader: Reader, digest_id: str, on: bool,
+                   hour: Optional[int] = None) -> list[dict[str, Any]]:
+        from operating import digests
+        spec = digests.entry(digest_id)
+        if spec is None:
+            raise UserFacing("not_found", "No such digest.", 404)
+        store = self._recurring_store()
+        row = next((r for r in store.list(reader.key)
+                    if r["params"].get("digest") == digest_id), None)
+        try:
+            if on and row is None:
+                store.add(reader.key, spec["question"], spec["title"], digests.trigger(spec),
+                          spec["hour"] if hour is None else hour)
+            elif on:
+                store.change(reader.key, row["id"], state="active",
+                             hour=row["hour"] if hour is None else hour)
+            elif row is not None:
+                store.stop(reader.key, row["id"])
+                self._digest_store().drop(reader.key, row["id"])
+        except ri.RecurringRefused as refused:
+            raise UserFacing("invalid_request", str(refused), 422) from None
+        return self.digest_list(reader)
+
+    def _digest_once(self, reader: Optional[Reader], row: dict[str, Any]) -> str:
+        """Run one digest as its owner through the plain Ask (read only: nothing is prepared
+        or sent) and keep the answer's words for them."""
+        from operating import digests
+        spec = digests.entry(row["params"].get("digest", ""))
+        if reader is None:
+            return "Not run: you were not signed in. Sign in so it can run as you."
+        if spec is None:
+            return "Not run: this digest is no longer offered."
+        try:
+            answer = None
+            until = time.monotonic() + RECURRING_RUN_SECONDS
+            events = self.ask(reader, m.AskRequest(question=spec["question"]))  # type: ignore[attr-defined]
+            for event, payload in events:
+                if event == "answer":
+                    answer = payload
+                if time.monotonic() > until:
+                    close = getattr(events, "close", None)
+                    if callable(close):
+                        close()
+                    return "Not run: it took too long; the next run tries again."
+        except UserFacing as refused:
+            return f"Not run: {refused.message}"
+        except Exception as error:  # noqa: BLE001 - said on the row; the next run tries again
+            logging.getLogger("operator_api").warning("digest run failed: %s",
+                                                      type(error).__name__)
+            return "Not run: the run failed."
+        text = str(getattr(answer, "direct_answer", "") or "").strip()
+        if not text:
+            return "Not run: no answer."
+        self._digest_store().put(reader.key, row["id"], text)
+        return "Ran; the report is on your Digests list"
 
     def start_recurring(self) -> None:
         """The minute loop that runs due recurring instructions (the primary process)."""

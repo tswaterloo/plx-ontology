@@ -50,6 +50,7 @@ class DocumentEditMixin:
     refused by SharePoint (412), never overwritten."""
 
     prepared_doc_read: Any = None   # tests: (reader, citation) -> (name, bytes, etag) | None
+    prepared_doc_text: Any = None   # tests: (reader, citation) -> (name, text, etag) | None
 
     def _pw_doc_bytes(self, reader: Reader, citation: str) -> Optional[tuple[str, bytes, str]]:
         if self.prepared_doc_read is not None:
@@ -72,6 +73,85 @@ class DocumentEditMixin:
             record = json.loads(row.get("record") or "{}")
             name = str(record.get("name") or str(row.get("path") or "").rsplit("/", 1)[-1])
             return name, store.blob(row["content_sha256"]), version
+        finally:
+            close = getattr(store, "close", None)
+            if close is not None:
+                close()
+
+    def _pw_doc_text(self, reader: Reader, citation: str) -> Optional[tuple[str, str, str]]:
+        """(name, captured text, version) of a SharePoint file the reader's host opens when its
+        ORIGINAL bytes are not held (dropped for disk: 29,473 of 70,954 PDFs on 11-21) but the
+        text the capture extracted from it is; None: no such text, or not opened for this
+        reader. The same host gate and version check as ``_pw_doc_bytes``."""
+        if self.prepared_doc_text is not None:
+            return self.prepared_doc_text(reader, citation)
+        from integrations import capture_sharepoint as cs
+        from integrations.live_source_guard import parse_handle
+        (drive, item), version, _x = parse_handle(citation.split("#", 1)[0], "sharepoint", 2)
+        folder = getattr(self, "sharepoint_capture_dir", None)
+        if not folder or not cs.store_exists(Path(folder)) \
+                or not self._host_opens(reader, citation):  # type: ignore[attr-defined]
+            return None
+        store = cs.SharePointCaptureStore.open_read_only(Path(folder))
+        try:
+            from urllib.parse import unquote
+            row = store.current(unquote(drive), unquote(item))
+            version = unquote(version)
+            if row is None or row.get("etag") != version or not row.get("text_sha256") \
+                    or not str(row.get("text_status") or "").startswith("extracted") \
+                    or store.original_dropped(row["text_sha256"]):
+                return None
+            text = store.blob(row["text_sha256"]).decode("utf-8", "replace")
+            if not text.strip():
+                return None
+            record = json.loads(row.get("record") or "{}")
+            name = str(record.get("name") or str(row.get("path") or "").rsplit("/", 1)[-1])
+            return name, text, version
+        finally:
+            close = getattr(store, "close", None)
+            if close is not None:
+                close()
+
+    prepared_mail_attachment: Any = None   # tests: (reader, citation) -> (name, bytes|None, text|None)
+
+    def _pw_mail_attachment(self, reader: Reader, citation: str
+                            ) -> Optional[tuple[str, Optional[bytes], Optional[str]]]:
+        """(name, original bytes, captured text) of a mail attachment (a byte-pinned
+        ``graph-mail://...#attachment=...&sha256=...`` citation) the reader's host opens: the
+        original when the capture holds it, else the text extracted from it (either may be
+        None; both None: not read). The same host gate as a SharePoint file's; the pin must
+        be the stored attachment's own digest."""
+        if self.prepared_mail_attachment is not None:
+            return self.prepared_mail_attachment(reader, citation)
+        from integrations import capture_mail as cm
+        from ontology.mentions import cited_page
+        folder = getattr(self, "mail_capture_dir", None)
+        base = cited_page(citation)[0]
+        if not folder or not cm.store_exists(Path(folder)) or "#attachment=" not in base \
+                or not self._host_opens(reader, citation):  # type: ignore[attr-defined]
+            return None
+        store = cm.MailCaptureStore.open_read_only(Path(folder))
+        try:
+            row = store.db.execute(
+                "SELECT metadata, content_sha256, text_status, text_sha256 FROM attachments "
+                "WHERE l1_handle = ?", (base,)).fetchone()
+            if row is None or not row["content_sha256"] \
+                    or not base.endswith("sha256=" + row["content_sha256"]):
+                return None
+            name = str(json.loads(row["metadata"]).get("name") or "attachment")
+            data = text = None
+            if not store.original_dropped(row["content_sha256"]):
+                try:
+                    data = store.blob(row["content_sha256"])
+                except (cm.CaptureError, OSError):
+                    data = None
+            if data is None and row["text_sha256"] \
+                    and str(row["text_status"] or "").startswith("extracted"):
+                try:
+                    text = store.blob(row["text_sha256"]).decode("utf-8", "replace")
+                except (cm.CaptureError, OSError):
+                    text = None
+            return (name, data, text) if (data is not None or (text or "").strip()) else None
         finally:
             close = getattr(store, "close", None)
             if close is not None:

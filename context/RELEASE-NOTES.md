@@ -105,6 +105,18 @@ Changed:
 - open junk reply items closed
 - Spark runs carry the people exclusion
 
+## Update 2026-11-22
+Changed:
+- Comms to parties by identities in the data: named records and exact party addresses, narrow links table with both doors
+- Background warm-up finishes: no re-reading a week that hit its budget, session readers first, read-ahead screens get the background limit
+- Home keeps financials in one compact section and one quality-holds list
+- one rule for BC pilot POs
+- the receivables chart reads properly
+- Ask says what it can do
+- Ask follows each agreed measure's definition: receivables are a per-account net balance, and a margin answer gives amount, revenue and percent
+- Ask knows a Business Central-only row is pilot data and looks for the same business in the systems of record and mail
+- Insights: pinned charts keep relative periods, monitors from plain words with a read-back, waterfalls only when the parts add up
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

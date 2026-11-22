@@ -266,6 +266,13 @@ def _recurring_fires(d: Path) -> Path:
     return Path(fires.path)
 
 
+def _digest_reports(d: Path) -> Path:
+    from operating import digests
+    store = digests.ReportStore(d / "dr")
+    store._db().close()
+    return Path(store.path)
+
+
 OPENERS: dict[str, Callable[[Path], Path]] = {
     "capture_mail": _mail, "capture_sharepoint": _sharepoint, "capture_store": _capture_store,
     "sheet_readings": _sheet_readings, "cases": _cases, "playbook_reports": _playbook,
@@ -280,6 +287,7 @@ OPENERS: dict[str, Callable[[Path], Path]] = {
     "session_replay": _replay_guard, "session_journal": _journal,
     "confirmation_forms": _confirmation_forms, "kind_confirmation": _kind_confirmation,
     "recurring_instructions": _recurring, "recurring_fires": _recurring_fires,
+    "digest_reports": _digest_reports,
 }
 
 

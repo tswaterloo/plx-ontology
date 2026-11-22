@@ -15,7 +15,7 @@ import { formatDate, groupDigits, money, objectHref, plural, readable, recordLab
 import { activityTitle, factMap, groupLinked, groupRelated, identifierLabel, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { rememberOpened, toggleSaved, useSaved } from "@/lib/saved";
 import { lateness, recordState, type Shown } from "@/lib/status";
-import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectSection, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
+import type { ActionResult, BizPage, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectSection, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, HiddenNotice, missingText, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
 import { CustodyRail } from "./custody-rail";
@@ -37,6 +37,8 @@ import { DoneRing, lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/gl
 import { Toolbar, ToolbarButton } from "./ui/toolbar";
 import { useCommandPalette } from "./command-palette";
 import { LoadProblem, StaleNote } from "./ui/notice";
+import { ImpactCard } from "./impact-panel";
+import { BizArticle, Section as DoorSection } from "./biz-page";
 import { Situation } from "./record/situation";
 import { AskNext } from "./record/ask-next";
 import { OnRecord } from "./record/on-record";
@@ -1048,6 +1050,12 @@ function WalkSkeleton({ part, title, lines }: { part: string; title: string; lin
 }
 
 /** Every source the record's facts cite, once each. */
+/** The system a record's facts come from, in words ("Sage"), else "the source". */
+function sourceNameOf(sources: Source[]): string {
+  const systems = [...new Set(sources.map((s) => s.system).filter(Boolean))];
+  return systems.length === 1 ? String(systems[0]) : "the source";
+}
+
 function factSources(obj: ObjectPage): Source[] {
   const seen = new Set<string>();
   const out: Source[] = [];
@@ -1145,7 +1153,7 @@ function RecordMissing({ type }: { type: string }) {
  * A record's page. `missing`: shown instead of the not-found notice when the record
  * resolves to nothing for this reader (a friendly URL's chooser).
  */
-export function ObjectView({ type, id, missing }: { type: string; id: string; missing?: ReactNode }) {
+export function ObjectView({ type, id, missing, door }: { type: string; id: string; missing?: ReactNode; door?: BizPage | null }) {
   const params = useSearchParams();
   const routeLabel = params?.get("label");
   const [obj, setObj] = useState<ObjectPage | null>(null);
@@ -1375,7 +1383,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   // a minor record (an order line, a product) shows its numbers as figures, the rest as details
   const numeric = (v: string) => /^-?\$?[\d,]+(?:\.\d+)?(?:\s[A-Z]{3})?$/.test(v.trim());
   // a rate, a count or a number field is a detail, never the page's headline figure ("Exchange rate 1")
-  const factFigures = generic ? head.keyFacts.filter((k) => k.value && numeric(k.value) && !/\b(?:rate|count|number|no)\b/i.test(k.label) && !identifierLabel(k.label)).slice(0, 5) : [];
+  const factFigures = generic && !obj.type_label ? head.keyFacts.filter((k) => k.value && numeric(k.value) && !/\b(?:rate|count|number|no)\b/i.test(k.label) && !identifierLabel(k.label)).slice(0, 5) : [];
   const facts = head.keyFacts.filter((k) => k.value && !factFigures.includes(k));
   const trail = obj.trail?.trails?.[0];
   const trailPending = pending.has("trail");
@@ -1576,6 +1584,14 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const orderState = f.get("status")?.value ?? "";
   const showNotOnRecord = !(isPo || isSalesOrder || isAo) || /^(issued|released)\b/i.test(orderState.trim());
   const orderLines = isPo || isSalesOrder;
+  // the business tables' page of this record, when the door has one: its lines (an order)
+  // or its invoices, what is owed and yearly figures (a customer or supplier), with each
+  // number linking to its record. Its open orders stay the record page's own list.
+  // an item's or a batch's page over the business tables (stock from the stock view, its
+  // batches or QC readings) stands in for the record's raw field list
+  const itemDoor = door && (door.kind === "product" || door.kind === "batch") ? door : null;
+  const doorLines = door?.sections.find((s) => s.key === "lines" && s.rows.length > 0) ?? null;
+  const doorAccount = (door?.sections ?? []).filter((s) => ["owed", "invoices", "years", "same_name"].includes(s.key) && s.rows.length > 0);
 
   const tabs = (
     <div role="tablist" aria-label="Record views" className="-mt-3 flex gap-1 border-b border-border text-[13px]" data-testid="record-tabs">
@@ -1617,10 +1633,20 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
       <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} named={counterpart?.label ?? null} />
       {figures}
+      {itemDoor && <BizArticle page={itemDoor} />}
       {/* an order's lines are its main content: right under the total, before everything else */}
-      {orderLines && (pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={3} /> : <LinesTable lines={lines} />)}
+      {orderLines && doorLines ? (
+        <>
+          <DoorSection s={doorLines} />
+          {/* the lines the order's own read calls late stay listed, with how late */}
+          {!pending.has("late") && <LinesTable lines={lines.filter((l) => (l.days_late ?? 0) > 0)} title="Late lines" />}
+        </>
+      ) : (
+        orderLines && (pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={3} /> : <LinesTable lines={lines} />)
+      )}
       <OnRecord obj={obj} />
       {isParty && <PartyPulse obj={obj} />}
+      {isParty && doorAccount.map((s) => <DoorSection key={s.key} s={s} />)}
       <KindSections obj={obj} />
       {(isPo || isAo || isSalesOrder || isCustomer || (obj.proposals ?? []).length > 0) && (
         <NextStep obj={obj} head={head} card={card} cardState={cardState} onDone={setCardState} pending={trailPending && (isPo || isAo)} />
@@ -1665,6 +1691,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       {FORMULA_TYPES.includes(obj.type) && (pending.has("formula") ? <SectionSkeleton name="formula" title="Formula" lines={3} /> : <FormulaCard f={obj.formula ?? null} />)}
       {!walking && <FulfilmentCard sections={links.fulfilment} />}
       {(isCustomer || isSalesOrder) && (walking ? <WalkSkeleton part="timeline" title="History" lines={4} /> : <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />)}
+      {!walking && <ImpactCard type={obj.type} id={obj.object_id} />}
       {DOCUMENT_LIST_TYPES.includes(obj.type) && (pending.has("documents") ? <SectionSkeleton name="documents" title="Sheets and mail" lines={3} /> : <DocumentLists docs={obj.documents} />)}
       {PACK_TYPES.includes(obj.type) && <DocumentsSection type={obj.type} id={obj.object_id} />}
       {walking ? <WalkSkeleton part="linked" title="Messages and documents" lines={3} /> : <Linked items={obj.linked ?? []} withheld={obj.linked_withheld ?? 0} unavailable={obj.linked_unavailable ?? 0} countedAll={obj.linked_counted_all ?? true} />}
@@ -1688,10 +1715,24 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
 
   const inspector = (
     <>
-      {facts.length > 0 && (
+      {facts.length > 0 && !itemDoor && (
       <section data-testid="summary">
-        <SectionTitle>Details</SectionTitle>
-          <dl>
+        {obj.type_label ? (
+          // a raw source table (the schema gives it a business name): its fields are the source's own
+          // column names, folded so they are never read as the record's described facts
+          <details data-testid="source-fields">
+            <summary className="cursor-pointer text-[12px] text-muted">Fields as {sourceNameOf(sources)} names them ({facts.length})</summary>
+            <dl className="mt-2">
+              {facts.map((k) => (
+                <Property key={k.label} label={k.label}>
+                  <SourcedValue source={k.source}>{k.value}</SourcedValue>
+                </Property>
+              ))}
+            </dl>
+          </details>
+        ) : null}
+        {!obj.type_label && <SectionTitle>Details</SectionTitle>}
+          {!obj.type_label && <dl>
             {facts.map((k) => (
               <Property key={k.label} label={k.label}>
                 {k.status && k.status !== "neutral" ? (
@@ -1708,7 +1749,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
                 )}
               </Property>
             ))}
-          </dl>
+          </dl>}
       </section>
       )}
       {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={2} /> : <People people={obj.people ?? []} />}

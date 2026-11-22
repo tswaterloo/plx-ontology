@@ -134,7 +134,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
         cls.env = mock.patch.dict(os.environ, {"PLX_STATE_DIR": str(cls.state)})
         cls.env.start()
         with psycopg.connect(cls.dsn, autocommit=True) as pg:
-            for name in ("0027_item_audiences.sql", "0040_people_excluded_objects.sql",
+            for name in ("0027_item_audiences.sql", "0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
                          "0041_business_views.sql"):
                 pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
         with psycopg.connect(cls.dsn) as pg:
@@ -161,26 +161,30 @@ class EmailsThroughTheDoor(unittest.TestCase):
     gated = tmp.TableMailParity.gated
     subjects = tmp.TableMailParity.subjects
 
-    def tool(self):
+    def tool(self, owner=False):
+        import dataclasses
         from operating.pg.ontology_reader import PgStoreReader
         from operating.pg.sqlite_compat import PgCompatConnection
         conn = PgCompatConnection(self.dsn, link_guard=True)
         self.addCleanup(conn.close)
         reader = PgStoreReader(conn, ot.StoreReader(self.sqlite))
-        base = ot.OntologyTools(reader, self.policy, item_gate=lambda a, h: True,
+        # The one holding ``OWNER_KEY``
+        policy = dataclasses.replace(self.policy, unrestricted=True, owner=True) if owner \
+            else self.policy
+        base = ot.OntologyTools(reader, policy, item_gate=lambda a, h: True,
                                 schema=ot.SchemaView.from_compiled(self.compiled),
                                 grammar=None, contracts=ev.CONTRACTS, clock=lambda: ev.NOW)
         return ts.SqlTool(base)
 
-    def sql(self, actor, sql, tag=None):
+    def sql(self, actor, sql, tag=None, owner=False):
         with mock.patch.object(ts, "_people_tag", return_value=self.tag if tag is None
                                else tag):
-            out = self.tool().call("plx.sql", {"sql": sql}, actor)
+            out = self.tool(owner).call("plx.sql", {"sql": sql}, actor)
         self.assertNotIn("error", out, out)
         return out
 
-    def handles(self, actor, tag=None):
-        out = self.sql(actor, "SELECT handle FROM emails", tag)
+    def handles(self, actor, tag=None, owner=False):
+        out = self.sql(actor, "SELECT handle FROM emails", tag, owner)
         self.assertFalse(out["truncated"])
         return {_cell(r["cells"][0]) for r in out["rows"]}
 
@@ -198,6 +202,53 @@ class EmailsThroughTheDoor(unittest.TestCase):
                                  (self.subjects({oid_of[h] for h in got}),
                                   self.subjects(gate)))
         self.assertLess(len(self.handles(tmp.NARROW)), len(self.handles(tmp.MID)))
+
+    def test_the_people_sets_mail_is_the_owners_alone(self):
+        """The set's mail is never removed."""
+        import psycopg
+        with psycopg.connect(self.dsn) as pg:
+            in_set = {r[0] for r in pg.execute(
+                f"SELECT handle FROM {bv.SCHEMA}.emails WHERE excluded AND ai_ok")}
+        self.assertTrue(in_set)   # not vacuous: the fixture's set holds mail
+        everyone = self.handles(tmp.OWNER)
+        self.assertFalse(everyone & in_set)
+        for actor in READERS:
+            self.assertFalse(self.handles(actor) & in_set, sorted(actor.principals))
+        owner = self.handles(tmp.OWNER, owner=True)
+        self.assertEqual(owner, everyone | in_set)
+        # whatever the list tag says, nothing is withheld from the owner by the set
+        self.assertEqual(self.handles(tmp.OWNER, "", owner=True), owner)
+
+    def test_a_row_the_set_grew_over_is_flagged_by_the_set_change_not_the_next_refresh(self):
+        """11-22 live: a mail refreshed before the set grew kept ``excluded`` false until
+        its table's next refresh (the leak scan counted it). ``people_excluded.flag_comms``
+        flags every row of an object of the set at once (only those: no other row moves),
+        whole or for the grown objects alone."""
+        import psycopg
+        from operating.pg import people_excluded
+        with psycopg.connect(self.dsn) as pg:
+            flagged = {r[0]: r[1] for r in pg.execute(
+                f"SELECT handle, object_ids[1] FROM {bv.SCHEMA}.emails WHERE excluded")}
+            clear = pg.execute(f"SELECT count(*) FROM {bv.SCHEMA}.emails WHERE "
+                               "excluded IS FALSE").fetchone()[0]
+            self.assertTrue(flagged)
+            some = sorted(flagged)[0]
+            pg.execute(f"UPDATE {bv.SCHEMA}.emails SET excluded = false WHERE handle = %s",
+                       (some,))
+            pg.commit()
+            self.assertEqual(people_excluded.flag_comms(pg, ["no-such-object"]), {})
+            self.assertEqual(people_excluded.flag_comms(pg, [flagged[some]]).get("emails"), 1)
+            pg.execute(f"UPDATE {bv.SCHEMA}.emails SET excluded = false WHERE handle = %s",
+                       (some,))
+            pg.commit()
+            self.assertEqual(people_excluded.flag_comms(pg).get("emails"), 1)
+            pg.commit()
+            again = {r[0] for r in pg.execute(
+                f"SELECT handle FROM {bv.SCHEMA}.emails WHERE excluded")}
+            self.assertEqual(again, set(flagged))
+            self.assertEqual(pg.execute(f"SELECT count(*) FROM {bv.SCHEMA}.emails WHERE "
+                                        "excluded IS FALSE").fetchone()[0], clear)
+            self.assertEqual(people_excluded.flag_comms(pg), {})   # nothing left to do
 
     def test_an_undecided_or_other_exclusion_list_shows_nothing(self):
         for tag in ("", "another-list"):
@@ -442,6 +493,57 @@ class EmailsThroughTheDoor(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": "lots"}), \
                 self.assertRaisesRegex(RuntimeError, "PLX_BIZ_MIN_FREE_GB"):
             bc._min_free_bytes()
+
+    def test_a_paused_wal_budget_never_holds_a_build_open(self):
+        """11-22: a build waited for the WAL budget inside its one transaction for an hour,
+        holding ~20 GB. Paused before it starts: nothing begun. Paused at the write: rolled
+        back at once. Either way no ``emails_next`` and the served table unchanged."""
+        import psycopg
+        from operating.pg import wal_budget
+        table = f"{bv.SCHEMA}.emails"
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            before = sorted(map(repr, pg.execute(f"SELECT * FROM {table}").fetchall()))
+        calls = []
+
+        def at_start(budget):
+            calls.append(budget.job)
+            return "standby_missing:plx_s7d3d"
+
+        def at_write(budget):
+            calls.append(budget.job)
+            return "standby_missing:plx_s7d3d" if len(calls) > 1 else None
+        for blocked, said in ((at_start, "not begun"), (at_write, "paused the write")):
+            calls.clear()
+            with self.subTest(said=said), _NO_FLOOR, \
+                    mock.patch.object(wal_budget.Budget, "blocked", blocked), \
+                    mock.patch.object(wal_budget.Budget, "wait",
+                                      side_effect=AssertionError("waited")):
+                # a quiet retry: reported as paused, never a failure (no alarm)
+                got = bv.build(self.dsn, ["emails"], schema=self.compiled)
+            self.assertEqual([g["view"] for g in got], ["emails"])
+            self.assertRegex(got[0]["paused"], said)
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                for left in ("emails_next", "emails_next_stage"):
+                    self.assertIsNone(pg.execute("SELECT to_regclass(%s)", (
+                        f"{bv.SCHEMA}.{left}",)).fetchone()[0], left)
+                self.assertEqual(sorted(map(repr, pg.execute(
+                    f"SELECT * FROM {table}").fetchall())), before)
+
+    def test_a_whole_build_is_not_begun_without_room_for_its_peak(self):
+        """The disk must hold BUILD_NEED_FACTOR x the live table above the floor before a
+        whole build starts; the default floor sits above the 60 GB slot-guard line."""
+        import psycopg
+        from operating.pg.build_pause import BUILD_NEED_FACTOR
+        self.assertGreater(bc.MIN_FREE_GB_DEFAULT, 60)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            live = pg.execute("SELECT pg_total_relation_size(%s::regclass)",
+                              (f"{bv.SCHEMA}.emails",)).fetchone()[0]
+        floor = 10 * 1024 ** 3
+        just_short = floor + int(BUILD_NEED_FACTOR * live) - 1
+        with mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": "10"}), \
+                mock.patch.object(bc, "free_bytes", return_value=just_short), \
+                self.assertRaisesRegex(RuntimeError, "before starting the build"):
+            bv.build(self.dsn, ["emails"], schema=self.compiled)
 
     def _ranges(self, n):
         """``CHUNK`` patched so the store's versions make about ``n`` ranges."""
@@ -1252,10 +1354,23 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 tool = self.tool()
                 self.assertEqual(tool.comms_open({"citation": in_h}, tmp.OWNER)["citation"],
                                  in_h)
-                for h in (out_h, "sharepoint://site/x.pdf"):
+                with self.assertRaises(ts.ToolError) as caught:
+                    tool.comms_open({"citation": out_h}, tmp.OWNER)
+                self.assertEqual(caught.exception.code, "not_found")
+                # a message before the moment outside the narrow reader's views: not
+                # found, never handed to the old read
+                hidden = before - self.handles(tmp.NARROW)
+                self.assertTrue(hidden)
+                for h in sorted(hidden)[:3]:
                     with self.assertRaises(ts.ToolError) as caught:
-                        tool.comms_open({"citation": h}, tmp.OWNER)
+                        tool.comms_open({"citation": h}, tmp.NARROW)
                     self.assertEqual(caught.exception.code, "not_found")
+                # no mail or Teams item at all (a PO, an order): the old read, bounded by
+                # its own time (``_open_single``), never "no such message"
+                for h in ("sharepoint://site/x.pdf",
+                          'api://public.app_purchase_order/{"id":"po1"}@x-1'):
+                    self.assertEqual(tool.comms_open({"citation": h}, tmp.OWNER),
+                                     {"not_comms": True})
                 described = tool.call("plx.sql", {"describe": "emails"}, tmp.OWNER)
                 self.assertNotIn("sample", described)
                 self.assertIn("emails", described["views"])
@@ -1748,6 +1863,66 @@ class EmailsThroughTheDoor(unittest.TestCase):
             self.assertTrue(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
                                        (hit,)).fetchone()[0])
         self.assertIn(hit, self.handles(tmp.OWNER))
+
+    def test_plx_own_documents_are_kept_from_every_reader_by_the_table_not_the_setting(self):
+        """11-22: PLX's own sales documents held as supplier documents were sent as a 10 MB
+        list in ``plx.reader_hidden`` with every comms statement; the views now read
+        ``ontology.own_issued_documents`` by its key. A mail whose object is in it is read by
+        no reader, with the setting carrying none of the ids; deleting the row brings it back."""
+        import psycopg
+        before = self.handles(tmp.OWNER)
+        victim = sorted(before)[0]
+        oid = {h: o for o, h in self.emails.items()}[victim]
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("INSERT INTO ontology.own_issued_documents (object_id, object_type, "
+                       "content_sha256, evidence, detected_at) VALUES (%s, 'SupplierInvoice', "
+                       "%s, 'test', 'now')", (oid, "0" * 64))
+        try:
+            for actor in READERS:
+                with self.subTest(actor=sorted(actor.principals)):
+                    self.assertNotIn(victim, self.handles(actor))
+            self.assertEqual(self.handles(tmp.OWNER), before - {victim})
+        finally:
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                pg.execute("DELETE FROM ontology.own_issued_documents WHERE object_id = %s",
+                           (oid,))
+        self.assertEqual(self.handles(tmp.OWNER), before)
+
+    def test_the_own_issued_ids_travel_in_the_setting_until_every_view_reads_the_table(self):
+        """11-22 review (deploy order): the views are installed by sql_views.install, not by
+        the deploy. Until every comms view carries the table check the code keeps sending
+        PLX's own document ids in plx.reader_hidden, so old views stay safe; once all carry
+        it they are not sent."""
+        import psycopg
+        from operating.search import document_marks
+        with psycopg.connect(self.dsn) as pg:
+            self.assertTrue(bc.views_check_own_issued(pg))   # this fixture's views are new
+        # an installed view without the check (the previous release's): not carried
+        class Old:
+            def __init__(self, pg):
+                self.pg = pg
+
+            def execute(self, sql, params=None):
+                cur = self.pg.execute(sql, params)
+                if "pg_get_viewdef" in sql:
+                    class Row:
+                        def fetchone(_):
+                            return ("SELECT 1 FROM biz.emails",)
+                    return Row()
+                return cur
+        with psycopg.connect(self.dsn) as pg:
+            self.assertFalse(bc.views_check_own_issued(Old(pg)))
+        tool = self.tool()
+        scope = tool._reader(tmp.OWNER)[1]
+        own = frozenset({"OWN-ISSUED-1"})
+        with mock.patch.object(document_marks, "_own_issued", return_value=own), \
+                mock.patch.object(ts, "_people_tag", return_value=self.tag):
+            with mock.patch.object(bc, "own_issued_in_views", return_value=False):
+                sent = json.loads(tool._comms_settings(scope, tmp.OWNER)["plx.reader_hidden"])
+            with mock.patch.object(bc, "own_issued_in_views", return_value=True):
+                kept = json.loads(tool._comms_settings(scope, tmp.OWNER)["plx.reader_hidden"])
+        self.assertIn("OWN-ISSUED-1", sent)
+        self.assertNotIn("OWN-ISSUED-1", kept)
 
     def test_a_day_filter_reads_its_own_index(self):
         import psycopg

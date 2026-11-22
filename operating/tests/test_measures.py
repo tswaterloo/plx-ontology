@@ -243,6 +243,40 @@ class Catalogue(unittest.TestCase):
         self.assertTrue(measures.lines())
 
 
+class MovingPeriods(unittest.TestCase):
+    def test_an_unknown_or_untyped_moving_period_is_refused_never_guessed(self):
+        from unittest import mock
+        for bad in ("this_decade", "last_13_months", "next_month", "thismonth"):
+            with self.assertRaises(ToolError, msg=bad):
+                measures._period(bad, "period")
+        self.assertEqual(measures._period("This Month", "period")[:4],
+                         measures._period("this_month", "period")[:4])
+        measures._is_day_column.cache_clear()
+        with mock.patch("operating.ontology_tools_sql._dictionary",
+                        return_value={"sales_invoice_lines": {"columns": {}}}):
+            with self.assertRaises(ToolError):
+                measures.statement("revenue", period="this_month")
+            # a fixed period needs no type: its literal reads as either
+            measures.statement("revenue", period="2026-11")
+        measures._is_day_column.cache_clear()
+
+    def test_the_period_before_a_moving_one_is_the_same_kind_just_before(self):
+        from unittest import mock
+        with mock.patch.object(measures, "business_today", return_value=dt.date(2028, 2, 29)):
+            got = {t: measures._period(t, "p")[:2] for t in measures.RELATIVE}
+            before = {t: measures._before(measures._period(t, "p"))[:2]
+                      for t in measures.RELATIVE}
+        d = dt.date
+        self.assertEqual(got["this_month"], (d(2028, 2, 1), d(2028, 3, 1)))
+        self.assertEqual(got["last_quarter"], (d(2027, 10, 1), d(2028, 1, 1)))
+        self.assertEqual(got["this_week"], (d(2028, 2, 28), d(2028, 3, 6)))
+        self.assertEqual(got["last_12_months"], (d(2027, 2, 1), d(2028, 2, 1)))
+        self.assertEqual(got["year_to_date"], (d(2028, 1, 1), d(2028, 3, 1)))
+        self.assertEqual(before["year_to_date"], (d(2027, 1, 1), d(2027, 3, 1)))
+        self.assertEqual(before["last_year"], (d(2026, 1, 1), d(2027, 1, 1)))
+        self.assertEqual(before["last_week"], (d(2028, 2, 14), d(2028, 2, 21)))
+
+
 class MeasureDoor(unittest.TestCase):
     """Through plx.sql on the business-views fixture, as plx.sql's own tests read it."""
 
@@ -265,6 +299,54 @@ class MeasureDoor(unittest.TestCase):
         out = self.call({"sql": f"SELECT min({m['date']})::date FROM {m['view']}"}, actor)
         first = dt.date.fromisoformat(str(self.rows(out)[0][0])[:10])
         return max(1, (dt.date.today() - first).days // 2 - 1)
+
+    def test_a_moving_period_reads_what_today_s_dates_read_and_names_no_date(self):
+        """this_month, year_to_date ... are statements on now(), never today's dates (a
+        pinned chart of them moves with the date), and through the door they read exactly
+        what the same days named as fixed dates read: on a date column and a timestamp one,
+        alone and compared with the period before."""
+        dated = [m for m in measures.measures().values() if m["date"]]
+        kinds = {measures._is_day_column(m["view"], m["date"]) for m in dated}
+        self.assertEqual(kinds, {True, False})      # both column types are exercised
+        for text in measures.RELATIVE:
+            p = measures._period(text, "period")
+            fixed = f"{p[0].isoformat()}..{(p[1] - dt.timedelta(days=1)).isoformat()}"
+            for m in dated:
+                sql, cited = measures.statement(m["id"], period=text)
+                self.assertIsNone(re.search(r"'\d{4}-\d{2}-\d{2}", sql), (text, m["id"]))
+                self.assertIn("moves with the date", cited["period"])
+                a = self.call({"measure": m["id"], "period": text}, FULL)
+                if a.get("error", {}).get("code") == "unknown_view":
+                    continue
+                b = self.call({"measure": m["id"], "period": fixed}, FULL)
+                self.assertEqual(self.rows(a), self.rows(b), (text, m["id"]))
+            m = measures.measures()["revenue"]
+            before = measures._before(p)
+            against = f"{before[0].isoformat()}..{(before[1] - dt.timedelta(days=1)).isoformat()}"
+            a = self.call({"measure": "revenue", "period": text, "compare": True,
+                           "by": "customer"}, FULL)
+            b = self.call({"measure": "revenue", "period": fixed, "against": against,
+                           "by": "customer"}, FULL)
+            self.assertEqual(self.rows(a), self.rows(b), text)
+
+    def test_a_moving_edge_is_the_company_s_calendar_not_utc(self):
+        """At 9 PM in Toronto on 30 November it is 1 December in UTC: "this_month" is still
+        November, on a date column and on a timestamp column."""
+        import psycopg
+        late = "'2026-12-01 02:00+00'::timestamptz"      # 30 Nov, 9 PM in Toronto
+        p = measures._period("this_month", "period")
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            day = [conn.execute("SELECT " + e.replace("now()", late)).fetchone()[0]
+                   for e in (f"({x})::date" for x in p[4])]
+            stamp = [conn.execute("SELECT " + f"(({x}) AT TIME ZONE 'America/New_York')"
+                                  .replace("now()", late) + " AT TIME ZONE 'UTC'").fetchone()[0]
+                     for x in p[4]]
+            ytd = measures._before(measures._period("year_to_date", "period"))[4]
+            last_year = [conn.execute("SELECT " + f"({x})::date".replace("now()", late))
+                         .fetchone()[0] for x in ytd]
+        self.assertEqual(day, [dt.date(2026, 11, 1), dt.date(2026, 12, 1)])
+        self.assertEqual(stamp, [dt.datetime(2026, 11, 1, 4), dt.datetime(2026, 12, 1, 5)])
+        self.assertEqual(last_year, [dt.date(2025, 1, 1), dt.date(2025, 12, 1)])
 
     def test_a_comparison_never_reads_the_whole_source_for_its_first_record(self):
         """Through a reader's door a view's unbounded min reads every row (~20 s for mail,

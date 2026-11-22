@@ -36,9 +36,14 @@ class Pages(unittest.TestCase):
         cls.store = tbv.build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
-            for name in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
+                         "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / name).read_text())
         bv.build(cls.dsn, None, schema=tbv.SCHEMA, as_of=tbv.AS_OF)
+        from operating.pg import generic_records
+        # every record's own row, as served: the search box finds a shipment, a receipt, a
+        # lot by the number its label carries (``records`` is a view the find reads)
+        generic_records.build(cls.dsn, bv.SCHEMA, workers=1, uncovered=True, business=True)
         for attempt in range(5):   # the role is the cluster's: parallel modules may race
             try:
                 sql_views.install(cls.dsn)
@@ -161,6 +166,73 @@ class Pages(unittest.TestCase):
         # an order is found by its number, never by its customer's name
         self.assertFalse([x for x in top("beta") if x[0] == "SalesOrder"])
 
+    NUMBERED = (  # (type, system, label, whose class): records the box finds by number
+        ("Shipment", "sage", "Shipment SH1000000001", "PO-1"),
+        ("Shipment", "bc", "SH1000000001", "PO-1"),                 # a BC pilot copy
+        ("Shipment", "sage", "Shipment SH10000000019", "PO-1"),     # starts with the number
+        ("Shipment", "sage", "Shipment SH-HIDDEN-1", "PO-FIN"),
+        ("Receipt", "sage", "Receipt RCP10000001", "PO-1"),
+        ("Lot", "filemaker", "S220001", "PO-1"),
+        ("SalesCreditMemo", "bc", "CM-1000", "PO-1"))
+
+    def add_numbered(self):
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            # the access class of a visible and of a finance-marked record: the PO rows' own
+            cls = {po: c.execute(
+                f"SELECT r.access_class FROM {bv.SCHEMA}.records r JOIN "
+                f"{bv.SCHEMA}.purchase_orders p ON p.handle = r.handle WHERE p.po_number = %s "
+                "LIMIT 1", (po,)).fetchone()[0] for po in ("PO-1", "PO-FIN")}
+            c.execute(f"DELETE FROM {bv.SCHEMA}.records WHERE record_id LIKE 'numbered:%'")
+            for i, (type_, system, label, po) in enumerate(self.NUMBERED):
+                c.execute(
+                    f"INSERT INTO {bv.SCHEMA}.records (rid, record_id, type, system, source, "
+                    "handle, label, access_class, col_class, ai_ok, link_ok, fields, ver, biz) "
+                    f"SELECT coalesce(max(rid), 0) + 1, %s, %s, %s, 'test', %s, %s, %s, 0, "
+                    f"true, true, '{{}}'::jsonb, 1, true FROM {bv.SCHEMA}.records",
+                    (f"numbered:{i}", type_, system, f"api://numbered/{i}", label, cls[po]))
+
+    def test_search_finds_each_numbered_kind_exact_first_and_pilot_after_record(self):
+        self.add_numbered()
+
+        def top(q, actor=FULL):
+            return [(s.type, s.label, s.match) for s in self.find(q, actor)]
+        got = top("SH1000000001")
+        # the Sage shipment first, then BC's pilot copy of the same number (same rank),
+        # then the shipment whose number only starts with it
+        self.assertEqual(got[:3], [("Shipment", "Shipment SH1000000001", "exact"),
+                                   ("Shipment", "SH1000000001", "exact"),
+                                   ("Shipment", "Shipment SH10000000019", "prefix")])
+        self.assertEqual(top("sh1000000001")[0], got[0])        # any case
+        self.assertEqual(top("RCP10000001")[0], ("Receipt", "Receipt RCP10000001", "exact"))
+        self.assertEqual(top("s220001")[0], ("Lot", "S220001", "exact"))
+        self.assertEqual(top("CM-1000")[0][:2], ("SalesCreditMemo", "CM-1000"))
+        # a number prefix finds them after the exact ones
+        self.assertEqual([x[1] for x in top("RCP100") if x[0] == "Receipt"],
+                         ["Receipt RCP10000001"])
+        # an invoice, a supplier document: by their numbers, exact, their own record pages
+        inv = self.find("IN-1")
+        self.assertEqual((inv[0].type, inv[0].label, inv[0].match), ("SalesInvoice", "IN-1",
+                                                                      "exact"))
+        self.assertTrue(inv[0].open_url.startswith("/object/"), inv[0].open_url)
+        sup = self.find("V-INV-1")
+        self.assertEqual((sup[0].type, sup[0].label), ("SupplierInvoice", "V-INV-1"))
+        # a BC pilot invoice ranks after a system-of-record one of the same rank
+        self.assertEqual([s.label for s in self.find("IN-") if s.type == "SalesInvoice"][:2],
+                         ["IN-1", "IN-2"])
+        self.assertEqual([s.label for s in self.find("PILOT-1")][:1], ["PILOT-1"])
+
+    def test_numbered_search_shows_a_restricted_reader_nothing_it_may_not_read(self):
+        self.add_numbered()
+        self.assertEqual([s.label for s in self.find("SH-HIDDEN-1", FULL)],
+                         ["Shipment SH-HIDDEN-1"])
+        for q in ("SH-HIDDEN-1", "SH-HIDDEN", "IN-FIN", "RCP10000001"):
+            with self.subTest(q=q):
+                self.assertEqual([s.label for s in self.find(q, NOBODY)], [])
+        for q in ("SH-HIDDEN-1", "IN-FIN"):
+            self.assertFalse([s for s in self.find(q, OPS) if "HIDDEN" in s.label
+                              or "FIN" in s.label], q)
+
     def test_search_fails_closed_and_is_never_a_pattern(self):
         for q in ("", "a", " ", "%%", "__", "%", "P%", "\\"):
             with self.subTest(q=q):
@@ -211,6 +283,103 @@ class Pages(unittest.TestCase):
         self.assertNotIn("PILOT-1", page.model_dump_json())   # BC pilot data is not used
         self.assertTrue(page.sources.startswith("Sources: "))
         self.assertNotIn("emails", [s.key for s in page.sections])   # no source yet: absent
+
+    def test_cells_that_name_a_record_link_to_it(self):
+        # an invoice opens its own record page (the record its row was read into); an item
+        # code or an order number opens Records' search for it; an empty cell links nowhere
+        h = self.handle("customers", "name", "Acme Ltd")
+        page = self.page("customer", handle=h)
+        invoices = self.section(page, "invoices").rows
+        self.assertTrue(invoices)
+        for r in invoices:
+            self.assertTrue(r[0].href is None or r[0].href.startswith("/object/"), r[0])
+            self.assertEqual(r[3].href is None, r[3].text is None, r[3])
+        self.assertTrue(any(r[0].href for r in invoices))
+        po = self.page("purchase_order", handle=self.handle("purchase_orders", "po_number", "PO-1"))
+        for r in po.sections[0].rows:
+            if r[0].text:
+                self.assertEqual(r[0].href, "/records?q=" + quote(r[0].text, safe=""))
+            else:
+                self.assertIsNone(r[0].href)
+        # a restricted reader's invoice cells link only to what its door returned
+        for r in self.section(self.page("customer", OPS, handle=h), "invoices").rows:
+            self.assertTrue(r[0].href is None or r[0].href.startswith("/object/"))
+
+    def test_item_page_states_stock_from_the_stock_view_and_lists_its_batches(self):
+        h = self.handle("products", "name", "Shampoo Base")
+        page = ps.item(self.backend(FULL), None, h)
+        self.assertEqual((page.kind, page.title), ("product", "Shampoo Base"))
+        stock = self.truth("SELECT on_hand, on_hand_unit FROM {biz}.stock WHERE item_code = "
+                           "(SELECT item_code FROM {biz}.products WHERE handle = %s)", (h,))
+        self.assertEqual(len(stock), 1)
+        on_hand = [f.value for f in page.facts if f.label == "On hand"][0]
+        self.assertEqual(on_hand.number, f"{Decimal(stock[0][0]).normalize():f} {stock[0][1]}")
+        batches = self.truth("SELECT batch_code FROM {biz}.batches WHERE item_code = (SELECT "
+                             "item_code FROM {biz}.products WHERE handle = %s)", (h,))
+        listed = self.section(page, "batches")
+        self.assertEqual(sorted(r[0].text for r in listed.rows), sorted(b[0] for b in batches))
+        self.assertIn("BC-1A", [r[0].text for r in listed.rows])
+        for r in listed.rows:
+            self.assertTrue(r[0].href is None or r[0].href.startswith("/object/Batch/"), r[0])
+        # no raw field text or JSON reaches a cell
+        cells = [f.value for f in page.facts] + [c for r in listed.rows for c in r]
+        self.assertFalse([c for c in cells if "{" in (c.text or "")])
+        # an item with no stated stock says so, never zero
+        label = ps.item(self.backend(FULL), None, self.handle("products", "name", "Label"))
+        self.assertTrue(label.facts)
+        gone = self.truth("SELECT handle FROM {biz}.products WHERE name = 'Gone Item'")
+        self.assertFalse(gone)   # a source-deleted item has no row, so no page
+        with self.assertRaises(ps.NotFound):
+            ps.item(self.backend(FULL), None, "no-such-handle")
+        with self.assertRaises(ps.NotFound):
+            ps.item(self.backend(FULL), None, "")
+
+    def test_batch_page_shows_the_hold_and_what_a_restricted_reader_may_not_see_is_left_out(self):
+        h = self.handle("batches", "batch_code", "BC-1A")
+        page = ps.batch(self.backend(FULL), None, h)
+        self.assertEqual((page.kind, page.title), ("batch", "Batch BC-1A"))
+        facts = {f.label: f.value for f in page.facts}
+        self.assertEqual(facts["Hold"].text, "QC holds this batch")
+        self.assertEqual(facts["Product"].text, "Shampoo Base")
+        qc = self.section(page, "qc")
+        self.assertEqual([(r[0].text, r[1].text) for r in qc.rows][0], ("pH after 24 h", "5.6"))
+        # the finance-marked batch has no page for a reader without finance access
+        secret = self.truth("SELECT handle FROM {biz}.batches WHERE batch_code = 'BC-SECRET'")
+        if secret:
+            with self.assertRaises(ps.NotFound):
+                ps.batch(self.backend(NOBODY), None, secret[0][0])
+        with self.assertRaises(ps.NotFound):
+            ps.batch(self.backend(FULL), None, "no-such-handle")
+
+    def test_the_production_list_filters_pages_and_loses_no_batch_at_1_10_60(self):
+        everything = self.truth("SELECT count(*) FROM {biz}.batches")[0][0]
+        got = ps.record_list(self.backend(FULL), None, "production", limit=100)
+        self.assertEqual(got.total, everything)
+        # every batch exactly once across pages of 7, in the one order
+        seen, offset = [], 0
+        while True:
+            page = ps.record_list(self.backend(FULL), None, "production", offset=offset, limit=7)
+            seen += [r[0].href or r[0].text for r in page.table.rows]
+            offset = page.next_offset
+            if not page.more:
+                break
+        self.assertEqual(len(seen), everything)
+        self.assertEqual(len(set(seen)), len(seen))
+        # a filter is the SQL truth
+        held = self.truth("SELECT count(*) FROM {biz}.batches WHERE on_hold IS TRUE")[0][0]
+        self.assertEqual(ps.record_list(self.backend(FULL), None, "production", hold="yes").total, held)
+        self.assertEqual(ps.record_list(self.backend(FULL), None, "production", hold="yes").table.rows[0][4].text, "On-Hold")
+        by_text = ps.record_list(self.backend(FULL), None, "production", q="bc-1a")
+        self.assertIn("BC-1A", [r[0].text for r in by_text.table.rows])
+        # a pattern is text, never a pattern
+        self.assertEqual(ps.record_list(self.backend(FULL), None, "production", q="%").total, 0)
+        # a reader sees only the batches its door shows
+        self.assertLessEqual(ps.record_list(self.backend(NOBODY), None, "production").total, everything)
+        self.assertEqual(sorted(o.value for o in got.filters[0].options)[0], "")
+        # unknown view and filter values fail closed
+        for bad in (dict(view="quotes"), dict(view="production", hold="maybe")):
+            with self.assertRaises(ps.NotFound):
+                ps.record_list(self.backend(FULL), None, bad.pop("view"), **bad)
 
     def test_chain_page_rolls_up_its_stores(self):
         page = self.page("chain", chain="TAKE 5")

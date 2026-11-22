@@ -180,7 +180,11 @@ function Figure({ f }: { f: BriefFigure }) {
 function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?: boolean }) {
   // a section that could not be read yet says its note under its title, never "nothing this week"
   const shown = list.filter((s) => (s.rows ?? []).length > 0 || (s.figures ?? []).length > 0 || (s.state === "unread" && !!s.note));
-  const quiet = list.filter((s) => !shown.includes(s));
+  const left = list.filter((s) => !shown.includes(s));
+  // a section whose read failed, was blocked or came back partial is "not read", never counted
+  // among the topics with nothing this week
+  const unread = left.filter((s) => s.state === "unread" || s.state === "blocked" || s.state === "partial");
+  const quiet = left.filter((s) => !unread.includes(s));
   return (
     <>
       {shown.map((s, i) => (
@@ -239,8 +243,12 @@ function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?:
       ))}
       {quiet.length > 0 && (
         <p className="text-[12px] text-muted" title={quiet.map((s) => s.title).join(" · ")} data-testid="weekly-quiet">
-          {quiet.length === 1 ? `Nothing this week on ${quiet[0].title.charAt(0).toLowerCase()}${quiet[0].title.slice(1)}` : `${quiet.length} more topics had nothing this week`}
-          {quiet.some((s) => s.state === "unread" || s.state === "blocked" || s.state === "partial") ? "; some could not be read in full" : ""}.
+          {quiet.length === 1 ? `Nothing this week on ${quiet[0].title.charAt(0).toLowerCase()}${quiet[0].title.slice(1)}` : `${quiet.length} more topics had nothing this week`}.
+        </p>
+      )}
+      {unread.length > 0 && (
+        <p className="text-[12px] text-muted" data-testid="weekly-unread">
+          Not read in full, so not known: {unread.map((s) => s.title.charAt(0).toLowerCase() + s.title.slice(1)).join(", ")}.
         </p>
       )}
     </>

@@ -13,6 +13,7 @@ from .auth import Reader
 from .serving import (
     LAST_GOOD_SECONDS, READ_TIMEOUT_SECONDS, SNAPSHOT_RECENT_SECONDS, SNAPSHOT_REFRESH_KEPT
 )
+from operating.po_pilot import bc_pilot_object_sql
 from .suggest import (
     ITEM_CHECK_SECONDS, party_codes, projection_suggest, SAME_RECORD_SECONDS, same_records,
     SameRecordMemo, SUGGEST_FUZZY, suggest_phrases, SUGGEST_ROWS, SUGGEST_TYPE_RANK, suggestions
@@ -105,7 +106,8 @@ class ServingMixin:
                         "e.alias @> ARRAY[%(code)s]::text[] OR e.alias @> ARRAY[%(raw)s]::text[]"
                         + (" OR %(q)s <%% e.normalized" if fuzzy else "") +
                         ") ORDER BY exact DESC, code DESC, prefix DESC, word DESC, "
-                        + type_order + ", s DESC, length(e.name), e.name LIMIT %(n)s",
+                        + type_order + ", " + bc_pilot_object_sql("e.object_id")
+                        + ", s DESC, length(e.name), e.name LIMIT %(n)s",
                         scope.params(q=needle, p=plain_needle + "%", w="% " + plain_needle + "%",
                                      code=needle.upper(), raw=needle,
                                      n=SUGGEST_ROWS)).fetchall()
@@ -222,6 +224,10 @@ class ServingMixin:
                     if record and not handle and kind != "chain" else handle
                 if kind in ("purchase_order", "sales_order"):
                     return page_sql.order(self, reader, kind, at)
+                if kind == "product":
+                    return page_sql.item(self, reader, at)
+                if kind == "batch":
+                    return page_sql.batch(self, reader, at)
                 return page_sql.account(self, reader, kind, handle=at, chain=chain)
             except page_sql.NotFound:
                 raise errors.UserFacing("not_found", "No such record that you can open.",
@@ -237,6 +243,29 @@ class ServingMixin:
         # the order Home's detail pane shows (11-19 cold round), after a restart too
         return self._serving(reader, ("biz_page", kind, handle, chain, record), read,
                              self._screen_inputs())
+
+    def records_list(self, reader: Reader, view: str, status: str = "", hold: str = "",
+                     q: str = "", offset: int = 0, limit: int = 25) -> m.RecordList:
+        """A Records list (``page_sql.record_list``) through the reader's door, kept per
+        reader and filter as every screen is."""
+        from . import page_sql
+        if not page_sql.on("batch"):
+            raise errors.UserFacing("pages_off", "These lists aren't switched on on this "
+                                    "server yet.", 404)
+
+        def read() -> m.RecordList:
+            try:
+                return page_sql.record_list(self, reader, view, status=status, hold=hold, q=q,
+                                            offset=offset, limit=limit)
+            except page_sql.NotFound:
+                raise errors.UserFacing("not_found", "No such list.", 404) from None
+            except page_sql.PageDoorUnavailable as exc:
+                why = ("took too long" if exc.code == "timeout" else
+                       "is busy" if exc.code == "busy" else "couldn't be read")
+                raise errors.UserFacing("page_unavailable", f"The list {why}; try again in a "
+                                        "minute.", 503) from None
+        return self._serving(reader, ("records_list", view, status, hold, q, offset, limit),
+                             read, self._screen_inputs())
 
     def test_named(self) -> frozenset[str]:
         """The deployment's named test records (``operator_api.test_records``)."""

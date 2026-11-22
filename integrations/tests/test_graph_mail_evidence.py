@@ -189,3 +189,26 @@ class AutomationHeaders(unittest.TestCase):
         for headers, want in cases:
             with self.subTest(headers=headers):
                 self.assertEqual(graph_read._automation(headers), want)
+
+
+class MeetingNotice(unittest.TestCase):
+    """A meeting notice is marked from what the listing already carries; any other mail gets
+    no ``meeting`` key; event fields are kept only when Graph sent them."""
+
+    def test_marks_notices_and_leaves_other_mail_alone(self):
+        cc = [{"name": "Content-Class", "value": "urn:content-classes:calendarmessage"}]
+        self.assertEqual(graph_read._meeting({"internetMessageHeaders": cc}),
+                         {"marked_by": ["content_class"]})
+        got = graph_read._meeting({"@odata.type": "#microsoft.graph.eventMessageRequest",
+                                   "meetingMessageType": "meetingRequest",
+                                   "event": {"id": "E1", "start": {"dateTime": "2026-02-06T15:00:00"},
+                                             "location": {"displayName": "Room 2"}, "end": None}})
+        self.assertEqual(got["marked_by"], ["odata_type"])
+        self.assertEqual(got["message_type"], "meetingRequest")
+        self.assertEqual(got["event_id"], "E1")
+        self.assertEqual(got["location"], {"displayName": "Room 2"})
+        self.assertNotIn("end", got)
+        for raw in ({}, {"internetMessageHeaders": []}, {"@odata.type": "#microsoft.graph.message"},
+                    {"internetMessageHeaders": [{"name": "Content-Class", "value": "x"}]},
+                    {"internetMessageHeaders": "bad", "event": "bad"}):
+            self.assertIsNone(graph_read._meeting(raw))

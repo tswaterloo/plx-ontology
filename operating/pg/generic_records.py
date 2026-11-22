@@ -29,9 +29,11 @@ Postgres in bounded batches (no record is loaded into Python) and refreshed in p
     excluded person sent is never shown before the set decided it;
   * ``ai_ok``: false when any cell of the current version, the handle, binding or native
     key names Freightcom (the owner's no-AI rule; regex once here, never per query).
-  Never in the table: records whose source no longer holds them, the excluded people's own
-  records (``ontology.people_excluded_objects``: no set built for the store = no record of
-  a non-business system at all), PLX's own issued documents (``own_issued_documents``) and
+  The excluded people's own records (``ontology.people_excluded_objects``) are the
+  owner's alone (``OWNER_KEY`` among their keys); no set built
+  for the store = no record of a non-business system served at all.
+  Never in the table: records whose source no longer holds them, PLX's own issued
+  documents (``own_issued_documents``) and
   the types ``LEFT_OUT`` (mail, chat messages, calendar events, transcripts: the comms
   tables'; attachments and files: the documents').
 
@@ -41,7 +43,8 @@ both ends' patterns, the link's own markings and, when the link was learned from
 but a business system or its from record (evidence handles), ``FULL_KEY``: one class test
 says both ends and the link are the reader's. Its ``ver`` is the newest of both ends' and its
 evidence's, ``biz`` only when both ends are and no such evidence exists, ``ev_ids`` the
-evidence's records (lineage ``read_ids``: the people exclusion drops the link with any).
+evidence's records (lineage ``read_ids``: evidence of the people set makes the link the
+owner's alone, ``OWNER_KEY``).
 
   python3 -m operating.pg.generic_records build [--schema S] [--workers N]
   python3 -m operating.pg.generic_records refresh [--schema S]
@@ -160,9 +163,13 @@ def _stage(pg: Any, where: str, excluded_ready: bool) -> None:
         "CREATE TEMP TABLE gr_b AS SELECT o.row_no AS rid, o.object_id, o.object_type, "
         "o.binding_id, o.first_recorded_at, v.ver, v.l1_handle, v.recorded_at, "
         f"(split_part(v.l1_handle, '://', 1) = ANY({business})) AS biz, "
+        "(SELECT array_agg(k ORDER BY k) FROM unnest("
         f"CASE WHEN split_part(v.l1_handle, '://', 1) = ANY({business}) THEN "
-        f"ARRAY[o.audience_key] ELSE (SELECT array_agg(k ORDER BY k) FROM unnest(ARRAY["
-        f"o.audience_key, {_lit(ac.FULL_KEY)}]) k) END AS keys, "
+        f"ARRAY[o.audience_key] ELSE ARRAY[o.audience_key, {_lit(ac.FULL_KEY)}] END "
+        # a record of the people set: the owner's alone
+        f"|| CASE WHEN EXISTS (SELECT 1 FROM {ONT}.people_excluded_objects peo WHERE "
+        f"peo.object_id = o.object_id) THEN ARRAY[{_lit(ac.OWNER_KEY)}] ELSE '{{}}'::text[] "
+        "END) k) AS keys, "
         f"ARRAY(SELECT DISTINCT w.markings FROM {ONT}.object_versions w WHERE w.object_id = "
         "o.object_id AND w.superseded_at IS NULL ORDER BY 1) AS marks, "
         f"NOT (COALESCE(v.lineage, '') = ANY({_arr(bv.NEVER_AUTHORITY_LINEAGES)})) AS link_ok, "
@@ -171,8 +178,6 @@ def _stage(pg: Any, where: str, excluded_ready: bool) -> None:
         "WHERE v.object_id = o.object_id AND v.superseded_at IS NULL ORDER BY v.ver DESC "
         f"LIMIT 1) v WHERE ({where}) AND NOT (o.object_type = ANY({_arr(LEFT_OUT)})) "
         f"AND NOT {removed_sql('o', _now())} "
-        f"AND NOT EXISTS (SELECT 1 FROM {ONT}.people_excluded_objects peo WHERE "
-        "peo.object_id = o.object_id) "
         f"AND NOT EXISTS (SELECT 1 FROM {ONT}.own_issued_documents oi WHERE "
         "oi.object_id = o.object_id) "
         f"AND (split_part(v.l1_handle, '://', 1) = ANY({business}) OR {item_ok})")
@@ -380,7 +385,11 @@ def relabel(dsn: str, schema: str | None = None, *, step: int = BATCH) -> dict[s
         _session(pg)
         lo, hi = pg.execute(f"SELECT coalesce(min(rid), 0), coalesce(max(rid), -1) FROM "
                             f"{s}.records").fetchone()
+        from operating.pg import wal_budget
+        budget = wal_budget.Budget.for_conn(pg, job="records_relabel")
+        longest = wal_budget.max_wait_seconds()
         for start in range(lo, hi + 1, step):
+            budget.wait(max_seconds=longest)   # between the steps' transactions
             with pg.transaction():
                 out["cleared"] += pg.execute(
                     f"UPDATE {s}.records SET label = NULL WHERE rid >= {int(start)} AND rid < "
@@ -400,9 +409,10 @@ def _link_insert(pg: Any, schema: str, records: str, table: str, where: str) -> 
     own handle (mail, Teams, SharePoint, Planner...) makes the link a full reader's only
     (``FULL_KEY``) and not a business link (``biz`` false: the views serve it only once the
     people exclusion decided its newest version, ``ver``); its records are the link's
-    ``ev_ids`` (``lineage.read_ids``: the exclusion drops the link with any of them,
-    ``door.exclude``). A link with evidence from an excluded person's record, or evidence
-    the store cannot name as a record (undecidable), is left out (fail closed); a page or
+    ``ev_ids`` (``lineage.read_ids``: the exclusion makes the link the owner's alone,
+    ``door.exclude``). A link with evidence from an excluded person's record is the
+    owner's alone (``OWNER_KEY``); one with evidence the store cannot name as a record
+    (undecidable) is left out (fail closed); a page or
     attachment handle names its message's or file's record (live sample 2026-11-18, read
     only: 0 of 14,771 such evidence handles unnamed so; 434 without the fragment rule)."""
     business = _arr(bv.BUSINESS_SCHEMES)
@@ -424,7 +434,10 @@ def _link_insert(pg: Any, schema: str, records: str, table: str, where: str) -> 
         "t.record_id AS to_id, t.type AS to_type, t.handle AS to_handle, "
         "f.ai_ok AND t.ai_ok AS ai_ok, ARRAY(SELECT DISTINCT k FROM unnest(fc.audience_keys "
         "|| tc.audience_keys || CASE WHEN e.n > 0 THEN "
-        f"ARRAY[{_lit(ac.FULL_KEY)}] ELSE '{{}}'::text[] END) k "
+        f"ARRAY[{_lit(ac.FULL_KEY)}] ELSE '{{}}'::text[] END "
+        # evidence from the people set: the owner's alone
+        f"|| CASE WHEN EXISTS (SELECT 1 FROM unnest(e.ids) i JOIN {ONT}.people_excluded_objects "
+        f"peo ON peo.object_id = i) THEN ARRAY[{_lit(ac.OWNER_KEY)}] ELSE '{{}}'::text[] END) k "
         "ORDER BY 1) AS keys, ARRAY(SELECT DISTINCT m FROM unnest(fc.rec_marks || "
         "tc.rec_marks || ARRAY[l.markings]) m ORDER BY 1) AS marks, "
         "greatest(f.ver, t.ver, COALESCE(e.ver, 0)) AS ver, "
@@ -435,8 +448,7 @@ def _link_insert(pg: Any, schema: str, records: str, table: str, where: str) -> 
         f"JOIN {schema}.access_classes tc ON tc.id = t.access_class "
         f"CROSS JOIN LATERAL ({evidence}) e "
         f"WHERE ({where}) AND l.superseded_at IS NULL AND l.tier = ANY({_arr(gv.LINK_TIERS)}) "
-        "AND f.link_ok AND t.link_ok AND e.lost = 0 AND NOT EXISTS (SELECT 1 FROM "
-        f"unnest(e.ids) i JOIN {ONT}.people_excluded_objects peo ON peo.object_id = i)")
+        "AND f.link_ok AND t.link_ok AND e.lost = 0")
     with pg.transaction():
         ac.assign(pg, schema, "SELECT keys, marks FROM gr_l")
     return pg.execute(
@@ -485,14 +497,19 @@ def min_free_bytes() -> int:
 
 
 def room(pg: Any, workers: int, *, wait: float = ROOM_WAIT_SECONDS,
-         sleep: Any = None, free: Any = None) -> None:
+         sleep: Any = None, free: Any = None, wal: bool = True) -> None:
     """Before a batch: wait until the database's disk has the floor plus ``workers``
     batches' temp tables free; still short after ``wait`` seconds (or its free space
     unreadable): raise (the batch's transaction never starts; a build keeps the served
-    tables)."""
+    tables). ``wal``: also wait for the WAL budget (``wal_budget``, up to
+    ``PLX_WAL_MAX_WAIT_S``); the in-place refresh (the delta) passes False."""
     import time as _time
     from operating.pg import business_comms
     sleep = sleep or _time.sleep
+    if wal:
+        from operating.pg import wal_budget
+        wal_budget.Budget.for_conn(pg, job="records_build", check_seconds=0).wait(
+            max_seconds=wal_budget.max_wait_seconds(), sleep=sleep)
     free = free or business_comms.free_bytes
     path = business_comms.disk_path(pg)
     need = min_free_bytes() + int(max(1, workers) * BATCH_GB * 1024 ** 3)
@@ -623,12 +640,15 @@ def served_notes(pg: Any, s: str) -> dict[str, Any] | None:
     return dict(json.loads(notes) if isinstance(notes, str) else notes or {})
 
 
-def door_side(pg: Any, s: str, touched: Mapping[str, str] | None = None) -> None:
+def door_side(pg: Any, s: str, touched: Mapping[str, str] | None = None,
+              tables: Mapping[str, str] | None = None) -> None:
     """The door's side tables for the generic tables: their ``lineage`` (each row's own
     records: the people exclusion drops a row naming one, ``door.exclude``; a handle two
     records share names both) and ``class_counts``. ``touched``: per view, a query of the
     handles whose rows changed (a refresh: only those are decided again); else whole. In
-    the caller's transaction."""
+    the caller's transaction. ``tables``: per view, the table the rows are read from when it
+    is not the served one (a build's own ``_new`` table, decided before the swap takes its
+    locks)."""
     from operating.pg import door
     for view, ids, read in (("records", "ARRAY[record_id]", "'{}'::text[]"),
                             ("record_links", "ARRAY[from_id, to_id]", "ev_ids")):
@@ -643,9 +663,10 @@ def door_side(pg: Any, s: str, touched: Mapping[str, str] | None = None) -> None
         pg.execute(f"INSERT INTO {s}.lineage (view, handle, object_ids, read_ids) SELECT %s, "
                    f"handle, array_agg(DISTINCT x ORDER BY x), COALESCE(array_agg(DISTINCT y ORDER "
                    "BY y) FILTER (WHERE y IS NOT NULL), '{}'::text[]) "
-                   f"FROM {s}.{view} LEFT JOIN LATERAL unnest({read}) y ON true, "
-                   f"unnest({ids}) x {only} GROUP BY handle", (view,))
-        door.recount(pg, s, view)
+                   f"FROM {s}.{(tables or {}).get(view, view)} LEFT JOIN LATERAL "
+                   f"unnest({read}) y ON true, unnest({ids}) x {only} GROUP BY handle",
+                   (view,))
+        door.recount(pg, s, view, (tables or {}).get(view))
 
 
 def build(dsn: str, schema: str | None = None, workers: int = 4, *,
@@ -729,6 +750,11 @@ INDEXES = (("records", "btree", "type, access_class) INCLUDE (ai_ok, record_id")
            ("records", "btree", "source"),
            # a record found by its name or number (``label ILIKE '%...%'``) without a scan
            ("records", "gin", "label gin_trgm_ops"),
+           # the search box's number lookup (``page_reads.FIND_SQL``): a label equal to a
+           # number or starting with one, by ``texteq`` / ``text_pattern_ge`` (leakproof, so
+           # the guarded view lets them reach this index; ``lower()`` could not: a scan of
+           # every shipment's row, 410 ms)
+           ("records", "btree", "type, label text_pattern_ops"),
            ("record_links", "btree", "from_rid, link_type"),
            ("record_links", "btree", "to_rid, link_type"),
            ("record_links", "btree", "link_type"),
@@ -798,28 +824,37 @@ def ensure_indexes(dsn: str, schema: str | None = None, *, free: Any = None,
 
 def swap(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any]) -> None:
     """The new tables in place of the old in one transaction, the guarded views re-made
-    over them (a view follows its table, so it is dropped and made again)."""
+    over them (a view follows its table, so it is dropped and made again). Everything heavy
+    (each table's lineage, its class counts, the state row: 11-19 live, 22 minutes over
+    ~36M rows) is done first against the new tables, none of it locking a table a reader
+    has open; the lock-taking statements then run as ``swap_lock.swap_in`` does for every
+    other view (a short lock wait, tried again), so a reader never queues behind the swap."""
+    from operating.pg import swap_lock
     with pg.transaction():
         dst = gv.sql_views.guarded_schema(s)
-        if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
-            for name in ("record_links", "records"):
-                gv.sql_views.drop(pg, name, s)
-        for old, new in (("records", "records_new"), ("record_links", "record_links_new")):
-            pg.execute(f"DROP TABLE IF EXISTS {s}.{old}")
-            pg.execute(f"ALTER TABLE {s}.{new} RENAME TO {old}")
-        _state(pg, s, got, notes)
-        door_side(pg, s)
-        if pg.execute("SELECT to_regclass(%s)", (f"{s}.record_types",)).fetchone()[0]:
-            gv.mark_tables(pg, s)
-        if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
-            gv.make_views(pg, s)
+        door_side(pg, s, tables={"records": "records_new", "record_links": "record_links_new"})
+        _state(pg, s, got, notes, "records_new")
+
+        def steps() -> None:
+            if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
+                for name in ("record_links", "records"):
+                    gv.sql_views.drop(pg, name, s)
+            for old, new in (("records", "records_new"), ("record_links", "record_links_new")):
+                pg.execute(f"DROP TABLE IF EXISTS {s}.{old}")
+                pg.execute(f"ALTER TABLE {s}.{new} RENAME TO {old}")
+            if pg.execute("SELECT to_regclass(%s)", (f"{s}.record_types",)).fetchone()[0]:
+                gv.mark_tables(pg, s)
+            if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
+                gv.make_views(pg, s)
+        swap_lock.swap_in(pg, steps)
 
 
-def _state(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any]) -> None:
+def _state(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any],
+           table: str = "records") -> None:
     pg.execute(f"CREATE TABLE IF NOT EXISTS {s}.state (view text PRIMARY KEY, "
                "built_at text NOT NULL, digest text, rows bigint NOT NULL, "
                "seconds double precision, notes jsonb NOT NULL DEFAULT '{}')")
-    rows = pg.execute(f"SELECT count(*) FROM {s}.records").fetchone()[0]
+    rows = pg.execute(f"SELECT count(*) FROM {s}.{table}").fetchone()[0]
     pg.execute(f"INSERT INTO {s}.state (view, built_at, rows, notes) VALUES ('records', %s, "
                "%s, %s) ON CONFLICT (view) DO UPDATE SET built_at = EXCLUDED.built_at, rows = "
                "EXCLUDED.rows, notes = EXCLUDED.notes",
@@ -842,6 +877,43 @@ def _probe_plan(pg: Any, *temps: str | None) -> None:
     pg.execute(f"SET LOCAL enable_mergejoin = {on}")
 
 
+DEAD_WORKERS = 8
+
+
+def _dead_links(dsn: str, s: str, workers: int = DEAD_WORKERS) -> list[tuple[str, str, str]]:
+    """The served links (from, type, to) the store no longer holds live at their tier, found
+    one link type at a time on ``workers`` read-only connections before the refresh's
+    transaction opens (it held 164 s of the transaction on 17-25M links, one connection).
+    The store's links are partitioned by type, so each check is an index probe per link in
+    that type's partition; over the whole table the planner hashed all 17M links against all
+    live link rows and spilled past temp_file_limit (10 GB) on every refresh once Sage's
+    links were served (2026-11-19 12:37 AM ET on: the records step failed each run). A link
+    that dies after this read is found by the next refresh; one found here but live again by
+    the transaction is read again from the store, so it is served either way."""
+    import psycopg
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        types = [t for (t,) in pg.execute(LINK_TYPES_SQL.format(s=s)).fetchall()]
+
+    def check(chunk: Sequence[str]) -> list[tuple[str, str, str]]:
+        found: list[tuple[str, str, str]] = []
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            pg.execute("SET work_mem = '256MB'")
+            pg.execute("SET default_transaction_read_only = on")
+            for link_type in chunk:
+                found.extend(pg.execute(
+                    "SELECT l.from_id, l.link_type, l.to_id FROM "
+                    f"{s}.record_links l WHERE l.link_type = %(t)s AND NOT EXISTS (SELECT 1 "
+                    f"FROM {ONT}.link_rows r WHERE r.link_type = %(t)s AND r.from_object = "
+                    "l.from_id AND r.link_type = l.link_type AND r.to_object = l.to_id AND "
+                    "r.superseded_at IS NULL AND r.tier = l.tier)", {"t": link_type}).fetchall())
+        return found
+
+    n = max(1, min(workers, len(types)))
+    with cf.ThreadPoolExecutor(max_workers=n) as pool:
+        return [row for part in pool.map(check, [types[i::n] for i in range(n)])
+                for row in part]
+
+
 def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict[str, Any]:
     """Update the live tables in place, one transaction: records with a version recorded or
     a link changed since the last marks are read again; records removed from their source,
@@ -856,8 +928,9 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
         _session(pg)
         (notes,) = pg.execute(f"SELECT notes FROM {s}.state WHERE view = 'records'").fetchone()
         since = (notes or {}).get("marks") or {}
-        room(pg, 1)   # before the transaction: never waits holding its locks
+        room(pg, 1, wal=False)   # before the transaction: never waits holding its locks
         _open_column(pg, s)
+        dead = _dead_links(dsn, s)
         with pg.transaction():
             got = _marks(pg)
             lo_ver, lo_link = int(since.get("ver") or 0), int(since.get("link") or 0)
@@ -876,8 +949,7 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                 "IN (SELECT rid FROM gr_changed)) "
                 + (f"OR NOT EXISTS (SELECT 1 FROM {ONT}.objects o WHERE o.row_no = r.rid) "
                    if sweep else "")
-                + f"OR EXISTS (SELECT 1 FROM {ONT}.people_excluded_objects p WHERE "
-                "p.object_id = r.record_id) OR EXISTS (SELECT 1 FROM "
+                + "OR EXISTS (SELECT 1 FROM "
                 f"{ONT}.own_issued_documents oi WHERE oi.object_id = r.record_id) OR "
                 f"EXISTS (SELECT 1 FROM {ONT}.objects o WHERE o.row_no = r.rid AND "
                 f"{removed_sql('o', _now())}) RETURNING r.rid, r.record_id, r.handle) SELECT * FROM d")
@@ -892,19 +964,11 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                        f"to_object FROM {ONT}.link_rows WHERE row_no > %s AND row_no <= %s",
                        (lo_link, got["link"]))
             # a link the store no longer holds live at its tier (deleted or superseded with
-            # no new row): dropped, and read again from whatever live rows it has left
-            # one link type at a time: the store's links are partitioned by type, so each
-            # check is an index probe per link in that type's partition. Over the whole
-            # table the planner hashed all 17M links against all live link rows and spilled
-            # past temp_file_limit (10 GB) on every refresh once Sage's links were served
-            # (2026-11-19 12:37 AM ET on: the records step failed each run)
-            for (link_type,) in pg.execute(LINK_TYPES_SQL.format(s=s)).fetchall():
-                pg.execute(
-                    "INSERT INTO gr_lt SELECT l.from_id, l.link_type, l.to_id FROM "
-                    f"{s}.record_links l WHERE l.link_type = %(t)s AND NOT EXISTS (SELECT 1 "
-                    f"FROM {ONT}.link_rows r WHERE r.link_type = %(t)s AND r.from_object = "
-                    "l.from_id AND r.link_type = l.link_type AND r.to_object = l.to_id AND "
-                    "r.superseded_at IS NULL AND r.tier = l.tier)", {"t": link_type})
+            # no new row): found before the transaction (``_dead_links``), dropped here and
+            # read again from whatever live rows it has left
+            with pg.cursor().copy("COPY gr_lt FROM STDIN") as cp:
+                for row in dead:
+                    cp.write_row(row)
             pg.execute("DROP TABLE IF EXISTS pg_temp.gr_ldel")
             pg.execute(
                 "CREATE TEMP TABLE gr_ldel AS WITH d AS ("

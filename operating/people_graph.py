@@ -84,6 +84,7 @@ from dataclasses import dataclass, field
 import datetime as dt
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -146,12 +147,20 @@ class PeopleDirectory:
     mailbox ids the capture's own exclusion withholds now (None: every one, the capture could
     not decide). ``internal_domains``: the tenant's mail domains beside those of the captured
     mailboxes. ``address_guard``: a zero-argument callable returning a guard bound to the
-    tenant directory (or None), asked only for a tenant address no mailbox holds."""
+    tenant directory (or None), asked only for a tenant address no mailbox holds.
+    ``tenant_withheld``: digest -> kind of every address the tenant holds that its listing
+    does not clear as one person's (``people_exclusion.mail_capture_tenant_withheld``; None:
+    not recorded recently). Without a bound guard, a tenant-domain address is then decided by
+    the recorded listing (``guard.decides``), and one neither the listing nor that record
+    holds is an address the tenant does not hold at all (a former employee's, a removed
+    alias): no current person of ours, so it withholds nothing."""
 
     def __init__(self, guard: Any, mailboxes: Iterable[Mapping[str, Any]] = (), *,
                  withheld: Iterable[str] | None = (), internal_domains: Iterable[str] = (),
-                 address_guard: Callable[[], Any] | None = None) -> None:
+                 address_guard: Callable[[], Any] | None = None,
+                 tenant_withheld: Mapping[str, str] | None = None) -> None:
         self.guard = guard
+        self._tenant_withheld = tenant_withheld
         self._address_guard = address_guard
         self._bound: Any = None
         self._asked = False
@@ -213,7 +222,8 @@ class PeopleDirectory:
         bound = getattr(runtime, "address_exclusion", None)
         return cls(guard, rows, withheld=withheld,
                    internal_domains=getattr(scope, "internal_domains", ()) or (),
-                   address_guard=bound if callable(bound) else None)
+                   address_guard=bound if callable(bound) else None,
+                   tenant_withheld=_recorded_withheld(store))
 
     @property
     def unavailable(self) -> str | None:
@@ -273,12 +283,37 @@ class PeopleDirectory:
             return Resolution(EXTERNAL)
         bound = self._bound_guard()
         if bound is None:
-            return _UNDECIDED
+            return self._recorded(address)
         excluded = self._excluded(bound, [address])
         if excluded is None:
             return _UNDECIDED
         return _WITHHELD if excluded else Resolution(
             PERSON, f"address:{address}", "tenant_address", frozenset({address}))
+
+    def _recorded(self, address: str) -> Resolution:
+        """A tenant-domain address no captured mailbox holds, with no bound guard: decided
+        by the tenant listing the capture recorded (an address it holds: that listed
+        person's, or excluded), else by the record of the tenant's uncleared addresses
+        (absent from it too: the tenant holds no such address now), else undecided."""
+        guard = self.guard
+        try:
+            listed = guard.decides(address)
+        except Exception:  # noqa: BLE001 - undecidable
+            listed = False
+        if listed:
+            excluded = self._excluded(guard, [address])
+            if excluded is None:
+                return _UNDECIDED
+            return _WITHHELD if excluded else Resolution(
+                PERSON, f"address:{address}", "tenant_listing", frozenset({address}))
+        recorded = self._tenant_withheld
+        if recorded is None:
+            return _UNDECIDED
+        from integrations.people_exclusion import address_digest
+        kind = recorded.get(address_digest(address))
+        if kind is not None:
+            return _WITHHELD if kind == "excluded" else _UNDECIDED
+        return Resolution(PERSON, f"address:{address}", "tenant_unheld", frozenset({address}))
 
     def object_id(self, value: Any) -> Resolution:
         """One Entra object id: decided by the guard, then its captured mailbox if any."""
@@ -296,6 +331,19 @@ class PeopleDirectory:
         if box:
             return self._mailbox(box)
         return Resolution(PERSON, f"oid:{oid}", "object_id")
+
+
+def _recorded_withheld(store: Any) -> Mapping[str, str] | None:
+    """The tenant's uncleared addresses the mail capture of ``store`` recorded
+    (``people_exclusion.mail_capture_tenant_withheld``), or None."""
+    root = getattr(store, "root", None)
+    if root is None:
+        return None
+    from integrations.people_exclusion import mail_capture_tenant_withheld
+    try:
+        return mail_capture_tenant_withheld(Path(root).parent)
+    except Exception:  # noqa: BLE001 - unreadable: decides nothing
+        return None
 
 
 def directory_of(runtime: Any) -> Callable[[], PeopleDirectory | None] | None:

@@ -155,12 +155,31 @@ def put(write: Any, name: str, ddl: str, *,
     return True
 
 
+def _drop_attachments(write: Any, schema: str | None) -> None:
+    """The attachments views read the mail views (an attachment is readable only where its
+    message is): dropped before a mail view is dropped, made again after by ``_remake_attachments``."""
+    _drop_one(write, f"{guarded_schema(schema)}.attachments")
+    _drop_one(write, f"{person_schema(schema)}.attachments")
+
+
+def _remake_attachments(write: Any, schema: str | None) -> None:
+    """The attachments views, when a mail view's drop took them and the table is there."""
+    v = bv.VIEWS.get("attachments")
+    if v is None or write.execute("SELECT to_regclass(%s)",
+                                  (f"{schema or bv.SCHEMA}.attachments",)).fetchone()[0] is None:
+        return
+    dst = guarded_schema(schema)
+    gone = write.execute("SELECT to_regclass(%s) IS NULL", (f"{dst}.attachments",)).fetchone()[0]
+    person = person_schema(schema)
+    if write.execute("SELECT to_regnamespace(%s)", (person,)).fetchone()[0] is not None:
+        gone |= write.execute("SELECT to_regclass(%s) IS NULL",
+                              (f"{person}.attachments",)).fetchone()[0]
+    if gone:
+        make(write, v, schema)
+
+
 def drop(write: Any, name: str, schema: str | None = None) -> None:
-    from operating.pg import comms_findings
-    if name in comms_findings.SOURCES:
-        # the findings view reads the communications views: dropped first, made again by
-        # ``create`` (it would block this DROP)
-        comms_findings.drop_view(write, schema)
+    _drop_dependents(write, name, schema)
     write.execute(f"DROP VIEW IF EXISTS {guarded_schema(schema)}.{name}")
     if write.execute("SELECT to_regnamespace(%s)", (person_schema(schema),)
                      ).fetchone()[0] is not None:
@@ -191,15 +210,21 @@ def make(write: Any, v: bv.View, schema: str | None = None, *,
     src = schema or bv.SCHEMA
     made = False
     if v.fill:   # a communications table: its own guarded view rule (``business_comms``)
-        from operating.pg import business_comms, comms_findings
+        from operating.pg import business_comms, comms_findings, teams_file_links
         # the findings view reads the guarded mail and Teams views: dropped before one of
         # them is made again (it would block the DROP) and made again after, in this same
         # transaction, so no reader sees it missing
         findings = v.name in comms_findings.SOURCES
+        mail = v.name == "emails"
+        links = v.name in teams_file_links.SOURCES   # Teams message -> shared file view
         remade = put(write, f"{dst}.{v.name}", business_comms.view_ddl(v, src, dst),
-                     before=(lambda: comms_findings.drop_view(write, schema))
-                     if findings else None)
+                     before=(lambda: _drop_dependents(write, v.name, schema))
+                     if findings or links or mail else None)
         made |= remade
+        if links and (remade or write.execute(
+                "SELECT to_regclass(%s) IS NULL",
+                (f"{dst}.{teams_file_links.VIEW}",)).fetchone()[0]):
+            _links(write, schema)
         if findings and (remade or write.execute(
                 "SELECT to_regclass(%s) IS NULL",
                 (f"{dst}.{comms_findings.VIEW}",)).fetchone()[0]):
@@ -207,10 +232,13 @@ def make(write: Any, v: bv.View, schema: str | None = None, *,
         person = person_schema(schema)
         if write.execute("SELECT to_regnamespace(%s)", (person,)).fetchone()[0] is not None:
             made |= put(write, f"{person}.{v.name}",
-                        business_comms.view_ddl(v, src, person, ai=False))
+                        business_comms.view_ddl(v, src, person, ai=False),
+                        before=(lambda: _drop_attachments(write, schema)) if mail else None)
             _grant(write, PERSON_READERS, f"SELECT ON {person}.{v.name}")
         _grant(write, COMMS_READERS, f"SELECT ON {dst}.{v.name}")
         _drop_one(write, f"{page_schema(schema)}.{v.name}")   # never a person-page view
+        if mail:   # the attachments views read the mail views: made again over the new ones
+            _remake_attachments(write, schema)
     elif not door.is_v2(write, src, v.name):
         drop(write, v.name, schema)   # an old-shape table: no view (fail closed)
         return None
@@ -237,6 +265,30 @@ def make(write: Any, v: bv.View, schema: str | None = None, *,
 def _drop_one(write: Any, name: str) -> None:
     if write.execute("SELECT to_regclass(%s)", (name,)).fetchone()[0] is not None:
         write.execute(f"DROP VIEW IF EXISTS {name}")
+
+
+def _drop_dependents(write: Any, name: str, schema: str | None) -> None:
+    """The views reading a guarded communications view (the findings view, the Teams
+    message -> file view) are dropped before it is (they would block the DROP) and made
+    again by ``create`` in the same transaction."""
+    from operating.pg import comms_findings, teams_file_links
+    if name == "emails":   # an attachment is readable only where its message is
+        _drop_attachments(write, schema)
+    if name in comms_findings.SOURCES:
+        comms_findings.drop_view(write, schema)
+    if name in teams_file_links.SOURCES:
+        teams_file_links.drop_view(write, schema)
+
+
+def _links(write: Any, schema: str | None) -> None:
+    """The Teams message -> shared file view; its failure never fails the swap (without it
+    plx.sql reads no link: fail closed)."""
+    from operating.pg import teams_file_links
+    try:
+        with write.transaction():
+            teams_file_links.create_view(write, schema)
+    except Exception as exc:  # noqa: BLE001
+        print(f"teams file links view not made: {type(exc).__name__}", file=sys.stderr)
 
 
 def _findings(write: Any, schema: str | None) -> None:

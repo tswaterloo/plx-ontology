@@ -40,7 +40,7 @@ NOT_DECLARED = {
     "ontology/pg_step_inplace.py", "operating/pg/mention_scope.py", "operating/pg/step_staging.py",
     # the staged link apply's run-owned Postgres schema (the staged difference and its
     # undo rows), one per apply as step_staging's; never a served table
-    "operating/pg/link_apply.py",
+    "operating/pg/link_apply.py", "operating/embed/oldmail.py",
     # a chunked migration's row log (undo_<run> schema: its tables, triggers and sequence),
     # made for one migration and dropped after it is confirmed or undone; never a served table
     "operating/pg/migrate_chunks.py",
@@ -60,6 +60,10 @@ NOT_DECLARED = {
     # list and state, and the alert rows and runs; each also uses session TEMP tables.
     # Postgres tables made by their own build, never a SQLite store
     "operating/pg/business_comms.py", "operating/pg/business_views_access.py",
+    # the chunk vectors' per-kind partitions (migration 0052 declares the parent, its
+    # default partition and HNSW): each kind's table is built standalone LIKE the parent by
+    # ``chunk_vectors build``, indexed, then attached; never a SQLite store
+    "operating/pg/chunk_vectors.py",
     "operating/pg/generic_records.py", "operating/pg/generic_views.py",
     "operating/pg/comms_findings.py", "operating/pg/door.py", "operating/pg/alerts.py",
     # the capture backup's pack check: a throwaway SQLite file of one pack's names, made
@@ -78,6 +82,9 @@ NOT_DECLARED = {
     # a one-off proof over a scratch copy of a generation it builds itself; never a store
     # the Workbench opens
     "scripts/stamp_sighting_proof.py",
+    # the partners re-capture's undo: re-creates people_withheld in the capture state file it
+    # was run against, one table of a one-off script, never a store it opens
+    "scripts/partners_recapture.py",
     # Postgres partitions of ontology.link_rows built beside the served ones (no SQLite store)
     "operating/pg/link_partitions.py", "scripts/rehearse_link_partitions.py",
     "scripts/rehearse_link_pack.py",

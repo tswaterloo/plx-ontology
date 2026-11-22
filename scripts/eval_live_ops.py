@@ -295,10 +295,11 @@ def current_mail(conn: sqlite3.Connection) -> tuple[str, tuple[str, ...]]:
 
 
 class SenderGuard:
-    """Whether a message's sender is cleared by the people exclusion (an excluded
-    person's mail is never read): an address the exclusion decides is cleared unless
-    excluded; one it cannot decide is cleared only outside our own domains (an excluded
-    person is one of us). With no usable exclusion list nothing is cleared."""
+    """Whether a message may feed an eval set: the tuning bar (``excluded_people.
+    tuning_barred``) over its sender, every recipient and the
+    mailbox it was read from (``row``), decided by the people exclusion (``guard_clear``:
+    an address it decides is cleared unless excluded; one it cannot decide only outside our
+    own domains). With no usable exclusion list nothing is cleared."""
 
     def __init__(self, exclusion: Any) -> None:
         self.exclusion = exclusion
@@ -308,20 +309,17 @@ class SenderGuard:
         from integrations.people_exclusion import PeopleExclusion, with_directory
         return cls(with_directory(PeopleExclusion.from_env(environ), state))
 
-    def cleared(self, sender: Any, own: Iterable[str]) -> bool:
-        from integrations.live_source_guard import NotVisible
-        if self.exclusion.unavailable:
-            return False
+    def cleared(self, sender: Any, own: Iterable[str],
+                row: Mapping[str, Any] | None = None) -> bool:
+        """``row``: the captured message (its ``to``, ``cc``, ``bcc`` and ``mailbox_upn``
+        are barred alike); a message with no sender address is never cleared."""
+        from operating.excluded_people import guard_clear, tuning_barred
         address = str(sender or "").strip().casefold()
-        if not address:
+        if not address or "@" not in address:
             return False
-        try:
-            if self.exclusion.decides(address):
-                return not self.exclusion.is_excluded(address)
-        except NotVisible:
-            return False
-        domain = _domain(address)
-        return bool(domain) and domain not in set(own)
+        named = [address, *([row.get(k) for k in ("to", "cc", "bcc", "mailbox_upn")]
+                            if row is not None else [])]
+        return not tuning_barred(guard_clear(self.exclusion, own), *named)
 
 
 def _guarded(senders: Any) -> Any:
@@ -366,7 +364,7 @@ def mail_messages(db: Path, scan: "TextScan | None" = None, *, senders: Any = No
         for handle, message_id, record in conn.execute(
                 "SELECT l1_handle, message_id, record FROM messages WHERE " + where, args):
             row = json.loads(record)
-            if not senders.cleared(row.get("from"), internal):
+            if not senders.cleared(row.get("from"), internal, row):
                 continue
             text = f"{row.get('subject') or ''}\n{row.get('body_preview') or ''}"
             entry = None
@@ -696,7 +694,7 @@ def attachment_names(db: Path, *, senders: Any = None) -> list[dict[str, Any]]:
                 ).fetchone()
             current = seen[(mailbox, graph_id)]
             if current is not None and senders.cleared(
-                    json.loads(current[2]).get("from"), internal):
+                    json.loads(current[2]).get("from"), internal, json.loads(current[2])):
                 out.append({**mail_entry(current[0], current[1], json.loads(current[2]),
                                          internal), "name": name})
         return out
@@ -761,7 +759,7 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]], *, senders: 
         for handle, message_id, record in conn.execute(
                 "SELECT l1_handle, message_id, record FROM messages WHERE " + where, args):
             row = json.loads(record)
-            if not senders.cleared(row.get("from"), ours):
+            if not senders.cleared(row.get("from"), ours, row):
                 continue
             sender = _domain(row.get("from"))
             box = _domain(row.get("mailbox_upn"))
@@ -920,7 +918,7 @@ def attachment_docs(db: Path, as_of: Any, *, senders: Any = None) -> list[dict[s
             row = json.loads(current[2])
             day = instant(row.get("received_at"))
             if day is None or not 0 <= (as_of - day.date()).days <= DOC_DAYS \
-                    or not senders.cleared(row.get("from"), internal):
+                    or not senders.cleared(row.get("from"), internal, row):
                 continue
             text = read_blob(db.parent / "blobs" / "sha256", digest)
             if not text:

@@ -54,5 +54,34 @@ class WatchTests(unittest.TestCase):
         self.assertFalse(any(p.stopped for p in procs))
 
 
+class ResendTests(unittest.TestCase):
+    """A failed stream is sent again whole before the copy is given up."""
+
+    def test_a_failed_stream_is_sent_again_and_the_copy_goes_on(self):
+        sent, rounds = [], iter([[0]])
+        got = sc.resend(["p0", "p1", "p2"], [1], 2, 60, start=lambda p: sent.append(p) or p,
+                        wait=lambda procs: next(rounds))
+        self.assertEqual((got, sent), ([], ["p1"]))
+
+    def test_a_stream_failing_every_retry_still_fails_and_others_are_not_resent(self):
+        sent = []
+        got = sc.resend(["p0", "p1", "p2"], [0, 2], 2, 60, start=lambda p: sent.append(p) or p,
+                        wait=lambda procs: [143 if p == "p2" else 1 for p in procs])
+        self.assertEqual(got, [2])            # tar's exit 1 (file changed) counts as sent
+        self.assertEqual(sent, ["p0", "p2", "p2"])
+
+    def test_no_retries_leaves_the_failures(self):
+        self.assertEqual(sc.resend(["p0"], [0], 0, 60, start=None, wait=None), [0])
+
+
+class FolderTests(unittest.TestCase):
+
+    def test_slot_folders_are_not_made_but_the_wal_folders_are(self):
+        self.assertFalse(sc.folder_made("pg_replslot/plx_sb4ec_archive"))
+        self.assertTrue(sc.folder_made("pg_replslot"))
+        self.assertTrue(sc.folder_made("pg_wal/archive_status"))
+        self.assertTrue(sc.folder_made("base/16385"))
+
+
 if __name__ == "__main__":
     unittest.main()

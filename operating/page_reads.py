@@ -29,6 +29,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from operating.po_pilot import bc_pilot_po_sql, bc_pilot_record_sql
+
 TOOL_NAME = "plx.page"
 MAX_READS = 12
 MAX_ROWS = 500
@@ -87,6 +89,43 @@ def _fresh() -> str:
 _FRESH = _fresh()
 
 
+def _impact_top() -> "Query":
+    """The open alerts of the rules that state a money impact (``Rule.impact``), the biggest
+    first: per alert the sums over its own invoice lines (the topic is
+    ``item|unit|currency`` of one customer) in the last window and the one before, the
+    rule's own impact expression over them. A rule's window and cost-sanity rule are the
+    rule's own (``alerts.PRICE_DAYS``, ``alerts.COST_LOOKS_WRONG_SQL``)."""
+    from operating.pg.alerts import COST_LOOKS_WRONG_SQL, PRICE_DAYS, RULES
+    cases = " ".join(f"WHEN '{name}' THEN {rule.impact}" for name, rule in RULES.items()
+                     if rule.impact)
+    days = int(PRICE_DAYS)
+    return Query(
+        "WITH a AS (SELECT rule, kind, record_table, handle, topic, why, since, first_seen "
+        "FROM alerts WHERE state = 'open' AND rule = ANY(string_to_array(%(rules)s, ',')) "
+        "AND " + _FRESH + "), "
+        "l AS (SELECT a.rule, a.handle, a.topic, l.quantity, l.revenue, l.margin, "
+        "l.margin_basis, l.revenue_currency AS cur, l.invoice_date > current_date - "
+        f"{days} AS recent, {COST_LOOKS_WRONG_SQL} AS wrong "
+        "FROM a JOIN sales_invoice_lines l ON l.customer_handle = a.handle "
+        "AND l.item_code || '|' || l.quantity_unit || '|' || l.revenue_currency = a.topic "
+        "WHERE l.pilot IS NOT TRUE AND l.quantity > 0 AND l.revenue > 0 AND "
+        f"l.invoice_date > current_date - {2 * days} AND l.invoice_date <= current_date), "
+        "s AS (SELECT rule, handle, topic, max(cur) AS cur, "
+        "sum(-margin) FILTER (WHERE recent AND NOT wrong AND margin_basis IN "
+        "('same_currency', 'cost_converted_at_invoice_rate')) AS below, "
+        "sum(quantity) FILTER (WHERE recent) AS q, sum(revenue) FILTER (WHERE recent) AS rev, "
+        "sum(revenue) FILTER (WHERE NOT recent) / nullif(sum(quantity) FILTER "
+        "(WHERE NOT recent), 0) AS prior_price FROM l GROUP BY rule, handle, topic), "
+        "t AS (SELECT a.*, s.cur, CASE s.rule " + cases + " END AS impact FROM a "
+        "LEFT JOIN s ON s.rule = a.rule AND s.handle = a.handle AND s.topic = a.topic), "
+        "n AS (SELECT t.*, row_number() OVER (PARTITION BY rule ORDER BY impact DESC NULLS "
+        "LAST, since, handle, topic) AS place FROM t) "
+        "SELECT rule, kind, record_table, handle, topic, why, since, first_seen, "
+        "(SELECT r.label FROM records r WHERE r.handle = n.handle ORDER BY r.record_id "
+        "LIMIT 1) AS subject, cur, impact FROM n WHERE place <= %(limit)s "
+        "ORDER BY rule, place", ("rules", "limit"), MAX_ROWS)
+
+
 def _rank(exact: str, prefix: str, name: str | None = None) -> str:
     """0 a number or code equal to the text, 1 a name equal to it, 2 a number or code
     starting with it, 3 a name starting with it, 4 a word of the name starting with it, 5
@@ -112,11 +151,40 @@ def _codes(code: str, codes: str) -> tuple[str, str]:
             f"(strpos(lower({code}), k.q) = 1 OR strpos(lower({codes}), ':' || k.q) > 0)")
 
 
+# Record kinds found by their own number through the guarded ``records`` view (a document's
+# label is its number, with or without the kind in front: "Receipt RCP10002648", a lot's
+# "S220001"). Sales and supplier invoices are read from their own views, whose number
+# columns are typed; every kind here is one record page (``object_url``).
+NUMBERED_RECORDS = {"shipment": "Shipment", "receipt": "Receipt", "lot": "Lot",
+                    "credit_note": "SalesCreditMemo", "purchase_invoice": "PurchaseInvoice"}
+# Search kinds whose results open the record page the Ask opens (the record's object), not
+# an account or order page.
+OBJECT_KINDS = ("product", "batch", "sales_invoice", "supplier_invoice", *NUMBERED_RECORDS)
+
+
+def _label_number(word: str) -> tuple[str, str]:
+    """A record's label read as its number, by the operators the guarded view lets reach
+    an index (``texteq``, ``text_pattern_ge``/``lt``: leakproof; ``lower()`` is not): the
+    label is the number or its kind word and the number, spelt as typed, upper or lower
+    case. Exact is equality with one of those, a prefix a range over them."""
+    # the typed text as the statement's own parameters (constants to the planner), never a
+    # column of ``k``: only then does the guarded view let the test reach the index
+    forms = ["btrim(%(q)s)", "upper(btrim(%(q)s))", "lower(btrim(%(q)s))"]
+    forms += [f"('{word} ' || {f})" for f in forms]
+    exact = f"r.label = ANY(ARRAY[{', '.join(forms)}])"
+    ranges = " OR ".join(f"(r.label ~>=~ {f} AND r.label ~<~ ({f} || chr(1114111)))"
+                         for f in forms)
+    return exact, f"({ranges})"
+
+
 def _find_sql() -> str:
     """One ranked list over every kind of record: parties and products by name or any
-    system's code, orders, POs and batches by number (never by their party's name, so a
-    name finds the party once). A chain (two or more accounts under one chain) is one
-    result. No ``LIKE``: the text is never a pattern."""
+    system's code, orders, POs, invoices, supplier invoices and batches by number (never
+    by their party's name, so a name finds the party once), and shipments, receipts, lots,
+    credit notes by the number their label carries (guarded ``records`` view). A chain (two
+    or more accounts under one chain) is one result. Exact numbers rank first across kinds;
+    a BC pilot row ranks after a system-of-record row of the same rank (``po_pilot``'s one
+    rule). No ``LIKE``: the text is never a pattern."""
     cx, cp = _codes("c.customer_code", "c.codes")
     sx, sp = _codes("s.supplier_code", "s.codes")
     ox, op_ = _num("o.order_number")
@@ -125,32 +193,50 @@ def _find_sql() -> str:
     ix, ip = _num("i.item_code")
     bx, bp = _num("b.batch_code")
     lx, lp = _num("b.lot_number")
+    vx, vp = _num("v.invoice_number")
+    vcx, vcp = _num("v.customer_po")
+    dx, dp = _num("d.document_number")
+    no = "false"
     parts = [
         ("customer", "c.handle", "c.name", "c.customer_code", "c.chain", "NULL::text", "NULL::bigint",
-         _rank(cx, cp, "c.name"), "customers c"),
+         _rank(cx, cp, "c.name"), no, "customers c"),
         ("chain", "NULL::text", "g.chain", "g.chain_code", "NULL::text", "NULL::text", "g.n",
          _rank("lower(g.chain_code) = k.q", "strpos(lower(g.chain_code), k.q) = 1", "g.chain"),
-         "(SELECT chain, chain_code, count(*) AS n FROM customers WHERE chain IS NOT NULL "
+         no, "(SELECT chain, chain_code, count(*) AS n FROM customers WHERE chain IS NOT NULL "
          "GROUP BY 1, 2 HAVING count(*) > 1) g"),
         ("supplier", "s.handle", "s.name", "s.supplier_code", "NULL::text", "s.status", "NULL::bigint",
-         _rank(sx, sp, "s.name"), "suppliers s"),
+         _rank(sx, sp, "s.name"), no, "suppliers s"),
         ("sales_order", "o.handle", "o.order_number", "o.customer_po", "o.customer", "o.status",
          "NULL::bigint", f"LEAST({_rank(ox, op_)}, CASE WHEN {cpx} THEN 2 ELSE 9 END)",
-         "sales_orders o"),
+         no, "sales_orders o"),
         ("purchase_order", "p.handle", "p.po_number", "p.vendor_number", "p.supplier", "p.status",
-         "NULL::bigint", _rank(px, pp), "purchase_orders p"),
+         "NULL::bigint", _rank(px, pp), bc_pilot_po_sql("p"), "purchase_orders p"),
         ("product", "i.handle", "i.name", "i.item_code", "i.category", "i.active", "NULL::bigint",
-         _rank(ix, ip, "i.name"), "products i"),
+         _rank(ix, ip, "i.name"), no, "products i"),
         ("batch", "b.handle", "b.batch_code", "b.lot_number", "b.product", "b.status", "NULL::bigint",
-         f"LEAST({_rank(bx, bp)}, {_rank(lx, lp)})", "batches b"),
+         f"LEAST({_rank(bx, bp)}, {_rank(lx, lp)})", no, "batches b"),
+        ("sales_invoice", "v.handle", "v.invoice_number", "v.customer_po", "v.customer",
+         "v.status", "NULL::bigint",
+         f"LEAST({_rank(vx, vp)}, CASE WHEN {vcx} THEN 2 ELSE 9 END)",
+         "coalesce(v.pilot, false)", "sales_invoices v"),
+        ("supplier_invoice", "d.handle", "d.document_number", "d.po_number", "d.supplier",
+         "d.document_type", "NULL::bigint", _rank(dx, dp), "coalesce(d.pilot, false)",
+         "supplier_invoices d"),
     ]
+    for kind, type_ in NUMBERED_RECORDS.items():
+        rx, rp = _label_number(type_)
+        parts.append((kind, "r.handle", "r.label", "r.system", "r.type", "NULL::text",
+                      "NULL::bigint", _rank(rx, rp), bc_pilot_record_sql("r.system"),
+                      f"(SELECT * FROM records WHERE type = '{type_}' AND ({rx.replace('r.', '')} OR "
+                      f"{rp.replace('r.', '')})) r"))
     union = " UNION ALL ".join(
         f"SELECT * FROM (SELECT '{kind}' AS kind, {h} AS handle, {t} AS title, {c} AS code, "
-        f"{ctx} AS context, {st} AS status, {n} AS members, {r} AS rank FROM {frm}, k) x"
-        f" WHERE rank < 9" for kind, h, t, c, ctx, st, n, r, frm in parts)
-    return ("WITH k AS (SELECT lower(btrim(%(q)s)) AS q WHERE length(btrim(%(q)s)) >= 2) "
+        f"{ctx} AS context, {st} AS status, {n} AS members, {r} AS rank, {pilot} AS pilot "
+        f"FROM {frm}, k) x WHERE rank < 9"
+        for kind, h, t, c, ctx, st, n, r, pilot, frm in parts)
+    return ("WITH k AS (SELECT btrim(%(q)s) AS raw, lower(btrim(%(q)s)) AS q WHERE length(btrim(%(q)s)) >= 2) "
             f"SELECT kind, handle, title, code, context, status, members, rank FROM ({union}) "
-            "hit ORDER BY rank, CASE kind WHEN 'chain' THEN 0 WHEN 'customer' THEN 1 "
+            "hit ORDER BY rank, pilot, CASE kind WHEN 'chain' THEN 0 WHEN 'customer' THEN 1 "
             "WHEN 'supplier' THEN 2 ELSE 3 END, length(title), title, handle "
             "LIMIT %(limit)s")
 
@@ -162,18 +248,20 @@ FIND_SQL = _find_sql()
 QUERIES: dict[str, Query] = {
     # Home / My work / Watching: the late purchase orders (the PO view's own verdict)
     "late_po_count": Query(
-        "SELECT count(*) AS late FROM purchase_orders WHERE verdict = 'late'"),
+        "SELECT count(*) AS late FROM purchase_orders WHERE verdict = 'late' AND NOT "
+        + bc_pilot_po_sql()),
     "late_po_list": Query(
         "SELECT po_number, supplier, days_late, promised_date, requested_date, total, "
         "total_currency, purchaser, line_count, handle, withheld FROM purchase_orders "
-        "WHERE verdict = 'late' ORDER BY days_late DESC NULLS LAST, po_number, handle "
+        "WHERE verdict = 'late' AND NOT " + bc_pilot_po_sql() + " "
+        "ORDER BY days_late DESC NULLS LAST, po_number, handle "
         "LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
     # the sidebar's late POs by supplier: each supplier's count, most first, and how many
     # suppliers there are (a hidden supplier cell is no supplier: never named or counted)
     "late_po_suppliers": Query(
         "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT supplier, "
         "count(*) AS late FROM purchase_orders WHERE verdict = 'late' AND supplier IS NOT "
-        "NULL GROUP BY supplier) s ORDER BY late DESC, supplier LIMIT %(limit)s",
+        "NULL AND NOT " + bc_pilot_po_sql() + " GROUP BY supplier) s ORDER BY late DESC, supplier LIMIT %(limit)s",
         ("limit",), MAX_ROWS),
     # customer orders past their required date (open only, the order view's days_late)
     "late_order_count": Query(
@@ -202,6 +290,8 @@ QUERIES: dict[str, Query] = {
         "WHERE state = 'open' AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH +
         " ORDER BY since, rule, handle, topic LIMIT %(limit)s OFFSET %(offset)s",
         ("rules", "limit", "offset"), MAX_ROWS),
+    # the alerts that state a money impact, biggest first (Home's Financials)
+    "alerts_impact_top": _impact_top(),
     # per rule its last finished run and last run (no reason text)
     "alert_runs": Query("SELECT rule, ok_at, run_at, status FROM alert_runs ORDER BY rule",
                         (), 64),
@@ -210,19 +300,21 @@ QUERIES: dict[str, Query] = {
     # the alert AND the order; its cells as the order view masks them)
     "alerts_late_po_count": Query(
         "SELECT count(*) AS late FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
-        "WHERE a.rule = 'po_late' AND a.state = 'open' AND " + _FRESH.replace("rule", "a.rule", 1)),
+        "WHERE a.rule = 'po_late' AND a.state = 'open' AND NOT " + bc_pilot_po_sql("p")
+        + " AND " + _FRESH.replace("rule", "a.rule", 1)),
     "alerts_late_po_list": Query(
         "SELECT p.po_number, p.supplier, p.days_late, p.promised_date, p.requested_date, "
         "p.total, p.total_currency, p.purchaser, p.line_count, p.handle, p.withheld "
         "FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
-        "WHERE a.rule = 'po_late' AND a.state = 'open' AND " + _FRESH.replace("rule", "a.rule", 1)
+        "WHERE a.rule = 'po_late' AND a.state = 'open' AND NOT " + bc_pilot_po_sql("p")
+        + " AND " + _FRESH.replace("rule", "a.rule", 1)
         + " ORDER BY p.days_late DESC NULLS LAST, p.po_number, p.handle "
         "LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
     "alerts_late_po_suppliers": Query(
         "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT p.supplier, "
         "count(*) AS late FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
-        "WHERE a.rule = 'po_late' AND a.state = 'open' AND p.supplier IS NOT NULL AND "
-        + _FRESH.replace("rule", "a.rule", 1) + " GROUP BY p.supplier) s "
+        "WHERE a.rule = 'po_late' AND a.state = 'open' AND p.supplier IS NOT NULL AND NOT "
+        + bc_pilot_po_sql("p") + " AND " + _FRESH.replace("rule", "a.rule", 1) + " GROUP BY p.supplier) s "
         "ORDER BY late DESC, supplier LIMIT %(limit)s", ("limit",), MAX_ROWS),
     "views_as_of": Query("SELECT view, built_at FROM view_state ORDER BY view", (), 64),
     # ---- the one search box: every kind of business record by name or number --------
@@ -338,6 +430,49 @@ QUERIES: dict[str, Query] = {
         "line_amount_currency, handle, withheld FROM sales_order_lines "
         "WHERE order_handle = %(handle)s ORDER BY item_code NULLS LAST, description, handle "
         "LIMIT %(limit)s", ("handle", "limit"), MAX_ROWS),
+    # ---- the item's page (``handle``): its row, its stock from the stock view, its batches
+    "product": Query(
+        "SELECT name, item_code, item_type, category, uom, active, blocked, unit_cost, "
+        "unit_cost_currency, unit_price, unit_price_currency, handle, withheld FROM products "
+        "WHERE handle = %(handle)s", ("handle",)),
+    "product_stock": Query(
+        "SELECT s.on_hand, s.on_hand_unit, s.as_of, s.handle, s.withheld FROM stock s "
+        "WHERE s.item_code = (SELECT p.item_code FROM products p WHERE p.handle = %(handle)s) "
+        "AND s.item_code IS NOT NULL", ("handle",)),
+    "product_batches": Query(
+        "SELECT b.batch_code, b.lot_number, b.status, b.quality_status, b.scheduled_date, "
+        "b.planned_quantity, b.produced_quantity, b.handle, b.withheld FROM batches b WHERE "
+        "b.item_code = (SELECT p.item_code FROM products p WHERE p.handle = %(handle)s) AND "
+        "b.item_code IS NOT NULL ORDER BY b.scheduled_date DESC NULLS LAST, b.batch_code, "
+        "b.handle LIMIT %(limit)s", ("handle", "limit"), MAX_ROWS),
+    # ---- Records' production list: batches with the filters its page offers. ``status`` and
+    # ``hold`` are exact values or '' (no filter); ``q`` is a plain text matched by position,
+    # never as a pattern. One order, so a page never loses or repeats a row.
+    "list_batches": Query(
+        "SELECT batch_code, lot_number, product, item_code, status, quality_status, on_hold, "
+        "scheduled_date, produced_quantity, handle, withheld FROM batches WHERE "
+        "(%(status)s = '' OR status = %(status)s) AND (%(hold)s = '' OR "
+        "on_hold IS NOT DISTINCT FROM (%(hold)s = 'yes')) AND (%(q)s = '' OR "
+        "position(lower(%(q)s) IN lower(coalesce(batch_code, '') || ' ' || "
+        "coalesce(lot_number, '') || ' ' || coalesce(product, ''))) > 0) "
+        "ORDER BY scheduled_date DESC NULLS LAST, batch_code, handle "
+        "LIMIT %(limit)s OFFSET %(offset)s", ("status", "hold", "q", "limit", "offset"),
+        MAX_ROWS),
+    "list_batches_count": Query(
+        "SELECT count(*) AS n FROM batches WHERE (%(status)s = '' OR status = %(status)s) AND "
+        "(%(hold)s = '' OR on_hold IS NOT DISTINCT FROM (%(hold)s = 'yes')) AND (%(q)s = '' OR "
+        "position(lower(%(q)s) IN lower(coalesce(batch_code, '') || ' ' || "
+        "coalesce(lot_number, '') || ' ' || coalesce(product, ''))) > 0)",
+        ("status", "hold", "q")),
+    "list_batch_statuses": Query(
+        "SELECT status, count(*) AS n FROM batches WHERE status IS NOT NULL GROUP BY 1 "
+        "ORDER BY 2 DESC, 1 LIMIT 30", (), 30),
+    # ---- the batch's page (``handle``)
+    "batch": Query(
+        "SELECT batch_code, lot_number, product, item_code, status, quality_status, on_hold, "
+        "scheduled_date, realized_date, released_date, planned_quantity, produced_quantity, "
+        "production_line, po_number, qc_ph_24h, qc_viscosity_24h, qc_tpc_yeast, tested_by, "
+        "checked_by, handle, withheld FROM batches WHERE handle = %(handle)s", ("handle",)),
 }
 
 
@@ -515,7 +650,8 @@ class PageReads:
 
 
 # the record pages a record id can open (``PageReads._resolve``)
-RESOLVABLE = frozenset({"purchase_orders", "sales_orders", "customers", "suppliers"})
+RESOLVABLE = frozenset({"purchase_orders", "sales_orders", "customers", "suppliers", "products",
+                        "batches"})
 
 
 def register(table: dict[str, dict[str, Any]], base: Any) -> PageReads:

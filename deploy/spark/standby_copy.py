@@ -38,6 +38,13 @@ SKIP_FILES = ("postmaster.pid", "postmaster.opts", "standby.signal", "recovery.s
 SSH_CONFIG = "/data/plx-state/ts-petra/ssh_config"
 
 
+def folder_made(path: str) -> bool:
+    """Whether a data-folder directory is made on the Spark: not a replication slot's folder
+    (its state file is never copied, and a slot folder without one stops the standby's
+    start: 'could not open file pg_replslot/<slot>/state', 11-22)."""
+    return not path.startswith("pg_replslot/")
+
+
 def kept(path: str) -> bool:
     """Whether a data-folder file (relative path) is copied."""
     top = path.split("/", 1)[0]
@@ -125,6 +132,27 @@ def watch(procs: list, stall_s: float, *, bytes_of=stream_bytes, now=time.monoto
     return [p.wait() for p in procs]
 
 
+def launch(pipe: str) -> "subprocess.Popen":
+    return subprocess.Popen(["bash", "-o", "pipefail", "-c", pipe], start_new_session=True)
+
+
+def resend(pipes: list[str], failed: list[int], retries: int, stall_s: float, *,
+           start=launch, wait=None) -> "list[int]":
+    """The streams still failed after up to ``retries`` rounds of sending each failed one
+    again whole (while the backup is open: tar -x overwrites its files, and the WAL from the
+    backup's start mends what changed). 11-22: one ssh channel through the proxy hung twice
+    at ~90% of a copy, and each time the whole 489 GiB copy was thrown away."""
+    wait = wait or (lambda procs: watch(procs, stall_s))
+    for attempt in range(retries):
+        if not failed:
+            break
+        print(f"streams {failed}: sending again (retry {attempt + 1} of {retries})",
+              file=sys.stderr, flush=True)
+        codes = wait([start(pipes[i]) for i in failed])
+        failed = [i for i, c in zip(failed, codes) if c not in (0, 1)]
+    return failed
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--host", required=True)
@@ -138,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--zstd-level", type=int, default=3)
     ap.add_argument("--stall-minutes", type=float, default=10,
                     help="stop a stream that moves no bytes this long (it then fails)")
+    ap.add_argument("--stream-retries", type=int, default=2,
+                    help="times a failed or stalled stream is sent again before the copy fails")
     ap.add_argument("--go", action="store_true", help="copy (without it: plan only)")
     a = ap.parse_args(argv)
     sudo = ["sudo", "-n", "-u", a.as_user] if a.as_user else []
@@ -148,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     files = [f for f in files if kept(f[1])]
     dirs = subprocess.run(sudo + ["find", a.src, "-mindepth", "1", "-type", "d", "-printf", "%P\\n"],
                           capture_output=True, check=True, text=True).stdout.split()
+    dirs = [d for d in dirs if folder_made(d)]
     parts = split(files, a.streams)
     total = sum(s for s, _ in files)
     print(f"plan: {len(files)} files, {total / 2**30:.1f} GiB, {len(parts)} streams of "
@@ -165,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     print("backup start lsn", sess.one("SELECT pg_backup_start('plx-standby', false)"), flush=True)
     work = tempfile.mkdtemp(prefix="standby-copy-")  # tmp-lint: standalone box script; the sudo'd tar reads its lists, removed once the streams end
     os.chmod(work, 0o755)
-    procs = []
+    procs, pipes = [], []
     started = time.monotonic()
     for i, paths in enumerate(parts):
         lst = os.path.join(work, f"s{i}.list")
@@ -176,12 +207,14 @@ def main(argv: list[str] | None = None) -> int:
                              "--warning=no-file-changed", "--warning=no-file-removed", "-cf", "-"]
         pipe = (" ".join(map(shlex.quote, tar)) + f" | zstd -q -{a.zstd_level} -T2 | "
                 + " ".join(map(shlex.quote, ssh)) + " " + shlex.quote(f"zstd -dq | tar -C {dest} -xf -"))
+        pipes.append(pipe)
         procs.append(subprocess.Popen(["bash", "-o", "pipefail", "-c", pipe],
                                       start_new_session=True))
     codes = watch(procs, a.stall_minutes * 60)
-    shutil.rmtree(work, ignore_errors=True)
     # GNU tar exits 1 for a file changed or removed while read: the WAL replay mends it
     failed = [i for i, c in enumerate(codes) if c not in (0, 1)]
+    failed = resend(pipes, failed, a.stream_retries, a.stall_minutes * 60)
+    shutil.rmtree(work, ignore_errors=True)
     row = sess.one("SELECT s.lsn || ' ' || replace(encode(convert_to(s.labelfile, 'UTF8'), 'base64'), "
                    "E'\\n', '') || ' ' || replace(encode(convert_to(coalesce(s.spcmapfile, ''), 'UTF8'), "
                    "'base64'), E'\\n', '') FROM pg_backup_stop(false) s")

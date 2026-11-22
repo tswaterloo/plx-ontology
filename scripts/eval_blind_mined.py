@@ -91,9 +91,10 @@ def mail_questions(db: Path, senders: lo.SenderGuard) -> list[dict[str, Any]]:
             raise Refused("mail_own_domains_unknown")
         where, args = lo.current_mail(conn)
         out = []
-        for handle, sender, to, cc, subject, preview, at in conn.execute(
+        for handle, sender, to, cc, bcc, box, subject, preview, at in conn.execute(
                 "SELECT l1_handle, json_extract(record, '$.from'), json_extract(record, '$.to'), "
-                "json_extract(record, '$.cc'), json_extract(record, '$.subject'), "
+                "json_extract(record, '$.cc'), json_extract(record, '$.bcc'), mailbox_id, "
+                "json_extract(record, '$.subject'), "
                 "json_extract(record, '$.body_preview'), json_extract(record, '$.received_at') "
                 "FROM messages WHERE " + where +
                 " AND instr(json_extract(record, '$.body_preview'), '?') > 0", args):
@@ -101,7 +102,9 @@ def mail_questions(db: Path, senders: lo.SenderGuard) -> list[dict[str, Any]]:
                 [str(p) for p in json.loads(cc or "[]")]
             if not all(p and _people_domain(p) in internal for p in people) \
                     or any(lo.skipped(p) for p in people) \
-                    or not senders.cleared(sender, internal):
+                    or not senders.cleared(sender, internal, {
+                        "to": json.loads(to or "[]"), "cc": json.loads(cc or "[]"),
+                        "bcc": json.loads(bcc or "[]"), "mailbox_upn": box}):
                 continue
             for question in bm.question_lines(str(preview or "")):
                 if bm.topical(question):

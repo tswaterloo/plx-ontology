@@ -56,6 +56,56 @@ from .backend_common import (
 DIRECTORY_ROUND = threading.local()
 
 
+class ScreensPool:
+    """The screens read ahead (``_screens_ahead``): ``workers`` daemon threads taking jobs
+    in order of (``later``, when queued), so a session reader's screens are read before any
+    directory employee's however many of those are queued. One round reads ahead for every
+    session reader and up to ``DIRECTORY_WARM_MOST`` employees (17 screens each); first in,
+    first out, a session reader's screens after an access change waited behind the whole
+    directory round (11-21: rounds of 30-40 min, longer than the time between deploys). A job
+    whose ``key`` is queued and not started yet is not queued again: the queued one's
+    future is returned (the same reader's same screen, read once)."""
+
+    def __init__(self, workers: int, name: str = "warm-screens") -> None:
+        self._jobs: "queue.PriorityQueue[tuple[int, int, Any]]" = queue.PriorityQueue()
+        self._queued: dict[Any, Any] = {}
+        self._lock = threading.Lock()
+        self._seq = 0
+        for number in range(max(1, workers)):
+            threading.Thread(target=self._loop, name=f"{name}_{number}", daemon=True).start()
+
+    def submit(self, fn: Callable[..., Any], *args: Any, later: bool = False,
+               key: Any = None) -> Any:
+        from concurrent.futures import Future
+        with self._lock:
+            if key is not None:
+                held = self._queued.get(key)
+                if held is not None:
+                    return held
+            future: Any = Future()
+            if key is not None:
+                self._queued[key] = future
+            self._seq += 1
+            self._jobs.put((1 if later else 0, self._seq, (future, key, fn, args)))
+        return future
+
+    def queued(self) -> int:
+        return self._jobs.qsize()
+
+    def _loop(self) -> None:
+        while True:
+            _rank, _seq, (future, key, fn, args) = self._jobs.get()
+            with self._lock:
+                if key is not None and self._queued.get(key) is future:
+                    del self._queued[key]
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args))
+            except BaseException as error:  # noqa: BLE001 - handed to the future
+                future.set_exception(error)
+
+
 def prewarm_shared_reads() -> None:
     """The process-wide reads every reader's first page waits on, read once at start in
     the background (11-18 profile, a fresh API: the documents marked beyond a reader, 10 s;
@@ -714,18 +764,15 @@ class WarmMixin:
                 inbox_state(inbox_path(self.store_path), wait=wait),
                 ai_watcher.stamp(Path(self.store_path)))
 
-    def _screens_pool(self) -> Any:
+    def _screens_pool(self) -> "ScreensPool":
         """The workers the screens read ahead run on (``screens_workers``, else
-        ``SCREENS_AHEAD_WORKERS``): every known reader's screens queued on them in order,
-        never a thread each."""
+        ``SCREENS_AHEAD_WORKERS``): every reader's screens queued on them, never a thread
+        each, a session reader's before any directory employee's (``ScreensPool``)."""
         with self._lock:
             pool = self.__dict__.get("_screens_executor")
             if pool is None:
-                from concurrent.futures import ThreadPoolExecutor
-                pool = self.__dict__["_screens_executor"] = ThreadPoolExecutor(
-                    max_workers=max(1, int(getattr(self, "screens_workers", 0)
-                                           or SCREENS_AHEAD_WORKERS)),
-                    thread_name_prefix="warm-screens")
+                pool = self.__dict__["_screens_executor"] = ScreensPool(
+                    max(1, int(getattr(self, "screens_workers", 0) or SCREENS_AHEAD_WORKERS)))
             return pool
 
     def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:

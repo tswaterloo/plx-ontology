@@ -1166,6 +1166,9 @@ DRAFT_CHOICES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
       "rnd_sample_project", "rnd_status_update", "routine_update", "other_external")),
     ("system_entries", "Entries in the business systems",
      ("ar_invoice_entry", "ap_invoice_entry", "cash_application", "shipment_posting")),
+    # the work a message left the person beyond a reply (``autopilot_message_work``): its
+    # own switch, off for everyone until they turn it on (in no Draft file)
+    ("message_todos", "To-dos a message left me", ("message_todos",)),
 )
 
 
@@ -1628,6 +1631,11 @@ class Executor:
                     missing = [f"approved_writes_off:{kind}", *missing]
             if dry_only and mode == "live":
                 mode, missing, row["live_by"] = "dry_run", [dry_only], None
+            if request.get("proposal_only"):
+                # proposed for a person to do (``Adapter.PROPOSAL_ONLY``): never performed,
+                # whatever the gate, an approval or a confirm says
+                mode, row["live_by"] = "dry_run", None
+                missing = [f"proposal_only:{action.get('operation')}", *missing]
             if mode == "live" and approval is None \
                     and _bc_production(kind, request, self.environ):
                 # BC Production: a named person's approval of this exact item (their

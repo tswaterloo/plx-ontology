@@ -955,8 +955,11 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                 if summary.get("status") in ("off", "blocked"):
                     status = summary["status"]
                     break
+                # the day's further cycles read with the same triage model: live, every
+                # cycle has it (an event left past a cycle's time limit is triaged by the
+                # next one, never handled on the rules alone)
                 summary["drained"] = ap._drain(st, queue, people, registry, nxt,
-                                               only_owners=who)
+                                               only_owners=who, ask_judge=ask_judge)
                 progress.finish(key, summary)
             day = nxt
         closes = answer_end(until, config["horizon"])
@@ -1073,6 +1076,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "generation); default: as PLX_ONTOLOGY_PG says")
     p.add_argument("--print-data-end", action="store_true",
                    help="print the store's last received mail (ISO) and its source; no run")
+    p.add_argument("--triage-model", default="off",
+                   help="the small model that triages every message as live does "
+                        "(``chat_ask_model``, e.g. haiku; its screens run before any call); "
+                        "off (default): the cheap rules alone, no model call")
     a = p.parse_args(argv)
     if not a.print_data_end and not (a.role and a.out):
         p.error("--role and --out are required")
@@ -1104,15 +1111,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if a.capture_state and (Path(a.capture_state) / "mc-capture" / "capture.sqlite").exists():
         from . import autopilot_work as aw
         st.autopilot_mc = aw.MCQuestions(a.capture_state)
+    if a.capture_state:     # the chats' earlier messages the triage reads (``earlier_for``)
+        st.autopilot_state = Path(a.capture_state)
     try:
         until = ap._instant(a.until) if a.until else data_end(
             st, ap._iso(datetime.now(timezone.utc)))
         since = until - timedelta(days=a.days)
         roles = ap._roles({autopilot_queue.ROLES_ENV: a.roles_file} if a.roles_file else {},
                           Path(a.out))
+        from .chat_ask_model import MODEL_ENV, from_environ
+        judge = from_environ({MODEL_ENV: a.triage_model})
         result = replay(st, people, role=a.role, out=Path(a.out), since=since, until=until,
                         roles=roles, config=config, floor_gb=a.min_available_gb,
-                        wait_s=a.wait_minutes * 60, held_out_days=a.held_out_days)
+                        wait_s=a.wait_minutes * 60, held_out_days=a.held_out_days,
+                        ask_judge=judge)
+        # a model-on run says so: its coverage is never read as the rules' alone
+        result["triage_model"] = judge.model if judge is not None else "off"
     finally:
         st.close()
     print(json.dumps(result, indent=1, sort_keys=True))

@@ -1398,6 +1398,7 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
         members = [i for i in ordered if i.event_type == name]
         if members:
             groups.append({"event_type": name, "label": spec["label"], "count": len(members),
+                           "section": alert_kinds.section(name),
                            "new_since_visit": sum(1 for i in members if i.new_since_visit),
                            "acknowledged": sum(1 for i in members if i.acknowledged),
                            "in_top": sum(1 for i in members[:TOP_ITEMS]
@@ -1417,7 +1418,7 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             "count": len(ordered), "top": min(TOP_ITEMS, len(ordered)), "items": shown,
             # My work holds the home kinds only (at most ``TOP_ITEMS``); the rest wait in
             # Watching ("14 more in Watching")
-            "home_count": sum(1 for i in ordered if alert_kinds.home(i.event_type)),
+            "home_count": sum(1 for i in ordered if alert_kinds.needs_you(i.event_type)),
             "watching_count": sum(1 for i in ordered if not alert_kinds.home(i.event_type)),
             "groups": groups, "more": len(ordered) > limit,
             # the read stopped at ``MAX_READ``: the counts are "at least"
@@ -1536,6 +1537,7 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
             "alert_kind": alert_kinds.kind_of(item.event_type),
             "default_on": alert_kinds.default_on(item.event_type),
             "home": alert_kinds.home(item.event_type),
+            "section": alert_kinds.section(item.event_type),
             # the slop gate's verdict on the summary as written (counted, never hidden)
             "copy_check": copy_gate.check(summary, surface="summary")
             if isinstance(summary, str) else None,

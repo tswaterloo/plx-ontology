@@ -48,7 +48,7 @@ from operating import ontology_tools as ot
 from operating.case_mail_scope import MailScope
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating.case_tools_host import CaseCaptures
-from operating.employee_permissions import (EmployeePermissionPolicy,
+from operating.employee_permissions import (FULL_READ_SCOPES, EmployeePermissionPolicy,
                                             EmployeePermissionResolver, EntraDirectoryRead,
                                             POLICY_SCHEMA, PORTAL_ACCESS_SNAPSHOT_SCHEMA,
                                             PortalAccessSnapshot)
@@ -677,6 +677,29 @@ class ExcludedAfterCaptureTest(unittest.TestCase):
         other = document["kinds"]["mail_other"]
         self.assertEqual(other["controls_served"], other["controls"])
         self.assertGreater(other["controls"], 0)
+
+    def test_the_owner_alone_reads_an_excluded_persons_mail_through_the_runtime(self):
+        # The two people's data is the owner's alone. Through the
+        # case runtime's own gates (plx.read / open of the captured message) the owner marked
+        # on a full-read grant is served it; another full reader, the mailbox's own reader and
+        # everyone else are not, and a guard that cannot decide serves the owner nothing.
+        [b_to_a] = self.stored(("mail-capture/capture.db",
+                                "SELECT l1_handle FROM messages WHERE message_id = 'MSG-A2'"))
+        policy = json.loads((self.root / "policy.json").read_text())
+        grant = {"granted_by": "test", "granted_at": "2026-11-21T00:00:00Z",
+                 "reason": "fixture", "scopes": list(FULL_READ_SCOPES), "mail_scope": "all"}
+        policy["full_read"] = [dict(grant, object_id=tct.U_COS.lower(), owner=True),
+                               dict(grant, object_id=tct.U_VINCE.lower())]
+        (self.root / "policy.json").write_text(json.dumps(policy))
+        self.addCleanup(lambda: (self.root / "policy.json").write_text(
+            json.dumps({k: v for k, v in policy.items() if k != "full_read"})))
+        env = environ(self.root, PLX_EXCLUDED_PEOPLE_OIDS=",".join([EXCL, tcm.BOX_B]))
+        [a_own] = self.stored(("mail-capture/capture.db",
+                               "SELECT l1_handle FROM messages WHERE message_id = 'MSG-A1'"))
+        seen, _document = self.served(env, [b_to_a, a_own])
+        self.assertTrue(seen[a_own][tct.U_COS.lower()], seen)   # control: the grant reads mail
+        served = {oid for oid, hit in seen[b_to_a].items() if hit}
+        self.assertEqual(served, {tct.U_COS.lower()}, seen)
 
     def test_one_kept_mail_store_serves_every_reader_as_a_store_per_read_did(self):
         # Every captured message (the excluded person's mail to A, mail of mailboxes a

@@ -47,7 +47,7 @@ BACKGROUND_UNITS = frozenset({
     "plx-answer-bank", "plx-people-excluded", "plx-own-issued", "plx-bare-mentions",
     "plx-work-graph", "plx-team-activity", "plx-system-activity", "plx-source-coverage",
     "plx-precedence-measure", "plx-qbank-refresh", "plx-sheet-readings", "plx-truth-check",
-    "plx-exclusion-leak", "plx-mail-exclusion-purge", "plx-expiry", "plx-learning",
+    "plx-exclusion-leak", "plx-expiry", "plx-learning",
     "plx-labour", "plx-org-capture", "plx-doc-style", "plx-write-readiness",
 })
 # the API's read-ahead (``operator_api.warm_process.warm_app_name``): an API unit's name

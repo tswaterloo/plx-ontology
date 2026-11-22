@@ -4731,6 +4731,18 @@
         "additionalProperties": false,
         "description": "One thing prepared for you: who wrote, what they wrote, and either the reply (to\nedit, confirm, copy or open in Outlook), the question only you can answer, the system\nchanges the event calls for (``job``: each reviewed and confirmed on its own), or only\nthings to do by hand (``todo``: mark it done or not needed; nothing is written).",
         "properties": {
+          "alert_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On an alert card: the alert kind whose items it is the same hold as (operating/alert_kinds.json prepared_by); Home lists both in one section.",
+            "title": "Alert Kind"
+          },
           "always_ok": {
             "default": false,
             "description": "Your replay score earned Auto for this item's work, so \"always do this\" can be chosen for it.",
@@ -6022,7 +6034,9 @@
               "chain",
               "supplier",
               "purchase_order",
-              "sales_order"
+              "sales_order",
+              "product",
+              "batch"
             ],
             "title": "Kind",
             "type": "string"
@@ -7219,6 +7233,18 @@
             "title": "New Since Visit",
             "type": "integer"
           },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Home section this type is gathered into (financials), if any.",
+            "title": "Section"
+          },
           "unavailable": {
             "description": "True when this type's check has not finished within two refresh cycles (or is not served on this page): its items are not shown, never as current; count is 0.",
             "title": "Unavailable",
@@ -7532,6 +7558,18 @@
             "minimum": 1.0,
             "title": "Rank",
             "type": "integer"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Home section the registry gathers its type into (financials): a count and the biggest few, not one item each under needs you.",
+            "title": "Section"
           },
           "sources": {
             "items": {
@@ -8905,6 +8943,18 @@
             "title": "Partial",
             "type": "boolean"
           },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
+          },
           "status": {
             "enum": [
               "read",
@@ -8960,6 +9010,25 @@
           "on": {
             "description": "Shown to readers (measured right); off: named only.",
             "title": "On",
+            "type": "boolean"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every open finding of the check, those this reader may see and those hidden from them, counted without reading them: the page's first read. Then ``count``, ``hidden`` and ``items`` are not read yet (``read`` false).",
+            "title": "Open"
+          },
+          "read": {
+            "default": true,
+            "description": "False: only ``open`` is known; ask for the check (``check=``) to read its findings.",
+            "title": "Read",
             "type": "boolean"
           },
           "type": {
@@ -9090,6 +9159,137 @@
           "me"
         ],
         "title": "DevLoginResponse",
+        "type": "object"
+      },
+      "Digest": {
+        "additionalProperties": false,
+        "description": "One digest on offer: off until you switch it on; its latest report is yours alone.",
+        "properties": {
+          "hour": {
+            "title": "Hour",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Result"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          },
+          "next_run": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run"
+          },
+          "on": {
+            "title": "On",
+            "type": "boolean"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "report_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report At"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "when": {
+            "title": "When",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "when",
+          "on",
+          "hour"
+        ],
+        "title": "Digest",
+        "type": "object"
+      },
+      "DigestSet": {
+        "additionalProperties": false,
+        "properties": {
+          "hour": {
+            "anyOf": [
+              {
+                "maximum": 23.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hour"
+          },
+          "on": {
+            "title": "On",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "title": "DigestSet",
+        "type": "object"
+      },
+      "Digests": {
+        "additionalProperties": false,
+        "properties": {
+          "digests": {
+            "items": {
+              "$ref": "#/components/schemas/Digest"
+            },
+            "title": "Digests",
+            "type": "array"
+          }
+        },
+        "title": "Digests",
         "type": "object"
       },
       "DocFigure": {
@@ -10259,6 +10459,72 @@
           "sources"
         ],
         "title": "Fact",
+        "type": "object"
+      },
+      "FeedState": {
+        "additionalProperties": false,
+        "description": "One background feed: whether the job that makes a screen's list is running.",
+        "properties": {
+          "key": {
+            "description": "reply_drafts, autopilot, comms_findings or late_pos.",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "state": {
+            "description": "not_running: its timer is stopped or its detector pass is stale (the list is then not 'nothing to do'); unknown: the reliability checks have not run lately.",
+            "enum": [
+              "running",
+              "not_running",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "why": {
+            "description": "The check's own words.",
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "state"
+        ],
+        "title": "FeedState",
+        "type": "object"
+      },
+      "FeedStates": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the reliability checks last ran.",
+            "title": "Checked At"
+          },
+          "feeds": {
+            "items": {
+              "$ref": "#/components/schemas/FeedState"
+            },
+            "title": "Feeds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "feeds"
+        ],
+        "title": "FeedStates",
         "type": "object"
       },
       "FeedbackClaim": {
@@ -11927,6 +12193,18 @@
               }
             ]
           },
+          "fixed_dates": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A saved one whose statement names fixed dates: the first and last it names ('2026-01-01 to 2026-11-21'); it reads the rows again but not later dates.",
+            "title": "Fixed Dates"
+          },
           "group": {
             "title": "Group",
             "type": "string"
@@ -12182,6 +12460,18 @@
                 "type": "null"
               }
             ]
+          },
+          "fixed_dates": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A saved one whose statement names fixed dates: the first and last it names ('2026-01-01 to 2026-11-21'); it reads the rows again but not later dates.",
+            "title": "Fixed Dates"
           },
           "group": {
             "title": "Group",
@@ -12446,9 +12736,45 @@
             "title": "Op",
             "type": "string"
           },
+          "order": {
+            "anyOf": [
+              {
+                "maxLength": 63,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The axis column latest is read along.",
+            "title": "Order"
+          },
+          "row": {
+            "default": "any",
+            "description": "any: some row; latest: the last row along the chart's axis (per currency unless where names one), so earlier periods never fire; total: the column's sum over the rows (one currency).",
+            "enum": [
+              "any",
+              "latest",
+              "total"
+            ],
+            "title": "Row",
+            "type": "string"
+          },
           "value": {
             "title": "Value",
             "type": "number"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsightWatchWhere"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only the rows whose column holds this value (a currency)."
           }
         },
         "required": [
@@ -12457,6 +12783,29 @@
           "value"
         ],
         "title": "InsightWatch",
+        "type": "object"
+      },
+      "InsightWatchWhere": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "maxLength": 63,
+            "minLength": 1,
+            "title": "Column",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "column",
+          "value"
+        ],
+        "title": "InsightWatchWhere",
         "type": "object"
       },
       "InstructContext": {
@@ -18571,6 +18920,64 @@
         "title": "RecordDocuments",
         "type": "object"
       },
+      "RecordFilter": {
+        "additionalProperties": false,
+        "description": "One filter of a Records list: its choices (value '' is \"all\"), as the data holds them.",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/RecordFilterOption"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "options"
+        ],
+        "title": "RecordFilter",
+        "type": "object"
+      },
+      "RecordFilterOption": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "title": "RecordFilterOption",
+        "type": "object"
+      },
       "RecordHistory": {
         "additionalProperties": false,
         "description": "A record's change log as this reader may read it, newest first, a page at a time.\nA change the reader may not read (a value marked beyond them then or since, a record\nthey cannot open) is left out and ``partial`` says so, never how many.",
@@ -18641,6 +19048,69 @@
           "label"
         ],
         "title": "RecordHistory",
+        "type": "object"
+      },
+      "RecordList": {
+        "additionalProperties": false,
+        "description": "One Records list (``/api/records/list``): a page of rows with record links, the\nfilters it offers and how many rows match them; ``more`` when rows follow.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/RecordFilter"
+            },
+            "title": "Filters",
+            "type": "array"
+          },
+          "more": {
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_offset": {
+            "title": "Next Offset",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "table": {
+            "$ref": "#/components/schemas/BizTable"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "view": {
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view",
+          "title",
+          "table",
+          "filters",
+          "total",
+          "offset",
+          "more",
+          "next_offset"
+        ],
+        "title": "RecordList",
         "type": "object"
       },
       "RecordPack": {
@@ -27544,7 +28014,9 @@
                 "chain",
                 "supplier",
                 "purchase_order",
-                "sales_order"
+                "sales_order",
+                "product",
+                "batch"
               ],
               "title": "Kind",
               "type": "string"
@@ -28532,8 +29004,51 @@
     },
     "/api/data-health": {
       "get": {
-        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named). An Admin page: the owner and the\nTeam readers only, as its menu entry (403 for every other reader).",
+        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named). An Admin page: the owner and the\nTeam readers only, as its menu entry (403 for every other reader). ``check``: one\ncheck's findings from ``offset`` (a page of them), cut from the page's one read.",
         "operationId": "data_health_api_data_health_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "check",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Check"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 20000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -28564,11 +29079,195 @@
               }
             },
             "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Data Health",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/data-health/export": {
+      "get": {
+        "description": "The findings you may see, one check's or all, as a spreadsheet (CSV): the same\nrows the page lists, never more.",
+        "operationId": "data_health_export_api_data_health_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "check",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Check"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Health Export",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/digests": {
+      "get": {
+        "description": "The digests on offer (morning briefing; decisions, customer feedback and waiting\nrequests): all off until you switch one on; each report is yours alone.",
+        "operationId": "digests_list_api_digests_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Digests"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Digests List",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/digests/{digest_id}": {
+      "put": {
+        "description": "Switch one of your digests on (at an hour, US Eastern) or off. It runs as you.",
+        "operationId": "digests_set_api_digests__digest_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "digest_id",
+            "required": true,
+            "schema": {
+              "title": "Digest Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigestSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Digests"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Digests Set",
+        "tags": [
+          "actions"
         ]
       }
     },
@@ -29302,6 +30001,38 @@
         "summary": "Feedback Status",
         "tags": [
           "feedback"
+        ]
+      }
+    },
+    "/api/feeds": {
+      "get": {
+        "description": "Whether the background jobs behind Home's lists (reply drafts, autopilot entries,\nfindings, late purchase orders and alerts) are running, from the reliability alarms'\nlast pass: a stopped job is said, never shown as an empty list. The same for every\nsigned-in reader; unit state only, never a record.",
+        "operationId": "feed_states_api_feeds_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedStates"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Feed States",
+        "tags": [
+          "trust"
         ]
       }
     },
@@ -32088,6 +32819,141 @@
         "summary": "Record Pack",
         "tags": [
           "actions"
+        ]
+      }
+    },
+    "/api/records/list": {
+      "get": {
+        "description": "A list of records from the business tables, as you may see them, with its\nfilters: ``production`` is the batches (status, QC hold, text).",
+        "operationId": "records_list_api_records_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "view",
+            "required": true,
+            "schema": {
+              "const": "production",
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hold",
+            "required": false,
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "yes",
+                "no"
+              ],
+              "title": "Hold",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 20000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Records List",
+        "tags": [
+          "search"
         ]
       }
     },

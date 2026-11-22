@@ -369,15 +369,18 @@ class AgentAsk:
 
     def read_source(self, session: Any, handle: str, text_offset: int = 0
                     ) -> dict[str, Any]:
-        """A captured original (``original://``) or SharePoint file (``sharepoint://``) as
-        this reader's own host reads it: its
+        """A captured original (``original://``), SharePoint file (``sharepoint://``) or
+        byte-pinned mail attachment (``graph-mail://...#attachment=<id>&sha256=<digest>``:
+        read only when the capture's per-reader gate shows the reader the parent message)
+        as this reader's own host reads it: its
         ``plx.read`` through the capture store's per-reader gate
         (``operating.captured_originals``), the gate the agent's reads passed. Read-only;
         envelopes removed. ``KeyError`` when the host does not serve it to this reader
         (refused, unknown or unreadable alike), ``ReaderRefused`` for a reader with no
         employee identity."""
-        if not isinstance(handle, str) or not handle.startswith(("original://",
-                                                                  "sharepoint://")):
+        if not isinstance(handle, str) or not (
+                handle.startswith(("original://", "sharepoint://"))
+                or _is_pinned_mail_attachment(handle)):
             raise KeyError("not_a_captured_original")
         host = self.host_for(session)
         try:
@@ -571,3 +574,12 @@ def reply_prose(final_text: str, answer: Optional[Mapping[str, Any]]) -> str:
         # (the agent's own words when its text says it stopped: never twice)
         return text if STOPPED_WORDS in text.casefold() else STOPPED_LINE + "\n\n" + text
     return prose.strip() or text
+
+
+def _is_pinned_mail_attachment(handle: str) -> bool:
+    """A ``graph-mail://`` handle naming one attachment by its bytes (``#attachment=<id>
+    &sha256=<64 hex>``): the only mail handle ``read_source`` takes (a message is read with
+    ``plx.open``)."""
+    import re
+    return bool(re.fullmatch(r"graph-mail://[^#\s]+#attachment=[^&\s]+&sha256=[0-9a-f]{64}",
+                             handle))

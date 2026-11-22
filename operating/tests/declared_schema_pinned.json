@@ -827,6 +827,14 @@
     "CREATE TABLE slow (digest TEXT PRIMARY KEY, timeouts INTEGER NOT NULL)"
    ]
   ],
+  "digest_reports": [
+   [
+    "table",
+    "report",
+    "report",
+    "CREATE TABLE report (owner TEXT NOT NULL, rid TEXT NOT NULL, ran_at REAL NOT NULL, text TEXT NOT NULL, PRIMARY KEY (owner, rid))"
+   ]
+  ],
   "document_fields": [
    [
     "table",

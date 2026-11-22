@@ -19,9 +19,11 @@ NARROW: its business columns, ``handle`` and three permission columns decided at
 * ``ai_ok boolean``: false when any text cell names Freightcom (the owner's no-AI rule,
   ``integrations.freightcom_rule``): decided here, never by a regex at query time.
 
-Rows made from any object of ``ontology.people_excluded_objects`` are not in the table
-(``exclude`` drops rows whose lineage names a newly excluded object, set-based; the people
-exclusion's ``update`` and ``build`` call it on every v2 schema). ``door_state.excluded_at``
+Rows made from any object of ``ontology.people_excluded_objects`` are the owner's alone
+(never removed: ``exclude`` moves a row whose lineage names a
+newly excluded object to the class of its pattern with ``access_classes.OWNER_KEY``, which
+only the owner's scope holds, set-based; the people exclusion's ``update`` and ``build``
+call it on every v2 schema). ``door_state.excluded_at``
 records the set's stamp (its list tag and ``covered_ver``) the rows were last decided
 against; a reader is refused (``serves``) while it is not the set's current one, so a row
 of a newly excluded person is never served between the set growing and the drop. Lineage
@@ -335,17 +337,21 @@ def index(write: Any, schema: str, name: str, v: bv.View) -> None:
     write.execute(f"ANALYZE {schema}.{name}")
 
 
-def recount(write: Any, schema: str, name: str) -> None:
+def recount(write: Any, schema: str, name: str, table: str | None = None) -> None:
+    """The view's class counts, from its served table or (``table``) the build's own."""
     write.execute(f"DELETE FROM {schema}.{COUNTS} WHERE view = %s", (name,))
     write.execute(f"INSERT INTO {schema}.{COUNTS} SELECT %s, access_class, col_class, "
-                  f"count(*) FROM {schema}.{name} GROUP BY 2, 3", (name,))
+                  f"count(*) FROM {schema}.{table or name} GROUP BY 2, 3", (name,))
 
 
 def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = True,
             among: Sequence[str] | None = None, staged: tuple[str, str] | None = None) -> int:
-    """Drop every row of every v2 table (``only``: of that view) whose lineage names an
+    """Make every row of every v2 table (``only``: of that view) whose lineage names an
     object of the people exclusion among its own or read records (``object_ids ||
-    read_ids``), empty a cell whose column was read from one (``col_objects``), and
+    read_ids``) the owner's alone (never removed: its access
+    class becomes the same pattern with ``access_classes.OWNER_KEY`` among its audience
+    keys, :func:`owner_only`), empty a cell whose column was read from one
+    (``col_objects``; a cell's needs on an unmasked column would refuse the view), and
     (``record``) record the set's stamp the rows now answer to (``serves``). ``among``:
     only these objects are tested (the ones a grown set added, over a door decided
     against the set before it: ``exclude_within``), found by the lineage's object-id
@@ -406,12 +412,9 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
                 write.execute(f"UPDATE {lineage_ref} SET col_objects = col_objects - "
                               "%s, cites = cites - %s WHERE view = %s AND handle = ANY(%s)",
                               (col, col, view, handles))
-            gone += write.execute(
-                f"DELETE FROM {target} t USING {lineage_ref} l WHERE "
-                f"l.view = %(view)s AND l.handle = t.handle AND {hit}",
-                {**params, "view": view}).rowcount
-            write.execute(f"DELETE FROM {lineage_ref} l WHERE l.view = %(view)s AND {hit}",
-                          {**params, "view": view})
+            gone += owner_only(write, schema, target,
+                               f"SELECT l.handle FROM {lineage_ref} l WHERE "
+                               f"l.view = %(view)s AND {hit}", {**params, "view": view})
             if not staged:
                 recount(write, schema, view)
         if gone and not staged:
@@ -419,6 +422,49 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
         if record:
             write.execute(f"UPDATE {schema}.{STATE} SET excluded_at = %s", (set_stamp,))
     return gone
+
+
+def _owner_keys(column: str) -> str:
+    """``column`` (a text[] of audience keys) with ``OWNER_KEY`` added, as a class's keys
+    are kept: distinct, sorted."""
+    from operating.pg.access_classes import OWNER_KEY
+    return (f"ARRAY(SELECT DISTINCT k FROM unnest({column} || ARRAY['{OWNER_KEY}']::text[]) "
+            "k ORDER BY 1)")
+
+
+def owner_only(write: Any, schema: str, target: str, handles_sql: str,
+               params: Mapping[str, Any]) -> int:
+    """The rows of ``target`` (a v2 table of ``schema``) whose handle ``handles_sql``
+    selects, moved to the owner's alone: each row's access class replaced by the class of
+    the same pattern with ``OWNER_KEY`` among its audience keys (added, append-only ids, as
+    the builder adds them), which only the owner's scope holds (``ReadPolicy.may_read``).
+    A row whose class holds it already is left. The caller's transaction; how many rows
+    moved."""
+    from operating.pg.access_classes import OWNER_KEY
+    c = f"{schema}.{CLASSES}"
+    write.execute("DROP TABLE IF EXISTS pg_temp._door_owner")
+    write.execute(f"CREATE TEMP TABLE _door_owner ON COMMIT DROP AS SELECT DISTINCT "
+                  f"t.access_class AS id FROM {target} t WHERE t.handle IN ({handles_sql})",
+                  params)
+    write.execute(f"LOCK TABLE {c} IN SHARE ROW EXCLUSIVE MODE")
+    write.execute(f"""
+        INSERT INTO {c} (id, audience_keys, rec_marks, doc_marks, blocked)
+        SELECT (SELECT COALESCE(max(id), 0) FROM {c}) + row_number() OVER (ORDER BY p.id),
+               p.aks, p.rec_marks, p.doc_marks, p.blocked
+        FROM (SELECT x.id, {_owner_keys("x.audience_keys")} AS aks, x.rec_marks,
+                     x.doc_marks, x.blocked FROM {c} x JOIN _door_owner o ON o.id = x.id
+              WHERE NOT ('{OWNER_KEY}' = ANY(x.audience_keys))) p
+        WHERE NOT EXISTS (SELECT 1 FROM {c} y WHERE y.audience_keys = p.aks
+            AND y.rec_marks = p.rec_marks AND y.doc_marks = p.doc_marks
+            AND y.blocked = p.blocked)""")
+    moved = write.execute(f"""
+        UPDATE {target} t SET access_class = y.id FROM {c} x, {c} y
+        WHERE t.handle IN ({handles_sql}) AND x.id = t.access_class
+          AND NOT ('{OWNER_KEY}' = ANY(x.audience_keys))
+          AND y.audience_keys = {_owner_keys("x.audience_keys")} AND y.rec_marks = x.rec_marks
+          AND y.doc_marks = x.doc_marks AND y.blocked = x.blocked""", params).rowcount
+    write.execute("DROP TABLE IF EXISTS pg_temp._door_owner")
+    return moved
 
 
 def follow(write: Any, schema: str, name: str) -> int:

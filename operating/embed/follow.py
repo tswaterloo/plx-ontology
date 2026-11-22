@@ -322,6 +322,21 @@ def _free_gb(path: Path) -> float:
     return shutil.disk_usage(path).free / 1e9
 
 
+_BUDGETS: dict[str, Any] = {}
+
+
+def _wal_paused(values: dict[str, str]) -> str | None:
+    """Why the heavy writes (history windows, the embedding step) wait now: the WAL
+    budget (``operating.pg.wal_budget``: the standby too far behind, or its lag unread).
+    The new layers' rows are the delta itself and always go in. One budget per database
+    for the process, so its pause holds until the lag is back under the resume line."""
+    from operating.pg import config, wal_budget
+    dsn = values.get("PLX_PG_DSN") or config.DEFAULT_DSN
+    if dsn not in _BUDGETS:
+        _BUDGETS[dsn] = wal_budget.Budget.for_dsn(dsn, job="embed_follow", check_seconds=0)
+    return _BUDGETS[dsn].blocked()
+
+
 GENERATION_CURSOR = Path("search") / "generation.json"
 
 
@@ -425,6 +440,10 @@ def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[st
             if args.min_free_gb and _free_gb(state) < args.min_free_gb:
                 report["history"].append({"stopped": "disk_below_min_free"})
                 return
+            paused = _wal_paused(values)
+            if paused:
+                report["history"].append({"stopped": paused})
+                return
             since = max(floor, until - dt.timedelta(days=args.history_days))
             report["history"].append(history_window(
                 args, source, since.isoformat(), until.isoformat(), values))
@@ -503,8 +522,11 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
         wrote = any(layer.get("inserted") or layer.get("updated")
                     for layer in report["layers"].values())
         low = args.min_free_gb and _free_gb(state) < args.min_free_gb
+        paused = None if low else _wal_paused(values)
         if low:
             report["embed"] = {"skipped": "disk_below_min_free"}
+        elif paused:
+            report["embed"] = {"skipped": paused}
         elif delta_running(state):
             # the delta's projection takes every core for hours: the embedding (its CPU
             # is most of this run's) waits for the next run after it (PERF-16)

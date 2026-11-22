@@ -16,7 +16,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { AnswerCharts } from "@/components/answer-chart";
-import { InsightsDashboard, ScheduleControl, TOP, askAbout, grouped, monitorLine, topOf } from "./dashboard";
+import { InsightsDashboard, ScheduleControl, TOP, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
 
 const base = { about: "Per person: mail sent.", group: "Team", saved: false, question: null, schedule: "" as const, notify: "never" as const };
 const list: InsightList = {
@@ -163,7 +163,7 @@ describe("insights dashboard", () => {
   });
 
   it("the monitors the reader runs are listed first, each saying when it checks and what it tells", () => {
-    const watched = { ...list.items[1], schedule: "daily" as const, notify: "crosses" as const, watch: { column: "late_orders", op: "above" as const, value: 5 } };
+    const watched = { ...list.items[1], schedule: "daily" as const, notify: "crosses" as const, watch: { column: "late_orders", op: "above" as const, value: 5, row: "any" as const } };
     render(<InsightsDashboard list={{ ...list, items: [list.items[0], watched] }} onChanged={vi.fn()} />);
     expect(screen.getByTestId("monitors")).toHaveTextContent("Open orders by month");
     expect(screen.getByTestId("monitors")).toHaveTextContent("Every morning, tells you when late orders goes above 5");
@@ -189,7 +189,36 @@ describe("insights dashboard", () => {
     fireEvent.change(screen.getByLabelText("Above or below"), { target: { value: "below" } });
     fireEvent.change(screen.getByLabelText("Line"), { target: { value: "30" } });
     fireEvent.click(screen.getByText("Watch"));
-    await waitFor(() => expect(setInsightSchedule).toHaveBeenCalledWith("s7", { schedule: "daily", notify: "crosses", watch: { column: "days_late", op: "below", value: 30 } }));
+    await waitFor(() => expect(setInsightSchedule).toHaveBeenCalledWith("s7", { schedule: "daily", notify: "crosses", watch: { column: "days_late", op: "below", value: 30, row: "any" } }));
     await waitFor(() => expect(screen.getByText("Watching days late below 30")).toBeTruthy());
+  });
+
+  it("a chart along an axis is watched on its latest row, so an earlier month never comes back", async () => {
+    setInsightSchedule.mockReset();
+    setInsightSchedule.mockImplementation((_id: string, body: object) => Promise.resolve({ ...list.items[1], ...body }));
+    const saved = { ...list.items[1], schedule: "daily" as const, notify: "crosses" as const, chart: { kind: "line" as const, x: "month", y: ["revenue"] } };
+    render(<ScheduleControl item={saved} columns={["month", "currency", "revenue"]} />);
+    fireEvent.change(screen.getByLabelText("Column to watch"), { target: { value: "revenue" } });
+    fireEvent.change(screen.getByLabelText("Above or below"), { target: { value: "below" } });
+    fireEvent.change(screen.getByLabelText("Line"), { target: { value: "400000" } });
+    fireEvent.click(screen.getByText("Watch"));
+    await waitFor(() => expect(setInsightSchedule).toHaveBeenCalledWith("s7", { schedule: "daily", notify: "crosses", watch: { column: "revenue", op: "below", value: 400000, row: "latest", order: "month" } }));
+    await waitFor(() => expect(screen.getByText("Watching the latest revenue below 400000")).toBeTruthy());
+    expect(monitorLine({ ...saved, watch: { column: "revenue", op: "below", value: 400000, row: "latest", where: { column: "currency", value: "USD" } } }))
+      .toBe("Every morning, tells you when the latest revenue in USD goes below 400000");
+  });
+
+  it("'Tell me when' sends the words to the Ask with the chart it is on; nothing is set here", () => {
+    setInsightSchedule.mockReset();
+    const saved = { ...list.items[1], schedule: "" as const, notify: "never" as const };
+    render(<ScheduleControl item={saved} />);
+    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();     // no words yet
+    fireEvent.change(screen.getByLabelText("Tell me when"), { target: { value: "usd drops under 400k" } });
+    const href = screen.getByRole("link", { name: "Set up" }).getAttribute("href") ?? "";
+    expect(href).toBe(tellMeWhenHref(saved, "usd drops under 400k"));
+    const url = new URL(href, "http://x");
+    expect(url.searchParams.get("q")).toBe('Tell me when usd drops under 400k (my pinned chart "Open orders by month")');
+    expect(url.searchParams.get("page")).toBe("/insights#insight-s7");
+    expect(setInsightSchedule).not.toHaveBeenCalled();
   });
 });

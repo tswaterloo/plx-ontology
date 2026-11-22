@@ -12,7 +12,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), bizPage: api.bizPage }));
 
-import { BizOrObject, BizRecordPage } from "./biz-page";
+import { BizArticle, BizRecordPage } from "./biz-page";
 
 const CHAIN: BizPage = {
   kind: "chain",
@@ -79,18 +79,16 @@ describe("BizRecordPage", () => {
   });
 });
 
-describe("BizOrObject (a record link of a type the door has pages for)", () => {
-  it("opens the door page of the row the record was read into", async () => {
-    api.bizPage.mockResolvedValue({ ...CHAIN, kind: "supplier", title: "EZ Chemicals" });
-    render(<BizOrObject kind="supplier" record="Supplier:bc.vendors:1" title="Supplier" fallback={<p>own page</p>} />);
-    expect(await screen.findByRole("heading", { name: "EZ Chemicals" })).toBeTruthy();
-    expect(api.bizPage).toHaveBeenCalledWith("supplier", { record: "Supplier:bc.vendors:1" }, expect.anything());
-    expect(screen.queryByText("own page")).toBeNull();
-  });
-
-  it("shows the record's own page when the door has none (off, not found, not readable)", async () => {
-    api.bizPage.mockRejectedValue(new ApiError(404, "pages_off"));
-    render(<BizOrObject kind="supplier" record="Supplier:bc.vendors:1" title="Supplier" fallback={<p>own page</p>} />);
-    expect(await screen.findByText("own page")).toBeTruthy();
+describe("Section columns", () => {
+  it("leaves out a column no row has a value in, and keeps every row", () => {
+    const page = { kind: "purchase_order", title: "PO1", subtitle: null, facts: [], sources: "Sage", took_ms: 1, as_of: null, sections: [
+      { key: "lines", title: "Lines", columns: ["Item", "Description", "Unit price"], total: 2, rows: [
+        [{}, { text: "Towels" }, { hidden: true }], [{}, { text: "Soap" }, {}]] }] };
+    render(<BizArticle page={page as never} />);
+    expect(screen.queryByRole("columnheader", { name: "Item" })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Description" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Unit price" })).toBeTruthy();   // a hidden value is not empty
+    expect(screen.getByText("Towels")).toBeTruthy();
+    expect(screen.getByText("Soap")).toBeTruthy();
   });
 });

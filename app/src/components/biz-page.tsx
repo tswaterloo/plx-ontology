@@ -8,12 +8,12 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { bizPage } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
-import { formatDate, money, objectHref, safeHref } from "@/lib/format";
+import { formatDate, money, safeHref } from "@/lib/format";
 import { rememberOpened } from "@/lib/saved";
 import type { BizCell, BizKind, BizPage as Page, BizTable } from "@/lib/types";
 
 /** The record type each page of the business tables shows (Records' tabs file it by it). */
-const TYPE_OF_KIND: Record<BizKind, string> = { purchase_order: "PurchaseOrder", sales_order: "SalesOrder", customer: "Customer", supplier: "Supplier", chain: "Chain" };
+const TYPE_OF_KIND: Record<BizKind, string> = { purchase_order: "PurchaseOrder", sales_order: "SalesOrder", customer: "Customer", supplier: "Supplier", chain: "Chain", product: "Product", batch: "Batch" };
 
 const KINDS: readonly BizKind[] = ["customer", "chain", "supplier", "purchase_order", "sales_order"];
 
@@ -40,7 +40,14 @@ function isNumeric(rows: BizCell[][], i: number): boolean {
   return rows.some((r) => r[i]?.money || r[i]?.number);
 }
 
-function Section({ s }: { s: BizTable }) {
+/** One table of a business page (its columns, rows with record links, its note). */
+export function Section({ s }: { s: BizTable }) {
+  // a column no row has a value in (an item code a line never carried, a price not on record)
+  // is left out, so the columns that say something keep their width on a narrow screen
+  const filled = (i: number) => s.rows.length === 0 || s.rows.some((r) => { const c = r[i]; return !!c && (c.hidden || !!(c.text || c.number || c.day || c.money)); });
+  const keep = s.columns.map((_, i) => i).filter(filled);
+  const rows = s.rows.map((r) => keep.map((i) => r[i]));
+  s = { ...s, columns: keep.map((i) => s.columns[i]), rows };
   const numeric = s.columns.map((_, i) => isNumeric(s.rows, i));
   return (
     <section className="mt-7" aria-labelledby={`biz-${s.key}`} data-testid={`biz-section-${s.key}`}>
@@ -150,33 +157,5 @@ export function BizArticle({ page }: { page: Page }) {
         {page.sources}
       </p>
     </article>
-  );
-}
-
-/**
- * A record link (`/object/<type>/<id>`) of a type the business tables have pages for: the
- * page of the row the record was read into (one door read, well under a second), else, when
- * the door has none (switched off, no such row, a reader who may not read it, unavailable),
- * the record's own page.
- */
-export function BizOrObject({ kind, record, title, fallback }: { kind: BizKind; record: string; title: string; fallback: React.ReactNode }) {
-  const [page, setPage] = useState<Page | null>(null);
-  const [none, setNone] = useState(false);
-  useEffect(() => {
-    setPage(null);
-    setNone(false);
-    const ctl = new AbortController();
-    bizPage(kind, { record }, ctl.signal).then(setPage, () => !ctl.signal.aborted && setNone(true));
-    return () => ctl.abort();
-  }, [kind, record]);
-  useEffect(() => {
-    if (page?.title) rememberOpened({ type: TYPE_OF_KIND[kind], label: page.title, href: objectHref(TYPE_OF_KIND[kind], record) });
-  }, [page?.title, kind, record]);
-  if (none) return <>{fallback}</>;
-  return (
-    <div className="flex min-h-0 flex-1 flex-col bg-list">
-      <Toolbar heading title={page?.title ?? title} />
-      <div className="w-full max-w-[960px] overflow-y-auto px-6 py-5">{page ? <BizArticle page={page} /> : <Pending label={`Reading ${title.toLowerCase()}`} page />}</div>
-    </div>
   );
 }

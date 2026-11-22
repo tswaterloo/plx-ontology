@@ -33,6 +33,7 @@ from .http import SourceUnavailable
 MAIL_CITATION_SCHEME = "graph-mail"
 ATTACHMENT_FRAGMENT_KEYS = frozenset({"attachment", "sha256"})
 FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment"
+ITEM_ATTACHMENT_TYPE = "#microsoft.graph.itemAttachment"
 MAX_ATTACHMENT_BYTES = 20_000_000  # Graph's file attachment limit (base64 < 28 MB)
 _SHA256 = _ids.system_pattern("sha256_hex")
 _ADDRESS = _ids.system_pattern("mail_address")

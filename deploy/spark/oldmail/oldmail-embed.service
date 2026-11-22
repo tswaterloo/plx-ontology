@@ -1,0 +1,19 @@
+[Unit]
+Description=PLX old-mail store: embed its chunks on this host's GPU (bge-m3 fp16, resumes from its cursor)
+Requires=oldmail-store.service
+After=oldmail-store.service
+StartLimitIntervalSec=3600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+ExecStart=%h/oldmail-embed.sh %h/oldmail-code --report-seconds 60
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2
+MemoryMax=24G
+StandardOutput=append:%h/oldmail-store/embed.log
+StandardError=append:%h/oldmail-store/embed.err
+
+[Install]
+WantedBy=default.target

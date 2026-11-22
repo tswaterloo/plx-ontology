@@ -44,8 +44,8 @@ class ScopeSteps:
     def _scope(self, actor: Actor, at: dt.datetime) -> _Scope:
         keys, held, sets, granted = reader_grants(self, self.policy, actor,
                                                   self.store.audience_keys())
-        from operating.pg.people_excluded import full_reader
-        return _Scope(actor, keys, held, sets, granted, at, full_reader(self, actor))
+        from operating.pg.people_excluded import filter_tag
+        return _Scope(actor, keys, held, sets, granted, at, filter_tag(self, actor))
 
     def prefetch_items(self, actor: Actor, handles: Iterable[Any]) -> None:
         """Let the item gate read ahead, in batches, what it will read to decide each of

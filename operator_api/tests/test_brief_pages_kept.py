@@ -109,6 +109,10 @@ class WeeklyKeptTests(unittest.TestCase):
                 cuts = briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE)
                 week = br.week_of(date.today()) - briefs.timedelta(days=7)
                 self.assertTrue(cuts.recent("r1", week))
+                # a closed week cut once is cut again: no read-ahead 6 h later either
+                # (11-21: every 6 h each of 91 readers ran 300 s again and kept nothing)
+                self.assertTrue(cuts.recent("r1", week,
+                                            now=__import__("time").time() + 6 * 3600 + 1))
                 later = __import__("time").time() + briefs.WEEKLY_CUT_SECONDS + 1
                 self.assertFalse(cuts.recent("r1", week, now=later))
                 self.assertFalse(cuts.recent("r1", week - briefs.timedelta(days=7)))

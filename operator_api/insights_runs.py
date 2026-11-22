@@ -35,6 +35,7 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import re
 import logging
 import threading
 import time
@@ -119,20 +120,90 @@ def row_keys(insight_id: int, salt: bytes, rows: Sequence[Sequence[Any]]) -> lis
     return out
 
 
+class WatchUnread(ValueError):
+    """A watched line its rows cannot be read on (plain words): a column it names is not
+    in them, or a total or latest row would mix currencies."""
+
+
+def _key_cells(cells: Sequence[Any]) -> list[Any]:
+    """Sort keys of an axis's cells: calendar periods or dates by their first day, numbers
+    by value, ISO timestamps as written; anything else keeps the result's order (None)."""
+    from .charts import _period, _text, number
+    texts = [(_text(c) or "").strip() for c in cells]
+    periods = [_period(t) for t in texts]
+    if texts and all(p is not None for p in periods):
+        return [p[0] for p in periods]
+    numbers = [number(c) for c in cells]
+    if cells and all(n is not None and n.is_finite() for n in numbers):
+        return numbers
+    if texts and all(re.match(r"^\d{4}-\d{2}-\d{2}", t) for t in texts):
+        return texts
+    return [None] * len(cells)
+
+
+def currency_columns(columns: Sequence[str]) -> list[str]:
+    from .charts import _CURRENCY_COL
+    return [c for c in columns if _CURRENCY_COL.search(str(c))]
+
+
+def reading(line: Mapping[str, Any], columns: Sequence[str],
+            rows: Sequence[Sequence[Any]]) -> list[dict[str, Any]]:
+    """What ``line`` reads on ``rows``: one entry per number it is set against (``at``:
+    the row's axis label or "total", ``group``: its currency, ``value``, ``past``).
+    "any": every row with a number; "latest": per currency (or the one ``where`` keeps),
+    the last row along ``order`` (the result's order when the axis is no period, number or
+    date) with a number, so an earlier period never comes to them; "total": the column's
+    sum over the rows ``where`` keeps, refused across two currencies. Exact decimals; a
+    cell that is no number is not past it. ``WatchUnread`` when a named column is missing."""
+    from decimal import Decimal
+    from .charts import _text, number
+    cols = list(columns)
+    for need in (line["column"], (line.get("where") or {}).get("column"), line.get("order")):
+        if need is not None and need not in cols:
+            raise WatchUnread(f"the rows have no column {need}")
+    at = cols.index(line["column"])
+    mark = Decimal(repr(line["value"]))
+    cell = lambda r, c: r[cols.index(c)] if cols.index(c) < len(r) else None  # noqa: E731
+    text = lambda v: (_text(v) or "").strip()   # noqa: E731
+    where = line.get("where")
+    kept = [r for r in rows if where is None
+            or text(cell(r, where["column"])).lower() == where["value"].lower()]
+    money = [c for c in currency_columns(cols) if not where or c != where["column"]]
+    group = lambda r: " ".join(text(cell(r, c)) for c in money)   # noqa: E731
+
+    def past(v: Any) -> bool:
+        return (line["op"] == "above" and v > mark) or (line["op"] == "below" and v < mark)
+    valued = [(i, r, number(r[at]) if at < len(r) else None) for i, r in enumerate(kept)]
+    valued = [(i, r, v) for i, r, v in valued if v is not None and v.is_finite()]
+    row = line.get("row") or "any"
+    order = line.get("order")
+    if row == "total":
+        codes = {group(r) for _, r, _ in valued}
+        if len(codes) > 1:
+            raise WatchUnread("a total would add two currencies: name one")
+        total = sum((v for _, _, v in valued), Decimal(0))
+        return [{"at": "total", "group": next(iter(codes), ""), "value": total,
+                 "past": bool(valued) and past(total)}] if valued else []
+    if row == "latest":
+        keys = _key_cells([cell(r, order) for _, r, _ in valued]) if order else \
+            [None] * len(valued)
+        last: dict[str, tuple] = {}
+        for (i, r, v), k in zip(valued, keys):
+            rank = (k, i) if k is not None else (i,)
+            g = group(r)
+            if g not in last or rank > last[g][0]:
+                last[g] = (rank, r, v)
+        return [{"at": text(cell(r, order)) if order else "", "group": g, "value": v,
+                 "past": past(v)} for g, (_, r, v) in sorted(last.items())]
+    return [{"at": text(cell(r, order)) if order else "", "group": group(r), "value": v,
+             "past": past(v)} for _, r, v in valued]
+
+
 def past(line: Mapping[str, Any], columns: Sequence[str], rows: Sequence[Sequence[Any]]
          ) -> int:
-    """How many rows hold a number in ``line``'s column past its value (above: greater,
-    below: less; exact decimals); a cell that is no number is not past it."""
-    from decimal import Decimal
-    from .charts import number
-    at, mark, n = list(columns).index(line["column"]), Decimal(repr(line["value"])), 0
-    for row in rows:
-        value = number(row[at]) if at < len(row) else None
-        if value is None or not value.is_finite():
-            continue
-        if (line["op"] == "above" and value > mark) or (line["op"] == "below" and value < mark):
-            n += 1
-    return n
+    """How many of the numbers ``line`` reads (``reading``) are past its value (above:
+    greater, below: less; exact decimals)."""
+    return sum(1 for got in reading(line, columns, rows) if got["past"])
 
 
 def fires(notify: str, row_count: int, new_rows: int) -> bool:
@@ -250,9 +321,12 @@ class Runner:
             from .insights import watch_of
             line = watch_of(watch)
             columns = list(got.get("columns") or ())
-            if not line or line["column"] not in columns:
+            if not line:
                 return failed(FAILED["insight_watch"])
-            over = past(line, columns, rows)
+            try:
+                over = past(line, columns, rows)
+            except WatchUnread:
+                return failed(FAILED["insight_watch"])
             # it came to them when it crossed: past the line now, none past it the last
             # good run (the first run: past it at all)
             out.update(over_rows=over, fired=over > 0 and not was_over)
@@ -322,8 +396,16 @@ def said(notify: str, rows: int, new: int, reason: str = "", over: Optional[int]
     from .insights import watch_of
     line_ = watch_of(watch)
     if notify == "crosses" and over and line_:
-        line = (f"{many(over, 'row')} now {line_['op']} {line_['value']:g} in "
-                f"{line_['column'].replace('_', ' ')} ({many(rows, 'row')} in all).")
+        of = f" for {line_['where']['value']}" if line_.get("where") else ""
+        col = line_['column'].replace('_', ' ')
+        if line_.get("row") == "total":
+            line = f"The total of {col}{of} is now {line_['op']} {line_['value']:g}."
+        elif line_.get("row") == "latest":
+            line = (f"The latest {col}{of} is now {line_['op']} {line_['value']:g}"
+                    + (f" ({over} currencies)." if over > 1 else "."))
+        else:
+            line = (f"{many(over, 'row')} now {line_['op']} {line_['value']:g} in "
+                    f"{col} ({many(rows, 'row')} in all).")
     elif notify == "new_rows" and new:
         line = f"{many(new, 'new row')} since it last ran ({many(rows, 'row')} now)."
     else:

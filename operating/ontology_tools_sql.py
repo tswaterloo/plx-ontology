@@ -410,13 +410,19 @@ class SqlTool:
         for one over the business tables (the reader's whole grant as JSON, megabytes for
         staff, was sent with every call and read back by its check)."""
         from operating.search import document_marks
+        from operating.pg import business_comms as bc
         docs = {k: list(json.loads(v)) for k, v in document_marks.params(scope.held).items()
                 if k in ("dm_ids", "dm_own")}
         settings = {   # the keys of ``COMMS_SETTINGS``
             "plx.reader_audience": json.dumps(sorted(scope.audience_keys)),
             "plx.reader_marks": json.dumps(sorted(scope.marking_sets)),
-            "plx.reader_hidden": json.dumps(sorted(set(docs.get("dm_ids") or ())
-                                                   | set(docs.get("dm_own") or ()))),
+            # the reader's own withheld documents; PLX's own sales documents (``dm_own``, 38,478
+            # ids, 10.4 MB a statement) only until every comms view reads them from their table
+            # (``business_comms.own_issued_in_views``: before the views are installed the
+            # setting is all they read)
+            "plx.reader_hidden": json.dumps(sorted(
+                set(docs.get("dm_ids") or ())
+                | (set() if bc.own_issued_in_views() else set(docs.get("dm_own") or ())))),
             # the people exclusion list this process holds (its one-way tag), for the
             # communications views; '' when it cannot be decided (they then show nothing)
             "plx.reader_people": _people_tag(),
@@ -968,6 +974,9 @@ class SqlTool:
         the answer the old path gives for it."""
         from operating.pg import comms_search as cs
         conn, settings = self._comms_reader(actor)
+        if self._files_reader(actor):   # a full reader reads files through the door alone
+            from operating.pg import business_comms as bc
+            settings = {**settings, bc.FILES_SETTING: bc.FILES_FULL}
         biz = bv.SCHEMA
         handle = args.get("citation")
         offset = int(args.get("text_offset") or 0)
@@ -977,6 +986,8 @@ class SqlTool:
                 and all(isinstance(w, str) and 0 < len(w) <= 100 for w in near)):
             raise ToolError("invalid_input", "near: up to 16 words")
 
+        shared: list[dict[str, Any]] = []
+
         def work(pg: Any) -> Any:
             views = cs.present(pg, guarded, opening=True)
             if not views:
@@ -984,6 +995,8 @@ class SqlTool:
             rows = pg.execute(cs.open_sql(views, guarded=guarded, biz=biz),
                               {"h": handle}).fetchall()
             if rows:
+                if rows[0][0] == "teams_messages":
+                    shared.extend(self._shared_files(pg, guarded, handle))
                 return rows
             person = sql_views.person_schema()
             if guarded != person:   # the reader may read it, the AI may not
@@ -991,19 +1004,51 @@ class SqlTool:
                 if mine and pg.execute(cs.exists_sql(mine, biz=person), {"h": handle}
                                        ).fetchone()[0]:
                     return []
+            every = cs.present(pg, biz, opening=True) if moment is not None else ()
+            if every and pg.execute(cs.exists_sql(every, biz=biz), {"h": handle}
+                                    ).fetchone()[0]:
+                return "comms"      # a mail or Teams item of any scope: below
             return None
         moment = _ceiling()
         rows = self._comms_scoped(conn, settings, work, actor)
+        if rows == "comms":
+            # under a replay's ceiling a mail or Teams item outside the reader's views is
+            # opened by no other path (the old read of a message is not bounded)
+            raise ToolError("not_found", "no such message")
         if rows is None:
-            if moment is not None:
-                # under a ceiling no other path opens it (the old read is not bounded)
-                raise ToolError("not_found", "no such message")
+            # no mail or Teams item at all (a PO, an order, a file): the old read, which
+            # under a ceiling shows it only with a time before the moment
+            # (``ontology_tools_search._open_single``; 11-22: every Portal PO a replayed
+            # job opened answered "no such message")
             return {"not_comms": True}
         if not rows:
             raise ToolError("egress_withheld", "this item is never shown to the assistant")
         if moment is not None and read_ceiling.after(rows[0][4], moment):
             raise ToolError("not_found", "no such message")   # it had not happened yet
-        return cs.opened(rows, offset=offset, most=most, near=tuple(near))
+        out = cs.opened(rows, offset=offset, most=most, near=tuple(near))
+        if shared:
+            out["shared_files"] = shared
+        return out
+
+    SHARED_FILES_MAX = 20
+
+    def _shared_files(self, pg: Any, guarded: str, handle: str) -> list[dict[str, Any]]:
+        """The files a Teams message shares, linked by exact address
+        (``operating.pg.teams_file_links``), each only when the reader's own guarded message
+        AND file views show their rows (``<guarded>.teams_message_files``): a reader who may
+        not read a file sees none. No such view (not built here): none, never an error."""
+        from operating.pg import comms_search as cs
+        from operating.pg import teams_file_links as tfl
+        if pg.execute("SELECT to_regclass(%s)", (f"{guarded}.{tfl.VIEW}",)).fetchone()[0] is None:
+            return []
+        rows = pg.execute(
+            f"SELECT file_handle, file_name, file_path, mime_type, via FROM {guarded}.{tfl.VIEW} "
+            "WHERE message_handle = %(h)s ORDER BY file_name, file_handle LIMIT %(n)s",
+            {"h": handle, "n": self.SHARED_FILES_MAX}).fetchall()
+        return [{"citation": fh, "name": cs._text(name, fh, 300) if name else None,
+                 "path": cs._text(path, fh, 500) if path else None,
+                 "mime_type": mime, "linked_by": via}
+                for fh, name, path, mime, via in rows]
 
     def _comms_scoped(self, conn: Any, settings: Mapping[str, str], work: Any,
                       actor: Any) -> Any:
@@ -1311,6 +1356,11 @@ class SqlTool:
         # closed)
         extra = self._comms_settings(scope, actor) \
             if derived or any(bv.VIEWS[v].fill for v in views) else None
+        if extra is not None and ("sharepoint_files" in views
+                                  or "teams_message_files" in derived) \
+                and self._files_reader(actor):
+            from operating.pg import business_comms as bc
+            extra = {**extra, bc.FILES_SETTING: bc.FILES_FULL}   # a full reader: the door alone
         # the generic door tables (``generic_views``): refused while rebuilt, withheld
         # counts and build time as a curated view's
         views += [v for v in GENERIC if re.search(rf"\b{v}\b", sql, re.I)]

@@ -125,7 +125,8 @@ run_host() {  # <host> <shard index>
   pin=""
   if [ "$scope" = 1 ]; then
     cap=$budget; [ "$cap" -ge "$per" ] || cap=$per
-    pin="systemd-run --user --scope -q -p CPUWeight=$cw -p MemoryMax=${cap}G --"
+    # oom_score_adj 800: a test run is killed before the host's standby (11-22 OOM on s7d3d)
+    pin="systemd-run --user --scope -q -p CPUWeight=$cw -p MemoryMax=${cap}G -- choom -n 800 --"
   fi
   echo "host $h: $cores cores, load $load, ${mem} GB free -> $w workers${pin:+, CPU weight $cw, memory cap ${cap:-} GB}"
   $R "$idenv $shard $pin bash ~/plx-tests/r-$rh/spark_test_remote.sh $sha $w ${mods[*]+${mods[*]}}"

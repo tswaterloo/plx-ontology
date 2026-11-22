@@ -29,6 +29,8 @@ def home_group_pages(got: Any) -> list[str]:
         return []
     kinds = []
     for group in got.groups or []:
+        if getattr(group, "section", None):
+            continue   # a gathered section lists its biggest few (their own read), not pages
         shown = sum(1 for i in top if i.event_type == group.event_type
                     and i.home)
         if (group.event_type != "po_late" and group.count > (group.in_top or 0)

@@ -423,13 +423,25 @@ def run(dsn: str, job: Job, *, workers: int = 4, budget_minutes: float = DEFAULT
         rehearse_untransactional: bool = False,
         lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
-        log: Any = sys.stderr, stop: Stop | None = None) -> dict:
+        log: Any = sys.stderr, stop: Stop | None = None, wal: Any = "auto",
+        sleep: Callable[[float], None] = time.sleep) -> dict:
     """Run ``job`` (see the module text). The summary: counts, ``stopped`` (the reason,
     None when every slice is done), ``failed`` (the slice and its error class), and for a
     rehearsal the projection. A rehearsal never runs a non-transactional slice (nothing
     could roll it back) unless ``rehearse_untransactional`` (a run on a scratch copy): its
-    part is reported ``unmeasured_parts``."""
+    part is reported ``unmeasured_parts``.
+
+    ``wal``: the WAL budget (``operating.pg.wal_budget``; "auto": one on ``dsn``'s
+    database): while it is paused no new slice starts (the running ones finish), and a
+    pause longer than ``PLX_WAL_MAX_WAIT_S`` stops the run (``wal_budget: ...``)."""
+    from operating.pg import wal_budget
     stop = stop or Stop()
+    if wal == "auto":
+        wal = wal_budget.Budget.for_dsn(
+            dsn, job=job.name,
+            log=lambda e: print(json.dumps({"job": job.name, **e}), file=log, flush=True))
+    wal_max = wal_budget.max_wait_seconds()
+    paused_since: float | None = None
     lock = _job_lock(dsn, job)
     if lock is None:
         return {"job": job.name, "state": "job_running", "exit": EXIT_RUNNING}
@@ -450,6 +462,7 @@ def run(dsn: str, job: Job, *, workers: int = 4, budget_minutes: float = DEFAULT
                                 thread_name_prefix=f"chunked-{job.name}") as pool:
             running: dict[Future, Slice] = {}
             while todo or running:
+                held = None
                 while todo and len(running) < max(1, workers) and failed is None:
                     if monotonic() >= stop_at:
                         stop.set("budget")
@@ -461,12 +474,23 @@ def run(dsn: str, job: Job, *, workers: int = 4, budget_minutes: float = DEFAULT
                                 break
                     if stop.reason is not None:
                         break
+                    held = wal.blocked() if wal is not None else None
+                    if held:
+                        paused_since = paused_since if paused_since is not None \
+                            else monotonic()
+                        if monotonic() - paused_since >= wal_max:
+                            stop.set(f"wal_budget: {held}")
+                        break
+                    paused_since = None
                     sl = todo.pop(0)
                     running[pool.submit(run_slice, dsn, job, sl,
                                         statement_seconds=statement_seconds,
                                         lock_timeout_seconds=lock_timeout_seconds,
                                         commit=not rehearse)] = sl
                 if not running:
+                    if held and stop.reason is None:
+                        sleep(min(max(getattr(wal, "check_seconds", 5.0), 1.0), 5.0))
+                        continue        # paused: nothing running, nothing started
                     break
                 finished, _ = wait(list(running), timeout=5.0, return_when=FIRST_COMPLETED)
                 for fut in finished:

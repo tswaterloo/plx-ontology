@@ -243,6 +243,8 @@ class MeasureSessionTest(ServedFixture):
         self.sign_in(client, self.measure_ticket())
         for path in ("/api/me", "/api/home", "/api/sidebar", "/api/briefing"):
             self.assertEqual(client.get(path).status_code, 200, path)
+        # record search is a read: served to the measure, never to the Ask canary
+        self.assertEqual(client.get("/api/suggest", params={"q": "croda"}).status_code, 200)
         refused = [("POST", "/api/ask", {"question": "Where is TASK-1 at?"}),
                    ("POST", "/api/briefing/seen", {}),
                    ("POST", "/api/memory", {"kind": "fact", "text": "x"}),
@@ -267,7 +269,7 @@ class MeasureSessionTest(ServedFixture):
         # the Ask canary is not widened by it: still its one question only
         canary = TestClient(app, base_url="http://testserver")
         self.sign_in(canary, self.canary_ticket())
-        for path in ("/api/home", "/api/sidebar", "/api/insights"):
+        for path in ("/api/home", "/api/sidebar", "/api/insights", "/api/suggest"):
             got = canary.get(path)
             self.assertEqual((got.status_code, got.json()["error"]["code"]),
                              (403, "canary_route_refused"), path)

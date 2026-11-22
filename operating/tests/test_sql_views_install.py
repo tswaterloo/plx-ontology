@@ -27,7 +27,7 @@ class InstallOnLiveStore(unittest.TestCase):
         cls.store = tbv.build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
-            for name in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql", "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / name).read_text())
         bv.build(cls.dsn, None, schema=tbv.SCHEMA, as_of=tbv.AS_OF)
         cls.views = cls._install()
@@ -225,6 +225,22 @@ class InstallOnLiveStore(unittest.TestCase):
         self._install()
         with self.connect() as c:
             self.assertIsNotNone(c.execute("SELECT to_regclass(%s)", (findings,)).fetchone()[0])
+
+    def test_changed_mail_view_keeps_the_attachments_view_reading_it(self):
+        """The attachments view reads the guarded mail view (an attachment is readable only
+        where its message is): a changed mail view is made again with the attachments view
+        dropped first and made again after, reading the new one."""
+        self._install()
+        mail, att = f"{self.dst}.emails", f"{self.dst}.attachments"
+        with self.connect() as c:
+            self.assertIsNotNone(c.execute("SELECT to_regclass(%s)", (att,)).fetchone()[0])
+            old = c.execute("SELECT to_regclass(%s)::oid", (mail,)).fetchone()[0]
+            c.execute(f"COMMENT ON VIEW {mail} IS NULL")   # its DDL changed: made again
+        self._install()
+        with self.connect() as c:
+            self.assertNotEqual(c.execute("SELECT to_regclass(%s)::oid", (mail,)).fetchone()[0],
+                                old)
+            self.assertIn(mail, sql_views._refs(c, att))
 
     def test_a_failed_step_fails_install_and_the_rest_still_run(self):
         """A view whose DROP fails (a view nobody here knows reads it): install still makes

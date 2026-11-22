@@ -164,7 +164,7 @@ function Ask() {
       busy={busy}
       onStop={stop}
       autoFocus={!q}
-      placeholder={turns.length ? "Ask a follow-up" : "Ask about a PO, SO, lot, supplier or customer"}
+      placeholder={turns.length ? "Ask a follow-up" : "Ask a question, or ask for a chart, document or quote"}
     />
   );
 

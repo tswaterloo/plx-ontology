@@ -385,15 +385,17 @@ class LeakTest(Base):
              **status}))
 
     def test_anything_served_of_an_excluded_person_is_critical_and_counted_only(self):
+        # What of the people set a reader other than the owner
+        # can reach (the capture holds their data by design: not a count)
         self.write(ok=True, excluded_people=2, served_total=7,
-                   served={"mailbox_versions": 4, "chat_chunks": 3, "withheld_objects": 0},
-                   capture={"withheld_copies": 5})
+                   served={"business_rows_not_owners": 4, "comms_rows_unflagged": 3,
+                           "mailbox_versions": 0})
         status = self.run_pass(Fake())
         c = self.check(status, "exclusion_leak")
         self.assertEqual((c["state"], c["value"]), ("breach", 7))
-        self.assertEqual(c["line"], "People exclusion leak scan: served: 4 records of an "
-                         "excluded mailbox; 3 search chunks of those chats (capture store: "
-                         "5 withheld copies the next purge removes)")
+        self.assertEqual(c["line"], "People exclusion leak scan: served to others: 4 business "
+                         "rows of the people set not the owner's; 3 mail and chat rows of the "
+                         "people set unflagged")
         self.assertEqual(next(i for i in status["open"]
                               if i["key"] == "exclusion_leak")["level"], "critical")
         self.write(ok=True, excluded_people=2, served_total=0, served={})
@@ -416,6 +418,31 @@ class LeakTest(Base):
                                     connect=lambda dsn: self.fail("no list: no read"))
         self.assertFalse(found["ok"])
         self.assertIn("exclusion unavailable", found["error"])
+
+        # a list that loads but no people set built for it: the finding itself
+        class Cur:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, *a):
+                pass
+
+            def fetchone(self):
+                return None   # no state row
+
+        class Conn:
+            def cursor(self):
+                return Cur()
+
+            def close(self):
+                pass
+        env = {"PLX_EXCLUDED_PEOPLE_OIDS": "0e0e0e0e-0000-4000-8000-00000000e0e1"}
+        found = exclusion_leak.scan(self.root, "dbname=x", env, connect=lambda dsn: Conn())
+        self.assertEqual((found["ok"], found["error"]),
+                         (False, "people set not built for this list"))
 
         def crash(*a):
             raise RuntimeError("boom")
@@ -719,6 +746,52 @@ class ServedLagAlarmTest(Base):
         self.assertEqual((self.lag("portal")["state"], self.lag("portal")["value"]),
                          ("ok", 0.42))
 
+
+
+class AppliedLag(unittest.TestCase):
+    """11-22: Teams looked stopped for 34 h; it was a quiet weekend, but nothing would have
+    told a stuck delta -> Postgres hop from quiet. A published delta layer the Postgres
+    ontology has not applied for 30 min pages; all applied is green; unreadable is unknown."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        d = self.root / "projection" / "delta"
+        d.mkdir(parents=True)
+        self.names = ["delta-20261122T040000000001.sqlite", "delta-20261122T041500000002.sqlite"]
+        (d / "CURRENT.json").write_text(json.dumps(
+            {"layers": [{"store": str(d / n), "owned": 1} for n in self.names]}))
+
+    def run_check(self, applied, now):
+        return ops_alarms.applied_lag_checks(self.root, now, T, "dbname=x",
+                                             read_applied=applied)[0]
+
+    def test_every_layer_applied_is_green(self):
+        got = self.run_check(lambda dsn: set(self.names),
+                             datetime(2026, 11, 22, 6, 0, tzinfo=timezone.utc))
+        self.assertEqual((got["value"], got["state"]), (0, "ok"))
+
+    def test_an_unapplied_layer_past_30_min_pages_and_under_it_waits(self):
+        late = self.run_check(lambda dsn: {self.names[1]},
+                              datetime(2026, 11, 22, 4, 31, tzinfo=timezone.utc))
+        self.assertEqual(late["state"], "breach")
+        self.assertEqual(late["level"], "high")
+        self.assertIn(self.names[0], late["detail"])
+        soon = self.run_check(lambda dsn: {self.names[1]},
+                              datetime(2026, 11, 22, 4, 20, tzinfo=timezone.utc))
+        self.assertEqual(soon["state"], "ok")
+
+    def test_unreadable_postgres_is_unknown_never_green(self):
+        def boom(dsn):
+            raise RuntimeError("down")
+        got = self.run_check(boom, datetime(2026, 11, 22, 6, 0, tzinfo=timezone.utc))
+        self.assertEqual(got["state"], "unknown")
+
+    def test_no_postgres_ontology_means_no_check(self):
+        self.assertEqual(ops_alarms.applied_lag_checks(self.root, datetime.now(timezone.utc),
+                                                       T, None), [])
 
 if __name__ == "__main__":
     unittest.main()

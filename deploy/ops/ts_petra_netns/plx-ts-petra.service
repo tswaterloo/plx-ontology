@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX Petra tailnet node, kernel mode inside netns tsp (same state as the old userspace ts-petra)
+Requires=plx-ts-petra-netns.service
+After=plx-ts-petra-netns.service
+[Service]
+ExecStart=/usr/sbin/ip netns exec tsp /usr/sbin/tailscaled --state=/data/plx-state/ts-petra/tailscaled.state --socket=/data/plx-state/ts-petra/tailscaled.sock --statedir=/data/plx-state/ts-petra --port=41642 --tun=tspts --socks5-server=10.201.0.2:1055 --outbound-http-proxy-listen=10.201.0.2:1056
+Restart=always
+RestartSec=5
+CPUWeight=1000
+[Install]
+WantedBy=multi-user.target

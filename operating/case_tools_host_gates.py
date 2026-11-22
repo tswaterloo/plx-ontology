@@ -124,10 +124,13 @@ class _GatesMixin:
         def key_material(actor: Any) -> Any:
             # A full reader with a usable set: ``("people-excluded", tag)``, the key the
             # session's ``ontology.sq_item_gate`` decides mail, Teams and meetings by
-            # (``people_excluded.reader_key``); anyone else: the runtime gate's own.
+            # (``people_excluded.reader_key``); the owner ``("people-excluded-owner",
+            # tag)`` (the set withholds nothing); anyone else: the runtime gate's own.
+            from operating.pg.people_excluded import OwnerView
             fast = self._full_reader_set(actor, "graph-mail://")
             if fast is not None:
-                return ("people-excluded", fast.exclusion)
+                return ("people-excluded-owner" if isinstance(fast, OwnerView)
+                        else "people-excluded", fast.exclusion)
             return None if inner is None else inner(actor)
 
         gate.key_material = key_material  # type: ignore[attr-defined]
@@ -142,6 +145,12 @@ class _GatesMixin:
                 fast.exclusion, str) else ""
 
         gate.full_reader_tag = full_reader_tag  # type: ignore[attr-defined]
+
+        def owner_reader(actor: Any) -> bool:
+            # THE owner (``EmployeeEntitlement.owner``): the set withholds nothing from it
+            return self._owner(self.runtime.employee_gate(actor))
+
+        gate.owner_reader = owner_reader  # type: ignore[attr-defined]
         # The case runtime the inner gate decides with (``item_gate_from_case_runtime``):
         # the bulk readers compute each reader's parts with its functions (plx.sql's Teams
         # chat windows and transcript rule, plx.table's mail and Teams rules). Without it
@@ -207,8 +216,12 @@ class _GatesMixin:
             return None
         try:
             got = people_excluded.excluded()
-            if got is None or not self._unrestricted(self.runtime.employee_gate(actor)):
+            gated = self.runtime.employee_gate(actor)
+            if got is None or not self._unrestricted(gated):
                 return None
+            if self._owner(gated):
+                # the owner: the same coverage, nothing withheld
+                return people_excluded.OwnerView(got.exclusion, got.covered_ver)
         except Exception:  # noqa: BLE001 - undecidable: the gate decides
             return None
         return got
@@ -336,7 +349,8 @@ class _GatesMixin:
                 if not memo[decided]:
                     memo[kept] = False
                     return False
-                memo[kept] = not citations.participants_withheld(store, sent, to, memo)
+                memo[kept] = not citations.participants_withheld(store, sent, to, memo,
+                                                                 mailbox=mailbox, gated=gated)
                 return memo[kept]
         except Exception:  # noqa: BLE001 - a refused gate or unreadable capture admits nothing
             return False
@@ -467,6 +481,16 @@ class _GatesMixin:
         if key not in memo:
             memo[key] = reader_unrestricted(getattr(self.runtime, "employee_gate", None),
                                             gated)
+        return memo[key]
+
+    def _owner(self, gated: Any) -> bool:
+        """Whether the reader is THE owner (``employee_permissions.reader_owner``), decided
+        once per tool call and reader (``_CallBound.memo``)."""
+        from .employee_permissions import reader_owner
+        memo = self._call_bound.memo
+        key = ("owner", frozenset(getattr(gated, "principals", ())))
+        if key not in memo:
+            memo[key] = reader_owner(getattr(self.runtime, "employee_gate", None), gated)
         return memo[key]
 
     def _full_read_stale(self, gated: Any, view: Mapping[str, Any]) -> bool:

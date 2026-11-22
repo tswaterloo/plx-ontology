@@ -646,6 +646,7 @@ def _full_reader_policy(runtime: Any, actor: Any, principals: frozenset[str],
         entitlement = gate.entitlement(actor) if gate is not None else None
         if entitlement is None or entitlement.unrestricted() is not True:
             return None
+        is_owner = entitlement.owner() is True   # the excluded people's units: its alone
     except Exception:  # noqa: BLE001 - undecidable: decided as for anyone
         return None
     guard = getattr(runtime, "people_exclusion", None)
@@ -677,15 +678,14 @@ def _full_reader_policy(runtime: Any, actor: Any, principals: frozenset[str],
                 continue
         else:
             continue
-        # a person's mailbox, calendar or transcripts: never an excluded person's
+        # a person's mailbox, calendar or transcripts: an excluded person's, the owner's alone
         grants[key] = frozenset() if not is_object_id(owner.strip().lower()) \
-            or people_excluded(guard, [owner]) else principals
+            or (people_excluded(guard, [owner]) and not is_owner) else principals
     units: dict[str, tuple[str, ...]] = {}
     if bc_units:
         units["bc"] = tuple(sorted(bc_units))
-    return ReadPolicy(actor.tenant, grants,
-                      full_read_marking_grants(marking_grants, entitlement), units,
-                      unrestricted=True)
+    return ReadPolicy(actor.tenant, grants, full_read_marking_grants(
+        marking_grants, entitlement), units, unrestricted=True, owner=is_owner)
 
 
 def _brain_grants(runtime: Any, actor: Any, principals: frozenset[str],

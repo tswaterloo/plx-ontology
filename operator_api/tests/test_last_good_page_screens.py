@@ -270,6 +270,32 @@ class OtherScreens(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(self.visit(other)[1], [other.key])   # nothing kept for another
 
+    def test_screens_ahead_read_with_a_background_budget_session_readers_first(self):
+        """11-21 live: the warm-up's screens were cut at a request's 60-90 s limit (165 in
+        6 h) while they waited behind other reads, and a session reader's screens queued
+        behind a whole directory round. A screen read ahead runs with the background
+        budget; a session reader's go before directory employees' queued earlier, and a
+        screen already queued for a reader is not queued twice."""
+        from operator_api.backend_warm import ScreensPool
+        from operator_api.serving import BACKGROUND_READ_BUDGET, READ_BUDGET
+        who = reader("grp-a")
+        budgets: list[int] = []
+        self.backend.probe_screen = lambda r: budgets.append(READ_BUDGET.get())
+        self.assertEqual(self.backend._screens_ahead(who, ("probe_screen",)), 1)
+        self.assertEqual((budgets, READ_BUDGET.get()), ([BACKGROUND_READ_BUDGET], 1))
+
+        pool, gate, order = ScreensPool(1, name="t-screens"), threading.Event(), []
+        pool.submit(gate.wait, 10)                 # the one worker busy
+        time.sleep(0.05)
+        first = pool.submit(order.append, "d1", later=True, key="d1")
+        again = pool.submit(order.append, "d1", later=True, key="d1")
+        last = pool.submit(order.append, "d2", later=True, key="d2")
+        pool.submit(order.append, "s1", key="s1")
+        self.assertIs(first, again)
+        gate.set()
+        last.result(timeout=5)
+        self.assertEqual(order, ["s1", "d1", "d2"])
+
     def test_the_warm_up_process_keeps_todays_screens_under_the_keys_the_app_asks(self):
         """Speed 11-12: after a restart the briefing's first read never finished (104 s,
         503) because the warm-up read Today only through its inner caches and kept no page

@@ -649,6 +649,23 @@ class SessionTest(unittest.TestCase):
         self.assertIsNone(sql.served_views(("customers", "emails"), pg))
         sql._SERVED.clear()
 
+    def test_a_document_made_again_under_its_name_is_listed_once_as_the_last_copy(self):
+        """A session that makes a file again (same name and kind: its revision) gives the
+        answer that file once, the newer copy; two different files both stay."""
+        import json
+        from operator_api import assistant_tools
+
+        def made(name, kind, file_id):
+            return {"type": "tool_call", "name": "mcp__plx__plx.make_document",
+                    "result": json.dumps({"name": name, "kind": kind, "size": 10,
+                                          "download_url": f"/api/instruct/files/f_{file_id}"})}
+        listed = assistant_tools.documents([
+            made("Croda memo.docx", "docx", "a" * 24), made("Croda memo.docx", "pdf", "b" * 24),
+            made("Croda memo.docx", "docx", "c" * 24), made("Other.docx", "docx", "d" * 24)])
+        self.assertEqual([(d["name"], d["kind"], d["download_url"][-3:]) for d in listed],
+                         [("Croda memo.docx", "pdf", "bbb"), ("Croda memo.docx", "docx", "ccc"),
+                          ("Other.docx", "docx", "ddd")])
+
     def test_the_prompt_names_every_measure_and_only_reports_every_reader_may_run(self):
         """The one prompt every reader gets lists the agreed measures and the company-wide
         reports every reader may run; a report for full readers only is never named in it

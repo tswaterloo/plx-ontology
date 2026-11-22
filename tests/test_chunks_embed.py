@@ -1159,7 +1159,7 @@ class FollowHistoryOnPostgresTests(unittest.TestCase):
     """With the SQLite generation retired and Postgres the only store, the follower's mail
     history reads the Postgres ontology, newest first, and resumes where it stopped."""
 
-    def run_follow(self, state, env, windows, stop_at=None):
+    def run_follow(self, state, env, windows, stop_at=None, wal=None):
         from operating.embed import follow as fl
         args = fl.parser().parse_args([
             "--state", str(state), "--mode", "generation", "--window-days", "30",
@@ -1173,8 +1173,26 @@ class FollowHistoryOnPostgresTests(unittest.TestCase):
                 mock.patch.object(fl, "_exclusion", return_value=exclusion()), \
                 mock.patch.object(fl.config, "settings", return_value={}), \
                 mock.patch.object(fl, "history_window", side_effect=window), \
-                mock.patch.object(fl, "chunk_code", return_value="code-1"):
+                mock.patch.object(fl, "chunk_code", return_value="code-1"), \
+                mock.patch.object(fl, "_wal_paused", return_value=wal):
             return fl.follow(args)
+
+    def test_a_standby_too_far_behind_stops_the_history_before_any_window(self):
+        """The mail history is a heavy writer: with the WAL budget paused (the standby
+        too far behind) no window is read; the cursor is untouched, the next run reads."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        (state / "projection").mkdir()
+        (state / "projection" / "CURRENT").write_text(json.dumps(
+            {"generation": "g1", "content_digest": "sha256:aaa"}))
+        windows = []
+        only = {"PLX_ONTOLOGY_PG": "only"}
+        report = self.run_follow(state, only, windows, wal="standby_lag:plx_s7d3d")
+        self.assertEqual((windows, report["history"]),
+                         ([], [{"stopped": "standby_lag:plx_s7d3d"}]))
+        self.run_follow(state, only, windows)
+        self.assertEqual(windows[0][2], (dt.date.today() - dt.timedelta(days=30)).isoformat())
 
     def test_the_history_reads_postgres_once_the_generation_is_retired_and_resumes(self):
         tmp = tempfile.TemporaryDirectory()

@@ -240,24 +240,18 @@ class Store:
         return sorted(set(index.get(" ".join(label.split()).casefold(), [])))
 
     def _address_ok(self, address: str) -> bool:
-        from integrations.live_source_guard import NotVisible
+        from operating.excluded_people import guard_clear, tuning_barred
         from scripts import eval_live_ops as lo
         address = address.strip().casefold()
         if lo.skipped(address):
             return False
-        try:
-            if self.guard.decides(address):
-                return not self.guard.is_excluded(address)
-        except NotVisible:
-            return False
-        return address.rsplit("@", 1)[-1] not in self.own
+        # the one tuning bar (``excluded_people.tuning_barred``): undecidable is ours only
+        # outside our domains
+        return not tuning_barred(guard_clear(self.guard, self.own), address)
 
     def _oid_ok(self, value: str) -> bool:
-        from integrations.live_source_guard import NotVisible
-        try:
-            return not self.guard.is_excluded(value)
-        except NotVisible:
-            return False
+        from operating.excluded_people import guard_clear, tuning_barred
+        return not tuning_barred(guard_clear(self.guard), value)
 
     def cleared(self, ids: Sequence[str]) -> bool:
         """No record of a skipped mailbox, no person the exclusion excludes, no address of

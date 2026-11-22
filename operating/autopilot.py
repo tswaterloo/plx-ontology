@@ -86,7 +86,8 @@ from .autopilot_engine import (
 from .autopilot_reading import (
     _plain, _store, digest)
 from . import autopilot_agent_io, autopilot_engine, autopilot_handlers
-from .autopilot_triage import _ask_wanted, _judge_asks, recheck_open_replies  # noqa: F401
+from .autopilot_triage import (_ask_wanted, _judge_asks, earlier_for,  # noqa: F401
+                               recheck_open_replies)
 from .autopilot_teams_names import (  # noqa: F401  (re-exported)
     OLD_LABELS, RETITLE_BATCH, TEAMS_NAME_BATCH, name_teams_items, retitle_old_labels)
 from .autopilot_memory import (  # noqa: F401  (re-exported)
@@ -144,6 +145,12 @@ def _check_when(when: Any, name: str, *, nested: bool = False) -> None:
         if not (isinstance(kinds, list) and kinds and all(k in KINDS for k in kinds)
                 and "reply" not in kinds):
             raise RegistryInvalid(f"registry_condition:{name}")
+    for key in ("triage_work_in", "triage_work_none"):
+        kinds = when.get(key)
+        if kinds is not None:
+            from .chat_ask_model import KINDS
+            if not (isinstance(kinds, list) and kinds and all(k in KINDS for k in kinds)):
+                raise RegistryInvalid(f"registry_condition:{name}")
     cc_min = when.get("cc_min")
     if cc_min is not None and not (isinstance(cc_min, int) and not isinstance(cc_min, bool)
                                    and cc_min >= 1):
@@ -159,9 +166,12 @@ def _check_when(when: Any, name: str, *, nested: bool = False) -> None:
 
 def _needs_ask(when: Mapping[str, Any]) -> bool:
     """Whether a ``when`` (or one of its ``any_of`` sets) reads the message's ask or its
-    triage (``asks``, ``engaged_or_asks``, ``triage_none``)."""
+    triage (``asks``, ``engaged_or_asks``, ``triage_none``, ``triage_work_in``: the work a
+    reading names). ``triage_work_none`` alone asks for no reading: an unread message
+    passes it."""
     def reads(w: Mapping[str, Any]) -> bool:
-        return w.get("asks") is True or "engaged_or_asks" in w or "triage_none" in w
+        return w.get("asks") is True or "engaged_or_asks" in w or "triage_none" in w \
+            or "triage_work_in" in w
     return reads(when) or any(isinstance(b, Mapping) and reads(b)
                               for b in when.get("any_of") or ())
 
@@ -727,6 +737,7 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     window = answer_window_hours() if answered_rule else None
     asking = [a for a in registry["autopilots"] if _needs_ask(a.get("when") or {})]
     waiting: list[tuple[dict[str, Any], tuple[str, str, str]]] = []
+    earlier = earlier_for(st, queue, people, addresses_of, as_of, domains) if ask_judge else None
     # the live queue's model drafts run on the writer's pool (``autopilot_drafter.Writer``):
     # an event waiting on its draft is handed back once the draft is done, in this cycle
     drafting = queue.__dict__.setdefault("_draft_context", {})
@@ -750,7 +761,7 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
 
     def judged() -> None:
         if waiting:
-            _judge_asks(ask_judge, queue, waiting, people, stamp, summary)
+            _judge_asks(ask_judge, queue, waiting, people, stamp, summary, earlier)
             for held, _who in waiting:
                 handle(held)
             waiting.clear()
@@ -974,6 +985,11 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 summary["skipped"][f"{ap['id']}:workflow_not_passed"] += 1
                 continue
         if ap.get("fallback"):
+            if deferred or pending:
+                # another autopilot still prepares it (rate-limited, a draft running): the
+                # event comes back, and its item is that one's
+                summary["skipped"][f"{ap['id']}:another_preparing"] += 1
+                continue
             # only for an owner no other autopilot prepared this event for
             owners = [o for o in owners if not queue.conn.execute(
                 "SELECT 1 FROM items WHERE event_id = ? AND owner = ? LIMIT 1",

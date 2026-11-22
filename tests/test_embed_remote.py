@@ -217,6 +217,27 @@ class RemotePassTests(unittest.TestCase):
         code, report = self.run_pass("--verify", "0", "--min-free-gb", "0")
         self.assertEqual((code, report["texts"]), (0, 1))
 
+    def test_a_standby_too_far_behind_holds_every_request_back(self):
+        """11-21 live: the backfill wrote 23 MB/s of WAL, 2.8 reached the standby (18 GB
+        behind of a 40 GB slot cap). Past the WAL budget's pause line nothing is sent; an
+        unreadable lag holds it back too; back under the resume line the pass goes on."""
+        from operating.pg import wal_budget
+        self.add(1, "pending")
+        for lag in ({"return_value": (9 * 1024 ** 3, "plx_s7d3d")},
+                    {"side_effect": RuntimeError("no stats")}):
+            with self.subTest(lag=lag), mock.patch.object(wal_budget, "lag", **lag):
+                code, report = self.run_pass("--verify", "0", "--stall-seconds", "1",
+                                             "--max-seconds", "3")
+                self.assertEqual((code, report.get("ended"), report.get("texts")),
+                                 (0, "max_seconds", 0), report)
+                self.assertTrue(report["paused"], report)
+                self.assertEqual(self.vectors()["c1"], (None, None))
+                self.assertFalse((self.tmp / "calls.log").exists()
+                                 and (self.tmp / "calls.log").read_text())   # none sent
+        with mock.patch.object(wal_budget, "lag", return_value=(1024 ** 3, "plx_s7d3d")):
+            code, report = self.run_pass("--verify", "0")
+        self.assertEqual((code, report["texts"]), (0, 1))
+
     def test_dry_run_ships_no_pending_text_and_writes_nothing(self):
         kept = self.add(0, "stored before")
         self.conn.execute("UPDATE search.chunks SET embedding = %s::halfvec(1024), "

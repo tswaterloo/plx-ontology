@@ -7,7 +7,7 @@ import { ApiError, apiErrorFrom } from "./errors";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { AskChatUpdate, AskChats, DataHealth, DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
@@ -42,6 +42,7 @@ import type { AskChatUpdate, AskChats, DataHealth, DocList, Explore, LabourPage,
   AutopilotSwitches,
   AutopilotScorecard,
   TrustPage,
+  FeedStates,
   AutopilotCatalog,
   AutopilotDraftKept,
   AutopilotMode,
@@ -601,6 +602,27 @@ export function getDataHealth(signal?: AbortSignal): Promise<DataHealth> {
   return getJson<DataHealth>("/api/data-health", signal);
 }
 
+/** One check's findings from `offset` (the page after those listed), as this reader may see them. */
+export function getDataHealthPage(check: string, offset: number, signal?: AbortSignal, limit = 50): Promise<DataHealth> {
+  return getJson<DataHealth>(`/api/data-health?check=${encodeURIComponent(check)}&offset=${Math.max(0, Math.floor(offset))}&limit=${limit}`, signal);
+}
+
+/** A Records list (production batches) with its filters, a page at a time. */
+export function getRecordList(view: string, f: { status?: string; hold?: string; q?: string; offset?: number }, signal?: AbortSignal): Promise<RecordList> {
+  const q = new URLSearchParams({ view, status: f.status ?? "", hold: f.hold ?? "", q: f.q ?? "", offset: String(Math.max(0, Math.floor(f.offset ?? 0))) });
+  return getJson<RecordList>(`/api/records/list?${q.toString()}`, signal);
+}
+
+/** Where the findings download as a spreadsheet (all checks, or one). */
+export function dataHealthExportHref(check?: string): string {
+  return check ? `/api/data-health/export?check=${encodeURIComponent(check)}` : "/api/data-health/export";
+}
+
+/** Whether the background jobs behind Home's lists run (reply drafts, autopilot entries, late orders): a stopped job is said, never an empty list. */
+export function getFeeds(signal?: AbortSignal): Promise<FeedStates> {
+  return getJson<FeedStates>("/api/feeds", signal);
+}
+
 export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
   const n = Math.min(100, Math.max(1, Math.floor(limit)));
   return getRead<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
@@ -724,6 +746,8 @@ onSessionReset(() => (autopilotLast = null));
 export type PreparedItem = {
   item_id: string; sender: string; channel: "mail" | "teams" | "system"; subject: string; message: string;
   kind: "reply" | "your_call" | "job" | "todo" | "alert"; to: string[]; cc: string[]; body: string; edited: boolean;
+  /** On an alert: the alert kind whose items it is the same hold as (Home lists both in one section). */
+  alert_kind?: string | null;
   /** On an alert: where it is decided or answered (never from the card), and its records. */
   note?: string; links?: { label: string; href: string }[];
   handed_to?: string; handed_from?: string;

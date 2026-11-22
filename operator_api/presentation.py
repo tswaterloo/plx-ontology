@@ -430,6 +430,11 @@ PAREN_PLURAL = re.compile(r"\b(?:(\d[\d,]*)(\s+(?:[A-Za-z]+\s+){0,2}?))?([A-Za-z
 SPACED_PERCENT = re.compile(r"(\d) %(?![\w%])")
 
 
+def counted_words(text: Any) -> Any:
+    """``text`` with every "n thing(s)" given the plural its count calls for."""
+    return PAREN_PLURAL.sub(_counted, text) if isinstance(text, str) else text
+
+
 def _counted(found: re.Match) -> str:
     number, between, word = found.group(1), found.group(2) or "", found.group(3)
     one = number is not None and number.replace(",", "") == "1"

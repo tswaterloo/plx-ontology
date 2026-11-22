@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Mapping, Optional, Sequence
 
 KINDS = ("bar", "line", "area", "pie", "donut", "scatter", "histogram", "heatmap",
@@ -206,6 +206,8 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
     if truncated and kind in WHOLE:
         raise NotDrawn(f"A {kind} chart is of every row, and the result holds only its "
                        "first rows: total it in the statement.")
+    if kind == "waterfall":
+        _adds_up(spec, columns, rows, sql)
     currency = _currency(spec, columns, rows)
     at = {c: i for i, c in enumerate(columns)}
 
@@ -232,6 +234,8 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
         _pivot(out, spec, rows, cell)
     else:
         _wide(out, spec, rows, cell)
+    if out.get("panels"):
+        _drop_empty_panels(out)
     if kind in ("pie", "donut"):
         for whole in out.get("panels") or [out]:
             _slices(whole, truncated)
@@ -249,6 +253,53 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
         out["open_period"] = open_period(labels, out["as_of"])
         out["first_period"] = first_period(labels, out["as_of"], sql)
     return out
+
+
+# a statement's last clause keeping only its first rows (a top-level LIMIT)
+_LAST_LIMIT = re.compile(r"\bLIMIT\s+(\d+)\s*;?\s*$", re.I)
+_OTHERS = re.compile(r"^\s*all others\b", re.I)
+_CENT = Decimal("0.01")
+
+
+def _adds_up(spec: Mapping[str, Any], columns: Sequence[str], rows: Sequence[Sequence[Any]],
+             sql: Optional[str]) -> None:
+    """A waterfall's parts add up to the whole change, or it draws nothing (``NotDrawn``):
+    each part's change is its ``current`` minus its ``previous`` when the rows carry both
+    (to the cent), and a statement that keeps only its first rows (a last ``LIMIT``) folds
+    the rest into one "All others" row, else its last bar is not the whole change."""
+    y, x = spec["y"][0], spec.get("x")
+    at = {c: i for i, c in enumerate(columns)}
+
+    def get(row: Sequence[Any], col: str) -> Any:
+        i = at.get(col)
+        return row[i] if i is not None and i < len(row) else None
+    if "current" in at and "previous" in at and y not in ("current", "previous"):
+        for row in rows:
+            cells = [number(get(row, c)) for c in (y, "current", "previous")]
+            if any(v is None or not v.is_finite() for v in cells):
+                continue
+            change, now, before = cells
+            # each side rounded alike (to the fewest places the three cells are written
+            # with), then within a cent: a statement that rounds current, previous and
+            # change apart to cents is off by at most one
+            unit = Decimal(1).scaleb(-min(_places(v) for v in cells))
+            if abs(change.quantize(unit, ROUND_HALF_UP)
+                   - (now - before).quantize(unit, ROUND_HALF_UP)) > _CENT:
+                raise NotDrawn("A waterfall's parts must add up to the whole change: a "
+                               "part's change is not its current minus its previous.")
+    limit = _LAST_LIMIT.search(sql.strip()) if sql else None
+    # fewer rows than the limit: the statement returned every part, nothing was cut
+    if limit and len(rows) >= int(limit.group(1)) and not any(
+            _OTHERS.match(str(get(row, x) or "")) for row in rows):
+        raise NotDrawn("A waterfall's parts must add up to the whole change, and the "
+                       "statement keeps only its first rows (LIMIT): fold the rest into one "
+                       "\"All others\" row.")
+
+
+def _places(value: Decimal) -> int:
+    """How many decimal places ``value`` is written to ("10.50": 2, "7": 0; at most 6)."""
+    exp = value.as_tuple().exponent
+    return max(0, min(6, -exp)) if isinstance(exp, int) else 0
 
 
 # kinds whose labels may be calendar periods along an axis (or a table's rows)
@@ -384,6 +435,21 @@ def _currency(spec: Mapping[str, Any], columns: Sequence[str],
     return found
 
 
+def _is_amount(rows: Sequence[Any], col: str, cell: Any) -> bool:
+    """A column of numbers with cents (an amount a statement also returns): it never tells
+    repeated labels apart, so its values are never the names of a chart's series."""
+    seen = False
+    for r in rows:
+        v = cell(r, col)
+        if v is None or v == "":
+            continue
+        n = number(v)
+        if n is None:
+            return False
+        seen = seen or n != n.to_integral_value()
+    return seen
+
+
 def _repeat_split(spec: Mapping[str, Any], columns: Sequence[str], rows: list,
                   cell: Any) -> Optional[str]:
     """The column a chart without a split draws as its split when its label column repeats
@@ -403,7 +469,7 @@ def _repeat_split(spec: Mapping[str, Any], columns: Sequence[str], rows: list,
     if spec["kind"] in ("bar", "line", "area", "heatmap") and len(spec["y"]) == 1 \
             and not spec.get("y2"):
         for col in columns:
-            if col in (x, spec["y"][0]):
+            if col in (x, spec["y"][0]) or _is_amount(rows, col, cell):
                 continue
             pairs = {(v, _text(cell(r, col))) for v, r in zip(labels, rows)}
             if len(pairs) == len(rows):
@@ -508,6 +574,19 @@ def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,
     out["panels"] = panels
     out["omitted"] = max(0, len(groups) - MAX_PANELS)
     out["shown"] = shown
+
+
+def _drop_empty_panels(out: dict[str, Any]) -> None:
+    """A panel whose values hold no number (a currency its rows state no amount for: the
+    "(none)" group of a statement faceted by currency) draws nothing: it is left out and
+    counted in ``omitted`` (its rows stay counted in ``rows``), never shown as a chart with
+    no bars. A chart left with no panel is ``NotDrawn``."""
+    kept = [p for p in out["panels"]
+            if any(v is not None for s in p["series"] for v in s["values"])]
+    if not kept:
+        raise NotDrawn("The value columns hold no numbers.")
+    out["omitted"] = out.get("omitted", 0) + len(out["panels"]) - len(kept)
+    out["panels"] = kept
 
 
 def _slices(out: dict[str, Any], truncated: bool) -> None:
@@ -795,8 +874,15 @@ PROMPT_LINE = (
     'or other part with its change, from a measure\'s "compare" rows or your own '
     'statement; the parts past the top few one "All others" row) is a waterfall of the '
     'change column, never a bar of it: the parts add up to the whole change; "facet" by '
-    'the currency or unit column when the rows hold more than one. Pick the kind from what '
-    'the question asks for, not bar by habit: shares of a whole -> pie or donut, a long '
+    'the currency or unit column when the rows hold more than one. Choose the chart from '
+    'the data\'s shape: a time axis is a line, parts of a whole are stacked (over time a '
+    'stacked bar or area; at one time a pie or donut), a ranking is a bar, two measures are '
+    'a scatter; a person\'s explicit chart choice wins. A period counted from today (this '
+    'month, year to date, last quarter) goes to a measure as its moving period '
+    '("this_month", "year_to_date", "last_quarter"...) or is written against now() in your '
+    'own statement, never as today\'s dates, so a pinned chart stays current. When a chart '
+    'shows the rows, the text gives the headline figures and what stands out, not the same '
+    'rows again as a table. Not bar by habit: shares of a whole -> pie or donut, a long '
     'list too (the app keeps the largest slices and folds the rest into one "All others"); '
     'a few headline numbers (now against before) -> kpi; counts through ordered steps, even '
     'two -> funnel; a list of named rows -> table; how values spread -> histogram of the '

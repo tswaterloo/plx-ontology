@@ -106,7 +106,8 @@ class StaffRows(unittest.TestCase):
         self.assertIs(got[staff_scope.ORG_CHART_KEY], True)
         got = staff_scope.staff_grants([], {}, own=own, excluded=None)
         self.assertIs(got[staff_scope.ORG_CHART_KEY], False)
-        self.assertEqual(otp.VIEW_ONLY_KEYS, (staff_scope.ORG_CHART_KEY,))
+        # the owner's alone key rides the same view-only list (2ed8b9108a)
+        self.assertEqual(otp.VIEW_ONLY_KEYS, (staff_scope.ORG_CHART_KEY, otp.OWNER_KEY))
         guest = ot.ReadPolicy(tenant="plx", audiences={})
         reader = Actor("plx", frozenset({"guest:x"}), "restricted")
         keys, *_ = otp.reader_grants(object(), guest, reader, ("mail:x",))
@@ -115,6 +116,7 @@ class StaffRows(unittest.TestCase):
         keys, *_ = otp.reader_grants(object(), staff, Actor(
             "plx", frozenset({"staff:a"}), "restricted"), ("mail:x",))
         self.assertIn(staff_scope.ORG_CHART_KEY, keys)
+        self.assertNotIn(otp.OWNER_KEY, keys)   # a staff reader never holds the owner-only key
         self.assertNotIn("mail:x", keys)
 
 
@@ -174,7 +176,7 @@ def _migrate(dsn):
     import psycopg
     from operating.pg.migrate import MIGRATIONS_DIR
     with psycopg.connect(dsn, autocommit=True) as pg:
-        for name in ("0027_item_audiences.sql", "0040_people_excluded_objects.sql",
+        for name in ("0027_item_audiences.sql", "0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
                      "0041_business_views.sql"):
             pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
 

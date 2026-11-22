@@ -401,7 +401,8 @@ def reader_grants(owner: Any, policy: Any, actor: Actor, all_keys: Sequence[str]
 _GRANTS: dict[tuple[int, Any], tuple[Any, Any, Any]] = {}
 # Audience keys no store object holds, carried only by business view rows (``biz.staff``):
 # offered to every reader's policy beside the store's keys (``reader_grants``).
-VIEW_ONLY_KEYS = ("org:chart",)   # operating.staff_scope.ORG_CHART_KEY
+OWNER_KEY = "plx:owner"
+VIEW_ONLY_KEYS = ("org:chart", OWNER_KEY)   # operating.staff_scope.ORG_CHART_KEY
 _GRANTS_LOCK = threading.Lock()
 MAX_GRANTS_KEPT = 64
 
@@ -652,6 +653,10 @@ class ReadPolicy:
     # checks of the consumers pass through (the people exclusion still decides). Set only
     # by the host's policy resolution (``ontology_host.case_host_policy``).
     unrestricted: bool = False
+    # The reader is THE owner (``EmployeeEntitlement.owner``):
+    # the only policy granting ``OWNER_KEY``, whatever its patterns say (no pattern ever
+    # grants it). Unrestricted only. Set only by the host's policy resolution.
+    owner: bool = False
     # Decided by the staff scope (``operating.staff_scope``, ``ontology_host.
     # _staff_policy``): its ``mail``, ``teams``, ``sharepoint`` and ``meetings`` units are
     # already decided, so a host never decides them again per unit.
@@ -663,6 +668,8 @@ class ReadPolicy:
         if not isinstance(self.unrestricted, bool) or not isinstance(self.staff, bool) \
                 or self.unrestricted and self.staff:
             raise ValueError("read_policy_unrestricted_invalid")
+        if not isinstance(self.owner, bool) or self.owner and not self.unrestricted:
+            raise ValueError("read_policy_owner_invalid")
         clean: dict[str, frozenset[str]] = {}
         for pattern, principals in dict(self.audiences).items():
             if (not isinstance(pattern, str) or not pattern or "*" in pattern[:-1]
@@ -715,6 +722,8 @@ class ReadPolicy:
         return isinstance(actor, Actor) and actor.tenant == self.tenant
 
     def may_read(self, actor: Actor, audience_key: str) -> bool:
+        if audience_key == OWNER_KEY:   # the owner's alone: never by an entry or pattern
+            return self.owner is True and self._member(actor)
         return self._member(actor) and bool(self._principals(audience_key) & actor.principals)
 
     def held_markings(self, actor: Actor) -> frozenset[str]:
@@ -728,8 +737,9 @@ class ReadPolicy:
         family (``api``, ``bc`` ...): ``<prefix>:*`` (or ``*``) grants it and no
         more specific pattern of that family takes a unit out, or, for a family whose
         held units the policy lists (``units``), every listed unit is granted. Decided
-        from the policy alone."""
-        if not self._member(actor):
+        from the policy alone. The family of ``OWNER_KEY`` is covered for no one: that key
+        is decided by ``may_read`` alone."""
+        if not self._member(actor) or OWNER_KEY.startswith(prefix + ":"):
             return False
         family = prefix + ":"
         if self._principals(family) & actor.principals and all(

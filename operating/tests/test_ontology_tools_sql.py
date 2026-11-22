@@ -63,7 +63,7 @@ class SqlDoor(unittest.TestCase):
         cls.store = tbv.build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
-            for name in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql", "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / name).read_text())
         bv.build(cls.dsn, None, schema=tbv.SCHEMA, as_of=tbv.AS_OF)
         for attempt in range(5):   # the role is the cluster's: parallel modules may race
@@ -679,9 +679,13 @@ class SqlDoor(unittest.TestCase):
                 c.execute("INSERT INTO ontology.people_excluded_objects VALUES "
                           "('x://later', %s, 'own_unit')", (oid,))
                 self.assertGreaterEqual(door.exclude(c, bv.SCHEMA), 1)
-                # (uncommitted: read on this connection, rolled back after)
-                self.assertEqual(c.execute(f"SELECT count(*) FROM {bv.SCHEMA}.customers "
-                                           "WHERE name = 'Acme Ltd'").fetchone()[0], 0)
+                # (uncommitted: read on this connection, rolled back after) the row stays,
+                # the owner's alone: every class it is in holds OWNER_KEY
+                from operating.pg.access_classes import OWNER_KEY
+                self.assertEqual({r[0] for r in c.execute(
+                    f"SELECT %s = ANY(a.audience_keys) FROM {bv.SCHEMA}.customers t JOIN "
+                    f"{bv.SCHEMA}.access_classes a ON a.id = t.access_class WHERE t.name = "
+                    "'Acme Ltd'", (OWNER_KEY,))}, {True})
                 n = c.execute(f"SELECT sum(rows) FROM {bv.SCHEMA}.class_counts WHERE "
                               "view = 'customers'").fetchone()[0]
                 self.assertEqual(n, c.execute(f"SELECT count(*) FROM {bv.SCHEMA}.customers"
@@ -960,8 +964,12 @@ class SqlDoor(unittest.TestCase):
                 self.assertEqual(got["door"][s], 1, got)
                 self.assertNotIn(late, self.names())
                 self.assertIn("Acme Ltd", self.names())
+                # the row stays, the owner's alone
                 self.assertEqual(c.execute(f"SELECT count(*) FROM {s}.lineage WHERE handle = "
-                                           "'api://door/late'").fetchone()[0], 0)
+                                           "'api://door/late'").fetchone()[0], 1)
+                owner = tbv.BusinessViews.base(self, owner=True)
+                self.assertIn(late, set(SqlDoor.column(self, self.sql(
+                    "SELECT name FROM customers", base=owner))))
                 # and a set changed by a whole build (another list tag) refuses again
                 c.execute(f"UPDATE {pe.STATE} SET exclusion = 'another-tag'")
                 out = self.sql("SELECT count(*) FROM customers")
@@ -1254,8 +1262,9 @@ class SqlDoor(unittest.TestCase):
                 c.rollback()
 
     def test_the_exclusion_follows_read_records_and_column_records(self):
-        """``door.exclude``: a row one of whose READ records is an excluded person's goes; a
-        cell read only from one is emptied, its row stays."""
+        """``door.exclude``: a row one of whose READ records is an excluded person's is the
+        owner's alone (its class holds OWNER_KEY); a cell read only from one is emptied,
+        its row stays."""
         import psycopg
         from operating.pg import door
         from operating.pg import people_excluded as pe
@@ -1271,9 +1280,12 @@ class SqlDoor(unittest.TestCase):
                           (view, h2))
                 c.execute(f"INSERT INTO {pe.TABLE} VALUES ('x://r', 'door:read-x', 'own_unit'),"
                           " ('x://c', 'door:col-x', 'own_unit')")
+                from operating.pg.access_classes import OWNER_KEY
                 self.assertEqual(door.exclude(c, s), 2)
-                self.assertEqual(c.execute(f"SELECT count(*) FROM {s}.{view} WHERE handle = %s",
-                                           (h1,)).fetchone()[0], 0)
+                self.assertEqual(c.execute(
+                    f"SELECT %s = ANY(a.audience_keys) FROM {s}.{view} t JOIN "
+                    f"{s}.access_classes a ON a.id = t.access_class WHERE t.handle = %s",
+                    (OWNER_KEY, h1)).fetchall(), [(True,)])
                 self.assertEqual(c.execute(f"SELECT customer FROM {s}.{view} WHERE handle = %s",
                                            (h2,)).fetchall(), [(None,)])
                 self.assertEqual(c.execute(f"SELECT col_objects ? 'customer' FROM {s}.lineage "

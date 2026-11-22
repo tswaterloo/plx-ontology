@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ago, fieldValue, formatMoney, money, objectHref, plainServerNote, readable, safeHref, safeNext, typeLabel, withoutFloatNoise, groupDigits } from "./format";
-import { recordLabel } from "./format";
+import { countedWords, recordLabel } from "./format";
 
 describe("safeHref", () => {
   it("allows same-origin paths and https links only", () => {
@@ -207,5 +207,14 @@ describe("a reliability problem at a glance", () => {
     const mail = "Mail capture against Graph's counts: 3,274,264 of 3,468,189 messages held (94.4%); 1 folder(s) re-listing (3,032 short)";
     expect(problemParts(mail).head).toBe("Mail capture against Graph's counts: 3,274,264 of 3,468,189 messages held (94.4%)");
     expect(problemParts("Backup restore test: last run failed")).toEqual({ head: "Backup restore test: last run failed", more: null });
+  });
+});
+
+describe("countedWords", () => {
+  it("gives a source's parenthesised plural the one its count calls for", () => {
+    expect(countedWords("1 open order(s) affected")).toBe("1 open order affected");
+    expect(countedWords("3 open order(s) affected, 0 lot(s)")).toBe("3 open orders affected, 0 lots");
+    expect(countedWords("2 address(s)")).toBe("2 addresses");
+    expect(readable("1 open order(s) affected")).toBe("1 open order affected");
   });
 });

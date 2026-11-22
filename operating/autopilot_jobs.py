@@ -153,6 +153,10 @@ def catalogue() -> list[str]:
                 if route.get("asked"):
                     continue                  # not exposed by the Portal yet
                 target, fields = route["target"], sorted(route.get("fields") or ())
+            if operation in getattr(adapter, "CHARGE_LINES", {}):
+                fields = tuple(adapter.CHARGE_LINES[operation]["fields"])
+            if operation in getattr(adapter, "ATTACHES", {}):
+                fields = ("attachment (the Attachment record the file is)", "fileName")
             for table in ("DOC_UPDATES", "LINE_UPDATES", "LINE_OPERATIONS"):
                 spec = (getattr(adapter, table, None) or {}).get(operation)
                 if spec:
@@ -179,6 +183,8 @@ def catalogue() -> list[str]:
             line = f"{system} {operation}: target {', '.join(target) or '-'}"
             if fields:
                 line += f"; change {', '.join(fields)}"
+            if operation in getattr(adapter, "PROPOSAL_ONLY", {}):
+                line += " (a person does it after review: never performed)"
             out.append(line)
     out.append("sharepoint document text or cells: plx.edit_document (citation, find/replace "
                "or sheet/cell/value)")

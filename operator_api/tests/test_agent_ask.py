@@ -1356,6 +1356,50 @@ class AgentPath(unittest.TestCase):
                          [po["object_id"], other])
 
 
+class MailAttachmentSource(unittest.TestCase):
+    """``read_source`` takes a byte-pinned mail attachment handle (the plx.read_document path
+    for a mail attachment goes through ``Backend._host_opens`` -> ``read_source``), and only
+    as the reader's own host reads it: a reader the capture's gate does not show the parent
+    message gets nothing. Nothing here replaces ``read_source`` or ``_host_opens``."""
+    PIN = "a" * 64
+    HANDLE = "graph-mail://mbx/msg@ck#attachment=AAA&sha256=" + PIN
+
+    class Host:
+        def __init__(self, sees_parent):
+            self.sees_parent, self.asked = sees_parent, []
+
+        def call(self, tool, arguments):
+            self.asked.append((tool, arguments))
+            if not self.sees_parent:   # the capture's gate: the parent message is not theirs
+                return {"error": {"code": "citation_unresolvable"}}
+            return {"status": "resolved", "citation": arguments["citation"]}
+
+    def ask_for(self, sees_parent):
+        host = self.Host(sees_parent)
+        return aa.AgentAsk(seconds=5, host_for=lambda session: host,
+                           agent_for=lambda on_line: self.fail("no session")), host
+
+    def test_a_reader_who_sees_the_parent_message_reads_it_and_one_who_does_not_is_refused(self):
+        ask, host = self.ask_for(True)
+        self.assertEqual(ask.read_source(object(), self.HANDLE)["status"], "resolved")
+        self.assertEqual(host.asked, [("plx.read", {"citation": self.HANDLE})])
+        ask, host = self.ask_for(False)
+        from operator_api.errors import RecordNotFound
+        with self.assertRaises(RecordNotFound):
+            ask.read_source(object(), self.HANDLE)
+
+    def test_only_a_byte_pinned_attachment_handle_is_taken_from_mail(self):
+        ask, host = self.ask_for(True)
+        for bad in ("graph-mail://mbx/msg@ck",                       # a message
+                    "graph-mail://mbx/msg@ck#attachment=AAA",         # no pin
+                    "graph-mail://mbx/msg@ck#attachment=AAA&sha256=" + "A" * 64,   # not hex
+                    "graph-mail://mbx/msg@ck#attachment=AAA&sha256=" + "a" * 63,
+                    "graph-mail://mbx/msg@ck#attachment=AAA&sha256=" + self.PIN + "&x=1"):
+            with self.subTest(handle=bad), self.assertRaises(KeyError):
+                ask.read_source(object(), bad)
+        self.assertEqual(host.asked, [])
+
+
 class ItemRecheck(unittest.TestCase):
     def test_only_a_captured_original_the_app_cannot_recheck_stays_with_the_host_link(self):
         from operator_api.workspace.object_workspace import ITEM_REFUSED, _withheld

@@ -379,6 +379,10 @@ TEMPLATES: dict[str, tuple[str, str]] = {
                                   "{message:mail_id}/attachments"),
     "graph.message_attachment": (GRAPH, "/v1.0/users/{user:user_id}/messages/"
                                  "{message:mail_id}/attachments/{attachment:mail_id}"),
+    # An attached email (an item attachment): its raw message (MIME), a GET of the document
+    # (``SourceApi.get_document``), the one large-response read besides a file attachment's.
+    "graph.message_attachment_raw": (GRAPH, "/v1.0/users/{user:user_id}/messages/"
+                                     "{message:mail_id}/attachments/{attachment:mail_id}/$value"),
     "graph.drive_delta": (GRAPH, "/v1.0/drives/{drive:drive_id}/root/delta"),
     # Drive search for one term (the oracle's root-first document strata,
     # scripts/eval_oracle_dev.py LiveDocuments.search): a function call on the root,

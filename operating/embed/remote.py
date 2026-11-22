@@ -68,9 +68,10 @@ DEFAULT_REMOTE_DIR = "~/plx-embed"
 def pending_texts(conn: Any, model: str, after: str, limit: int) -> list[tuple[str, str]]:
     """(content_sha, text) of the next ``limit`` hashes after ``after`` still without a
     vector of ``model`` (``store.pending``'s rule: words-only kinds are never embedded)."""
+    from operating.pg import chunk_vectors
     rows = conn.execute(
         "SELECT DISTINCT ON (content_sha) content_sha, header, body FROM search.chunks "
-        "WHERE content_sha > %s AND (embedding IS NULL OR embed_model IS DISTINCT FROM %s) "
+        f"WHERE content_sha > %s AND {chunk_vectors.pending_predicate(conn)} "
         "AND kind <> ALL(%s::text[]) ORDER BY content_sha LIMIT %s",
         (after, model, list(st.WORDS_ONLY_KINDS), limit)).fetchall()
     conn.commit()
@@ -78,18 +79,24 @@ def pending_texts(conn: Any, model: str, after: str, limit: int) -> list[tuple[s
 
 
 def count_pending(conn: Any, model: str) -> int:
+    from operating.pg import chunk_vectors
     row = conn.execute(
-        "SELECT count(DISTINCT content_sha) FROM search.chunks WHERE (embedding IS NULL OR "
-        "embed_model IS DISTINCT FROM %s) AND kind <> ALL(%s::text[])",
+        "SELECT count(DISTINCT content_sha) FROM search.chunks WHERE "
+        f"{chunk_vectors.pending_predicate(conn)} AND kind <> ALL(%s::text[])",
         (model, list(st.WORDS_ONLY_KINDS))).fetchone()
     conn.commit()
     return int(row[0])
 
 
 def stored_sample(conn: Any, model: str, limit: int) -> list[tuple[str, str, np.ndarray]]:
-    rows = conn.execute(
-        "SELECT content_sha, header, body, embedding::text FROM search.chunks "
-        "WHERE embed_model = %s AND embedding IS NOT NULL LIMIT %s", (model, limit)).fetchall()
+    from operating.pg import chunk_vectors
+    sql = ("SELECT c.content_sha, c.header, c.body, v.embedding::text FROM "
+           "search.chunk_vectors v JOIN search.chunks c ON c.kind = v.kind AND "
+           "c.content_sha = v.content_sha WHERE v.embed_model = %s LIMIT %s"
+           if chunk_vectors.narrow(conn) else
+           "SELECT content_sha, header, body, embedding::text FROM search.chunks "
+           "WHERE embed_model = %s AND embedding IS NOT NULL LIMIT %s")
+    rows = conn.execute(sql, (model, limit)).fetchall()
     conn.commit()
     return [(sha, header + "\n\n" + body, np.asarray(json.loads(vec), dtype=np.float32))
             for sha, header, body, vec in rows]
@@ -185,7 +192,10 @@ def check_hello(hello: dict[str, Any], model: str, column_dim: int) -> str | Non
 
 def ssh_argv(host: str, args: argparse.Namespace) -> list[str]:
     remote = (f"cd {args.remote_dir} && HF_HOME={args.remote_dir}/hf HF_HUB_OFFLINE=1 "
-              f"exec venv/bin/python remote_worker.py --model {shlex.quote(args.model_name)} "
+              # oom_score_adj 800: under memory pressure the worker goes before the host's
+              # standby (11-22: an OOM on s7d3d took the standby); a pass resumes from its cursor
+              f"exec choom -n 800 -- venv/bin/python remote_worker.py "
+              f"--model {shlex.quote(args.model_name)} "
               f"--precision {args.precision} --batch {args.batch} "
               f"--memory-fraction {args.memory_fraction}")
     return [*_ssh_base(args), host, remote]
@@ -222,6 +232,10 @@ def open_hosts(args: argparse.Namespace, logs: Path | None) -> list[Host]:
     return hosts
 
 
+def _stdout(event: Any) -> None:
+    print(json.dumps(dict(event)), flush=True)
+
+
 # --- the pass ----------------------------------------------------------------------
 
 class Run:
@@ -250,6 +264,11 @@ class Run:
         self.saved_after = start_after
         self.paused = False
         self._disk_at = -1e9
+        self._low = False
+        # the WAL budget (operating.pg.wal_budget): no request goes out while the standby
+        # is too far behind; the disk is this pass's own --min-free-gb check
+        from operating.pg import wal_budget
+        self.budget = wal_budget.Budget.for_dsn(dsn, job="embed_remote", log=_stdout)
         self.ended: str | None = None
 
     # reader
@@ -291,17 +310,20 @@ class Run:
                 self.reading_done = True
 
     def low_disk(self) -> bool:
-        """Whether the store's disk has less free than ``--min-free-gb`` (read every 10 s):
-        no new request goes out until it has (vectors and their index grow the disk)."""
+        """Whether no new request may go out: the store's disk has less free than
+        ``--min-free-gb`` (read every 10 s; vectors and their index grow the disk) or the
+        WAL budget is paused (the standby too far behind, or its lag unreadable)."""
         now = time.monotonic()
         if now - self._disk_at >= 10:
             self._disk_at = now
             free = shutil.disk_usage(self.args.free_path or self.args.state).free / 1e9
             low = bool(self.args.min_free_gb) and free < self.args.min_free_gb
-            if low != self.paused:
+            if low != self._low:
                 print(json.dumps({"paused": "disk_below_min_free"} if low
                                  else {"resumed": round(free, 1)}), flush=True)
-            self.paused = low
+            self._low = low
+        lagging = self.budget.blocked() is not None
+        self.paused = self._low or lagging
         return self.paused
 
     def take(self) -> tuple[int, list[tuple[str, str]]] | None:
@@ -478,7 +500,8 @@ class Run:
         return {"texts": self.texts, "rows": self.rows, "seconds": round(seconds, 1),
                 "texts_per_second": round(self.texts / seconds, 1) if seconds else 0,
                 "hosts": {h.name: {"texts": h.texts} for h in self.hosts},
-                "hosts_alive": self.alive, "cursor_set": self.saved_after != ""}
+                "hosts_alive": self.alive, "cursor_set": self.saved_after != "",
+                "paused": self.paused, "wal_budget": self.budget.report()}
 
 
 def load_cursor(path: Path, model: str) -> str:

@@ -234,6 +234,21 @@ class Threads(Engine):
                                   may_read=lambda key: False, held=(), decide=lambda c: {})
         self.assertEqual(hidden.get(pt.APPROVAL_KIND, 0), 0)
 
+    def test_open_counts_are_what_a_reader_sees_plus_what_is_hidden_from_them(self):
+        w, _ = self.approval_world()
+        self.run_rules(w)
+        kind = pt.APPROVAL_KIND
+        none_seen = pe.hidden_counts(self.inbox, self.store, kinds=[kind],
+                                     may_read=lambda key: False, held=(), decide=lambda c: {})
+        total = pe.open_counts(self.inbox, self.store, kinds=[kind]) or {}
+        # an off type is counted to nobody; a person's own kinds are nobody else's
+        if total.get(kind):
+            self.assertEqual(total[kind], none_seen.get(kind, 0))
+        else:
+            self.assertEqual(none_seen.get(kind, 0), 0)
+        import tempfile
+        self.assertIsNone(pe.open_counts(tempfile.gettempdir() + "/no-such-inbox.sqlite", self.store, kinds=[kind]))
+
     def kinds(self, *kinds: str, **read) -> list[dict]:
         return self.read(kinds=list(kinds), limit=1000, **read)["gaps"]
 

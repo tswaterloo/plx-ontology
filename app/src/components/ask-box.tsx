@@ -157,7 +157,7 @@ export function spanFor(phrase: { start: number; end: number; text: string }, la
 export function AskBox({
   onSubmit,
   size = "lg",
-  placeholder = "Question about a PO, SO, supplier or lot",
+  placeholder = "Ask a question, or ask for a chart, document or quote",
   autoFocus,
   disabled,
   busy,

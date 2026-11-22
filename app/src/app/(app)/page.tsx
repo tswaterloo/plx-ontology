@@ -14,6 +14,7 @@ import { ReplyCard, ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { LIMIT_MS, Pending, SlowNote, TimedOut, useSlow } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
+import { FeedNote } from "@/components/feed-note";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
 import { HomeAsk } from "@/components/home-start";
@@ -50,7 +51,9 @@ function didntLoad(thing: string, err: unknown): string {
  * you (a kind with dozens open would bury the rest); every one is in Alerts. */
 export const HOME_ROWS = 3;
 const ORDER = ["po_late", "negative_margin", "customer_order_at_risk", "po_due", "eta_slipped", "vendor_no_reply", "vendor_terms_unapplied", "quantity_mismatch", "lot_on_hold", "lot_near_expiry", "quote_accepted_no_order"];
-const SHORT_GROUP: Record<string, string> = { po_late: "Late", po_undated: "No date", po_due: "Due soon" };
+const SHORT_GROUP: Record<string, string> = { po_late: "Late", po_undated: "No date", po_due: "Due soon", lot_on_hold: "Quality holds" };
+/** The alert kind a group's items belong to (the registry's), if its rows say. */
+const kindOfGroup = (g: { rows: QueueRow[] }): string | null => g.rows.find((r) => r.item?.alert_kind)?.item?.alert_kind ?? null;
 /** My work's chips: what the reader does about an item. */
 const VERBS = [
   { verb: "confirm", label: "Confirm" },
@@ -117,7 +120,8 @@ function itemRow(i: BriefingItem, suggestion?: ProactiveSuggestion): QueueRow {
     objectId: i.object_id,
     title: recordLabel(type, i.subject_label ?? ""),
     counterpart: i.counterpart ?? null,
-    line: [summary, amount].filter(Boolean).join(" · "),
+    line: i.section ? summary : [summary, amount].filter(Boolean).join(" · "),
+    figure: i.section ? amount : null,
     days: i.event_type === "po_undated" ? null : (i.days ?? null),
     status: i.amount_suspect ? "suspect" : i.event_type === "po_undated" ? "risk" : /late|negative/.test(i.event_type) ? "late" : "risk",
     href: safeHref(i.open_url) ?? objectHref(type, i.object_id),
@@ -174,6 +178,8 @@ function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: bool
                   <span className="text-muted">No date</span>
                   <OpenRing size={13} />
                 </>
+              ) : row.figure ? (
+                <span className="num font-medium text-fg">{row.figure}</span>
               ) : null}
             </span>
           </span>
@@ -342,7 +348,7 @@ function Today() {
     const bySubject = new Map(suggestions.map((s) => [s.subject.object_id, s]));
     const top = briefing?.status === "read" ? (briefing.items ?? []) : [];
     const itemBy = new Map(top.map((i) => [i.object_id, i]));
-    const out: { type: string; label: string; count: number; rows: QueueRow[]; more: boolean }[] = [];
+    const out: { type: string; label: string; count: number; rows: QueueRow[]; more: boolean; section?: string }[] = [];
     const na = home?.needs_attention;
     const lateList = late?.length ? late : na?.status === "read" ? (na.late_pos ?? []) : [];
     if (lateList.length) {
@@ -355,25 +361,35 @@ function Today() {
     for (const g of briefing?.status === "read" ? (briefing.groups ?? []) : []) {
       if (g.event_type === "po_late") continue;
       const seen = new Set<string>();
-      const rows = [...top.filter((i) => i.event_type === g.event_type), ...(pages[g.event_type]?.items ?? [])]
+      // a gathered section lists its biggest few as the briefing sent them, never pages of the rest
+      const rows = [...top.filter((i) => i.event_type === g.event_type), ...(g.section ? [] : (pages[g.event_type]?.items ?? []))]
         .filter((i) => !homeOnly || i.home)
         .filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)))
         .map((i) => itemRow(i, bySubject.get(i.object_id)));
       // the group's count is every alert of its kind firing for you (the count Alerts shows),
       // never just the rows read so far: Home said 25 below cost while Alerts said 65
-      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: Math.max(g.count, rows.length), rows, more: rows.length < g.count });
+      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: Math.max(g.count, rows.length), rows, more: rows.length < g.count && !g.section, section: g.section ?? undefined });
     }
     return out.sort((a, b) => rankOf(a.type) - rankOf(b.type));
   }, [briefing, late, home, suggestions, pages]);
 
+  // what needs a person, one item each; the groups the registry gathers into a section
+  // (Financials: a count and the biggest few, the full list in Alerts) stand apart from it
+  const needsGroups = useMemo(() => groups.filter((g) => !g.section), [groups]);
+  const financialGroups = useMemo(() => groups.filter((g) => g.section === "financials"), [groups]);
+  // a kind with prepared cards of its own (a hold that blocks an order) lists them in the
+  // kind's one section, first, not in a second section beside it
+  const [heldN, setHeldN] = useState<Record<string, number>>({});
+  const mergedKinds = useMemo(() => (supplier ? [] : [...new Set(needsGroups.map(kindOfGroup).filter((k): k is string => !!k))]), [needsGroups, supplier]);
   const bySupplier = supplier
-    ? groups.map((g) => ({ ...g, rows: g.rows.filter((r) => r.counterpart === supplier) })).filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length, more: false }))
-    : groups;
+    ? needsGroups.map((g) => ({ ...g, rows: g.rows.filter((r) => r.counterpart === supplier) })).filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length, more: false }))
+    : needsGroups;
   const capped = bySupplier.map((g) =>
     g.type === "po_late" || opened[g.type] || g.rows.length <= HOME_ROWS ? { ...g, folded: 0 } : { ...g, rows: g.rows.slice(0, HOME_ROWS), folded: g.rows.length - HOME_ROWS },
   );
   const visible = filter === "all" ? capped : capped.filter((g) => verbOf(g) === filter);
-  const flat = useMemo(() => visible.flatMap((g) => g.rows), [visible]);
+  const financialShown = useMemo(() => (filter === "all" && !supplier ? financialGroups : []), [filter, supplier, financialGroups]);
+  const flat = useMemo(() => [...visible, ...financialShown].flatMap((g) => g.rows), [visible, financialShown]);
   const selectedKey = picked ?? (desktop ? flat[0]?.key ?? null : null);
   const selected = flat.find((r) => r.key === selectedKey) ?? groups.flatMap((g) => g.rows).find((r) => r.key === selectedKey) ?? null;
 
@@ -454,7 +470,7 @@ function Today() {
   // the one count, shared with the sidebar: late, alerts, replies you owe and prepared items;
   // unknown (null) until every part is read, and while any part failed (never a partial number)
   const everyRead = !loading && !error && !!briefing && briefing.status === "read" && late !== null && replies !== null && !repliesError && queued !== null;
-  const total = everyRead ? groups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared + preparedAlerts : null;
+  const total = everyRead ? needsGroups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared + preparedAlerts : null;
   useEffect(() => {
     if (!supplier) publishNeedsCount(total);
   }, [total, supplier]);
@@ -527,13 +543,16 @@ function Today() {
 
       {!supplier && <HomeAsk className="shrink-0 px-5 pt-3" />}
       <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="shrink-0 px-5 py-1.5" />
+      <FeedNote feed="reply_drafts" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
+      <FeedNote feed="autopilot" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
+      <FeedNote feed="late_pos" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing && !briefingError && !error ? { "data-pending": "" } : {})}>
         <SignedInFirstWeek />
         {/* prepared work is its own chip (Confirm): listed under All and Confirm, never under
             another verb, so All is the sum of the chips; kept mounted so its count stays read */}
         {!supplier && !error && (
           <div hidden={filter !== "all" && filter !== "confirm" && filter !== "decide"}>
-            <AssistQueue onCount={setQueued} only={filter === "confirm" ? "confirm" : filter === "decide" ? "alerts" : undefined} />
+            <AssistQueue onCount={setQueued} except={mergedKinds} only={filter === "confirm" ? "confirm" : filter === "decide" ? "alerts" : undefined} />
           </div>
         )}
         {/* sections no chip counts: under All only (a chip lists what its count says) */}
@@ -555,7 +574,7 @@ function Today() {
           <div className="px-5 pt-3" data-testid="my-replies">
             {repliesError ? <LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /> : replies ? <ReplyList triage={replies} selectedId={replyShown?.id} onSelect={desktop ? setReplyPick : undefined} states={states} onDone={done} /> : <Pending label="Reading your inbox" />}
           </div>
-        ) : groups.length === 0 && !(othersListed && !briefingError && briefing?.status === "read") ? (
+        ) : needsGroups.length === 0 && !(othersListed && !briefingError && briefing?.status === "read") ? (
           <div className="px-5 py-10 text-[13px] text-muted">
             {briefingError ? (
               <LoadProblem message={briefingError} onRetry={loadBriefing} />
@@ -581,11 +600,25 @@ function Today() {
                     </Link>
                   ) : (
                     <>
-                      {g.label} <span className="font-normal text-faint num">{g.count}</span>
+                      {g.label} <span className="font-normal text-faint num">{g.count + (mergedKinds.includes(kindOfGroup(g) ?? "") ? (heldN[kindOfGroup(g) ?? ""] ?? 0) : 0)}</span>
                     </>
                   )}
                 </h2>
               </div>
+              {!supplier && (() => {
+                const kind = kindOfGroup(g);
+                if (!kind || needsGroups.find((x) => kindOfGroup(x) === kind)?.type !== g.type) return null;
+                const held = heldN[kind] ?? 0;
+                return (
+                  <div hidden={filter !== "all" && filter !== "decide"}>
+                    {held > 0 && <p className="px-5 pt-0.5 text-[12px] text-muted">Holding up an order</p>}
+                    <div className="px-5">
+                      <AssistQueue kind={kind} onKind={(n) => setHeldN((x) => (x[kind] === n ? x : { ...x, [kind]: n }))} />
+                    </div>
+                    {held > 0 && <p className="px-5 pt-2 text-[12px] text-muted">Not holding an order we found</p>}
+                  </div>
+                );
+              })()}
               <ul className="px-2">
                 {g.rows.map((r, n) => (
                   <Row key={r.key} row={r} on={!replyShown && r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} testId={g.type === "po_late" && n === 0 && !supplier ? "stat-oldest" : undefined} />
@@ -616,6 +649,34 @@ function Today() {
               )}
             </div>
           ))
+        )}
+        {filter === "all" && !supplier && !error && !loading && financialGroups.length > 0 && (
+          <section aria-label="Financials" data-testid="home-financials">
+            <div className="sticky top-0 z-10 flex h-9 items-end bg-list px-5 pb-1.5">
+              <h2 className="text-[12px] font-medium text-muted">
+                Financials <span className="font-normal text-faint num">{financialGroups.reduce((n, g) => n + g.count, 0)}</span>
+              </h2>
+            </div>
+            {financialGroups.map((g) => {
+              const kind = g.rows.find((r) => r.item?.alert_kind)?.item?.alert_kind;
+              return (
+                <div key={g.type} className="pb-2" data-testid={`financials-${g.type}`}>
+                  <div className="flex items-baseline gap-2 px-5 pt-1 text-[12px] text-muted">
+                    <span className="text-fg/80">{g.label}</span>
+                    <span className="num text-faint">{g.count}</span>
+                    <Link href={kind ? `${ALERTS_HREF}#kind-${kind}` : ALERTS_HREF} className="ml-auto font-medium hover:text-fg">
+                      {g.count > g.rows.length ? `All ${g.count}` : "In Alerts"}
+                    </Link>
+                  </div>
+                  <ul className="px-2">
+                    {g.rows.map((r) => (
+                      <Row key={r.key} row={r} on={!replyShown && r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} />
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </section>
         )}
         {alertsReading && groups.length > 0 && <Pending label="Reading your alerts" className="px-5 pt-2" testId="alerts-reading" />}
         {briefing?.status === "read" && briefing.count > 0 && briefing.watching_count !== 0 && groups.length > 0 && (

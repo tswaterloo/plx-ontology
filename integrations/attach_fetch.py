@@ -70,6 +70,10 @@ MAX_TRIES = 3
 MAX_REQUEUES = 20   # throttled or transient answers of one row within one run
 MIN_IMAGE_BYTES = 20_000
 DEFAULT_MIN_FREE_BYTES = 30 << 30
+# attached emails (22,822 on 11-22, 14.4 GB before compression) stop when /data would fall under
+# this (the standby copy's guard drops the standby at 65 GB)
+ITEM_MIN_FREE_BYTES = 75 << 30
+ITEM_KIND = "#microsoft.graph.itemAttachment"
 MESSAGE_SELECT = ("id,changeKey,parentFolderId,internetMessageId,from,sender,"
                   "toRecipients,ccRecipients,bccRecipients")
 
@@ -106,6 +110,14 @@ def read_key(digest: str, metadata: Mapping[str, Any]) -> str:
     type and name, so two names of the same bytes are read once each."""
     return sha256(json.dumps([digest, metadata.get("content_type"), metadata.get("name")],
                              ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _is_item(row: Any) -> bool:
+    """Whether a work row is an attached email (a Graph item attachment)."""
+    try:
+        return json.loads(row["metadata"]).get("kind") == ITEM_KIND
+    except (TypeError, ValueError, AttributeError):
+        return False
 
 
 def blob_file(root: Path, digest: str) -> Path:
@@ -428,6 +440,7 @@ class Downloader:
                  threads: int = 64, per_mailbox: int = 1, batch: bool = True,
                  batch_size: int = 4,
                  min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+                 item_min_free_bytes: int = ITEM_MIN_FREE_BYTES,
                  free_bytes: Callable[[Path], int] | None = None,
                  clock: Callable[[], float] = time.monotonic) -> None:
         from .graph_evidence import MAX_ATTACHMENT_BYTES
@@ -442,6 +455,7 @@ class Downloader:
         self.threads, self.per_mailbox, self.batch = threads, per_mailbox, batch
         self.max_bytes = MAX_ATTACHMENT_BYTES
         self.min_free = min_free_bytes
+        self.item_min_free = item_min_free_bytes
         self.free = free_bytes or (lambda path: shutil.disk_usage(path).free)
         self.clock = clock
         self.boxes: dict[str, Any] = {}
@@ -578,6 +592,14 @@ class Downloader:
                 else:
                     passed.add(row["attachment_id"] + "\0" + mid)
         todo = [row for row in rows if row["attachment_id"] + "\0" + row["message_id"] in passed]
+        # attached emails (item attachments): the raw message, one GET each (never a $batch)
+        items = [row for row in todo if _is_item(row)]
+        if items:
+            got, more, wait = self._item_rows(box, items)
+            settled += got
+            again += more
+            back_off = max(back_off or 0, wait or 0) or back_off
+            todo = [row for row in todo if not _is_item(row)]
         # attachment GETs: small ones batched up to BATCH_RAW_BYTES, a large one alone
         groups: list[list[sqlite3.Row]] = []
         current_group: list[sqlite3.Row] = []
@@ -634,6 +656,61 @@ class Downloader:
                     continue
                 settled.append((row, self._decoded(row, body, decode_file_attachment,
                                                    SourceUnavailable)))
+        return settled, again, back_off
+
+    def _item_rows(self, box: Any, rows: list[sqlite3.Row]
+                   ) -> tuple[list[tuple[sqlite3.Row, dict[str, Any]]], list[sqlite3.Row],
+                              float | None]:
+        """Attached emails of one mailbox: each one's raw message by the guarded document
+        read (``graph.message_attachment_raw``, GET only), stored content-addressed like a
+        file attachment and read as ``<subject>.eml`` (``message/rfc822``). The disk floor is
+        checked before each one (``item_min_free_bytes``: it stops, rows wait as they were);
+        a size past the attachment cap is ``exceeds_cap``."""
+        import hashlib
+        from . import live_source_grammar as grammar
+        from .live_source_guard import SourceNotFound, SourceUnavailable
+        settled: list[tuple[sqlite3.Row, dict[str, Any]]] = []
+        again: list[sqlite3.Row] = []
+        back_off = None
+        for row in rows:
+            if self.free(self.fetch.root) < max(self.min_free, self.item_min_free):
+                again.append(row)
+                continue
+            meta = json.loads(row["metadata"])
+            size = meta.get("size")
+            if isinstance(size, int) and size > self.max_bytes:
+                settled.append((row, {"status": FILLED, "content_status": "exceeds_cap"}))
+                continue
+            self._count("requests")
+            try:
+                content = self.api.get_document(
+                    grammar.url("graph.message_attachment_raw", None, user=box.object_id,
+                                message=row["message_id"], attachment=row["attachment_id"]),
+                    max_bytes=self.max_bytes)
+            except SourceNotFound:
+                settled.append((row, {"status": NOT_VISIBLE}))
+                continue
+            except SourceUnavailable as exc:
+                status = getattr(exc, "http_status", None)
+                if status in (None, 429, 502, 503, 504):
+                    again.append(row)
+                    if status == 429:
+                        self._count("throttled")
+                        back_off = max(back_off or 0, getattr(exc, "retry_after_seconds", None)
+                                       or 10.0)
+                elif "exceeds" in str(exc):
+                    settled.append((row, {"status": FILLED, "content_status": "exceeds_cap"}))
+                else:
+                    settled.append((row, {"status": LEFT}))
+                continue
+            digest = self.fetch.put_bytes(content)
+            name = str(meta.get("name") or "attached message").strip()[:200] or "attached message"
+            read_meta = {**meta, "name": name if name.lower().endswith(".eml") else name + ".eml",
+                         "content_type": "message/rfc822", "size": len(content),
+                         "bytes": len(content), "content_sha256": digest}
+            self._count("bytes", len(content))
+            settled.append((row, {"status": FETCHED, "content_sha256": digest,
+                                  "read_meta": read_meta}))
         return settled, again, back_off
 
     def _decoded(self, row: sqlite3.Row, body: Any, decode: Callable[..., Any],
@@ -1326,7 +1403,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     down.add_argument("--no-batch", action="store_true")
     down.add_argument("--limit", type=int, default=None)
     down.add_argument("--min-free-gb", type=float, default=DEFAULT_MIN_FREE_BYTES / (1 << 30))
+    down.add_argument("--item-min-free-gb", type=float, default=ITEM_MIN_FREE_BYTES / (1 << 30),
+                      help="attached emails stop when /data would fall under this")
     down.add_argument("--progress-seconds", type=float, default=60.0)
+    reopen = sub.add_parser("reopen-items", help="list attached emails (item attachments) "
+                            "again as deferred, so plan/download/read/apply fetch them")
+    reopen.add_argument("--state-dir", required=True, help="the workbench state (mail store)")
+    reopen.add_argument("--limit", type=int, default=None)
     read = sub.add_parser("read", help="read the fetched bytes (text layer, OCR)")
     read.add_argument("--fetch-dir", required=True)
     read.add_argument("--budget-seconds", type=float, required=True)
@@ -1362,6 +1445,15 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     status.add_argument("--fetch-dir", required=True)
     args = parser.parse_args(argv)
 
+    if args.command == "reopen-items":
+        from .capture_mail import MailCaptureStore
+        # the one writer of the mail store: run between ingest's runs (it holds the store's lock)
+        store = MailCaptureStore(args.state_dir)
+        try:
+            _print({"ok": True, "reopened": store.reopen_item_attachments(args.limit)})
+        finally:
+            store.close()
+        return 0
     if args.command == "status":
         fetch = FetchStore(args.fetch_dir, read_only=True)
         out = fetch.counts()
@@ -1401,11 +1493,11 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         mail = withheld = None
         if args.state_dir is not None:
             from .capture_mail import MailCaptureStore
-            from .people_exclusion import PeopleExclusion
+            from .people_capture import capture_guard
             mail = MailCaptureStore.open_read_only(args.state_dir, timeout=60)
             # Reuse of the mail store's readings, fail-closed like plan-stored: no
             # exclusion decided, no reuse (every download is read).
-            guard = PeopleExclusion.from_env(env_in)
+            guard = capture_guard(env_in)
             withheld = None if guard.unavailable else mail.withheld_mailboxes(guard)
         _scrubbed_environment()
         if args.recap:
@@ -1438,8 +1530,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     if args.command in ("plan-stored", "plan-dropped"):
         # The people exclusion from the environment, fail-closed: a withheld mailbox's
         # files are never listed (and ingest checks again before applying a reading).
-        from .people_exclusion import PeopleExclusion
-        guard = PeopleExclusion.from_env(env_in)
+        from .people_capture import capture_guard
+        guard = capture_guard(env_in)
         withheld = None if guard.unavailable else mail.withheld_mailboxes(guard)
         if withheld is None:
             _print({"ok": False, "error": "people_exclusion_unavailable"})
@@ -1464,7 +1556,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         return 2
     audience = LiveSourceAudience.from_file(args.live_audience)
     env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
+    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60),
+                                  capture=True)
     reader = GraphMailReader(api, audience)
     actor = Actor(audience.tenant, frozenset({args.principal or CAPTURE_PRINCIPAL}),
                   "restricted")
@@ -1480,7 +1573,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     downloader = Downloader(fetch, reader, actor, threads=args.threads,
                             per_mailbox=args.per_mailbox, batch=not args.no_batch,
                             batch_size=args.batch_size,
-                            min_free_bytes=int(args.min_free_gb * (1 << 30)))
+                            min_free_bytes=int(args.min_free_gb * (1 << 30)),
+                            item_min_free_bytes=int(args.item_min_free_gb * (1 << 30)))
     with reader.directory_cache():
         out = downloader.run(fetch.todo(args.limit), withheld=withheld,
                              budget_seconds=args.budget_seconds, progress=_print,

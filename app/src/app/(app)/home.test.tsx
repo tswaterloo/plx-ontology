@@ -228,6 +228,65 @@ describe("Home counts an alert kind the way Alerts does", () => {
   });
 });
 
+describe("Home gathers the registry's Financials into one compact section", () => {
+  it("lists a count and the biggest few with their money, opens the full list, and keeps them out of what needs you", async () => {
+    ok.on = true;
+    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
+    const money = (n: number, id: string, basis: string, event: string) => ({ id, event_type: event, object_type: "Customer", object_id: `Customer:${id}`, subject_label: `Cust ${n}`, summary: `Cust ${n} paid 80% of cost.`, home: true, section: "financials", alert_kind: "margin_loss", rank: n, amount: { amount: String(6576.48 * n), currency: "CAD" }, amount_basis: basis });
+    ok.briefing = {
+      status: "read", count: 71, home_count: 4, watching_count: 0,
+      items: [
+        { id: "l1", event_type: "lot_on_hold", object_type: "Batch", object_id: "Batch:1", subject_label: "BC-1", summary: "Batch BC-1 is on quality hold.", home: true, rank: 1, alert_kind: "quality_hold" },
+        ...[3, 2, 1].map((n) => money(n, `m${n}`, "below_cost", "price_below_cost")),
+      ],
+      groups: [
+        { event_type: "lot_on_hold", label: "Batch on quality hold", count: 4, in_top: 1, new_since_visit: 0, acknowledged: 0 },
+        { event_type: "price_below_cost", label: "Customer price below cost", count: 67, in_top: 3, new_since_visit: 0, acknowledged: 0, section: "financials" },
+      ],
+    };
+    ok.replies = { total: 0, items: [] };
+    render(<HomePage />);
+    const box = await screen.findByTestId("home-financials");
+    expect(within(box).getByRole("heading", { name: /Financials\s*67/ })).toBeInTheDocument();
+    // the biggest few in the order given, each with its money and thousands separators
+    const rows = within(box).getAllByTestId("briefing-item");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent("$19,729.44 CAD");
+    // the full list is one click away and says how many it holds
+    expect(within(box).getByRole("link", { name: "All 67" }).getAttribute("href")).toBe("/?show=alerts#kind-margin_loss");
+    // needs you: the batches only (4); the 67 are not 67 things to act on
+    expect(screen.getByRole("heading", { name: /Quality holds\s*4/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /below cost/i })).toBeNull();
+    expect(screen.getAllByTestId("briefing-item")).toHaveLength(4);
+    ok.on = false;
+  });
+});
+
+describe("One section for holds", () => {
+  it("lists a prepared hold card in its kind's section, first, and nowhere else", async () => {
+    ok.on = true;
+    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
+    ok.briefing = {
+      status: "read", count: 1, home_count: 1,
+      items: [{ id: "l1", event_type: "lot_on_hold", object_type: "Batch", object_id: "Batch:1", subject_label: "BC-1", summary: "Batch BC-1 is on quality hold.", home: true, rank: 1, alert_kind: "quality_hold" }],
+      groups: [{ event_type: "lot_on_hold", label: "Batch on quality hold", count: 1, in_top: 1, new_since_visit: 0, acknowledged: 0 }],
+    };
+    ok.replies = { total: 0, items: [] };
+    ok.drafts = [{ item_id: "q1", sender: "", channel: "system", subject: "QC hold or fail", message: "", kind: "alert", alert_kind: "quality_hold", to: [], cc: [], body: "", edited: false, summary: "Lot BC-9 is on-hold; 1 open order(s) affected.", ask: "Lot BC-9 is on-hold; 1 open order(s) affected.", facts: [], created_at: "2026-11-21T12:00:00Z" }];
+    render(<HomePage />);
+    await screen.findByRole("heading", { name: /Quality holds/ });
+   
+    const card = await screen.findAllByText(/Lot BC-9 is on-hold; 1 open order affected/);
+    expect(card).toHaveLength(1);
+    const section = screen.getByRole("heading", { name: /Quality holds/ }).parentElement!.parentElement!;
+    expect(section).toHaveTextContent("Holding up an order");
+    expect(section).toHaveTextContent("Lot BC-9");
+    expect(screen.queryByTestId("assist-queue")).toBeNull();
+    ok.drafts = [];
+    ok.on = false;
+  });
+});
+
 describe("The visit is marked seen after the suggestion cards have settled", () => {
   it("sends no mark while the cards are still being read (the mark makes their kept read stale)", async () => {
     ok.on = true;

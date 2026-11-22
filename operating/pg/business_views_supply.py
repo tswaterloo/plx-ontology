@@ -15,8 +15,8 @@ from decimal import Decimal
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from operating.pg.business_views import (
-    Cell, MERGE_RULES_DOC, doc_type_doc, PARTY_MERGE, PILOT_DOC, Reader, Rec, Row, Thing, _text,
-    aging_bucket, binding_rank, cents, fill, handle_col, money, money_of, name_linked,
+    CATEGORY_DOC, Cell, MERGE_RULES_DOC, doc_type_doc, PARTY_MERGE, PILOT_DOC, Reader, Rec, Row, Thing, _text,
+    aging_bucket, binding_rank, cents, fill, fill_category, handle_col, money, money_of, name_linked,
     party_codes, party_handle, pick, pilot_binding, to_currency, to_date, to_decimal,
     unique_things, view)
 
@@ -42,7 +42,7 @@ def _product_row(thing: Thing) -> Row:
         fill(row, thing, "item_code", "erp_code")
     if fill(row, thing, "item_type", "product_type") is None:
         fill(row, thing, "item_type", "bc_item_type")
-    fill(row, thing, "category", "item_category")
+    fill_category(row, thing)
     return row
 
 
@@ -67,7 +67,7 @@ def _on_hand(row: Row, thing: Thing) -> bool:
       "by identity links): finished goods, bulk, raw materials and packaging.",
       [("name", "text", "item name"), ("item_code", "text", "item code"),
        ("item_type", "text", "item type (bulk, finished, raw material, ...; BC: Inventory)"),
-       ("category", "text", "item category"),
+       ("category", "text", "item category: " + CATEGORY_DOC),
        ("uom", "text", "unit of measure"),
        ("active", "text", "Portal active flag"), ("blocked", "text", "blocked flag"),
        ("unit_cost", "money", "unit cost (BC)"), ("unit_price", "money", "unit price (BC)"),
@@ -810,7 +810,7 @@ PURCHASE_INVOICE_PROPS = ("bc_number", "vendor_invoice_number", "order_number",
 
 
 def _ap_vendors(rd: Reader) -> dict[str, Thing]:
-    recs = rd.records("RelSageApVendor", ("vendname", "vendorid", "shortname"))
+    recs = rd.records("RelSageApVendor", ("vendname", "vendorid", "shortname", "idgrp"))
     return {oid: Thing([rec]) for oid, rec in recs.items()}
 
 
@@ -835,6 +835,8 @@ def _ap_row(rd: Reader, rec: Rec, vendors: Mapping[str, Thing],
     fill(row, thing, "po_number", "idponbr")
     fill(row, thing, "description", "descinvc")
     vendor = name_linked(row, owner.get(rec.object_id) or [], vendors, "supplier", "vendname")
+    if vendor is not None:
+        fill(row, vendor, "vendor_group", "idgrp")
     suppliers, things, of_vendor = vendor_suppliers(rd)
     party_handle(row, "supplier", one_party(
         row, of_vendor.get(vendor.rep.object_id, []) if vendor is not None else [], things))
@@ -870,6 +872,14 @@ def one_party(row: Row, ends: Sequence[tuple[str, str]], things: Mapping[str, Th
     return thing
 
 
+VENDOR_GROUP_DOC = ("the Sage AP vendor group of the document's vendor (idgrp: DEF, USD, PAY, PAYACH, "
+                    "CONTU). It is how Sage books and pays the vendor, NOT a trade flag: trade "
+                    "suppliers and non-trade payees (card issuers, tax bodies, utilities, "
+                    "individuals' expenses) share DEF and USD, PAYACH pays by ACH, PAY is "
+                    "payroll. Sage states no trade / non-trade split: separate them by supplier "
+                    "name, never by group alone")
+
+
 @view("supplier_invoices", "Every supplier document once: Sage AP documents of every kind "
       "(invoices, debit and credit notes, interest, prepayments, payments; paid or not: "
       "document_type tells them apart, an invoice count is document_type = 'invoice') and "
@@ -884,6 +894,7 @@ def one_party(row: Row, ends: Sequence[tuple[str, str]], things: Mapping[str, Th
        ("paid", "boolean", "fully paid: Sage swpaid 1, else (BC) amount_due 0"),
        ("po_number", "text", "the PO it bills, when stated"),
        ("description", "text", "Sage document description (descinvc)"),
+       ("vendor_group", "text", VENDOR_GROUP_DOC),
        ("pilot", "boolean", PILOT_DOC),
        handle_col("supplier", "a Sage document's vendor (its RelSageApOpenDocument.vendor link) "
                   "and that vendor's settled link to a Portal or BC supplier "
@@ -945,6 +956,7 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         "31-60, 61-90, over 90"),
        ("po_number", "text", "the PO it bills, when stated"),
        ("description", "text", "Sage document description (descinvc)"),
+       ("vendor_group", "text", VENDOR_GROUP_DOC),
        ("as_of", "date", "the day the aging was computed"),
        handle_col("supplier", "a Sage document's vendor (its RelSageApOpenDocument.vendor link) "
                   "and that vendor's settled link to a Portal or BC supplier "

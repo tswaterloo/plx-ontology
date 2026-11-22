@@ -3090,7 +3090,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     store = open_store(state_dir, audience, clock=store_clock)
     try:
         retry = BoundedBackoff(budget_seconds=60, **({"sleep": sleep} if sleep else {}))
-        api, transport = build_graph(environ, sender=sender, retry=retry)
+        api, transport = build_graph(environ, sender=sender, retry=retry, capture=True)
         env_tenant = (environ if environ is not None else os.environ).get(
             "MICROSOFT_GRAPH_TENANT_ID")
         capture = TeamsCapture(store, api, audience, actors["capture"],

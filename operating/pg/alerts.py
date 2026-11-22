@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from operating.pg import business_views as bv
+from operating.po_pilot import bc_pilot_po_sql
 from operating.pg.people_excluded import internal_domains
 
 KINDS_FILE = Path(__file__).resolve().parents[1] / "alert_kinds.json"
@@ -86,6 +87,11 @@ class Rule:
     # (table, column) the sentence also shows from a table other than ``cols_of`` (a line's
     # date on a header's card): tested against that column's markings like ``shows``
     also_shows: tuple[tuple[str, str], ...] = ()
+    # the money the alert is about, in the currency its topic ends with, as SQL over the
+    # window's sums (``below`` cost minus revenue on its lines under cost, ``q`` and ``rev``
+    # the last window's quantity and revenue, ``prior_price`` the window before's price):
+    # Home's Financials section lists the biggest first (page_reads ``alerts_impact_top``)
+    impact: str = ""
 
     @property
     def shown_cols(self) -> tuple[str, ...]:
@@ -170,6 +176,12 @@ _ETA_RE = (r"\m(eta|etas|delivery|deliver(ed|ing)?|ship(s|ping|ment|ped)?|dispat
            r"arriv(e|al|ing)|tracking|status|update)\M")
 _FORWARD_RE = r"^\s*(\[[^\]]{1,30}\]|[A-Za-z]{2,4}(\[[0-9]+\])?\s*:\s*)*(FW|FWD|WG|TR|RV)\s*:"
 _REPLY_RE = r"^\s*((\[[^\]]{1,30}\]|[A-Za-z]{2,4}(\[[0-9]+\])?\s*:\s*)*)?(RE|AW|SV|VS|R|RIF|ANTW)\s*:"
+# A line whose booked cost is more than this many times its revenue is a wrong unit cost in
+# Sage (a case cost on an each line), not a price below cost: measures.json's cost_looks_wrong
+# ("margin < -4 * revenue") and its gross-margin and loss measures leave the same lines out
+# (operating/tests/test_po_pilot.py holds the two together).
+COST_WRONG_TIMES = 5
+COST_LOOKS_WRONG_SQL = f"(l.revenue > 0 AND l.margin < -{COST_WRONG_TIMES - 1} * l.revenue)"
 MARGIN_BASES = ("same_currency", "cost_converted_at_invoice_rate")   # a decided line margin
 
 
@@ -188,7 +200,8 @@ LATE_PO = Rule(
     "'is', r.days_late, CASE WHEN r.days_late = 1 THEN 'day' ELSE 'days' END, "
     "'past its requested date of', to_char(r.requested_date, 'Mon DD, YYYY') || '.'), "
     "(r.requested_date + 1)::timestamptz, " + ONE + " "
-    "FROM {s}.purchase_orders r WHERE r.verdict = 'late' AND r.days_late > {p[grace]}",
+    "FROM {s}.purchase_orders r WHERE r.verdict = 'late' AND r.days_late > {p[grace]} "
+    "AND NOT " + bc_pilot_po_sql("r"),
     "the PO is received, closed or cancelled, or its date moves (its verdict is no longer late)",
     "proactive_purchasing late_or_unconfirmed_po (po_late)",
     shows=("po_number", "supplier", "days_late", "requested_date"),
@@ -207,7 +220,8 @@ DUE_PO = Rule(
     "'is due today and the supplier has not confirmed a date.'), "
     "r.requested_date::timestamptz, " + ONE + " "
     "FROM {s}.purchase_orders r WHERE r.status = 'open' AND r.verdict IS DISTINCT FROM 'late' "
-    "AND r.requested_date = {p[day]}::date AND r.promised_date IS NULL",
+    "AND r.requested_date = {p[day]}::date AND r.promised_date IS NULL "
+    "AND NOT " + bc_pilot_po_sql("r"),
     "the day passes (late, if still open: po_late), the supplier confirms a date, or the PO is "
     "received, closed or cancelled",
     "proactive_purchasing late_or_unconfirmed_po, not late yet (briefing po_due)",
@@ -230,7 +244,7 @@ UNDATED_PO = Rule(
     "r.order_date::timestamptz, " + ONE + " "
     "FROM {s}.purchase_orders r WHERE r.status = 'open' AND r.verdict = 'unknown' "
     "AND r.verdict_reason = 'no_requested_date' "
-    "AND r.order_date >= {p[day]}::date - {p[active]}",
+    "AND r.order_date >= {p[day]}::date - {p[active]} AND NOT " + bc_pilot_po_sql("r"),
     "a requested-by, promised or lead-time date is recorded, or the PO is received, closed "
     "or cancelled",
     "proactive_engine_purchasing undated_po (po_undated)",
@@ -730,7 +744,7 @@ _LINES = (
     "coalesce(l.item_name, l.item_code) AS item_name, l.quantity_unit AS unit, "
     "l.revenue_currency AS cur, l.quantity AS q, l.revenue AS amt, l.invoice_date AS day, "
     "CASE WHEN l.margin_basis IN ('same_currency', 'cost_converted_at_invoice_rate') "
-    "THEN l.revenue - l.margin END AS floor, "
+    "AND NOT " + COST_LOOKS_WRONG_SQL + " THEN l.revenue - l.margin END AS floor, "
     "l.access_class, l.ai_ok, l.col_class, l.handle FROM {s}.sales_invoice_lines l "
     "WHERE l.pilot IS NOT TRUE AND l.customer_handle IS NOT NULL AND l.item_code IS NOT NULL "
     "AND l.quantity > 0 AND l.quantity_unit IS NOT NULL AND l.revenue > 0 "
@@ -765,7 +779,7 @@ PRICE_BELOW_COST = Rule(
     "price_consistency (price_below_cost)",
     shows=("revenue", "cost", "margin", "unit_price", "unit_cost") + _PRICE_SHOWS,
     cols_of="sales_invoice_lines",
-    params={"days": PRICE_DAYS, "tolerance": COST_TOLERANCE})
+    params={"days": PRICE_DAYS, "tolerance": COST_TOLERANCE}, impact="below")
 
 # far below typical: the other customers' lines of the series, weighted by quantity, give a
 # median and 10th percentile; with MIN_CUSTOMERS others, a price under that percentile AND
@@ -810,7 +824,8 @@ PRICE_BELOW_TYPICAL = Rule(
 CUSTOMER_PRICE_DROP = Rule(
     "customer_price_drop", "price_exception",
     "A customer's own price for one item, unit and currency down 10% or more against the "
-    "180 days before.",
+    "180 days before (an item mostly booked at no cost, a service or miscellaneous line, is "
+    "not judged).",
     "customers", ("sales_invoice_lines", "customers"),
     "WITH " + _LINES + ", "
     + _LINES.replace("lines AS", "prior AS", 1).replace("paid AS", "was AS", 1)
@@ -824,12 +839,17 @@ CUSTOMER_PRICE_DROP = Rule(
         "x.classes || c.access_class", "x.classes || w.classes || c.access_class").replace(
         "x.cols, x.srcs", "x.cols || w.cols, x.srcs || w.srcs") +
     "FROM paid x JOIN was w USING (cust, item, unit, cur) "
+    # a code its system mostly books at no cost (labour hours, a miscellaneous non-stock
+    # line) prices different things under one code: its "price" has no meaning to drop
+    "JOIN (SELECT item, unit, cur FROM lines GROUP BY 1, 2, 3 "
+    "HAVING count(*) FILTER (WHERE floor > 0) * 2 >= count(*)) k USING (item, unit, cur) "
     "JOIN {s}.customers c ON c.handle = x.cust "
     "WHERE x.price <= w.price * (1 - {p[drop]}::numeric)",
     "the customer's price comes back, or the lines leave the window",
     "price_consistency (customer_price_drop)",
     shows=("revenue", "unit_price") + _PRICE_SHOWS, cols_of="sales_invoice_lines",
-    params={"days": PRICE_DAYS, "drop": OWN_DROP})
+    params={"days": PRICE_DAYS, "drop": OWN_DROP},
+    impact="q * prior_price - rev")
 
 # per customer and currency, recent order value against the baseline run-rate (scaled to the
 # same days); only customers with DEMAND_MIN_ORDERS baseline orders and a baseline value at

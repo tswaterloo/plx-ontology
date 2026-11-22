@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview, nextStep } from "@/components/late/overview";
 import { stepWords, TodayDetail, type QueueRow } from "@/components/today-detail";
 import { DoneRing, lateEdge, lateFigure, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
+import { FeedNote } from "@/components/feed-note";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
@@ -458,6 +459,7 @@ export function LateView() {
       {controls}
       {ready && items.length > 0 && <LateGlance items={filtered ? shown : items} />}
       <StaleNote since={staleSince} className="px-5 py-1.5" />
+      <FeedNote feed="late_pos" />
       <div ref={listRef} className="min-h-0 flex-1 pb-6 lg:overflow-y-auto" data-testid="late-all">
         <div ref={desktop ? undefined : phoneRef}>
           {error ? (

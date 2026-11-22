@@ -39,12 +39,16 @@ const PLACES: { label: string; href: string; hint: string; words: string; ops?: 
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
   { label: "Messages and tasks", href: "/activity", hint: "Work log: each message and task you started, and whether it went out", words: "activity actions messages tasks sent log journal" },
   { label: "Data health", href: "/data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po", ops: true },
-  { label: "Records", href: "/records", hint: "Find a customer, order, supplier or product", words: "records customers orders suppliers products items find" },
+  { label: "Records", href: "/records", hint: "Find a customer, order, invoice, shipment, supplier or product", words: "records customers orders invoices shipments receipts lots suppliers products items find" },
   { label: "Switches", href: "/autopilot", hint: "What gets prepared for you, and Auto", words: "autopilot switches auto assist prepare" },
   { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
   { label: "Work log", href: "/work-log", hint: "What you did, day by day", words: "work log history time saved" },
   { label: "Memory", href: "/memory", hint: "What the Workbench remembers for you", words: "memory remember notes facts" },
   { label: "Templates", href: "/templates", hint: "Reply and document templates", words: "templates drafts replies documents" },
+  { label: "Insights", href: "/insights", hint: "Dashboards: sales, purchasing, receivables and the people tiles", words: "insights dashboards charts tiles measures reports numbers" },
+  { label: "Reliability", href: "/ops", hint: "What is broken now: capture, timers, backups", words: "reliability ops alarms broken capture timers backups health", ops: true },
+  { label: "Trust", href: "/trust", hint: "How often the Workbench was right, on held-out items", words: "trust accuracy scores held-out measured quality", ops: true },
+  { label: "Help", href: "/help", hint: "How to ask, what each screen is for", words: "help guide how to docs questions" },
 ];
 
 export default function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {

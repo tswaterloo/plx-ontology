@@ -261,6 +261,7 @@
    "actionable": true,
    "default": "on",
    "home": true,
+   "prepared_by": ["qc_hold"],
    "roles": [
     "QUALITY",
     "QA",
@@ -1150,6 +1151,7 @@
    "actionable": true,
    "default": "on",
    "home": true,
+   "section": "financials",
    "roles": [
     "SALES",
     "ACCTMGMT",
@@ -1170,6 +1172,7 @@
    "actionable": true,
    "default": "on",
    "home": true,
+   "section": "financials",
    "roles": [
     "SALES",
     "ACCTMGMT",

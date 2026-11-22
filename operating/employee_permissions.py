@@ -681,6 +681,9 @@ class FullReadGrant:
     # policy: the same reads, but its code is not the owner's (``feedback.owner_open``), so
     # the owner's own views (view as, team view, autopilot settings) stay the owner's.
     listed: bool = False
+    # The one owner-only reader (``"owner": true`` on one declared grant): the one reader of what only the owner may read (``EmployeeEntitlement.
+    # owner``; ``access_classes.OWNER_KEY``). A policy marking more than one marks none.
+    owner: bool = False
 
     @classmethod
     def listed_reader(cls, object_id: str) -> "FullReadGrant":
@@ -691,7 +694,7 @@ class FullReadGrant:
     def from_json(cls, doc: Any) -> "FullReadGrant":
         from datetime import datetime
         fields = {"object_id", "granted_by", "granted_at", "reason", "scopes", "mail_scope",
-                  "note"}
+                  "note", "owner"}
         required = {"object_id", "granted_by", "granted_at", "reason", "scopes"}
         if not isinstance(doc, dict) or set(doc) - fields or required - set(doc):
             raise ValueError("employee_policy_full_read_invalid")
@@ -710,9 +713,12 @@ class FullReadGrant:
         mail_scope = doc.get("mail_scope", "all")
         if mail_scope not in FULL_READ_MAIL_SCOPES:
             raise ValueError("employee_policy_full_read_mail_scope_invalid")
+        owner = doc.get("owner", False)
+        if not isinstance(owner, bool):
+            raise ValueError("employee_policy_full_read_owner_invalid")
         return cls(_guid(doc.get("object_id"), "employee_policy_full_read_object_id"),
                    texts[0].strip(), texts[1].strip(), texts[2].strip(), frozenset(scopes),
-                   mail_scope)
+                   mail_scope, owner=owner)
 
     def code(self) -> str:
         """An enum-only summary (scopes, mail scope) for journals and fingerprints."""
@@ -982,6 +988,10 @@ class EmployeePermissionPolicy:
                 # One grant per employee; a service principal never holds one.
                 raise ValueError("employee_policy_full_read_invalid")
             full_read[grant.object_id] = grant
+        if sum(g.owner for g in full_read.values()) > 1:
+            # more than one owner marked: none is (what only the owner reads, nobody reads)
+            from dataclasses import replace
+            full_read = {k: replace(g, owner=False) for k, g in full_read.items()}
         shared = doc.get("shared_mailboxes", [])
         if not isinstance(shared, list) or any(
                 not isinstance(v, str) or (_GUID.fullmatch(v.strip().lower()) is None
@@ -1236,6 +1246,14 @@ class EmployeeEntitlement:
         exclusion that cannot be decided now makes this False (nothing is granted)."""
         return self.actor is not None and self.full_read is not None \
             and self.full_read.unrestricted()
+
+    def owner(self) -> bool:
+        """THE owner-only reader: unrestricted now and holding
+        the one declared full-read grant the policy marks ``owner`` (never a configured
+        full reader's). The only reader of what is the owner's alone (``access_classes.
+        OWNER_KEY``: the two people's mail, chats and content). Anything else: False."""
+        return self.unrestricted() and self.full_read.grant.owner is True \
+            and not self.full_read.grant.listed
 
     def full_read_covers(self, scope: str) -> bool:
         return self.actor is not None and self.full_read is not None \
@@ -1847,6 +1865,16 @@ def reader_unrestricted(gate: Any, actor: Any) -> bool:
         return False
 
 
+def reader_owner(gate: Any, actor: Any) -> bool:
+    """``EmployeeEntitlement.owner`` for ``actor`` as the employee gate resolves it; no
+    gate, no entitlement, or anything undecidable: False (not the owner)."""
+    try:
+        entitlement = gate.entitlement(actor) if gate is not None else None
+        return entitlement is not None and entitlement.owner() is True
+    except Exception:  # noqa: BLE001 - undecidable: never the owner
+        return False
+
+
 def full_read_marking_grants(marking_grants: Mapping[str, Iterable[str]] | None,
                              entitlement: EmployeeEntitlement | None
                              ) -> dict[str, frozenset[str]]:
@@ -1889,7 +1917,7 @@ def live_source_audience_document(base: Mapping[str, Any],
 __all__ = ["DIRECTORY_SOURCE", "EMPLOYEE_IDENTITY_REQUIRED", "EMPLOYEE_PREFIX",
            "FULL_READ_LABEL", "FULL_READ_MAIL_SCOPES", "FULL_READ_MARKINGS",
            "FULL_READ_SCOPES", "FullReadAccess", "FullReadGrant",
-           "full_read_marking_grants",
+           "full_read_marking_grants", "reader_owner",
            "ENTRA_REFUSAL_REASONS",
            "GROUP_BASES", "GROUP_BASIS_JOINED_TEAMS", "GROUP_BASIS_NONE",
            "GROUP_BASIS_TRANSITIVE", "GROUP_MEMBERSHIP_DERIVED", "PORTAL_DEPARTMENT_CODES",

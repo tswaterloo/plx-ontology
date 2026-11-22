@@ -764,7 +764,7 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
                 if held:
                     units[family] = tuple(held)
             return ReadPolicy(policy.tenant, policy.audiences, policy.markings, units,
-                              unrestricted=True)
+                              unrestricted=True, owner=policy.owner)
         if policy.staff:
             return self._staff_mail_policy(policy, actor)
         grants = dict(policy.audiences)
@@ -830,7 +830,7 @@ class CaptureCaseHostTools(_GatesMixin, _LabelsMixin, _DocumentsMixin, _CallsMix
                     else frozenset()
             units["sharepoint"] = tuple(sharepoint_units)
         return ReadPolicy(policy.tenant, grants, policy.markings, units,
-                          unrestricted=policy.unrestricted)
+                          unrestricted=policy.unrestricted, owner=policy.owner)
 
     def _staff_mail_policy(self, policy: ReadPolicy, actor: Any) -> ReadPolicy:
         """A staff reader's policy (``ontology_host._staff_policy``) with the mail units

@@ -58,13 +58,18 @@ def _parse(text: Any) -> dt.datetime | None:
 
 def full_scope(pg: Any, s: str) -> tuple[dict[str, str], list[int]]:
     """A full reader's door settings over ``s`` (``door.reader_scope`` with every key and
-    marking set the classes use, every document held) and the classes it holds."""
+    marking set the classes use but the owner's, every document held) and the classes it
+    holds."""
     from operating.pg import door
     keys, marks = pg.execute(
         "SELECT COALESCE(array_agg(DISTINCT k) FILTER (WHERE k IS NOT NULL), '{}'), "
         "COALESCE(array_agg(DISTINCT m) FILTER (WHERE m IS NOT NULL), '{}') FROM "
         f"{s}.access_classes LEFT JOIN LATERAL unnest(audience_keys) k ON true "
         "LEFT JOIN LATERAL unnest(rec_marks) m ON true WHERE NOT blocked").fetchone()
+    # a full reader, not the owner: the owner's alone (``OWNER_KEY``) is not what the
+    # sources serve every full reader (``served`` leaves the people set out too)
+    from operating.pg.access_classes import OWNER_KEY
+    keys = [k for k in keys if k != OWNER_KEY]
     scope = door.reader_scope(pg, s, audience_keys=keys, marking_sets=["[]", *marks],
                               held=(), holds_every_doc=True)
     held = [int(x) for part in ("plx.classes", "plx.dclasses")

@@ -80,6 +80,14 @@ class MailParticipantsClearedTests(unittest.TestCase):
         items = store.index(READER_A, reader_audience())["items"]
         cls.handles = {name: next(i["l1_handle"] for i in items if i["message_id"] == mid)
                        for name, mid in MESSAGES.items()}
+        # The capture's bound guard recorded the tenant's uncleared addresses beside its
+        # listing; the class runs without that record (as a store recorded before it, or
+        # one whose record aged out): an address no mailbox and no listing holds is then
+        # undecided. ``TenantRecordTests`` below covers the record itself.
+        cls.record = store.db.execute("SELECT value FROM meta WHERE key='tenant_withheld_at'"
+                                      ).fetchone()
+        with store.db:
+            store.db.execute("DELETE FROM meta WHERE key='tenant_withheld_at'")
         store.close()
         cls.projection = Path(cls.tmp.name) / "ontology.sqlite"
         with MailCaptures(cls.state, internal_domains=SCOPE.internal_domains,
@@ -173,7 +181,18 @@ class MailParticipantsClearedTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertTrue(rule(SUPPLIER, bad))
         self.assertTrue(rule(UPN_A, sender=[], sender_required=True))   # no sender
+        # ... unless the mailbox it was read from stands for its sender: a cleared owner
+        # clears it, an excluded or malformed one does not
+        self.assertFalse(rule(UPN_A, sender=[], sender_required=True, mailbox=BOX_A))
+        self.assertTrue(rule(UPN_A, sender=[], sender_required=True, mailbox="not-an-id"))
+        excluded = PeopleDirectory.from_store(self.runtime(), store)
+        self.assertTrue(participants_withheld(excluded, [UPN_A], sender=[],
+                                              sender_required=True, mailbox=BOX_B))
         self.assertTrue(rule(SUPPLIER, sender={"name": "no address"}, sender_required=True))
+        # a sender that is there but names no identity (a display name) may be anyone's: the
+        # mailbox never stands in for it (only a message with no sender recorded at all)
+        self.assertTrue(rule(UPN_A, sender=["Accounts Payable"], sender_required=True,
+                             mailbox=BOX_A))
         self.assertTrue(participants_withheld(None, [SUPPLIER]))
         unusable = PeopleDirectory(PeopleExclusion(unavailable="excluded_people_file_unreadable"))
         self.assertTrue(participants_withheld(unusable, [SUPPLIER]))
@@ -302,6 +321,122 @@ def _numbers(value) -> list:
     if isinstance(value, list):
         return [n for v in value for n in _numbers(v)]
     return []
+
+
+class TenantRecordTests(unittest.TestCase):
+    """The tenant's uncleared addresses (``people_exclusion.tenant_withheld_rows``): with a
+    recent record an address the tenant does not hold at all (a former employee's) is no
+    current person of ours and withholds nothing; one the record holds stays withheld; no
+    record, a stale one or one of another listing decides nothing (fail closed)."""
+
+    PARTNER, GONE = "11111111-1111-4111-8111-111111111111", "gone.person@example-plx.com"
+
+    def guard(self, *, groups=True):
+        from datetime import datetime, timezone
+        guard = PeopleExclusion([self.PARTNER])
+        guard._bound = True
+        guard._listing = [(self.PARTNER, "p@example-plx.com", ["p@example-plx.com",
+                                                                "alias.p@example-plx.com"]),
+                          ("22222222-2222-4222-8222-222222222222", "a@example-plx.com",
+                           ["a@example-plx.com", "shared@example-plx.com"]),
+                          ("33333333-3333-4333-8333-333333333333", "b@example-plx.com",
+                           ["b@example-plx.com", "shared@example-plx.com"])]
+        guard._addresses = frozenset({"p@example-plx.com", "alias.p@example-plx.com"})
+        guard._listing_at = datetime.now(timezone.utc)
+        guard._groups = {"team@example-plx.com": False, "all@example-plx.com": True} \
+            if groups else None
+        return guard
+
+    def test_the_record_holds_every_uncleared_address_and_no_cleared_one(self):
+        from integrations.people_exclusion import address_digest, tenant_withheld_rows
+        self.assertIsNone(tenant_withheld_rows(self.guard(groups=False)))
+        self.assertIsNone(tenant_withheld_rows(PeopleExclusion([self.PARTNER])))  # unbound
+        _at, rows = tenant_withheld_rows(self.guard())
+        kinds = dict(rows)
+        self.assertEqual(kinds[address_digest("p@example-plx.com")], "excluded")
+        self.assertEqual(kinds[address_digest("alias.p@example-plx.com")], "excluded")
+        for address in ("shared@example-plx.com", "team@example-plx.com",
+                        "all@example-plx.com"):
+            self.assertEqual(kinds[address_digest(address)], "uncleared", address)
+        for address in ("a@example-plx.com", "b@example-plx.com", self.GONE):
+            self.assertNotIn(address_digest(address), kinds, address)
+        self.assertNotIn("p@example-plx.com", json.dumps(rows))   # digests only
+
+    def test_the_directory_decides_by_a_recent_record_of_this_listing_only(self):
+        from datetime import datetime, timedelta, timezone
+        from integrations.people_exclusion import mail_capture_tenant_withheld
+        from operating.excluded_people import participants_withheld
+        from operating.people_graph import PERSON, UNDECIDED, WITHHELD, PeopleDirectory
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MailCaptureStore(Path(tmp), clock=Clock())
+            self.addCleanup(store.close)
+            self.assertGreater(store.record_tenant_listing(self.guard()), 0)
+            # the excluded person's own mailbox is not captured: their alias history is
+            # not known, so an address no listing holds decides nothing yet
+            self.assertIsNone(mail_capture_tenant_withheld(tmp))
+            # captured, with a sent message from an old alias no listing names any more
+            with store.db:
+                store.db.execute("INSERT INTO mailboxes VALUES (?, ?, '[]', '[]', '{}', ?, ?)",
+                                 (self.PARTNER, "p@example-plx.com", "2026-11-01T00:00:00Z",
+                                  "2026-11-01T00:00:00Z"))
+                store.db.execute("INSERT INTO folders (mailbox_id, folder_key, folder_id, "
+                                 "status) VALUES (?, 'sentitems', 'F-SENT', 'complete')",
+                                 (self.PARTNER,))
+                store.db.execute(
+                    "INSERT INTO messages (l1_handle, mailbox_id, message_id, change_key, "
+                    "folder_id, record, digest, body_status, recorded_at, last_seen_at) VALUES "
+                    "('h-old', ?, 'M-OLD', 'CK', 'F-SENT', ?, 'd', 'none', 'x', 'x')",
+                    (self.PARTNER, json.dumps({"from": "old.p@example-plx.com"})))
+            self.assertGreater(store.record_tenant_listing(self.guard()), 0)
+            recorded = mail_capture_tenant_withheld(tmp)
+            self.assertIsNotNone(recorded)
+            later = datetime.now(timezone.utc) + timedelta(days=2)
+            self.assertIsNone(mail_capture_tenant_withheld(tmp, now=later))   # stale
+            offline = PeopleExclusion([self.PARTNER])
+
+            def state(address, record):
+                return PeopleDirectory(offline, internal_domains=["example-plx.com"],
+                                       tenant_withheld=record).address(address).state
+            self.assertEqual(state(self.GONE, recorded), PERSON)
+            self.assertEqual(state(self.GONE, None), UNDECIDED)
+            self.assertEqual(state("all@example-plx.com", recorded), UNDECIDED)
+            self.assertEqual(state("shared@example-plx.com", recorded), UNDECIDED)
+            self.assertEqual(state("alias.p@example-plx.com", recorded), WITHHELD)
+            # an alias they sent from once is theirs, not an address nobody holds
+            self.assertEqual(state("old.p@example-plx.com", recorded), WITHHELD)
+            directory = PeopleDirectory(offline, internal_domains=["example-plx.com"],
+                                        tenant_withheld=recorded)
+            self.assertFalse(participants_withheld(directory, [self.GONE],
+                                                   sender=["x@outside.example"]))
+            self.assertTrue(participants_withheld(directory, [self.GONE, "p@example-plx.com"],
+                                                  sender=["x@outside.example"]))
+            # a later listing recorded without a groups listing: the old record no longer
+            # matches the listing's time and decides nothing
+            with store.db:
+                store.db.execute("UPDATE meta SET value='2000-01-01T00:00:00Z' "
+                                 "WHERE key='tenant_listing_at'")
+            self.assertIsNone(mail_capture_tenant_withheld(tmp))
+
+    def test_the_gate_serves_an_unheld_address_with_the_record_and_never_the_excluded(self):
+        case = MailParticipantsClearedTests
+        case.setUpClass()
+        self.addCleanup(case.tearDownClass)
+        self.assertIsNotNone(case.record)   # the capture's bound guard recorded it
+        db = MailCaptureStore(case.state, clock=Clock())
+        self.addCleanup(db.close)
+        with db.db:
+            db.db.execute("INSERT INTO meta VALUES ('tenant_withheld_at', ?)", case.record)
+            # as a store whose excluded people's own mailboxes are captured (their alias
+            # history complete: ``MailCaptureStore._alias_history``)
+            db.db.execute("INSERT INTO meta VALUES ('tenant_alias_history', 'complete') ON "
+                          "CONFLICT(key) DO UPDATE SET value = excluded.value")
+        probe = case("test_the_item_gate_serves_a_message_only_when_every_participant_is_"
+                     "cleared")
+        probe.setUp()
+        self.addCleanup(probe.doCleanups)
+        gate = item_gate_from_case_runtime(probe.runtime())
+        self.assertEqual({name: gate(READER_A, handle) for name, handle in case.handles.items()},
+                         {"cleared": True, "undecided": True, "excluded": False})
 
 
 if __name__ == "__main__":

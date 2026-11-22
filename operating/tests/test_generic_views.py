@@ -199,27 +199,31 @@ class Fixture:
         ts._DOOR.clear()
         ts._GRANTS.clear()
 
-    def base(self):
+    def base(self, owner=False):
+        import dataclasses
         from operating.pg.ontology_reader import PgStoreReader
         from operating.pg.sqlite_compat import PgCompatConnection
         conn = PgCompatConnection(self.dsn, link_guard=True)
         self.addCleanup(conn.close)
         reader = PgStoreReader(conn, ot.StoreReader(self.store.conn))
-        return ot.OntologyTools(reader, tab.POLICY, item_gate=lambda a, h: True,
+        # The one holding ``OWNER_KEY``
+        policy = dataclasses.replace(tab.POLICY, unrestricted=True, owner=True) if owner \
+            else tab.POLICY
+        return ot.OntologyTools(reader, policy, item_gate=lambda a, h: True,
                                 schema=SCHEMA, grammar=None, contracts=ev.CONTRACTS,
                                 clock=lambda: ev.NOW)
 
-    def call(self, args, actor=FULL):
+    def call(self, args, actor=FULL, owner=False):
         full = (lambda base, a: TAG if a is FULL else "")
         with mock.patch("operating.pg.people_excluded.full_reader", full):
-            out = ts.SqlTool(self.base()).call("plx.sql", args, actor)
+            out = ts.SqlTool(self.base(owner)).call("plx.sql", args, actor)
         if "error" not in out and "sql" in args:
             self.assertEqual(validate(out, ts._CONTRACT["output"], root=ev.CONTRACTS), [],
                              json.dumps(out)[:1500])
         return out
 
-    def rows(self, sql, actor=FULL):
-        out = self.call({"sql": sql}, actor)
+    def rows(self, sql, actor=FULL, owner=False):
+        out = self.call({"sql": sql}, actor, owner)
         self.assertNotIn("error", out, out)
         text = lambda v: v["untrusted_text"] if isinstance(v, dict) else v  # noqa: E731
         return [[text(c) for c in r["cells"]] for r in out["rows"]]
@@ -488,7 +492,7 @@ class TeamsRecords(Fixture, unittest.TestCase):
                 mock.patch.object(here, "SCHEMA", ot.SchemaView.from_documents([TEAMS_DOMAIN])):
             super().setUpClass()
 
-    def base(self):
+    def base(self, owner=False):
         """The fixture's reader policy with the chat's audience granted to staff and the
         full reader alike."""
         from operating.pg.ontology_reader import PgStoreReader
@@ -620,9 +624,10 @@ class Undecided(Fixture, unittest.TestCase):
 
     def test_a_version_the_exclusion_has_not_decided_is_served_to_nobody(self):
         records, links = self.undecided()
-        # not vacuous: the list row and the link learned from mail m1 are in the tables
+        # not vacuous: the list row and the links learned from mail m1 and (the owner's
+        # alone) from the excluded person's mail m2 are in the tables
         self.assertEqual(records, {"sharepoint://site1/list/r1"})
-        self.assertEqual(len(links), 1)
+        self.assertEqual(len(links), 2)
         for actor in (FULL, OPS, NOBODY):
             got = {r[0] for r in self.rows("SELECT handle FROM records", actor)}
             got_links = {r[0] for r in self.rows("SELECT handle FROM record_links", actor)}
@@ -660,10 +665,14 @@ class Undecided(Fixture, unittest.TestCase):
         self.assertEqual(self.rows(about, OPS), [["3"]])   # learned from mail: full only
         with psycopg.connect(self.dsn) as c:
             (ver,) = c.execute("SELECT ver FROM biz.records WHERE NOT biz").fetchone()
-            # the link learned from the excluded person's mail m2 is in no row at all
-            self.assertEqual(c.execute("SELECT count(*) FROM biz.record_links WHERE "
-                                       "from_handle = 'mc://tasks/t10-0'").fetchone(),
-                             (0,))
+            # the link learned from the excluded person's mail m2 is the owner's alone
+            # (Never removed): its class holds OWNER_KEY
+            from operating.pg.access_classes import OWNER_KEY
+            self.assertEqual(c.execute(
+                "SELECT %s = ANY(a.audience_keys) FROM biz.record_links l JOIN "
+                "biz.access_classes a ON a.id = l.access_class WHERE l.from_handle = "
+                "'mc://tasks/t10-0' AND l.link_type = 'MCTask.about'",
+                (OWNER_KEY,)).fetchall(), [(True,)])
         decide(self.dsn, ver - 1)   # a set behind the row's version: withheld again
         self.assertEqual(self.rows("SELECT label FROM records WHERE type = "
                                    "'SharePointListItem'"), [])
@@ -935,6 +944,23 @@ class Exclusion(Fixture, unittest.TestCase):
                                    OPS), [["70"]])
 
 
+class OwnerOnly(Fixture, unittest.TestCase):
+    """The people set's records and links are kept, never removed: in the tables with
+    ``OWNER_KEY`` in their class, read by the one reader marked for it, by no other
+    reader."""
+
+    def test_the_owner_reads_the_set_and_no_other_reader_does(self):
+        decide(self.dsn, None)
+        self.addCleanup(decide, self.dsn, 0)
+        task = "SELECT label FROM records WHERE label = 'Excluded task'"
+        self.assertEqual(self.rows(task, FULL, owner=True), [["Excluded task"]])
+        for actor in (FULL, OPS, NOBODY):
+            self.assertEqual(self.rows(task, actor), [], actor)
+        about = "SELECT count(*) FROM record_links WHERE link_type = 'MCTask.about'"
+        self.assertEqual(self.rows(about, FULL, owner=True), [["5"]])   # + the one from m2
+        self.assertEqual(self.rows(about, FULL), [["4"]])
+
+
 class Refresh(Fixture, unittest.TestCase):
     def test_refresh_in_place_equals_a_fresh_build(self):
         import psycopg
@@ -952,7 +978,8 @@ class Refresh(Fixture, unittest.TestCase):
                            "'SalesInvoice.billed_to'")
         self.assertEqual(before, [["3"]])
         out = gr.refresh(self.dsn)
-        self.assertEqual(out["dropped"], 3, out)
+        # the deleted task goes; the two of the people set stay, the owner's alone
+        self.assertEqual(out["dropped"], 1, out)
         ts._DOOR.clear()
         self.assertEqual(self.rows("SELECT count(*) FROM record_links WHERE link_type = "
                                    "'SalesInvoice.billed_to'"), [["2"]])
@@ -974,6 +1001,62 @@ class Refresh(Fixture, unittest.TestCase):
         gr.build(self.dsn, workers=1)
         with psycopg.connect(self.dsn) as c:
             self.assertEqual([c.execute(q).fetchall() for q in dump], refreshed)
+
+
+class SwapLocks(Fixture, unittest.TestCase):
+    def test_the_swap_waits_out_a_reader_and_no_other_reader_waits_long(self):
+        """11-19 live: the records swap ran the lineage and counts of ~36M rows after taking
+        its renames' locks, 22 minutes in which plx.search's records leg was not ready. The
+        heavy statements now run on the new tables first and the lock-taking ones as every
+        other view's swap does: a short lock wait, tried again. A reader holding the served
+        table open makes the swap try and pause; no new reader queues behind it."""
+        import threading
+        import time
+        import psycopg
+        from operating.pg import swap_lock
+        slept: list[float] = []
+        real = swap_lock.swap_in
+
+        def watched(write, steps, **kw):
+            return real(write, steps, sleep=lambda x: (slept.append(x), time.sleep(x)), **kw)
+
+        before = self.rows("SELECT count(*) FROM records")
+        holder = psycopg.connect(self.dsn)
+        holder.execute("SELECT count(*) FROM biz.records")   # ACCESS SHARE, held open
+        out: dict = {}
+
+        def rebuild():
+            try:
+                with mock.patch.object(swap_lock, "swap_in", watched):
+                    out["got"] = gr.build(self.dsn, workers=1)
+            except BaseException as exc:  # noqa: BLE001 - reported by the assertion
+                out["err"] = exc
+        t = threading.Thread(target=rebuild)
+        t.start()
+        waits: list[float] = []
+        try:
+            deadline = time.monotonic() + 120
+            while t.is_alive() and time.monotonic() < deadline:
+                with psycopg.connect(self.dsn, autocommit=True) as c:
+                    c.execute("SET lock_timeout = '10s'")   # a queued reader gives up, loudly
+                    began = time.monotonic()
+                    try:
+                        c.execute("SELECT count(*) FROM biz.records").fetchone()
+                    except (psycopg.errors.UndefinedTable, psycopg.errors.LockNotAvailable):
+                        pass
+                    waits.append(time.monotonic() - began)
+                if len(slept) >= 3:
+                    holder.rollback()   # the swap tried and failed three times: let it through
+                time.sleep(0.05)
+        finally:
+            holder.rollback()
+            holder.close()
+            t.join(120)
+        self.assertNotIn("err", out, out.get("err"))
+        self.assertGreaterEqual(len(slept), 3)   # it did wait on the held reader
+        self.assertLess(max(waits), 2.0, waits)  # and no new reader queued behind it
+        ts._DOOR.clear()
+        self.assertEqual(self.rows("SELECT count(*) FROM records"), before)
 
 
 class RefreshMovedRows(Fixture, unittest.TestCase):
@@ -1390,12 +1473,12 @@ class DiskRoom(unittest.TestCase):
                 raise RuntimeError("no pg_settings here")
         frees, slept = [40 * gb, 44 * gb, 60 * gb], []
         with mock.patch.dict(os.environ, {"PLX_RECORDS_MIN_FREE_GB": ""}):
-            gr.room(NoSetting(), 4, free=lambda p: frees.pop(0), sleep=slept.append)
+            gr.room(NoSetting(), 4, free=lambda p: frees.pop(0), sleep=slept.append, wal=False)
             self.assertEqual(len(slept), 2)            # 35 + 4 x 3 = 47 GB needed
             with self.assertRaisesRegex(RuntimeError, "below the 47 GB"):
-                gr.room(NoSetting(), 4, wait=0, free=lambda p: 46 * gb, sleep=slept.append)
+                gr.room(NoSetting(), 4, wait=0, free=lambda p: 46 * gb, sleep=slept.append, wal=False)
             with self.assertRaisesRegex(RuntimeError, "cannot be read"):
-                gr.room(NoSetting(), 1, free=mock.Mock(side_effect=OSError("gone")))
+                gr.room(NoSetting(), 1, free=mock.Mock(side_effect=OSError("gone")), wal=False)
         with mock.patch.dict(os.environ, {"PLX_RECORDS_MIN_FREE_GB": "lots"}), \
                 self.assertRaisesRegex(RuntimeError, "PLX_RECORDS_MIN_FREE_GB"):
             gr.min_free_bytes()
@@ -1433,7 +1516,8 @@ class TypeChoice(unittest.TestCase):
         business = gr.type_choice(True, True, ["RelSage"], business=True)
         self.assertEqual(business["skip_types"], gr.comms_types())
         self.assertEqual(set(gr.comms_types()),
-                         {"Email", "TeamsChatMessage", "CalendarEvent", "MeetingTranscript"})
+                         {"Email", "TeamsChatMessage", "CalendarEvent", "MeetingTranscript",
+                          "Attachment"})   # the attachments table is a communications table too
         for kept in ("SalesOrder", "PurchaseOrder", "PurchaseOrderLine", "Batch", "Customer"):
             self.assertIn(kept, covered)
             self.assertNotIn(kept, business["skip_types"])

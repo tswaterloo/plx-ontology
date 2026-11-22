@@ -43,7 +43,7 @@ CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
               "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in",
-              "triage_none",
+              "triage_none", "triage_work_in", "triage_work_none",
               "to_me", "after_own_post", "cc_min", "usual_answerer", "known_party", "any_of")
 # conditions a triage reading of "reply" answers (``matches``): whether the text asks, is a
 # closer, and the history guesses standing in for that reading (an asking sender the reader
@@ -225,6 +225,15 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             # the model's triage of the message (``chat_ask_model.KINDS``) is none of
             # ``want``; a message it did not read (no model, a failed call) passes
             if event.get("triage") in want:
+                return False
+            continue
+        if key in ("triage_work_in", "triage_work_none"):
+            # the model read the message as one of ``want`` and named work it leaves the
+            # reader (``triage_work``): ``_in`` needs that reading (a message it did not
+            # read never passes), ``_none`` passes every other message, unread ones too
+            worked = event.get("triage") in want and bool(
+                str(event.get("triage_work") or "").strip())
+            if worked != (key == "triage_work_in"):
                 return False
             continue
         if key == "engaged_or_asks" and bool(event.get("engaged") or (

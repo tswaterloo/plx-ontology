@@ -1,0 +1,6 @@
+[Unit]
+Description=PLX old-mail store: restart a stalled build or embed (one line per check in watch.log)
+
+[Service]
+Type=oneshot
+ExecStart=%h/oldmail-watch.sh

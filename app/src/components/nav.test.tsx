@@ -33,7 +33,10 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
 
   it("Admin shows to an ops reader (Reliability, Trust) and to a feedback admin (triage only)", () => {
     const ops = navSectionsFor({ ops_reader: true }).find((s) => s.key === "admin")!;
-    expect(ops.children.map((c) => c.href)).toEqual(["/ops", "/data-health", "/trust", "/autopilot-log"]);
+    // the Autopilot log's API is the owner's alone: an ops reader is not shown a tab it refuses
+    expect(ops.children.map((c) => c.href)).toEqual(["/ops", "/data-health", "/trust"]);
+    const owner = navSectionsFor({ ops_reader: true, owner: true }).find((s) => s.key === "admin")!;
+    expect(owner.children.map((c) => c.href)).toEqual(["/ops", "/data-health", "/trust", "/autopilot-log"]);
     const fb = navSectionsFor({ feedback_admin: true }).find((s) => s.key === "admin")!;
     expect(fb.children.map((c) => c.href)).toEqual(["/feedback"]);
     expect(fb.href).toBe("/feedback"); // its link goes where this reader may go

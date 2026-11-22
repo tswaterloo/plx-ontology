@@ -99,6 +99,58 @@ class ReadDocument(Base):
         self.assertEqual(theirs["error"]["code"], "not_readable")
         self.assertNotIn("content", theirs)
 
+    def test_a_dropped_original_is_read_from_its_captured_text_for_those_the_host_opens(self):
+        """11-22 (HARD20 h07): 29,473 of 70,954 SharePoint PDFs have no original any more but
+        the text the capture extracted; plx.read_document answered not_readable for all of
+        them. It now reads that text through the same host gate and says so; a reader the
+        host does not open it for still gets nothing; text withheld by the egress check
+        (Freightcom) is still withheld."""
+        read = self.tools(self.ana)["plx.read_document"]
+        coa = "Certificate of Analysis\nLot Number:\n26233A\nBulk Lot Number: BC-26181D\n"
+        opened = {self.ana.key}
+        self.b.prepared_doc_read = lambda r, c: None               # the original is gone
+        self.b.prepared_doc_text = lambda r, c: ("COA K18.pdf", coa, "v1") \
+            if r.key in opened and c == SP else None
+        got = read.call({"citation": SP})
+        self.assertNotIn("error", got, got)
+        self.assertEqual(got["kind"], "captured_text")
+        self.assertEqual(got["name"], "COA K18.pdf")
+        self.assertIn("26233A", got["content"]["untrusted_text"])
+        self.assertIn("not held here", got["captured_text_note"])
+        found = read.call({"citation": SP, "find": "BC-26181D"})
+        self.assertEqual(len(found["matches"]), 1)
+        theirs = self.tools(self.sam)["plx.read_document"].call({"citation": SP})
+        self.assertEqual(theirs["error"]["code"], "not_readable")
+        self.assertNotIn("content", theirs)
+        # no text kept either: the plain refusal, never an empty read
+        self.b.prepared_doc_text = lambda r, c: None
+        self.assertEqual(read.call({"citation": SP})["error"]["code"], "not_readable")
+        # the same egress check as any read
+        self.b.prepared_doc_text = lambda r, c: ("COA.pdf", coa + "Freightcom freight bill", "v1")
+        self.assertEqual(read.call({"citation": SP})["error"]["code"], "egress_withheld")
+
+    def test_a_mail_attachment_is_read_whole_or_from_its_captured_text(self):
+        """A byte-pinned mail-attachment citation reads like a file the host opens: its
+        original when held, else the text extracted from it; nothing for a reader the host
+        does not open it for, nor for a citation without its pin."""
+        read = self.tools(self.ana)["plx.read_document"]
+        att = "graph-mail://mbx/msg@ck#attachment=AAA&sha256=" + "a" * 64
+        opened = {self.ana.key}
+        self.b.prepared_mail_attachment = lambda r, c: ("Plan.csv", csv_bytes(30), None) \
+            if r.key in opened and c == att else None
+        got = read.call({"citation": att, "find": "IT-00029"})
+        self.assertEqual(got["matches"][0]["in"], "rows")
+        self.b.prepared_mail_attachment = lambda r, c: ("Spec.pdf", None, "Lot 26233A passes") \
+            if r.key in opened and c == att else None
+        got = read.call({"citation": att})
+        self.assertEqual(got["kind"], "captured_text")
+        self.assertEqual(got["name"], "Spec.pdf")
+        self.assertIn("26233A", got["content"]["untrusted_text"])
+        theirs = self.tools(self.sam)["plx.read_document"].call({"citation": att})
+        self.assertEqual(theirs["error"]["code"], "not_readable")
+        self.assertEqual(read.call({"citation": "graph-mail://mbx/msg@ck"})["error"]["code"],
+                         "unsupported")
+
     def test_nobody_reads_what_they_may_not(self):
         read = self.tools(self.ana)["plx.read_document"]
         mine = self.own_file(self.ana, csv_bytes(50))

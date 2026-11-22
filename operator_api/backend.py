@@ -566,14 +566,18 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 if pending is not None:
                     future.plx_warm = name   # named in the first pass's log if cut
                     pending.append(future)
+        # a directory employee with no session (``_warm_directory``): their screens go
+        # after every session reader's, and their weekly review is not read ahead
+        directory = bool(getattr(DIRECTORY_ROUND, "on", False))
         if today and not self.yield_to_live:
             # the warm-up process: the other screens (My work, Autopilot, Team, Meetings,
             # the QC pack) read through ``_serving`` after Today, so each is kept on disk
             # for this reader and their first visit after a restart opens at once (served
             # as kept, re-checked, and read again)
             future = self.reads.submit(reader, warm_timed(
-                "screens", lambda view: self._screens_all(reader)), priority=WARM_PRIORITY)
-            if pending is not None and not getattr(DIRECTORY_ROUND, "on", False):
+                "screens", lambda view: self._screens_all(reader, later=directory)),
+                priority=WARM_PRIORITY)
+            if pending is not None and not directory:
                 future.plx_warm = "screens"
                 pending.append(future)
         if warmer is not None and not warmer.stopped.is_set():
@@ -582,7 +586,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             warmer.submit(reader, self.yielding(warm_timed("pages", pages)),
                           priority=WARM_PRIORITY + 1 if warmer is self.reads and today
                           else 0)
-            if today and pending is None:
+            if today and pending is None and not directory:
                 # last week's review, read whole once and kept (``WeeklyArchive``): the
                 # Meetings page's weekly view then opens from the archive. Not in the
                 # warm-up's first pass: its Postgres aggregates for every known and
@@ -593,17 +597,35 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     priority=WARM_PRIORITY + 1 if warmer is self.reads else 0)
         return True
 
-    def _screens_all(self, reader: Reader) -> Future:
+    def _screens_all(self, reader: Reader, later: bool = False) -> Future:
         """Each of ``SCREENS_AHEAD`` read ahead for ``reader`` as its own job on the
         screens pool, most visited first: with several workers (the warm-up process's) they
-        are read side by side, never one reader's slow screen holding the rest. A future
-        done when every one is (the first pass waits on it)."""
+        are read side by side, never one reader's slow screen holding the rest. ``later``:
+        a directory employee with no session, whose screens go after every session
+        reader's (``ScreensPool``) and whose weekly review is not read ahead (each one ran
+        its whole 300 s budget and kept nothing). A future done when every one is (the
+        first pass waits on it)."""
         pool = self._screens_pool()
-        return _all_done([pool.submit(self._screens_ahead, reader, (screen,))
-                          for screen in SCREENS_AHEAD])
+        return _all_done([pool.submit(self._screens_ahead, reader, (screen,), None, later,
+                                      later=later, key=(reader.key, reader.mode, repr(screen)))
+                          for screen in SCREENS_AHEAD
+                          if not (later and _screen_name(screen) == "weekly_review")])
 
     def _screens_ahead(self, reader: Reader, screens: Sequence[Any] = SCREENS_AHEAD,
-                       until: Optional[float] = None) -> int:
+                       until: Optional[float] = None, later: bool = False) -> int:
+        """See ``_screens_read``: read with a background read's time (``READ_BUDGET``),
+        as nobody waits on it: its limits are a request's times ``BACKGROUND_READ_BUDGET``,
+        so a read that waited behind others (or for the API to be quiet) finishes and
+        keeps its page instead of being cut at a request's 60-90 s and lost (11-21: 165
+        such cuts in 6 h, the screens read cold again on the reader's first visit)."""
+        token = READ_BUDGET.set(BACKGROUND_READ_BUDGET)
+        try:
+            return self._screens_read(reader, screens, until, later)
+        finally:
+            READ_BUDGET.reset(token)
+
+    def _screens_read(self, reader: Reader, screens: Sequence[Any], until: Optional[float],
+                      later: bool) -> int:
         """Each of ``screens`` (``SCREENS_AHEAD``) read for ``reader`` as their request
         would (one at a time; one refused or failing is read when opened). How many were
         read. One answered "still reading" (the Templates answer bank while the company's
@@ -644,7 +666,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         until = time.monotonic() + SCREENS_AGAIN_MOST if until is None else until
         if again and time.monotonic() + SCREENS_AGAIN_SECONDS < until:
             timer = threading.Timer(SCREENS_AGAIN_SECONDS, lambda: self._screens_pool().submit(
-                self._screens_ahead, reader, tuple(again), until))
+                self._screens_ahead, reader, tuple(again), until, later, later=later))
             timer.daemon = True
             timer.start()
         return done
@@ -3411,6 +3433,11 @@ def _all_done(futures: Sequence[Future]) -> Future:
     return out
 
 
+def _screen_name(screen: Any) -> str:
+    """A ``SCREENS_AHEAD`` entry's method name."""
+    return screen if isinstance(screen, str) else str(screen[0])
+
+
 def _marks_moved(now: Any, held: Any) -> Optional[list[Any]]:
     """[kept, now] marks stamps (``_marks_stamp``, part 3 of an access state) when they
     differ, each a digest prefix or None / "unreadable"; else None."""
@@ -4244,6 +4271,12 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         backend.sharepoint_capture_dir = ctx.get("sharepoint_capture_dir") or (
             Path(ctx["state_dir"]) if ctx.get("state_dir")
             and _sp.store_exists(ctx["state_dir"]) else None)
+        # the mail capture a read of a mail attachment's whole file starts from
+        # (``prepared_area._pw_mail_attachment``)
+        from integrations import capture_mail as _cm
+        backend.mail_capture_dir = ctx.get("mail_capture_dir") or (
+            Path(ctx["state_dir"]) if ctx.get("state_dir")
+            and _cm.store_exists(ctx["state_dir"]) else None)
         if resolver is not None and not args.dev_fixture_principal:
             backend.view_as = view_as_for(resolver, ctx.get("state_dir"))
         from operating.case_tools_host import prime_attachment_mailboxes

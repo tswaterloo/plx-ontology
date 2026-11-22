@@ -214,12 +214,19 @@ class FakeGraph:
         if found:
             folder = self.folders.get(found[1].lower(), {}).get(found[2].lower())
             return j(200, {"id": folder}) if folder else j(404, {"error": {}})
+        found = re.fullmatch(r"/v1\.0/users/([^/]+)/messages/([^/]+)/attachments/([^/]+)/\$value",
+                             path)
+        if found:   # an attached email's raw message (an item attachment)
+            for item in self.attachments.get((found[1].lower(), found[2]), []):
+                if item["id"] == found[3] and item.get("_raw") is not None:
+                    return 200, {"content-type": "message/rfc822"}, item["_raw"]
+            return j(404, {"error": {}})
         found = re.fullmatch(r"/v1\.0/users/([^/]+)/messages/([^/]+)/attachments/([^/]+)",
                              path)
         if found:
             for item in self.attachments.get((found[1].lower(), found[2]), []):
                 if item["id"] == found[3]:
-                    return j(200, item)
+                    return j(200, {k: v for k, v in item.items() if k != "_raw"})
             return j(404, {"error": {}})
         found = re.fullmatch(r"/v1\.0/users/([^/]+)/messages/([^/]+)/attachments", path)
         if found:
@@ -227,7 +234,7 @@ class FakeGraph:
             items = self.attachments.get((found[1].lower(), found[2]), [])
             skip = int(query.get("$skip", ["0"])[0])
             page = items[skip:skip + self.attachment_page]
-            body = {"value": [{k: v for k, v in a.items() if k != "contentBytes"}
+            body = {"value": [{k: v for k, v in a.items() if k not in ("contentBytes", "_raw")}
                               for a in page]}
             if skip + self.attachment_page < len(items):
                 kept = "&".join(p for p in parts.query.split("&")
@@ -311,9 +318,21 @@ def file_attachment(aid: str, content: bytes = ATTACHMENT_BYTES, name="confirmat
             "contentBytes": base64.b64encode(content).decode()}
 
 
-def item_attachment(aid: str):
+ATTACHED_EMAIL = (b"From: lab@vendor.example\r\nTo: ops@petra.example\r\nSubject: Lot 26233A\r\n"
+                  b"Content-Type: text/plain; charset=utf-8\r\n\r\nCertificate of analysis passed.\r\n")
+
+
+def item_attachment(aid: str, raw: bytes | None = ATTACHED_EMAIL):
+    """An attached email; its raw message is what ``$value`` answers (``raw`` None: Graph
+    would not serve it)."""
     return {"id": aid, "@odata.type": "#microsoft.graph.itemAttachment", "name": "Fwd",
             "contentType": None, "size": 900, "isInline": False,
+            "lastModifiedDateTime": "2026-09-30T10:00:00Z", "_raw": raw}
+
+
+def reference_attachment(aid: str):
+    return {"id": aid, "@odata.type": "#microsoft.graph.referenceAttachment", "name": "Link",
+            "contentType": None, "size": 0, "isInline": False,
             "lastModifiedDateTime": "2026-09-30T10:00:00Z"}
 
 
@@ -869,7 +888,10 @@ class VersionIntegrityTests(CaptureCase):
 
     def test_store_bound_stops_capture_and_is_reported(self):
         self.seed(40)
-        self.store.max_store_bytes = self.store.store_bytes() + 6000
+        # + the two pages the run's record of the tenant's uncleared addresses takes (its
+        # table and key, ``tenant_withheld``), written before any message
+        page = self.store.db.execute("PRAGMA page_size").fetchone()[0]
+        self.store.max_store_bytes = self.store.store_bytes() + 6000 + 2 * page
         folder = self.folder(self.capture().run(SCOPE))
         self.assertEqual((folder["complete"], folder["reason"]), (False, "store_full"))
         report = self.store.completeness(READER_A, reader_audience())
@@ -1102,9 +1124,11 @@ class RefusedCaptureTests(CaptureCase):
 class AttachmentCaptureTests(CaptureCase):
     def test_file_attachment_bytes_are_sha256_pinned_and_resolve_offline(self):
         self.graph.put(BOX_A, "MSG-1", "CK-1-1",
-                       attachments=[file_attachment("ATT-1"), item_attachment("ATT-2")])
+                       attachments=[file_attachment("ATT-1"), item_attachment("ATT-2"),
+                                    reference_attachment("ATT-3")])
         folder = self.folder(self.capture().run(SCOPE))
-        self.assertEqual(folder["counts"]["attachments_captured"], 1)
+        # the attached email is fetched as <subject>.eml; only the link stays metadata
+        self.assertEqual(folder["counts"]["attachments_captured"], 2)
         self.assertEqual(folder["counts"]["attachments_metadata_only"], 1)
         digest = sha256(ATTACHMENT_BYTES).hexdigest()
         message = graph_read.mail_citation(BOX_A, "MSG-1", "CK-1-1")
@@ -1119,7 +1143,12 @@ class AttachmentCaptureTests(CaptureCase):
         self.assertEqual(blob.read_bytes(), ATTACHMENT_BYTES)
         view = self.store.messages(READER_A, audience)["items"][0]
         kinds = {a["attachment_id"]: a["content_status"] for a in view["attachments"]}
-        self.assertEqual(kinds, {"ATT-1": "captured", "ATT-2": "not_file_attachment"})
+        self.assertEqual(kinds, {"ATT-1": "captured", "ATT-2": "captured",
+                                 "ATT-3": "not_file_attachment"})
+        attached = json.loads(self.store.db.execute(
+            "SELECT metadata FROM attachments WHERE attachment_id='ATT-2'").fetchone()[0])
+        self.assertEqual((attached["name"], attached["content_type"]),
+                         ("Fwd.eml", "message/rfc822"))
         # A tampered blob is refused, never served.
         blob.write_bytes(b"tampered")
         with self.assertRaises(CaptureError):

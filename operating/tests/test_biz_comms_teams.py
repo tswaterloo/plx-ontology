@@ -72,7 +72,7 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         from ontology import schema as schema_loader
         from operating.pg.migrate import MIGRATIONS_DIR
         with psycopg.connect(self.dsn, autocommit=True) as pg:
-            for name in ("0027_item_audiences.sql", "0040_people_excluded_objects.sql",
+            for name in ("0027_item_audiences.sql", "0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
                          "0041_business_views.sql"):
                 pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
             # the message bodies are in the projection's document text, which the build reads

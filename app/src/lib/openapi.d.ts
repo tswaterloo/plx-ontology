@@ -1060,10 +1060,73 @@ export type paths = {
          * Data Health
          * @description Every data-health check: the findings you may see, and how many more it found on
          *     records you may not open (counted, never named). An Admin page: the owner and the
-         *     Team readers only, as its menu entry (403 for every other reader).
+         *     Team readers only, as its menu entry (403 for every other reader). ``check``: one
+         *     check's findings from ``offset`` (a page of them), cut from the page's one read.
          */
         get: operations["data_health_api_data_health_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/data-health/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Data Health Export
+         * @description The findings you may see, one check's or all, as a spreadsheet (CSV): the same
+         *     rows the page lists, never more.
+         */
+        get: operations["data_health_export_api_data_health_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/digests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Digests List
+         * @description The digests on offer (morning briefing; decisions, customer feedback and waiting
+         *     requests): all off until you switch one on; each report is yours alone.
+         */
+        get: operations["digests_list_api_digests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/digests/{digest_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Digests Set
+         * @description Switch one of your digests on (at an hour, US Eastern) or off. It runs as you.
+         */
+        put: operations["digests_set_api_digests__digest_id__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1242,6 +1305,29 @@ export type paths = {
          * @description Triage (the owner and the admins): new, accepted, fixed or won't fix.
          */
         post: operations["feedback_status_api_feedback__feedback_id__status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feeds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Feed States
+         * @description Whether the background jobs behind Home's lists (reply drafts, autopilot entries,
+         *     findings, late purchase orders and alerts) are running, from the reliability alarms'
+         *     last pass: a stopped job is said, never shown as an empty list. The same for every
+         *     signed-in reader; unit state only, never a record.
+         */
+        get: operations["feed_states_api_feeds_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2031,6 +2117,27 @@ export type paths = {
          *     Nothing is sent: the draft goes through ``/api/actions/*`` and your confirm.
          */
         get: operations["record_pack_api_record_pack__object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/records/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Records List
+         * @description A list of records from the business tables, as you may see them, with its
+         *     filters: ``production`` is the batches (status, QC hold, text).
+         */
+        get: operations["records_list_api_records_list_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4874,6 +4981,11 @@ export type components = {
          */
         AutopilotPrepared: {
             /**
+             * Alert Kind
+             * @description On an alert card: the alert kind whose items it is the same hold as (operating/alert_kinds.json prepared_by); Home lists both in one section.
+             */
+            alert_kind?: string | null;
+            /**
              * Always Ok
              * @description Your replay score earned Auto for this item's work, so "always do this" can be chosen for it.
              * @default false
@@ -5461,7 +5573,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order";
+            kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order" | "product" | "batch";
             /** Sections */
             sections: components["schemas"]["BizTable"][];
             /** Sources */
@@ -5923,6 +6035,11 @@ export type components = {
             /** New Since Visit */
             new_since_visit: number;
             /**
+             * Section
+             * @description The Home section this type is gathered into (financials), if any.
+             */
+            section?: string | null;
+            /**
              * Unavailable
              * @description True when this type's check has not finished within two refresh cycles (or is not served on this page): its items are not shown, never as current; count is 0.
              */
@@ -6030,6 +6147,11 @@ export type components = {
             orders_affected?: number | null;
             /** Rank */
             rank: number;
+            /**
+             * Section
+             * @description The Home section the registry gathers its type into (financials): a count and the biggest few, not one item each under needs you.
+             */
+            section?: string | null;
             /** Sources */
             sources?: components["schemas"]["Source"][];
             /**
@@ -6560,6 +6682,11 @@ export type components = {
              */
             partial: boolean;
             /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
+            /**
              * Status
              * @enum {string}
              */
@@ -6598,6 +6725,17 @@ export type components = {
              * @description Shown to readers (measured right); off: named only.
              */
             on: boolean;
+            /**
+             * Open
+             * @description Every open finding of the check, those this reader may see and those hidden from them, counted without reading them: the page's first read. Then ``count``, ``hidden`` and ``items`` are not read yet (``read`` false).
+             */
+            open?: number | null;
+            /**
+             * Read
+             * @description False: only ``open`` is known; ask for the check (``check=``) to read its findings.
+             * @default true
+             */
+            read: boolean;
             /** Type */
             type: string;
         };
@@ -6659,6 +6797,44 @@ export type components = {
             me: components["schemas"]["Me"];
             /** Ok */
             ok: boolean;
+        };
+        /**
+         * Digest
+         * @description One digest on offer: off until you switch it on; its latest report is yours alone.
+         */
+        Digest: {
+            /** Hour */
+            hour: number;
+            /** Id */
+            id: string;
+            /** Last Result */
+            last_result?: string | null;
+            /** Last Run */
+            last_run?: number | null;
+            /** Next Run */
+            next_run?: number | null;
+            /** On */
+            on: boolean;
+            /** Report */
+            report?: string | null;
+            /** Report At */
+            report_at?: number | null;
+            /** Title */
+            title: string;
+            /** When */
+            when: string;
+        };
+        /** DigestSet */
+        DigestSet: {
+            /** Hour */
+            hour?: number | null;
+            /** On */
+            on: boolean;
+        };
+        /** Digests */
+        Digests: {
+            /** Digests */
+            digests?: components["schemas"]["Digest"][];
         };
         /**
          * DocFigure
@@ -7157,6 +7333,40 @@ export type components = {
             sources: components["schemas"]["Source"][];
             /** Text */
             text: string;
+        };
+        /**
+         * FeedState
+         * @description One background feed: whether the job that makes a screen's list is running.
+         */
+        FeedState: {
+            /**
+             * Key
+             * @description reply_drafts, autopilot, comms_findings or late_pos.
+             */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * State
+             * @description not_running: its timer is stopped or its detector pass is stale (the list is then not 'nothing to do'); unknown: the reliability checks have not run lately.
+             * @enum {string}
+             */
+            state: "running" | "not_running" | "unknown";
+            /**
+             * Why
+             * @description The check's own words.
+             */
+            why?: string;
+        };
+        /** FeedStates */
+        FeedStates: {
+            /**
+             * Checked At
+             * @description When the reliability checks last ran.
+             */
+            checked_at?: string | null;
+            /** Feeds */
+            feeds: components["schemas"]["FeedState"][];
         };
         /** FeedbackClaim */
         FeedbackClaim: {
@@ -7785,6 +7995,11 @@ export type components = {
              */
             about: string;
             chart?: components["schemas"]["ChartSpec"] | null;
+            /**
+             * Fixed Dates
+             * @description A saved one whose statement names fixed dates: the first and last it names ('2026-01-01 to 2026-11-21'); it reads the rows again but not later dates.
+             */
+            fixed_dates?: string | null;
             /** Group */
             group: string;
             /**
@@ -7895,6 +8110,11 @@ export type components = {
             /** Columns */
             columns: string[];
             drawn?: components["schemas"]["AskChart"] | null;
+            /**
+             * Fixed Dates
+             * @description A saved one whose statement names fixed dates: the first and last it names ('2026-01-01 to 2026-11-21'); it reads the rows again but not later dates.
+             */
+            fixed_dates?: string | null;
             /** Group */
             group: string;
             /**
@@ -8003,8 +8223,29 @@ export type components = {
              * @enum {string}
              */
             op: "above" | "below";
+            /**
+             * Order
+             * @description The axis column latest is read along.
+             */
+            order?: string | null;
+            /**
+             * Row
+             * @description any: some row; latest: the last row along the chart's axis (per currency unless where names one), so earlier periods never fire; total: the column's sum over the rows (one currency).
+             * @default any
+             * @enum {string}
+             */
+            row: "any" | "latest" | "total";
             /** Value */
             value: number;
+            /** @description Only the rows whose column holds this value (a currency). */
+            where?: components["schemas"]["InsightWatchWhere"] | null;
+        };
+        /** InsightWatchWhere */
+        InsightWatchWhere: {
+            /** Column */
+            column: string;
+            /** Value */
+            value: string;
         };
         /**
          * InstructContext
@@ -10432,6 +10673,27 @@ export type components = {
             lists?: components["schemas"]["DocList"][];
         };
         /**
+         * RecordFilter
+         * @description One filter of a Records list: its choices (value '' is "all"), as the data holds them.
+         */
+        RecordFilter: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Options */
+            options: components["schemas"]["RecordFilterOption"][];
+        };
+        /** RecordFilterOption */
+        RecordFilterOption: {
+            /** Count */
+            count?: number | null;
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
+        /**
          * RecordHistory
          * @description A record's change log as this reader may read it, newest first, a page at a time.
          *     A change the reader may not read (a value marked beyond them then or since, a record
@@ -10463,6 +10725,30 @@ export type components = {
             partial: boolean;
             /** Type */
             type: string;
+        };
+        /**
+         * RecordList
+         * @description One Records list (``/api/records/list``): a page of rows with record links, the
+         *     filters it offers and how many rows match them; ``more`` when rows follow.
+         */
+        RecordList: {
+            /** As Of */
+            as_of?: string | null;
+            /** Filters */
+            filters: components["schemas"]["RecordFilter"][];
+            /** More */
+            more: boolean;
+            /** Next Offset */
+            next_offset: number;
+            /** Offset */
+            offset: number;
+            table: components["schemas"]["BizTable"];
+            /** Title */
+            title: string;
+            /** Total */
+            total: number;
+            /** View */
+            view: string;
         };
         /**
          * RecordPack
@@ -15164,7 +15450,7 @@ export interface operations {
     biz_page_api_biz_page_get: {
         parameters: {
             query: {
-                kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order";
+                kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order" | "product" | "batch";
                 h?: string;
                 chain?: string;
                 record?: string;
@@ -15693,7 +15979,11 @@ export interface operations {
     };
     data_health_api_data_health_get: {
         parameters: {
-            query?: never;
+            query?: {
+                check?: string | null;
+                offset?: number;
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -15720,6 +16010,146 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    data_health_export_api_data_health_export_get: {
+        parameters: {
+            query?: {
+                check?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    digests_list_api_digests_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Digests"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    digests_set_api_digests__digest_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                digest_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DigestSet"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Digests"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16233,6 +16663,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feed_states_api_feeds_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedStates"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -18326,6 +18785,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    records_list_api_records_list_get: {
+        parameters: {
+            query: {
+                view: "production";
+                status?: string;
+                hold?: "" | "yes" | "no";
+                q?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

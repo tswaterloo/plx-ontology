@@ -1,0 +1,42 @@
+{
+  "tool": "plx.sql",
+  "examples": [
+    {
+      "name": "open purchase orders per supplier",
+      "input": {
+        "sql": "SELECT supplier, count(*) AS open_pos FROM purchase_orders WHERE status = 'open' GROUP BY supplier ORDER BY 2 DESC LIMIT 2"
+      },
+      "output": {
+        "result": "sql://0123456789abcdef0123",
+        "columns": [
+          "supplier",
+          "open_pos"
+        ],
+        "rows": [
+          {
+            "cite": "sql://0123456789abcdef0123#row=1",
+            "cells": [
+              {
+                "untrusted_text": "Example Chemicals Ltd"
+              },
+              12
+            ]
+          },
+          {
+            "cite": "sql://0123456789abcdef0123#row=2",
+            "cells": [
+              {
+                "untrusted_text": "Sample Packaging Inc"
+              },
+              7
+            ]
+          }
+        ],
+        "views": [
+          "purchase_orders"
+        ],
+        "as_of": "2099-01-02T03:00:00+00:00"
+      }
+    }
+  ]
+}

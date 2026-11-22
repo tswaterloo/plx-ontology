@@ -272,8 +272,6 @@ class DeployFilesTest(unittest.TestCase):
             "plx-expiry": "reads the credential files to report their expiry dates",
             "plx-write-readiness": "reads the apps' permission claims and BC's company list "
                                    "to record where a write could run",
-            "plx-mail-exclusion-purge": "re-reads captured mail through the GET-only Graph "
-                                        "client to find what the exclusion refuses",
         }
         dropped = {"AZURE_CLIENT_SECRET", "BC_CLIENT_SECRET", "MICROSOFT_GRAPH_CLIENT_SECRET",
                    "MC_MCP_API_KEY"}

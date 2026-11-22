@@ -32,7 +32,27 @@ export function splitPrepared(items: PreparedItem[]): { confirm: PreparedItem[];
 
 export type PreparedCount = { confirm: number; alerts: number };
 
-export function AssistQueue({ onCount, only }: { onCount?: (n: PreparedCount | null) => void; only?: "confirm" | "alerts" }) {
+/** Lists on Home that each show part of the queue and mount together share one read of it. */
+let inFlight: Promise<{ items: PreparedItem[]; never_senders?: string[] }> | null = null;
+function readDrafts(round: number): Promise<{ items: PreparedItem[]; never_senders?: string[] }> {
+  if (round > 0) return getAutopilotDrafts();
+  if (!inFlight) {
+    const read = getAutopilotDrafts();
+    inFlight = read;
+    const done = () => {
+      if (inFlight === read) inFlight = null;
+    };
+    read.then(done, done);
+  }
+  return inFlight;
+}
+
+/**
+ * ``except``: alert kinds whose cards are listed in that kind's own section (a hold that blocks
+ * an order beside the other holds), not here. ``kind``: only those cards, with no heading of
+ * their own, for that section; ``onKind`` says how many there are.
+ */
+export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?: (n: PreparedCount | null) => void; only?: "confirm" | "alerts"; except?: string[]; kind?: string; onKind?: (n: number) => void }) {
   const params = useSearchParams();
   const linked = params?.get("item") ?? null;
   const [items, setItems] = useState<PreparedItem[] | null>(null);
@@ -41,17 +61,23 @@ export function AssistQueue({ onCount, only }: { onCount?: (n: PreparedCount | n
   const [round, setRound] = useState(0);
   const reload = useCallback(() => setRound((n) => n + 1), []);
   useEffect(() => {
-    const ctl = new AbortController();
-    getAutopilotDrafts(ctl.signal).then(
+    let live = true;
+    readDrafts(round).then(
       (r) => {
+        if (!live) return;
         setItems(r.items);
         setNever(r.never_senders ?? []);
         setError(null);
       },
-      (e) => !ctl.signal.aborted && setError(e),
+      (e) => live && setError(e),
     );
-    return () => ctl.abort();
+    return () => {
+      live = false;
+    };
   }, [round]);
+  useEffect(() => {
+    if (kind && onKind) onKind(items?.filter((i) => i.kind === "alert" && i.alert_kind === kind).length ?? 0);
+  }, [items, kind, onKind]);
   useEffect(() => {
     if (error || !items) return onCount?.(null);
     const { confirm, alerts } = splitPrepared(items);
@@ -62,9 +88,17 @@ export function AssistQueue({ onCount, only }: { onCount?: (n: PreparedCount | n
   }, [linked, items]);
   if (error) return <div className="px-5 pt-3"><LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={reload} /></div>;
   if (!items) return null;            // the rest of Home shows meanwhile; the queue joins it when read
-  const split = splitPrepared(items);
-  const listed = only === "confirm" ? split.confirm : only === "alerts" ? split.alerts : items;
+  if (kind) {
+    const mine = items.filter((i) => i.kind === "alert" && i.alert_kind === kind);
+    if (mine.length === 0) return null;
+    return <PreparedView items={mine} empty="" linked={linked} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />;
+  }
+  const left = except?.length ? items.filter((i) => !(i.kind === "alert" && i.alert_kind && except.includes(i.alert_kind))) : items;
+  const split = splitPrepared(left);
+  const listed = only === "confirm" ? split.confirm : only === "alerts" ? split.alerts : left;
   if (only && listed.length === 0) return null;
+  // everything waiting is listed in its kind's own section: no empty queue beside it
+  if (listed.length === 0 && left.length < items.length) return null;
   const { send, wait } = autoDigest(listed);
   // the heading says what is there: drafts to confirm are prepared for you; alerts alone
   // (a QC hold) have nothing to confirm, so they are not called prepared

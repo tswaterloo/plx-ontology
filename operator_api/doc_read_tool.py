@@ -8,7 +8,10 @@ What it reads, and as whom:
 * ``sharepoint://<drive>/<item>@<version>`` (a ``plx.search`` hit): only when the reader's
   own host opens that citation now (``DocumentEditMixin._pw_doc_bytes``: the host's gates
   decide, then that version's original from the SharePoint capture store; a version the
-  store no longer holds, or whose original was dropped, is not read here);
+  store no longer holds is not read here; one whose original was dropped is read from the
+  text the capture extracted from it, and says so: ``captured_text_note``);
+* ``graph-mail://<mailbox>/<message>#attachment=<id>&sha256=<digest>`` (a mail attachment, byte-
+  pinned): the same host gate; its original when held, else the text extracted from it;
 * ``file:<id>``: the person's own file (``_pw_file``: a file they attached to an Ask, or one
   the Ask made or edited for them; another reader's id is none).
 
@@ -38,6 +41,9 @@ from . import ocr_background
 
 NAME = "plx.read_document"
 KEEP_SECONDS = 900
+# a file whose original is not held is read from its captured text: its name carries this
+# for the read, which the answer then states
+CAPTURED_SUFFIX = ".captured.txt"
 KEEP_DOCS = 6
 KEEP_CHARS = 12_000_000
 
@@ -49,7 +55,8 @@ SPEC = {
         "a Word file's tables, headers and footers, a deck's slides and notes. Use it when "
         "plx.open's text is cut or a sheet says truncated, when an attached file's text was "
         "cut, or when the answer needs rows or pages further in. citation: a sharepoint:// "
-        "citation from plx.search or a file: citation of the person's own file. With no "
+        "or mail-attachment (graph-mail://...#attachment=...&sha256=...) citation from "
+        "plx.search or a file: citation of the person's own file. With no "
         "offset or find: the first part and the outline (sheets with row counts, pages). "
         "offset: the next part (next_offset of the last read); find: the lines holding all "
         "the words (an item code, a name, a PO), each with its offset and sheet or page. "
@@ -133,12 +140,33 @@ def _open(backend: Any, reader: Any, citation: str) -> Any:
         except Exception:  # noqa: BLE001 - not readable here: said, never guessed
             got = None
         if got is None:
+            # the original was dropped (or never held) but the capture kept the text it
+            # extracted: the same gates, read from that text, and said so
+            try:
+                kept = backend._pw_doc_text(reader, citation)
+            except Exception:  # noqa: BLE001 - not readable here: said, never guessed
+                kept = None
+            if kept is not None:
+                return kept[0] + CAPTURED_SUFFIX, kept[1].encode("utf-8")
             return _error("not_readable", "Its original is not one this reader can open here "
-                          "as that version (it changed since, or only its captured text is "
-                          "kept): use plx.open's text.")
+                          "as that version (it changed since, or no text of it was kept): "
+                          "use plx.open's text.")
         return got[0], got[1]
-    return _error("unsupported", "Only sharepoint:// and file: citations are read whole "
-                  "here; read other items with plx.open.")
+    if citation.startswith("graph-mail://") and "#attachment=" in citation:
+        try:
+            att = backend._pw_mail_attachment(reader, citation)
+        except Exception:  # noqa: BLE001 - not readable here: said, never guessed
+            att = None
+        if att is None:
+            return _error("not_readable", "That mail attachment is not one this reader can "
+                          "open here (not byte-pinned with its sha256, not held, or no text "
+                          "of it was kept): use plx.open's text.")
+        name, data, text = att
+        if data is not None:
+            return name, data
+        return name + CAPTURED_SUFFIX, (text or "").encode("utf-8")
+    return _error("unsupported", "Only sharepoint://, mail-attachment (graph-mail://...#attachment=) "
+                  "and file: citations are read whole here; read other items with plx.open.")
 
 
 def call(backend: Any, reader: Any, arguments: Any) -> dict[str, Any]:
@@ -205,9 +233,16 @@ def call(backend: Any, reader: Any, arguments: Any) -> dict[str, Any]:
     withheld = backend._pw_withheld(" \n".join([name, text]), guard)
     if withheld:
         return _error("egress_withheld", withheld.split(":")[0].rstrip(".") + ".")
-    about = dict(about, name=name)
+    captured = name.endswith(CAPTURED_SUFFIX)
+    about = dict(about, name=name[:-len(CAPTURED_SUFFIX)] if captured else name)
     out: dict[str, Any] = {"citation": citation, "name": about["name"], "kind": about["kind"],
                            "total_chars": len(text)}
+    if captured:
+        out["kind"] = "captured_text"
+        out["captured_text_note"] = (
+            "The original file is not held here; this is the text the capture extracted from "
+            "it (a scanned page read by OCR is unconfirmed). Layout, images and any page the "
+            "extraction left out are not in it.")
     if about["not_read"]:
         out["not_read"] = about["not_read"]
     if about.get("pending"):

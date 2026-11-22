@@ -244,6 +244,63 @@ class FullReadGrantTest(unittest.TestCase):
         self.assertFalse({k for k in keys if policy.may_read(actor, k)})
         self.assertFalse(policy.held_markings(actor))
 
+    def test_only_the_marked_owner_holds_the_owner_key_and_the_excluded_units(self):
+        """The excluded people's data is the owner's alone. The
+        one declared grant marked ``owner`` holds ``OWNER_KEY`` and the excluded person's
+        units; the same grant unmarked, a listed full reader, a staff reader and a policy
+        marking two owners hold neither; no pattern grants the key."""
+        import copy
+        from operating import ontology_host
+        from operating.ontology_tools_policy import ReadPolicy
+        from operating.pg.access_classes import OWNER_KEY
+        keys = [f"mail:{BOX}", f"mail:{EXCLUDED}", f"meetings:calendar:{EXCLUDED}"]
+
+        def runtime(resolver):
+            no = SimpleNamespace(allows=lambda *a: False)
+            return SimpleNamespace(
+                employee_gate=ep.EmployeeActorGate(resolver, "plx"),
+                people_exclusion=PeopleExclusion([EXCLUDED]),
+                live=SimpleNamespace(audience=no), mirror=SimpleNamespace(_audience=lambda: no))
+
+        def held(doc, oid, **kw):
+            resolver = (self.resolver(doc) if not kw else ep.EmployeePermissionResolver(
+                ep.EmployeePermissionPolicy.from_json(doc), ep.PortalAccessSnapshot(self.access),
+                people_exclusion=PeopleExclusion([EXCLUDED]), **kw))
+            actor = Actor("plx", frozenset({"employee:" + oid}), "restricted")
+            gate = ep.EmployeeActorGate(resolver, "plx")
+            policy = ontology_host.case_host_policy(runtime(resolver), actor, None,
+                                                    audience_keys=keys)
+            return ({k for k in [*keys, OWNER_KEY] if policy.may_read(actor, k)},
+                    ep.reader_owner(gate, actor))
+        marked = copy.deepcopy(self.policy_doc)
+        marked["full_read"][0]["owner"] = True
+        self.assertEqual(held(marked, VINCE), ({*keys, OWNER_KEY}, True))
+        # the same grant unmarked: a full reader, not the owner
+        self.assertEqual(held(self.policy_doc, VINCE), ({f"mail:{BOX}"}, False))
+        # a listed full reader (no declared grant) is never the owner
+        unlisted = {k: v for k, v in marked.items() if k != "full_read"}
+        self.assertEqual(held(unlisted, OTHER, full_readers=["other@example.com"]),
+                         ({f"mail:{BOX}"}, False))
+        # a staff reader: neither
+        self.assertEqual(held(marked, OTHER), (set(), False))
+        # two grants marked owner: none is
+        two = copy.deepcopy(marked)
+        two["full_read"].append(dict(marked["full_read"][0], object_id=OTHER))
+        self.assertEqual(held(two, VINCE)[1], False)
+        self.assertNotIn(OWNER_KEY, held(two, VINCE)[0])
+        # a non-boolean mark is refused; no pattern grants the key; owner needs unrestricted
+        bad = copy.deepcopy(self.policy_doc)
+        bad["full_read"][0]["owner"] = "yes"
+        with self.assertRaises(ValueError):
+            ep.EmployeePermissionPolicy.from_json(bad)
+        actor = Actor("plx", frozenset({"p"}))
+        every = ReadPolicy("plx", {"*": {"p"}, "plx:*": {"p"}, OWNER_KEY: {"p"}},
+                           unrestricted=True)
+        self.assertFalse(every.may_read(actor, OWNER_KEY))
+        self.assertFalse(every.covers_family(actor, "plx"))
+        with self.assertRaises(ValueError):
+            ReadPolicy("plx", {}, owner=True)
+
     def test_planner_tasks_stay_decided_per_record_inside_a_granted_plan(self):
         """A plan unit granted on the audience opens no task by itself: each task is
         decided by its own captured people (``plan_people``): a reader the task names

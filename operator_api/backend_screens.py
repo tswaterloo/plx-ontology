@@ -266,11 +266,38 @@ class ScreensMixin:
                 checked_on=checked if late_behind and isinstance(checked, str) else None),
             recent_questions=recent, freshness=self.freshness(inbox))
 
-    def data_health(self, reader: Reader) -> m.DataHealth:
-        """Admin, Data health (``operator_api.data_health``): every data-health check with
-        the findings this reader may see and the count hidden from them."""
+    def data_health(self, reader: Reader, check: Optional[str] = None) -> m.DataHealth:
+        """Admin, Data health (``operator_api.data_health``). No ``check``: every check's
+        open count, read with no per-finding decision (the page's first read, well under a
+        second). ``check``: that check's findings this reader may see and the count hidden
+        from them (the trimmed read, kept per reader and check as Home and the late list are)."""
         from . import data_health
-        return self.reads.run(reader, data_health.page, timeout=READ_TIMEOUT_SECONDS)
+
+        def read() -> m.DataHealth:
+            job = data_health.summary if check is None else (lambda v: data_health.page(v, check))
+            return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+        # kept per reader (``_serving``): the last good page is served at once, marked stale,
+        # while the business views refresh holds the read up (live 11-21: 60 s then 503)
+        return self._serving(reader, ("data_health", check or "counts"), read,
+                             self._screen_inputs(alerts=True),
+                             reading=lambda: m.DataHealth(status="unread"))
+
+    def data_health_all(self, reader: Reader) -> m.DataHealth:
+        """Every on check's findings (the spreadsheet): one trimmed read per check."""
+        from . import data_health
+        first = self.data_health(reader)
+        if first.status != "read":
+            return first
+        checks = []
+        for c in first.checks:
+            if not c.on:
+                checks.append(c)
+                continue
+            got = self.data_health(reader, c.type)
+            if got.status != "read":
+                return got
+            checks.extend(x for x in got.checks if x.type == c.type)
+        return first.model_copy(update={"checks": checks})
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         from . import page_sql
@@ -523,6 +550,29 @@ class ScreensMixin:
         env = self._actions_env()
         return self.reads.run(reader, lambda view: alert_playbook_of(view, alert_id, env),
                               timeout=READ_TIMEOUT_SECONDS)
+
+    def finding_card(self, reader: Reader, ref: str) -> Optional[dict[str, Any]]:
+        """A data-health finding as a card for the action desk (assign only), built from
+        the finding as this reader's trimmed read shows it: ``ref`` is ``<check>:<id>``; the
+        check only narrows the read, the finding must be in it. None: not theirs to see."""
+        from . import data_health
+        check, _, gap_id = ref.partition(":")
+        known = {str(t["type"]): t for t in data_health.registered() if t.get("default") == "on"}
+        if check not in known or not gap_id:
+            return None
+
+        def read(view: Any) -> Optional[dict[str, Any]]:
+            found = view.gap_inbox(kinds=[check], limit=data_health.READ_LIMIT)
+            if found.get("status") != "read":
+                return None
+            return next((g for g in found.get("gaps") or () if g.get("id") == gap_id), None)
+        gap = self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
+        if gap is None:
+            return None
+        words = str(gap.get("summary") or known[check].get("label") or "Finding")
+        return {"id": f"dh:{ref}", "headline": words[:300], "subject": {"label": words[:200]},
+                "action": {"text": ""}, "draft": {"channel": None, "facts": []},
+                "teams_draft": None}
 
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:

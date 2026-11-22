@@ -38,7 +38,11 @@ TOOL_EXAMPLES = {
 DECIDED_TOOLS = {f"plx.{name}" for name in (
     "schema", "find", "object", "around", "timeline", "aggregate", "process", "compare", "identity",
     "documents", "read", "investigate", "agenda", "changes", "review", "playbook_propose",
-    "playbook_evaluate", "playbook_adopt", "query", "table", "business")}
+    "playbook_evaluate", "playbook_adopt", "query", "table", "business",
+    # 11-17 architecture: one read-only SELECT over the reader's guarded views, one
+    # search over mail/Teams/files/records and one open of a cited item
+    "sql", "search", "open")}
+CORE_TOOLS = {"plx.sql", "plx.search", "plx.open"}
 WORKBENCH_WRITERS = {"plx.review", "plx.playbook_propose", "plx.playbook_evaluate",
                      "plx.playbook_adopt", "plx.investigate"}
 
@@ -82,13 +86,20 @@ class ContractsAreWellFormed(unittest.TestCase):
         self.assertEqual(limits["max_hops"], 3)
         for name, tool in TOOLS["tools"].items():
             with self.subTest(tool=name):
-                self.assertLessEqual(len(tool["description"]), limits["max_description_chars"])
+                # the 11-17 core tools carry the guidance a prompt would otherwise hold
+                cap = limits["max_core_description_chars"] if name in CORE_TOOLS \
+                    else limits["max_description_chars"]
+                self.assertLessEqual(len(tool["description"]), cap)
                 self.assertIs(tool["read_only"], name not in WORKBENCH_WRITERS)
         from operating.mcp_server_evidence import MAX_RESULT_BYTES
         self.assertEqual(limits["max_result_bytes"], MAX_RESULT_BYTES)
 
     def test_no_sql_tool(self):
+        # plx.sql (11-17 architecture) is the one SQL tool: its own tests hold it to one
+        # read-only SELECT over the reader's guarded views (operating/ontology_tools_sql.py)
         for name, tool in TOOLS["tools"].items():
+            if name == "plx.sql":
+                continue
             self.assertNotIn("sql", name.lower())
             self.assertNotIn("sql", json.dumps(tool["input"]).lower(), name)
 
@@ -615,6 +626,9 @@ class ToolContractsReject(unittest.TestCase):
             # plx.aggregate item_po_prices: the caller's own input codes (items[].code, at most
             # 60 characters) handed back unmatched or ambiguous, never text read from a source
             "codes_not_found", "codes_ambiguous",
+            # plx.search widened hits: the Workbench's own words for how a hit matched
+            # ('1 of 2 words', 'close in meaning') and why the list was widened
+            "match", "widened",
         }
         found: set[str] = set()
 
@@ -628,6 +642,10 @@ class ToolContractsReject(unittest.TestCase):
                     walk(target, name, seen | {ref})
                 types = schema.get("type")
                 types = types if isinstance(types, list) else [types]
+                # an inline envelope ({untrusted_text, ...} with the citation on its row,
+                # plx.sql cells) is enveloped as the $defs one is
+                if name == "untrusted_text":
+                    return
                 if "string" in types and not ({"pattern", "enum", "const"} & set(schema)):
                     found.add(name)
                 for key, sub in (schema.get("properties") or {}).items():

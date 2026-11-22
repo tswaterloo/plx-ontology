@@ -755,6 +755,14 @@ def purge(store: Any, pairs: Sequence[tuple[str, str]], *, dsn: str | None,
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
          sender: Any = None) -> int:
+    # With the captures including the excluded people
+    # (``people_capture.ENV``) their mail is kept, the owner's alone; a scan or purge would
+    # delete it, so none runs, whatever is still scheduled.
+    from integrations import people_capture
+    if people_capture.enabled(os.environ if environ is None else environ):
+        print(json.dumps({"ok": False, "error": "refused: the captures include the excluded "
+                          "people (PLX_CAPTURE_PEOPLE=include); nothing is purged"}))
+        return 2
     parser = argparse.ArgumentParser(prog="python3 -m operating.mail_exclusion_purge",
                                      description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)

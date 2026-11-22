@@ -1,0 +1,23 @@
+[Unit]
+Description=PLX old-mail store: chunk the planned mail units (resumable; skips recorded units)
+Requires=oldmail-store.service
+After=oldmail-store.service
+# the vectors follow once every unit is chunked (a cursor walk started earlier would pass
+# over the hashes chunked after it)
+OnSuccess=oldmail-embed.service
+StartLimitIntervalSec=3600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+Environment=OLDMAIL_ARGS=
+ExecStart=%h/oldmail-run.sh %h/oldmail-code 12 $OLDMAIL_ARGS
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2 3
+MemoryMax=40G
+StandardOutput=append:%h/oldmail-store/build.log
+StandardError=append:%h/oldmail-store/build.err
+
+[Install]
+WantedBy=default.target

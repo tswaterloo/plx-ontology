@@ -114,7 +114,7 @@ class FilesTableThroughTheGate(unittest.TestCase):
                 for cid, vec in words.chunk_word_rows((r[0], bytes(r[1])) for r in rows):
                     pg.execute("INSERT INTO ontology.chunk_words VALUES (%s, %s::tsvector)",
                                (cid, vec))
-            for name in ("0027_item_audiences.sql", "0040_people_excluded_objects.sql",
+            for name in ("0027_item_audiences.sql", "0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
                          "0041_business_views.sql"):
                 pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
         # the exclusion's set reads the people directory a mail capture records: an empty one
@@ -284,14 +284,32 @@ class FilesTableThroughTheGate(unittest.TestCase):
                     self.walk(tool, QUALITY, "widget", 20, full=full)
                 self.assertEqual(caught.exception.code, "not_served")
 
-    def test_no_reader_query_reads_the_table(self):
+    def count(self, tool, actor, *, full):
+        with mock.patch.object(ts, "_people_tag", return_value=self.tag), \
+                mock.patch.object(people_excluded, "full_reader", return_value=full):
+            out = tool.call("plx.sql", {"sql": "SELECT count(*) FROM sharepoint_files"}, actor)
+        self.assertNotIn("error", out, out)
+        cell = out["rows"][0]["cells"][0]
+        return int(cell["untrusted_text"] if isinstance(cell, dict) else cell)
+
+    def test_a_full_reader_counts_the_files_through_the_door_and_no_other_reader_reads_one(self):
+        """11-22 (A full reader sees every business record): plx.sql counts and
+        lists the files for a full reader (the door's rows: its unit, Freightcom, the people
+        flag), and reads none for a reader who is not full or on a host with no item gate."""
+        gate = item_gate_from_case_runtime(self.runtime())
+        served = self.count(self.tool(gate), QUALITY, full=True)
+        self.assertGreater(served, 0)
+        self.assertEqual(served, self.count(self.tool(gate), EMPLOYEE, full=True))
+        self.assertEqual(self.count(self.tool(gate), QUALITY, full=False), 0)
+        self.assertEqual(self.count(self.tool(None), QUALITY, full=True), 0)
+        # listed by folder: the rows are the table's own
         with mock.patch.object(ts, "_people_tag", return_value=self.tag), \
                 mock.patch.object(people_excluded, "full_reader", return_value=True):
-            out = self.tool(item_gate_from_case_runtime(self.runtime())).call(
-                "plx.sql", {"sql": "SELECT count(*) FROM sharepoint_files"}, QUALITY)
-        self.assertTrue("error" in out or
-                        str(out["rows"][0]["cells"][0]) in ("0", "{'untrusted_text': '0'}"),
-                        out)
+            out = self.tool(gate).call("plx.sql", {"sql": "SELECT name, path, size FROM "
+                                                   "sharepoint_files ORDER BY name LIMIT 5"},
+                                       QUALITY)
+        self.assertNotIn("error", out, out)
+        self.assertTrue(out["rows"])
 
 
 from integrations.graph_read import SharePointReader  # noqa: E402

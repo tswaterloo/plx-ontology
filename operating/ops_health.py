@@ -167,8 +167,12 @@ DEFAULT_TARGETS: dict[str, float] = {
     # one finished cycle that left none
     "delta_backlog_minutes": 60,
     # hours a captured record may wait past the delta's cursor before it pages
-    # (``ops_alarms.served_lag_checks``; one delta cycle is ~6 minutes)
-    "served_lag_hours": 1,
+    # (``ops_alarms.served_lag_checks``; one delta cycle is ~6 minutes; 11-22: 30 min, the
+    # owner's line for a source to fall behind unnoticed)
+    "served_lag_hours": 0.5,
+    # hours a published delta layer may wait unapplied to the Postgres ontology
+    # (``ops_alarms.applied_lag_checks``; the follower runs every 2 minutes)
+    "applied_lag_hours": 0.5,
     "backup_age_hours": 26,         # the newest complete backup set (nightly; 26 h: no night missed)
     "restore_test_age_hours": 30,   # the last restore test (nightly)
     "backup_store_hours": 26,       # every capture piece and the off-box copy (ops_alarms_backup)

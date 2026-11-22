@@ -40,6 +40,8 @@ from operating import autopilot_outcomes as ao
 from operating import autopilot_queue
 from operating.autopilot_records import object_href
 from operating import learning
+from operating.alert_kinds import kind_prepared_by
+from .presentation import counted_words
 from operating import autopilot_write as aw
 from operating import workflows as wf
 from operating.card_actions import Journal
@@ -161,6 +163,10 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
         said = "1 open order" if n == 1 else f"{n} open orders"
         summary = re.sub(r"holds up \d+ open orders?", "holds up " + said, summary)
         summary = re.sub(r"\d+ open order\(s\) affected", said + " affected", summary)
+    # a source's own "1 open order(s) affected": the plural the count calls for, in every
+    # sentence the card says (whatever an old item stored)
+    summary = counted_words(summary)
+    facts = [counted_words(f) for f in facts]
     options = [str(o) for o in prepared.get("options") or () if isinstance(o, str)]
     if options:
         facts.append("Choices asked: " + "; ".join(options))
@@ -196,8 +202,9 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
     return m.AutopilotPrepared(
         item_id=item["item_id"], sender=str(happened.get("sender") or ""), channel="system",
         subject=title[:300], kind="alert", summary=summary[:600],
-        message=shown_message(prepared.get("context") or happened.get("snippet")),
-        facts=facts[:ALERT_FACTS], note=note[:300], links=links[:4],
+        alert_kind=kind_prepared_by(str(item.get("autopilot") or "")),
+        message=counted_words(shown_message(prepared.get("context") or happened.get("snippet"))),
+        facts=facts[:ALERT_FACTS], note=counted_words(note[:300]), links=links[:4],
         created_at=str(item["created_at"]))
 
 
@@ -1207,7 +1214,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                     if alert is not None:
                         out.append(passed(alert, hands, mine_ids))
                     continue
-                if prepared.get("kind") == "job":
+                if prepared.get("kind") in ("job", "todo"):   # todo: a message's to-do card
                     job = self._apa_job_shown(reader, item, shown, jobs_cache)
                     if job is not None:
                         out.append(job)

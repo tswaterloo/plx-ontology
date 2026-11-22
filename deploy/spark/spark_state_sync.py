@@ -1,14 +1,20 @@
 """Copy the read side of the box's state directory to a Spark, for runs started there by
 ``deploy/spark/spark_run.sh`` (their ``/data/plx-state`` is this copy).
 
-usage: python3 deploy/spark/spark_state_sync.py --host s7d3d [--jobs 4] [--blobs] [--only REL]...
+usage: python3 deploy/spark/spark_state_sync.py --host s7d3d [--jobs 4] [--blobs] [--text-blobs]
+       [--only REL]...
        [--state /data/plx-state] [--dest plx-state-copy] [--dry-run]
 
 What goes: the stores an eval, bench or private API reads (``ALLOW``: the capture stores,
 case runtime, projection readings, autopilot/learning/answer bank, small JSON files). What never
 goes: sessions and tickets, the held-out set, keys and tunnels, alarms, job queues, other modules'
 work, transient delta work files (``DENY``), and the blob folders unless ``--blobs`` (attachment
-and file bodies: ~120 GB that does not compress).
+and file bodies: ~120 GB that does not compress). ``--text-blobs``: only the extracted TEXT of
+captured files (``TEXT_BLOB_STORES``' blob kind ``text``, a file a store still holds: ~1 GB for
+SharePoint, ~2.7 GB of mail attachments), which every read of a file's text (plx.open, plx.search snippets, a COA's lot
+numbers) goes through; without it a Spark run reads "no text was extracted" for files whose
+text the box holds (HARD20 h07, 11-21: 19 of 20 random SharePoint PDFs have text on the box,
+none on a Spark).
 
 How, per file, all read-only on the box:
 * a SQLite store in WAL mode: ``sqlite3_rsync`` (SQLite 3.54) over ssh with compression. It
@@ -98,7 +104,41 @@ def _walk(state: Path, top: Path, blobs: bool):
             yield base / f
 
 
-def plan(state: Path, *, blobs: bool = False, only: tuple[str, ...] = ()) -> list[dict]:
+# capture stores whose blob folder is plain files (blobs/sha256/<2>/<sha>) with a ``blobs``
+# table naming each one's kind and whether it was dropped
+# (a mail attachment's text is a loose ``<sha>.z``, a SharePoint file's a plain ``<sha>``)
+TEXT_BLOB_STORES = ("sharepoint-capture", "mail-capture")
+TEXT_BLOB_SUFFIXES = ("", ".z", ".zst")
+
+
+def text_blob_rels(state: Path, store: str) -> list[str]:
+    """The relative paths of a store's text blobs that exist on disk (none for a store with no
+    ``blobs`` table or folder: nothing to copy, never an error)."""
+    db = state / store / "capture.db"
+    if not db.is_file():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30)
+        try:
+            shas = [r[0] for r in con.execute(
+                "SELECT sha256 FROM blobs WHERE kind = 'text' AND dropped_at IS NULL")]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return []
+    out = []
+    for sha in shas:
+        if re.fullmatch(r"[0-9a-f]{64}", sha or ""):
+            for suffix in TEXT_BLOB_SUFFIXES:
+                rel = f"{store}/blobs/sha256/{sha[:2]}/{sha}{suffix}"
+                if (state / rel).is_file():
+                    out.append(rel)
+                    break
+    return out
+
+
+def plan(state: Path, *, blobs: bool = False, only: tuple[str, ...] = (),
+         text_blobs: bool = False) -> list[dict]:
     """Every file to copy: ``{"rel", "size", "kind"}``, biggest first. Only ``ALLOW`` names
     (narrowed by ``only``), never a ``DENY`` path, blob folders only with ``blobs``."""
     out = []
@@ -116,6 +156,15 @@ def plan(state: Path, *, blobs: bool = False, only: tuple[str, ...] = ()) -> lis
             except OSError:
                 continue
             out.append({"rel": rel, "size": size, "kind": kind_of(p)})
+    if text_blobs and not blobs:   # ``blobs`` already holds every blob
+        for store in TEXT_BLOB_STORES:
+            if only and not any(store == o or o.startswith(store + "/") for o in only):
+                continue
+            for rel in text_blob_rels(state, store):
+                try:
+                    out.append({"rel": rel, "size": (state / rel).stat().st_size, "kind": "file"})
+                except OSError:
+                    continue
     out.sort(key=lambda r: -r["size"])
     return out
 
@@ -220,13 +269,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dest", default=DEST)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--blobs", action="store_true")
+    ap.add_argument("--text-blobs", action="store_true",
+                    help="only the extracted text of captured files, not the file bodies")
     ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9._-]+", a.dest):
         ap.error("--dest is a folder name under the Spark login's home")
     state = Path(a.state)
-    items = plan(state, blobs=a.blobs, only=tuple(a.only))
+    items = plan(state, blobs=a.blobs, only=tuple(a.only), text_blobs=a.text_blobs)
     if a.dry_run:
         for r in items:
             print(json.dumps(r))

@@ -746,6 +746,25 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                 self._kept.pop(next(iter(self._kept)))
         yield "answer", answer
 
+    def records_list(self, reader: Reader, view: str, status: str = "", hold: str = "",
+                     q: str = "", offset: int = 0, limit: int = 25) -> m.RecordList:
+        rows = [("BC-1A", "Shampoo Base", "Realized", "On-Hold"), ("BC-2A", "Shampoo Base", "Realized", "Released")]
+        rows = [r for r in rows if (not status or r[2] == status)
+                and (not hold or (r[3] == "On-Hold") == (hold == "yes"))
+                and (not q or q.lower() in " ".join(r).lower())]
+        page = rows[offset:offset + limit]
+        cell = lambda t: m.BizCell(text=t)
+        return m.RecordList(
+            view="production", title="Production batches", total=len(rows), offset=offset,
+            more=offset + len(page) < len(rows), next_offset=offset + len(page),
+            table=m.BizTable(key="batches", title="Batches", columns=["Batch", "Product", "Status", "QC"],
+                             rows=[[cell(c) for c in r] for r in page], total=len(rows)),
+            filters=[m.RecordFilter(key="status", label="Status", options=[
+                m.RecordFilterOption(value="", label="All"), m.RecordFilterOption(value="Realized", label="Realized", count=2)]),
+                m.RecordFilter(key="hold", label="QC hold", options=[
+                    m.RecordFilterOption(value="", label="All"), m.RecordFilterOption(value="yes", label="On hold"),
+                    m.RecordFilterOption(value="no", label="Not on hold")])])
+
     def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = "",
                  record: str = "") -> m.BizPage:
         raise UserFacing("pages_off", "These record pages aren't switched on on this "
@@ -793,12 +812,15 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
     def forget_reader(self, reader: Reader) -> None:
         return None
 
-    def data_health(self, reader: Reader) -> m.DataHealth:
+    def data_health(self, reader: Reader, check: Optional[str] = None) -> m.DataHealth:
         """The demo's data-health findings through the real page builder: one duplicate
         pair the demo reader sees and two findings on records it may not open."""
         from . import data_health
 
         class Demo:
+            def data_health_counts(self, kinds: Any) -> dict[str, Any]:
+                return {"status": "read", "counts": {"duplicate_party_candidate": 1}}
+
             def data_health_gaps(self, kinds: Any, *, limit: int = 0) -> dict[str, Any]:
                 gaps = [{"id": "dh-1", "kind": "duplicate_party_candidate",
                          "object_id": "Customer:demo:maple-leaf", "object_type": "Customer",
@@ -808,7 +830,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                         "gaps": [g for g in gaps if g["kind"] in kinds],
                         "hidden": {"key_field_missing": 2} if "key_field_missing" in kinds
                         else {}}
-        return data_health.page(Demo())
+        return data_health.summary(Demo()) if check is None else data_health.page(Demo(), check)
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         late = self._late()
@@ -1179,6 +1201,16 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         from .briefs import LATE_ROWS, brief_model, late_from_home
         return late_from_home(brief_model(mock_meetings.weekly(week)),
                               lambda: self.late_list(reader, limit=LATE_ROWS))
+
+    def finding_card(self, reader: Reader, ref: str) -> Optional[dict[str, Any]]:
+        """The demo data-health finding as an assign-only card (nothing else is offered)."""
+        if ref != "duplicate_party_candidate:dh-1":
+            return None
+        words = ("Maple Leaf Soapworks and MAPLE LEAF SOAPWORKS INC look like one customer "
+                 "entered twice.")
+        return {"id": f"dh:{ref}", "headline": words, "subject": {"label": words},
+                "action": {"text": ""}, "draft": {"channel": None, "facts": []},
+                "teams_draft": None}
 
     def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
         """A demo alert's playbook by the real builder over the demo briefing; no record

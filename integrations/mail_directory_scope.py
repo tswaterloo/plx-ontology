@@ -461,7 +461,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                 deny=scope.deny)
     try:
         api, transport = build_graph(environ, sender=sender,
-                                     retry=BoundedBackoff(sleep=sleep, budget_seconds=60))
+                                     retry=BoundedBackoff(sleep=sleep, budget_seconds=60),
+                                     capture=True)
         log = RequestLog()
         transport.observers.append(log)
         people = from_api(api)

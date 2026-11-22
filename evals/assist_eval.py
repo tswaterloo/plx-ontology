@@ -191,7 +191,12 @@ def sample(state: Path, store: str, roles: Mapping[str, list[str]], out: Path,
                 "superseded_at IS NULL AND removed_reason IS NULL AND "
                 "json_extract(record, '$.sent_at') >= ? AND json_extract(record, '$.sent_at') < ?",
                 (oid, since, until))]
-            mine = [(h, r, b) for h, r, b in mine if str(r.get("from") or "").lower() in own]
+            # the one tuning bar: a message naming anyone the
+            # exclusion does not clear (sender, any recipient) is never in an eval set
+            from operating.excluded_people import tuning_barred
+            mine = [(h, r, b) for h, r, b in mine if str(r.get("from") or "").lower() in own
+                    and not tuning_barred(people.identity_clear, r.get("from"), r.get("to"),
+                                          r.get("cc"), r.get("bcc"))]
             convs = sorted({r.get("conversation_id") for _h, r, _b in mine
                             if r.get("conversation_id")})
             first = dict(conn.execute(

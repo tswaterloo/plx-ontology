@@ -51,6 +51,9 @@ WITH m AS (
          ({owed}) AS owed, {fails} AS fails
   FROM {source} WHERE e.mailbox = %(box)s AND e.thread IS NOT NULL
     AND e.from_owner IS NOT NULL
+    -- the tuning bar (owner decision 2026-11-21): the people set's mail never feeds an
+    -- eval, and mail the set has not decided yet neither (fail closed)
+    AND e.excluded IS FALSE
 ), o AS (   -- per message, in thread order: the owner's writes and owed mail around it
   SELECT m.*,
     max(at) FILTER (WHERE from_owner) OVER (PARTITION BY thread ORDER BY at, handle

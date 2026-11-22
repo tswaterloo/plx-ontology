@@ -15,6 +15,10 @@ from __future__ import annotations
 from typing import Any
 
 FULL_KEY = "plx:full-reader"
+# The owner's alone: the audience key only the owner's scope
+# holds (``ReadPolicy.owner``, ``EmployeeEntitlement.owner``), never by a pattern. What is
+# the two excluded people's (``ontology.people_excluded_objects``) is served to it only.
+OWNER_KEY = "plx:owner"
 UNMARKED = "[]"
 CLASS_MAX = 2**31 - 1   # integer ids, as business_views.CLASS_MAX
 

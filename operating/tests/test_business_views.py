@@ -55,7 +55,7 @@ IL_MONEY = {p: "money" for p in ("unit_price", "amount_excluding_tax", "extended
                                   "invoice_discount_share", "unit_cost")}
 LINE_PROPS = ("ordered_quantity", "unit_price", "description", "sage_item_code")
 AR_TEXT = ("idinvc", "idcust", "trxtypetxt", "dateinvc", "datedue", "amtduetc", "amtinvctc",
-           "codecurn", "swpaid")
+           "codecurn", "swpaid", "datepaid")
 DOMAIN = {
     "format": "plx-ontology-domain/v1", "domain": "biz", "origin": "curated",
     "description": "business views fixture.",
@@ -99,7 +99,7 @@ DOMAIN = {
                   ("bc.purchase_order_lines", "bc")], display=["item_code"]),
         ev._type(AP, [(p, "text") for p in AP_TEXT], [("gen.sage.ap_open_document",
                                                        "portal_api")], display=["idinvc"]),
-        ev._type("RelSageApVendor", [("vendname", "text")], [("gen.sage.ap_vendor",
+        ev._type("RelSageApVendor", [("vendname", "text"), ("idgrp", "text")], [("gen.sage.ap_vendor",
                                                               "portal_api")]),
         ev._type("SalesInvoiceLine", [(p, IL_MONEY.get(p, "text")) for p in bv.INVOICE_LINE_PROPS],
                  [("portal.sage_oe_invoice_detail", "portal_api")], display=["description"]),
@@ -182,7 +182,7 @@ def cust(s, binding, key, name, code, currency=None):
 
 
 def doc(s, key, customer, number, amount, currency, *, paid="0", due="20261001",
-        markings="[]", amount_markings=None):
+        markings="[]", amount_markings=None, paid_on=None):
     oid = f"{AR}:gen.sage.ar_open_document:{key}"
     s.obj(oid, "api:sage.ar_open_document", _api("sage.ar_open_document", key),
           "gold_etl_from_fm", markings=markings)
@@ -191,6 +191,8 @@ def doc(s, key, customer, number, amount, currency, *, paid="0", due="20261001",
                         ("swpaid", paid), ("amtinvctc", amount)):
         s.val(oid, prop, "text", value)
     s.val(oid, "amtduetc", "text", amount, markings=amount_markings)
+    if paid_on:
+        s.val(oid, "datepaid", "text", paid_on)
     if customer:
         s.link(f"l-{key}", f"{AR}.customer", oid, customer, "verified")
     return oid
@@ -375,7 +377,7 @@ def build():
     doc(s, "d1", acme_s, "INV-1", "100.10", "CAD", due="20261001")   # 47 days late
     doc(s, "d2", acme_s, "INV-2", "300.00", "USD", due="20261201")   # not yet due
     doc(s, "d3", beta, "INV-3", "50.00", "CAD", amount_markings='["finance"]')
-    doc(s, "d4", beta, "INV-4", "999.00", "CAD", paid="1")
+    doc(s, "d4", beta, "INV-4", "999.00", "CAD", paid="1", paid_on="20260920")
     gone_doc = doc(s, "d5", beta, "GONE-1", "777.77", "CAD")
     doc(s, "d6", beta, "SECRET-FIN", "4444.44", "CAD", markings='["finance"]')
     doc(s, "d7", gone, "INV-7", "5.00", "CAD")
@@ -518,7 +520,7 @@ def build():
             ln = obj(s, "PurchaseOrderLine", "portal.app_purchase_order_line", f"{key}-{i}",
                      values, markings=marks)
             s.link(f"pl-{key}-{i}", "PurchaseOrderLine.line_of", ln, head, "verified")
-    vend = obj(s, "RelSageApVendor", "gen.sage.ap_vendor", "cro", {"vendname": "Croda Canada"})
+    vend = obj(s, "RelSageApVendor", "gen.sage.ap_vendor", "cro", {"vendname": "Croda Canada", "idgrp": "DEF   "})
     s.link("vs-cro", "RelSageApVendor.portal_supplier_by_sage_id", vend, sup, "verified")
     # one supplier held by the Portal, FileMaker and BC under other codes: the BC copy's
     # lead link names it alone (same_name); a lead link between differently named suppliers
@@ -685,25 +687,29 @@ class BusinessViews(unittest.TestCase):
         import psycopg
         from operating.pg.migrate import MIGRATIONS_DIR
         with psycopg.connect(cls.dsn, autocommit=True) as c:   # the loader stops short of it
-            for mig in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for mig in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql", "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / mig).read_text())
             # an excluded person's own record (the exclusion set, migration 0040)
             c.execute("INSERT INTO ontology.people_excluded_objects VALUES (%s, %s, "
                       "'own_unit')", (_api("portal.app_customer", "excl"), EXCLUDED_ID))
         cls.built = bv.build(cls.dsn, None, schema=SCHEMA, as_of=AS_OF)
 
-    def base(self):
+    def base(self, owner=False):
+        import dataclasses
         from operating.pg.ontology_reader import PgStoreReader
         from operating.pg.sqlite_compat import PgCompatConnection
         conn = PgCompatConnection(self.dsn, link_guard=True)
         self.addCleanup(conn.close)
         reader = PgStoreReader(conn, ot.StoreReader(self.store.conn))
-        return ot.OntologyTools(reader, tab.POLICY, item_gate=lambda a, h: True,
+        # The one holding ``OWNER_KEY``
+        policy = dataclasses.replace(tab.POLICY, unrestricted=True, owner=True) if owner \
+            else tab.POLICY
+        return ot.OntologyTools(reader, policy, item_gate=lambda a, h: True,
                                 schema=SCHEMA, grammar=None, contracts=ev.CONTRACTS,
                                 clock=lambda: ev.NOW)
 
-    def call(self, args, actor=FULL):
-        out = tb.BusinessTool(self.base()).call("plx.business", args, actor)
+    def call(self, args, actor=FULL, owner=False):
+        out = tb.BusinessTool(self.base(owner)).call("plx.business", args, actor)
         self.assertEqual(validate(out, tb._CONTRACT["output"], root=ev.CONTRACTS), [],
                          json.dumps(out)[:1500])
         return out
@@ -847,12 +853,24 @@ class BusinessViews(unittest.TestCase):
             got = c.execute("SELECT ai_ok FROM biz.suppliers WHERE name = 'FreightCom Inc'"
                             ).fetchall()
             self.assertEqual(got, [(False,)])
-            # an excluded person's own record is not built at all
+            # an excluded person's own record is built, the owner's alone:
+            # its class holds OWNER_KEY
+            from operating.pg.access_classes import OWNER_KEY
             self.assertEqual(c.execute("SELECT count(*) FROM biz.lineage WHERE %s = ANY("
-                                       "object_ids)", (EXCLUDED_ID,)).fetchone()[0], 0)
+                                       "object_ids)", (EXCLUDED_ID,)).fetchone()[0], 1)
+            self.assertEqual(c.execute(
+                "SELECT %s = ANY(a.audience_keys) FROM biz.customers t JOIN biz.lineage l "
+                "ON l.view = 'customers' AND l.handle = t.handle JOIN biz.access_classes a "
+                "ON a.id = t.access_class WHERE %s = ANY(l.object_ids)",
+                (OWNER_KEY, EXCLUDED_ID)).fetchall(), [(True,)])
         names = [self.text(r["values"]["name"]["value"])
                  for r in self.call({"view": "suppliers", "select": ["name"]})["rows"]]
         self.assertNotIn("FreightCom Inc", names)
+        customers = lambda **kw: [  # noqa: E731
+            self.text(r["values"]["name"]["value"]) for r in self.call(
+                {"view": "customers", "select": ["name"], "limit": 200}, **kw)["rows"]]
+        self.assertNotIn("Excluded Person Co", customers())   # a full reader: never
+        self.assertIn("Excluded Person Co", customers(owner=True))   # the owner: always
 
     def test_balances_by_currency_never_mixed_and_exact(self):
         out = self.call({"view": "customer_balances",
@@ -876,6 +894,34 @@ class BusinessViews(unittest.TestCase):
                                                  "measures": [{"fn": "sum",
                                                                "field": "amount_due"}]}, out)
         self.assertTrue(got["counts"], got)
+
+    def test_receivable_documents_read_the_receivables_of_a_past_day(self):
+        out = self.call({"view": "receivable_documents", "where": [
+            {"field": "document_number", "op": "=", "value": "INV-4"}],
+            "select": ["document_number", "status", "document_date", "paid_date",
+                       "original_amount"]})
+        vals = out["rows"][0]["values"]
+        self.assertEqual((vals["status"]["value"], vals["document_date"]["value"],
+                          vals["paid_date"]["value"], vals["original_amount"]["value"]),
+                         ("paid", "2026-09-01", "2026-09-20", "999"))
+        # open now: no paid date; customer_balances is exactly the open ones
+        open_rows = self.call({"view": "receivable_documents", "where": [
+            {"field": "status", "op": "=", "value": "open"}],
+            "measures": [{"fn": "count"}], "group_by": ["status"]})
+        bal = self.call({"view": "customer_balances", "measures": [{"fn": "count"}]})
+        self.assertEqual(sum(int(g["measures"][0]["value"]) for g in open_rows["groups"]),
+                         sum(int(g["measures"][0]["value"]) for g in bal["groups"]))
+        # a reader who may not read finance-marked amounts sees the same open documents in
+        # both views (the door is the same), and the paid one is only a history row
+        def numbers(view, reader, extra=()):
+            got = self.call({"view": view, "where": list(extra), "select": ["document_number"],
+                             "limit": 200}, reader)
+            return {self.text(r["values"]["document_number"]["value"]) for r in got["rows"]}
+        for reader in (OPS,):
+            self.assertEqual(
+                numbers("receivable_documents", reader,
+                        [{"field": "status", "op": "=", "value": "open"}]),
+                numbers("customer_balances", reader))
 
     def test_aging_by_due_date(self):
         out = self.call({"view": "customer_balances", "where": [
@@ -922,6 +968,20 @@ class BusinessViews(unittest.TestCase):
         nobody = self.call({"view": "customers", "measures": [{"fn": "count"}]}, tab.NOBODY)
         self.assertEqual(nobody["groups"][0]["measures"][0]["value"], "0")
 
+    def test_receivable_documents_withhold_money_from_a_reader_without_finance(self):
+        # the same door as customer_balances: INV-3's finance-marked amount is withheld
+        # (partial, counted, never shown or summed), whichever view it is read through
+        out = self.call({"view": "receivable_documents", "where": [
+            {"field": "status", "op": "=", "value": "open"}],
+            "measures": [{"fn": "sum", "field": "amount_due"}]}, OPS)
+        self.assertEqual(self.sums(out)["CAD"], "120.1")
+        self.assertTrue(out["partial"])
+        self.assertEqual(out["withheld"]["objects"], 1)
+        listed = self.call({"view": "receivable_documents", "select": [
+            "document_number", "amount_due"], "limit": 200}, OPS)
+        for secret in SECRET + ("50.00",):
+            self.assertNotIn(secret, json.dumps(listed))
+
     def test_unknown_input_fails_closed(self):
         for args, code in (({"view": "nope"}, "unknown_view"),
                            ({"view": "customers", "select": ["secret_col"]}, "unknown_column"),
@@ -935,9 +995,10 @@ class BusinessViews(unittest.TestCase):
 
     def test_dictionary_states_every_column_and_how_derived_ones_are_computed(self):
         views = self.call({"describe": True})["views"]
-        # every view a reader's query may name; a search-only table never shows
+        # every view a reader's query may name (the files table too: only a full reader's
+        # statement reads rows of it)
         self.assertEqual(sorted(views), sorted(bv.listed()))
-        self.assertNotIn("sharepoint_files", views)
+        self.assertIn("sharepoint_files", views)
         for name, view in views.items():
             # generated from the spec: the source types it reads, and every column
             self.assertTrue(view["sources"] and view["about"] and view["lineage"], name)
@@ -1647,7 +1708,14 @@ class BusinessViews(unittest.TestCase):
         self.assertEqual({self.text(g["key"]["document_type"]): g["measures"][0]["value"]
                           for g in kinds["groups"]},
                          {"invoice": "3", "payment": "1", "prepayment": "1"})
+        # E03: Sage's vendor group rides with every vendor's document, said to be how the vendor
+        # is booked and paid, never a trade flag
+        grouped = self.call({"view": "supplier_balances", "select": ["document_number",
+                                                                     "vendor_group"]})
+        self.assertEqual({self.text(r["values"]["vendor_group"]["value"]).strip()
+                          for r in grouped["rows"]}, {"DEF"})
         about = self.call({"describe": True})["views"]["supplier_invoices"]["columns"]
+        self.assertIn("NOT a trade flag", about["vendor_group"])
         self.assertIn("document_type = 'invoice'", about["document_type"])
         self.assertIn("payment", about["document_type"])
         self.assertIn("pilot_rows_left_out", [g["reason"] for g in docs["gaps"]])
@@ -1738,7 +1806,9 @@ class BusinessViews(unittest.TestCase):
         the served biz tables are never touched; a bad name fails closed; drop refuses biz."""
         import psycopg
         count = {"view": "customers", "measures": [{"fn": "count"}]}
-        served = int(self.call(count)["groups"][0]["measures"][0]["value"])
+        # the owner reads every built row (an owner-only one included)
+        owned = lambda: self.call(count, owner=True)["groups"][0]["measures"][0]["value"]  # noqa: E731
+        served = int(owned())
         with mock.patch.object(bv, "SCHEMA", "biz_scratch"):
             got = bv.build(self.dsn, ["customers"], schema=SCHEMA, as_of=AS_OF)
             self.assertEqual(got[0]["rows"], served)
@@ -1746,9 +1816,9 @@ class BusinessViews(unittest.TestCase):
                 c.execute("DELETE FROM biz_scratch.customers WHERE ctid = "
                           "(SELECT min(ctid) FROM biz_scratch.customers)")
             # the tool reads the scratch copy (one row fewer), not the served one
-            self.assertEqual(self.call(count)["groups"][0]["measures"][0]["value"], str(served - 1))
+            self.assertEqual(owned(), str(served - 1))
             self.assertEqual(bv.drop_scratch_schema(self.dsn), "biz_scratch")
-        self.assertEqual(self.call(count)["groups"][0]["measures"][0]["value"], str(served))
+        self.assertEqual(owned(), str(served))
         with psycopg.connect(self.dsn) as c:
             self.assertIsNone(c.execute("SELECT to_regnamespace('biz_scratch')").fetchone()[0])
             self.assertEqual(sorted(r[0] for r in c.execute(
@@ -2048,6 +2118,36 @@ class BusinessViews(unittest.TestCase):
         self.assertEqual((bool(recs), bool(links)), (True, True))
         self.assertEqual(kinds, [StreamCursor.__name__] * 2)
 
+    def test_the_production_host_keeps_the_owner_and_only_the_owner_reads_the_row(self):
+        """The served host's ``policy_now`` (``CaptureCaseHostTools``: the full reader's
+        policy rebuilt with the captured mail and SharePoint units) keeps ``owner``: the
+        owner reads the people set's row through plx.business, a full reader the host
+        decided without the mark does not (review d041ca48b4: the rebuild dropped it)."""
+        import dataclasses
+        from operating.case_tools_host import CaptureCaseHostTools
+        from operating.ontology_host import CaseHostTools
+        from operating.pg.access_classes import OWNER_KEY
+        from operating.pg.ontology_reader import PgStoreReader
+        from operating.pg.sqlite_compat import PgCompatConnection
+        host = object.__new__(CaptureCaseHostTools)
+        host._reader_keys = ["mail:box-1", "sharepoint:drive-1"]
+        names = {}
+        for owner in (True, False):
+            decided = dataclasses.replace(tab.POLICY, unrestricted=True, owner=owner)
+            with mock.patch.object(CaseHostTools, "policy_now", lambda self, a: decided):
+                policy = CaptureCaseHostTools.policy_now(host, FULL)
+            self.assertEqual((policy.owner, policy.may_read(FULL, OWNER_KEY)), (owner, owner))
+            conn = PgCompatConnection(self.dsn, link_guard=True)
+            self.addCleanup(conn.close)
+            base = ot.OntologyTools(PgStoreReader(conn, ot.StoreReader(self.store.conn)),
+                                    policy, item_gate=lambda a, h: True, schema=SCHEMA,
+                                    grammar=None, contracts=ev.CONTRACTS, clock=lambda: ev.NOW)
+            out = tb.BusinessTool(base).call("plx.business", {
+                "view": "customers", "select": ["name"], "limit": 200}, FULL)
+            names[owner] = {self.text(r["values"]["name"]["value"]) for r in out["rows"]}
+        self.assertIn("Excluded Person Co", names[True])
+        self.assertNotIn("Excluded Person Co", names[False])
+
     def test_rebuild_swaps_whole(self):
         import psycopg
         again = bv.build(self.dsn, ["customers"], schema=SCHEMA, as_of=AS_OF)
@@ -2058,7 +2158,7 @@ class BusinessViews(unittest.TestCase):
             state = dict(c.execute("SELECT view, rows FROM biz.state").fetchall())
         self.assertEqual(tables, sorted([*bv.VIEWS, "state", "access_classes", "col_classes",
                                          "lineage", "class_counts", "comms_units"]))
-        self.assertEqual(state["customers"], 20)
+        self.assertEqual(state["customers"], 21)   # 20 + the owner's alone
 
     def test_swap_waits_out_a_reader_and_no_other_reader_waits_long(self):
         """Behaviour at the swap's boundary: a reader holding the served table open (a
@@ -2128,10 +2228,14 @@ class BusinessViews(unittest.TestCase):
                 gone = door.exclude(c, "biz", only="customers", record=False,
                                     staged=("biz.customers_next", "biz.lineage_customers_next"))
                 self.assertGreaterEqual(gone, 1)
-                self.assertEqual(c.execute("SELECT count(*) FROM biz.customers_next WHERE "
-                                           "handle = %s", (handle,)).fetchone()[0], 0)
+                # the row stays, the owner's alone (its class holds OWNER_KEY), lineage kept
+                from operating.pg.access_classes import OWNER_KEY
+                self.assertEqual(c.execute(
+                    "SELECT %s = ANY(a.audience_keys) FROM biz.customers_next t JOIN "
+                    "biz.access_classes a ON a.id = t.access_class WHERE t.handle = %s",
+                    (OWNER_KEY, handle)).fetchall(), [(True,)])
                 self.assertEqual(c.execute("SELECT count(*) FROM biz.lineage_customers_next "
-                                           "WHERE handle = %s", (handle,)).fetchone()[0], 0)
+                                           "WHERE handle = %s", (handle,)).fetchone()[0], 1)
                 self.assertEqual(c.execute("SELECT count(*) FROM biz.customers").fetchone()[0],
                                  live_rows)
                 self.assertEqual(c.execute("SELECT count(*) FROM biz.lineage WHERE view = "
@@ -2252,7 +2356,7 @@ class OrderCurrency(unittest.TestCase):
         import psycopg
         from operating.pg.migrate import MIGRATIONS_DIR
         with psycopg.connect(cls.dsn, autocommit=True) as c:
-            for mig in ("0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for mig in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql", "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / mig).read_text())
         bv.build(cls.dsn, None, schema=SCHEMA, as_of=AS_OF)
 

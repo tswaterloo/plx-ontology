@@ -46,6 +46,11 @@ BQ_MIN_CANDIDATES, BQ_MAX_CANDIDATES = 200, 400
 # hnsw.ef_search caps at 1000 in pgvector, so a bit-index candidate list does too.
 BQ_EF_CAP = 1000
 EXACT_TIMEOUT_MS = 5000
+# ef_search floor of the narrow table's walks (one node per text: a text many chunks share
+# was one node, not many): full-scale copy 11-21, 20 real query vectors, broad reader:
+# distance recall@10 vs the chunks path 0.945 at ef 100 (one query 0/10), 1.0 at 200 and 400;
+# warm p50 0.19 / 0.70 / 1.04 s vs 0.13 s on the chunks path; one-mailbox reader 1.0 at all.
+NARROW_EF_SEARCH = 200
 
 
 KINDS_FLAG = "PLX_SEARCH_KINDS"
@@ -222,6 +227,9 @@ def filtered_knn(conn: psycopg.Connection, scope: SearchScope, vector: Sequence[
     if not isinstance(scope, SearchScope) or scope.empty:
         return {"hits": [], "path": "empty"}
     id_col, vec_col = _COLUMNS[table]
+    from operating.pg import chunk_vectors
+    if table == "chunks" and chunk_vectors.narrow(conn):
+        return _narrow_knn(conn, scope, vector, k, kinds, ef_search, max_scan_tuples)
     where = [scope.clause("c"), f"c.{vec_col} IS NOT NULL"]
     extra: dict[str, Any] = {"q": _vector_text(vector), "k": k}
     if kinds is not None:
@@ -262,6 +270,50 @@ def filtered_knn(conn: psycopg.Connection, scope: SearchScope, vector: Sequence[
         with conn.transaction():
             # set_config(..., true) is SET LOCAL; inside a caller's transaction this block
             # is a savepoint whose release would keep it, so the old value is put back.
+            before = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
+            conn.execute("SELECT set_config('statement_timeout', %s, true)",
+                         (f"{int(EXACT_TIMEOUT_MS)}ms",))
+            full = conn.execute(exact, params).fetchall()
+            conn.execute("SELECT set_config('statement_timeout', %s, true)", (before,))
+    except psycopg.errors.QueryCanceled:
+        return {"hits": rows, "path": "partial"}
+    return {"hits": full, "path": "exact"}
+
+
+def _narrow_knn(conn: psycopg.Connection, scope: SearchScope, vector: Sequence[float],
+                k: int, kinds: Sequence[str] | None, ef_search: int,
+                max_scan_tuples: int) -> dict[str, Any]:
+    """``filtered_knn`` over ``search.chunk_vectors`` ('narrow' mode): the partitioned HNSW
+    in distance order joined to the chunks holding each text, the scope's predicate on the
+    chunk row; the same exact fallback (over the joined visible rows) when the walk stops
+    short of ``k``."""
+    where = [scope.clause("c")]
+    extra: dict[str, Any] = {"q": _vector_text(vector), "k": k}
+    if kinds is not None:
+        if isinstance(kinds, str) or not all(isinstance(v, str) for v in kinds):
+            raise ValueError("knn_kinds_invalid")
+        where.append("c.kind = ANY(%(kinds)s::text[]) AND v.kind = ANY(%(kinds)s::text[])")
+        extra["kinds"] = list(kinds)
+    params = scope.params(**extra)
+    distance = "v.embedding <=> %(q)s::halfvec"
+    source = ("search.chunk_vectors v JOIN search.chunks c ON c.kind = v.kind "
+              "AND c.content_sha = v.content_sha")
+    hnsw = (f"WITH hits AS MATERIALIZED (SELECT c.chunk_id AS id, {distance} AS d "
+            f"FROM {source} WHERE {' AND '.join(where)} ORDER BY {distance} "
+            f"LIMIT %(k)s) SELECT id, d FROM hits ORDER BY d, id")
+    with conn.transaction():
+        search_defaults(conn, ef_search=min(1000, max(ef_search, k, NARROW_EF_SEARCH)),
+                        max_scan_tuples=max_scan_tuples, local=True)
+        # each partition's walk feeds a merge that takes its input as sorted: relaxed order
+        # let a merge cut the nearest rows off (1 of 20 live queries, full-scale copy 11-21)
+        conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+        rows = conn.execute(hnsw, params).fetchall()
+    if len(rows) >= k:
+        return {"hits": rows, "path": "index"}
+    exact = (f"SELECT c.chunk_id, {distance} AS d FROM {source} WHERE {' AND '.join(where)} "
+             f"ORDER BY ({distance}) + 0, c.chunk_id LIMIT %(k)s")
+    try:
+        with conn.transaction():
             before = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
             conn.execute("SELECT set_config('statement_timeout', %s, true)",
                          (f"{int(EXACT_TIMEOUT_MS)}ms",))

@@ -879,3 +879,85 @@ def from_api(api: Any) -> PeopleExclusion:
     if isinstance(found, PeopleExclusion):
         return found
     return PeopleExclusion(unavailable="excluded_people_oids_absent")
+
+
+# The tenant's addresses no one person is cleared by (``tenant_withheld_rows``): recorded
+# by a bound guard beside its tenant listing, as one-way digests only, so an offline reader
+# can tell an address the tenant does not hold at all (a former employee's, a removed
+# alias) from one it holds but does not clear (an excluded person's, any group's, one two
+# entries share). Decides only while this recent: a newer alias of anyone stays undecided.
+TENANT_WITHHELD_MAX_AGE = GROUP_MAX_AGE
+_WITHHELD_SALT = "plx-tenant-withheld/v1:"
+
+
+def address_digest(address: str) -> str:
+    """The one-way digest an address is recorded under (``tenant_withheld_rows``)."""
+    import hashlib
+    return hashlib.sha256((_WITHHELD_SALT + address.strip().lower()).encode("utf-8")
+                          ).hexdigest()
+
+
+def tenant_withheld_rows(guard: PeopleExclusion
+                         ) -> tuple[str, list[tuple[str, str]]] | None:
+    """(read at, (digest, kind) rows) of every address the tenant held when ``guard`` was
+    bound that its listing does not clear as one listed person's: each address of an
+    excluded user (kind ``excluded``), each address two users hold and every group address
+    (kind ``uncleared``, whatever its members; cleared groups age out of the listing sooner
+    than this record). None unless the guard is bound
+    with a complete users listing and a complete groups listing (an unread list could be
+    any address: nothing may then be decided by absence)."""
+    if not isinstance(guard, PeopleExclusion) or guard.unavailable or not guard.bound \
+            or guard._listing is None or guard._listing_at is None \
+            or guard._groups is None:
+        return None
+    count: dict[str, int] = {}
+    for _oid, _upn, held in guard._listing:
+        for address in set(held):
+            count[address] = count.get(address, 0) + 1
+    excluded = set(guard._addresses)
+    excluded.update(a for oid, _upn, held in guard._listing if oid in guard._ids for a in held)
+    uncleared = ({a for a, n in count.items() if n > 1} | set(guard._groups)) - excluded
+    at = guard._listing_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    rows = {(address_digest(a), "excluded") for a in excluded if isinstance(a, str) and a}
+    rows |= {(address_digest(a), "uncleared") for a in uncleared if isinstance(a, str) and a}
+    return at, sorted(rows)
+
+
+def mail_capture_tenant_withheld(state_dir: Any, *, now: datetime | None = None
+                                 ) -> dict[str, str] | None:
+    """digest -> kind of what ``tenant_withheld_rows`` recorded in the mail capture under
+    ``state_dir`` (read-only), when recorded within ``TENANT_WITHHELD_MAX_AGE`` of ``now``,
+    with the tenant listing it was read with, and with the excluded people's alias history
+    complete (``MailCaptureStore._alias_history``: every address once theirs, and every
+    one they sent from in their own captured mailbox, kind ``excluded``); None otherwise
+    (decides nothing)."""
+    import sqlite3
+    if state_dir is None:
+        return None
+    path = Path(state_dir) / "mail-capture" / "capture.db"
+    if not path.is_file():
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        try:
+            db.execute("BEGIN")   # one snapshot: the digests and their read time
+            stamps = dict(db.execute(
+                "SELECT key, value FROM meta WHERE key IN ('tenant_withheld_at', "
+                "'tenant_listing_at', 'tenant_alias_history')").fetchall())
+            # every alias the excluded people ever used must be known first (their own
+            # mailboxes captured): before that an unlisted address decides nothing
+            if stamps.get("tenant_alias_history") != "complete":
+                return None
+            if stamps.get("tenant_withheld_at") is None \
+                    or stamps.get("tenant_withheld_at") != stamps.get("tenant_listing_at"):
+                return None
+            at = datetime.fromisoformat(str(stamps["tenant_withheld_at"]).replace("Z", "+00:00"))
+            if at.tzinfo is None or not now - TENANT_WITHHELD_MAX_AGE <= at <= now:
+                return None
+            rows = db.execute("SELECT digest, kind FROM tenant_withheld").fetchall()
+        finally:
+            db.close()
+    except (sqlite3.Error, ValueError, TypeError, OSError):
+        return None
+    return {digest: kind for digest, kind in rows}

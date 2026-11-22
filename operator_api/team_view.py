@@ -240,6 +240,111 @@ def open_counts(rows: Iterable[Mapping[str, Any]], closed: Iterable[Mapping[str,
     return per
 
 
+_NAME_RANK = {"teams": 0, "calendar": 1, "address": 2}
+
+
+def merge_identities(people: Mapping[str, Mapping[str, Any]], shown: Iterable[str],
+                     counts: Mapping[str, Counter], domains: Iterable[str] = ()
+                     ) -> tuple[dict[str, dict[str, Any]], dict[str, Counter], dict[str, frozenset[str]]]:
+    """One row per person: the snapshot keeps one row per directory object, and one person
+    can hold several (a work address and a second brand's address, a tenant sign-in).
+
+    Two rows are one person only when every join below holds; otherwise they stay apart:
+    * they share the local part of an address at one of the directory's own ``domains``
+      (none known: nothing is joined);
+    * at least one has a display name a colleague gave it in Teams (a person's evidence), and
+      the other has either no name (an address only) or the same Teams name;
+    * neither is a directory group (``group_address``).
+    Two rows with no Teams name are never joined: a role mailbox (info@ at two brands) and
+    two people who share a first name look the same there. A calendar's name never anchors a
+    join (it can name a mailbox's alias). Counts add; the reply times of the row with the
+    most replies stand (a median cannot be added); partners are re-pointed to the merged
+    rows. Returns (people with the merged rows, their open counts, representative -> members)."""
+    own = frozenset(str(d).lower() for d in domains)
+    shown = [o for o in shown if o in people]
+    parent = {o: o for o in shown}
+
+    def find(o: str) -> str:
+        while parent[o] != o:
+            parent[o] = parent[parent[o]]
+            o = parent[o]
+        return o
+
+    def named(o: str) -> Optional[str]:
+        row = people[o]
+        return str(row.get("name")).strip().lower() if row.get("name_from") == "teams" else None
+    by_local: dict[str, list[str]] = {}
+    for oid in shown:
+        for a in people[oid].get("addresses") or ():
+            local, _, dom = str(a).lower().partition("@")
+            if local and dom in own and not people[oid].get("group_address"):
+                by_local.setdefault(local, []).append(oid)
+    for oids in by_local.values():
+        oids = list(dict.fromkeys(oids))
+        anchors = [o for o in oids if people[o].get("name_from") == "teams"]
+        plain = [o for o in oids if people[o].get("name_from") == "address"]
+        # one Teams name in the bucket, and at most one name-less row: two name-less rows
+        # sharing a local part may be two people or one role mailbox, so none is joined
+        if len({named(o) for o in anchors}) != 1:
+            continue   # no Teams name, or two that differ
+        if len(plain) > 1:
+            plain = []
+        if len(anchors) + len(plain) < 2:
+            continue
+        for other in anchors[1:] + plain:
+            a, b = find(anchors[0]), find(other)
+            if a != b:
+                parent[b] = a
+    groups: dict[str, list[str]] = {}
+    for oid in shown:
+        groups.setdefault(find(oid), []).append(oid)
+    for members in groups.values():
+        members.sort(key=lambda o: (_NAME_RANK.get(str(people[o].get("name_from")), 3), o))
+    alias = {m: members[0] for members in groups.values() for m in members}
+    merged = {o: people[o] for o in people if o not in alias}
+    new_counts: dict[str, Counter] = {o: c for o, c in counts.items() if o not in alias}
+    members_of: dict[str, frozenset[str]] = {}
+    for members in groups.values():
+        rep = members[0]
+        members_of[rep] = frozenset(members)
+        rows = [people[o] for o in members]
+        days: dict[str, Counter] = {}
+        hours = [0] * 24
+        for row in rows:
+            for d, c in (row.get("days") or {}).items():
+                days.setdefault(d, Counter()).update({k: int(v) for k, v in c.items()})
+            for i, h in enumerate((row.get("hours") or [])[:24]):
+                hours[i] += int(h)
+        best = max(rows, key=lambda r: int((r.get("reply_n") or {}).get("28") or 0))
+        partners: Counter = Counter()
+        for row in rows:
+            for o, n in (row.get("with") or {}).items():
+                target = alias.get(o, o)
+                if target != rep:
+                    partners[target] += int(n)
+        row0 = dict(rows[0])
+        row0.update({
+            "roles": sorted({r for row in rows for r in row.get("roles") or ()}),
+            "department": next((r.get("department") for r in rows if r.get("department")), None),
+            "addresses": sorted({a for row in rows for a in row.get("addresses") or ()})[:10],
+            "days": {d: dict(c) for d, c in sorted(days.items())}, "hours": hours,
+            "reply": best.get("reply"), "reply_n": best.get("reply_n"),
+            "reply_weeks": best.get("reply_weeks"), "with": dict(partners.most_common())})
+        merged[rep] = row0
+        total: Counter = Counter()
+        for o in members:
+            total.update(counts.get(o, Counter()))
+        if total:
+            new_counts[rep] = total
+    for row in merged.values():   # a partner row merged into another is that row
+        if row.get("with"):
+            tally: Counter = Counter()
+            for o, n in row["with"].items():
+                tally[alias.get(o, o)] += int(n)
+            row["with"] = dict(tally.most_common())
+    return merged, new_counts, members_of
+
+
 class TeamViewMixin:
     """``/api/team`` and ``/api/team/{key}`` on the real backend."""
 
@@ -307,10 +412,13 @@ class TeamViewMixin:
         teams = (grants.load() if grants else {}).get("teams") or {}
         people = (snap or {}).get("people") or {}
         shown = {oid for oid in people if not gone(oid) and (everyone or oid in me)}
-        return everyone, me, gone, snap, counts, teams, people, shown, known
+        people, counts, members = merge_identities(people, shown, counts, (snap or {}).get("domains") or ())
+        shown = {oid for oid in shown if oid in people}
+        me = frozenset(me | {rep for rep, ms in members.items() if ms & me})
+        return everyone, me, gone, snap, counts, teams, people, shown, known, members
 
     def team_view(self, reader: Reader) -> m.TeamView:
-        everyone, me, _gone, snap, counts, teams, people, shown, _known = self._team_parts(reader)
+        everyone, me, _gone, snap, counts, teams, people, shown, _known, _members = self._team_parts(reader)
         if snap is None or snap.get("status") != "built":
             return m.TeamView(scope="everyone" if everyone else "self",
                               state="blocked" if snap else "not_built", note=NOTE)
@@ -329,7 +437,7 @@ class TeamViewMixin:
         from operating import inbox_triage as it
         from operating import proactive_engine as pe
         from operating.proactive_commitments import OWNER_KINDS
-        everyone, me, gone, snap, counts, teams, people, shown, known = self._team_parts(reader)
+        everyone, me, gone, snap, counts, teams, people, shown, known, members = self._team_parts(reader)
         oid = next((o for o in shown if key_of(o) == key), None)
         if oid is None or snap is None:
             raise UserFacing("not_found", "No such person.", 404)
@@ -359,9 +467,10 @@ class TeamViewMixin:
         # a whole-inbox read never reached a person's low-priority replies), kinds the alert
         # registry keeps off Home included (counted, so listed), still trimmed to the reader
         store = getattr(self, "store_path", None)
+        mine = members.get(oid) or frozenset({oid})   # every row this one person is
         kinds = sorted({r["kind"] for r in (it.open_rows(pe.inbox_path(store)) if store
                                             else ())
-                        if r.get("owner") == oid and isinstance(r.get("kind"), str)})
+                        if r.get("owner") in mine and isinstance(r.get("kind"), str)})
 
         def job(view: Any) -> Any:
             found = view.gap_inbox(limit=br_max(), all_owners=everyone, kinds=kinds,
@@ -373,13 +482,14 @@ class TeamViewMixin:
             self._brief_run(reader, job)   # type: ignore[attr-defined]
         items: list[dict[str, Any]] = []
         for bucket in it.BUCKETS:
-            for x in it.owner_items(gaps or (), person=oid, bucket=bucket,
-                                    owner_kinds=OWNER_KINDS, excluded=lambda o: gone(o)
-                                    or excluded(o), address_excluded=address_excluded,
-                                    today=date.today()):
-                if x["waiting_on"] == oid:
-                    x["waiting_on"] = person["name"]
-                items.append({**x, "bucket": bucket})
+            for member in sorted(mine):
+                for x in it.owner_items(gaps or (), person=member, bucket=bucket,
+                                        owner_kinds=OWNER_KINDS, excluded=lambda o: gone(o)
+                                        or excluded(o), address_excluded=address_excluded,
+                                        today=date.today()):
+                    if x["waiting_on"] in mine:
+                        x["waiting_on"] = person["name"]
+                    items.append({**x, "bucket": bucket})
         counted = sum(counts.get(oid, {}).get(b, 0) for b in it.BUCKETS)
         items.sort(key=lambda r: (-(r["age_days"] if r["age_days"] is not None else -1),
                                   r["id"]))

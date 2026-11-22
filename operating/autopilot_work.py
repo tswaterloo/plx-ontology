@@ -358,13 +358,19 @@ class MCQuestions:
         self.conn.close()
 
 
-def attachments(ctx: Any, event: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The message's attachments with text: (name, form, text, handle, record)."""
+def attachments(ctx: Any, event: Mapping[str, Any], *,
+                unread: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
+    """The message's attachments with text: (name, form, text, handle, record). ``unread``
+    gets each one not read: no text to read (``no_text``: a scan never OCR'd, an image)
+    or past the ``MAX_ATTACHMENTS`` read (``over_limit``), never silently skipped."""
     from integrations import sheet_grid as sr
     out = []
-    atts = [o for o in ctx.linked(event["object_id"], ("Attachment.attached_to",))
-            if o.startswith("Attachment:")][:MAX_ATTACHMENTS * 2]
-    for att in sorted(atts):
+    every = sorted(o for o in ctx.linked(event["object_id"], ("Attachment.attached_to",))
+                   if o.startswith("Attachment:"))
+    atts = every[:MAX_ATTACHMENTS * 2]
+    if unread is not None:
+        unread += [{"object_id": o, "why": "over_limit"} for o in every[len(atts):]]
+    for n, att in enumerate(atts):
         handle = _handle(ctx, att)
         if not handle:
             continue
@@ -375,6 +381,8 @@ def attachments(ctx: Any, event: Mapping[str, Any]) -> list[dict[str, Any]]:
             got_name, text = capture.text(handle)
             name = name or got_name or ""
         if not text:
+            if unread is not None:
+                unread.append({"object_id": att, "name": name, "why": "no_text"})
             continue
         form = sr.form_of(name) or "text"
         ctx.objects.add(att)
@@ -383,6 +391,8 @@ def attachments(ctx: Any, event: Mapping[str, Any]) -> list[dict[str, Any]]:
         out.append({"name": name, "form": form, "text": text, "handle": handle,
                     "object_id": att})
         if len(out) >= MAX_ATTACHMENTS:
+            if unread is not None:
+                unread += [{"object_id": o, "why": "over_limit"} for o in atts[n + 1:]]
             break
     return out
 
@@ -714,7 +724,8 @@ def _orders_of_customer(ctx: Any, orders: Sequence[str], number: str) -> list[st
 def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     subject = event.get("subject") or ""
     body = body_text(ctx, event)
-    files = attachments(ctx, event)
+    unread: list[dict[str, str]] = []
+    files = attachments(ctx, event, unread=unread)
     pos = dl.unique([*dl.po_numbers(subject), *autopilot_handlers._numbers(autopilot_queue.PO_NUMBER, subject),
                      *[p for f in files for p in dl.po_numbers(f["text"])],
                      *dl.po_numbers(body[:2000])])
@@ -840,6 +851,11 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                            "gaps": [], "links": []}
     if not lines:
         out["gaps"].append("no_lines_read")
+    if unread:
+        # files the lines were not read from: said on the item, never silently skipped
+        out["files_not_read"] = [{"name": u.get("name") or "", "why": u["why"]}
+                                 for u in unread][:10]
+        out["gaps"].append(f"files_not_read:{len(unread)}")
     if unresolved:
         out["gaps"].append("lines_not_resolved")
     if not customer.get("number"):

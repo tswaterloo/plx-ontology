@@ -1043,10 +1043,38 @@ class BizTable(_Model):
     note: Optional[str] = None
 
 
+class RecordFilter(_Model):
+    """One filter of a Records list: its choices (value '' is "all"), as the data holds them."""
+    key: str
+    label: str
+    options: list["RecordFilterOption"]
+
+
+class RecordFilterOption(_Model):
+    value: str
+    label: str
+    count: Optional[int] = None
+
+
+class RecordList(_Model):
+    """One Records list (``/api/records/list``): a page of rows with record links, the
+    filters it offers and how many rows match them; ``more`` when rows follow."""
+    view: str
+    title: str
+    table: BizTable
+    filters: list[RecordFilter]
+    total: int
+    offset: int
+    more: bool
+    next_offset: int
+    as_of: Optional[str] = None
+
+
 class BizPage(_Model):
     """A customer, chain or supplier account page, or a PO / sales order page: every number
     from the business tables through the reader's door, in one read."""
-    kind: Literal["customer", "chain", "supplier", "purchase_order", "sales_order"]
+    kind: Literal["customer", "chain", "supplier", "purchase_order", "sales_order", "product",
+                  "batch"]
     title: str
     subtitle: Optional[str] = None
     facts: list[BizFact]
@@ -2128,6 +2156,10 @@ class BriefingItem(_Model):
     default_on: bool = Field(False, json_schema_extra=_optional,
                              description="On by default (measured >= 90% on 15+).")
     home: bool = Field(False, json_schema_extra=_optional, description="Shown on My work.")
+    section: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="The Home section the registry gathers its type into (financials): a "
+                    "count and the biggest few, not one item each under needs you.")
     copy_check: Optional[CopyCheck] = None
     first_seen: Optional[str] = None
     open_url: str
@@ -2158,6 +2190,9 @@ class BriefingGroup(_Model):
         description="True when this type's check has not finished within two refresh cycles "
                     "(or is not served on this page): its items are not shown, never as "
                     "current; count is 0.")
+    section: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="The Home section this type is gathered into (financials), if any.")
     unavailable_since: Optional[str] = Field(
         None, json_schema_extra=_optional,
         description="While unavailable: when its check last finished (ISO); null if never.")
@@ -3844,6 +3879,13 @@ class DataHealthCheck(_Model):
                         "not open: never named, never listed.")
     items: list[DataHealthItem] = Field(default_factory=list)
     more: int = Field(0, ge=0, description="Findings this reader may see past those listed.")
+    open: Optional[int] = Field(None, ge=0, description="Every open finding of the check, "
+                                "those this reader may see and those hidden from them, "
+                                "counted without reading them: the page's first read. "
+                                "Then ``count``, ``hidden`` and ``items`` are not read yet "
+                                "(``read`` false).")
+    read: bool = Field(True, description="False: only ``open`` is known; ask for the check "
+                       "(``check=``) to read its findings.")
 
 
 class DataHealth(_Model):
@@ -3855,6 +3897,7 @@ class DataHealth(_Model):
     as_of: Optional[str] = None
     partial: bool = Field(False, description="The read stopped at its limit: counts are "
                           "at least these.")
+    stale_since: Optional[str] = _stale_since()
 
 
 class AutopilotLink(_Model):
@@ -3920,6 +3963,10 @@ class AutopilotPrepared(_Model):
                             "replay score earned its workflow: \"send\" (it would go by "
                             "itself once you switch Auto on) or \"keep: <reasons>\" (it would "
                             "still wait for your click); empty otherwise. Nothing is done.")
+    alert_kind: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="On an alert card: the alert kind whose items it is the same hold as "
+                    "(operating/alert_kinds.json prepared_by); Home lists both in one section.")
     category: str = Field("", description="The switch this item falls under (one of "
                           "``my_drafts``' choices), empty when none.")
     category_label: str = Field("", description="That switch's name, as the switches show it.")
@@ -4549,6 +4596,21 @@ class TemplateSuggestions(_Model):
     suggestions: list[TemplateSuggestion] = Field(default_factory=list)
 
 
+class FeedState(_Model):
+    """One background feed: whether the job that makes a screen's list is running."""
+    key: str = Field(description="reply_drafts, autopilot, comms_findings or late_pos.")
+    label: str
+    state: Literal["running", "not_running", "unknown"] = Field(description=(
+        "not_running: its timer is stopped or its detector pass is stale (the list is then "
+        "not 'nothing to do'); unknown: the reliability checks have not run lately."))
+    why: str = Field("", json_schema_extra=_optional, description="The check's own words.")
+
+
+class FeedStates(_Model):
+    checked_at: Optional[str] = Field(None, description="When the reliability checks last ran.")
+    feeds: list[FeedState]
+
+
 class TrustFreshness(_Model):
     """One source system: the newest capture taken from it, the newest capture the served
     data holds, and the age of the newest capture."""
@@ -4982,6 +5044,10 @@ class InsightInfo(_Model):
                                             "(notify crosses).")
     last_run: Optional[str] = Field(None, description="A scheduled one: when it last ran "
                                     "by itself and what it found, in plain words.")
+    fixed_dates: Optional[str] = Field(None, description="A saved one whose statement names "
+                                       "fixed dates: the first and last it names "
+                                       "('2026-01-01 to 2026-11-21'); it reads the rows "
+                                       "again but not later dates.")
 
 
 class MeasureInfo(_Model):
@@ -5036,12 +5102,25 @@ class InsightDeleted(_Model):
     deleted: bool
 
 
+class InsightWatchWhere(_Model):
+    column: str = Field(min_length=1, max_length=63)
+    value: str = Field(min_length=1, max_length=200)
+
+
 class InsightWatch(_Model):
     """A line a number of a saved insight is watched against: a run tells you when some
     row's ``column`` is ``above`` / ``below`` ``value`` and the run before had none."""
     column: str = Field(min_length=1, max_length=63)
     op: Literal["above", "below"]
     value: float
+    row: Literal["any", "latest", "total"] = Field(
+        "any", description="any: some row; latest: the last row along the chart's axis "
+        "(per currency unless where names one), so earlier periods never fire; total: the "
+        "column's sum over the rows (one currency).")
+    where: Optional[InsightWatchWhere] = Field(
+        None, description="Only the rows whose column holds this value (a currency).")
+    order: Optional[str] = Field(None, min_length=1, max_length=63,
+                                 description="The axis column latest is read along.")
 
 
 class InsightSchedule(_Model):
@@ -5369,6 +5448,29 @@ class RecurringInstruction(_Model):
 
 class RecurringInstructions(_Model):
     instructions: list[RecurringInstruction] = Field(default_factory=list)
+
+
+class Digest(_Model):
+    """One digest on offer: off until you switch it on; its latest report is yours alone."""
+    id: str
+    title: str
+    when: str
+    on: bool
+    hour: int
+    last_run: Optional[float] = None
+    next_run: Optional[float] = None
+    last_result: Optional[str] = None
+    report: Optional[str] = None
+    report_at: Optional[float] = None
+
+
+class Digests(_Model):
+    digests: list[Digest] = Field(default_factory=list)
+
+
+class DigestSet(_Model):
+    on: bool
+    hour: Optional[int] = Field(None, ge=0, le=23)
 
 
 class RecurringKeep(_Model):

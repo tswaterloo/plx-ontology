@@ -64,8 +64,8 @@ class Due(unittest.TestCase):
 class Worker:
     """The reads worker: records who each read ran as."""
 
-    def __init__(self, rows, delay=0.0):
-        self.rows, self.delay, self.as_who = rows, delay, []
+    def __init__(self, rows, delay=0.0, columns=("po", "days_late")):
+        self.rows, self.delay, self.as_who, self.columns = rows, delay, [], list(columns)
 
     def run(self, reader, job, timeout=0, priority=0, long=False):
         view = type("V", (), {})()
@@ -75,7 +75,7 @@ class Worker:
 
         def call(tool, args):
             rows = self.rows() if callable(self.rows) else self.rows
-            return {"columns": ["po", "days_late"], "truncated": False,
+            return {"columns": list(self.columns), "truncated": False,
                     "rows": [{"cells": list(r)} for r in rows]}
         view._call = call
         return job(view)
@@ -287,6 +287,35 @@ class Runs(unittest.TestCase):
         news = {n.insight_id: n.ask for n in
                 ir.news(self.memory.pool.connection, f"employee:{ANA}", self.now[0])}
         self.assertEqual(news, {f"s{crossing}": why, f"s{listing}": ""})
+
+    def test_a_chart_over_time_fires_on_its_latest_row_never_an_earlier_month(self):
+        self.worker.columns = ["month", "revenue_currency", "revenue"]
+        iid = self.watched({"column": "revenue", "op": "below", "value": 400000,
+                            "row": "latest", "order": "month",
+                            "where": {"column": "revenue_currency", "value": "USD"}})
+        old = [["2026-01", "USD", "100000.00"], ["2026-11", "CAD", "1.00"]]
+        fired = []
+        for nov in ("500000.00", "164001.36", "150000.00", "450000.00", "399999.99"):
+            # rows out of order: the latest is read along the month, not the last row
+            self.rows = [["2026-11", "USD", nov], *old, ["2026-10", "USD", "688513.34"]]
+            self.tick_at(61)
+            fired.append(self.runs(iid)[-1][5])
+        # January (100,000) and CAD's November (1) are past the line in every run, and
+        # never fire; USD's November fires when it crosses, again only after it came back
+        self.assertEqual(fired, [False, True, False, False, True])
+        news = ir.news(self.memory.pool.connection, f"employee:{ANA}", self.now[0])
+        self.assertEqual(news[0].said, "The latest revenue for USD is now below 400000.")
+
+    def test_a_total_is_of_one_currency_and_fails_plainly_across_two(self):
+        self.worker.columns = ["customer", "currency", "overdue"]
+        both = self.watched({"column": "overdue", "op": "above", "value": 1000,
+                             "row": "total"})
+        usd = self.watched({"column": "overdue", "op": "above", "value": 1000, "row": "total",
+                            "where": {"column": "currency", "value": "usd"}})
+        self.rows = [["A", "USD", "600"], ["B", "USD", "500.01"], ["C", "CAD", "5000"]]
+        self.tick_at(61)
+        self.assertEqual(self.runs(both)[-1][:2], ("failed", ir.FAILED["insight_watch"]))
+        self.assertEqual((self.runs(usd)[-1][0], self.runs(usd)[-1][5]), ("ok", True))
 
     def test_below_counts_every_row_past_the_line(self):
         iid = self.watched({"column": "days_late", "op": "below", "value": 50})

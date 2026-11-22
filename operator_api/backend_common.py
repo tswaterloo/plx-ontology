@@ -19,7 +19,7 @@ REWARM_FLOOR_SECONDS = 120
 
 
 # A page in one of these statuses could not be read: never kept as last good (API-012).
-UNSERVABLE_STATUSES = frozenset({"unavailable", "error", "failed"})
+UNSERVABLE_STATUSES = frozenset({"unavailable", "error", "failed", "unread"})
 
 
 RESUME_HOST_CHECKS = 6   # host re-reads one resumed Ask turn may make; more: withheld

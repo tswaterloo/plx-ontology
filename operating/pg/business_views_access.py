@@ -174,8 +174,10 @@ def _resolved_rows(rows: Sequence[Any], v: Any, name: str, reader: Any, write: A
                    doc_types: frozenset[str], notes: Counter) -> list[tuple]:
     """Each row's classes with everything it was read from resolved: its other records'
     keys, markings and ids join the row's pattern, a column's own records its column
-    needs; a row read from an excluded person's record is dropped, a column only read from
-    one is emptied."""
+    needs; a row read from an excluded person's record is the owner's alone (its pattern
+    holds ``access_classes.OWNER_KEY``, Never removed), a column
+    only read from one is emptied."""
+    from operating.pg.access_classes import OWNER_KEY
     ids = {o for r in rows for o in (*r.objects, *r.reads,
                                      *(i for c in r.col_reads.values() for i in c),
                                      *(i for c in r.col_names.values() for i in c))}
@@ -183,13 +185,13 @@ def _resolved_rows(rows: Sequence[Any], v: Any, name: str, reader: Any, write: A
     gone = excluded_objects(write, ids)
     out = []
     for row in rows:
-        if gone.intersection(row.objects) or gone.intersection(row.reads):
-            notes["people_excluded_rows"] += 1
-            continue
+        owner_only = bool(gone.intersection(row.objects) or gone.intersection(row.reads))
+        if owner_only:
+            notes["owner_only_rows"] += 1
         keys, marks, doc, blocked = _resolve(row.reads, held, doc_types)
         aud, rec_marks, _d, blocked0 = access_pattern(row)
         doc = doc or any(o.split(":", 1)[0] in doc_types for o in row.objects)
-        all_keys = set(aud) | keys
+        all_keys = set(aud) | keys | ({OWNER_KEY} if owner_only else set())
         pattern = (tuple(k for k in all_keys if isinstance(k, str) and k),
                    tuple(set(rec_marks) | marks), (UNREADABLE,) if doc else (),
                    blocked0 or blocked or any(not (isinstance(k, str) and k) for k in keys))
@@ -256,14 +258,21 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
     cols = ", ".join(f'"{n}"' for n, _ in bv.columns(v))
     lcols = ", ".join(bv.LINEAGE_COLS)
     rows = 0
+    from operating.pg import wal_budget
+    budget = wal_budget.Budget.for_conn(write, job=f"views:{name}")
+    longest = wal_budget.max_wait_seconds()
 
     def put(chunk: Sequence[Any]) -> None:
         """Resolve a chunk of made rows and append it to the ``_next`` tables (its own
-        transaction: what is held in memory is one chunk, never the whole view)."""
+        transaction: what is held in memory is one chunk, never the whole view). Each
+        chunk waits for the WAL budget first (``wal_budget``: between transactions, so a
+        paused build holds no lock; still paused after ``PLX_WAL_MAX_WAIT_S``: the build
+        fails, the served table kept)."""
         nonlocal rows
         made = _resolved_rows(chunk, v, name, reader, write, DOCUMENT_TYPES, notes)
         if not made:
             return
+        budget.wait(max_seconds=longest)
         with write.transaction():
             # ids are append-only: one given for a build that then fails stays unused
             ids = access_ids(write, (m[1] for m in made))
@@ -312,8 +321,8 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
                 (name, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), digest,
                  rows, seconds, json.dumps({"as_of": as_of.isoformat(),
                                                  "code": _code().fingerprint(v),
-                                                 "people_excluded_rows":
-                                                     notes["people_excluded_rows"],
+                                                 "owner_only_rows":
+                                                     notes["owner_only_rows"],
                                                  "people_excluded_cells":
                                                      notes["people_excluded_cells"]})))
 

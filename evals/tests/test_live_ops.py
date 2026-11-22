@@ -460,7 +460,7 @@ def bc(entity_set: str, fields: dict, n: int) -> dict:
 class Cleared:
     """A sender guard clearing every sender (the fixtures hold no excluded person)."""
 
-    def cleared(self, sender, own) -> bool:
+    def cleared(self, sender, own, row=None) -> bool:
         return True
 
 

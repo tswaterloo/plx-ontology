@@ -18,7 +18,7 @@ export function HomeAsk({ className }: { className?: string }) {
       <AskBox
         size="md"
         label="Ask or tell the Workbench"
-        placeholder="Ask about an order, supplier, customer or lot"
+        placeholder="Ask a question, or ask for a chart, document or quote"
         onSubmit={(question, chosen) => {
           stashPending(question, chosen);
           router.push(`/ask?q=${encodeURIComponent(question)}`);
@@ -45,7 +45,7 @@ export function HomeStart({ className }: { className?: string }) {
         <AskBox
           size="md"
           label="Ask or tell the Workbench"
-          placeholder="Ask about an order, supplier, customer or lot"
+          placeholder="Ask a question, or ask for a chart, document or quote"
           onSubmit={(question, chosen) => {
             stashPending(question, chosen);
             router.push(`/ask?q=${encodeURIComponent(question)}`);

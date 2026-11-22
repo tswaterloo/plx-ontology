@@ -1,0 +1,11 @@
+[Unit]
+Description=PLX Petra tailnet: host 127.0.0.1:1056 -> the node's proxy in netns tsp
+After=plx-ts-petra.service
+[Service]
+User=@PLX_USER@
+ExecStart=/usr/bin/systemd-socket-activate -l 127.0.0.1:1056 /lib/systemd/systemd-socket-proxyd 10.201.0.2:1056
+Restart=always
+RestartSec=5
+CPUWeight=1000
+[Install]
+WantedBy=multi-user.target

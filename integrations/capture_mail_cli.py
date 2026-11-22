@@ -127,7 +127,8 @@ def ocr_deferred_cli(argv: Sequence[str] | None = None, *,
         return 2
     audience = cm.LiveSourceAudience.from_file(args.live_audience)
     env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
+    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60),
+                                  capture=True)
     reader = GraphMailReader(api, audience)
     actor = cm.Actor(audience.tenant, frozenset({args.principal}), "restricted")
 
@@ -174,7 +175,8 @@ def deferred_attachments_cli(argv: Sequence[str] | None = None, *,
         return 2
     audience = cm.LiveSourceAudience.from_file(args.live_audience)
     env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
+    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60),
+                                  capture=True)
     reader = GraphMailReader(api, audience)
     actor = cm.Actor(audience.tenant, frozenset({args.principal}), "restricted")
 
@@ -243,7 +245,8 @@ def backlog_cli(argv: Sequence[str] | None = None, *,
     clock = cm.drain.clock(monotonic)
     audience = cm.LiveSourceAudience.from_file(args.live_audience)
     env = os.environ if environ is None else environ
-    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
+    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60),
+                                  capture=True)
     reader = GraphMailReader(api, audience)
     actor = cm.Actor(audience.tenant, frozenset({args.principal}), "restricted")
     started = monotonic()

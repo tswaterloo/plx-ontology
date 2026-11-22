@@ -4,22 +4,28 @@ the refresh's advisory lock (``business_views.REFRESH_LOCK``) first, waits up to
 seconds for a running refresh to end (refresh runs that start meanwhile skip: "another
 refresh is running"), runs ``pg_repack`` with the remaining arguments and releases the lock.
 
+The repack runs under the WAL budget (``operating.pg.wal_budget.run_guarded``): it starts
+only once the standby is under the resume line and the disk above the floor, and it is
+stopped (SIGINT: pg_repack drops its work tables) when the standby falls past the abort
+line (3/4 of the slot's cap): one repack writes the whole table's WAL in one go.
+
   python3 -m operating.pg.locked_repack [--dsn D] [--wait S] -- pg_repack -d plx -t biz.lineage
-Exit: the repack's, or 3 when the lock was not got in time (nothing ran).
+Exit: the repack's; 3 when the lock was not got in time (nothing ran); 4 when the WAL
+budget gave no room in time (nothing ran); 5 when it was stopped at the abort line.
 """
 from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import time
-from typing import Sequence
+from typing import Any, Sequence
 
 from operating.pg import business_views as bv
 
 
-def run(dsn: str, command: Sequence[str], wait_s: float = 3600, poll_s: float = 15) -> int:
+def run(dsn: str, command: Sequence[str], wait_s: float = 3600, poll_s: float = 15,
+        **guard: Any) -> int:
     import psycopg
     if not command:
         raise ValueError("no command to run")
@@ -32,7 +38,8 @@ def run(dsn: str, command: Sequence[str], wait_s: float = 3600, poll_s: float = 
                 return 3
             time.sleep(poll_s)
         try:
-            return subprocess.call(list(command))
+            from operating.pg import wal_budget
+            return wal_budget.run_guarded(dsn, command, poll=min(poll_s, 10.0), **guard)
         finally:
             meta.execute("SELECT pg_advisory_unlock(%s)", (bv.REFRESH_LOCK,))
 

@@ -101,10 +101,13 @@ done
 spec=$(SPEC_SHA=$sha SPEC_TREE=$top SPEC_CWD=$cwd SPEC_STATE=$state SPEC_PG=$pg SPEC_NAME=${name:-$(basename "$top")} \
   python3 "$here/spark_run_spec.py" "${#ship_paths[@]}" "${ship_paths[@]+"${ship_paths[@]}"}" \
   "${#out_paths[@]}" "${out_paths[@]+"${out_paths[@]}"}" "${#envs[@]}" "${envs[@]+"${envs[@]}"}" "$@") || exit 2
-# memory guard (as spark_test.sh): the run's scope holds MemoryMax = MemAvailable - 16 GB
+# memory guard (as spark_test.sh): the run's scope holds MemoryMax = MemAvailable - 16 GB, and
+# the run is the kernel's first choice under memory pressure (oom_score_adj 800: 11-22 an eval
+# beside the s7d3d standby got the standby OOM-killed; a user scope cannot protect the standby
+# itself, so the runs volunteer first)
 started=$(date +%s)
 printf '%s\n' "$spec" | $R "mem=\$(awk '/MemAvailable/ {print int(\$2/1048576)}' /proc/meminfo); cap=\$((mem-16)); [ \$cap -ge 4 ] || cap=4;
-  exec systemd-run --user --scope -q -p MemoryMax=\${cap}G -- python3 ~/plx-run/r-$rh/spark_run_remote.py"
+  exec systemd-run --user --scope -q -p MemoryMax=\${cap}G -- choom -n 800 -- python3 ~/plx-run/r-$rh/spark_run_remote.py"
 rc=$?
 for o in "${outs[@]+"${outs[@]}"}"; do
   r=$(norm "$o")

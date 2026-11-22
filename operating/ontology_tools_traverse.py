@@ -723,9 +723,9 @@ class TraverseTools:
             at, explicit = self.base.clock().astimezone(dt.timezone.utc), False
         keys, held, sets, granted = reader_grants(self, self.policy, actor,
                                                   self._audience_keys())
-        from operating.pg.people_excluded import full_reader
+        from operating.pg.people_excluded import filter_tag
         return _Scope(actor, at, _fixed(at), explicit, keys, held, sets, granted, gate,
-                      people=full_reader(self.base, actor))
+                      people=filter_tag(self.base, actor))
 
     def prime(self, cell_families: Sequence[str] = ()) -> None:
         """Read every reader-independent store fact now (``_store_cached``'s keys), so no
