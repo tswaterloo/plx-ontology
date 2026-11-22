@@ -1,8 +1,27 @@
+import { useState } from "react";
+import { getLabour } from "@/lib/api";
+import { plainError } from "@/lib/errors";
 import type { LabourPage } from "@/lib/types";
 
 /** Department and week labour hours: totals only (hours, overtime, headcount-days), the
  * overtime trend and spikes. Never a person; the server sends nothing per person. */
-export function LabourView({ page }: { page: LabourPage }) {
+export function LabourView({ page: first }: { page: LabourPage }) {
+  // the last 12 weeks come first (the page was 355 KB with every week since 2023)
+  const [every, setEvery] = useState<LabourPage | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const page = every ?? first;
+  const earlier = async () => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      setEvery(await getLabour(undefined, true));
+    } catch (e) {
+      setProblem(plainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   if (page.state !== "ready") {
     return (
       <p role="note" className="text-[13px] text-muted" data-testid="labour-note">
@@ -55,6 +74,13 @@ export function LabourView({ page }: { page: LabourPage }) {
           <thead><tr className="text-left text-muted"><th>Department</th><th>Week of</th><th>Run or order</th><th>Hours</th></tr></thead>
           <tbody>{runs.map((w) => (<tr key={w.department + w.week + w.run}><td>{w.department}</td><td>{w.week}</td><td>{w.run}</td><td>{w.hours}</td></tr>))}</tbody>
         </table>
+      )}
+      {page.older && (
+        <p className="text-meta text-muted">
+          The last 12 weeks are shown.{" "}
+          <button type="button" className="underline cursor-pointer disabled:cursor-default" disabled={busy} onClick={earlier}>Show every week</button>
+          {problem && <span role="alert"> {problem}</span>}
+        </p>
       )}
       <p className="text-meta text-muted">{page.note} Hours only; pay is never read.</p>
     </div>

@@ -64,6 +64,9 @@ NOT_DECLARED = {
     # default partition and HNSW): each kind's table is built standalone LIKE the parent by
     # ``chunk_vectors build``, indexed, then attached; never a SQLite store
     "operating/pg/chunk_vectors.py",
+    # the restricted readers' 1-bit copy (migration 0056): its staging table is made on a
+    # build copy by ``reader_bits stage`` and dropped after the fill; Postgres, never SQLite
+    "operating/pg/reader_bits.py",
     "operating/pg/generic_records.py", "operating/pg/generic_views.py",
     "operating/pg/comms_findings.py", "operating/pg/door.py", "operating/pg/alerts.py",
     # the capture backup's pack check: a throwaway SQLite file of one pack's names, made

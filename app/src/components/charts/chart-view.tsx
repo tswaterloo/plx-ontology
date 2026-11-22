@@ -122,7 +122,8 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   const rpos = (v: number) => (rAxis ? ((v - rAxis[0]) / (rAxis[rAxis.length - 1] - rAxis[0] || 1)) * ph : 0);
 
   const rect = (i: number, a: number, b: number, fill: string, slot = 0, slots = 1, key = "") => {
-    const inner = band * (kind === "histogram" ? 0.98 : 0.76);
+    // a few bars stay bars: one category is not drawn as a slab as wide as the plot
+    const inner = kind === "histogram" ? band * 0.98 : Math.min(band * 0.76, 56 * slots);
     const t = inner / slots;
     const start = band * i + (band - inner) / 2 + t * slot;
     const [p, q] = [pos(Math.min(a, b)), pos(Math.max(a, b))];

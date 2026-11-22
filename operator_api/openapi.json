@@ -3827,6 +3827,18 @@
             },
             "title": "Never Senders",
             "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           }
         },
         "title": "AutopilotDrafts",
@@ -14117,6 +14129,12 @@
           "note": {
             "title": "Note",
             "type": "string"
+          },
+          "older": {
+            "default": false,
+            "description": "Weeks older than the ones shown are held (ask again with weeks=0 for every week).",
+            "title": "Older",
+            "type": "boolean"
           },
           "state": {
             "enum": [
@@ -30407,6 +30425,31 @@
         ]
       }
     },
+    "/api/insights/all/stream": {
+      "get": {
+        "description": "The whole dashboard in one response (one JSON object per line): your list, then\neach chart as it is read (its own result or its own error, each read as you).",
+        "operationId": "insights_stream_api_insights_all_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Insights Stream",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
     "/api/insights/{insight_id}": {
       "delete": {
         "description": "Remove one of your saved insights.",
@@ -31231,8 +31274,24 @@
     },
     "/api/labour": {
       "get": {
-        "description": "Labour hours from the department time sheets: department and week totals of\nhours, overtime hours and headcount-days, the overtime trend and the overtime-spike\nalert (30% over a department's 8-week median). Hours only, never pay; no per-person\nfigure; groups of fewer than 3 people are not shown. Only a reader granted hr or\nops-management sees any figure (state not_granted otherwise).",
+        "description": "Labour hours from the department time sheets: department and week totals of\nhours, overtime hours and headcount-days, the overtime trend and the overtime-spike\nalert (30% over a department's 8-week median). Hours only, never pay; no per-person\nfigure; groups of fewer than 3 people are not shown. Only a reader granted hr or\nops-management sees any figure (state not_granted otherwise). The last 12 weeks\nby default (``older`` says more are held; weeks=0 gives every week).",
         "operationId": "labour_api_labour_get",
+        "parameters": [
+          {
+            "description": "The last this many weeks (0: every week)",
+            "in": "query",
+            "name": "weeks",
+            "required": false,
+            "schema": {
+              "default": 12,
+              "description": "The last this many weeks (0: every week)",
+              "maximum": 1000,
+              "minimum": 0,
+              "title": "Weeks",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -31253,6 +31312,16 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Labour",

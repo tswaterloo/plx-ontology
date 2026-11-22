@@ -184,7 +184,7 @@ from .cli import (  # noqa: F401 - re-exported
 
 from .backend_common import (
     _clean_text, _iso, GRANT_SCREENS, REWARM_FLOOR_SECONDS, SCREENS_AGAIN_MOST,
-    SCREENS_AGAIN_SECONDS, SCREENS_AHEAD, SHAPE_SECONDS, SHAPE_WAIT_FACTOR, STOP_JOIN_SECONDS,
+    AHEAD_LATER, SCREENS_AGAIN_SECONDS, SCREENS_AHEAD, SHAPE_SECONDS, SHAPE_WAIT_FACTOR, STOP_JOIN_SECONDS,
     FRESHNESS_SECONDS)
 from .recurring_api import RecurringMixin
 from .backend_warm import DIRECTORY_ROUND, WarmMixin  # noqa: F401 - re-export
@@ -195,7 +195,7 @@ from .backend_trails import (
     _batched_words, _person, answer_trail, customer_names, fast_off, quicker_answer,
     why_answer_trail)
 from .backend_pages import (
-    _count, _marks_stamp, PAGE_SPREAD, PAGE_SPREAD_PRIORITY, plan_families, _ReadByOtherCode,
+    _count, _marks_stamp, own_shown, PAGE_SPREAD, PAGE_SPREAD_PRIORITY, plan_families, _ReadByOtherCode,
     SPREAD_SECTIONS)
 from .page_core import CorePageMixin
 from .backend_run import (
@@ -649,6 +649,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 continue
             if name == "weekly_review":
                 named = {**named, "ahead": True}   # a cut read marks itself (WeeklyCuts)
+            if name in AHEAD_LATER:
+                named = {**named, "later": later}
             began = time.monotonic()
             try:
                 got = getattr(self, name)(reader, *args, **named)
@@ -1838,7 +1840,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         self._remember_read(key, reader, read, inputs_of)
         held = self._held_good(key)
         before = self._access_later(reader, shown_handles(held[1]) if held else (),
-                                    screen=key[2], objects=getattr(held, "objects", None))
+                                    screen=key[2], objects=getattr(held, "objects", None),
+                                    page=(held[0], shown_objects(held[1])) if held else None)
         snapshot = self._snapshot(key, held, before, inputs)
         if snapshot is not None:
             if getattr(snapshot, "stale_since", None) is not None:
@@ -1978,7 +1981,9 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             return None
         now = self._access_result(self._access_later(
             reader, shown_handles(got[1]), screen=key[2],
-            objects=shown_objects(got[1])), ACCESS_WAIT_SECONDS)
+            objects=shown_objects(got[1]),
+            page=(time.time() - (time.monotonic() - got[0]), shown_objects(got[1]))),
+            ACCESS_WAIT_SECONDS)
         if now is None or now[0] != got[2] or now[1] is not True:
             return None
         return got[1].model_copy(deep=True)
@@ -2149,7 +2154,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         threading.Thread(target=run, name="last-good-keep", daemon=True).start()
 
     def _access_later(self, reader: Reader, handles: Iterable[str] = (),
-                      screen: Any = None, objects: Optional[Iterable[str]] = None) -> Future:
+                      screen: Any = None, objects: Optional[Iterable[str]] = None,
+                      page: Optional[tuple] = None) -> Future:
         """(the reader's access state, every one of ``handles`` still opens for them),
         asked of the read worker ahead of the screen's own read (it runs before it, or the
         worker is stuck and it never does). The state: policy fingerprint, unrestricted,
@@ -2164,7 +2170,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         access without that decision opens none."""
         handles = tuple(handles)
         objects = None if objects is None else tuple(objects)
-        job = self._access_job(handles, screen, objects, who=shared_key(reader))
+        job = self._access_job(handles, screen, objects, who=shared_key(reader), page=page)
+        # (the PLX-issued check of ``page`` is a set lookup: no record read, batched too)
         worker = getattr(self, "state_worker", None) if not handles and not objects else None
         if worker is None or worker.stopped.is_set():
             worker = getattr(self, "check_worker", None)
@@ -2206,7 +2213,10 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         with self._lock:
             batches = self.__dict__.setdefault("_check_batches", {})
             held = batches.get(key)
-            if held is not None and not held["started"] and held["deadline"] - now > 1.0:
+            # only a batch already queued is joined: one being queued right now (its
+            # ``queued`` not yet set) is left to run as it is
+            if held is not None and not held["started"] and held["queued"] is not None \
+                    and held["deadline"] - now > 1.0:
                 held["items"].append((job, own))
                 held["deadline"] = deadline
                 held["queued"].plx_deadline = deadline
@@ -2242,15 +2252,19 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     except Exception:  # noqa: BLE001 - settled meanwhile
                         pass
 
-        with self._lock:   # a check asked now finds ``queued`` set
-            queued = worker.submit(reader, run, priority=-1, deadline=deadline)
+        # queued outside the lock: a worker may run the job before ``submit`` returns (one
+        # that runs it at once: the tests' worker), and ``run`` takes the lock; held
+        # across the submit, that deadlocked the search box's access check (11-22:
+        # test_pg_http_permissions hung on main, suggest -> _access_now)
+        queued = worker.submit(reader, run, priority=-1, deadline=deadline)
+        with self._lock:   # a check asked from now on may join it
             batch["queued"] = queued
         queued.add_done_callback(finished)
         return own
 
     def _access_job(self, handles: Iterable[str] = (), screen: Any = None,
-                    objects: Optional[Iterable[str]] = None, who: Any = None
-                    ) -> Callable[[Any], tuple]:
+                    objects: Optional[Iterable[str]] = None, who: Any = None,
+                    page: Optional[tuple] = None) -> Callable[[Any], tuple]:
         """The job ``_access_later`` runs on a view of the reader (its answer: (access
         state, everything shown opens))."""
         from operating.pg.permissions import exclusion_stamp, policy_parts
@@ -2285,7 +2299,9 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     # (its own part below) and each source again before a kept page serves
                     parts = tuple(p for p in parts if p[0] not in FULL_READER_MOVING_PARTS)
                 state = (parts, full, exclusion_stamp(),
-                         _marks_stamp(view),
+                         # the withheld set only: a PLX-issued document refuses the kept
+                         # pages that show it (``own_shown``, below), not every page
+                         _marks_stamp(view, own_issued=False),
                          # unreadable: raises, no state, nothing kept is served
                          screen_state())
                 if listed and who is not None:
@@ -2325,6 +2341,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                             opens = all(seen.get(i) is True for i in records)
                         except LookupError:
                             opens = False
+                if opens and page is not None and own_shown(page[1], page[0]):
+                    opens = False   # it shows (or may show) a PLX-issued document
                 return state, opens
         return job
 

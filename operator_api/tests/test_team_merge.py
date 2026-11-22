@@ -44,6 +44,23 @@ PEOPLE["V"]["with"] = {"W": 3, "G": 2}
 PEOPLE["G"]["with"] = {"V": 2}
 
 
+class ListWeeks(unittest.TestCase):
+    def test_the_list_carries_this_week_and_last_and_the_person_row_all_four(self):
+        row_ = PEOPLE["V"]
+        until = tv.date(2026, 11, 22)
+        full = tv.person_row("V", row_, until=until, team=None, open_={}, is_self=False)
+        self.assertEqual(len(full["weeks"]), 4)
+
+        class Host(tv.TeamViewMixin):
+            def _team_parts(self, reader):
+                snap = {"status": "built", "window": {"to": until.isoformat()}, "coverage": []}
+                return (True, frozenset(), lambda o: False, snap, {}, {}, {"V": row_}, {"V"},
+                        {}, {})
+        got = Host().team_view(None).people
+        self.assertEqual([len(p.weeks) for p in got], [tv.LIST_WEEKS])
+        self.assertEqual([w.week for w in got[0].weeks], [w["week"] for w in full["weeks"][-2:]])
+
+
 class MergeIdentities(unittest.TestCase):
     def merge(self, shown=None, domains=DOMAINS):
         return tv.merge_identities(PEOPLE, shown or list(PEOPLE),

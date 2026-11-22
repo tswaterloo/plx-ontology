@@ -202,6 +202,9 @@ def attach_saved(people: Iterable[Any], found: Optional[Mapping[str, Any]],
                 week.saved_minutes = mine.get(week.week, 0)
 
 
+LIST_WEEKS = 2   # tracker weeks per person in the Team list (the drill-down has all four)
+
+
 def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[str],
                open_: Mapping[str, int], is_self: bool) -> dict[str, Any]:
     from operating import team_activity as ta
@@ -423,9 +426,12 @@ class TeamViewMixin:
             return m.TeamView(scope="everyone" if everyone else "self",
                               state="blocked" if snap else "not_built", note=NOTE)
         until = date.fromisoformat(snap["window"]["to"])
-        rows = [m.TeamPerson(**person_row(oid, people[oid], until=until, team=teams.get(oid),
-                                          open_=counts.get(oid, {}), is_self=oid in me))
-                for oid in sorted(shown, key=lambda o: str(people[o].get("name")).lower())]
+        # the list's columns read only this week and last (``thisWeek``, ``lastWeek``); the
+        # whole four-week tracker comes with the person's own drill-down (``team_person``)
+        rows = [m.TeamPerson(**{**row, "weeks": row["weeks"][-LIST_WEEKS:]})
+                for row in (person_row(oid, people[oid], until=until, team=teams.get(oid),
+                                       open_=counts.get(oid, {}), is_self=oid in me)
+                            for oid in sorted(shown, key=lambda o: str(people[o].get("name")).lower()))]
         return m.TeamView(scope="everyone" if everyone else "self", state="ready",
                           as_of=snap.get("generated_at"), window_to=snap["window"]["to"],
                           people=rows, note=NOTE,

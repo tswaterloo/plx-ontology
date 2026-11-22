@@ -1,0 +1,7 @@
+# The only way to restart or stop plx-api.service (it refuses a direct systemctl restart or
+# stop: RefuseManualStop): `plx-release restart` restarts this target, which restarts the API
+# (PartOf), inside the warm switch, so no reader meets a cold API (11-22: a direct restart
+# for a settings change served Home in 33 s and Insights in 32-56 s with 504s). Starting the
+# API stays manual (`systemctl start plx-api`); a crash restarts it by itself (Restart=always).
+[Unit]
+Description=PLX Workbench API restart cycle (restarted only by plx-release's warm switch)

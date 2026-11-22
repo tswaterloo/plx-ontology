@@ -182,6 +182,8 @@ async function call(path: string, init: RequestInit & { json?: unknown } = {}): 
     autopilotLast = null;
     writesSent += 1;
     paneKept.clear();
+    insightsKept.clear();
+    recordAhead.clear();
   }
   const as = viewAsHeader(path, method);
   const limited = readSignal(method, rest.signal);
@@ -682,8 +684,9 @@ export function getMeetingBrief(type: string, id: string, signal?: AbortSignal):
 }
 
 /** Department and week labour hours (hr / ops-management readers only). */
-export function getLabour(signal?: AbortSignal): Promise<LabourPage> {
-  return getJson<LabourPage>("/api/labour", signal);
+export function getLabour(signal?: AbortSignal, everyWeek = false): Promise<LabourPage> {
+  // the last 12 weeks by default (`older` says more are held); every week on request
+  return getJson<LabourPage>(everyWeek ? "/api/labour?weeks=0" : "/api/labour", signal);
 }
 
 /** The weekly review of the week holding `week` (YYYY-MM-DD; default last week). */
@@ -1032,18 +1035,55 @@ export function isObjectType(t: string): boolean {
   return OBJECT_TYPE.test(t);
 }
 
+// A record page read when its link is hovered (`prefetchRecord`), taken once by the page's own
+// read if it asks within AHEAD_RECORD_MS, so a click lands on a read already under way or done.
+// Kept for the person who hovered only (key: view-as), dropped on any write and a sign-out; the
+// server decides what each read returns as it does for any other read.
+const AHEAD_RECORD_MS = 5000;
+const recordAhead = new Map<string, { at: number; read: Promise<unknown> }>();
+onSessionReset(() => recordAhead.clear());
+function takeAhead<T>(path: string): Promise<T> | null {
+  const k = readKey(path);
+  const hit = recordAhead.get(k);
+  if (!hit) return null;
+  recordAhead.delete(k);
+  return Date.now() - hit.at < AHEAD_RECORD_MS ? (hit.read as Promise<T>) : null;
+}
+
+/** Read a record's page ahead (its link is hovered or focused), once; a failure is dropped. */
+export function prefetchRecord(type: string, id: string): void {
+  if (!isObjectType(type) || !id || id.length > 700) return;
+  const base = `/api/object/${type}/${encodeURIComponent(id)}`;
+  const reads: [string, () => Promise<unknown>][] = [
+    [`${base}?quick=1&core=1`, () => getJson<ObjectPage>(`${base}?quick=1&core=1`)],
+    [`${base}?quick=1`, () => getRead<ObjectPage>(`${base}?quick=1`)],
+  ];
+  for (const [path, run] of reads) {
+    const k = readKey(path);
+    const have = recordAhead.get(k);
+    if (have && Date.now() - have.at < AHEAD_RECORD_MS) continue;
+    const entry = { at: Date.now(), read: run() };
+    recordAhead.set(k, entry);
+    entry.read.catch(() => {
+      if (recordAhead.get(k) === entry) recordAhead.delete(k);
+    });
+  }
+}
+
 /** A record's page; `quick`: a first read without the checks (`complete` false) to show
  * while the full page is read. */
 export function getObject(type: string, id: string, signal?: AbortSignal, quick = false): Promise<ObjectPage> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
-  return getRead<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
+  const path = `/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`;
+  return (quick && !signal?.aborted ? takeAhead<ObjectPage>(path) : null) ?? getRead<ObjectPage>(path, signal);
 }
 
 /** A record's core read: its own details only (`core`, status "reading"), served before the
  * quick read while its status, timeline, links and documents are read. */
 export function getObjectCore(type: string, id: string, signal?: AbortSignal): Promise<ObjectPage> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
-  return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}?quick=1&core=1`, signal);
+  const path = `/api/object/${type}/${encodeURIComponent(id)}?quick=1&core=1`;
+  return (!signal?.aborted ? takeAhead<ObjectPage>(path) : null) ?? getJson<ObjectPage>(path, signal);
 }
 
 /** A record's neighbours one hop out, by kind of link, as this reader may see them (the
@@ -1348,6 +1388,50 @@ export async function forgetMemory(id: number): Promise<void> {
 /** The insights you may see: the built-ins, then the ones you pinned or saved. */
 export function getInsights(signal?: AbortSignal): Promise<InsightList> {
   return getJson<InsightList>("/api/insights", signal);
+}
+
+/** One line of the one-response dashboard: your list first, then each chart as it was read
+ * (its result, or its own error: one chart failing never fails the others; `later`: a measure
+ * chart with nothing kept for you, which reads itself once it nears the view). */
+export type InsightsLine =
+  | { list: InsightList }
+  | { id: string; result?: InsightResult; error?: { code: string; message?: string; status: number }; later?: boolean };
+
+/** What the dashboard showed last (per person and view-as): the next visit draws it at once,
+ * then reads again and replaces it. Dropped on sign-out, any write and a view-as change. */
+const insightsKept = new Map<string, { list: InsightList; tiles: Record<string, InsightResult> }>();
+onSessionReset(() => insightsKept.clear());
+const insightsKeptKey = () => viewingAs()?.key ?? "";
+export function keptInsights(): { list: InsightList; tiles: Record<string, InsightResult> } | undefined {
+  return insightsKept.get(insightsKeptKey());
+}
+export function keepInsights(list: InsightList, tiles: Record<string, InsightResult>): void {
+  insightsKept.set(insightsKeptKey(), { list, tiles });
+}
+
+/** The whole dashboard in ONE request: `on` gets each line as it arrives (the list, then every
+ * chart as it was read). Each chart was checked for your access on its own, server side. */
+export async function streamInsights(on: (line: InsightsLine) => void, signal?: AbortSignal): Promise<void> {
+  const res = await call("/api/insights/all/stream", { signal });
+  if (!res.body) throw new ApiError(502, "invalid_response");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const feed = (text: string) => {
+    buf += text;
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) on(JSON.parse(line) as InsightsLine);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    feed(dec.decode(value, { stream: true }));
+  }
+  feed(dec.decode() + "\n");
 }
 
 /** One insight as you read it (kept from your read of the last few minutes; `again`: read

@@ -683,6 +683,26 @@ class GpuApplyTests(tcm.CompactCase):
             out[att] = (status, None if digest is None else self.store.blob(digest).decode())
         return out
 
+    def test_a_walk_that_spends_the_whole_budget_no_longer_starves_the_gpu_apply(self):
+        # 11-22: last in line, the apply never ran (the walks used the budget every run)
+        env = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
+        now = [0.0]
+        real = self.store.walk_cursor
+
+        def walk_cursor(walk):
+            if walk == "fetched":      # the fetched walk begins: it takes every second left
+                now[0] += 10_000
+            return real(walk)
+        api, _ = graph_read.build_graph(env, sender=self.graph)
+        with mock.patch.dict(os.environ, {capture_mail.GPU_OCR_APPLY_ENV: "1"}), \
+                mock.patch.object(self.store, "walk_cursor", side_effect=walk_cursor):
+            os.environ.pop("PLX_WINDOW_DIR", None)
+            counts = capture_mail.apply_fetched_pass(
+                self.store, GraphMailReader(api, tm.capture_audience()), tm.CAPTURE,
+                self.fetch_dir, budget_seconds=600, monotonic=lambda: now[0])
+        self.assertEqual(counts["gpu_ocr"]["applied"], 3)
+        self.assertEqual(self.texts()["ATT-1"], ("extracted_ocr", "GPU PO 4500012345"))
+
     def test_gpu_readings_replace_only_where_not_worse_and_only_once(self):
         env = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
         counts = self.apply(env)["gpu_ocr"]

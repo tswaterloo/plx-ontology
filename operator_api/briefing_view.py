@@ -20,6 +20,28 @@ HOME_GROUP_PAGE_ROWS = 25  # a group's first page, read by Home's one request an
 HOME_GROUP_ROWS = 3  # rows of one kind Home lists before "Show more" (app: HOME_ROWS)
 
 
+HOME_PAGES_AHEAD = 6  # records Home opens first, read ahead per reader (``home_first_records``)
+
+
+def home_first_records(got: Any, most: int = HOME_PAGES_AHEAD) -> list[tuple[str, str]]:
+    """The records a read briefing's Home opens first: the first item sent home of each
+    kind, in the briefing's rank order (Home's detail pane opens the first row of the list
+    it shows, and each kind's tab its own first row), at most ``most``; (type, object id),
+    each once. An item without a record is skipped."""
+    out: list[tuple[str, str]] = []
+    kinds: set = set()
+    for item in list(getattr(got, "items", None) or []):
+        kind, oid, otype = item.event_type, item.object_id, item.object_type
+        if not item.home or kind in kinds or not oid or not otype:
+            continue
+        kinds.add(kind)
+        if (otype, oid) not in out:
+            out.append((otype, oid))
+        if len(out) >= most:
+            break
+    return out
+
+
 def home_group_pages(got: Any) -> list[str]:
     """The groups of a read briefing whose next page Home can show: the kinds sent home,
     of each only HOME_GROUP_ROWS before "Show more", so a kind whose top items already fill

@@ -71,6 +71,7 @@ def reply_due(event: Mapping[str, Any]) -> str:
     a group note for others, greeting someone else, a notice): no reply or question there.
     The mail's Exchange kind (``item_kind``) comes first: an invitation put to them is
     "asked"; an invitation's answer, a cancellation, an automatic reply or a bounce is "".
+    A message on the person's replies to write (``owed``: the drafts path) is their "turn".
     A field missing or unreadable counts as not shown (fail closed: no reply due)."""
     def pair(key: str) -> tuple[int, int]:
         v = event.get(key)
@@ -83,6 +84,11 @@ def reply_due(event: Mapping[str, Any]) -> str:
     kind = event.get("item_kind")
     if kind in NO_REPLY_KINDS:
         return ""
+    if event.get("owed") is True:
+        # a line on the person's replies to write (``reply_drafts.line_draft``): the line
+        # itself says their reply is due (dev 11-22: 2 of 10 cards on copied mail the person
+        # answered were dropped here)
+        return "turn"
     if direct and kind == "meeting_request":
         return "asked"     # an invitation put to them asks for their answer by what it is
     exchange = in_exchange(event)

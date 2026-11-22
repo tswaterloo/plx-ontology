@@ -523,7 +523,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "at": _iso(datetime.now(timezone.utc)),
                          "by": sorted(self._apa_me(reader))[0],
                          "ids": sorted(self._apa_me(reader))})
-        return self.autopilot_prepared_list(reader)
+        return self._prepared_read(reader)   # after a write: read now, never kept
 
     @staticmethod
     def _apa_auto_would(state: Optional[Path], me: set[str]) -> Callable[[Mapping[str, Any]], str]:
@@ -608,7 +608,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "by_name": viewing.name_among(me),
                          "at": _iso(datetime.now(timezone.utc)),
                          "note": (body.note or "").strip()[:500] or None})
-        return self.autopilot_prepared_list(reader)
+        return self._prepared_read(reader)   # after a write: read now, never kept
 
     def _apa_exclusion(self, env: Mapping[str, str] | None = None) -> Any:
         """The people exclusion the writer's screens read; None when it cannot be loaded."""
@@ -666,7 +666,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         with Journal(state / TAKE_FILE).locked() as held:
             held.append({"event": "item_take", "item_id": item_id, "pool": found["pooled"],
                          "by": me[0], "at": _iso(datetime.now(timezone.utc))})
-        return self.autopilot_prepared_list(reader)
+        return self._prepared_read(reader)   # after a write: read now, never kept
 
     def _apa_roles(self) -> dict[str, list[str]]:
         """The roles file's members (``autopilot._roles``) beside the queue."""
@@ -1163,6 +1163,10 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         raise UserFacing("not_found", "That item is not on your list.", 404)
 
     def autopilot_prepared_list(self, reader: Reader) -> m.AutopilotDrafts:
+        """``_prepared_read`` (the backend serves it kept per reader: ``backend_screens``)."""
+        return self._prepared_read(reader)
+
+    def _prepared_read(self, reader: Reader) -> m.AutopilotDrafts:
         """The reader's own open items that carry a reply or a "your call" card, newest
         first. One display copy each (``shown_item``: no thread text or kept event); an item
         the person already answered (their own later mail in the conversation, or a decision

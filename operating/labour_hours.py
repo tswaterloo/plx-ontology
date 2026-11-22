@@ -886,25 +886,50 @@ def overtime_spikes(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return alerts
 
 
-def labour_page(store: Optional[LabourStore], held: bool) -> dict[str, Any]:
-    """The Labour page for a reader: nothing at all without ``hr`` / ``ops-management``."""
+def _window(rows: list[dict[str, Any]], weeks: Optional[int]
+            ) -> tuple[list[dict[str, Any]], bool]:
+    """``rows`` of the last ``weeks`` weeks (counted back from the newest week of any
+    department), plus each department's own latest whole-week row whatever its age (a
+    department that stopped sending sheets still shows its last week); and whether older
+    rows were left out. None or 0: every row."""
+    if not weeks or not rows:
+        return rows, False
+    newest = max(date.fromisoformat(r["week"]) for r in rows)
+    cutoff = (newest - timedelta(days=7 * (weeks - 1))).isoformat()
+    latest: dict[str, str] = {}
+    for r in rows:
+        if r["run"] is None and r["week"] > latest.get(r["department"], ""):
+            latest[r["department"]] = r["week"]
+    kept = [r for r in rows if r["week"] >= cutoff
+            or (r["run"] is None and latest.get(r["department"]) == r["week"])]
+    return kept, len(kept) < len(rows)
+
+
+def labour_page(store: Optional[LabourStore], held: bool, weeks: Optional[int] = None
+                ) -> dict[str, Any]:
+    """The Labour page for a reader: nothing at all without ``hr`` / ``ops-management``.
+    ``weeks``: only the rows and trend points of that many recent weeks (the alerts are
+    always judged against every week's history); ``older`` says more are held."""
     if not held:
         return {"state": "not_granted", "weeks": [], "trend": [], "alerts": [],
                 "built_at": None, "note": "Labour figures need the hr or ops-management "
-                "grant."}
+                "grant.", "older": False}
     if store is None:
         return {"state": "not_built", "weeks": [], "trend": [], "alerts": [],
-                "built_at": None, "note": "No labour hours have been read yet."}
+                "built_at": None, "note": "No labour hours have been read yet.",
+                "older": False}
     rows = store.rows()
     built = store.built() or {}
+    alerts = overtime_spikes(rows)
+    shown, older = _window(rows, weeks)
     trend: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
+    for r in shown:
         if r["run"] is None:
             trend.setdefault(r["department"], []).append(
                 {"week": r["week"], "hours": r["hours"], "overtime_hours": r["overtime_hours"]})
-    return {"state": "ready", "weeks": rows, "alerts": overtime_spikes(rows),
+    return {"state": "ready", "weeks": shown, "alerts": alerts,
             "trend": [{"department": d, "points": pts} for d, pts in sorted(trend.items())],
-            "built_at": built.get("built_at"),
+            "built_at": built.get("built_at"), "older": older,
             "note": f"Groups of fewer than {MIN_GROUP} people are not shown."}
 
 

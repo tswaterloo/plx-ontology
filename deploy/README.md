@@ -87,7 +87,7 @@ The units are **not enabled** by the build. Nothing here writes to a PLX system.
 
 ```sh
 sudo systemctl start plx-api plx-app plx-caddy      # start
-sudo systemctl stop plx-caddy plx-app plx-api       # stop
+sudo systemctl stop plx-caddy plx-app plx-api-cycle.target   # stop (the API only via its cycle target)
 sudo systemctl restart plx-app                      # after a new build
 sudo systemctl reload plx-caddy                     # after a Caddyfile change
 systemctl status plx-api plx-app plx-caddy
@@ -137,7 +137,7 @@ psql -X -v ON_ERROR_STOP=1 -d plx -f deploy/pg/plx_api_role.sql     # as the sch
 #   pg_ident.conf:  plxapi  <api-os-user>  plx_api
 #   pg_hba.conf:    local  plx  plx_api  peer map=plxapi     (above the generic local line)
 sudo systemctl reload postgresql
-# /etc/plx/workbench-api.env: PLX_PG_DSN=postgresql:///plx?user=plx_api ; restart plx-api,
+# /etc/plx/workbench-api.env: PLX_PG_DSN=postgresql:///plx?user=plx_api ; `plx-release restart`,
 # confirm `psql -d plx -U plx_api -c 'RESET ROLE; select current_user'` stays plx_api;
 # then walk Home, a record page, search and Ask once; a "permission denied" in the Postgres
 # log names a grant to add to the file (and to the test).
@@ -173,7 +173,7 @@ sets `PLX_SEARCH=hybrid` (and `PLX_PG_DSN` from `--pg-dsn`) in its own environme
 (`operator_api.backend.default_search`, `operating.agent_session.SEARCH_ENV`).
 
 - Turn it off: `PLX_SEARCH=keyword` in `/etc/plx/workbench-api.env`, then
-  `sudo systemctl restart plx-api`. Any value other than `hybrid` is the word index alone.
+  `plx-release restart` (a direct `systemctl restart plx-api` is refused: plx-api-cycle.target). Any value other than `hybrid` is the word index alone.
 - `--mock` keeps the word index (its fixtures have no search tables).
 - A search that cannot run hybrid (no database, a timeout) falls back to the word index and
   the answer says so (`search_fallback`).

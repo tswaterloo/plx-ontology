@@ -34,6 +34,7 @@ from typing import AbstractSet, Any, Callable, Mapping, Sequence
 
 from operating.chunking.normalise import mask_private
 from operating.search import authority as au
+from operating.search import oldmail_leg
 from operating.search import retrievers as rt
 from operating.search.config import (Weights, dsn as default_dsn, load_owners,
                                      load_weights, owner_of)
@@ -339,6 +340,18 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
                                 ef_search=weights.dense_ef_search,
                                 timeout_ms=DENSE_TIMEOUT_MS)
             jobs["dense"] = dense_job
+        older: dict[str, Any] = {}
+        if oldmail_leg.enabled():
+            # mail the box's search tables do not hold, in the old-mail store, each
+            # candidate admitted by the box before it ranks (``oldmail_leg``)
+            def older_job(c: Any) -> Any:
+                vectors = (_embedded(embedding, embed_deadline)
+                           if embedding is not None and model else [])
+                got = oldmail_leg.search(c, scope, vectors or [], model or "", texts, n,
+                                         ef_search=weights.dense_ef_search)
+                older["words"], older["info"] = got[1], got[2]
+                return got[0]
+            jobs["older_mail"] = older_job
         if resolved or candidates:
             def graph_job(c: Any) -> Any:
                 linked: list[tuple[str, float]] = []
@@ -368,12 +381,21 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
                 if "dense_failed:_NoVectors" in notes:
                     notes.remove("dense_failed:_NoVectors")
 
+        if "older_mail" in lists:
+            # the older mail's lists join the box's own: meaning with meaning, words with
+            # words, best first, the per-retriever depth kept
+            for name, extra in (("dense", lists.pop("older_mail")),
+                                ("bm25", older.get("words") or [])):
+                if extra:
+                    lists[name] = merged(lists.get(name) or [], extra, n)
         t = time.perf_counter()
         fused = fuse(lists, intent, weights.fusion, weights.rrf_k)
         timings["fuse"] = _ms(t)
         pool_size = max(weights.rerank_top, 3 * k)
         t = time.perf_counter()
         info = rt.details(conn, scope, [cid for cid, _ in fused[:pool_size * 3]])
+        for cid, row in (older.get("info") or {}).items():
+            info.setdefault(cid, row)
         timings["details"] = _ms(t)
         if weights.title_match > 0:
             fused = title_lifted(fused, info, query.question, weights.title_match)
@@ -682,6 +704,17 @@ def _run(jobs: Mapping[str, Callable[[Any], Any]], target: str,
             else:
                 lists[name] = value
     return lists, hidden
+
+
+def merged(box: Sequence[tuple[str, float]], older: Sequence[tuple[str, float]],
+           n: int) -> list[tuple[str, float]]:
+    """One ranked list of the box's and the older mail's: one score per chunk id (a mail
+    chunked on the box since the store was built is in both: its best), best first, ``n``."""
+    best: dict[str, float] = {}
+    for cid, score in list(box) + list(older):
+        if cid not in best or score > best[cid]:
+            best[cid] = score
+    return sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
 
 
 def _signal(ranked: Sequence[tuple[str, float]] | None, cid: str) -> float | None:

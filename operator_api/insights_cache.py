@@ -112,12 +112,24 @@ class Kept:
         self._flight: dict[tuple, Future] = {}
         self._lock = threading.Lock()
 
-    def get(self, key: tuple, read: Callable[[], Any], *, again: bool = False) -> Any:
+    def get(self, key: tuple, read: Callable[[], Any], *, again: bool = False,
+            prior: Optional[Callable[[Any], bool]] = None,
+            stamp: Optional[Callable[[], Optional[int]]] = None) -> Any:
         """The answer for ``key``: kept (fresh, same door stamp: in memory, else on disk),
         or kept and stale but young enough (``stale_most``) while ``later`` reads it again,
         or the read in flight for it, or ``read()`` now (kept for the next). ``again``:
-        never a kept one. An unreadable stamp serves nothing kept."""
-        now_stamp = self._stamp()
+        never a kept one. An unreadable stamp serves nothing kept.
+
+        ``prior(answer)``: with nothing kept under the door's stamp now (the business tables
+        refreshed since, in this process or before a restart), the last answer read for
+        ``key`` under any stamp (``previous``: ``stale_most`` or younger) is served while
+        ``later`` reads it again, only when ``prior`` says it may be (the caller's check
+        that the reader's access state is the one it was read under). Every tile read cold
+        after each refresh and each restart (11-22: Insights 32-56 s, 504s).
+
+        ``stamp``: the door's stamp as the caller read it (a dashboard reads it once for all
+        its tiles); None: read here."""
+        now_stamp = self._stamp() if stamp is None else self._valid(stamp)
         stale = None
         with self._lock:
             hit = self._kept.get(key)
@@ -139,6 +151,12 @@ class Kept:
                     if age < self.fresh:
                         return value
                     stale = value
+            if stale is None and prior is not None and self.later is not None:
+                held = self.previous(key)
+                try:
+                    stale = held if held is not None and prior(held) else None
+                except Exception:  # noqa: BLE001 - undecided: read now
+                    stale = None
             if stale is not None and self.later is not None:
                 try:
                     self.later(key)
@@ -172,6 +190,9 @@ class Kept:
             if disk_key is not None:
                 try:
                     self.disk.put(disk_key, got, self.stale_most, **self._disk_kw)
+                    # the last answer whatever the stamp (``previous``), across restarts
+                    self.disk.put(("insight_last",) + disk_key[1:3], got, self.stale_most,
+                                  **self._disk_kw)
                 except Exception:  # noqa: BLE001 - kept in memory only
                     pass
         flying.set_result(got)
@@ -187,6 +208,50 @@ class Kept:
             return None
         return hit[0]
 
+    def servable(self, key: tuple, prior: Optional[Callable[[Any], bool]] = None,
+                 stamp: Optional[Callable[[], Optional[int]]] = None) -> bool:
+        """Whether ``get(key, ..., prior=prior)`` would answer now without reading: a kept
+        answer under the door's stamp (fresh, or stale with ``later`` to read it again), or
+        the reader's last one that ``prior`` allows. Reads nothing; answers nothing."""
+        now_stamp = self._stamp() if stamp is None else self._valid(stamp)
+        if now_stamp is None or self.fresh <= 0:
+            return False
+        with self._lock:
+            hit = self._kept.get(key)
+        age = None
+        if hit is not None and hit[1] == now_stamp:
+            age = self.clock() - hit[2]
+        else:
+            got = self._from_disk(key, now_stamp)
+            age = got[1] if got is not None else None
+        if age is not None and (age < self.fresh or (age < self.stale_most
+                                                     and self.later is not None)):
+            return True
+        if prior is None or self.later is None:
+            return False
+        held = self.previous(key)
+        try:
+            return held is not None and bool(prior(held))
+        except Exception:  # noqa: BLE001 - undecided: not servable
+            return False
+
+    def previous(self, key: tuple) -> Any:
+        """``key``'s last answer under any door stamp, ``stale_most`` seconds old or
+        younger: in memory, else on disk (written with every read); None without one."""
+        with self._lock:
+            hit = self._kept.get(key)
+        if hit is not None:
+            return hit[0] if self.clock() - hit[2] < self.stale_most else None
+        if self.disk is None or self._disk_key(key, 0) is None:
+            return None
+        try:
+            got = self.disk.get(("insight_last", key[0], key[1]), **self._disk_kw)
+        except Exception:  # noqa: BLE001 - a miss
+            return None
+        if not got or self.wall() - float(got[2]) >= self.stale_most:
+            return None
+        return got[1]
+
     def drop(self, key: tuple) -> None:
         """Forget ``key``'s kept answer, in memory and on disk (under every door stamp the
         disk holds it for: the current one)."""
@@ -199,6 +264,7 @@ class Kept:
             if disk_key is not None and callable(pop):
                 try:
                     pop(disk_key, **self._disk_kw)
+                    pop(("insight_last",) + disk_key[1:3], **self._disk_kw)
                 except Exception:  # noqa: BLE001 - it ages out
                     pass
 
@@ -248,6 +314,14 @@ class Kept:
                 self._keep(key, got[0], stamp, self.clock() - got[1])
             return got[1]
         return None if hit is None else self.clock() - hit[2]
+
+    @staticmethod
+    def _valid(stamp: Callable[[], Optional[int]]) -> Optional[int]:
+        try:
+            got = stamp()
+        except Exception:  # noqa: BLE001 - an unreadable door: nothing kept is served
+            return None
+        return got if isinstance(got, int) else None
 
     def _stamp(self) -> Optional[int]:
         try:

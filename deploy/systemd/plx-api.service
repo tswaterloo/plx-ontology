@@ -15,6 +15,10 @@ Wants=network-online.target
 # failed for plx-liveness.timer to start again after its cooldown, with an alarm
 StartLimitIntervalSec=30min
 StartLimitBurst=20
+# restarted or stopped only through plx-api-cycle.target (plx-release's warm switch): a direct
+# `systemctl restart|stop plx-api` is refused, so no settings change or fix restarts it cold
+PartOf=plx-api-cycle.target
+RefuseManualStop=yes
 
 [Service]
 # DI-02: Postgres is the only store (no projection file)

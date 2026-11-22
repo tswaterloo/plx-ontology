@@ -36,11 +36,12 @@ from __future__ import annotations
 import datetime as dt
 import functools
 import json
+import logging
 import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from . import models as m
 from .errors import UserFacing
@@ -56,6 +57,8 @@ WATCH_OPS = ("above", "below")
 WATCH_ROWS = ("any", "latest", "total")
 _COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 MAX_SAVED = 60          # saved insights per person
+STREAM_WORKERS = 8      # tiles of the one-response dashboard read at the same time
+log = logging.getLogger(__name__)
 RUN_SECONDS = 30.0      # one insight's read, queue wait included
 AHEAD_PRIORITY = 3      # reads nobody waits on: after page reads (-1..1) and warm-ups (2)
 SAVED_ID = re.compile(r"^s([1-9][0-9]{0,17})$")
@@ -157,9 +160,20 @@ def builtin() -> tuple[Spec, ...]:
     return tuple(out)
 
 
-# a catalogue measure's tile id prefix: read when opened, not ahead with the declared tiles
-# (thirty more statements on every dashboard visit would slow the page it is meant to fill)
+# a catalogue measure's tile id prefix: read ahead after the declared tiles (``ahead_refs``),
+# for a signed-in reader only (thirty more statements a directory employee would each cost)
 MEASURE_TILE = "measure_"
+
+
+def ahead_refs(specs: Sequence[Spec], measures: bool = True) -> list[str]:
+    """The statements read ahead of a dashboard listing ``specs``: the declared and saved
+    tiles first, then (``measures``) the catalogue measures' tiles, so the ones the page
+    shows first are read first (the reads ahead run in order on a few workers). The page
+    asks for each tile only once it nears the view; the 30 measure tiles were read cold
+    together at every visit (11-22: 504s on nine of them, Insights 32-56 s)."""
+    first = [ref(s) for s in specs if not s.id.startswith(MEASURE_TILE)]
+    rest = [ref(s) for s in specs if s.id.startswith(MEASURE_TILE)] if measures else []
+    return first + rest
 
 
 def measure_specs(taken: Sequence[str] = ()) -> tuple[Spec, ...]:
@@ -698,6 +712,37 @@ def _viewing_as(reader: Any) -> bool:
     return bool(getattr(getattr(reader, "session", None), "view_as", False))
 
 
+class StreamOnce:
+    """What one dashboard stream reads once for all its tiles, each part on first use:
+    the door's stamp, the reader's access state (``_insight_access``) and the built-ins
+    they are shown (``_builtin_for``). A tile's own answer, door and refusals are its own."""
+
+    def __init__(self, host: Any, reader: Any, scope: tuple) -> None:
+        self._host, self._reader, self._scope = host, reader, scope
+        self._lock = threading.Lock()
+        self._got: dict[str, Any] = {}
+
+    def _once(self, name: str, read: Callable[[], Any]) -> Any:
+        with self._lock:
+            if name not in self._got:
+                self._got[name] = read()
+            return self._got[name]
+
+    def stamp(self) -> Optional[int]:
+        return self._once("stamp", lambda: self._host._insight_keeper().kept._stamp())
+
+    def access(self) -> Any:
+        return self._once("access", lambda: self._host._insight_access(self._reader))
+
+    def builtins(self) -> list[Spec]:
+        return self._once("builtins", lambda: self._host._builtin_for(
+            self._reader, bool(self._scope[0])))
+
+
+class NotKept(Exception):
+    """``insight_result(kept_only=True)``: nothing kept would answer the tile now."""
+
+
 class InsightsMixin:
     """``/api/insights``: the reader's dashboard (the built-ins they may see, then their
     own), one insight read now, save (pin) and delete."""
@@ -731,8 +776,9 @@ class InsightsMixin:
         from .feedback import owner_open
         return bool(owner_open(getattr(reader, "session", None)))
 
-    def _insight(self, reader: Any, iid: str, everyone: bool) -> Spec:
-        for spec in self._builtin_for(reader, everyone):
+    def _insight(self, reader: Any, iid: str, everyone: bool,
+                 builtins: Optional[Sequence[Spec]] = None) -> Spec:
+        for spec in (self._builtin_for(reader, everyone) if builtins is None else builtins):
             if spec.id == iid:
                 return spec
         if any(s.id == iid for s in declared()):
@@ -754,25 +800,105 @@ class InsightsMixin:
         if store is not None:
             specs += store.list(reader.key)
         # its tiles are asked for next: their reads start now (``insights_cache``)
-        self._insight_keeper().ahead(reader, [ref(s) for s in specs if not s.id.startswith(MEASURE_TILE)])
+        self._insight_keeper().ahead(reader, ahead_refs(specs))
         return m.InsightList(scope="everyone" if everyone else "self",
                              items=[info(s) for s in specs], saving=store is not None,
                              measures=measure_list())
 
-    def insight_result(self, reader: Any, iid: str, again: bool = False) -> m.InsightResult:
+    def insights_stream(self, reader: Any) -> Iterator[dict[str, Any]]:
+        """The whole dashboard in one response, as lines: first ``{"list": ...}`` (what
+        ``insights_list`` gives), then one ``{"id", "result"}`` or ``{"id", "error"}`` per
+        tile as each finishes (read at the same time, not in order). Each tile goes through
+        ``insight_result``: its own access check, last-good fallback and fail-closed refusal
+        are unchanged; one tile's failure is that tile's error line, never the stream's."""
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        listed = self.insights_list(reader)
+        yield {"list": listed.model_dump(mode="json")}
+        if not listed.items:
+            return
+        scope = self._insight_scope(reader)   # once for all tiles
+        # read once for the whole stream, not once per tile: the door's stamp (each tile
+        # waited for a Postgres read of it started after it asked), the reader's access
+        # state and the built-ins they are shown (11-22: 61 kept tiles took 1.9-2.9 s)
+        shared = StreamOnce(self, reader, scope)
+
+        def one(iid: str, kept: bool) -> dict[str, Any]:
+            try:
+                got = self.insight_result(reader, iid, False, scope=scope, kept_only=kept,
+                                          shared=shared)
+                return {"id": iid, "result": got.model_dump(mode="json")}
+            except NotKept:
+                if not kept or iid.startswith(MEASURE_TILE):
+                    # a measure tile with nothing kept for the reader: the page reads it
+                    # once it nears the view (its read ahead started with the listing)
+                    return {"id": iid, "later": True}
+                return {"id": iid, "read": True}
+            except UserFacing as exc:
+                return {"id": iid, "error": {"code": exc.code, "message": exc.message,
+                                             "status": exc.status}}
+            except TimeoutError:
+                from .errors import BUSY
+                return {"id": iid, "error": {"code": BUSY.code, "message": BUSY.message,
+                                             "status": BUSY.status}}
+            except Exception:  # noqa: BLE001 - plain words, never a trace
+                log.exception("insight tile %s failed in the dashboard stream", iid)
+                return {"id": iid, "error": {"code": "internal", "status": 500,
+                                             "message": "This chart could not be read. "
+                                                        "Try Refresh."}}
+
+        # first every tile that is kept (or the reader's last answer under the same access
+        # state), each sent at once; then the others read, side by side
+        unread = []
+        for item in listed.items:
+            got = one(item.id, True)
+            if got.get("read"):
+                unread.append(item.id)
+            else:
+                yield got
+        if not unread:
+            return
+        pool = ThreadPoolExecutor(max_workers=STREAM_WORKERS,
+                                  thread_name_prefix="insights-stream")
+        try:
+            futures = [pool.submit(contextvars.copy_context().run, one, iid, False)
+                       for iid in unread]
+            for fut in as_completed(futures):
+                yield fut.result()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def insight_result(self, reader: Any, iid: str, again: bool = False,
+                       scope: Optional[tuple] = None,
+                       kept_only: bool = False,
+                       shared: Optional["StreamOnce"] = None) -> m.InsightResult:
         """One insight as ``reader`` reads it: kept from a read of the last few minutes
         under the same door (``insights_cache``), else read now; ``again`` (their Refresh):
-        read now."""
+        read now. ``kept_only``: ``NotKept`` instead of a read now when nothing kept (or the
+        reader's last answer under the same access state) would answer it."""
         from .insights_cache import reader_key
-        scope = self._insight_scope(reader)
-        spec = self._insight(reader, iid, scope[0])
+        scope = scope or self._insight_scope(reader)
+        spec = self._insight(reader, iid, scope[0],
+                             builtins=shared.builtins() if shared is not None else None)
         keeper, key = self._insight_keeper(), reader_key(reader)
+        stamp = shared.stamp if shared is not None else None
+
+        def same_access(held: Any) -> bool:
+            # an answer read under another door stamp (a refresh since, or before a
+            # restart) only while the reader's access state is the one it was read under
+            was = held.get("access") if isinstance(held, dict) else None
+            now = shared.access() if shared is not None else self._insight_access(reader)
+            return was is not None and now is not None and was == now
+        if kept_only and (key is None or again or not keeper.kept.servable(
+                (key, ref(spec)), prior=same_access, stamp=stamp)):
+            raise NotKept(iid)
         if key is None:
             return result(self, reader, spec, scope, self._insight_read(reader, ref(spec)))
         keeper.opened(reader, ref(spec))
         try:
             read = keeper.kept.get((key, ref(spec)),
-                                   lambda: self._insight_read(reader, ref(spec)), again=again)
+                                   lambda: self._insight_read(reader, ref(spec)), again=again,
+                                   prior=same_access, stamp=stamp)
         except UserFacing as exc:
             # a read that could not finish: the last good answer, with the time it was read
             # (``read_at``), never a 504 while one is kept
@@ -796,10 +922,14 @@ class InsightsMixin:
         now = getattr(self, "_access_now", None)
         if not callable(now):
             return None
+        from .backend_pages import own_issued_stamp
         try:
-            return now(reader)
+            state, own = now(reader), own_issued_stamp()
         except Exception:  # noqa: BLE001 - undecided: no last-good fallback
             return None
+        # with the PLX-issued documents' digest: a tile's rows are not named one by one,
+        # so a new PLX-issued document reads it again (the screens' state leaves it out)
+        return None if state is None or own is None else (state, own)
 
     def _insight_read(self, reader: Any, what: str, seconds: float = RUN_SECONDS,
                       ahead: bool = False) -> dict[str, Any]:
@@ -889,10 +1019,11 @@ class InsightsMixin:
                 self._insight_keep.start()
             return self._insight_keep
 
-    def _insights_ahead(self, reader: Any) -> int:
+    def _insights_ahead(self, reader: Any, later: bool = False) -> int:
         """The warm-up's read ahead of ``reader``'s Insights tiles (each statement the
         dashboard lists for them, kept on disk for the API: ``insights_cache``), waited
-        for; how many were read. Not for a viewing-as session (never kept)."""
+        for; how many were read. Not for a viewing-as session (never kept). The measure
+        tiles too, except for a directory employee with no session (``later``)."""
         from concurrent.futures import wait
         from . import insights_cache as ic
         if ic.reader_key(reader) is None or _viewing_as(reader):
@@ -903,7 +1034,7 @@ class InsightsMixin:
         if store is not None:
             specs += store.list(reader.key)
         # read once, not kept warm here: the API keeps warm the tiles a person opens
-        futures = self._insight_keeper().ahead(reader, [ref(s) for s in specs if not s.id.startswith(MEASURE_TILE)])
+        futures = self._insight_keeper().ahead(reader, ahead_refs(specs, measures=not later))
         done, _ = wait(futures, timeout=ic.AHEAD_SECONDS + 30)
         return len(done)
 

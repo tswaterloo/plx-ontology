@@ -51,11 +51,11 @@ python3 /data/OntologyProject/deploy/render.py --api-user --out /tmp/plx-units
 sudo install -m 644 /tmp/plx-units/plx-api.service.d/zy-pg-role.conf /etc/systemd/system/plx-api.service.d/
 printf 'PLX_PG_DSN=postgresql://plx_api@/plx\n' | sudo tee /etc/plx/api-pg-dsn.env   # the role in the DSN too (ASK-FIX 11-15)
 sudo install -m 644 /tmp/plx-units/plx-api.service.d/zzzz-pg-dsn.conf /etc/systemd/system/plx-api.service.d/
-sudo systemctl daemon-reload && sudo systemctl restart plx-api
+sudo systemctl daemon-reload && plx-release restart
 sudo grep 'permission denied' /var/log/postgresql/postgresql-17-main.log      # after Home, a record, Ask
 ```
 **Rollback:** `sudo rm /etc/systemd/system/plx-api.service.d/zy-pg-role.conf`, then daemon-reload
-and restart plx-api. The two `.bak-s13` files undo the map.
+and `plx-release restart`. The two `.bak-s13` files undo the map.
 
 ## 2. Sealed releases (S-12, REL-R-12)
 ```sh
@@ -130,7 +130,7 @@ while no build runs.
 
 ## 5. Switch the live API (S-07, part 3)
 ```sh
-sudo systemctl stop plx-api
+sudo systemctl stop plx-api-cycle.target   # the API refuses a direct stop
 # the app data dir moves into the shared-write set (the owner's copy stays as the rollback)
 cp -a ~/.local/state/plx-workbench-app/. /data/plx-state/app-data/
 sudo chgrp -R plx-state /data/plx-state/app-data && sudo chmod -R g+rwX /data/plx-state/app-data
@@ -152,7 +152,7 @@ Then open Home, a record page and Ask in the app.
 directly. Point them at `sudo -n /usr/local/sbin/plx-mint-link` (owner only), or the evals
 stop at exit 3.
 **Rollback:**
-`sudo rm $U/plx-api.service.d/zz-api-user.conf && sudo cp /etc/plx/workbench-api.env.bak-s07 /etc/plx/workbench-api.env && sudo chown root:$(id -gn) /etc/plx/live-session.env && sudo chmod 640 /etc/plx/live-session.env && sudo systemctl daemon-reload && sudo systemctl restart plx-api`.
+`sudo rm $U/plx-api.service.d/zz-api-user.conf && sudo cp /etc/plx/workbench-api.env.bak-s07 /etc/plx/workbench-api.env && sudo chown root:$(id -gn) /etc/plx/live-session.env && sudo chmod 640 /etc/plx/live-session.env && sudo systemctl daemon-reload && plx-release restart`.
 The state rights from step 3 can stay.
 
 ## Known costs and checks

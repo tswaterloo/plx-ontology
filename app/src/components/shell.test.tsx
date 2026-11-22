@@ -24,7 +24,7 @@ import { readdirSync } from "node:fs";
 import { ApiError } from "@/lib/errors";
 import { join } from "node:path";
 import { PLACES } from "@/components/ui/glyphs";
-import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, NAV_SECTIONS, navFor, OpsAlarmBanner, pageSources, personNotice, SidebarNav, TOOLBAR_PAGES } from "./shell";
+import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, NAV_SECTIONS, navFor, OpsAlarmBanner, recordOf, pageSources, personNotice, SidebarNav, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -331,5 +331,12 @@ describe("phone title bar", () => {
 describe("sidebar icons", () => {
   it("every sidebar place has its icon", () => {
     for (const s of NAV_SECTIONS) expect(PLACES[s.place], s.label).toBeTruthy();
+  });
+});
+
+describe("the record a hovered link opens", () => {
+  it("reads only a record page's own address and fails closed on anything else", () => {
+    expect(recordOf("/object/PurchaseOrder/po%201?x=1")).toEqual({ type: "PurchaseOrder", id: "po 1" });
+    for (const bad of [null, "", "/insights", "/object/", "/object/1bad/x", "https://x.test/object/Item/1", "/object/Item/%E0%A4%A"]) expect(recordOf(bad), String(bad)).toBeNull();
   });
 });

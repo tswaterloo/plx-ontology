@@ -336,6 +336,29 @@ class Access(unittest.TestCase):
         self.assertTrue(lh.serves("How much overtime did shipping work?"))
         self.assertFalse(lh.serves("Where is PO 1234?"))
 
+    def test_a_recent_window_keeps_the_alerts_and_each_departments_latest_week(self):
+        full = lh.labour_page(self.store, True)
+        self.assertFalse(full["older"])
+        win = lh.labour_page(self.store, True, 3)
+        self.assertTrue(win["older"])
+        self.assertEqual(win["alerts"], full["alerts"])        # judged against every week
+        self.assertEqual(len(win["trend"][0]["points"]), 3)
+        weeks = sorted({r["week"] for r in win["weeks"]})
+        self.assertEqual(weeks, sorted({r["week"] for r in full["weeks"]})[-3:])
+        self.assertEqual(lh.labour_page(self.store, True, 0)["weeks"], full["weeks"])
+        self.assertEqual(lh.labour_page(self.store, True, 500)["weeks"], full["weeks"])
+        # a department whose last sheet is older than the window still shows that week
+        rows = [{"department": "old", "week": "2025-01-06", "run": None, "hours": "8",
+                 "overtime_hours": None, "sources": []},
+                {"department": "new", "week": "2026-06-01", "run": None, "hours": "8",
+                 "overtime_hours": None, "sources": []},
+                {"department": "old", "week": "2024-12-30", "run": "r1", "hours": "1",
+                 "overtime_hours": None, "sources": []}]
+        kept, older = lh._window(rows, 4)
+        self.assertEqual([(r["department"], r["run"]) for r in kept], [("old", None), ("new", None)])
+        self.assertTrue(older)
+        self.assertEqual(lh.labour_page(None, False, 4)["older"], False)
+
     def test_spike_needs_thirty_percent_over_the_median(self):
         rows = [{"department": "quality", "week": (MONDAY + timedelta(weeks=i)).isoformat(),
                  "run": None, "overtime_hours": v, "sources": []}

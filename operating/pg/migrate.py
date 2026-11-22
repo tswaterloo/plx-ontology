@@ -229,6 +229,14 @@ def set_embedding(conn: psycopg.Connection, model: str, dim: int | None = None) 
                      "WHERE name_embedding IS NOT NULL")
         conn.execute(sql.SQL("ALTER TABLE search.chunks ALTER COLUMN embedding TYPE halfvec({})")
                      .format(sql.Literal(dim)))
+        if conn.execute("SELECT to_regclass('search.reader_bits') IS NOT NULL").fetchone()[0]:
+            # the 1-bit copy (migration 0056) follows: emptied (every vector was cleared),
+            # retyped, and off until it is filled again
+            conn.execute("TRUNCATE search.reader_bits")
+            conn.execute(sql.SQL("ALTER TABLE search.reader_bits ALTER COLUMN bits TYPE bit({})")
+                         .format(sql.Literal(dim)))
+            conn.execute("UPDATE search.reader_bits_state SET ready = false, filled_at = NULL, "
+                         "fill_after = NULL, changed_at = now()")
         conn.execute(sql.SQL("ALTER TABLE search.entities ALTER COLUMN name_embedding "
                              "TYPE halfvec({})").format(sql.Literal(dim)))
         conn.execute("CREATE INDEX chunks_embedding_hnsw ON search.chunks USING hnsw "

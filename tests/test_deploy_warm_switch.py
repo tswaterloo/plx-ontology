@@ -128,6 +128,7 @@ def show(unit, props, value):
            "ExecStart": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m operator_api serve "
                         f"--bind 127.0.0.1 {p} $PLX_API_ARGS ; ignore_errors=no ; pid=1 }}",
            "User": cfg.get("standby_user", "plx-workbench") if standby else "plx-workbench",
+           "RefuseManualStop": "yes" if cfg.get("guard") and unit == "plx-api" else "no",
            "Environment": f"PGAPPNAME={unit} PLX_ONTOLOGY_PG=only"}
     for name in props:
         if name in out:
@@ -137,6 +138,20 @@ def show(unit, props, value):
 cmd = args[0]
 if cmd not in ("is-active", "show"):
     with open(S / "timeline", "a") as f: f.write(time.strftime("%H:%M:%S ") + " ".join(args) + "\n")
+# the restart guard (RefuseManualStop): plx-api restarts or stops only through its cycle target
+if cfg.get("guard") and cmd in ("restart", "stop", "try-restart") and "plx-api" in args[1:]:
+    print("Failed to %s plx-api.service: Operation refused, unit plx-api.service may be "
+          "requested by dependency only" % cmd, file=sys.stderr)
+    sys.exit(4)
+if cfg.get("guard") and "plx-api-cycle.target" in args[1:]:
+    args = [a for a in args if a != "plx-api-cycle.target"]
+    if cmd == "restart":
+        start("plx-api")           # PartOf: the target's restart restarts the API
+    elif cmd == "stop":
+        stop("plx-api")
+        with open(S / "calls", "a") as f: f.write("stop plx-api (cycle)\n")
+    if len(args) == 1:
+        sys.exit(0)
 if cmd == "is-active":
     up = alive(args[-1])
     if "-q" not in args: print("active" if up else "inactive")
@@ -393,6 +408,35 @@ class WarmSwitchThroughCaddy(unittest.TestCase):
                       "127.0.0.1 --unix-socket /run/plx-api-%i/api.sock $PLX_API_ARGS", slot)
         links = sorted(p.name for p in (host.tmp / "units" / "plx-api@.service.d").iterdir())
         self.assertEqual(links, ["a.conf", "zzzz-slot.conf"])   # not the plx-.service.d one
+
+    def test_with_the_restart_guard_a_direct_restart_is_refused_and_plx_release_switches_warm(self):
+        """plx-api.service refuses a direct restart (RefuseManualStop: a settings change
+        restarted it cold, 11-22); plx-release restarts it through plx-api-cycle.target
+        inside the warm switch and no reader request fails."""
+        host = Host(self, caddy=True, guard=True)
+        direct = subprocess.run([str(host.tmp / "bin" / "systemctl"), "restart", "plx-api"],
+                                env=host.env, capture_output=True, text=True)
+        self.assertEqual(direct.returncode, 4)
+        self.assertIn("refused", direct.stderr)
+        before = len((host.state / "timeline").read_text())
+        host.switch_to_new()
+        loop = Loop(host)
+        loop.start()
+        got = host.restart()
+        time.sleep(0.5)
+        loop.stop.set()
+        loop.join()
+        timeline = (host.state / "timeline").read_text()
+        self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+        self.assertIn("warm switch", got.stdout)
+        self.assertEqual(loop.failed, 0, (loop.errors, got.stdout, got.stderr, timeline))
+        self.assertEqual(list(dict.fromkeys(loop.answers)),
+                         [(host.api_port, "code-old"), ("standby", "code-new"),
+                          (host.api_port, "code-new")])
+        ran = timeline[before:]                            # plx-release's own calls
+        self.assertIn("restart plx-api-cycle.target", ran)
+        self.assertNotIn("restart plx-api\n", ran)
+        self.assertIsNone(host.serving("standby"))
 
     def test_a_warming_api_yields_the_cores_to_the_one_that_serves(self):
         """While a held API warms beside the serving one its cgroup's CPU and IO weight are
@@ -678,6 +722,20 @@ class WarmSwitchRefused(unittest.TestCase):
         self.assertEqual(got.returncode, 0, got.stderr)
         self.assertEqual(host.serving("plx-api")["code"], "code-new")
         self.assertIsNone(host.serving("standby"))
+
+    def test_with_the_restart_guard_a_cold_restart_and_a_stopped_api_go_through_the_cycle(self):
+        for stopped, how in ((False, "--cold"), (True, "--cold"), (True, None)):
+            with self.subTest(stopped=stopped, how=how):
+                host = Host(self, caddy=False, guard=True)
+                host.switch_to_new()
+                if stopped:      # a deploy stopped half way: the standby serves
+                    host.systemctl("start", "plx-api@standby")
+                    host.systemctl("stop", "plx-api-cycle.target")
+                got = host.restart(*([how] if how else []))
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertEqual(host.serving("plx-api")["code"], "code-new")
+                self.assertIsNone(host.serving("standby"))
+                self.assertNotIn("refused", got.stderr)
 
     def test_postgres_without_room_for_a_second_api(self):
         bins = Path(tempfile.mkdtemp(prefix="t6pg-", dir="/tmp"))

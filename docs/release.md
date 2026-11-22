@@ -97,7 +97,7 @@ it started with, and the next cycle runs from `current`.
 - To the units as they were before the release, with code from `/data/scratch/wt/deploy`
   and `wt/search`: `sudo tar -xzf /root/plx-units-before-release.tgz -C /`, then
   `sudo systemctl daemon-reload`, then
-  `sudo systemctl restart plx-api plx-app plx-ingest plx-search-follow plx-search-generation`.
+  `plx-release restart --with-ingest` (the API through its warm switch: a direct `systemctl restart plx-api` is refused, plx-api-cycle.target).
 
 After a day on the release, the old trees (`/data/scratch/wt/deploy`, `/data/scratch/wt/search`)
 and `/data/scratch/cfg/*.sh` can be retired.

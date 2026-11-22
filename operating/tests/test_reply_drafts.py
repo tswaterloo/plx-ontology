@@ -212,6 +212,67 @@ class ReplyDrafts(unittest.TestCase):
                                  [{"why": "pay_or_hr"}])
             self.assertEqual(len(ran), 3)
 
+    def test_line_draft_reads_the_persons_habit_and_that_the_line_is_theirs_to_answer(self):
+        from unittest import mock
+        from operating import autopilot as apm, autopilot_engine as eng
+        from operating.autopilot_agent import Decision
+        reg = {"autopilots": [{"id": "assistant"}], "limits": {"handler_seconds": 5}}
+        ev = {"event_type": "message.received", "cleared": True, "object_id": "Email:r",
+              "channel": "mail", "mailbox": ANA, "at": "2026-11-17T14:00:00Z",
+              "conversation_id": "T1", "sender": "bo@plx.example", "to": ["cy@plx.example"],
+              "cc": ["ana@plx.example"]}
+        seen = []
+
+        class Assistant:
+            def run(self, event, owner, described, person, people, **kw):
+                seen.append(described)
+                events.append(event)
+                return Decision(reply="On it."), ""
+        events = []
+
+        class History:      # the live queue's reads, known before the message
+            def __init__(self, fail=False):
+                self.fail, self.asked = fail, []
+
+            def engagement(self, owner, conv, sender, at):
+                if self.fail:
+                    raise sqlite3.OperationalError("locked")
+                self.asked.append(("engagement", owner, conv, sender, at))
+                return {"engaged": True, "correspondent": True}
+
+            def reply_history(self, owner, sender, at, **kw):
+                return (9, 2)
+
+            def own_posts(self, owner, conv, at):
+                return (30.0, 3)
+        maps = ({}, {ANA: {"ana@plx.example"}}, ("plx.example",))
+        hist = History()
+        with mock.patch.object(apm, "discover", side_effect=lambda *a: ([dict(ev)], {})), \
+                mock.patch.object(eng, "_prepare", return_value={"work": {"material": {"text": "Who?"}}}):
+            self.assertEqual(rd.line_draft(None, reg, None, maps, Assistant(), ANA, "Email:r",
+                                           history=hist), [{"draft": "On it.", "note": ""}])
+            self.assertEqual(hist.asked, [("engagement", ANA, "T1", "bo@plx.example",
+                                           "2026-11-17T14:00:00Z")])
+            self.assertIn("the person answered 2 of the last 9 messages this sender sent them",
+                          seen[-1])
+            self.assertIn("they wrote in this conversation 3 time(s) recently", seen[-1])
+            self.assertIn(rd.OWED.format(person="ana@plx.example"), seen[-1])
+            # copied, never answering here before: no reply is due by the rules, but the line
+            # on their replies to write says it is (the gate keeps the session's reply)
+            from operating.autopilot_agent_io import reply_due
+            self.assertEqual(reply_due({**ev, "addressed_other": True}), "")
+            self.assertEqual(reply_due({**events[-1], "addressed_other": True}), "turn")
+            self.assertNotIn("owed", ev)
+            self.assertEqual(reply_due({**events[-1], "item_kind": "auto_reply"}), "")
+            # the queue is the history when none is given; a failing read costs only the line
+            rd.line_draft(None, reg, None, maps, Assistant(), ANA, "Email:r", queue=History())
+            self.assertIn("History:", seen[-1])
+            self.assertEqual(rd.line_draft(None, reg, None, maps, Assistant(), ANA, "Email:r",
+                                           history=History(fail=True)),
+                             [{"draft": "On it.", "note": ""}])
+            self.assertNotIn("History:", seen[-1])
+            self.assertIn(rd.OWED.format(person="ana@plx.example"), seen[-1])
+
     def test_a_sender_the_person_said_never_to_is_not_drafted_and_again_is(self):
         from unittest import mock
         from operating import autopilot as apm, autopilot_engine as eng

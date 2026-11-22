@@ -5,7 +5,7 @@ import { Activity, BellRing, BookMarked, Bookmark, CalendarClock, ChartColumn, C
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { afterPageReads, getHome, getLateList, getOpsAlarms, getSidebar, type OpsAlarms, type OpsCheck } from "@/lib/api";
+import { afterPageReads, getHome, getLateList, getOpsAlarms, getSidebar, prefetchRecord, type OpsAlarms, type OpsCheck } from "@/lib/api";
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
@@ -1354,9 +1354,35 @@ function ShellSkeleton() {
  * The window: a sidebar and one content area that fills the rest. The window never scrolls;
  * each page scrolls inside its own panes (Today) or inside the content area.
  */
+/** The record a link opens, when its address is a record page: `/object/<type>/<id>`. */
+export function recordOf(href: string | null): { type: string; id: string } | null {
+  const m = /^\/object\/([A-Za-z][A-Za-z0-9_]{0,59})\/([^/?#]+)/.exec(href ?? "");
+  if (!m) return null;
+  try {
+    return { type: m[1], id: decodeURIComponent(m[2]) };
+  } catch {
+    return null;
+  }
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { state, refresh, signOut, signOutError } = useAuth();
   const router = useRouter();
+  // hovering or focusing any link to a record reads that record's page ahead (a click then
+  // lands on a read already under way); one listener covers every list and result
+  useEffect(() => {
+    const ahead = (e: Event) => {
+      const a = (e.target as Element | null)?.closest?.("a[href^='/object/']");
+      const rec = a ? recordOf(a.getAttribute("href")) : null;
+      if (rec) prefetchRecord(rec.type, rec.id);
+    };
+    document.addEventListener("pointerover", ahead, { passive: true });
+    document.addEventListener("focusin", ahead, { passive: true });
+    return () => {
+      document.removeEventListener("pointerover", ahead);
+      document.removeEventListener("focusin", ahead);
+    };
+  }, []);
   return (
     <CommandPaletteProvider>
       <FeedbackProvider>

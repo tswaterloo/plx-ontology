@@ -117,6 +117,20 @@ Changed:
 - Ask knows a Business Central-only row is pilot data and looks for the same business in the systems of record and mail
 - Insights: pinned charts keep relative periods, monitors from plain words with a read-back, waterfalls only when the parts add up
 
+## Update 2026-11-22
+Changed:
+- Reply drafts cover mail the person was copied on, use how they usually answer the sender, and a draft whose outside-reader check times out is held, never sent
+- Insights loads in one streamed request and shows the last copy first
+- record links load on hover
+- search keeps recent answers per reader for 20 s
+- Team and labour send less
+- Older mail can be searched by meaning from the Spark store, each result re-checked on the box and within one second (off until switched on)
+- the narrow-reader search table no longer blocks a model change
+- Reply drafts never claim attachments or events the thread doesn't show
+- a fact only the person knows becomes a question to them
+- Insights tiles load near the view with the reader's last answer when access is unchanged
+- drafts and Home's first records are kept warm
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

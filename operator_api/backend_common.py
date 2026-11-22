@@ -69,11 +69,14 @@ SCREENS_AHEAD_WORKERS = 1   # the API's own; the warm-up process runs WARM_READ_
 
 
 SCREENS_AHEAD = ("_home_served", ("late_list", {"offset": 0, "limit": 100}),
-                 ("briefing", {"since_visit": False}), "_briefing_pages_ahead", "_sidebar_served", "_late_trails_ahead",
-                 "autopilot_area",
+                 ("briefing", {"since_visit": False}), "_briefing_pages_ahead", "_home_pages_ahead", "_sidebar_served", "_late_trails_ahead",
+                 "autopilot_area", "autopilot_prepared_list",
                  "suggestions", "approvals_queue", "reply_triage", "upcoming_meetings",
                  ("answer_bank", None), "_insights_ahead", ("my_action_items", None),
                  ("weekly_review", None), "workload", "team_view")
+# the screens read ahead told whether the reader is a directory employee with no session
+# (``later``): what only a signed-in reader is read ahead for
+AHEAD_LATER = frozenset({"_home_pages_ahead", "_insights_ahead"})
 # a screen read ahead that answered "still reading" is read again this often, for at most
 # this long (``WorkspaceBackend._screens_ahead``)
 SCREENS_AGAIN_SECONDS = 10.0
@@ -101,7 +104,7 @@ SHAPE_WAIT_FACTOR = 3   # past that, the bare shaping or the slow one waited for
 
 PREWARM_SCREENS = (("home",), ("home", "alerts"), ("late", 0, 100), ("briefing", False),
                    ("sidebar",),
-                   ("autopilot",), ("suggestions",), ("approvals",), ("replies",),
+                   ("autopilot",), ("autopilot_drafts",), ("suggestions",), ("approvals",), ("replies",),
                    ("meetings",), ("my_work",), ("workload",), ("team",))
 
 

@@ -67,7 +67,7 @@ function Help() {
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar title="Help" heading />
       <PageIntro path="/help" />
-      <div className="mx-auto w-full max-w-[52rem] space-y-6 px-5 py-5">
+      <div className="w-full max-w-[52rem] space-y-6 px-5 py-5">
         <section aria-labelledby="help-role" className="space-y-2">
           <h2 id="help-role" className="text-[13px] font-semibold">
             Your role

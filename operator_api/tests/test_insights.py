@@ -834,7 +834,7 @@ class KeptAnswers(unittest.TestCase):
         listed = b.insights_list(owner)
         b._insight_keep.pool().shutdown(wait=True)        # the reads ahead are done
         n = len(b.reads.sql)
-        self.assertEqual(n, len({s.sql for s in ins.builtin() if not ins.reads_findings(s)}))   # each statement once
+        self.assertEqual(n, len({s.sql for s in ins.declared() if not ins.reads_findings(s)}))   # each statement once, the measure tiles too
         got = b.insight_result(owner, "team_output")
         self.assertEqual(len(b.reads.sql), n)                       # from the read ahead
         self.assertEqual([r[0] for r in got.rows], ["Me", "Other"])  # Team rule applied now
@@ -910,7 +910,7 @@ class KeptAnswers(unittest.TestCase):
             b, r, next((s.sql for s in ins.builtin() if ins.ref(s) == what), what)))
         owner = person("employee:owner")
         done = b._insights_ahead(owner)
-        self.assertEqual(done, len([s for s in ins.builtin() if not ins.reads_findings(s)]))
+        self.assertEqual(done, len([s for s in ins.declared() if not ins.reads_findings(s)]))
         n = len(b.reads.sql)
         got = b.insight_result(owner, "team_output")
         self.assertEqual(len(b.reads.sql), n)   # served from what the warm-up kept
@@ -935,6 +935,82 @@ class KeptAnswers(unittest.TestCase):
         self.now[0] = 200.0 + 3601
         wait(keeper.tick())
         self.assertEqual(len(self.reads), 2)                        # quiet an hour: forgotten
+
+
+class StreamedDashboard(unittest.TestCase):
+    """``insights_stream``: the whole dashboard in one response (the list, then a line per
+    tile), each tile through the same door as its own request."""
+
+    def lines(self, b, who):
+        return list(b.insights_stream(who))
+
+    def test_the_list_comes_first_then_one_line_per_tile_equal_to_its_own_read(self):
+        b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
+        owner = reader("owner")
+        got = self.lines(b, owner)
+        self.assertIn("list", got[0])
+        ids = [i["id"] for i in got[0]["list"]["items"]]
+        self.assertGreater(len(ids), 20)
+        tiles = got[1:]
+        self.assertEqual(sorted(t["id"] for t in tiles), sorted(ids))   # none lost or doubled
+        self.assertEqual(len({t["id"] for t in tiles}), len(ids))
+        for t in tiles:
+            if "result" in t:
+                alone = b.insight_result(owner, t["id"]).model_dump(mode="json")
+                alone["read_at"] = t["result"]["read_at"]
+                self.assertEqual(t["result"], alone)
+        team = next(t for t in tiles if t["id"] == "team_output")
+        self.assertNotIn("Hidden", json.dumps(team))
+
+    def test_a_staff_reader_is_streamed_only_their_own_tiles_and_their_own_rows(self):
+        b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=False, me=frozenset({ME}))
+        got = self.lines(b, reader("ana"))
+        shown = {i["id"] for i in got[0]["list"]["items"]}
+        withheld = {s.id for s in ins.builtin() if s.scope == "full" or ins.reads_findings(s)}
+        self.assertTrue(withheld)
+        self.assertFalse(shown & withheld)
+        self.assertEqual({t["id"] for t in got[1:]}, shown)
+        mine = next(t for t in got[1:] if t["id"] == "team_output")   # a people view
+        self.assertEqual(mine["result"]["rows"], [["Me", "3", "1"]])
+        self.assertNotIn(OTHER, json.dumps(mine))
+
+    def test_one_tile_that_cannot_be_read_is_its_own_error_line_never_the_streams(self):
+        b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
+        real = b.reads.run
+
+        def run(reader, job, timeout=0, priority=0, long=False):
+            view = type("V", (), {})()
+
+            def call(tool, args):
+                if "mail_sent" in args["sql"] and "teams_sent" in args["sql"]:
+                    return {"error": {"code": "not_ready", "message": "rebuilt"}}
+                return b.reads.out
+            view._call = call
+            return job(view)
+        b.reads.run = run
+        got = self.lines(b, reader("owner"))
+        failed = [t for t in got[1:] if "error" in t]
+        self.assertTrue(failed)
+        self.assertTrue(all(t["error"]["code"] == "insight_not_ready" and t["error"]["status"] == 503
+                            for t in failed))
+        self.assertTrue(any("result" in t for t in got[1:]))
+        b.reads.run = real
+
+    def test_an_unexpected_failure_says_nothing_of_its_cause(self):
+        b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
+
+        def boom(*a, **k):
+            raise RuntimeError("secret /path detail")
+        b.reads.run = boom
+        with self.assertLogs("operator_api.insights", level="ERROR"):
+            got = self.lines(b, reader("owner"))
+        errs = [t["error"] for t in got[1:] if "later" not in t]
+        # a measure tile with nothing kept is left to the page (``later``), never read here
+        self.assertTrue(all(t["id"].startswith(ins.MEASURE_TILE) for t in got[1:] if "later" in t))
+        self.assertEqual(len(errs), len([t for t in got[1:] if "later" not in t]))
+        self.assertTrue(errs)
+        self.assertTrue(all(e["status"] in (500, 503) for e in errs))
+        self.assertNotIn("secret", json.dumps(got))
 
 
 class Saved(unittest.TestCase):

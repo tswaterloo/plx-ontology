@@ -26,11 +26,13 @@ def _note_stamp(part: str, value: str) -> None:
             f"is {value}" if last is None else f"moved: {last} -> {value}")
 
 
-def _marks_stamp(view: Any) -> Optional[str]:
+def _marks_stamp(view: Any, own_issued: bool = True) -> Optional[str]:
     """A cheap fingerprint of the documents marked beyond this reader
     (``document_marks.withheld_set``), so a re-mark is a new page key. None when no marking
     applies; a store that cannot be read is its own value, so the page is rebuilt when it
-    can."""
+    can. ``own_issued`` False: the withheld set alone, without the PLX-issued documents
+    every reader is kept from (a kept main screen is then refused only when it shows one:
+    ``own_shown``)."""
     from operating.search import document_marks
     try:
         grant = getattr(view.access, "grant", None)
@@ -43,8 +45,9 @@ def _marks_stamp(view: Any) -> Optional[str]:
         return "unreadable"
     # the PLX-issued documents every reader is kept from (``operating.pg.own_issued``):
     # a page kept before they were known (or before a refresh added one) is rebuilt
-    own = _own_stamp(document_marks._own_issued())
-    _note_stamp("own", own[:12] or "none")
+    own = _own_stamp(document_marks._own_issued()) if own_issued else ""
+    if own_issued:
+        _note_stamp("own", own[:12] or "none")
     if not got[0] and not got[1] and not own:
         return None
     # one digest per (withheld set, PLX-issued stamp): the withheld set is the same object
@@ -89,6 +92,52 @@ def _own_stamp(own: frozenset) -> str:
             "\n".join(sorted(own)).encode()).hexdigest()[:16]
     _OWN_LAST = (own, hit)
     return hit
+
+
+def own_issued_stamp() -> Optional[str]:
+    """The PLX-issued documents' digest now (``_own_stamp``); None when unreadable. For an
+    answer whose rows cannot be named one by one (an Insights tile, a search answer):
+    kept under it, so a new PLX-issued document reads it again."""
+    from operating.search import document_marks
+    try:
+        return _own_stamp(document_marks._own_issued())
+    except Exception:  # noqa: BLE001 - undecidable: nothing kept matches
+        return None
+
+
+# the PLX-issued set's digest -> when this process first saw it (wall clock); bounded
+_OWN_SEEN: dict[str, float] = {}
+# a page read up to this long before the set it is judged against was first seen may hold
+# a document the set names (its read ran across the change): refused too
+OWN_READ_MARGIN_SECONDS = 300.0
+
+
+def own_shown(objects: Optional[Iterable[str]], read_at: Optional[float]) -> bool:
+    """Whether a kept page may show a PLX-issued document (``operating.pg.own_issued``,
+    kept from every reader) it must no longer show: one of the records it shows
+    (``objects``: ``shown_objects``) is in the set now; or, for a page whose records cannot
+    all be named (None), the set it is judged against was first seen by this process
+    after (or within ``OWN_READ_MARGIN_SECONDS`` before) it was read (``read_at``, wall
+    clock; None: refused). The set unreadable: refused. A new PLX-issued document so
+    refuses only the pages that show it, instead of every page of every reader (11-22:
+    ~2,000 kept pages refused in 6 h over ~10 moves of the set)."""
+    from operating.search import document_marks
+    import time as _time
+    try:
+        own = document_marks._own_issued()
+    except Exception:  # noqa: BLE001 - undecidable: refused
+        return True
+    if not isinstance(own, frozenset):
+        return True
+    if objects is not None:
+        return any(o in own for o in objects)
+    digest = _own_stamp(own)
+    seen = _OWN_SEEN.get(digest)
+    if seen is None:
+        if len(_OWN_SEEN) >= 16:
+            _OWN_SEEN.clear()
+        seen = _OWN_SEEN[digest] = _time.time()
+    return read_at is None or seen > read_at - OWN_READ_MARGIN_SECONDS
 
 
 class _ReadByOtherCode(tuple):

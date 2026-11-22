@@ -145,7 +145,7 @@ export default function TrustRoute() {
       <Toolbar heading title="Trust" />
       <SectionTabs section="admin" />
       <PageIntro path="/trust" />
-      <div className="mx-auto w-full max-w-5xl space-y-6 overflow-y-auto px-4 py-4 sm:px-6" data-testid="trust-page">
+      <div className="w-full max-w-5xl space-y-6 overflow-y-auto px-4 py-4 sm:px-6" data-testid="trust-page">
         {refused ? (
           <p className="text-[13px]" data-testid="trust-refused">{plainError(new ApiError(403, "forbidden"))}</p>
         ) : error ? (

@@ -89,6 +89,29 @@ class OtherScreens(unittest.TestCase):
         self.assertRegex(got.read_at, r"^\d{4}-\d\d-\d\dT[\d:]+Z$")
         self.assertIsNone(got.stale_since)
 
+    def test_homes_prepared_list_is_kept_and_a_queue_change_is_read_again(self):
+        """``/api/autopilot/drafts`` served as the main screens are (read cold it held
+        Home's first load 32 s): kept per reader, current while its queue is the same."""
+        from operator_api.autopilot_area import AutopilotAreaMixin
+        who, other, reads = reader("grp-a"), reader("grp-b"), []
+
+        def read(backend, r):
+            reads.append(r.key)
+            return m.AutopilotDrafts(items=[], never_senders=[str(len(reads))])
+        with mock.patch.object(AutopilotAreaMixin, "_prepared_read", read):
+            first = self.backend.autopilot_prepared_list(who)
+            self.assertEqual(self.backend.autopilot_prepared_list(who).never_senders,
+                             first.never_senders)
+            self.assertEqual(reads, [who.key])
+            self.backend.autopilot_prepared_list(other)   # never another reader's copy
+            self.assertEqual(reads, [who.key, other.key])
+            time.sleep(0.01)
+            (self.dir / "autopilot" / "queue.sqlite").write_text("q2 longer")
+            got = self.backend.autopilot_prepared_list(who)
+            self.assertIsNotNone(got.stale_since)
+            self.background_reads_over()
+            self.assertEqual(reads.count(who.key), 2)
+
     def test_a_home_visit_reads_ahead_also_when_a_kept_page_answers_it(self):
         """A snapshot runs no read, so the read-ahead must not live inside the read
         (polish-8 review): Home asks for it itself, once per visit, for that reader."""

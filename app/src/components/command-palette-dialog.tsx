@@ -95,7 +95,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
           setUnsearched(true);
         })
         .finally(() => !c.signal.aborted && setSearching(false));
-    }, 120);
+    }, 80);
     return () => {
       clearTimeout(t);
       c.abort();

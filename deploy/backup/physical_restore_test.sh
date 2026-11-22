@@ -15,6 +15,9 @@ B='$HOME/plx-replica/pg17/bin'
 # RESTORE_DIR (a name under the sb4ec home): KEEP=1 with another name keeps a restored copy as a
 # build copy / store without the next restore test deleting it
 T='$HOME/'"${RESTORE_DIR:-plx-restore-test}"
+# WAL_DIR (under the sb4ec home): the archive the copy replays (the receiver's folder since 11-22: plx-backup/wal-1122)
+WAL=${WAL_DIR:-plx-backup/wal}
+[[ "$WAL" =~ ^[a-z0-9][a-z0-9/_-]{0,60}$ ]] || { echo '{"restorable": false, "error": "bad WAL_DIR"}'; exit 3; }
 [[ "${RESTORE_DIR:-plx-restore-test}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo '{"restorable": false, "error": "bad RESTORE_DIR"}'; exit 3; }
 t0=$(date +%s)
 # a server in recovery refuses to replay with these below the primary's: read them from it
@@ -30,7 +33,9 @@ rs "set -e; rm -rf $T; mkdir -p -m 700 $T/run; mkdir -m 700 $T/pg; cd $T/pg
       case \$w in *.zst) zstd -q -d -c \$w | tar -x -C pg_wal ;; *.gz) tar -xzf \$w -C pg_wal ;; *) tar -xf \$w -C pg_wal ;; esac
     done
     cp $base/backup_manifest $T/backup_manifest
-    $B/pg_verifybackup -q -n -m $T/backup_manifest $T/pg > $T/verify.out 2>&1 || { echo verify_failed > $T/verify.status; }
+    # SKIP_VERIFY=1 (a build copy in a hurry): the checksum pass runs beside the replay instead
+    if [ "${SKIP_VERIFY:-0}" = 1 ]; then (nohup $B/pg_verifybackup -q -n -m $T/backup_manifest $T/pg > $T/verify.out 2>&1 || echo verify_failed > $T/verify.status) >/dev/null 2>&1 & else
+    $B/pg_verifybackup -q -n -m $T/backup_manifest $T/pg > $T/verify.out 2>&1 || { echo verify_failed > $T/verify.status; }; fi
     rm -f postmaster.pid standby.signal; touch recovery.signal; : > postgresql.auto.conf
     cat > $T/postgresql.conf <<EOF
 data_directory = '\$HOME/${RESTORE_DIR:-plx-restore-test}/pg'
@@ -42,7 +47,7 @@ unix_socket_permissions = 0700
 shared_buffers = 8GB
 $prim
 hot_standby = on
-restore_command = 'f=\$HOME/plx-backup/wal/%f; if [ -f \$f.lz4 ]; then \$HOME/plx-backup/tools/root/usr/bin/lz4 -q -d -c \$f.lz4 > %p; elif [ -f \$f ]; then cp \$f %p; else exit 1; fi'
+restore_command = 'f=\$HOME/$WAL/%f; if [ -f \\\$f.lz4 ]; then \$HOME/plx-backup/tools/root/usr/bin/lz4 -q -d -c \\\$f.lz4 > %p; elif [ -f \\\$f ]; then cp \\\$f %p; else exit 1; fi'
 recovery_target_timeline = 'latest'
 recovery_target_action = 'promote'
 fsync = off
@@ -55,8 +60,8 @@ EOF
   || { echo '{"restorable": false, "error": "setup_failed"}'; exit 3; }
 t1=$(date +%s)
 # replayed and promoted: not in recovery any more (the archive ends at the receiver's last
-# full segment)
-up=$(rs "for i in \$(seq 1 5400); do r=\$($B/psql -X -h $T/run -p $PORT -d plx -Atc 'select pg_is_in_recovery()' 2>/dev/null); [ \"\$r\" = f ] && { echo f; break; }; sleep 2; done")
+# full segment); a server that shut down (recovery failed) ends the wait
+up=$(rs "for i in \$(seq 1 5400); do r=\$($B/psql -X -h $T/run -p $PORT -d plx -Atc 'select pg_is_in_recovery()' 2>/dev/null); [ \"\$r\" = f ] && { echo f; break; }; grep -q 'database system is shut down' $T/pg.log && break; sleep 2; done")
 t2=$(date +%s)
 verify=$(rs "cat $T/verify.status 2>/dev/null || echo ok")
 # the migration ledger is equal; the big served tables hold rows (counts move on the box
@@ -66,6 +71,10 @@ q_rows="select (select count(*) > 0 from search.chunks) and (select count(*) > 0
 problems=()
 [ "$up" = f ] || problems+=("not_promoted")
 [ "$verify" = ok ] || problems+=("pg_verifybackup_failed")
+# the copy must have replayed from the archive, not only from WAL carried in the base
+# (11-22: an escaped-away restore_command read nothing and two tests still passed)
+arch=$(rs "grep -c 'restored log file' $T/pg.log" 2>/dev/null)
+[ "${arch:-0}" -gt 0 ] 2>/dev/null || problems+=("archive_never_read")
 if [ "$up" = f ]; then
   box=$(psql -X -d "$DSN" -Atc "$q_ledger" 2>/dev/null)
   got=$(rs "$B/psql -X -h $T/run -p $PORT -d plx -Atc \"$q_ledger\"" 2>/dev/null)

@@ -72,7 +72,7 @@ Settings go in `~/.config/plx/backup.env` (mode 600), e.g. `PLX_BACKUP_OFFSITE_H
 
 ## Restore
 
-Stop writers first: `sudo systemctl stop plx-api plx-ingest plx-delta.timer
+Stop writers first: `sudo systemctl stop plx-api-cycle.target plx-ingest plx-delta.timer
 plx-delta-compact.timer plx-search-follow.timer plx-search-follow.path plx-truth-check.path`.
 Pick a set: `S=/data/backups/daily; T=<stamp>`.
 

@@ -1,0 +1,24 @@
+# Box side of the older-mail search leg (operating.search.oldmail_leg): a local socket that is
+# the old-mail store's socket on sb4ec, over the existing ssh login (no new credential).
+# The API reads it with PLX_OLDMAIL_DSN="host=/run/plx-oldmail port=55710 dbname=plx
+# user=plx_oldmail_ro" and PLX_SEARCH_OLDMAIL=1 (both unset: the leg is off).
+# Install: sudo cp plx-oldmail-tunnel.service /etc/systemd/system/ && sudo systemctl
+# daemon-reload && sudo systemctl enable --now plx-oldmail-tunnel. Undo: disable --now, rm.
+[Unit]
+Description=PLX older-mail search: the sb4ec old-mail store's socket on the box (ssh -L)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@PLX_USER@
+Group=@PLX_GROUP@
+RuntimeDirectory=plx-oldmail
+RuntimeDirectoryMode=0700
+ExecStart=/data/plx-releases/current/deploy/spark/oldmail/oldmail_tunnel.sh
+Restart=always
+RestartSec=10
+MemoryMax=128M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -265,6 +265,11 @@ def fallback_gap(subject: str) -> dict[str, Any] | None:
         failed = tuple(state.get("failed") or ())
         if not failed:
             return None
+        if failed == ("older_mail",):
+            # only the old-mail store's leg (``oldmail_leg``) is missing
+            return {"state": "unknown", "reason": "search_partial", "subject": subject[:700],
+                    "detail": "older mail wasn't searched (its search store did not answer "
+                              "in time); matches only in older mail may be missing"}
         return {"state": "unknown", "reason": "search_partial", "subject": subject[:700],
                 "detail": ("hybrid search ranked without its " + ", ".join(failed)
                            + " list" + ("s" if len(failed) > 1 else "") + " (failed or past "

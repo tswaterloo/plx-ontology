@@ -12,3 +12,5 @@ Install: cp *.service ~/.config/systemd/user/ && cp *.sh ~ && systemctl --user d
 Plan once: python3 -m operating.embed.oldmail plan --dsn "host=$HOME/oldmail-store/run port=55710 dbname=plx"
 Undo: systemctl --user disable --now oldmail-embed oldmail-build oldmail-store; rm -rf ~/oldmail-store
   oldmail-watch.timer        every 5 min: restarts a build with no unit for 15 min / an embed with no report for 20 min; watch.log
+Box search leg (off by default; operating.search.oldmail_leg): ro_role.sql + the two hba/ident lines in the store,
+  plx-oldmail-tunnel.service on the box, then PLX_OLDMAIL_DSN + PLX_SEARCH_OLDMAIL=1 in the API's environment.

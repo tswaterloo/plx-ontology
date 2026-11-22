@@ -368,7 +368,11 @@ class Owner(unittest.TestCase):
         self.backend.owner = True
         self._close_today(B)
         by = {p["name"]: p for p in self.team(OWNER).json()["people"]}
-        weeks = by[NAMES[B]]["weeks"]
+        # the list carries this week and last (its columns); the person's own page all four
+        self.assertEqual([len(p["weeks"]) for p in by.values()], [2] * len(by))
+        self.assertEqual(by[NAMES[B]]["weeks"],
+                         self.client(OWNER).get(f"/api/team/{tv.key_of(B)}").json()["person"]["weeks"][-2:])
+        weeks = self.client(OWNER).get(f"/api/team/{tv.key_of(B)}").json()["person"]["weeks"]
         today = date.today()
         monday = today - timedelta(days=today.weekday())
         self.assertEqual([w["week"] for w in weeks],
@@ -381,7 +385,8 @@ class Owner(unittest.TestCase):
         self.assertFalse(any(w["partial"] for w in weeks[:3]))
         # B's alert closed today counts in this week; the far-future one in no week
         self.assertEqual([w["closed"] for w in weeks], [0, 0, 0, 1])
-        self.assertEqual([w["closed"] for w in by[NAMES[C]]["weeks"]], [0, 0, 0, 0])
+        other = self.client(OWNER).get(f"/api/team/{tv.key_of(C)}").json()["person"]["weeks"]
+        self.assertEqual([w["closed"] for w in other], [0, 0, 0, 0])
         # the snapshot carries no per-week reply figures: none invented
         self.assertTrue(all(w["reply_minutes"] is None and w["replies"] == 0 for w in weeks))
         self.assertEqual(tv.DONE_CHANNELS, frozenset(ta.CHANNELS) - {"mail_received"})

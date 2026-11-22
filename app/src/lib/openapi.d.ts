@@ -1441,6 +1441,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/insights/all/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insights Stream
+         * @description The whole dashboard in one response (one JSON object per line): your list, then
+         *     each chart as it is read (its own result or its own error, each read as you).
+         */
+        get: operations["insights_stream_api_insights_all_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/insights/{insight_id}": {
         parameters: {
             query?: never;
@@ -1653,7 +1674,8 @@ export type paths = {
          *     hours, overtime hours and headcount-days, the overtime trend and the overtime-spike
          *     alert (30% over a department's 8-week median). Hours only, never pay; no per-person
          *     figure; groups of fewer than 3 people are not shown. Only a reader granted hr or
-         *     ops-management sees any figure (state not_granted otherwise).
+         *     ops-management sees any figure (state not_granted otherwise). The last 12 weeks
+         *     by default (``older`` says more are held; weeks=0 gives every week).
          */
         get: operations["labour_api_labour_get"];
         put?: never;
@@ -4519,6 +4541,11 @@ export type components = {
              * @description Senders you said never to prepare anything for you from (yours only).
              */
             never_senders?: string[];
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
         };
         /**
          * AutopilotDraftsPerson
@@ -8717,6 +8744,12 @@ export type components = {
             built_at?: string | null;
             /** Note */
             note: string;
+            /**
+             * Older
+             * @description Weeks older than the ones shown are held (ask again with weeks=0 for every week).
+             * @default false
+             */
+            older: boolean;
             /**
              * State
              * @enum {string}
@@ -16990,6 +17023,33 @@ export interface operations {
             };
         };
     };
+    insights_stream_api_insights_all_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     insight_result_api_insights__insight_id__get: {
         parameters: {
             query?: {
@@ -17637,7 +17697,10 @@ export interface operations {
     };
     labour_api_labour_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The last this many weeks (0: every week) */
+                weeks?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -17660,6 +17723,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -1,5 +1,9 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+const getLabour = vi.fn();
+vi.mock("@/lib/api", () => ({ getLabour: (...a: unknown[]) => getLabour(...a) }));
+
 import { LabourView } from "./labour-view";
 import type { LabourPage } from "@/lib/types";
 
@@ -11,6 +15,7 @@ const ready: LabourPage = {
   trend: [{ department: "production", points: [{ week: "2026-06-01", hours: "168.00", overtime_hours: "8.00" }] }],
   alerts: [{ kind: "labour_overtime_spike", department: "production", week: "2026-06-01", overtime_hours: "8.00",
     baseline_median: "4.00", baseline_weeks: 8, rise_percent: "100", markings: ["hr"], sources: src }],
+  older: false,
 };
 
 describe("LabourView", () => {
@@ -23,5 +28,17 @@ describe("LabourView", () => {
     render(<LabourView page={{ ...ready, state: "not_granted", note: "Labour figures need the hr or ops-management grant.", weeks: [], trend: [], alerts: [] }} />);
     expect(screen.getByTestId("labour-note").textContent).toContain("hr or ops-management");
     expect(screen.queryByRole("table")).toBeNull();
+  });
+  it("offers the weeks it left out and shows them on request, or says why it could not", async () => {
+    render(<LabourView page={{ ...ready, older: true }} />);
+    expect(screen.getByText(/last 12 weeks are shown/)).toBeTruthy();
+    getLabour.mockRejectedValueOnce(new Error("x"));
+    fireEvent.click(screen.getByText("Show every week"));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(getLabour).toHaveBeenCalledWith(undefined, true);
+    const more = { ...ready, weeks: [...ready.weeks, { ...ready.weeks[0], week: "2026-05-25", hours: "151.00" }], older: false };
+    getLabour.mockResolvedValueOnce(more);
+    fireEvent.click(screen.getByText("Show every week"));
+    await waitFor(() => expect(screen.queryByText("Show every week")).toBeNull());
   });
 });

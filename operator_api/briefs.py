@@ -590,10 +590,11 @@ def labour_held(reader: Reader) -> bool:
     return lh.holds_labour(getattr(reader.session, "principals", ()) or (), lh.load_grants())
 
 
-def labour_page_of(state_dir: Any, reader: Reader) -> dict[str, Any]:
+def labour_page_of(state_dir: Any, reader: Reader, weeks: Optional[int] = None
+                   ) -> dict[str, Any]:
     from operating import labour_hours as lh
     held = labour_held(reader)
-    return lh.labour_page(lh.open_store(state_dir) if held else None, held)
+    return lh.labour_page(lh.open_store(state_dir) if held else None, held, weeks)
 
 
 def labour_answer_of(state_dir: Any, reader: Reader, question: str) -> dict[str, Any]:
@@ -950,10 +951,11 @@ class BriefsMixin:
                 reader.key, br.week_of(date.today()) - timedelta(days=7))
         return late_from_home(brief_model(raw), lambda: self.late_list(reader, limit=LATE_ROWS))
 
-    def labour(self, reader: Reader) -> m.LabourPage:
+    def labour(self, reader: Reader, weeks: Optional[int] = None) -> m.LabourPage:
         """Department and week labour hours (``operating.labour_hours``): only for a reader
-        holding the hr or ops-management grant; read from the aggregates store alone."""
-        return m.LabourPage(**labour_page_of(getattr(self, "state_dir", None), reader))
+        holding the hr or ops-management grant; read from the aggregates store alone.
+        ``weeks``: the last that many weeks (0 or none: every week)."""
+        return m.LabourPage(**labour_page_of(getattr(self, "state_dir", None), reader, weeks))
 
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
         try:

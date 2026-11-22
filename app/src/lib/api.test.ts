@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider, PANE_REUSE_MS } from "./api";
+import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, prefetchRecord, streamInsights, saveInsight, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider, PANE_REUSE_MS } from "./api";
 import { ApiError } from "./errors";
 import { resetSessionCaches } from "./session-cache";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
@@ -372,5 +372,58 @@ describe("a record pane's reads (Home's detail)", () => {
     vi.advanceTimersByTime(PANE_REUSE_MS + 1);
     await getObjectSection("trail", "PurchaseOrder", "PurchaseOrder:x:1", undefined, true);
     expect(fetch.mock.calls.length).toBe(afterWrite + 1);
+  });
+});
+
+const settle = () => new Promise((r) => setTimeout(r, 20));
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+describe("a record read ahead on hover", () => {
+  it("is read once, taken by the page's own read, and a second open reads again", async () => {
+    resetSessionCaches();
+    const f = vi.fn(async () => json({ type: "PurchaseOrder", object_id: "1", complete: true }));
+    vi.stubGlobal("fetch", f);
+    prefetchRecord("PurchaseOrder", "po 1");
+    prefetchRecord("PurchaseOrder", "po 1");   // hovering again asks nothing more
+    await settle();
+    expect(f).toHaveBeenCalledTimes(2);        // the core read and the quick read, once each
+    await getObject("PurchaseOrder", "po 1", undefined, true);
+    expect(f).toHaveBeenCalledTimes(2);        // the page took the read already made
+    await getObject("PurchaseOrder", "po 1", undefined, true);
+    expect(f).toHaveBeenCalledTimes(3);        // a read ahead stands for one open only
+  });
+
+  it("is dropped by a write and by a sign-out, and a malformed type asks nothing", async () => {
+    const f = vi.fn(async () => json({ complete: true, id: "x" }));
+    vi.stubGlobal("fetch", f);
+    prefetchRecord("../x", "1");
+    prefetchRecord("PurchaseOrder", "");
+    expect(f).not.toHaveBeenCalled();
+    prefetchRecord("PurchaseOrder", "a");
+    await settle();
+    await saveInsight({ title: "t", question: "q", sql: "SELECT 1" } as never).catch(() => undefined);
+    const before = f.mock.calls.length;
+    await getObject("PurchaseOrder", "a", undefined, true);
+    expect(f.mock.calls.length).toBe(before + 1);   // read again: nothing read before a write is reused
+    await settle();
+    prefetchRecord("PurchaseOrder", "b");
+    await settle();
+    resetSessionCaches();
+    const mid = f.mock.calls.length;
+    await getObject("PurchaseOrder", "b", undefined, true);
+    expect(f.mock.calls.length).toBe(mid + 1);
+  });
+});
+
+describe("the one-request dashboard", () => {
+  it("hands each line over as it arrives, across chunk boundaries", async () => {
+    const lines = [{ list: { scope: "self", items: [], measures: [] } }, { id: "a", result: { id: "a" } }, { id: "b", error: { code: "insight_not_ready", status: 503 } }];
+    const text = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+    const cut = Math.floor(text.length / 2);
+    const enc = new TextEncoder();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(enc.encode(text.slice(0, cut))); c.enqueue(enc.encode(text.slice(cut))); c.close(); } }), { status: 200 })));
+    const got: unknown[] = [];
+    await streamInsights((l) => got.push(l));
+    expect(got).toEqual(lines);
   });
 });

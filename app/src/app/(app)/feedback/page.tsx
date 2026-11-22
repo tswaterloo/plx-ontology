@@ -247,6 +247,7 @@ export default function FeedbackPage() {
       />
       <SectionTabs section="admin" />
       <PageIntro path="/feedback" />
+      {!error && (
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2 lg:px-5" data-testid="feedback-filters">
         <div className="mr-2 flex gap-0.5 max-sm:-mx-1 max-sm:mr-0 max-sm:w-[calc(100%+8px)] max-sm:overflow-x-auto max-sm:px-1" role="tablist" aria-label="Status">
           {[["", "All", allCount] as const, ...STATUSES.map((s) => [s, STATUS_WORDS[s], list?.counts[s] ?? 0] as const)].map(([value, label, n]) => (
@@ -286,6 +287,7 @@ export default function FeedbackPage() {
           <option value="oldest">Oldest first</option>
         </select>
       </div>
+      )}
       {error ? (
         <div className="p-5">
           <LoadProblem message={error} onRetry={load} />

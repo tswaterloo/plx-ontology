@@ -21,7 +21,7 @@ import sys
 
 DEPLOY = Path(__file__).resolve().parent
 PLACEHOLDER = re.compile(r"@(PLX_[A-Z_]+)@")
-UNIT = ("*.service", "*.timer", "*.path")
+UNIT = ("*.service", "*.timer", "*.path", "*.target")
 CHECK_DROPINS = "plx-api-check@.service.d"
 
 

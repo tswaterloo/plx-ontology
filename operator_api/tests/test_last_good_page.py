@@ -427,7 +427,7 @@ class NeverServedCold(LastGoodPage.__base__):
         fast.start()
         self.addCleanup(fast.stop)
         self.marks = None
-        marks = mock.patch.object(be, "_marks_stamp", lambda view: self.marks)
+        marks = mock.patch.object(be, "_marks_stamp", lambda view, own_issued=True: self.marks)
         marks.start()
         self.addCleanup(marks.stop)
 
@@ -815,7 +815,7 @@ class NeverServedCold(LastGoodPage.__base__):
         def worker(name):
             return SimpleNamespace(stopped=SimpleNamespace(is_set=lambda: False), jobs=None,
                                    submit=lambda who, job, **k: sent.append(name) or name)
-        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None, page=None: (
             lambda v: (("state",), True))
         who = reader("grp-a")
         self.backend.check_worker, self.backend.access_worker = worker("check"), None
@@ -945,7 +945,7 @@ class NeverServedCold(LastGoodPage.__base__):
 
         reads = [self.backend.access_worker.submit(who, door_read) for _ in range(4)]
         time.sleep(0.05)   # both access workers held, two door reads queued
-        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None, page=None: (
             lambda v: (("state",), True))
         started = time.monotonic()
         decided = self.backend._access_later(who, (), screen=("home",))
@@ -1019,7 +1019,7 @@ class NeverServedCold(LastGoodPage.__base__):
         held = threading.Event()
         gate = check.submit(a, lambda v: held.wait(5), priority=-2)
         time.sleep(0.05)   # the one check worker is held
-        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None, page=None: (
             lambda v: ((screen[0] if screen else None, tuple(handles)), True))
         mine = [self.backend._access_later(a, (), screen=(name,)) for name in ("home", "team", "my_work")]
         theirs = self.backend._access_later(b, (), screen=("home",))
@@ -1038,13 +1038,42 @@ class NeverServedCold(LastGoodPage.__base__):
         self.assertEqual(later.result(timeout=2), (("insights", ()), True))
         self.assertEqual(len(scopes), 3)
         # a check that fails fails alone
-        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None: (
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None, page=None: (
             lambda v: 1 / 0 if screen == ("bad",) else "ok")
         bad = self.backend._access_later(a, (), screen=("bad",))
         good = self.backend._access_later(a, (), screen=("good",))
         with self.assertRaises(ZeroDivisionError):
             bad.result(timeout=2)
         self.assertEqual(good.result(timeout=2), "ok")
+
+    def test_a_check_on_a_worker_that_runs_it_at_once_never_waits_on_the_backend_lock(self):
+        """A worker whose submit runs the job before it returns (the tests' worker) ran a
+        reader's batched check while the backend lock was held for the submit: the check
+        then waited on that lock for ever (11-22: test_pg_http_permissions hung, suggest ->
+        _access_now). Each check is decided, and a batch is joinable only once queued."""
+        import queue as q
+        from concurrent.futures import Future
+
+        def submit(who, job, priority=0, deadline=None):
+            done: Future = Future()
+            done.set_result(job(SimpleNamespace(_request=contextlib.nullcontext)))
+            return done
+        worker = SimpleNamespace(stopped=threading.Event(), jobs=q.PriorityQueue(), submit=submit)
+        self.backend._lock = threading.Lock()   # the backend's own (not this fixture's RLock)
+        self.backend.state_worker = self.backend.check_worker = self.backend.access_worker = None
+        self.backend.reads = worker
+        self.backend._access_job = lambda handles=(), screen=None, objects=None, who=None, page=None: (
+            lambda v: ((screen[0] if screen else None, tuple(handles)), True))
+        a = reader("grp-a")
+        a.session = SimpleNamespace(principals=[a.key])
+        got: list = []
+        t = threading.Thread(target=lambda: got.extend([
+            self.backend._access_later(a, (), screen=(n,)).result(timeout=2)
+            for n in ("home", "team")]), daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "the check waited on the backend lock")
+        self.assertEqual(got, [(("home", ()), True), (("team", ()), True)])
 
     def test_marking_the_briefing_seen_runs_on_the_check_worker_not_behind_door_reads(self):
         """The visit mark is a short write a Home visit waits on: it ran on an access
@@ -1654,7 +1683,7 @@ class SnapshotFirst(LastGoodPage.__base__):
         stamp.start()
         self.addCleanup(stamp.stop)
         self.marks = None
-        marks = mock.patch.object(be, "_marks_stamp", lambda view: self.marks)
+        marks = mock.patch.object(be, "_marks_stamp", lambda view, own_issued=True: self.marks)
         marks.start()
         self.addCleanup(marks.stop)
 

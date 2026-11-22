@@ -1446,6 +1446,21 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         out = _insights().insights_list(who)
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/insights/all/stream", tags=["insights"], response_class=StreamingResponse,
+             responses={401: {"model": m.ErrorResponse}})
+    def insights_stream(who: Reader = Depends(reader)) -> StreamingResponse:
+        """The whole dashboard in one response (one JSON object per line): your list, then
+        each chart as it is read (its own result or its own error, each read as you)."""
+        backend_ = _insights()
+        lines = backend_.insights_stream(who)
+
+        def body() -> Iterator[bytes]:
+            for line in lines:
+                yield json.dumps(line, separators=(",", ":")).encode() + b"\n"
+        return StreamingResponse(body(), media_type="application/x-ndjson",
+                                 headers={"Cache-Control": "no-store",
+                                          "X-Accel-Buffering": "no"})
+
     @app.get("/api/insights/{insight_id}", response_model=m.InsightResult, tags=["insights"],
              responses=errs)
     def insight_result(insight_id: str = PathParam(pattern=r"^[a-z0-9_]{1,61}$"),
@@ -1856,13 +1871,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/labour", response_model=m.LabourPage, tags=["briefs"],
              responses={401: {"model": m.ErrorResponse}})
-    def labour(who: Reader = Depends(reader)) -> m.LabourPage:
+    def labour(weeks: int = Query(12, ge=0, le=1000, description="The last this many weeks "
+                                  "(0: every week)"), who: Reader = Depends(reader)
+               ) -> m.LabourPage:
         """Labour hours from the department time sheets: department and week totals of
         hours, overtime hours and headcount-days, the overtime trend and the overtime-spike
         alert (30% over a department's 8-week median). Hours only, never pay; no per-person
         figure; groups of fewer than 3 people are not shown. Only a reader granted hr or
-        ops-management sees any figure (state not_granted otherwise)."""
-        return backend.labour(who)
+        ops-management sees any figure (state not_granted otherwise). The last 12 weeks
+        by default (``older`` says more are held; weeks=0 gives every week)."""
+        return backend.labour(who, weeks)
 
     @app.get("/api/brief/weekly", response_model=m.Brief, tags=["briefs"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})

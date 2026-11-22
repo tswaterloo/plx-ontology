@@ -146,3 +146,42 @@ class Pages(unittest.TestCase):
         got = SimpleNamespace(items=[item], home_count=9,
                               groups=[grp("price_below_cost", "financials"), grp("lot_on_hold", None)])
         self.assertEqual(home_group_pages(got), ["lot_on_hold"])
+
+    def test_the_records_home_opens_first_are_read_ahead_for_a_signed_in_reader(self):
+        """The first item sent home of each kind (Home's pane opens the first row), each
+        record once; nothing for a directory employee's round; one that fails is skipped."""
+        from operator_api import backend as be
+        from operator_api.briefing_view import home_first_records
+        it = lambda kind, oid, home=True: SimpleNamespace(  # noqa: E731
+            event_type=kind, object_id=oid, object_type=oid.split(":")[0], home=home)
+        got = SimpleNamespace(status="read", items=[
+            it("lot_on_hold", "Batch:b1"), it("lot_on_hold", "Batch:b2"),
+            it("customer_demand_drop", "Customer:c1", home=False),
+            it("customer_demand_drop", "Customer:c2"), it("price_below_typical", "Customer:c2"),
+            it("needs_my_reply", ""), it("po_due", "PurchaseOrder:p1")])
+        self.assertEqual(home_first_records(got), [("Batch", "Batch:b1"), ("Customer", "Customer:c2"),
+                                                   ("PurchaseOrder", "PurchaseOrder:p1")])
+        self.assertEqual(len(home_first_records(got, most=2)), 2)
+        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
+        self.addCleanup(backend.stop)
+        read = []
+
+        def page(_backend, _view, otype, oid, quick=False):
+            if oid == "Customer:c2":
+                raise RuntimeError("cold")
+            read.append((otype, oid, quick))
+        backend.briefing = lambda reader, since_visit=False: got
+        backend.reads.run = lambda reader, job, timeout=None, **k: job(mock.MagicMock())
+        with mock.patch.object(be, "object_page", page):
+            self.assertEqual(backend._home_pages_ahead(mock.Mock(key="r")), 2)
+            self.assertEqual(read, [("Batch", "Batch:b1", True), ("PurchaseOrder", "PurchaseOrder:p1", True)])
+            self.assertEqual(backend._home_pages_ahead(mock.Mock(key="r"), later=True), 0)
+        self.assertEqual(len(read), 2)
+        # the warm-up's screen round tells these two whether the reader is a directory round
+        seen = {}
+        for name in be.AHEAD_LATER:
+            setattr(backend, name, lambda reader, n=name, **k: seen.setdefault(n, k) and 0)
+        with mock.patch.object(be, "SCREENS_AHEAD", tuple(be.AHEAD_LATER)), \
+                mock.patch("operator_api.page_sql.alerts_on", return_value=True):
+            backend._screens_read(mock.Mock(key="r"), tuple(be.AHEAD_LATER), None, True)
+        self.assertEqual(seen, {n: {"later": True} for n in be.AHEAD_LATER})

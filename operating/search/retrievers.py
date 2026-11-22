@@ -200,6 +200,15 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
         # and the per-kind partials are search.chunks' own)
         return _dense_run(conn, scope, vectors, model, limit, dim, deep, False, "vectors",
                           ef_search, timeout_ms=timeout_ms)
+    if dim is not None and _bits_reader(conn, scope):
+        # a reader of only part of the audience units (operating.pg.reader_bits): their
+        # own rows in Hamming order, the best re-checked with the full vector; bounded
+        # per statement, past it the search runs on the whole-table index as before.
+        try:
+            return _dense_run(conn, scope, vectors, model, limit, dim, deep, False, "bits",
+                              ef_search, timeout_ms=_bits_timeout(timeout_ms))
+        except _query_canceled():
+            pass
     bq = dim is not None and pgd.bq_enabled()
     shape = _kinds_shape(conn, scope) if pgd.kinds_enabled() else None
     if shape == "exact":
@@ -212,6 +221,19 @@ def dense(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[float]], 
             shape = None
     return _dense_run(conn, scope, vectors, model, limit, dim, deep, bq, shape, ef_search,
                       timeout_ms=timeout_ms)
+
+
+def _bits_reader(conn: Any, scope: dict[str, Any]) -> bool:
+    """The 1-bit table is on and current, and this reader may read only part of the
+    audience units (an older schema: False, the whole-table index)."""
+    from operating.pg import reader_bits
+    return reader_bits.ready(conn) and reader_bits.restricted(conn, scope["allowed"])
+
+
+def _bits_timeout(timeout_ms: int | None) -> int:
+    from operating.pg import reader_bits
+    return reader_bits.TIMEOUT_MS if timeout_ms is None else min(int(timeout_ms),
+                                                                 reader_bits.TIMEOUT_MS)
 
 
 def _query_canceled() -> type[BaseException]:
@@ -227,7 +249,24 @@ def _dense_run(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[floa
     from operating.pg import dense as pgd
     from operating.pg.dense import BQ_EF_CAP, bq_candidates, bq_order
     rest: list[str] = []
-    if shape == "vectors":
+    if shape == "bits":
+        # operating.pg.reader_bits: the reader's rows of the 1-bit table (the permission
+        # predicate in the scan), the best RECHECK by Hamming distance read again from
+        # search.chunks under the same predicate (a stale bits row never shows a row the
+        # reader may not read) and ranked by the full vector's cosine
+        from operating.pg import reader_bits
+        cand = reader_bits.RECHECK
+        inner = f"""SELECT x.chunk_id, x.s FROM (
+                    SELECT c.chunk_id, 1 - (c.embedding <=> %(v)s::halfvec) AS s
+                    FROM (SELECT c.chunk_id FROM search.reader_bits c
+                          WHERE c.embed_model = %(model)s AND {PERM} {KINDS}
+                          ORDER BY c.bits <~> binary_quantize(%(v)s::halfvec)::bit({int(dim or 0)})
+                          LIMIT %(cand)s) b
+                    JOIN search.chunks c ON c.chunk_id = b.chunk_id
+                    WHERE c.embed_model = %(model)s AND {PERM} {KINDS}) x
+                    ORDER BY x.s DESC, x.chunk_id LIMIT %(deep)s"""
+        ef = min(max(int(ef_search), deep), 1000)
+    elif shape == "vectors":
         # 'narrow' mode (operating.pg.chunk_vectors): the vectors' partitioned HNSW in
         # distance order, each joined to the chunks holding its text, the reader's
         # permission predicate on the chunk row (a vector alone names no chunk); the walk
@@ -302,6 +341,10 @@ def _dense_run(conn: Any, scope: dict[str, Any], vectors: Sequence[Sequence[floa
                      + ("strict_order" if shape == "vectors" else "relaxed_order"))
         conn.execute(f"SET LOCAL hnsw.ef_search = {ef}")
         conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {MAX_SCAN_TUPLES}")
+        if shape == "bits":
+            from operating.pg import reader_bits
+            conn.execute("SET LOCAL max_parallel_workers_per_gather = "
+                         f"{int(reader_bits.WORKERS)}")
         for vector in vectors:
             rows = conn.execute(
                 _per_item(inner),

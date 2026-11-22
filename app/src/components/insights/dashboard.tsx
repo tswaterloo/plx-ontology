@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { AnswerCharts } from "@/components/answer-chart";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { deleteInsight, getInsight, setInsightSchedule } from "@/lib/api";
-import { noticeKind, plainError, tileError } from "@/lib/errors";
+import { ApiError, noticeKind, plainError, tileError } from "@/lib/errors";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { human } from "@/components/charts/scale";
+import { full, human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
 const quiet = "h-7 rounded-md px-2 text-[12px] font-medium hover:bg-hover cursor-pointer disabled:cursor-default disabled:opacity-50";
@@ -49,6 +49,20 @@ export function grouped(items: InsightInfo[]): [string, InsightInfo[]][] {
 // has one, else by the name (Team decides what you may see)
 const PEOPLE = new Set(["person", "who", "busiest_person"]);
 
+/** Pure: one cell as people read it. A decimal number (what the database sends as text) gets
+ * thousands separators and at most two places (four under 1). It is money only when the data
+ * says so: a paired "<column>_currency" column (the business views' own convention) holding a
+ * currency code; any other decimal (a percentage, a day count, a quantity) is a plain number.
+ * Whole numbers are left alone: they may be order or invoice numbers. */
+export function cellText(cell: string | null | undefined, column: string, row: readonly (string | null)[], columns: readonly string[]): string {
+  if (cell === null || cell === undefined) return "";
+  if (!/^-?\d+\.\d+$/.test(cell)) return cell;
+  const n = Number(cell);
+  if (!Number.isFinite(n)) return cell;
+  const code = row[columns.indexOf(`${column}_currency`)];
+  return full(n, /^[A-Z]{3}$/.test(code ?? "") ? code : null);
+}
+
 /** The rows behind an insight, as read now (cells as text). */
 function Rows({ data }: { data: InsightResult }) {
   if (data.rows.length === 0) return <p className="text-[13px] text-muted">No rows you can see right now.</p>;
@@ -62,8 +76,8 @@ function Rows({ data }: { data: InsightResult }) {
           {data.rows.map((r, i) => (
             <tr key={i} className="border-t border-border">
               {r.map((c, j) => (
-                <td key={j} className="px-2 py-1 tabular-nums">
-                  {PEOPLE.has(data.columns[j]) && c ? <Link href={`/team?person=${encodeURIComponent(data.people?.[i] || c)}`} className="hover:underline">{c}</Link> : (c ?? "")}
+                <td key={j} className={`px-2 py-1 tabular-nums${/^-?\d+\.\d+$/.test(c ?? "") ? " text-right" : ""}`}>
+                  {PEOPLE.has(data.columns[j]) && c ? <Link href={`/team?person=${encodeURIComponent(data.people?.[i] || c)}`} className="hover:underline">{c}</Link> : cellText(c, data.columns[j], r, data.columns)}
                 </td>
               ))}
             </tr>
@@ -192,22 +206,58 @@ function TellMeWhen({ item }: { item: InsightInfo }) {
   );
 }
 
-/** One insight: read now as you, drawn, with its definition, statement and rows a click away. */
-export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?: () => void }) {
+// how far below the view a tile starts its own read (about a screen: it is drawn by the time it is scrolled to)
+export const NEAR_MARGIN = "900px 0px";
+
+/** The tile the page was opened at (Home links to "/insights#insight-<id>"). */
+function isTarget(id: string): boolean {
+  return typeof window !== "undefined" && window.location.hash === `#insight-${id}`;
+}
+
+/** What the one-response dashboard has for a tile so far (none yet: still being read;
+ * `later`: nothing kept for it, so the tile reads it itself once it nears the view). */
+export type TileEntry = { result?: InsightResult; error?: { code: string; message?: string; status: number }; later?: boolean };
+
+/** One insight: read as you, drawn, with its definition, statement and rows a click away.
+ * `entry`: given by a dashboard that reads every chart in one request (the tile then asks for
+ * nothing itself, until Refresh, unless the stream left it for `later`); `streaming`: that
+ * dashboard is still reading. A tile that reads itself does so once it nears the view. */
+export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, streaming }: { item: InsightInfo; onRemoved?: () => void; entry?: TileEntry; streaming?: boolean }) {
   const [data, setData] = useState<InsightResult | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
   const [round, setRound] = useState(0);
   const [all, setAll] = useState(false);
   const retry = useCallback(() => setRound((n) => n + 1), []);
+  const here = useRef<HTMLElement>(null);
+  const fed = streaming !== undefined && round === 0 && !entry?.later;   // the dashboard's one request supplies it
   useEffect(() => {
+    if (!fed) return;
+    if (entry?.result) { setData(entry.result); setError(null); }
+    else if (entry?.error) setError(new ApiError(entry.error.status, entry.error.code, undefined, entry.error.message));
+  }, [fed, entry]);
+  // its own read starts once it nears the view (or is the one opened from Home): a dashboard
+  // of 61 tiles asked for every one at once, and the server read them all cold together
+  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined" || isTarget(item.id));
+  useEffect(() => {
+    if (fed || near || !here.current) return;
+    const seen = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        setNear(true);
+        seen.disconnect();
+      }
+    }, { rootMargin: NEAR_MARGIN });
+    seen.observe(here.current);
+    return () => seen.disconnect();
+  }, [near, fed]);
+  useEffect(() => {
+    if (fed || !near) return;
     const ctl = new AbortController();
     setError(null);
     getInsight(item.id, ctl.signal, round > 0).then(setData, (e) => !ctl.signal.aborted && setError(e));
     return () => ctl.abort();
-  }, [item.id, round]);
+  }, [item.id, round, near, fed]);
   // opened from Home ("/insights#insight-s12"): brought into view once it is drawn
-  const here = useRef<HTMLElement>(null);
   useEffect(() => {
     if (data && typeof window !== "undefined" && window.location.hash === `#insight-${item.id}`) here.current?.scrollIntoView?.({ block: "start" });
   }, [data, item.id]);
@@ -232,6 +282,8 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
       {item.saved && <ScheduleControl item={item} columns={data?.columns} />}
       {error ? (
         <LoadProblem message={tileError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
+      ) : !near && !fed && !data ? (
+        <div className="h-40" data-testid={`unread-${item.id}`} />
       ) : !data ? (
         <Pending label="Reading" />
       ) : (
@@ -258,7 +310,7 @@ export function InsightTile({ item, onRemoved }: { item: InsightInfo; onRemoved?
       )}
     </section>
   );
-}
+});
 
 /** The dashboard: every insight the reader may see, grouped, each read live on its own. */
 /** What each monitor checks and when, in a line: "Every morning, tells you when a new row appears". */
@@ -334,7 +386,7 @@ export function Measures({ measures }: { measures: Measure[] }) {
   );
 }
 
-export function InsightsDashboard({ list, onChanged }: { list: InsightList; onChanged: () => void }) {
+export function InsightsDashboard({ list, onChanged, feed, streaming }: { list: InsightList; onChanged: () => void; feed?: Record<string, TileEntry>; streaming?: boolean }) {
   return (
     <div className="space-y-8">
       {list.scope === "self" && (
@@ -345,7 +397,7 @@ export function InsightsDashboard({ list, onChanged }: { list: InsightList; onCh
         <section key={group} className="space-y-4" aria-label={group}>
           <h2 className="text-[15px] font-semibold">{group}</h2>
           <div className="grid gap-6 xl:grid-cols-2">
-            {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} />)}
+            {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} entry={feed?.[it.id]} streaming={feed ? !!streaming : undefined} />)}
           </div>
         </section>
       ))}

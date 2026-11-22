@@ -22,6 +22,14 @@ function drawn(chart: AskChart) {
 }
 
 describe("answer charts", () => {
+  it("draws a single bar as a bar, not a slab across the plot", () => {
+    const svg = drawn({ ...bars, title: "One person", labels: ["Diane"], series: [{ name: "hours", values: [48] }] });
+    const [bar] = marks(svg, "rect");
+    expect(Number(bar.getAttribute("width"))).toBeLessThanOrEqual(56);
+  });
+  it("names a series by its amount as an amount", () => {
+    expect(human("214417.98")).toBe("214,417.98");
+  });
   it("draws one bar per label from the result's own values, titled, with its as-of", () => {
     const svg = drawn(bars);
     expect(screen.getByText("Invoiced by currency")).toBeTruthy();

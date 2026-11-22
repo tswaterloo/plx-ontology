@@ -1210,6 +1210,18 @@ class NeverSender(unittest.TestCase):
         self.assertEqual(self.bc.calls, [])
 
 
+    def test_the_list_is_read_ahead_and_a_write_answers_with_it_read_now(self) -> None:
+        from operator_api import backend as be
+        from operator_api.backend_common import PREWARM_SCREENS
+        self.assertIn("autopilot_prepared_list", be.SCREENS_AHEAD)
+        self.assertIn(("autopilot_drafts",), PREWARM_SCREENS)
+        with patch.object(type(self.backend), "autopilot_prepared_list",
+                          lambda *a: self.fail("a write answers with a kept list")):
+            got = self.client(OWNER).post("/api/autopilot/never", json={
+                "sender": "buyer@customer.example", "never": True})
+        self.assertEqual(got.json()["never_senders"], ["buyer@customer.example"])
+
+
 class AlertCards(unittest.TestCase):
     """An approval asked of the person, a QC hold or a Mission Control question sits in
     their Assist list as an alert: what happened, why, where it is decided and its records;

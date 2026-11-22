@@ -25,6 +25,8 @@ const RECORD_KINDS = [
   { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot", "Product", "Batch"], hint: "an item number, name or lot" },
   { key: "production", label: "Production", types: ["Batch"], hint: "a batch code, lot or product", list: "production" },
 ] as const;
+/** What a tab's saved records are called ("Your saved records", not "Your saved all"). */
+const SAVED_NOUN: Record<string, string> = { all: "records", production: "batches" };
 type Kind = (typeof RECORD_KINDS)[number];
 
 function kindOf(key: string | null): Kind {
@@ -63,7 +65,7 @@ function Records() {
     const ctl = new AbortController();
     const t = window.setTimeout(() => {
       suggest(query, ctl.signal, 20).then(setFound, (e) => !ctl.signal.aborted && setProblem(e));
-    }, 200);
+    }, 80);
     return () => {
       window.clearTimeout(t);
       ctl.abort();
@@ -164,7 +166,7 @@ function Records() {
             )}
             <section aria-labelledby="records-saved">
               <h2 id="records-saved" className="text-[13px] font-semibold">
-                Your saved {kind.label.toLowerCase()}
+                Your saved {SAVED_NOUN[kind.key] ?? kind.label.toLowerCase()}
               </h2>
               {mine.length ? (
                 <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="records-saved-list">

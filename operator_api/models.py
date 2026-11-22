@@ -4002,6 +4002,7 @@ class AutopilotDrafts(_Model):
     items: list[AutopilotPrepared] = Field(default_factory=list)
     never_senders: list[str] = Field(default_factory=list, description="Senders you said "
                                      "never to prepare anything for you from (yours only).")
+    stale_since: Optional[str] = _stale_since()
 
 
 class AutopilotNeverRequest(_Model):
@@ -4315,6 +4316,8 @@ class LabourPage(_Model):
     weeks: list[LabourWeek]
     trend: list[LabourTrend]
     alerts: list[LabourAlert]
+    older: bool = Field(False, description="Weeks older than the ones shown are held "
+                        "(ask again with weeks=0 for every week).")
 
 
 # ---- the work log (``/api/work-log*``, ``operator_api.work_log``) ---------------------------

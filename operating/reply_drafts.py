@@ -389,11 +389,19 @@ def keep_jobs(queue: Any, registry: Mapping[str, Any], spec: Mapping[str, Any],
     return item_id
 
 
+# what the drafts path knows of every line it drafts: it is on the person's replies to write
+# (dev 11-22: 3 of 10 messages the person answered got nothing, the session reading them as
+# only copied)
+OWED = ("This message is on {person}'s list of replies to write: prepare the reply they would "
+        "send (or the question to them when its answer is only theirs); nothing only when the "
+        "thread shows they already answered it.")
+
+
 def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence[Any],
                assistant: Any, owner: str, oid: str, *,
                now: Optional[datetime] = None, state_dir: Optional[Path] = None,
-               held: Optional[dict[str, Any]] = None, queue: Any = None
-               ) -> list[dict[str, Any]]:
+               held: Optional[dict[str, Any]] = None, queue: Any = None,
+               history: Any = None) -> list[dict[str, Any]]:
     """One open line's draft by the Assistant (``operating.autopilot_agent``), the same
     session Autopilot runs: the line's message event, the screens a draft keeps (participants
     cleared, nothing about pay or HR), the prepare step for its material, the session reading
@@ -403,7 +411,12 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     ``[{"why"}]``. Changes the Assistant proposed in a business system (BC, Planner, Portal,
     MC, calendar...) and its things to do by hand become a job item on ``queue`` for the
     person (``keep_jobs``; its id as the row's ``jobs``), confirmed there one by one;
-    nothing is written here."""
+    nothing is written here.
+
+    The session reads beside the message what the live cycle puts on it (``autopilot.
+    _engage`` over ``history``, default ``queue``: how the person answers this sender, their
+    own posts in the thread, known before the message), that the line is on their replies to
+    write (``OWED``), and their memory (``autopilot.person_memory``)."""
     from . import autopilot as apm, autopilot_engine as eng, autopilot_agent_io as io
     from .autopilot_handlers import Ctx
     import time
@@ -423,6 +436,14 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
         return [{"why": "no_assistant"}]
     if assistant is None:
         return [{"why": "draft_model_off"}]
+    # the line is on their replies to write: a reply is due (``autopilot_agent_io.reply_due``)
+    event = {**event, "owed": True}
+    habit = history if history is not None else queue
+    if habit is not None:
+        try:
+            apm._engage(habit, event, None)
+        except (sqlite3.Error, AttributeError, TypeError, ValueError):
+            pass        # no history read: the message alone, as before
     day = (now or _now()).date()
     seconds = float((registry.get("limits") or {}).get("handler_seconds") or 60)
     prepared = eng._prepare(st, spec, event, day, domains, seconds)
@@ -434,6 +455,7 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     sent_to = {str(a).lower() for a in [*(event.get("to") or ()), *(event.get("cc") or ())]}
     person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
     described, _inside = io.agent_input(event, text, material, addresses_of)
+    described += "\n" + OWED.format(person=person)
     # the person's memory and past corrections (``autopilot.person_memory``)
     described += apm.person_memory(state_dir, held if held is not None else {}, owner, mine,
                                    event, prepared.get("work") or {})

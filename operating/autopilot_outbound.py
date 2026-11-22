@@ -365,7 +365,8 @@ def held(ctx: Any, text: str, readers: Sequence[str], allowed: str,
     and thread they read), ``lines`` the party lines of the conversation, each counting for
     a reader only when every record it names is that reader's own (a thread with two outside
     parties never hands one's records to the other). Readers all ours: "" (the outbound
-    rules are for outside readers only)."""
+    rules are for outside readers only). The run's deadline passing mid-check
+    (``HandlerTimeout``): "outbound_unchecked" (held, as with no context)."""
     if ctx is None:
         return "outbound_unchecked" if any(str(r).startswith("chat:") or "@" in str(r)
                                            for r in readers) else ""
@@ -373,12 +374,18 @@ def held(ctx: Any, text: str, readers: Sequence[str], allowed: str,
         outside([r for r in readers if not str(r).startswith("chat:")], ctx.domains)
     if not out_readers or not str(text or "").strip():
         return ""
-    named = _named(ctx, text)
-    cache: dict[str, list[str]] = {}
-    for reader in out_readers:
-        why = _held_for(ctx, text, reader, allowed, lines, named, cache)
-        if why:
-            return why
+    from .autopilot_queue import HandlerTimeout
+    try:
+        named = _named(ctx, text)
+        cache: dict[str, list[str]] = {}
+        for reader in out_readers:
+            why = _held_for(ctx, text, reader, allowed, lines, named, cache)
+            if why:
+                return why
+    except HandlerTimeout:
+        # the run's deadline passed mid-check: unchecked is held, never passed (11-22: a
+        # timeout here crashed the whole line, 2 of 25 drafts lost)
+        return "outbound_unchecked"
     return ""
 
 

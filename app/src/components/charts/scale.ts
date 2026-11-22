@@ -79,6 +79,8 @@ const SPELLED: Record<string, string> = { amt: "amount", qty: "quantity", cnt: "
 
 /** A column name as a plain label: "amt_cad" -> "Amount CAD", "busiest_share_pct" -> "Busiest share %". */
 export function human(name: string): string {
+  // a series named by an amount (a pivot on a money column) reads as the amount, not raw digits
+  if (/^-?\d+\.\d+$/.test(name.trim())) return full(Number(name));
   const s = name
     .replace(/_/g, " ")
     .replace(/\b[a-z]+\b/gi, (w) => (SPELLED[w.toLowerCase()] ?? (/^(cad|usd|eur|gbp|mxn)$/i.test(w) ? w.toUpperCase() : w)))

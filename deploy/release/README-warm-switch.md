@@ -79,3 +79,28 @@ Undo: `sudo rm -r /etc/systemd/system/plx-api@.service /etc/systemd/system/plx-a
 /etc/systemd/system/plx-api.service.d/zz-stop.conf /run/plx-api && sudo systemctl daemon-reload`
 (the next restart is in place again: "plx-api@.service is not installed"). The Caddyfile's
 standby upstream is harmless with nothing on its socket.
+
+## No direct restart (restart guard, 11-22)
+
+A direct `sudo systemctl restart plx-api` (a settings change, a fix) bypassed all of the above
+and served cold: Home 33 s, Insights 32-56 s with 504s (11-22 11:30 AM ET). plx-api.service
+now refuses a direct restart or stop (`RefuseManualStop=yes`): `systemctl` answers
+"Operation refused, unit plx-api.service may be requested by dependency only". It is
+restarted or stopped only through `plx-api-cycle.target` (`PartOf=`), which plx-release
+uses (`api_restart`, `api_stop`) inside the warm switch; so a settings change is
+`plx-release restart`. Starting it stays manual (`systemctl start plx-api`), a crash still
+restarts it by itself, and the standby (plx-api@standby) is not guarded (plx-release stops it).
+A host without the guard (plx-api.service without `RefuseManualStop`) restarts it directly, as
+before. Install (once, with sudo):
+
+```
+R=<a checkout or release of this change>
+python3 $R/deploy/render.py --out /tmp/plx-units
+sudo install -m 644 /tmp/plx-units/plx-api.service /tmp/plx-units/plx-api-cycle.target /etc/systemd/system/
+sudo systemctl daemon-reload
+systemctl show -p RefuseManualStop,PartOf plx-api    # yes, plx-api-cycle.target
+```
+
+Undo: remove the two lines (`PartOf=`, `RefuseManualStop=`) from
+/etc/systemd/system/plx-api.service and `sudo systemctl daemon-reload`. A stop for
+maintenance: `sudo systemctl stop plx-api-cycle.target` (stops the API with it).

@@ -75,7 +75,13 @@ come back" where their answer goes: the answer is the placeholder. Put what they
 it did not ask about (a record can be behind what {person} knows now); a question put to \
 {person} about their product, plan or choice is answered only from what was stated. Any reply \
 says only what the message, the thread or the records show: no time, promise, price, name or \
-step of anyone's that nobody stated;
+step of anyone's that nobody stated. A reply carries no file: never say something is attached \
+or enclosed (a file {person} must add is a placeholder, [attach the PI]); never say a thing was \
+sent, received, signed, paid, shipped or agreed unless the message, the thread or the records \
+show it happened. An answer that is a fact only {person} knows (what someone told or confirmed \
+to them, a date they were given, the state of their own work) is their question ("What date did \
+the supplier confirm?") with the reply around it written and that piece a placeholder: never \
+guessed from a record that may be behind;
 - a change in a business system: plx.prepare_write (plx.edit_document for a document's text \
 or cells), with the record's ids as the records hold them; a message to someone other than \
 the sender (asking a colleague to do their part, a supplier, passing it on): plx.prepare_write \

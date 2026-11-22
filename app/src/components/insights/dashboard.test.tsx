@@ -16,7 +16,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { AnswerCharts } from "@/components/answer-chart";
-import { InsightsDashboard, ScheduleControl, TOP, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
+import { InsightsDashboard, cellText, ScheduleControl, TOP, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
 
 const base = { about: "Per person: mail sent.", group: "Team", saved: false, question: null, schedule: "" as const, notify: "never" as const };
 const list: InsightList = {
@@ -48,7 +48,81 @@ beforeEach(() => {
   saveInsight.mockReset().mockResolvedValue({});
 });
 
+describe("insights dashboard in one request", () => {
+  it("draws what the one request gave, asks for nothing itself, waits for a tile not yet read, and Refresh reads that tile again", async () => {
+    const feed = { team_output: { result: result("team_output") }, s7: { error: { code: "insight_not_ready", status: 503 } } };
+    const { rerender } = render(<InsightsDashboard list={list} onChanged={vi.fn()} feed={{ team_output: feed.team_output }} streaming />);
+    await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
+    expect(screen.getAllByText("Reading").length).toBe(1);   // s7 not arrived yet
+    rerender(<InsightsDashboard list={list} onChanged={vi.fn()} feed={feed} streaming={false} />);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());   // its own error, the other tile untouched
+    expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy();
+    expect(getInsight).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByText("Refresh")[0]);
+    await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true));
+  });
+});
+
+describe("insights dashboard in one request, a tile left for later", () => {
+  it("a tile the stream left for later reads itself only once it nears the view", async () => {
+    const watched: { el: Element; cb: IntersectionObserverCallback }[] = [];
+    class Seen {
+      constructor(private cb: IntersectionObserverCallback) {}
+      observe(el: Element) { watched.push({ el, cb: this.cb }); }
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return []; }
+    }
+    vi.stubGlobal("IntersectionObserver", Seen);
+    try {
+      const feed = { team_output: { later: true }, s7: { result: result("s7") } };
+      render(<InsightsDashboard list={list} onChanged={vi.fn()} feed={feed} streaming={false} />);
+      await waitFor(() => expect(screen.getByTestId("unread-team_output")).toBeTruthy());
+      expect(getInsight).not.toHaveBeenCalled();
+      // the streamed tile is drawn and watches nothing; the later one waits for the view
+      expect(watched.map((w) => w.el.id)).toEqual(["insight-team_output"]);
+      watched[0].cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
+      expect(getInsight).toHaveBeenCalledTimes(1);
+      expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("insights dashboard", () => {
+  it("reads a tile only once it nears the view, the tile opened from Home at once", async () => {
+    const watched: { el: Element; cb: IntersectionObserverCallback; margin?: string }[] = [];
+    class Seen {
+      constructor(private cb: IntersectionObserverCallback, private opts?: IntersectionObserverInit) {}
+      observe(el: Element) { watched.push({ el, cb: this.cb, margin: this.opts?.rootMargin }); }
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return []; }
+    }
+    vi.stubGlobal("IntersectionObserver", Seen);
+    window.location.hash = "#insight-s7";
+    try {
+      render(<InsightsDashboard list={list} onChanged={vi.fn()} />);
+      // the tile opened from Home reads at once; the other waits for the view, not drawn as busy
+      await waitFor(() => expect(getInsight).toHaveBeenCalledWith("s7", expect.anything(), false));
+      expect(getInsight).not.toHaveBeenCalledWith("team_output", expect.anything(), false);
+      expect(screen.getByTestId("unread-team_output")).toBeTruthy();
+      const far = watched.find((w) => w.el.id === "insight-team_output")!;
+      expect(far.margin).toBeTruthy();
+      // not yet in view: still unread
+      far.cb([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver);
+      expect(getInsight).not.toHaveBeenCalledWith("team_output", expect.anything(), false);
+      far.cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
+      expect(getInsight.mock.calls.filter((c) => c[0] === "team_output")).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+      window.location.hash = "";
+    }
+  });
+
   it("groups built-ins by their group and the reader's own under Pinned by you", () => {
     expect(grouped(list.items).map(([g]) => g)).toEqual(["Team", "Pinned by you"]);
   });
@@ -220,5 +294,24 @@ describe("insights dashboard", () => {
     expect(url.searchParams.get("q")).toBe('Tell me when usd drops under 400k (my pinned chart "Open orders by month")');
     expect(url.searchParams.get("page")).toBe("/insights#insight-s7");
     expect(setInsightSchedule).not.toHaveBeenCalled();
+  });
+});
+
+describe("cellText", () => {
+  it("says money only where the data pairs the column with its currency", () => {
+    const cols = ["amount_due", "amount_due_currency", "margin_pct", "overdue_days", "total_count", "avg_open_days", "po"];
+    const row = ["214417.98", "CAD", "12.5", "3.25", "1200.00", "4.5", "45508"];
+    const of = (c: string) => cellText(row[cols.indexOf(c)], c, row, cols);
+    expect(of("amount_due")).toBe("214,417.98 CAD");
+    expect(of("margin_pct")).toBe("12.5");
+    expect(of("overdue_days")).toBe("3.25");
+    expect(of("total_count")).toBe("1,200");
+    expect(of("avg_open_days")).toBe("4.5");
+    expect(of("po")).toBe("45508");
+    expect(cellText("28411605.52136943189612", "qty", row, cols)).toBe("28,411,605.52");
+    expect(cellText(null, "x", row, cols)).toBe("");
+  });
+  it("a currency column beside an unpaired decimal does not make it money", () => {
+    expect(cellText("9.5", "total_count", ["9.5", "CAD"], ["total_count", "currency"])).toBe("9.5");
   });
 });

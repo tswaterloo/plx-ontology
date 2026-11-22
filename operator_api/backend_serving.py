@@ -180,8 +180,57 @@ class ServingMixin:
         except FutureTimeout:
             return memo.pairs(reader.key, ids)
 
+    SUGGEST_KEPT_SECONDS = 20.0
+    SUGGEST_KEPT_MOST = 256
+
     def suggest(self, reader: Reader, q: str, limit: int, *, person: bool = False
                 ) -> m.SuggestResponse:
+        """``_suggest`` kept briefly per (reader, query, limit) for the person's own search
+        box: a repeat (the same word again, a back and forth, a Refresh) is answered from the
+        copy while the reader's access state (``_access_now``: policy fingerprint,
+        unrestricted, people exclusion, document markings) and the served inputs are exactly
+        those it was read under, confirmed before and after that read. Only a business-table
+        answer is kept (its rows are decided by the policy alone); a record-search answer
+        holds item-level (mail, Teams, file) rows whose permissions are in no state, and a
+        viewing-as session reads and keeps nothing. Never kept when the access state
+        could not be read."""
+        session = getattr(reader, "session", None)
+        if not person or reader is None or getattr(session, "view_as", False) \
+                or not callable(getattr(self, "_access_now", None)):
+            return self._suggest(reader, q, limit, person=person)
+        started = time.perf_counter()
+        key = (reader.key, getattr(reader, "mode", None), q, limit)
+        before = self._suggest_access(reader)
+        inputs = self.inputs_stamp()
+        now = time.monotonic()
+        with self._lock:
+            kept = self.__dict__.setdefault("_suggest_kept", {})
+            hit = kept.get(key)
+        if hit is not None and before is not None and inputs is not None \
+                and now - hit[0] < self.SUGGEST_KEPT_SECONDS and hit[1] == before \
+                and hit[2] == inputs:
+            return hit[3].model_copy(update={
+                "took_ms": int((time.perf_counter() - started) * 1000)})
+        out = self._suggest(reader, q, limit, person=True)
+        if before is not None and inputs is not None and out.source == "business" \
+                and self._suggest_access(reader) == before and self.inputs_stamp() == inputs:
+            with self._lock:
+                kept = self.__dict__.setdefault("_suggest_kept", {})
+                kept[key] = (now, before, inputs, out)
+                if len(kept) > self.SUGGEST_KEPT_MOST:
+                    for k in sorted(kept, key=lambda k: kept[k][0])[:len(kept) // 4]:
+                        kept.pop(k, None)
+        return out
+
+    def _suggest_access(self, reader: Reader) -> Optional[tuple]:
+        """``_access_now`` with the PLX-issued documents' digest (a search answer's rows are
+        not named one by one: a new PLX-issued document reads it again); None: unreadable."""
+        from .backend_pages import own_issued_stamp
+        state, own = self._access_now(reader), own_issued_stamp()
+        return None if state is None or own is None else (state, own)
+
+    def _suggest(self, reader: Reader, q: str, limit: int, *, person: bool = False
+                 ) -> m.SuggestResponse:
         """``person``: the person's own search box (``/api/suggest``), whose answer only
         that person reads. Only then the business-table search (``page_sql.search``, the
         person-only views: Freightcom rows a person may see). Every other caller (an

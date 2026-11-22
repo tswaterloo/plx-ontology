@@ -4246,6 +4246,13 @@ def apply_fetched_pass(store: MailCaptureStore, reader: Any, actor: Actor,
         return {"error": "people_exclusion_unavailable", **counts}
     held = {str(m).lower() for m in withheld}
     deadline = monotonic() + budget_seconds
+    # The GPU OCR apply, when switched on, goes first with its own share of the budget: last
+    # in line it never ran (11-22: the child is drained for mail before the walks end, so
+    # 36,989 readings sat unapplied for five days). Done, it costs one count per run.
+    if os.environ.get(GPU_OCR_APPLY_ENV) == "1":
+        counts["gpu_ocr"] = apply_gpu_ocr_pass(
+            store, fetch_dir, held, deadline=min(deadline, monotonic() + budget_seconds
+                                                 * GPU_OCR_SHARE), monotonic=monotonic)
     # The stored plan is walked after this one: it keeps at least half the budget, so a
     # long fetched list never starves it (the stored plan went unread a whole day, 11-15).
     walk_deadline = deadline
@@ -4336,13 +4343,12 @@ def apply_fetched_pass(store: MailCaptureStore, reader: Any, actor: Actor,
     if readings is not None and monotonic() < deadline:
         counts["recapped"] = apply_recapped_pass(store, readings, held, deadline=deadline,
                                                  monotonic=monotonic)
-    if monotonic() < deadline and os.environ.get(GPU_OCR_APPLY_ENV) == "1":
-        counts["gpu_ocr"] = apply_gpu_ocr_pass(store, fetch_dir, held, deadline=deadline,
-                                               monotonic=monotonic)
     return counts
 
 
 GPU_OCR_APPLY_ENV = "PLX_GPU_OCR_APPLY"
+# Its share of the backlog apply's budget (it runs first; the walks get the rest).
+GPU_OCR_SHARE = 1 / 3
 # The event each filled attachment gets besides ``text_reextracted``: which engine read
 # the new text version (``image_ocr_gpu.engine_key``; the key's model, revision, prompt and
 # bounds are in ``image-ocr-gpu.sqlite``'s readings and the worker's hello).

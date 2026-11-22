@@ -72,6 +72,25 @@ class ProposalPath(ta.Fixture):
                 self.assertEqual(self.held([send([ta.OUTSIDE], body)])[1],
                                  ["another_partys_record"])
 
+    def test_a_check_past_the_runs_deadline_holds_the_text_never_passes_or_crashes(self):
+        from operating import autopilot_outbound as ob
+        # a reply to an outside reader, its check started after the run's deadline: held as
+        # unchecked (11-22: the timeout crashed the line and lost its draft)
+        late = ah.Ctx(self.ctx.st, ta.NOW.date(), time.monotonic() - 1, DOMAINS)
+        self.assertEqual(ob.held(late, "SO-4410 ships Friday.", [ta.OUTSIDE], "Where is it?"),
+                         "outbound_unchecked")
+        # the same reply in time is checked as before; readers all ours need no check
+        self.assertEqual(ob.held(self.ctx, "SO-9931 ships first.", [ta.OUTSIDE], "Where?"),
+                         "another_partys_record")
+        self.assertEqual(ob.held(late, "SO-9931 ships first.", [ta.OURS], "Where?"), "")
+        # a proposed mail checked past the deadline is held back, never sent
+        kept, why = io.outbound_proposals([send([ta.OUTSIDE], "Ships Friday.")],
+                                          {"sender": ta.OUTSIDE, "to": [ta.OURS], "cc": [],
+                                           "subject": "Order", "channel": "mail"},
+                                          {"me": [ta.OURS]}, "me", "Where is my order?", [],
+                                          lambda: late)
+        self.assertEqual((kept, [b["why"] for b in why]), ([], ["outbound_unchecked"]))
+
     def test_their_own_numbers_pass_in_any_written_form(self):
         account = ["Order SO-4410: open, ships Friday."]
         for body in ("SO 4410 ships Friday.", "Your order 4410 ships Friday.",

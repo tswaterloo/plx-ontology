@@ -137,7 +137,7 @@ export default function OpsPage() {
       <Toolbar heading title="Reliability" />
       <SectionTabs section="admin" />
       <PageIntro path="/ops" />
-      <div className="mx-auto w-full max-w-5xl space-y-5 overflow-y-auto px-4 py-4 sm:px-6" data-testid="ops-page">
+      <div className="w-full max-w-5xl space-y-5 overflow-y-auto px-4 py-4 sm:px-6" data-testid="ops-page">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : !alarms ? (

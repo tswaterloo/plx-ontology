@@ -57,6 +57,15 @@ class ScreensMixin:
         return self._serving(reader, ("autopilot",), lambda: AutopilotAreaMixin.autopilot_area(
             self, reader), self._screen_inputs(files=(self._grants_file,), autopilot=True))
 
+    def autopilot_prepared_list(self, reader: Reader) -> m.AutopilotDrafts:
+        """Home's prepared-for-you list, kept per reader like the autopilot area (its
+        queue's and write state's files and settings are its inputs: a decision, a hand-off
+        or a "never" is read now) and read ahead (``SCREENS_AHEAD``): read cold it held
+        Home's first load 32 s after a restart (11-22, warm 2.5 s)."""
+        return self._serving(reader, ("autopilot_drafts",), lambda: AutopilotAreaMixin.
+                             autopilot_prepared_list(self, reader),
+                             self._screen_inputs(files=(self._grants_file,), autopilot=True))
+
     def workload(self, reader: Reader) -> m.Workload:
         return self._serving(reader, ("workload",), lambda: BriefsMixin.workload(
             self, reader), self._screen_inputs(files=(self._grants_file,)))
@@ -491,6 +500,30 @@ class ScreensMixin:
             try:
                 self.briefing_items(reader, kind, offset=0, limit=HOME_GROUP_PAGE_ROWS,
                                     since_visit=False)
+                read += 1
+            except Exception:  # noqa: BLE001 - read when Home opens it
+                continue
+        return read
+
+    def _home_pages_ahead(self, reader: Reader, later: bool = False) -> int:
+        """Read ahead (the warm-up) the quick page of each record Home opens first
+        (``home_first_records``: the first item of each kind it lists), kept per reader on
+        disk where the API's record request finds it: Home's detail pane opened its first
+        row (a batch on quality hold) cold after every delta cycle, 1.5 s "reading" then a
+        second request (11-22 walk: Home 4.4 s, 6.5-14 s at 11:20 AM). Not for a directory
+        employee with no session (``later``). How many were read."""
+        from .backend import object_page
+        from .briefing_view import home_first_records
+        if later:
+            return 0
+        got = self.briefing(reader, since_visit=False)
+        if getattr(got, "status", None) != "read":
+            return 0
+        read = 0
+        for otype, oid in home_first_records(got):
+            try:
+                self.reads.run(reader, lambda view, t=otype, o=oid: object_page(
+                    self, view, t, o, quick=True), timeout=READ_TIMEOUT_SECONDS)
                 read += 1
             except Exception:  # noqa: BLE001 - read when Home opens it
                 continue

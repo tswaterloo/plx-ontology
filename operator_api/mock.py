@@ -1003,7 +1003,7 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         from .errors import UserFacing
         raise UserFacing("item_not_found", "That item isn't in your briefing.", 404)
 
-    def labour(self, reader: Reader) -> m.LabourPage:
+    def labour(self, reader: Reader, weeks: Optional[int] = None) -> m.LabourPage:
         """The demo world holds no time sheets and grants no labour reader."""
         return m.LabourPage(state="not_granted", note="Labour figures need the hr or "
                             "ops-management grant.", weeks=[], trend=[], alerts=[])
