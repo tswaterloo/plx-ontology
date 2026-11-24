@@ -21,6 +21,14 @@ class NameFinderTests(unittest.TestCase):
         self.assertIn("COALESCE(CAST(blocked AS text), '(none)')", sql)   # as the view writes it
         self.assertNotIn("CASE WHEN blocked", sql)   # never read as a boolean
 
+    def test_a_kind_split_over_status_rows_carries_its_whole_count_on_every_row(self):
+        # h12 stated "8 accounts" where 9 matched: 8 blocked-(none) plus 1 blocked-All were two
+        # rows and the first row's n was read as the count of the kind
+        sql = nf.statement("Phillip Adam")
+        self.assertEqual(sql.count(") AS kind_total"), len(nf.ENTITIES))   # one per kind
+        self.assertEqual(sql.count("sum(count(*)) OVER ()"), len(nf.ENTITIES))
+        check(sql, schemas=frozenset(), allowed_schema="")
+
     def test_no_word_or_unreadable_input_is_refused_and_a_quote_cannot_enter(self):
         for bad in ("", "   ", "%%", None, 5):
             with self.assertRaises(nf.NamesInputError):
@@ -48,4 +56,5 @@ class ScopeTests(unittest.TestCase):
         got = nf.scope("Croda", "reads a, b; where x AND y; grouped by 2, 3, 4; 5 of 5 rows shown")
         self.assertIn("5 of 5 rows shown", got)
         self.assertIn("supplier (suppliers", got)
+        self.assertIn("kind_total", got)
         self.assertNotIn("where", got)

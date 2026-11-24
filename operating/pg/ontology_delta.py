@@ -1152,6 +1152,8 @@ def _diff_text(conn: sqlite3.Connection, cur: Any, ids: str, dsn: str | None = N
     report["kept.text_fields"] = cur.fetchone()[0]
     gone = (f"(SELECT field_id FROM ontology.text_fields p WHERE p.object_id IN {_OWNED_PG} "
             "AND NOT EXISTS (SELECT 1 FROM diff_tmatch m WHERE m.field_id = p.field_id))")
+    cur.execute(f"SELECT version_handle FROM ontology.text_fields WHERE field_id IN {gone}")
+    touched = [r[0] for r in cur.fetchall()]
     for table, where in (
             ("chunk_words", "chunk_id IN (SELECT chunk_id FROM ontology.text_chunks WHERE "
                             f"field_id IN {gone})"),
@@ -1174,6 +1176,11 @@ def _diff_text(conn: sqlite3.Connection, cur: Any, ids: str, dsn: str | None = N
     report["copied.chunk_words"] = _copy(
         cur, "chunk_words", ("chunk_id", "words"),
         chunk_word_rows((n, r[2]) for n, r in zip(numbers, rows)))
+    # a Teams message whose text field was removed, or came back with other markings or text,
+    # is read again from the fields as they are now (same transaction): no stale ``said``
+    from operating.pg import teams_text
+    teams_text.apply_handles(cur, touched + [t[2] for t in new])
+    report["said_reread"] = len(touched) + len(new)
     return report
 
 

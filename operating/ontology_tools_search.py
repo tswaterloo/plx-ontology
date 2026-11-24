@@ -210,7 +210,7 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
     docs = [] if wanted.get("participant") and comms else [
         x for x in sources if x not in comms]
     if isinstance(cursor, str):
-        comms, docs, records = ((comms, [], False) if cursor.startswith("c1:") else
+        comms, docs, records = ((comms, [], False) if cursor.startswith(("c1:", "a1:")) else
                                 ([], [], records) if cursor.startswith("r1:") else
                                 ([], docs, False))
     if not (comms or docs or records):
@@ -363,10 +363,13 @@ def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
             "next_cursor": cut[0].get("next_cursor") if cut else None}}
     # every cut list's own cursor, with the sources it continues: a search whose legs are
     # each cut is read to the end leg by leg (the single ``next_cursor`` is the first's)
-    more = [{"sources": list((r.get("searched") or {}).get("sources") or ()),
-             "cursor": (r.get("completeness") or {}).get("next_cursor")}
-            for r in results if (r.get("completeness") or {}).get("truncated")
-            and (r.get("completeness") or {}).get("next_cursor")]
+    # (a leg that already lists several continuations, as the comms leg does for its
+    # attachment-only mail, hands them on as they are)
+    more = [c for r in results if (r.get("completeness") or {}).get("truncated")
+            for c in ((r.get("completeness") or {}).get("continue") or [
+                {"sources": list((r.get("searched") or {}).get("sources") or ()),
+                 "cursor": (r.get("completeness") or {}).get("next_cursor")}])
+            if c.get("cursor")]
     if len(more) > 1:
         out["completeness"]["continue"] = more
     if cut and None not in each:

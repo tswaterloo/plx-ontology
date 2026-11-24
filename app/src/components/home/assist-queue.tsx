@@ -38,7 +38,9 @@ let inFlight: Promise<DraftList> | null = null;
 function readDrafts(round: number, allAges = false): Promise<DraftList> {
   if (round > 0 || allAges) return getAutopilotDrafts(undefined, allAges);
   if (!inFlight) {
-    const read = getAutopilotDrafts();
+    // Home's first read of the list is a read-ahead (W6): the rest of Home is complete and usable
+    // without it (it can take seconds), and the list says it is being prepared until it arrives
+    const read = getAutopilotDrafts(undefined, false, true);
     inFlight = read;
     const done = () => {
       if (inFlight === read) inFlight = null;
@@ -95,7 +97,9 @@ export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?:
     if (linked && items) document.getElementById(`prepared-${linked}`)?.scrollIntoView({ block: "center" });
   }, [linked, items]);
   if (error) return <div className="px-5 pt-3"><LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={reload} /></div>;
-  if (!items) return null;            // the rest of Home shows meanwhile; the queue joins it when read
+  // the rest of Home shows meanwhile; the queue joins it when read (a quiet line says so, only
+  // where the queue has a section of its own)
+  if (!items) return kind || only ? null : <p className="px-5 pt-3 text-[12px] text-muted" data-testid="assist-queue-loading" aria-live="polite">Your list is being prepared.</p>;
   if (kind) {
     const mine = items.filter((i) => i.kind === "alert" && i.alert_kind === kind);
     if (mine.length === 0) return null;

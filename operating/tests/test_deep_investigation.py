@@ -919,9 +919,9 @@ class HostCallLimits(unittest.TestCase):
     def test_limits_are_off_unless_the_session_turns_them_on(self):
         self.assertIsNone(call_limits.limit_for("plx.find", {}))
         self.assertIsNone(call_limits.limit_for("plx.case_get", {call_limits.LIMITS_ENV: "on"}))
-        self.assertEqual(call_limits.limit_for("plx.unknown_tool",
-                                               {call_limits.LIMITS_ENV: "on"}),
-                         call_limits.DEFAULT_LIMIT)
+        # a tool with no listed limit has none (owner 11-23: no default cut-off)
+        self.assertIsNone(call_limits.limit_for("plx.unknown_tool",
+                                                {call_limits.LIMITS_ENV: "on"}))
         # an unreadable deadline leaves the tool's own limit
         self.assertEqual(call_limits.limit_for("plx.read", {
             call_limits.LIMITS_ENV: "on", call_limits.DEADLINE_ENV: "soon"}),

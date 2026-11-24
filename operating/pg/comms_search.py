@@ -297,8 +297,12 @@ def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
                 words_from="ontology.chunk_words w")[0]
         dates = "".join(f" AND e.{when} {op} %({name})s" for on, op, name in (
             (since, ">=", "since"), (until, "<", "until")) if on)
+        # the match's handles read once (an init plan), then the reader's view by its handle
+        # index: ``handle IN (<union>)`` let the planner scan the reader's whole view with the
+        # access check on every row (live 11-24: 233 s and more for one word over 3 months of
+        # mail, 15 minutes of a search that held a page of 25)
         parts.append(f"(SELECT count(*) FROM {guarded}.{view} e WHERE e.{when} IS NOT NULL"
-                     f"{dates} AND e.handle IN ({header} UNION {text}))")
+                     f"{dates} AND e.handle = ANY(ARRAY({header} UNION {text})))")
     return ("SELECT " + " + ".join(parts)) if parts else ""
 
 
@@ -481,51 +485,71 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
 
 # a full reader's first page with query words also lists the mail whose attachment's own
 # text holds every word (``attachment_sql``): a common word ("invoice payment") walks the
-# attachments of the reader's newest this many mails with any (live: 0.2 s; 11-19 under
-# load ~24 s, so it runs within ``ATTACH_MS``), a rarer one
-# (``walk_rows`` 1) reads the word index's attachment matches at once ("QuikPAK orders
-# appearing": 0.06 s; its walk of 4,000 mails took 2.2 s and found none). Reading every
-# match of a common word took 17.8 s.
-ATTACH_WALK = 4000
-# a rare word's attachment matches are read as at most this many mails (their newest
-# ingest first), then those mails through the reader's view by handle: joined whole, the
-# planner scanned the reader's 300k mails (live 11-20: past 25 s; by handle 0.07 s)
-ATTACH_MAILS = 2000
+# attachments of the reader's mails newest first, ``ATTACH_BATCH`` mails at a time, until
+# ``k`` are found or every mail in the dates was read (no cap: the batch is only how much
+# one statement reads; 4,000 mails took 0.2 s live, 11-19 under load ~24 s), a rarer one
+# (``walk_rows`` 1) reads the word index's whole attachment match at once ("QuikPAK orders
+# appearing": 0.06 s), then those mails through the reader's view by handle: joined whole,
+# the planner scanned the reader's 300k mails (live 11-20: past 25 s; by handle 0.07 s).
+ATTACH_BATCH = 4000
 
 
 def attachment_mails_sql() -> str:
-    """The mails (handles) whose unmarked attachment text holds every word of ``q``, at
-    most ``mails``, newest ingest first: ``attachment_sql``'s ``mails`` for a rare word."""
+    """The mails (handles) whose unmarked attachment text holds every word of ``q``, all
+    of them: ``attachment_sql``'s ``mails`` for a rare word."""
     return ("SELECT split_part(fd.citation, '#', 1) AS mail FROM ontology.chunk_words w "
             "JOIN ontology.text_chunks c ON c.chunk_id = w.chunk_id JOIN "
             "ontology.text_fields fd ON fd.field_id = c.field_id WHERE w.words @@ "
             "%(q)s::tsquery AND fd.document_kind = 'attachment' AND fd.markings = '[]' "
-            "GROUP BY 1 ORDER BY max(fd.field_id) DESC LIMIT %(mails)s")
+            "GROUP BY 1")
+
+
+def _attachment_where(party_kind: str | None, since: bool, until: bool) -> str:
+    conds = ["e.attachments > 0", "e.received_at IS NOT NULL"]
+    if party_kind is not None:
+        conds.append(_PARTY[party_kind])
+    conds += (["e.received_at >= %(since)s"] if since else []) + (
+        ["e.received_at < %(until)s"] if until else [])
+    return " AND ".join(conds)
+
+
+def attachment_floor_sql(*, guarded: str, party_kind: str | None, since: bool, until: bool,
+                         after: bool) -> str:
+    """The ``ATTACH_BATCH``-th mail (received_at, handle, and how many were read) of the
+    walk below ``after``'s cursor (c_at, c_h): the oldest mail of one batch; no row when
+    none is left, fewer than ``walk`` read: the batch is the last."""
+    where = _attachment_where(party_kind, since, until)
+    if after:
+        where += " AND (e.received_at, e.handle) < (%(c_at)s, %(c_h)s)"
+    return ("SELECT x.at, x.handle, count(*) OVER () AS n FROM (SELECT e.received_at AS at, "
+            f"e.handle FROM {guarded}.emails e WHERE {where} ORDER BY e.received_at DESC, "
+            "e.handle DESC LIMIT %(walk)s) x ORDER BY x.at, x.handle LIMIT 1")
 
 
 def attachment_sql(*, guarded: str, party_kind: str | None, since: bool, until: bool,
-                   common: bool) -> str:
+                   common: bool, after: bool = False, floor: bool = False) -> str:
     """The reader's mail (``guarded``.emails, the same door as ``search_sql``) whose
     attachment text holds every query word (parameters q, party, since, until, k, walk),
     newest first, at most ``k``, one row per mail: ``search_sql``'s columns with the first
     matching chunk of an unmarked attachment field of that mail version, then the
     attachment's version handle and object id (for ``attachment_check_sql``). An
     attachment's citation starts with its mail's handle and ``#attachment=``; ``common``:
-    the walk (``ATTACH_WALK``), else the word index's attachment match of the mails
-    ``mails`` (``attachment_mails_sql``)."""
-    conds = ["e.attachments > 0", "e.received_at IS NOT NULL"]
-    if party_kind is not None:
-        conds.append(_PARTY[party_kind])
-    conds += (["e.received_at >= %(since)s"] if since else []) + (
-        ["e.received_at < %(until)s"] if until else [])
-    where = " AND ".join(conds)
+    the walk of one batch (the mails below the cursor ``after`` (c_at, c_h) down to the
+    ``floor`` (f_at, f_h): ``attachment_floor_sql``; the caller reads batch after batch),
+    else the word index's attachment match of the mails ``mails``
+    (``attachment_mails_sql``)."""
+    where = _attachment_where(party_kind, since, until)
     piece = ("c.body, c.start, fd.sender_class, fd.version_handle AS attachment, "
              "fd.object_id AS attachment_id")
     owned = ("starts_with(fd.citation, {h} || '#attachment=') AND fd.document_kind = "
              "'attachment' AND fd.markings = '[]'")
     if common:
+        if after:
+            where += " AND (e.received_at, e.handle) < (%(c_at)s, %(c_h)s)"
+        if floor:
+            where += " AND (e.received_at, e.handle) >= (%(f_at)s, %(f_h)s)"
         return (f"SELECT m.*, a.* FROM (SELECT {_cols('emails')} FROM {guarded}.emails e "
-                f"WHERE {where} ORDER BY e.received_at DESC, e.handle DESC LIMIT %(walk)s) m "
+                f"WHERE {where} ORDER BY e.received_at DESC, e.handle DESC) m "
                 f"CROSS JOIN LATERAL (SELECT {piece} FROM ontology.text_fields fd JOIN "
                 "ontology.text_chunks c ON c.field_id = fd.field_id WHERE fd.citation >= "
                 "m.handle || '#attachment=' AND fd.citation < m.handle || '#attachment>' AND "
@@ -543,7 +567,9 @@ def attachment_sql(*, guarded: str, party_kind: str | None, since: bool, until: 
             f"SELECT DISTINCT ON (e.received_at, e.handle) {_cols('emails')}, "
             f"{piece.replace('c.', 'a.').replace('fd.', 'a.')} FROM a JOIN {guarded}.emails e "
             "ON e.handle = a.mail AND " + owned.format(h="e.handle").replace("fd.", "a.")
-            + f" WHERE e.handle = ANY(%(mails)s::text[]) AND {where} ORDER BY "
+            + f" WHERE e.handle = ANY(%(mails)s::text[]) AND {where}"
+            + (" AND (e.received_at, e.handle) < (%(c_at)s, %(c_h)s)" if after else "")
+            + " ORDER BY "
             "e.received_at DESC, e.handle DESC, a.citation, "
             "a.start LIMIT %(k)s")
 
@@ -825,6 +851,29 @@ def hits(rows: Sequence[Sequence[Any]], *, words: Sequence[str], party_: Party |
     return out
 
 
+def attach_cursor(hit_row: Optional[Sequence[Any]]) -> str:
+    """The cursor after ``hit_row`` in the stream of mail holding the words only in an
+    attachment's text: ``a1:<date>|<handle>`` (the next page lists the ones older); None:
+    the stream's start (past every date)."""
+    if hit_row is None:
+        return "a1:9999-12-31T00:00:00+00:00|~"
+    return "a1:" + hit_row[4].astimezone(dt.timezone.utc).isoformat() + "|" + hit_row[1]
+
+
+def read_attach_cursor(text: str) -> tuple[dt.datetime, str]:
+    """(date, handle) of an ``attach_cursor``; anything else is refused."""
+    found = re.fullmatch(r"a1:([0-9T:.+-]+)\|(.+)", text) if isinstance(text, str) else None
+    if found is None:
+        raise SearchInputError("not a cursor of this search")
+    try:
+        at = dt.datetime.fromisoformat(found.group(1))
+    except ValueError:
+        raise SearchInputError("not a cursor of this search") from None
+    if at.tzinfo is None:
+        raise SearchInputError("not a cursor of this search")
+    return at, found.group(2)
+
+
 # rows a cursor may skip past its returned row (the file rows the item gate refused):
 # past this many a search says it stopped (incomplete), never pages without end
 MAX_SKIP = 2000
@@ -1036,25 +1085,19 @@ def depth_said(query: str | None, attach: Mapping[str, Any], *, later: bool,
                      + " ".join(rest))
     if query and attachments:
         if later:
-            parts.append("this later page lists the word matches only: matches in "
-                         "attachments' text and close in meaning are on the first page")
+            parts.append("this later page lists the word matches only: mail holding the "
+                         "words only in an attachment's text continues by its own cursor "
+                         "(completeness.continue); matches close in meaning are on the "
+                         "first page")
         elif attach.get("unread"):
             parts.append("attachments' text was not searched this time (that pass ran out "
                          "of its time): a mail holding the words only in an attachment "
                          "may be missing")
-        elif attach.get("common"):
-            parts.append(f"attachments' text: only the newest {ATTACH_WALK:,} mails with "
-                         "attachments in the dates were checked (a common word); set "
-                         "until to reach older ones")
-        elif attach.get("mails", 0) >= ATTACH_MAILS:
-            parts.append(f"attachments' text: only the {ATTACH_MAILS:,} most recently "
-                         "captured mails whose attachments hold the words were checked; "
-                         "set since/until to reach others")
     return "; ".join(parts)[:600] or None
 
 
 __all__ = ["Party", "SEARCH_ONLY", "depth_said", "SearchInputError", "VIEWS", "assemble", "stem_tsquery",
-           "attachment_blocked_sql", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
+           "attachment_blocked_sql", "attach_cursor", "read_attach_cursor", "attachment_floor_sql", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
            "meaning_sql", "tsquery_any", "words_held",
            "hits", "instant", "open_sql", "opened", "party", "present", "read_cursor",
            "search_sql", "searched", "snippet", "terms", "tsquery"]

@@ -119,5 +119,29 @@ class PageItems(unittest.TestCase):
         self.assertEqual(items, lin)
 
 
+    def test_ensure_grants_the_raw_table_to_plx_eval_alone_every_time(self):
+        """O3: 0064 revokes the roles and ``ensure`` replays it; the plan and history runners read
+        ``page_items`` itself as plx_eval, so ``ensure`` grants it again. plx_api never reads the
+        raw table (it holds rows of every access class): it stays without SELECT."""
+        def can(c, role):
+            return c.execute("SELECT has_table_privilege(%s, %s, 'SELECT')",
+                             (role, f"{S}.page_items")).fetchone()[0]
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            for role in ("plx_api", "plx_eval"):
+                c.execute(f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
+                          f"'{role}') THEN CREATE ROLE {role} NOLOGIN; END IF; END $$")
+            for _ in range(2):          # a rebuilt store, then one ensured again
+                pi.ensure(c, S)
+                self.assertTrue(can(c, "plx_eval"))
+                self.assertFalse(can(c, "plx_api"))
+                self.assertFalse(c.execute("SELECT has_table_privilege('plx_eval', %s, 'INSERT')",
+                                           (f"{S}.page_items",)).fetchone()[0])
+            c.execute(f"REVOKE ALL ON {S}.page_items FROM plx_eval")
+            c.execute(f"GRANT SELECT ON {S}.page_items TO plx_api")   # the 12:35 AM live state
+            pi.ensure(c, S)             # repairs it: runners read, the API's raw read is gone
+            self.assertTrue(can(c, "plx_eval"))
+            self.assertFalse(can(c, "plx_api"))
+
+
 if __name__ == "__main__":
     unittest.main()

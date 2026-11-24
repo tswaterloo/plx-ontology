@@ -474,6 +474,8 @@ def _apply_text_marks(cur: Any, layer: Path, spec: Mapping[str, Any],
                 copy.write_row(row)
         cur.execute("UPDATE ontology.text_fields f SET markings = r.markings FROM "
                     "text_marked r WHERE r.field_id = f.field_id")
+        from operating.pg import teams_text
+        teams_text.apply_fields(cur, [f for f, _m in changed])
     out["text_marks.documents"] = len(handles)
     out["text_marks.fields"] = len(held)
     out["remarked.text_fields"] = len(changed)
@@ -701,16 +703,7 @@ def _text_index(cur: Any, record: Mapping[str, Any], report: dict[str, Any]) -> 
                     (sorted(texted),))
         report["text_index.reprojected"] = reproject(
             cur, sorted(r[0] for r in cur.fetchall()), record["id"])
-    cur.execute("CREATE TEMP TABLE gone_fields ON COMMIT DROP AS SELECT f.field_id FROM "
-                "ontology.text_fields f JOIN prior p ON p.object_id = f.object_id WHERE NOT "
-                "EXISTS (SELECT 1 FROM ontology.object_versions v WHERE v.object_id = "
-                "f.object_id AND v.l1_handle = f.version_handle)")
-    cur.execute("DELETE FROM ontology.text_chunks WHERE field_id IN "
-                "(SELECT field_id FROM gone_fields)")
-    report["deleted.text_chunks"] = cur.rowcount
-    cur.execute("DELETE FROM ontology.text_fields WHERE field_id IN "
-                "(SELECT field_id FROM gone_fields)")
-    report["deleted.text_fields"] = cur.rowcount
+    _drop_gone_fields(cur, report)
     cur.execute("SELECT f.field_id, o.binding_id, f.field_path, f.markings, "
                 "array_agg(DISTINCT v.markings) FROM ontology.text_fields f "
                 "JOIN prior p ON p.object_id = f.object_id "
@@ -746,7 +739,30 @@ def _text_index(cur: Any, record: Mapping[str, Any], report: dict[str, Any]) -> 
                 copy.write_row(row)
         cur.execute("UPDATE ontology.text_fields f SET markings = r.markings FROM remarked r "
                     "WHERE r.field_id = f.field_id")
+        from operating.pg import teams_text
+        teams_text.apply_fields(cur, [f for f, _m in changed])
     report["remarked.text_fields"] = len(changed)
+
+
+def _drop_gone_fields(cur: Any, report: dict[str, Any]) -> None:
+    """Delete the text fields (and chunks) of the ``prior`` objects whose version the store
+    no longer holds, and clear the stored ``said`` of the Teams messages they belonged to."""
+    cur.execute("CREATE TEMP TABLE gone_fields ON COMMIT DROP AS SELECT f.field_id FROM "
+                "ontology.text_fields f JOIN prior p ON p.object_id = f.object_id WHERE NOT "
+                "EXISTS (SELECT 1 FROM ontology.object_versions v WHERE v.object_id = "
+                "f.object_id AND v.l1_handle = f.version_handle)")
+    cur.execute("SELECT version_handle FROM ontology.text_fields WHERE field_id IN "
+                "(SELECT field_id FROM gone_fields)")
+    gone_handles = [r[0] for r in cur.fetchall()]
+    cur.execute("DELETE FROM ontology.text_chunks WHERE field_id IN "
+                "(SELECT field_id FROM gone_fields)")
+    report["deleted.text_chunks"] = cur.rowcount
+    cur.execute("DELETE FROM ontology.text_fields WHERE field_id IN "
+                "(SELECT field_id FROM gone_fields)")
+    report["deleted.text_fields"] = cur.rowcount
+    # a Teams message whose document text is gone keeps no stored ``said``
+    from operating.pg import teams_text
+    teams_text.apply_handles(cur, gone_handles)
 
 
 def _search(cur: Any, record: Mapping[str, Any], report: dict[str, Any]) -> None:

@@ -593,11 +593,17 @@ class SqlTool:
             moment = _ceiling()
             until = cs.instant(args.get("until") if moment is None else
                                read_ceiling.clamp_until(args.get("until"), moment), end=True)
-            cur = cs.read_cursor(args["cursor"]) if args.get("cursor") else None
+            by_attachment = str(args.get("cursor") or "").startswith("a1:")
+            attach_at = cs.read_attach_cursor(args["cursor"]) if by_attachment else None
+            cur = (cs.read_cursor(args["cursor"]) if args.get("cursor") and not by_attachment
+                   else None)
         except cs.SearchInputError as exc:
             raise ToolError("invalid_input", str(exc)) from None
         wanted = set(args.get("sources") or [s for _, _, s in cs.VIEWS.values()])
         files = "sharepoint" in wanted and self._files_reader(actor)
+        if attach_at is not None:
+            return self._attachment_page(conn, settings, guarded, actor, args, words, q, since,
+                                         until, limit, attach_at, wanted)
         settings = {**settings, bc.FILES_SETTING: bc.FILES_SEARCH if files else ""}
         # room for the file rows the item gate may refuse, and the refused rows the
         # cursor skips (read again past its returned row, refused again)
@@ -746,6 +752,7 @@ class SqlTool:
                     "match did not list, each with its match"))))
         # a participant's search: the pass needs the party ``search_rows`` resolved, so it
         # runs after the word search (as before the parallel pass), bound to that party
+        attach_next = None   # the cursor of the attachment-only mail past this page's
         after = (attaching is None and who is not None and words and cur is None
                  and "graph_mail" in wanted and self._files_reader(actor))
         if (attaching is not None or after) and "emails" in views:
@@ -763,15 +770,21 @@ class SqlTool:
                     attached = []
                     attach_depth["unread"] = True
             seen = {h["citation"] for h in documents}
-            attached = [r for r in attached if r[1] not in seen][
-                :max(0, min(ATTACH_EXTRA, HITS_MAX - len(documents)))]
+            fresh = [r for r in attached if r[1] not in seen]
+            attached = fresh[:max(0, min(ATTACH_EXTRA, HITS_MAX - len(documents)))]
+            # more follows what is shown (the pass held more, or this page had no room for
+            # all it found): its own cursor continues after the last one shown
+            if attach_depth.get("more") or len(fresh) > len(attached):
+                attach_next = cs.attach_cursor(attached[-1] if attached else None)
             for hit in cs.hits(attached, words=words, party_=who):
                 hit["match"] = "every word, in an attachment's text"
                 documents.append(hit)
             if attached:
                 searched["widened"] = "; ".join(filter(None, (
-                    searched.get("widened"), f"also up to {ATTACH_EXTRA} mails whose "
-                    "attachment's text holds every word, each with its match")))
+                    searched.get("widened"), f"also the newest {len(attached)} mails whose "
+                    "attachment's text holds every word, each with its match"
+                    + ("; the rest of those mails continue by the cursor in "
+                       "completeness.continue (sources graph_mail)" if attach_next else ""))))
         depth = cs.depth_said(args.get("query") if words else None, attach_depth,
                               later=cur is not None,
                               attachments="graph_mail" in wanted and "emails" in views
@@ -782,6 +795,17 @@ class SqlTool:
                "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more, "returned": len(rows),
                                 "next_cursor": nxt if more and nxt else None}}
+        if attach_next:
+            # mail holding the words only in an attachment's text, past the ones shown: its
+            # own stream, read on by its cursor (the word list's, when it has one, continues
+            # the word matches)
+            done = out["completeness"]
+            done["continue"] = ([{"sources": list(searched.get("sources") or ()),
+                                  "cursor": nxt}] if more and nxt else []) + [
+                {"sources": ["graph_mail"], "cursor": attach_next}]
+            done.update({"complete": False, "truncated": True,
+                         "reason": "page_cap" if more else "attachments_continue"})
+            done["next_cursor"] = done["next_cursor"] or attach_next
         if more:
             # a run of refused files longer than a cursor skips: stopped, said, no cursor
             out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
@@ -793,16 +817,54 @@ class SqlTool:
                     out["completeness"]["total"] = total
         return out
 
+    def _attachment_page(self, conn: Any, settings: Any, guarded: str, actor: Any,
+                         args: dict[str, Any], words: Sequence[str], q: Any, since: Any,
+                         until: Any, limit: int, after: Any, wanted: set) -> dict[str, Any]:
+        """A search continued by an ``a1:`` cursor (``comms_search.attach_cursor``): the next
+        ``limit`` mails, older than the cursor's, whose attachment's text holds every query
+        word and that no word page lists, with their own cursor while more follow. The
+        stream the first page opened with its newest few (every one is reached); the
+        reader, the dates and the party are the first page's, sent again."""
+        from operating.pg import comms_search as cs
+        if not (words and "graph_mail" in wanted and self._files_reader(actor)):
+            raise ToolError("invalid_input", "not a cursor of this search")
+        who = None
+        if args.get("participant"):
+            def bind(pg: Any, *_: Any) -> Any:
+                return cs.party(args["participant"], pg, bv.SCHEMA)
+            try:
+                who = self._comms_scoped(conn, settings, bind, actor)
+            except cs.SearchInputError as exc:
+                raise ToolError("invalid_input", str(exc)) from None
+        depth: dict[str, Any] = {}
+        rows = self._comms_attached(conn, settings, guarded, actor, q, who, since, until,
+                                    limit, set(), 0, depth, after=after)
+        if depth.get("unread"):
+            raise ToolError("not_ready", "attachments' text was not searched this time")
+        documents = cs.hits(rows, words=words, party_=who)
+        for hit in documents:
+            hit["match"] = "every word, in an attachment's text"
+        more = bool(depth.get("more")) and bool(rows)
+        searched = cs.searched(["emails"], args, words)
+        return {"documents": documents, "searched": searched, "gaps": [],
+                "completeness": {"complete": not more, "truncated": more,
+                                 "returned": len(rows),
+                                 "next_cursor": cs.attach_cursor(rows[-1]) if more else None,
+                                 **({"reason": "page_cap"} if more else {})}}
+
     def _comms_attached(self, conn: Any, settings: Any, guarded: str, actor: Any, q: str,
                         who: Any, since: Any, until: Any, room: int, seen: set,
-                        spare: int = 0, depth: Optional[dict] = None) -> list[Any]:
+                        spare: int = 0, depth: Optional[dict] = None,
+                        after: Any = None) -> list[Any]:
         """Up to ``room`` rows of the reader's mail (``comms_search.attachment_sql``, the
         same guarded view as the word search) whose attachment's text holds every word of
-        ``q``, newest first: none in ``seen`` or that a word page lists (``listed_sql``),
-        none whose attachment the reader is kept from (``attachment_blocked_sql``),
-        The read failing or
-        late: none (the word search answers alone). ``depth`` (when given) is told how
-        deep the pass looked (``comms_search.depth_said``)."""
+        ``q``, newest first (older than ``after``, a (date, handle), when given): none in
+        ``seen`` or that a word page lists (``listed_sql``), none whose attachment the
+        reader is kept from (``attachment_blocked_sql``). ``depth["more"]`` is set when
+        more such mail follows the rows returned (the caller hands out a cursor,
+        ``comms_search.attach_cursor``). The read failing or late: none (the word search
+        answers alone). ``depth`` (when given) is told how deep the pass looked
+        (``comms_search.depth_said``)."""
         from operating.pg import comms_search as cs
         depth = {} if depth is None else depth
         if room <= 0:
@@ -811,33 +873,70 @@ class SqlTool:
         def work(pg: Any) -> list[Any]:
             common = cs.walk_rows(pg, q) > 1
             depth["common"] = common
-            mails = None if common else [r[0] for r in pg.execute(
-                cs.attachment_mails_sql(), {"q": q, "mails": cs.ATTACH_MAILS})]
-            if mails is not None:
+            want = 2 * room + len(seen) + spare
+            kind = who.kind if who else None
+            base = {"q": q, "party": who.value if who else None, "since": since,
+                    "until": until, "walk": cs.ATTACH_BATCH}
+            mails = None
+            if not common:
+                mails = [r[0] for r in pg.execute(cs.attachment_mails_sql(), {"q": q})]
                 depth["mails"] = len(mails)
-            if mails == []:
-                return []
-            sql = cs.attachment_sql(guarded=guarded, party_kind=who.kind if who else None,
-                                    since=since is not None, until=until is not None,
-                                    common=common)
-            rows = [r for r in pg.execute(sql, {
-                "q": q, "party": who.value if who else None, "since": since,
-                "until": until, "k": 2 * room + len(seen) + spare, "walk": cs.ATTACH_WALK,
-                "mails": mails}) if r[1] not in seen]
-            if not rows:
-                return []
-            listed = {r[0] for r in pg.execute(cs.listed_sql(bv.SCHEMA), {
-                "handles": [r[1] for r in rows], "q": q})}
-            blocked = {r[0] for r in pg.execute(cs.attachment_blocked_sql(), {
-                "ids": [r[-1] for r in rows]})}
-            return [r for r in rows if r[1] not in listed and r[-1] not in blocked]
+                if not mails:
+                    return []
+            cursor = after
+            shown: list[Any] = []
+
+            def fetch(cursor: Any) -> list[Any]:
+                """Up to ``want`` mails holding the words, older than ``cursor``."""
+                one = {**base, "k": want, **(
+                    {"c_at": cursor[0], "c_h": cursor[1]} if cursor else {})}
+                if mails is not None:
+                    return pg.execute(cs.attachment_sql(
+                        guarded=guarded, party_kind=kind, since=since is not None,
+                        until=until is not None, common=False, after=cursor is not None),
+                        {**one, "mails": mails}).fetchall()
+                # the reader's mails newest first, one batch at a time, until ``want`` mails
+                # hold the words or every mail in the dates was read (no cap: ``ATTACH_BATCH``
+                # is only how much one statement reads)
+                found: list[Any] = []
+                while len(found) < want:
+                    end = pg.execute(cs.attachment_floor_sql(
+                        guarded=guarded, party_kind=kind, since=since is not None,
+                        until=until is not None, after=cursor is not None), one).fetchone()
+                    if end is None:
+                        break
+                    one.update({"f_at": end[0], "f_h": end[1], "k": want - len(found)})
+                    found += pg.execute(cs.attachment_sql(
+                        guarded=guarded, party_kind=kind, since=since is not None,
+                        until=until is not None, common=True, after=cursor is not None,
+                        floor=True), one).fetchall()
+                    if end[2] < cs.ATTACH_BATCH:
+                        break
+                    cursor = (end[0], end[1])
+                    one.update({"c_at": cursor[0], "c_h": cursor[1], "k": want})
+                return found
+            while len(shown) <= room:
+                raw = fetch(cursor)
+                rows = [r for r in raw if r[1] not in seen]
+                if rows:
+                    listed = {r[0] for r in pg.execute(cs.listed_sql(bv.SCHEMA), {
+                        "handles": [r[1] for r in rows], "q": q})}
+                    blocked = {r[0] for r in pg.execute(cs.attachment_blocked_sql(), {
+                        "ids": [r[-1] for r in rows]})}
+                    shown += [r for r in rows if r[1] not in listed and r[-1] not in blocked]
+                if len(raw) < want:
+                    break
+                cursor = (raw[-1][4], raw[-1][1])
+            if len(shown) > room:
+                depth["more"] = True
+            return shown[:room]
         try:
             rows = self._comms_scoped(conn, settings, work, actor)
         except ToolError:
             depth["unread"] = True
             return []
         depth["read"] = True
-        return rows[:room]
+        return rows
 
     def _meaning_started(self, query: str, actor: Any, wanted: set) -> Any:
         """The hybrid ranking (``operating/search``) of ``query`` over the mail, Teams

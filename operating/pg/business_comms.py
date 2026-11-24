@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from operating.pg import business_views as bv
-from operating.pg import mail_owners, mail_said, swap_lock
+from operating.pg import mail_owners, mail_said, swap_dependents, swap_lock
 from operating.pg.mail_owners import capture_db, mailbox_addresses  # noqa: F401 (callers)
 from operating.pg.build_pause import before_build, check_write
 
@@ -210,12 +210,15 @@ def build_view(v: Any, write: Any, *, as_of: dt.date, digest: str | None = None
         def swap() -> None:
             if guarded is not None:
                 guarded.drop(write, name, bv.SCHEMA)
+            leaning_now = swap_dependents.save(write, f"{bv.SCHEMA}.{name}")
+            swap_dependents.drop(write, leaning_now)
             write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{old}")
             write.execute(f"ALTER TABLE IF EXISTS {bv.SCHEMA}.{name} RENAME TO {old}")
             write.execute(f"ALTER TABLE {bv.SCHEMA}.{nxt} RENAME TO {name}")
             write.execute(f"DROP TABLE IF EXISTS {bv.SCHEMA}.{old}")
             if guarded is not None:
                 guarded.create(write, v, bv.SCHEMA)
+            swap_dependents.restore(write, leaning_now)   # views over it, as they were
             write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
                           f"'plx_api') THEN EXECUTE 'GRANT SELECT ON {bv.SCHEMA}.{name} TO "
                           "plx_api'; END IF; END $$")
@@ -267,12 +270,20 @@ _register(EMAIL, "Every captured email, one row per mailbox copy (count distinct
           "handles), what it itself says (said); open the handle for the body.", EMAIL_COLS)
 
 
+def _sender_key(e: str, key: str) -> str:
+    """SQL: ``key`` of the sender object (the JSON text ``e``, ``{display_name, id, kind}``),
+    trimmed; NULL when the sender is empty, not JSON, or lacks the key."""
+    return (f"CASE WHEN pg_input_is_valid({e}, 'json') AND left(btrim({e}), 1) = '{{' THEN "
+            f"nullif(btrim(({e})::json->>'{key}'), '') END")
+
+
 TEAMS = Spec(
     "teams_messages", ("TeamsChatMessage",),
     ("created_at", "from", "chat_id", "subject", "message_type", "reply_to_id", "deleted_at"),
     "created_at",
     f"{_ts_floor('p.created_at')}, {_day('p.created_at')}, p.\"from\", p.chat_id, "
-    "p.subject, p.message_type, p.reply_to_id",
+    f"p.subject, p.message_type, p.reply_to_id, {_sender_key('p.\"from\"', 'display_name')}, "
+    f"{_sender_key('p.\"from\"', 'kind')}, NULL::text",
     (), keep="coalesce(btrim(p.deleted_at), '') = ''", scope="teams", text_in_fields=True,
     header="subject, sender")
 TEAMS_COLS = (
@@ -283,11 +294,18 @@ TEAMS_COLS = (
     ("subject", "text", "the subject, when one was set (untrusted text)"),
     ("message_type", "text", "the kind of message (message, unknownFutureValue)"),
     ("reply_to", "text", "the id of the message it replies to, if any"),
+    ("author", "text", "the poster's name (the display name inside sender); null: a system "
+                       "event or an unnamed sender"),
+    ("author_kind", "text", "what posted it: user, application or bot (as the sender says); "
+                            "null: not stated"),
+    ("said", "text", "what the message itself says: its whole text (untrusted text); null: it "
+                     "has no text (a system event: someone joined, a call started) or its text "
+                     "carries a marking you may not read here. Search ranks messages by it; "
+                     "open the handle for the thread around it"),
 )
 _register(TEAMS, "Every captured Teams chat message you may read (deleted ones left out): "
-          "when, who posted it, the chat, and the customers, suppliers and business records "
-          "it names (their handles). The text is not here: search finds it, open the handle "
-          "to read it.", TEAMS_COLS)
+          "when, who posted it (author), what it says (said, the whole text), the chat, and "
+          "the customers, suppliers and business records it names (their handles).", TEAMS_COLS)
 
 
 def _json_field(e: str, key: str) -> str:
@@ -1241,6 +1259,9 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         write.execute(_compose(spec, stage, t, people=got["people"] is not None,
                                rows=(lo, lo + WRITE_CHUNK)))
     write.execute(f"DROP TABLE {stage}" + (f", {text}" if spec.mail else ""))
+    if spec.view == "teams_messages":   # the message's own text (one pass, chunks in batches)
+        from operating.pg import teams_text
+        got["said"] = teams_text.apply(write, t)
     if spec.view in ("emails", "teams_messages"):
         # the parties a message's addresses and words name, before the indexes (no index
         # to keep up with the rows it sets)
@@ -1367,6 +1388,11 @@ def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
         got["people"] = _classify(write, spec, view,
                                   "object_ids[1] IN (SELECT object_id FROM cm_changed)",
                                   since.get("people"))
+        if spec.view == "teams_messages":
+            from operating.pg import teams_text
+            got["said"] = teams_text.apply(
+                write, f"{bv.SCHEMA}.{view}",
+                "t.object_ids[1] IN (SELECT object_id FROM cm_changed)")
         if spec.view in ("emails", "teams_messages"):
             from operating.pg import message_parties
             stamp = links_rule(spec)
@@ -1541,6 +1567,14 @@ def views_check_own_issued(pg: Any, schema: str | None = None) -> bool:
     """Whether every comms view in the guarded and the page schema names the table."""
     from operating.pg import sql_views
     for where in (sql_views.guarded_schema(schema), sql_views.page_schema(schema)):
+        # a schema this role cannot use holds nothing it could show (the eval role has no
+        # grant on the page schema: the check then failed with a permission error, was read
+        # as "not carried", and every comms statement on a Spark carried the 10 MB list of
+        # PLX's own document ids, 3-4 s a statement, 11-24)
+        usable = pg.execute("SELECT has_schema_privilege(n.oid, 'USAGE') FROM pg_namespace n "
+                            "WHERE n.nspname = %s", (where,)).fetchone()
+        if usable is None or not usable[0]:
+            continue
         for name in SPECS:
             found = pg.execute("SELECT to_regclass(%s)", (f"{where}.{name}",)).fetchone()[0]
             if found is None:
@@ -1565,7 +1599,11 @@ def own_issued_in_views(*, now: float | None = None) -> bool:
         from operating.pg.pool import when_free
         with when_free(lambda: psycopg.connect(config.dsn(), connect_timeout=5)) as pg:
             found = views_check_own_issued(pg)
-    except Exception:  # noqa: BLE001 - not read: not carried
+    except Exception as exc:  # noqa: BLE001 - not read: not carried, said (the ids are sent)
+        import logging
+        logging.getLogger("operating.pg.business_comms").warning(json.dumps({
+            "own_issued_check_failed": type(exc).__name__,
+            "effect": "own-issued ids are sent in plx.reader_hidden with every statement"}))
         found = False
     _OWN_VIEWS[0], _OWN_VIEWS[1] = at, found
     return found

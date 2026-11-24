@@ -151,6 +151,25 @@ class RssCap(PooledGate):
         self.pool.start = counted
         return started
 
+    def test_a_call_with_no_listed_limit_runs_to_its_end_and_the_watch_does_not_fail(self):
+        # owner 11-23: a tool with no listed limit is never cut. The watch thread used to read
+        # call_limits.DEFAULT_LIMIT (removed with the limits) and died on the first open call.
+        from operating import call_limits
+        self.addCleanup(setattr, agent_session, "POOL_GRACE_SECONDS",
+                        agent_session.POOL_GRACE_SECONDS)
+        agent_session.POOL_GRACE_SECONDS = 0.5
+        self.assertNotIn("plx.slow", call_limits.LIMITS)
+        failures = []
+        previous = threading.excepthook
+        threading.excepthook = lambda args: failures.append(args.exc_value)
+        self.addCleanup(setattr, threading, "excepthook", previous)
+        answers = self.gate([self.call(1, "plx.slow")], wait_for=1)
+        self.assertEqual(failures, [])
+        result = answers[0][1]["result"]
+        self.assertFalse(result.get("isError"))
+        self.assertIn("role", json.loads(result["content"][0]["text"]))
+        self.assertGreaterEqual(answers[0][0], 3.0)   # the real answer, after its own time
+
     def test_an_idle_helper_over_the_cap_is_stopped_and_replaced(self):
         started = self.counting()
         first = []    # the session's first helper reads as grown past the cap

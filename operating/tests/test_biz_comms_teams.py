@@ -391,6 +391,204 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         self.assertTrue(walked, "no search held more rows than the walk: the index read "
                                 "past the walk never ran")
 
+    def test_the_view_carries_the_author_and_the_whole_text(self):
+        """``author`` is the sender's display name and ``said`` the message's whole text, for
+        every row the reader reads (n of m against the document text itself); a marked text
+        field is not read into ``said``; applying again changes nothing."""
+        import zlib
+        import psycopg
+        from operating.pg import teams_text
+        out = self.sql(tct.COS_ONLY, "SELECT handle, sender, author, author_kind, said FROM "
+                                     "teams_messages")
+        rows = [[_cell(c) for c in r["cells"]] for r in out["rows"]]
+        self.assertTrue(rows)
+        with psycopg.connect(self.dsn) as pg:
+            want = {}
+            for handle, fid in pg.execute(
+                    "SELECT version_handle, field_id FROM ontology.text_fields WHERE "
+                    "document_kind = 'teams_message' AND markings = '[]'").fetchall():
+                want[handle] = "".join(zlib.decompress(bytes(b)).decode() for (b,) in pg.execute(
+                    "SELECT body FROM ontology.text_chunks WHERE field_id = %s ORDER BY start",
+                    (fid,)).fetchall())
+        wrong = [r[0] for r in rows if (r[4] or None) != (want.get(r[0]) or None)]
+        self.assertEqual(wrong, [], "said differs from the document text")
+        self.assertEqual(sum(1 for r in rows if r[4]), len(rows))   # every fixture message has text
+        for handle, sender, author, kind, _said in rows:
+            who = json.loads(sender) if sender and sender.startswith("{") else {}
+            self.assertEqual(author, who.get("display_name") or None, handle)
+            self.assertEqual(kind, who.get("kind") or None, handle)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("UPDATE ontology.text_fields SET markings = '[\"finance\"]' WHERE "
+                       "version_handle = %s", (rows[0][0],))
+            got = teams_text.apply(pg, "biz.teams_messages")
+            self.assertEqual(got["marked_text_withheld"], 1)
+            self.assertEqual(got["with_text"], len(rows) - 1)
+            self.assertIsNone(pg.execute("SELECT said FROM biz.teams_messages WHERE handle = %s",
+                                         (rows[0][0],)).fetchone()[0])   # no stale text
+
+    def test_a_text_marked_after_the_build_leaves_no_said_for_any_reader(self):
+        """A field's markings are changed in place after the build (``text_remark`` and the
+        ontology migration write ``ontology.text_fields.markings``): the writer's hook
+        (``teams_text.apply_fields``) clears ``said`` in the same transaction, so a message
+        whose text is marked later is never read as text by owner (cos), staff (vince) or a
+        restricted reader; undoing the mark gives the text back."""
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        import psycopg
+        from operating.pg import text_remark
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            handles = [h for (h,) in pg.execute(
+                "SELECT handle FROM biz.teams_messages WHERE said IS NOT NULL ORDER BY handle "
+                "LIMIT 3").fetchall()]
+            self.assertEqual(len(handles), 3)
+            fields = {h: f for h, f in pg.execute(
+                "SELECT version_handle, field_id FROM ontology.text_fields WHERE "
+                "version_handle = ANY(%s) AND document_kind = 'teams_message'",
+                (handles,)).fetchall()}
+        self.assertEqual(set(fields), set(handles))
+
+        def said(actor):
+            out = self.sql(actor, "SELECT handle, said FROM teams_messages")
+            return {_cell(r["cells"][0]): _cell(r["cells"][1]) for r in out["rows"]}
+        before = {a: said(a) for a in READERS}
+        self.assertTrue(all(before[tct.COS_ONLY][h] for h in handles))
+        self.assertTrue(any(v for v in before[tct.VINCE_ONLY].values()))
+        for actor in READERS:   # a restricted reader sees no row it may not, and no text of one
+            self.assertLessEqual(set(before[actor]), set(before[tct.COS_ONLY]))
+        with tempfile.TemporaryDirectory() as tmp:
+            # the writer under test is text_remark's undo: it sets each field's markings back
+            # to ``old`` (here a mark) where they are ``new`` (now none)
+            Path(tmp, "undo.jsonl").write_text("\n".join(_json.dumps(
+                {"field_id": f, "old": '["finance"]', "new": "[]"}) for f in fields.values()))
+            self.assertEqual(text_remark.undo(Path(tmp), self.dsn)["restored"], 3)
+            for actor in READERS:
+                got = said(actor)
+                for h in handles:
+                    self.assertIsNone(got.get(h), (sorted(actor.principals), h))
+                rest = {h for h in got if h not in handles and got[h]}
+                self.assertEqual(rest, {h for h in before[actor] if h not in handles
+                                        and before[actor][h]})   # the others keep their text
+            # the mark lifted again: the writer gives the text back
+            Path(tmp, "undo.jsonl").write_text("\n".join(_json.dumps(
+                {"field_id": f, "old": "[]", "new": '["finance"]'}) for f in fields.values()))
+            self.assertEqual(text_remark.undo(Path(tmp), self.dsn)["restored"], 3)
+            self.assertEqual(said(tct.COS_ONLY), before[tct.COS_ONLY])
+
+    def _said_fixture(self):
+        import psycopg
+        pg = psycopg.connect(self.dsn)
+        self.addCleanup(pg.close)
+        rows = pg.execute("SELECT t.handle, f.field_id, f.object_id, f.citation, f.field_path, "
+                          "f.document_kind, f.sender_class, f.markings, f.text_digest FROM "
+                          "biz.teams_messages t JOIN ontology.text_fields f ON f.version_handle "
+                          "= t.handle AND f.document_kind = 'teams_message' WHERE t.said IS NOT "
+                          "NULL ORDER BY t.handle LIMIT 3").fetchall()
+        self.assertEqual(len(rows), 3)
+        return pg, rows
+
+    def _said(self, pg, handle):
+        return pg.execute("SELECT said FROM biz.teams_messages WHERE handle = %s",
+                          (handle,)).fetchone()[0]
+
+    def test_a_document_removed_by_a_migration_leaves_no_said(self):
+        """``ontology_migrate`` deletes the text fields of a version the store no longer holds:
+        the message's stored text goes in the same transaction; the others keep theirs."""
+        from operating.pg import ontology_migrate
+        pg, rows = self._said_fixture()
+        gone, kept = rows[0], rows[1:]
+        pg.execute("CREATE TEMP TABLE prior (object_id text PRIMARY KEY)")
+        pg.execute("INSERT INTO prior VALUES (%s)", (gone[2],))
+        pg.execute("DELETE FROM ontology.object_versions WHERE object_id = %s AND l1_handle = %s",
+                   (gone[2], gone[0]))
+        before = {r[0]: self._said(pg, r[0]) for r in rows}
+        self.assertTrue(all(before.values()))
+        report: dict = {}
+        ontology_migrate._drop_gone_fields(pg.cursor(), report)
+        self.assertEqual(report["deleted.text_fields"], 1)
+        self.assertIsNone(self._said(pg, gone[0]))
+        for r in kept:
+            self.assertEqual(self._said(pg, r[0]), before[r[0]])
+        pg.rollback()
+
+    def test_a_delta_that_copies_text_fields_again_rereads_said(self):
+        """``ontology_delta`` replaces a layer's text fields: a message whose text came back
+        marked, or is gone from the layer, loses its ``said``; an unchanged one keeps it."""
+        import json as _json
+        import sqlite3
+        from operating.pg import ontology_delta
+        pg, rows = self._said_fixture()
+        marked, removed, same = rows
+        lite = sqlite3.connect(":memory:")
+        lite.execute("CREATE TABLE text_fields (field_id integer, object_id text, "
+                     "version_handle text, citation text, field_path text, document_kind text, "
+                     "sender_class text, markings text, text_digest text)")
+        lite.execute("CREATE TABLE text_chunks (field_id integer, start integer, body blob)")
+        for row in (marked, same):   # the layer holds these two; ``removed`` is not in it
+            mark = '["finance"]' if row is marked else row[7]
+            lite.execute("INSERT INTO text_fields VALUES (?,?,?,?,?,?,?,?,?)",
+                         (row[1], row[2], row[0], *row[3:7], mark, row[8]))
+            for start, body in pg.execute("SELECT start, body FROM ontology.text_chunks WHERE "
+                                          "field_id = %s", (row[1],)).fetchall():
+                lite.execute("INSERT INTO text_chunks VALUES (?,?,?)",
+                             (row[1], start, bytes(body)))
+        owned = [r[2] for r in rows]
+        before = {r[0]: self._said(pg, r[0]) for r in rows}
+        cur = pg.cursor()
+        cur.execute("CREATE TEMP TABLE owned (object_id text PRIMARY KEY)")
+        for oid in owned:
+            cur.execute("INSERT INTO owned VALUES (%s)", (oid,))
+        report = ontology_delta._diff_text(lite, cur, _json.dumps(owned), None)
+        self.assertEqual(report["kept.text_fields"], 1)           # the unchanged one
+        self.assertIsNone(self._said(pg, marked[0]))                # came back marked
+        self.assertIsNone(self._said(pg, removed[0]))               # gone from the layer
+        self.assertEqual(self._said(pg, same[0]), before[same[0]])  # unchanged
+        pg.rollback()
+
+    def test_a_rebuild_swaps_in_under_any_views_over_the_table_and_restores_them(self):
+        """Found on the Teams train copy: ``assist.matter_items`` reads biz.teams_messages and
+        blocked the swap's DROP of the old table. Any view over the table, and a view on
+        top of that one, is saved, dropped top-down and made again bottom-up: the same
+        definition, options, owner, grants and comments."""
+        import psycopg
+        from ontology import schema as schema_loader
+        from operating.pg.migrate import MIGRATIONS_DIR
+        snapshot = ("SELECT c.relname, pg_get_viewdef(c.oid, true), c.reloptions, "
+                    "pg_get_userbyid(c.relowner), c.relacl::text, obj_description(c.oid, 'pg_class'), "
+                    "(SELECT array_agg(a.attname || '=' || col_description(a.attrelid, a.attnum) "
+                    "ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 "
+                    "AND col_description(a.attrelid, a.attnum) IS NOT NULL) "
+                    "FROM pg_class c WHERE c.oid = ANY(%s::regclass[]) ORDER BY 1")
+        names = ["assist.matter_items", "assist.t_low", "assist.t_top"]
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for role in ("plx_api", "plx_eval"):
+                if not pg.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+                    pg.execute(f"CREATE ROLE {role} NOLOGIN")
+            pg.execute("CREATE TABLE IF NOT EXISTS biz.emails (handle text, sender text, "
+                       "subject text)")   # the list view reads both comms tables when both exist
+            for name in ("0062_assist_readings.sql", "0063_assist_work.sql", "0065_assist_api.sql",
+                         "0073_assist_items_view_columns.sql"):
+                pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+            # two more views of different shapes, one on the other
+            pg.execute("CREATE VIEW assist.t_low WITH (security_barrier = true) AS "
+                       "SELECT handle, sender FROM biz.teams_messages WHERE handle IS NOT NULL")
+            pg.execute("GRANT SELECT ON assist.t_low TO plx_eval WITH GRANT OPTION")
+            pg.execute("COMMENT ON VIEW assist.t_low IS 'low view'")
+            pg.execute("COMMENT ON COLUMN assist.t_low.sender IS 'who posted'")
+            pg.execute("CREATE VIEW assist.t_top AS SELECT handle, upper(sender) AS who "
+                       "FROM assist.t_low")
+            pg.execute("GRANT SELECT ON assist.t_top TO plx_api, PUBLIC")
+            before = pg.execute(snapshot, (names,)).fetchall()
+            self.assertEqual(len(before), 3)
+            self.assertIn("security_barrier=true", before[1][2] and before[1][2][0].replace(" ", ""))
+            rows = pg.execute("SELECT count(*) FROM biz.teams_messages").fetchone()[0]
+        bv.build(self.dsn, ["teams_messages"], schema=schema_loader.load_schema())
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            self.assertEqual(pg.execute("SELECT count(*) FROM biz.teams_messages").fetchone()[0], rows)
+            self.assertEqual(pg.execute(snapshot, (names,)).fetchall(), before)
+            self.assertEqual(pg.execute("SELECT count(*) FROM assist.t_top").fetchone()[0],
+                             pg.execute("SELECT count(*) FROM assist.t_low").fetchone()[0])
+
     def test_cardinality_1_10_60_by_day(self):
         out = self.sql(tct.COS_ONLY, "SELECT created_date, count(*) FROM teams_messages "
                                      "GROUP BY 1 ORDER BY 1")

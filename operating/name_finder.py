@@ -55,7 +55,7 @@ def _raw(column: str) -> str:
 
 def statement(query: Any, entities: Sequence[tuple] = ENTITIES) -> str:
     """The one SELECT: per kind, the rows its view holds whose label columns hold every
-    word, counted by status and by blocked / active, with one example label each."""
+    word, counted by status and by blocked / active, with one example label each and the kind's whole count on each row."""
     ws = words(query)
     parts = []
     for kind, view, labels, status, blocked, active in entities:
@@ -65,7 +65,8 @@ def statement(query: Any, entities: Sequence[tuple] = ENTITIES) -> str:
         flag = _raw(blocked[0]) if blocked else "'-'"
         live = _raw(active[0]) if active else "'-'"
         parts.append(f"SELECT '{kind}' AS kind, {state} AS status, {flag} AS blocked, "
-                     f"{live} AS active, count(*) AS n, min({labels[0]}) AS example "
+                     f"{live} AS active, count(*) AS n, CAST(sum(count(*)) OVER () AS bigint) AS "
+                     f"kind_total, min({labels[0]}) AS example "
                      f"FROM {view} WHERE {match} GROUP BY 2, 3, 4")
     return "\nUNION ALL\n".join(parts) + "\nORDER BY 1, 2, 3, 4"
 
@@ -77,5 +78,6 @@ def scope(query: Any, generic: Any = None) -> str:
     tail = str(generic).rsplit("; ", 1)[-1] if generic else ""
     kinds = "; ".join(f"{k} ({v}: {', '.join(l)})" for k, v, l, *_ in ENTITIES)
     return (f"names: every word of {' '.join(words(query))!r} held by one of a kind's label "
-            f"columns, counted per kind by status and state as the view writes them; kinds "
+            f"columns, counted per kind by status and state as the view writes them (kind_total on "
+            f"every row is the kind's whole count: sum n over a kind's rows or read kind_total); kinds "
             f"read: {kinds}" + (f"; {tail}" if tail else ""))

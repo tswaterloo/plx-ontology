@@ -197,6 +197,7 @@ from operating.kept_policy import KeptPolicies
 from operating.explanations import explain
 
 from ..errors import RecordNotFound
+from .door_ahead import read_ahead
 
 _LOG = logging.getLogger(__name__)
 
@@ -2725,6 +2726,7 @@ class HostAccess:
             with self.host.per_call():
                 item_gate = self.host.tools.item_gate
                 keyed = _version_keys(self.host)
+                read_ahead(item_gate, gated, todo, _ITEM_ACL_SCHEMES)
                 for handle in todo:
                     memo[handle] = self._decide(handle, gated, policy, item_gate, keyed)
         return {handle: memo[handle] for handle in handles}

@@ -1296,23 +1296,54 @@ class EmailsThroughTheDoor(unittest.TestCase):
         self.addCleanup(undo)
         full = mock.patch.object(people_excluded, "full_reader", lambda base, a: "tag")
         with full:
-            for walk in (1, cs.ATTACH_WALK):
-                with self.subTest(walk=walk), \
-                        mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk):
+            for walk, batch in ((1, cs.ATTACH_BATCH), (2, cs.ATTACH_BATCH), (2, 1), (2, 2)):
+                with self.subTest(walk=walk, batch=batch), \
+                        mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk), \
+                        mock.patch.object(cs, "ATTACH_BATCH", batch):
                     out = self.search(tmp.OWNER, query=q)
                     docs = [h for h in out["documents"] if "attachment" in h.get("match", "")]
                     self.assertEqual({h["citation"] for h in docs}, {plain, freight})
                     self.assertIn("zzwidget", docs[0]["snippet"]["untrusted_text"])
                     self.assertEqual(docs[0]["kind"], "email")
                     self.assertIn("attachment", out["searched"]["widened"])
-                    # how deep the attachment pass looked is said: a common word's walk
-                    # covers only the newest mails; a rare word's match is whole
+                    # no cap on the attachment pass: a common word's walk goes on, batch
+                    # after batch (1 and 2 mails here), to the oldest mail in the dates; a
+                    # rare word's match is whole. Nothing is said to be left unread.
                     depth = out["searched"].get("depth") or ""
-                    if walk > 1:
-                        self.assertIn(f"only the newest {cs.ATTACH_WALK:,} mails with "
-                                      "attachments", depth)
-                    else:
-                        self.assertNotIn("attachments' text", depth)
+                    self.assertNotIn("only the newest", depth)
+                    self.assertNotIn("most recently", depth)
+            # every mail holding the words only in an attachment is reachable: with one shown
+            # on the first page, the rest continue by their own cursor (completeness.continue),
+            # page after page, none twice and none left, whichever way the pass walks
+            from operating import ontology_tools_sql as ots
+            for walk, batch in ((1, cs.ATTACH_BATCH), (2, cs.ATTACH_BATCH), (2, 1)):
+                with self.subTest(continued=True, walk=walk, batch=batch), \
+                        mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk), \
+                        mock.patch.object(cs, "ATTACH_BATCH", batch), \
+                        mock.patch.object(ots, "ATTACH_EXTRA", 1):
+                    out = self.search(tmp.OWNER, query=q)
+                    got = [h["citation"] for h in out["documents"]
+                           if "attachment" in h.get("match", "")]
+                    self.assertEqual(len(got), 1)
+                    self.assertFalse(out["completeness"]["complete"])
+                    nexts = [c["cursor"] for c in out["completeness"]["continue"]
+                             if c["cursor"].startswith("a1:")]
+                    self.assertEqual(len(nexts), 1)
+                    cursor, pages = nexts[0], 0
+                    while cursor:
+                        pages += 1
+                        self.assertLess(pages, 5)
+                        page = self.search(tmp.OWNER, query=q, cursor=cursor, limit=1)
+                        got += [h["citation"] for h in page["documents"]]
+                        self.assertTrue(all("attachment" in h["match"]
+                                            for h in page["documents"]))
+                        cursor = page["completeness"]["next_cursor"]
+                        self.assertEqual(page["completeness"]["complete"], not cursor)
+                    self.assertEqual(sorted(got), sorted({plain, freight}))
+                    # a cursor of nothing this search made is refused, never read as a page
+                    with self.assertRaises(ots.ToolError) as caught:
+                        self.search(tmp.OWNER, query=q, cursor="a1:nonsense")
+                    self.assertEqual(caught.exception.code, "invalid_input")
             # words past the searched ones are named, never dropped unsaid
             many = " ".join(f"zzw{i}" for i in range(cs.MAX_TERMS + 2))
             self.assertIn(f"not searched: zzw{cs.MAX_TERMS} zzw{cs.MAX_TERMS + 1}",
@@ -1746,6 +1777,26 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 return cur
         with psycopg.connect(self.dsn) as pg:
             self.assertFalse(bc.views_check_own_issued(Old(pg)))
+        # a role with no USAGE on a schema (the eval role on the page schema) reads only the
+        # schemas it can use: the check still answers (it raised a permission error before,
+        # was read as "not carried" and every Spark statement sent the 10 MB id list)
+        class NoPage:
+            def __init__(self, pg):
+                self.pg = pg
+
+            def execute(self, sql, params=None):
+                if "has_schema_privilege" in sql and params and params[0] == \
+                        sql_views.page_schema():
+                    class Row:
+                        def fetchone(_):
+                            return (False,)
+                    return Row()
+                if params and any(isinstance(x, str) and x.startswith(
+                        sql_views.page_schema() + ".") for x in params):
+                    raise AssertionError("the unusable schema was read")
+                return self.pg.execute(sql, params)
+        with psycopg.connect(self.dsn) as pg:
+            self.assertTrue(bc.views_check_own_issued(NoPage(pg)))
         tool = self.tool()
         scope = tool._reader(tmp.OWNER)[1]
         own = frozenset({"OWN-ISSUED-1"})

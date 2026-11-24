@@ -882,7 +882,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                     if name is None or name == ANSWER_GATE_TOOL or key not in calls \
                             or key in abandoned:
                         continue
-                    limit = call_limits.LIMITS.get(str(name), call_limits.DEFAULT_LIMIT)
+                    limit = call_limits.listed_limit(name)
+                    if limit is None:   # no listed limit: the call runs to its end
+                        continue
                     if now - at <= limit + POOL_GRACE_SECONDS:
                         continue
                     abandoned.add(key)

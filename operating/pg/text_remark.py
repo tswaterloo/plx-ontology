@@ -633,6 +633,9 @@ def apply(work: Path, dsn: str, *, dry_run: bool) -> dict[str, Any]:
                                 "UPDATE ontology.text_fields SET markings = %s "
                                 "WHERE field_id = %s AND markings = %s",
                                 [(new, field_id, old) for field_id, old, new in rows])
+                        # a Teams message whose text is marked now loses its stored ``said``
+                        from operating.pg import teams_text
+                        teams_text.apply_fields(pg, [f for f, _o, _n in rows])
                     written += len(rows)
         report.update(fields_marked=written, undo=str(undo),
                       seconds=round(time.monotonic() - started, 1))
@@ -657,6 +660,8 @@ def undo(work: Path, dsn: str) -> dict[str, Any]:
                                     "field_id = %s AND markings = %s",
                                     (r["old"], r["field_id"], r["new"]))
                         restored += cur.rowcount
+                from operating.pg import teams_text
+                teams_text.apply_fields(pg, [r["field_id"] for r in part])
     finally:
         pg.close()
     return {"undo_rows": len(rows), "restored": restored}

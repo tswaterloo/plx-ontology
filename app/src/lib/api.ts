@@ -1152,8 +1152,8 @@ export async function forgetTeams(): Promise<TeamsConnection> {
 export type DraftList = { items: PreparedItem[]; never_senders?: string[]; older?: number; status?: string | null; reason?: string; stale_since?: string | null };
 
 /** Your open work, newest first (the one list Home reads too); the last 14 days unless ``allAges``. */
-export async function getAutopilotDrafts(signal?: AbortSignal, allAges = false): Promise<DraftList> {
-  return getJson<DraftList>(allAges ? "/api/autopilot/drafts?all_ages=true" : "/api/autopilot/drafts", signal);
+export async function getAutopilotDrafts(signal?: AbortSignal, allAges = false, ahead = false): Promise<DraftList> {
+  return getJson<DraftList>(allAges ? "/api/autopilot/drafts?all_ages=true" : "/api/autopilot/drafts", signal, ahead);
 }
 
 /** Ask for this item's draft now; it is prepared and the list shows it when ready. */

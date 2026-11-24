@@ -92,6 +92,15 @@ def enabled(environ: Mapping[str, str] | None = None) -> bool:
     return (environ if environ is not None else os.environ).get(LIMITS_ENV) == "on"
 
 
+def listed_limit(name: Any) -> float | None:
+    """The seconds ``LIMITS`` lists for ``name``; None for a tool with no listed limit and
+    for an exempt one (the Ask's tools, the answer gate): nothing stops those calls. The one
+    definition ``limit_for`` and the pool's watch thread share."""
+    if name in EXEMPT:
+        return None
+    return LIMITS.get(str(name))
+
+
 def limit_for(name: Any, environ: Mapping[str, str] | None = None,
               now: float | None = None) -> float | None:
     """Seconds ``name`` may run now: its ``LIMITS`` entry cut to the session's submit
@@ -100,7 +109,7 @@ def limit_for(name: Any, environ: Mapping[str, str] | None = None,
     environ = environ if environ is not None else os.environ
     if not enabled(environ) or name in EXEMPT:
         return None
-    limit = LIMITS.get(str(name))
+    limit = listed_limit(name)
     if limit is None:
         return None
     given = environ.get(DEADLINE_ENV)

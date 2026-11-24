@@ -43,11 +43,18 @@ LOCK_TIMEOUT, STATEMENT_TIMEOUT = "5s", "600s"
 _KIND = re.compile(r"[a-z][a-z0-9_:]{0,40}")
 
 
+GRANTS = Path(__file__).with_name("migrations") / "0078_page_items_read_grants.sql"
+
+
 def ensure(pg: Any, schema: str | None = None) -> None:
-    """The store and its request table (migration 0064's text: one definition), in ``schema``."""
+    """The store and its request table (migration 0064's text: one definition), in ``schema``,
+    then the runners' read grant (migration 0078's text: plx_eval only; the API reads through the
+    guarded view): 0064 revokes it, so replaying it alone left every batch runner without
+    SELECT (KNOWN-GAPS O3)."""
     s = schema or bv.SCHEMA
-    pg.execute(MIGRATION.read_text(encoding="utf-8").replace("biz_page", f"{s}_page")
-               .replace("biz.", f"{s}.").replace("pg_catalog, biz", f"pg_catalog, {s}"))
+    for path in (MIGRATION, GRANTS):
+        pg.execute(path.read_text(encoding="utf-8").replace("biz_page", f"{s}_page")
+                   .replace("biz.", f"{s}.").replace("pg_catalog, biz", f"pg_catalog, {s}"))
 
 
 def stage(pg: Any, kind: str, schema: str | None = None) -> str:

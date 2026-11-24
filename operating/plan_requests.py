@@ -17,6 +17,16 @@ from typing import Optional
 LOG = logging.getLogger("operating.plan_requests")
 ENV = "PLX_PLAN_REQUESTS"
 MAX_ID = 700
+# the puller runs as another user of the state's group and must list, read and remove what the
+# app wrote (KNOWN-GAPS O4: a 2700 folder gave the runners no work): group read-write, setgid
+FOLDER_MODE, FILE_MODE = 0o2770, 0o660
+
+
+def _folder_ready(where: str) -> None:
+    """The spool folder exists with the group mode (made so, or repaired when it is not)."""
+    os.makedirs(where, mode=FOLDER_MODE, exist_ok=True)   # the umask and the kernel may drop bits
+    if (os.stat(where).st_mode & 0o7777) != FOLDER_MODE:
+        os.chmod(where, FOLDER_MODE)
 
 
 def folder() -> str:
@@ -37,12 +47,13 @@ def request(record_id: str) -> bool:
     where = folder()
     path = os.path.join(where, name)
     try:
-        os.makedirs(where, mode=0o700, exist_ok=True)
+        _folder_ready(where)
         if os.path.exists(path):
             return True
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(record_id + "\n")
+        os.chmod(tmp, FILE_MODE)
         os.replace(tmp, path)
         return True
     except OSError as exc:

@@ -151,6 +151,19 @@ Changed:
 - Opening several mails at once fits the size the host actually sends
 - A record's links read by key, so Home's record pane opens at once
 
+## Update 2026-11-24
+Changed:
+- Teams messages show who wrote them and their whole text
+- a text marked later, removed or re-copied is hidden again at once
+- a table swap keeps every view built on it exactly as it was
+- Home no longer waits on the drafts list, and the drafts list decides access for all its items in a few reads instead of thousands
+- plan pages keep their read grants for the runners only
+- the plan request folder is shared with the puller
+- Ask: a search's full match count reads its matches once instead of scanning all mail (935 s to 23 s)
+- attachment matches are read whole and paged
+- the name finder gives each kind's total
+- the call watcher no longer dies
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.
