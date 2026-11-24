@@ -2,7 +2,9 @@
 
 import { Building2, ChevronLeft, ChevronRight, ListChecks, Lock, MapPin, Truck, Users, Video } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRead } from "@/lib/use-read";
+import { StoredAge } from "@/components/ui/stored-age";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Pending } from "@/components/ui/skeleton";
 import { LoadProblem } from "@/components/ui/notice";
@@ -48,27 +50,17 @@ function useNow(): Date {
 /** Meetings, Upcoming: your calendar for two weeks as an agenda by day or a week grid; a
  * meeting opens its detail (people, agenda, related records, carried action items, prep). */
 export function Upcoming() {
-  const [list, setList] = useState<UpcomingMeetings | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
+  const { data: list, error, retry, at } = useRead<UpcomingMeetings>("/api/brief/meetings", (s) => getUpcomingMeetings(s));
   const [layout, setLayout] = useState<Layout>("agenda");
   const [open, setOpen] = useState<UpcomingMeeting | null>(null);
   const now = useNow();
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    getUpcomingMeetings(ctl.signal).then(setList, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
-  }, [round]);
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!list) return <Pending label="Reading your calendar" />;
   if (list.meetings.length === 0)
     return <EmptyState title="No meetings today or in the next two weeks." line="A customer or supplier page has a Prep button for any meeting." />;
   return (
     <div className="space-y-4" data-testid="upcoming-meetings">
+      <StoredAge at={at} />
       <Summary meetings={list.meetings} now={now} layout={layout} onLayout={setLayout} />
       {layout === "agenda" ? (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">

@@ -84,7 +84,7 @@ export function RoleGuide({ guide }: { guide: Guide }) {
         </ul>
         <p className="text-[12px] text-muted">
           A workflow shows a Turn on switch only once it has passed its check for you. See{" "}
-          <Link href="/autopilot" className="underline">
+          <Link href="/assist?show=switches" className="underline">
             Autopilot
           </Link>
           .

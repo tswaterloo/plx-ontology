@@ -4,6 +4,9 @@
 // the HttpOnly session cookie that /api/auth/dev-login sets in dev/mock mode.
 
 import { ApiError, apiErrorFrom, incidentOf } from "./errors";
+import { quiet } from "./quiet";
+import { writeEpoch } from "./use-read";
+import { DOOR_HEADER, forgetAnswer, isSettledAnswer, noteAnswerHeaders, noteOwnWrite, rememberAnswer } from "./read-store";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
@@ -242,6 +245,7 @@ async function call(path: string, init: RequestInit & { json?: unknown; ahead?: 
     paneKept.clear();
     insightsKept.clear();
     recordAhead.clear();
+    noteOwnWrite(path);
   }
   const as = viewAsHeader(path, method);
   // the caller's cancel, plus our own abort when nothing has arrived for IDLE_STALL_MS
@@ -263,7 +267,9 @@ async function call(path: string, init: RequestInit & { json?: unknown; ahead?: 
   restart();
   let res: Response;
   callsOpen += 1;
-  if (!ahead) {
+  // a read-ahead, or a re-read behind an answer already drawn (`quietly`), is not the page's own read
+  const background = !!ahead || quiet();
+  if (!background) {
     pageCallsOpen += 1;
     for (const f of [...callListeners]) f();
   }
@@ -293,9 +299,12 @@ async function call(path: string, init: RequestInit & { json?: unknown; ahead?: 
     if (stalled && !rest.signal?.aborted) throw new ApiError(504, "connection_stalled");
     throw e;
   } finally {
-    callEnded(!!ahead);
+    callEnded(background);
   }
   restart();
+  // the door value and any refused-session mark come before the body is used (`read-store.ts`)
+  if (path.startsWith("/api/")) noteAnswerHeaders(res.headers);
+  if (method !== "GET") noteOwnWrite(path); // a read that finished while the write was out may carry the older answer
   const watched = watchBody(res, restart, stop, () => stalled && !rest.signal?.aborted);
   if (!res.ok) throw await apiErrorFrom(watched);
   return watched;
@@ -330,8 +339,7 @@ function getPaneRead<T>(path: string, signal?: AbortSignal): Promise<T> {
     (got) => {
       if (writesSent !== before) return;   // read across a write: never kept
       // a stale or still-reading answer is asked for again soon: never reused
-      const flags = got as { stale_since?: string | null; reading?: boolean | null };
-      if (flags?.stale_since || flags?.reading) return;
+      if (!isSettledAnswer(got)) return;
       paneKept.delete(key);
       paneKept.set(key, { at: Date.now(), got });
       while (paneKept.size > PANE_KEPT_MOST) paneKept.delete(paneKept.keys().next().value as string);
@@ -359,8 +367,24 @@ async function getJson<T>(path: string, signal?: AbortSignal, ahead = false): Pr
       if (got?.ok && got.body !== undefined) return got.body as T;
     }
   }
-  const res = await call(path, { signal, ahead });
-  return (await res.json()) as T;
+  let res: Response;
+  const began = writeEpoch();
+  try {
+    res = await call(path, { signal, ahead });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) forgetAnswer(path); // a kept answer for a record that is gone
+    throw e;
+  }
+  const text = await res.text();
+  const body = JSON.parse(text) as T;
+  if (began === writeEpoch()) rememberAnswer(path, text, res.headers.get(DOOR_HEADER), body); // not an answer read before a change of yours
+  return body;
+}
+
+/** One GET of an API path, as the page's own read of it (the route table's loader: read-ahead, warm-up).
+ * The answer is exactly what the path sends; `ahead` marks a read nobody is waiting on. */
+export function readPath<T>(path: string, signal?: AbortSignal, ahead = false): Promise<T> {
+  return getJson<T>(path, signal, ahead);
 }
 
 /** How often a Today list still being read for the first time is asked for again, and for how long at most. */
@@ -490,7 +514,9 @@ async function pollRead<T extends { reading?: boolean | null }>(path: string, si
   for (let attempt = 0; ; attempt++) {
     // Home's first reads come in one answer (startHomeBundle); a part that is still being
     // read, or no bundle, goes on to the part's own request below
-    const bundled = attempt === 0 ? await bundlePart<T>(path, signal) : null;
+    // (awaited only for a bundled read: an await here would end `quietly`'s scope before the
+    // request is sent, and a re-read behind a drawn answer would count as the page's own read)
+    const bundled = attempt === 0 && bundleMayAnswer(path) ? await bundlePart<T>(path, signal) : null;
     if (bundled && !bundled.reading) return bundled;
     const got = await getJson<T>(path, signal, ahead);
     if (!got.reading) return got;
@@ -639,6 +665,13 @@ export function onHomeBundleFresh(f: () => void): () => void {
   return () => void bundleListeners.delete(f);
 }
 
+/** Whether the bundle may still answer `path` (a bundle is under way and has not already given this read its fresh part). Checked
+ * without waiting, so a read the bundle will not answer is sent in the caller's own turn. */
+function bundleMayAnswer(path: string): boolean {
+  const name = BUNDLE_PARTS[path];
+  return !!name && !!bundleFresh && bundleGiven.get(name) !== "fresh";
+}
+
 /** The bundle's part for `path` as that read's own answer (a refused part throws what its own
  * request would: same status and code), or null when the read is made on its own. */
 async function bundlePart<T>(path: string, signal: AbortSignal): Promise<T | null> {
@@ -778,6 +811,8 @@ export interface OpsIncident {
   closed_at?: string;
   level?: "info" | "warning" | "high" | "critical";
   paused?: { until: string; why: string };
+  /** Already owned (deploy/ops/known-alarms.json): who has it, why, and the date it opens again if not closed. */
+  known?: { owner: string; why: string; until: string; needs_action?: boolean };
 }
 
 /** Whether the alarms mail anyone (off until the host config names a sender), and why not. */
@@ -796,6 +831,8 @@ export interface OpsAlarms {
   every_minutes?: number;
   open: OpsIncident[];
   paused?: OpsIncident[];
+  /** Open alarms that a named owner already has, with the reason and a date (not counted as needing attention). */
+  known?: OpsIncident[];
   /** A planned maintenance window (operating/ops_alarms_pauses.py): what it stops is paused until `until`;
    * `overrun` once that has passed (then it pages), `unreadable` for a marker nobody can read. */
   maintenance?: { state: "in_window" | "overrun" | "unreadable"; reason?: string; until?: string } | null;
@@ -1686,11 +1723,14 @@ export interface WorkLogFilters {
 }
 
 /** Your work log, newest first (the owner may ask for everyone's). */
-export function getWorkLog(filters: WorkLogFilters = {}, signal?: AbortSignal): Promise<WorkLogPage> {
+export function workLogPath(filters: WorkLogFilters = {}): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) if (v !== undefined && v !== "" && v !== false) q.set(k, String(v));
   const tail = q.toString();
-  return getJson<WorkLogPage>(`/api/work-log${tail ? `?${tail}` : ""}`, signal);
+  return `/api/work-log${tail ? `?${tail}` : ""}`;
+}
+export function getWorkLog(filters: WorkLogFilters = {}, signal?: AbortSignal): Promise<WorkLogPage> {
+  return getJson<WorkLogPage>(workLogPath(filters), signal);
 }
 
 /** The time the Workbench saved you each week (the owner may ask for everyone's): an estimate with its method. */

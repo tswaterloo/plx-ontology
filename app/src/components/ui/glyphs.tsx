@@ -1,4 +1,4 @@
-import { Activity, ChartColumn, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { Activity, ChartColumn, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Building2, ClipboardList, Truck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /** Not on record: a closed ring with a bar (static; a dashed ring read as a loading spinner). */
@@ -32,6 +32,7 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/watching": { icon: BellRing, hue: "text-[var(--place-watching)]" },
   "/ask": { icon: MessageCircle, hue: "text-[var(--place-ask)]" },
   "/insights": { icon: ChartColumn, hue: "text-[var(--place-ask)]" },
+  "/assist": { icon: Bot, hue: "text-[var(--place-autopilot)]" },
   "/autopilot": { icon: Bot, hue: "text-[var(--place-autopilot)]" },
   "/meetings": { icon: CalendarClock, hue: "text-[var(--place-meetings)]" },
   "/team": { icon: Users, hue: "text-[var(--place-team)]" },
@@ -43,6 +44,11 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },
   "/memory": { icon: BookMarked, hue: "text-[var(--place-ask)]" },
   "/records": { icon: Database, hue: "text-[var(--place-work)]" },
+  "/orders": { icon: ClipboardList, hue: "text-[var(--place-work)]" },
+  "/customers": { icon: Building2, hue: "text-[var(--place-work)]" },
+  "/suppliers": { icon: Truck, hue: "text-[var(--place-work)]" },
+  "/products": { icon: Package, hue: "text-[var(--place-work)]" },
+  "/more": { icon: Database, hue: "text-[var(--place-work)]" },
   "/work": { icon: Briefcase, hue: "text-[var(--place-meetings)]" },
   "/admin": { icon: Activity, hue: "text-[var(--place-activity)]" },
 };

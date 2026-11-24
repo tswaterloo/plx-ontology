@@ -13473,7 +13473,8 @@
               "record",
               "meeting",
               "autopilot",
-              "page"
+              "page",
+              "brief"
             ],
             "title": "Kind",
             "type": "string"
@@ -16305,6 +16306,15 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "records": {
+            "description": "The record ids (a meeting, customer, supplier, order) the note is about: the brief of that record, Ask and Assist read it back. Private to you.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Records",
+            "type": "array"
           },
           "text": {
             "maxLength": 1000,

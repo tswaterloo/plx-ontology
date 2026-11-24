@@ -97,7 +97,7 @@ class Matters(unittest.TestCase):
         p.execute("CREATE TABLE biz.alerts (rule text, handle text, topic text, concerns text, "
                   "mailbox text, why text, since timestamptz, state text, kind text)")
         p.execute("CREATE TABLE ontology.objects (object_id text, object_type text, "
-                  "audience_key text, first_recorded_at text, missing_from_source_since text)")
+                  "audience_key text, first_recorded_at text, missing_from_source_since text, native_key text)")
         p.execute("CREATE TABLE ontology.object_values (object_id text, property text, value "
                   "text, markings text, superseded_at text)")
 

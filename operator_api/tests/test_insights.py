@@ -1181,6 +1181,57 @@ class StreamedDashboard(unittest.TestCase):
         team = next(t for t in tiles if t["id"] == "team_output")
         self.assertNotIn("Hidden", json.dumps(team))
 
+    def test_a_view_as_and_a_canary_session_are_streamed_from_their_own_stored_tiles(self):
+        """P7: a session that views as someone, and the canary, has a stored key of its own
+        (``insights_cache.reader_key``), so its dashboard stream computes nothing in the
+        request either: every tile is waiting on the first stream, then drawn from what the
+        background read stored under that key; the person's own stored tiles never serve it
+        (nor its tiles the person)."""
+        from operator_api import insights_cache as ic
+        b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
+        owner = person("employee:owner")
+        viewing, canary = person("employee:owner"), person("employee:owner")
+        viewing.session.view_as = True
+        canary.session.canary = True
+        keys = {ic.reader_key(r) for r in (owner, viewing, canary)}
+        self.assertEqual(len(keys), 3)
+        self.assertNotIn(None, keys)
+        self.lines(b, owner)                      # the person's own tiles are stored
+        import threading
+        ran = []
+        real = b.reads.run
+
+        def run(reader, job, *a, **k):
+            ran.append(threading.current_thread().name)
+            return real(reader, job, *a, **k)
+        b.reads.run = run
+        for who in (viewing, canary):
+            ran.clear()
+            first = list(b.insights_stream(who))
+            keeper = b._insight_keeper()
+            keeper.pool().shutdown(wait=True)
+            keeper._pool = None
+            self.assertTrue(ran, "its own reads never ran")
+            # every read ran behind the request, in the background pool (never on the thread
+            # that answers the stream), and under the session's own key
+            self.assertTrue(all(n.startswith("insights-ahead") for n in ran), ran)
+            tiles = first[1:]
+            self.assertTrue(all(t.keys() & {"result", "waiting"} for t in tiles))
+            again = list(b.insights_stream(who))[1:]
+            self.assertTrue(any("result" in t for t in again))
+            self.assertFalse(any("waiting" in t for t in again))
+        b.reads.run = real
+        # a session with no principals has no key to keep tiles under: each tile says so,
+        # nothing is read for it in the request
+        bare = person("employee:owner")
+        bare.session.principals = frozenset()
+        before = len(b.reads.sql)
+        lines = list(b.insights_stream(bare))
+        tiles = lines[1:] if "list" in lines[0] else lines
+        self.assertTrue(all(t.get("error", {}).get("code") == "insight_unkept" for t in tiles),
+                        [sorted(t) for t in tiles][:3])
+        self.assertEqual(len(b.reads.sql), before)
+
     def test_a_staff_reader_is_streamed_only_their_own_tiles_and_their_own_rows(self):
         b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=False, me=frozenset({ME}))
         got = self.lines(b, person("employee:ana"))

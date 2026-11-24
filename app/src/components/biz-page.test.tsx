@@ -80,7 +80,7 @@ describe("BizRecordPage", () => {
     nav.params = new URLSearchParams("kind=purchase_order&h=x");
     show();
     expect(await screen.findByText("This page shows one account, and this address names none.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open Records" })).toHaveAttribute("href", "/records");
+    expect(screen.getByRole("link", { name: "Open Orders" })).toHaveAttribute("href", "/orders");
     expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Pin / })).toBeNull();
     expect(api.bizPage).not.toHaveBeenCalled();

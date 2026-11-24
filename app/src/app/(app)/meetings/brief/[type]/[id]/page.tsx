@@ -3,10 +3,12 @@
 import { notFound, useParams } from "next/navigation";
 
 import { BriefView } from "@/components/brief-view";
+import { AddContext } from "@/components/brief-context";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
 import { BRIEF_TYPES, getMeetingBrief } from "@/lib/api";
+import { StoredAge } from "@/components/ui/stored-age";
 import { useRead } from "@/lib/use-read";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { Brief } from "@/lib/types";
@@ -24,17 +26,21 @@ export default function BriefPage() {
   // A type no brief is prepared for fails closed: no request is made.
   if (!BRIEF_TYPES.includes(type) || !id) notFound();
   const objectId = safeDecode(id);
-  const { data: brief, error, retry } = useRead<Brief>(`brief ${type} ${objectId}`, (signal) => getMeetingBrief(type, objectId, signal));
+  const { data: brief, error, retry, at } = useRead<Brief>(`/api/brief/${encodeURIComponent(type)}/${encodeURIComponent(objectId)}`, (signal) => getMeetingBrief(type, objectId, signal));
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading={!brief} title={brief?.title ?? "Brief"} parent={{ label: "Meetings", href: "/meetings" }} />
       <div className="p-5">
+        <StoredAge at={at} className="pb-2" />
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : brief ? (
-          <BriefView brief={brief} />
+          <div className="space-y-4">
+            <BriefView brief={brief} />
+            <AddContext brief={brief} onSaved={retry} />
+          </div>
         ) : (
-          <Pending page label="Preparing the brief" />
+          <Pending page limit={null} label="Preparing the brief" />
         )}
       </div>
     </div>

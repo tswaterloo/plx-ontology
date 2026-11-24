@@ -46,7 +46,7 @@ import { OnRecord } from "./record/on-record";
 import { KindSections } from "./record/kind-sections";
 import { DocumentLists } from "./record/document-lists";
 import { ShowMore } from "./ui/show-more";
-import { RECORD_LIMIT_MS, TimedOut } from "./ui/skeleton";
+import { RECORD_LIMIT_MS, StillReading } from "./ui/skeleton";
 import { STATUS_INK, StatusBadge, StatusWord } from "./ui/status-badge";
 import { ShowAll } from "@/components/show-all";
 
@@ -115,13 +115,6 @@ function Crumb({ type, title, typeName }: { type: string; title?: string | null;
 function ObjectSkeleton({ type, label, onRetry }: { type: string; label?: string | null; onRetry?: () => void }) {
   const [tries, setTries] = useState(0);
   const t = useElapsed(true, tries);
-  if (t * 1000 >= RECORD_LIMIT_MS)
-    return (
-      <Frame
-        crumb={<Crumb type={type} title={label} />}
-        main={<TimedOut label={`Reading ${label ?? `this ${typeLabel(type).toLowerCase()}`}`} ms={RECORD_LIMIT_MS} onRetry={onRetry && (() => (setTries((n) => n + 1), onRetry()))} />}
-      />
-    );
   const step = t < 8 ? "Reading its systems" : t < 20 ? "Searching mail and files" : "Linking receipts and emails";
   return (
     <Frame
@@ -146,7 +139,8 @@ function ObjectSkeleton({ type, label, onRetry }: { type: string; label?: string
             ))}
           </div>
           <Bars n={4} className="max-w-xl" />
-          {t >= 20 && <p className="text-[12px] text-muted" data-testid="record-slow">{t < 60 ? "Records with a lot of mail take up to a minute." : "Taking longer than usual. Still reading."}</p>}
+          {t >= 20 && t * 1000 < RECORD_LIMIT_MS && <p className="text-[12px] text-muted" data-testid="record-slow">{t < 60 ? "Records with a lot of mail take up to a minute." : "Taking longer than usual. Still reading."}</p>}
+          {t * 1000 >= RECORD_LIMIT_MS && <StillReading label={`Reading ${label ?? `this ${typeLabel(type).toLowerCase()}`}`} since={Date.now() - t * 1000} onRetry={onRetry && (() => (setTries((n) => n + 1), onRetry()))} />}
         </div>
       }
       inspector={

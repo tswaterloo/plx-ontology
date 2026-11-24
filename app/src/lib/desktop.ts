@@ -10,11 +10,33 @@ export interface DesktopNotice {
   href?: string;
 }
 
+/** One stored answer, as the main process kept it: the server's own body text (never parsed there). */
+export interface StoredAnswer {
+  key: string;
+  body: string;
+  fetchedAt: number;
+  release: string;
+  door: string;
+}
+
+/** The durable page store in the desktop shell's main process (`desktop/src/store.js`): the
+ * answers the server sent this person, sealed on this machine. It refuses any page but the
+ * Workbench's own. An older installed shell has none (`store` absent): the page runs on memory. */
+export interface PlxDesktopStore {
+  open: () => Promise<{ durable: boolean; door: string | null; keys: string[]; entries: StoredAnswer[] }>;
+  get: (key: string) => Promise<StoredAnswer | null>;
+  put: (entry: { key: string; body: string; door: string; release: string; fetchedAt: number }) => Promise<boolean>;
+  drop: (key: string) => Promise<boolean>;
+  wipe: () => Promise<boolean>;
+  onWiped: (cb: () => void) => () => void;
+}
+
 export interface PlxDesktop {
   app: true;
   version: string;
   notify: (n: DesktopNotice) => void;
   onMenu: (cb: (msg: unknown) => void) => () => void;
+  store?: PlxDesktopStore;
 }
 
 /** The bridge when this page is running inside the desktop app, else null. */
@@ -24,7 +46,14 @@ export function desktopBridge(): PlxDesktop | null {
   return d && d.app === true && typeof d.notify === "function" && typeof d.onMenu === "function" ? d : null;
 }
 
-const MENU_HREF: Record<string, string> = { home: "/", ask: "/ask", "my-work": "/my-work", autopilot: "/autopilot" };
+/** The durable page store when this page runs in a desktop app that has one, else null. */
+export function desktopStore(): PlxDesktopStore | null {
+  const d = desktopBridge();
+  const st = d?.store;
+  return st && typeof st.open === "function" && typeof st.put === "function" && typeof st.get === "function" && typeof st.wipe === "function" && typeof st.onWiped === "function" ? st : null;
+}
+
+const MENU_HREF: Record<string, string> = { home: "/", ask: "/ask", "my-work": "/my-work", autopilot: "/assist?show=switches" };
 
 export type MenuTarget = { kind: "feedback" } | { kind: "go"; href: string };
 

@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { StoredAge } from "@/components/ui/stored-age";
+import { useRead } from "@/lib/use-read";
+import { useMemo } from "react";
 import { getAutopilot, getAutopilotDays } from "@/lib/api";
 import { countdownText, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
-import type { AutopilotScorecard, AutopilotScoreDay, AutopilotWorkflowRow } from "@/lib/types";
+import type { AutopilotArea, AutopilotScorecard, AutopilotScoreDay, AutopilotWorkflowRow } from "@/lib/types";
 
 const dayLabel = (iso: string, today: string) =>
   iso === today
@@ -22,18 +24,13 @@ const COLS: { key: keyof Omit<AutopilotScoreDay, "day">; label: string }[] = [
  * work log: one row a day, the last week, quiet days shown as dashes. Hidden until it has
  * prepared anything. */
 export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
-  const [data, setData] = useState<AutopilotScorecard | null>(null);
-  const [gates, setGates] = useState<AutopilotWorkflowRow[]>([]);
-  useEffect(() => {
-    const c = new AbortController();
-    getAutopilotDays(days, c.signal).then(setData, () => undefined);
-    // your own drafted workflows and their gate count (the autopilot area as you may see it)
-    getAutopilot(c.signal).then(
-      (a) => setGates((a.workflows ?? []).filter((r) => r.draft && r.person && (a.people ?? []).some((p) => p.you && p.id === r.person))),
-      () => undefined,
-    );
-    return () => c.abort();
-  }, [days]);
+  const { data, at } = useRead<AutopilotScorecard>(`/api/work-log/autopilot-days?days=${days}`, (s) => getAutopilotDays(days, s));
+  // your own drafted workflows and their gate count (the autopilot area as you may see it)
+  const { data: area, at: areaAt } = useRead<AutopilotArea>("/api/autopilot", (s) => getAutopilot(s));
+  const gates = useMemo<AutopilotWorkflowRow[]>(
+    () => (area?.workflows ?? []).filter((r) => r.draft && r.person && (area?.people ?? []).some((p) => p.you && p.id === r.person)),
+    [area],
+  );
   if (!data?.available) return null;
   const rows = data.days ?? [];
   const total = (k: (typeof COLS)[number]["key"]) => rows.reduce((n, d) => n + d[k], 0);
@@ -43,6 +40,7 @@ export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
   const today = rows[0]?.day ?? "";
   return (
     <section aria-label="Autopilot scorecard" className="border-b border-border px-6 py-3" data-testid="autopilot-scorecard">
+      <StoredAge at={at ?? areaAt} />
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-[12px] font-medium text-muted">Autopilot, last {rows.length} days</h2>
         <p className="num text-[12px] text-muted">

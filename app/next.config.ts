@@ -1,4 +1,23 @@
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 import type { NextConfig } from "next";
+
+// This build's identity for the desktop page store (src/lib/read-store.ts RELEASE): a digest of
+// the page's own source, so an answer kept by another build is read again, never drawn. It is
+// the same on every load of this config for the same source (no clock, no git).
+function sourceDigest(dir: string): string {
+  const h = createHash("sha256");
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(tsx?|css|json)$/.test(e.name)) h.update(path.relative(dir, p)).update(readFileSync(p));
+    }
+  };
+  walk(dir);
+  return h.digest("hex").slice(0, 16);
+}
 
 // In production Caddy sends /api/* straight to operator_api, so this rewrite only
 // serves local development and the Playwright walkthrough (operator_api on :8780 by default).
@@ -12,6 +31,7 @@ const securityHeaders = [
 ];
 
 const config: NextConfig = {
+  env: { NEXT_PUBLIC_PLX_RELEASE: sourceDigest(path.join(process.cwd(), "src")) },
   reactStrictMode: true,
   devIndicators: false, // dev only: no floating badge over the page
   poweredByHeader: false,
@@ -28,6 +48,14 @@ const config: NextConfig = {
   // a #fragment (/watching#data-health).
   async redirects() {
     return [
+      // Records became Orders, Customers, Suppliers, Products and More; the old address keeps working
+      { source: "/records", has: [{ type: "query", key: "kind", value: "customers" }], destination: "/customers", permanent: false },
+      { source: "/records", has: [{ type: "query", key: "kind", value: "suppliers" }], destination: "/suppliers", permanent: false },
+      { source: "/records", has: [{ type: "query", key: "kind", value: "products" }], destination: "/products", permanent: false },
+      { source: "/records", has: [{ type: "query", key: "kind", value: "(documents|production|lists|all)" }], destination: "/more", permanent: false },
+      { source: "/records", destination: "/orders", permanent: false },
+      { source: "/autopilot", has: [{ type: "query", key: "item" }], destination: "/assist", permanent: false },
+      { source: "/autopilot", destination: "/assist?show=switches", permanent: false },
       { source: "/watching", destination: "/?show=alerts", permanent: false },
       { source: "/late", destination: "/?show=late", permanent: false },
       { source: "/my-work", destination: "/", permanent: false },

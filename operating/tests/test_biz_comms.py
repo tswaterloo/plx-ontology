@@ -955,10 +955,17 @@ class EmailsThroughTheDoor(unittest.TestCase):
             self.assertEqual(len({h["citation"] for h in docs}), len(docs))
             self.assertTrue(all("close in meaning" in h["match"] for h in docs[1:]))
             self.assertIn("widened", out["searched"])
-            if out["completeness"]["next_cursor"]:
-                self.assertFalse(any("match" in h for h in self.search(
-                    tmp.OWNER, query="communicate", limit=1,
-                    cursor=out["completeness"]["next_cursor"])["documents"]))
+            cursor = out["completeness"]["next_cursor"]
+            if cursor:
+                later = self.search(tmp.OWNER, query="communicate", limit=1,
+                                    cursor=cursor)["documents"]
+                if cursor.startswith("m1:"):
+                    # the rows past the page's room continue by their own cursor (A16)
+                    self.assertTrue(all("close in meaning" in h["match"] for h in later))
+                    self.assertFalse({h["citation"] for h in later}
+                                     & {h["citation"] for h in docs})
+                else:
+                    self.assertFalse(any("match" in h for h in later))
         # read ahead for every ranked object, shown only for those the gate passed: when
         # the gate passes none, no row comes back as close in meaning, though they were read
         with mock.patch.object(plug, "enabled", return_value=True), \
@@ -1006,6 +1013,75 @@ class EmailsThroughTheDoor(unittest.TestCase):
         self.assertEqual({c for c, added in got if not added}, notes)
         self.assertTrue({c for c, added in got if added} <= set(others))
         self.assertTrue(any(added for _, added in got))
+
+    def test_rows_close_in_meaning_past_the_first_page_continue_by_their_own_cursor(self):
+        """A16: a first page shows up to MEANING_EXTRA rows close in meaning and no longer
+        drops the rest unsaid: they continue by an ``m1:`` cursor (completeness.continue),
+        page after page, in the ranking's order, none twice and none lost, for every
+        reader (only what the reader's own views show); a cursor of nothing this search
+        made is refused."""
+        import psycopg
+        from operating import ontology_tools_sql as ots
+        from operating.search import plug
+        notes = self.found(tmp.OWNER, query="note")
+        with psycopg.connect(self.dsn) as pg:
+            oid = dict(pg.execute(f"SELECT handle, object_ids[1] FROM {bv.SCHEMA}.emails"))
+        rest = sorted(h for h in self.handles(tmp.OWNER) - notes if h in oid)
+        self.assertGreater(len(rest), 4)
+        ranked = plug.Ranked([{"object_id": oid[h], "handle": None} for h in rest],
+                             "hybrid:x")
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", return_value=ranked), \
+                mock.patch.object(plug, "_gated", side_effect=lambda r, *a: r), \
+                mock.patch.object(ots, "MEANING_EXTRA", 2):
+            streamed = 0
+            for actor in READERS:
+                mine = self.handles(actor)
+                want = [h for h in rest if h in mine]
+                for limit, cs_limit in ((1, 50), (3, 10), (50, 1)):
+                    with self.subTest(actor=sorted(actor.principals), limit=limit):
+                        out = self.search(actor, query="note", limit=cs_limit)
+                        extras = [h for h in out["documents"] if "match" in h]
+                        done = out["completeness"]
+                        nexts = [c["cursor"] for c in done.get("continue") or []
+                                 if c["cursor"].startswith("m1:")]
+                        if not nexts:
+                            # nothing past the page's room: it showed every one
+                            self.assertEqual([h["citation"] for h in extras], want,
+                                             (len(want), out["searched"], done))
+                            continue
+                        streamed += 1
+                        self.assertEqual(len(nexts), 1)
+                        self.assertFalse(done["complete"])
+                        got = [h["citation"] for h in extras]
+                        ranks = [h["meaning_rank"] for h in extras]
+                        cursor, pages = nexts[0], 0
+                        while cursor:
+                            pages += 1
+                            self.assertLess(pages, 100)
+                            page = self.search(actor, query="note", limit=limit,
+                                               cursor=cursor)
+                            self.assertTrue(page["documents"])
+                            self.assertTrue(all("close in meaning" in h["match"]
+                                                for h in page["documents"]))
+                            got += [h["citation"] for h in page["documents"]]
+                            ranks += [h["meaning_rank"] for h in page["documents"]]
+                            cursor = page["completeness"]["next_cursor"]
+                            self.assertEqual(page["completeness"]["complete"], not cursor)
+                        self.assertEqual(len(got), len(set(got)), "a row came twice")
+                        self.assertEqual(got, want)
+                        self.assertEqual(ranks, sorted(ranks))
+            self.assertTrue(streamed, "no reader's page had rows left past its room")
+            for bad in ("m1:nonsense", "m1:2:3", "m1:0:", "m1:0:-1", "m1:0:1234567"):
+                with self.subTest(cursor=bad), self.assertRaises(ots.ToolError) as caught:
+                    self.search(tmp.OWNER, query="note", cursor=bad)
+                self.assertEqual(caught.exception.code, "invalid_input")
+        # a ranking that is down when the continuation is asked: an error, never an empty
+        # page that says the stream ended
+        with mock.patch.object(plug, "enabled", return_value=False), \
+                self.assertRaises(ots.ToolError) as caught:
+            self.search(tmp.OWNER, query="note", cursor="m1:0:2")
+        self.assertEqual(caught.exception.code, "not_ready")
 
     def test_header_matches_rank_first_and_pages_lose_or_repeat_nothing(self):
         """A row whose header (subject, addresses) holds every query word comes before the
@@ -1108,12 +1184,23 @@ class EmailsThroughTheDoor(unittest.TestCase):
             self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), 1)
             with mock.patch.object(cs, "COMMON_CHUNKS", 1):
                 self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), cs.WALK_ROWS)
+            # the message-level estimate (A11): a word matching few messages reads its index
+            # at once (header tier), a common one (threshold lowered) and no query walk
+            q = cs.tsquery("samples")
+            self.assertIn(("emails", 1), cs.direct_reads(
+                pg, q, ["emails"], {}, biz=bv.SCHEMA))
+            with mock.patch.object(cs, "COMMON_MESSAGES", 1):
+                self.assertEqual(cs.direct_reads(pg, q, ["emails"], {}, biz=bv.SCHEMA),
+                                 frozenset())
+            self.assertEqual(cs.direct_reads(pg, None, ["emails"], {}, biz=bv.SCHEMA),
+                             frozenset())
         walked = 0
         for actor in READERS:
             for ask in asks:
                 for limit in (1, 10, 60):
                     with mock.patch.object(cs, "WALK_ROWS", 100000), \
-                            mock.patch.object(cs, "COMMON_CHUNKS", 0):
+                            mock.patch.object(cs, "COMMON_CHUNKS", 0), \
+                            mock.patch.object(cs, "COMMON_MESSAGES", 0):
                         whole = pages(actor, limit, **dict(ask))
                     # a rare word (the fixture's every word, by the estimate) reads the
                     # word index at once: the same pages
@@ -1122,7 +1209,8 @@ class EmailsThroughTheDoor(unittest.TestCase):
                         with self.subTest(actor=sorted(actor.principals), ask=ask,
                                           limit=limit, walk=rows), \
                                 mock.patch.object(cs, "WALK_ROWS", rows), \
-                                mock.patch.object(cs, "COMMON_CHUNKS", 0):   # every word walks
+                                mock.patch.object(cs, "COMMON_CHUNKS", 0), \
+                                mock.patch.object(cs, "COMMON_MESSAGES", 0):   # every word walks
                             self.assertEqual(pages(actor, limit, **dict(ask)), whole)
                     if "participant" in ask:
                         # a party's own rows read first (``PARTY_ROWS``) or, past them, the

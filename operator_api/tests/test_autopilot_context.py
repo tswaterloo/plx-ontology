@@ -252,6 +252,22 @@ class ForDraft(unittest.TestCase):
         self.assertEqual(p.for_draft(OURS_OID, "customer_po", WORK, EVENT), (WORK, None))
 
 
+class AssistCommands(unittest.TestCase):
+    def test_the_assist_worker_and_prepared_session_get_the_tool_session_registered_first(self):
+        """11-24: they ran as ``python3 -m operating.assist_*`` and never registered a lookup, so
+        the Assistant had no tools (every session ``agent_no_session``)."""
+        from unittest import mock
+        from operating import assist_prepared, assist_worker
+        order = []
+        with mock.patch.object(ac, "register", lambda *a, **k: order.append("register")), \
+                mock.patch.object(assist_worker, "main", lambda argv: order.append(("worker", argv)) or 0), \
+                mock.patch.object(assist_prepared, "main", lambda argv: order.append(("prepared", argv)) or 0):
+            self.assertEqual(ac.main(["assist-worker", "run", "--store", "s"]), 0)
+            self.assertEqual(ac.main(["assist-prepared", "run", "--store", "s"]), 0)
+        self.assertEqual(order, ["register", ("worker", ["run", "--store", "s"]),
+                                 "register", ("prepared", ["run", "--store", "s"])])
+
+
 class Hook(unittest.TestCase):
     def test_anything_but_ids_from_a_provider_records_nothing(self):
         class P:

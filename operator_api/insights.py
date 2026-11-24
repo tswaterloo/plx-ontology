@@ -1290,6 +1290,11 @@ class InsightsMixin:
             except NotStored:
                 keeper.ahead(reader, [ref(spec)])
                 raise
+        if key is None and stored_only:
+            # a session with nothing to keep tiles under (no principals) is never read in the
+            # dashboard stream's request: said, never computed here (KNOWN-GAPS P7)
+            raise UserFacing("insight_unkept", "This session cannot keep chart values, so "
+                             "the dashboard cannot show them.", 403)
         if key is None:
             return result(self, reader, spec, scope, self._insight_read(reader, ref(spec)))
         keeper.opened(reader, ref(spec))

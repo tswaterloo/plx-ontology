@@ -42,7 +42,8 @@ WATCH = "plx.watch_measure"
 READ_DOCUMENT = "plx.read_document"
 MY_WORK = "plx.my_work"
 HAND_OFF = "plx.hand_off"
-NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH, READ_DOCUMENT, MY_WORK, HAND_OFF)
+OPEN_WORK = "plx.my_open_work"   # ``open_work_tool``
+NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH, READ_DOCUMENT, MY_WORK, HAND_OFF, OPEN_WORK)
 # the kinds of file plx.make_document makes (``operating.instruct_files.KINDS``)
 KINDS = ("docx", "xlsx", "pdf", "pptx", "csv")
 MOST_LISTED = 40
@@ -319,6 +320,10 @@ class AssistantToolsMixin:
         if getattr(self, "work_log", None) is not None:
             out.append(LocalTool(spec=MY_WORK_SPEC,
                                  call=lambda a: self._my_work_call(reader, a)))
+        if callable(getattr(self, "_apa_rows", None)):
+            from . import open_work_tool
+            out.append(LocalTool(spec=open_work_tool.SPEC,
+                                 call=lambda a: open_work_tool.call(self, reader, a)))
         if callable(getattr(self, "instruct_ask", None)):
             # the call itself does nothing: the app sees it in the answer
             # (``handed_off``) and gives the line to ``instruct_ask``
@@ -521,7 +526,7 @@ class AssistantToolsMixin:
         kind = args.get("kind") or "instruction"
         replaces = args.get("replaces") if type(args.get("replaces")) is int else None
         new, why = store.write(reader, kind=kind, text=_words(args.get("text")),
-                               replaces=replaces)
+                               replaces=replaces, personal=False)   # model-composed words
         if new is None:
             return {"not_kept": mem.WRITE_REFUSED.get(why or "", "It was not kept.")}
         text = _words(args.get("text"))

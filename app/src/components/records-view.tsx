@@ -1,7 +1,11 @@
 "use client";
 
+// The lists people look things up in: Orders, Customers, Suppliers, Products, and More (documents,
+// batches, every list). One component; each route passes its place (a place with no tab strip of
+// its own opens on its list), and with no place it keeps every kind as tabs.
+
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
@@ -10,7 +14,7 @@ import { Pending } from "@/components/ui/skeleton";
 import { RecordList } from "@/components/record-list";
 import { getRecordViews, suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ApiError, plainError } from "@/lib/errors";
+import { plainError } from "@/lib/errors";
 import { formatDateTime, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { useRecentRecords, useSaved } from "@/lib/saved";
 import type { RecordViews, SuggestResponse } from "@/lib/types";
@@ -19,7 +23,7 @@ import type { RecordViews, SuggestResponse } from "@/lib/types";
 const RECORD_KINDS = [
   { key: "all", label: "All", types: [], hint: "a name or any number: customer, supplier, order, PO, invoice, shipment, receipt, credit note, lot, item or batch" },
   { key: "customers", label: "Customers", types: ["Customer", "customer", "Chain"], hint: "a customer's name or number", list: "customers" },
-  { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number", list: "purchase_orders" },
+  { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number", list: "purchase_orders", sort: { key: "days_late", direction: "desc" } },
   { key: "suppliers", label: "Suppliers", types: ["Supplier", "Vendor", "supplier"], hint: "a supplier's name or number", list: "suppliers" },
   { key: "documents", label: "Documents", types: ["SalesInvoice", "SupplierInvoice", "Shipment", "Receipt", "SalesCreditMemo", "PurchaseInvoice"], hint: "an invoice, shipment, receipt or credit note number", list: "sales_invoices" },
   { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot", "Product", "Batch"], hint: "an item number, name or lot", list: "products" },
@@ -29,6 +33,9 @@ const RECORD_KINDS = [
 /** What a tab's saved records are called ("Your saved records", not "Your saved all"). */
 const SAVED_NOUN: Record<string, string> = { all: "records", production: "batches", lists: "records" };
 type Kind = (typeof RECORD_KINDS)[number];
+export type Place = "orders" | "customers" | "suppliers" | "products" | "more";
+/** The kinds a place offers as tabs: only More has any (the four others open straight on their list). */
+const MORE_KINDS = ["documents", "production", "lists", "all"];
 
 function kindOf(key: string | null): Kind {
   return RECORD_KINDS.find((k) => k.key === key) ?? RECORD_KINDS[0];
@@ -73,10 +80,13 @@ function AllLists({ view, onView }: { view: string; onView: (v: string) => void 
   );
 }
 
-function Records() {
+function Records({ place }: { place?: Place }) {
   const params = useSearchParams();
   const router = useRouter();
-  const kind = kindOf(params.get("kind"));
+  const path = usePathname() || "/records";
+  const kind = kindOf(place && place !== "more" ? place : params.get("kind") ?? (place === "more" ? "documents" : null));
+  const salesOrders = place === "orders" && params.get("list") === "sales_orders";
+  const listView = salesOrders ? "sales_orders" : "list" in kind ? kind.list : "";
   const [q, setQ] = useState(params.get("q") ?? "");
   const [found, setFound] = useState<SuggestResponse | null>(null);
   const [problem, setProblem] = useState<unknown>(null);
@@ -88,8 +98,10 @@ function Records() {
   const opened = useRecentRecords();
   const recent = useMemo(() => {
     const savedHrefs = new Set(mine.map((s) => s.href));
-    return opened.filter((r) => (kind.key === "all" || (kind.types as readonly string[]).includes(r.type)) && !savedHrefs.has(r.href)).slice(0, 10);
+    return opened.filter((r) => (kind.key === "all" || (kind.types as readonly string[]).includes(r.type)) && !savedHrefs.has(r.href));
   }, [opened, kind, mine]);
+  const [allRecent, setAllRecent] = useState(false);
+  const recentShown = allRecent ? recent : recent.slice(0, 10);  // guard-ok: the count and a Show all are drawn beside the list
   const query = q.trim();
 
   useEffect(() => {
@@ -100,14 +112,10 @@ function Records() {
       return;
     }
     const ctl = new AbortController();
-    // a search never waits for good: it says it is slow, then gives up with a retry; both timers
-    // end the moment the answer (or its failure) arrives
+    // a search says it is slow and keeps waiting (it never gives up); the timer ends the moment
+    // the answer (or its failure) arrives
     let slowT: number | undefined;
-    let giveUp: number | undefined;
-    const settled = () => {
-      window.clearTimeout(slowT);
-      window.clearTimeout(giveUp);
-    };
+    const settled = () => window.clearTimeout(slowT);
     const t = window.setTimeout(() => {
       suggest(query, ctl.signal, 20).then(
         (r) => {
@@ -121,10 +129,6 @@ function Records() {
       );
     }, 80);
     slowT = window.setTimeout(() => setSlow(true), 8000);
-    giveUp = window.setTimeout(() => {
-      ctl.abort();
-      setProblem(new ApiError(503, "search_busy"));
-    }, 20000);
     return () => {
       window.clearTimeout(t);
       settled();
@@ -139,16 +143,16 @@ function Records() {
   const go = (key: string) => {
     const next = new URLSearchParams(params.toString());
     next.set("kind", key);
-    router.replace(`/records?${next.toString()}`);
+    router.replace(`${path}?${next.toString()}`);
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
-      <Toolbar heading title="Records" pin={`Records: ${kind.label}`} />
-      <PageIntro path="/records" />
+      <Toolbar heading title={place ? PLACE_TITLE[place] : "Records"} pin={`${place ? PLACE_TITLE[place] : "Records"}: ${kind.label}`} />
+      <PageIntro path={place ? `/${place}` : "/records"} />
       <div className={cn("w-full overflow-y-auto px-6 py-5", "list" in kind || kind.key === "lists" ? "max-w-[1280px]" : "max-w-[880px]")}>
-        <div role="tablist" aria-label="Kind of record" className="flex h-9 gap-5 overflow-x-auto whitespace-nowrap border-b border-border">
-          {RECORD_KINDS.map((k) => (
+        {(!place || place === "more") && <div role="tablist" aria-label="Kind of record" className="flex h-9 gap-5 overflow-x-auto whitespace-nowrap border-b border-border">
+          {RECORD_KINDS.filter((k) => !place || MORE_KINDS.includes(k.key)).map((k) => (
             <button
               key={k.key}
               type="button"
@@ -160,7 +164,7 @@ function Records() {
               {k.label}
             </button>
           ))}
-        </div>
+        </div>}
         <label className="mt-4 block text-[12px] text-muted" htmlFor="records-q">
           Find {kind.hint}
         </label>
@@ -214,15 +218,13 @@ function Records() {
                 Type a name or a number above. A customer or supplier by name, an order, PO, invoice or batch by its number; a close spelling is found too. Records you open show up here.
               </p>
             )}
-            {"list" in kind && <div className="mb-6"><RecordList key={kind.list} view={kind.list} /></div>}
-            {kind.key === "lists" && <AllLists view={params.get("view") ?? ""} onView={(v) => { const next = new URLSearchParams(params.toString()); next.set("view", v); router.replace(`/records?${next.toString()}`); }} />}
             {recent.length > 0 && (
               <section aria-labelledby="records-recent" className="mb-6">
                 <h2 id="records-recent" className="text-[13px] font-semibold">
-                  Opened lately
+                  Opened lately{recent.length > recentShown.length ? ` (${recentShown.length} of ${recent.length})` : ""}
                 </h2>
                 <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="records-recent-list">
-                  {recent.map((r) => (
+                  {recentShown.map((r) => (
                     <li key={r.href}>
                       <Link href={r.href} className="flex items-baseline justify-between gap-4 py-2 text-[13px] hover:bg-hover">
                         <span className="truncate">{r.label}</span>
@@ -231,9 +233,14 @@ function Records() {
                     </li>
                   ))}
                 </ul>
+                {recent.length > recentShown.length && (
+                  <button type="button" className="mt-2 text-[12px] text-muted underline hover:text-fg" onClick={() => setAllRecent(true)}>
+                    Show all {recent.length}
+                  </button>
+                )}
               </section>
             )}
-            <section aria-labelledby="records-saved">
+            {(mine.length > 0 || !listView) && <section aria-labelledby="records-saved" className="mb-6">
               <h2 id="records-saved" className="text-[13px] font-semibold">
                 Your saved {SAVED_NOUN[kind.key] ?? kind.label.toLowerCase()}
               </h2>
@@ -250,7 +257,16 @@ function Records() {
               ) : (
                 <p className="mt-1 text-[13px] text-muted">None saved yet. Open one and press Save to keep it here.</p>
               )}
-            </section>
+            </section>}
+            {place === "orders" && (
+              <div role="group" aria-label="Which orders" className="mb-3 flex gap-4 text-[13px]">
+                {[["purchase_orders", "Purchase orders (to suppliers)"], ["sales_orders", "Sales orders (from customers)"]].map(([v, label]) => (
+                  <Link key={v} href={v === "sales_orders" ? `${path}?list=sales_orders` : path} replace aria-current={listView === v ? "page" : undefined} className={cn("pb-0.5", listView === v ? "border-b-2 border-accent font-medium text-fg" : "text-muted hover:text-fg")}>{label}</Link>
+                ))}
+              </div>
+            )}
+            {listView && <div className="mb-6"><RecordList key={listView} view={listView} initialSort={listView === "purchase_orders" && "sort" in kind ? kind.sort : undefined} /></div>}
+            {kind.key === "lists" && <AllLists view={params.get("view") ?? ""} onView={(v) => { const next = new URLSearchParams(params.toString()); next.set("view", v); router.replace(`${path}?${next.toString()}`); }} />}
             </>
           )}
         </div>
@@ -260,10 +276,12 @@ function Records() {
 }
 
 /** Records: customers, orders, suppliers and products, found by name or number, as this reader may see them. */
-export default function RecordsPage() {
+const PLACE_TITLE: Record<Place, string> = { orders: "Orders", customers: "Customers", suppliers: "Suppliers", products: "Products", more: "More" };
+
+export function RecordsView({ place }: { place?: Place }) {
   return (
     <Suspense>
-      <Records />
+      <Records place={place} />
     </Suspense>
   );
 }

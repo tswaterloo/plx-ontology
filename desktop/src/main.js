@@ -3,12 +3,20 @@
 // sign-in, same pages, same permissions: the server decides, nothing is cached or answered
 // here). It adds a window and icon, a menu, system notifications the page asks for, an
 // in-app "Give feedback", and updates from our own server.
+//
+// It also keeps the answers the server sent THIS person on this machine (store.js: one
+// encrypted file per answer), so the first screen after a launch draws at once. The page
+// stays the only thing that asks the server; this process only keeps what the page hands it,
+// and forgets it all when the sign-in, the server or the person's door changes (see
+// `watchAnswers`). The window is hidden, not closed, so opening the app again is a show.
 
 const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
-const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, net, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, net, safeStorage, session, shell } = require("electron");
 const policy = require("./policy");
+const { createStore } = require("./store");
+const storeIpc = require("./store-ipc");
 
 let win = null;
 let serverOrigin = null;
@@ -28,9 +36,77 @@ function readServer() {
   }
 }
 
-function saveServer(origin) {
+function readConfig() {
+  try {
+    const c = JSON.parse(fs.readFileSync(configFile(), "utf8"));
+    return c && typeof c === "object" ? c : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(patch) {
   fs.mkdirSync(path.dirname(configFile()), { recursive: true });
-  fs.writeFileSync(configFile(), JSON.stringify({ serverUrl: origin }), { mode: 0o600 });
+  fs.writeFileSync(configFile(), JSON.stringify({ ...readConfig(), ...patch }), { mode: 0o600 });
+}
+
+function saveServer(origin) {
+  writeConfig({ serverUrl: origin });
+}
+
+// ---- the page store (durable tier): sealed by the OS, one file per answer
+const sealer = {
+  async available() {
+    try {
+      // Linux without a keyring falls back to a fixed password ("basic_text"): not encryption
+      // (a development run on a Linux box without a keyring may set PLX_DESKTOP_TEST_SEAL=1 to exercise the store;
+      // an installed app never honours it)
+      const testing = process.env.PLX_DESKTOP_TEST_SEAL === "1" && !app.isPackaged;
+      if (!testing && typeof safeStorage.getSelectedStorageBackend === "function" && safeStorage.getSelectedStorageBackend() === "basic_text") return false;
+      return await safeStorage.isAsyncEncryptionAvailable();
+    } catch {
+      return false;
+    }
+  },
+  async seal(buf) {
+    return safeStorage.encryptStringAsync(buf.toString("base64"));
+  },
+  async unseal(sealed) {
+    const got = await safeStorage.decryptStringAsync(sealed);
+    return { key: Buffer.from(got.result, "base64"), reseal: !!got.shouldReEncrypt };
+  },
+};
+let store = null;
+const getStore = () => {
+  if (!store) store = createStore({ dir: path.join(app.getPath("userData"), "store"), sealer, log: (m) => console.log(m) });
+  return store;
+};
+
+/** The ONE listener on the Workbench's API answers (Electron keeps only the last listener per
+ * session): it sees status and headers before the body reaches the page, so a changed door or a
+ * refused session empties the store before any stored answer can be drawn for the new state. */
+function watchAnswers() {
+  const webRequest = session.defaultSession.webRequest;
+  if (!serverOrigin) {
+    webRequest.onHeadersReceived(null);
+    return;
+  }
+  webRequest.onHeadersReceived({ urls: [`${serverOrigin}/api/*`] }, (details, callback) => {
+    try {
+      if (storeIpc.answerSeen(getStore(), serverOrigin, details) === "wiped" && win && !win.isDestroyed()) win.webContents.send("desktop:wiped");
+    } catch (e) {
+      console.log(`store: an answer was not checked (${e && e.message ? String(e.message).slice(0, 60) : "error"}); wiped`);
+      getStore().wipe("answer check failed"); // never keep what could not be checked
+    }
+    callback({});
+  });
+}
+
+/** The server changed (or was first set): nothing kept for another server is ever shown. */
+function serverChanged(next) {
+  if (next !== serverOrigin) getStore().wipe("server changed");
+  serverOrigin = next;
+  watchAnswers();
 }
 
 const send = (msg) => win && !win.isDestroyed() && win.webContents.send("desktop:menu", msg);
@@ -85,6 +161,21 @@ function openStart() {
   else win.loadFile(SETUP_PAGE);
 }
 
+let quitting = false;
+let shownOnce = false;
+let hiddenSince = null; // when the window was hidden (an update installs after it was hidden a while)
+let startHidden = false; // opened at login, or restarted by an update: no window until the person asks
+const relaunchMarker = () => path.join(app.getPath("userData"), "relaunch-hidden");
+function consumeRelaunchMarker() {
+  try {
+    const was = fs.existsSync(relaunchMarker());
+    if (was) fs.rmSync(relaunchMarker(), { force: true });
+    return was;
+  } catch {
+    return false;
+  }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -102,9 +193,37 @@ function createWindow() {
       nodeIntegration: false,
       webSecurity: true,
       spellcheck: true,
+      backgroundThrottling: false, // a hidden window keeps its page live: reopening is a show, not a load
+      additionalArguments: [`--plx-desktop-version=${app.getVersion()}`],
     },
   });
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => {
+    if (startHidden && !shownOnce) hiddenSince = Date.now();
+    else win.show();
+  });
+  // closing hides: the app stays loaded (and in the tray / dock) until Quit
+  win.on("close", (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    win.hide();
+  });
+  win.on("session-end", () => {
+    quitting = true; // Windows is signing out or shutting down: a hidden window must not hold that up
+  });
+  win.on("hide", () => {
+    hiddenSince = Date.now();
+  });
+  win.on("show", () => {
+    shownOnce = true;
+    hiddenSince = null;
+  });
+  // a minimized window is out of sight too: an update waits the same 10 minutes, then restarts
+  win.on("minimize", () => {
+    hiddenSince = Date.now();
+  });
+  win.on("restore", () => {
+    hiddenSince = null;
+  });
   win.on("closed", () => {
     stopRetry();
     win = null;
@@ -171,7 +290,8 @@ function buildMenu() {
     {
       label: "File",
       submenu: [
-        { label: "Change server…", click: () => { serverOrigin = null; openStart(); } },
+        { label: "Change server…", click: () => { serverChanged(null); openStart(); } },
+        ...(app.isPackaged ? [{ label: "Open when I sign in to this computer", type: "checkbox", checked: loginItemOn(), click: (item) => setLoginItem(item.checked) }] : []),
         { type: "separator" },
         process.platform === "darwin" ? { role: "close" } : { role: "quit" },
       ],
@@ -214,14 +334,33 @@ function buildMenu() {
 
 // ---- updates: from our own server's /desktop/ folder (electron-builder's generic feed)
 let updater = null;
+let updateReady = false;
+const UPDATE_HIDDEN_MS = 10 * 60 * 1000; // the window hidden this long: nobody is looking, so restart into the update
+const UPDATE_CHECK_MS = 4 * 3600 * 1000; // the app no longer quits each night: look for an update every few hours
+
+/** An app that never quits would never update: with an update downloaded, restart into it once the
+ * window has been hidden a while (relaunching hidden, the store is on disk and survives). */
+function installWhenIdle() {
+  if (!updateReady || quitting || !updater) return;
+  if (win && !win.isDestroyed() && win.isVisible()) return;
+  if (hiddenSince !== null && Date.now() - hiddenSince < UPDATE_HIDDEN_MS) return;
+  try {
+    fs.writeFileSync(relaunchMarker(), "1", { mode: 0o600 });
+    getStore().flush();
+  } catch (e) {
+    console.log(`update: relaunch marker not written (${e && e.code ? e.code : "error"})`);
+  }
+  quitting = true;
+  updater.quitAndInstall(true, true);
+}
 function getUpdater() {
   if (updater) return updater;
   const { autoUpdater } = require("electron-updater");
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("update-downloaded", () => {
-    if (!Notification.isSupported()) return;
-    new Notification({ title: "Workbench update ready", body: "It installs when you quit and reopen the app." }).show();
+    updateReady = true; // installed once the window has been hidden UPDATE_HIDDEN_MS (`installWhenIdle`), else when the app quits
+    installWhenIdle();
   });
   autoUpdater.on("error", () => undefined); // a missing feed is not the person's problem
   updater = autoUpdater;
@@ -240,16 +379,13 @@ async function checkForUpdates(manual) {
   }
   const next = result && result.updateInfo && result.updateInfo.version;
   if (next && next !== app.getVersion() && result.isUpdateAvailable !== false) {
-    return tell(`Version ${next} is downloading; it installs when you quit and reopen the app.`);
+    return tell(`Version ${next} is downloading; it installs by itself when the window has been closed for a few minutes, or when you quit.`);
   }
   return tell(`You have the latest version (${app.getVersion()}).`);
 }
 
 // ---- the page's two requests
 let recent = [];
-ipcMain.on("desktop:version", (e) => {
-  e.returnValue = app.getVersion();
-});
 ipcMain.on("desktop:notify", (e, req) => {
   if (!win || e.sender !== win.webContents || !serverOrigin) return;
   let from = null;
@@ -287,10 +423,57 @@ ipcMain.handle("desktop:save-server", async (e, url) => {
   }
   if (!ok) return { error: `No Workbench answered at ${origin}. Check the address (and the VPN, if it is on one).` };
   saveServer(origin);
-  serverOrigin = origin;
+  serverChanged(origin);
   openStart();
   return { ok: true };
 });
+
+// ---- the page store's calls (the sender's origin is checked in each: see store-ipc.js)
+const storeCalls = storeIpc.handlers({ store: { open: () => getStore().open(), get: (k) => getStore().get(k), put: (a) => getStore().put(a), drop: (k) => getStore().drop(k), wipe: (r) => getStore().wipe(r) }, getWin: () => win, getOrigin: () => serverOrigin });
+for (const name of ["open", "get", "put", "drop", "wipe"]) ipcMain.handle(`desktop:store-${name}`, (e, arg) => storeCalls[name](e, arg));
+
+// ---- open at login (offered once), and the tray: the app lives on with its window hidden
+function loginItemOn() {
+  try {
+    return app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+}
+function setLoginItem(on) {
+  try {
+    app.setLoginItemSettings({ openAtLogin: !!on, args: ["--hidden"] });
+  } catch (e) {
+    console.log(`login item not set (${e && e.message ? String(e.message).slice(0, 60) : "error"})`);
+  }
+}
+async function offerLoginItem() {
+  if (!app.isPackaged || readConfig().loginAsked || !win) return;
+  const { response } = await dialog.showMessageBox(win, {
+    type: "question",
+    buttons: ["Open when I sign in", "Not now"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "PLX Workbench",
+    message: "Open the Workbench when you sign in to this computer?",
+    detail: "It opens in the background, so the Workbench is ready the moment you click its icon. You can change this under File.",
+  });
+  writeConfig({ loginAsked: true });
+  if (response === 0) setLoginItem(true);
+}
+let tray = null;
+function makeTray() {
+  if (process.platform === "darwin" || tray) return; // the Dock icon does this on a Mac
+  try {
+    const icon = nativeImage.createFromPath(path.join(__dirname, "..", "build", "icon.png")).resize({ width: 16, height: 16 });
+    tray = new Tray(icon);
+    tray.setToolTip("PLX Workbench");
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: "Open the Workbench", click: show }, { label: "Quit", click: () => app.quit() }]));
+    tray.on("click", show);
+  } catch (e) {
+    console.log(`tray not made (${e && e.message ? String(e.message).slice(0, 60) : "error"})`);
+  }
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -300,16 +483,24 @@ if (!app.requestSingleInstanceLock()) {
     // no permission is granted to a page; notifications go through the one IPC door above
     session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
+    startHidden = process.argv.includes("--hidden") || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin) || consumeRelaunchMarker();
     serverOrigin = readServer();
+    watchAnswers();
     buildMenu();
     createWindow();
+    makeTray();
     void checkForUpdates(false);
+    setInterval(() => void checkForUpdates(false), UPDATE_CHECK_MS).unref();
+    setInterval(installWhenIdle, 60_000).unref();
+    if (!startHidden) win.once("show", () => setTimeout(() => void offerLoginItem(), 5000));
     app.on("activate", () => {
       if (!win) createWindow();
       else show();
     });
   });
-  app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+  // the window hides when closed; only Quit (menu, tray, the OS) ends the app, and then the index is written
+  app.on("before-quit", () => {
+    quitting = true;
+    if (store) store.flush();
   });
 }

@@ -15,7 +15,7 @@ import { getAutopilotDrafts, setNeverSender, type DraftList, type PreparedItem }
 import { noticeKind, plainError } from "@/lib/errors";
 import { useFeed } from "@/lib/feeds";
 
-export const SWITCHES_HREF = "/autopilot";
+export const SWITCHES_HREF = "/assist?show=switches";
 
 /** Of today's items, how many Auto would send by itself and how many would still wait (a dry run). */
 export function autoDigest(items: PreparedItem[]): { send: number; wait: number } {

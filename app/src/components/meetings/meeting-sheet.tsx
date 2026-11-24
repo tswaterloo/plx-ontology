@@ -82,7 +82,7 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
               </a>
             )}
             <Link
-              href={`/ask?q=${encodeURIComponent(`Prepare me for the meeting "${m.object.label}"`)}&object=${encodeURIComponent(m.object.object_id)}`}
+              href={`/ask?q=${encodeURIComponent(`Prepare me for the meeting "${m.object.label}"`)}&object=${encodeURIComponent(m.object.object_id)}&brief=${encodeURIComponent(m.object.type)}`}
               className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] text-muted hover:bg-hover hover:text-fg"
             >
               <MessageCircle className="size-[15px]" strokeWidth={1.8} aria-hidden />

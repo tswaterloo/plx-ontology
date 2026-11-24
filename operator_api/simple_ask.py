@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequenc
 from zoneinfo import ZoneInfo
 
 from .ask_dates import dated
-from . import ask_legs, ask_refs
+from . import ask_legs, ask_refs, brief_context
 from .ask_refs import EVIDENCE_TOOLS, _parsed
 
 TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document")
@@ -96,6 +96,7 @@ METHOD = """How to work:
 - A result grouped by a column gives one row per group: a figure for the whole is the profile's total over the groups (total_over_groups) or its own query, never one group's row. A result filtered by a WHERE describes only what the filter kept. A profile that says limit_hit stopped at the statement's own LIMIT: more rows may exist.
 - A result and a search say where their data was read and as of when (data_as_of: the standby's replay time, or the primary with the reason); give that time in the answer.
 - A search result's coverage says how many matched, how many are shown, which sources and dates it covered. "None found" holds only for what the coverage covered.
+- For "what do I have to do", "what is open", "what am I waiting on", "what did I promise" (today, this week, any time): read plx.my_open_work FIRST. It is the person's own store of open work, built continuously from every mail and Teams message, their approvals, Planner and Mission Control tasks, waits and promises, and it holds their own notes (they override what contradicts them). Read every page (next_offset), then today's calendar (the meetings view), then what changed since in plx.search. Name in the answer what you read: the store, its as-of time, the calendar, the search and its dates. If its status says it is off or unreadable, say so and read mail and Teams with plx.search through its last page. Never answer such a question from the newest mail alone.
 - Times are America/New_York, day boundaries too (received_at >= '2026-11-16 00:00 America/New_York'). Filter mail on emails.received_at and Teams on teams_messages.created_at. Each amount has its own currency column: keep currencies apart. A record number repeats across systems and parties: two rows are one thing only when the party matches. source_systems lists every system holding a copy of the row.
 {search}
 {chart_line}
@@ -195,7 +196,7 @@ def system_prompt() -> str:
 
 
 # the system prompt's size (A5b: within 30,000 characters; was 99,930): a test holds it
-PROMPT_MOST = 31_000
+PROMPT_MOST = 32_000   # 11-24: +1,000 for the name-finder method line
 GENERIC_POINTER = ("Every other record of every system: record_types, records, "
                    "record_links (plx.sql {\"describe\": \"records\"}).")
 
@@ -807,7 +808,7 @@ class Checking:
         """The covering-read pass (``ask_cover``): the sentences it lists go back to the
         session as one turn (one read each, then a replacement or 'stands'); the host swaps
         those sentences only. Not checked, or nothing listed: the answer stands as written."""
-        from . import ask_cover
+        from . import ask_check, ask_cover
         self.emit("check", {"state": "start"})
         cover = ask_cover.check(self.asker, self.question, printed, ran.events)
         logging.getLogger("operator_api.ask").info(cover.line())
@@ -1739,6 +1740,7 @@ CALL_STEPS = {"plx.sql": "Querying the business records",
               "plx.template": "Reading your templates",
               "plx.make_document": "Making the document",
               "plx.my_work": "Reading your work log",
+              "plx.my_open_work": "Reading your open work and notes",
               "plx.hand_off": "Handing it to the drafting desk"}
 # the views a statement reads, as it names them: FROM / JOIN <view> (a schema prefix,
 # quotes and a function call such as generate_series(...) left out; only served view
@@ -1970,7 +1972,8 @@ def ask(backend: Any, reader: Any, request: Any, conversation: str,
                     return str(turn[0] or "") if turn else ""
                 done.set_result(run(backend.agent_ask, reader.session, asked.question,
                                     request.history, emit, cancel, remembered,
-                                    files=read, context=about(asked) + stated_lines(kept[0]),
+                                    files=read, context=about(asked) + stated_lines(kept[0])
+                                    + brief_context.lines(backend, reader, asked),
                                     conversation=conversation,
                                     tools=write_tools(backend, reader),
                                     deep=bool(getattr(request, "deep", False))))

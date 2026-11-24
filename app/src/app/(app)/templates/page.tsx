@@ -6,6 +6,8 @@ import { DOC_TYPE_LABEL, refusal, shareLabel, TemplateFilledView, TemplateForm }
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
+import { useRead } from "@/lib/use-read";
+import { StoredAge } from "@/components/ui/stored-age";
 import { deleteTemplate, fillTemplate, getAnswerBank, getLearnedTemplates, getTemplates } from "@/lib/api";
 import { OneList } from "@/components/record/document-lists";
 import { eastern } from "@/lib/format";
@@ -143,12 +145,7 @@ function LearnedRow({ t }: { t: LearnedTemplate }) {
 /** The kinds learned from what you sent, re-learned every night. Nothing shows until some
  * are learned; a read that fails leaves the rest of the page as it is. */
 function Learned() {
-  const [learned, setLearned] = useState<LearnedTemplates | null>(null);
-  useEffect(() => {
-    const c = new AbortController();
-    getLearnedTemplates(c.signal).then(setLearned).catch(() => undefined);
-    return () => c.abort();
-  }, []);
+  const { data: learned } = useRead<LearnedTemplates>("/api/templates/learned", getLearnedTemplates);
   const rows = learned?.status === "read" ? learned.templates ?? [] : [];
   if (rows.length === 0) return null;
   return (
@@ -170,18 +167,7 @@ function Learned() {
 function AnswerBank() {
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
-  const [bank, setBank] = useState<DocList | null>(null);
-  const [problem, setProblem] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  useEffect(() => {
-    const c = new AbortController();
-    setProblem(null);
-    setBank(null);
-    getAnswerBank(asked, c.signal)
-      .then(setBank)
-      .catch((e) => !c.signal.aborted && setProblem(e));
-    return () => c.abort();
-  }, [asked, round]);
+  const { data: bank, error: problem, retry } = useRead<DocList>(`/api/templates/answer-bank${asked ? `?question=${encodeURIComponent(asked)}` : ""}`, (s) => getAnswerBank(asked, s));
   const rows = bank?.rows ?? [];
   return (
     <section aria-labelledby="answers-title" className="mt-8" data-testid="answer-bank">
@@ -213,7 +199,7 @@ function AnswerBank() {
         </button>
       </form>
       <div className="mt-3">
-        {problem ? <LoadProblem message={plainError(problem)} onRetry={() => setRound((n) => n + 1)} /> : null}
+        {problem ? <LoadProblem message={plainError(problem)} onRetry={retry} /> : null}
         {!bank && !problem && <Pending label="Reading past questionnaires" />}
         {bank?.error && <p className="text-[13px] text-muted">{bank.error}</p>}
         {bank && !bank.error && rows.length === 0 && (
@@ -229,18 +215,8 @@ function AnswerBank() {
 }
 
 export default function TemplatesPage() {
-  const [list, setList] = useState<TemplateList | null>(null);
-  const [problem, setProblem] = useState<unknown>(null);
+  const { data: list, error: problem, retry: load, at } = useRead<TemplateList>("/api/templates", (s) => getTemplates(s));
   const [adding, setAdding] = useState(false);
-  const load = useCallback(() => {
-    const c = new AbortController();
-    setProblem(null);
-    getTemplates(c.signal)
-      .then(setList)
-      .catch((e) => !c.signal.aborted && setProblem(e));
-    return () => c.abort();
-  }, []);
-  useEffect(() => load(), [load]);
   const mine = (list?.templates ?? []).filter((t) => t.mine);
   const shared = (list?.templates ?? []).filter((t) => !t.mine);
   return (
@@ -260,6 +236,7 @@ export default function TemplatesPage() {
         <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-muted">
           Documents you write often, with blanks where a record&apos;s details go. Using one fills each blank from the record you name and shows where it came from; anything the records don&apos;t settle is marked to check. In the Ask box, type &ldquo;use my order confirmation template for SO 5512&rdquo;, or &ldquo;save a template for supplier follow-ups&rdquo; to make one from your words or from a document you name.
         </p>
+        <StoredAge at={at} className="mb-3" />
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
         {!list && !problem && <Pending label="Reading your templates" />}
         {list && !list.available && <LoadProblem message="Your templates couldn't be read just now." onRetry={load} />}

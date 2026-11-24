@@ -271,12 +271,15 @@ def from_environ(environ: Mapping[str, str], costs: Optional[list] = None
     return (None, "") if name.lower() in ("off", "none", "0") else (claude_text(name, costs=costs), name)
 
 
+from operating import assist_prepared as _assist_prepared
+BASIS_SQL = _assist_prepared.BASIS_SQL     # one definition of "has a basis the prepared session opens"
+
 _TODO = f"""
 SELECT m.matter_id, m.owner_person, m.kind, m.title, m.detail, m.basis_at, m.counterpart,
        m.sources, m.next_act, m.due_at, m.touched_at
 FROM {SCHEMA}.matters m
 WHERE m.state = 'open' AND m.plan_status = 'none' AND m.kind = ANY(%(kinds)s)
-  AND NOT (m.owner_person = ANY(%(skip)s) AND coalesce(jsonb_typeof(m.sources->'readings') = 'array', false))
+  AND NOT (m.owner_person = ANY(%(skip)s) AND coalesce({BASIS_SQL}, false))
 ORDER BY (m.owner_person = ANY(%(shown)s)) DESC, coalesce(m.touched_at, m.basis_at) DESC,
          m.matter_id"""
 
@@ -376,7 +379,8 @@ def run_plans(pg: Any, call: Callable[[str], Optional[str]],
     when = stamp.strftime("%A %Y-%m-%d %H:%M")
     # ``shown_only``: the usage wall is up: only the matters of people they are shown to
     cur = pg.execute(_TODO_SHOWN if shown_only else _TODO,
-                     {"kinds": list(KINDS), "shown": list(shown), "skip": list(prepared)})
+                     {"kinds": list(KINDS), "shown": list(shown), "skip": list(prepared),
+                      "types": _assist_prepared.record_types()})
     cols = [d.name for d in cur.description]
     todo = [dict(zip(cols, r)) for r in cur.fetchall()]
     waiting = len(todo)
@@ -599,7 +603,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             def inputs(m: Mapping[str, Any]) -> dict[str, Any]:
                 if m["matter_id"] not in cache:      # every waiting matter at once, one embed call
                     cur = pg.execute(_TODO_SHOWN if wall["parked"] else _TODO,
-                                     {"kinds": list(KINDS), "shown": shown, "skip": list(skip)})
+                                     {"kinds": list(KINDS), "shown": shown, "skip": list(skip),
+                                      "types": assist_prepared.record_types()})
                     cols = [d.name for d in cur.description]
                     todo = [dict(zip(cols, r)) for r in cur.fetchall()]
                     if a.pilot is not None:

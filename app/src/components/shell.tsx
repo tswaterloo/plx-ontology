@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, BellRing, BookMarked, Bookmark, CalendarClock, ChartColumn, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, Bot, BellRing, BookMarked, Bookmark, Building2, CalendarClock, ChartColumn, CircleHelp, ClipboardList, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Truck, Users, Package, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
@@ -16,7 +16,7 @@ import { useShortcut } from "@/lib/platform";
 import { setSavedNotice, useSaved, useSavedNotice } from "@/lib/saved";
 import { usePins, type PinnedPage, type PinReader } from "@/lib/pins";
 import { readAllLate } from "@/lib/late";
-import { readAheadRoute } from "@/lib/route-reads";
+import { aheadProps, warmStoredRoutes } from "@/lib/route-reads";
 import { onSessionReset } from "@/lib/session-cache";
 import type { HomeResponse, LatePo, SidebarResponse } from "@/lib/types";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
@@ -350,21 +350,29 @@ export const ALERTS_HREF = "/?show=alerts";
 export const LATE_HREF = "/?show=late";
 export const NAV_SECTIONS: NavSection[] = [
   {
-    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late", "/autopilot"], group: "main",
+    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late"], group: "main",
     children: [
       { href: "/", label: "Needs you" },
       { href: ALERTS_HREF, label: "Alerts" },
       { href: LATE_HREF, label: "Late POs", late: true },
-      { href: "/autopilot", label: "Switches" },
+    ],
+  },
+  {
+    key: "assist", href: "/assist", label: "Assist", place: "/assist", icon: Bot, holds: ["/autopilot"], group: "main",
+    children: [
+      { href: "/assist", label: "Prepared" },
+      { href: "/assist?show=routines", label: "Routines" },
+      { href: "/assist?show=log", label: "What it did" },
+      { href: "/assist?show=switches", label: "Switches" },
     ],
   },
   { key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: [], group: "main", children: [] },
   { key: "insights", href: "/insights", label: "Insights", place: "/insights", icon: ChartColumn, holds: [], group: "main", children: [] },
-  {
-    key: "records", href: "/records", label: "Records", place: "/records", icon: Database, group: "main",
-    holds: ["/customer", "/supplier", "/po", "/ao", "/object", "/source", "/account", "/order"],
-    children: [],
-  },
+  { key: "orders", href: "/orders", label: "Orders", place: "/orders", icon: ClipboardList, holds: ["/po", "/ao", "/order"], group: "main", children: [] },
+  { key: "customers", href: "/customers", label: "Customers", place: "/customers", icon: Building2, holds: ["/customer", "/account"], group: "main", children: [] },
+  { key: "suppliers", href: "/suppliers", label: "Suppliers", place: "/suppliers", icon: Truck, holds: ["/supplier"], group: "main", children: [] },
+  { key: "products", href: "/products", label: "Products", place: "/products", icon: Package, holds: [], group: "main", children: [] },
+  { key: "more", href: "/more", label: "More", place: "/more", icon: Database, holds: ["/object", "/source", "/records"], group: "main", children: [] },
   { key: "meetings", href: "/meetings", label: "Meetings", place: "/meetings", icon: CalendarClock, holds: [], group: "main", children: [] },
   { key: "team", href: "/team", label: "Team", place: "/team", icon: Users, holds: [], group: "main", grant: true, children: [] },
   { key: "memory", href: "/memory", label: "Memory", place: "/memory", icon: BookMarked, holds: [], group: "account", children: [] },
@@ -489,6 +497,11 @@ export function useHash(): string {
 export const PAGE_SOURCES: [string, readonly string[]][] = [
   ["/ask", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
   ["/records", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/orders", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/customers", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/suppliers", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/products", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
+  ["/more", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
   ["/object", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
   ["/source", ["BC", "Portal", "Sage", "FileMaker", "Email", "Teams", "File", "MC"]],
   ["/customer", ["BC", "Sage", "Portal", "Email", "File"]],
@@ -652,10 +665,19 @@ export function opsLabel(name: string) {
  * stopped") its job's name ("Reply drafts schedule: stopped"). The rest of the line, which
  * the check already words, stays as it is.
  */
+const UNIT_WORDS: Record<string, string> = {
+  "autopilot-fast-serve": "Autopilot fast feed",
+  "ts-petra": "Petra tailnet node",
+  "ts-petra-http-proxy": "Petra tailnet web proxy",
+  "ts-petra-socks-proxy": "Petra tailnet socks proxy",
+  "ts-petra-netns": "Petra tailnet network",
+  "search-follow": "Search index follower",
+};
+
 export function opsLine(key: string, line: string): string {
   const unit = /^(?:plx-)?([a-z0-9-]+)\.(timer|service|path|socket)(?: \((?:system|user)\))?: (.*)$/i.exec(line);
   if (key.startsWith("unit:") && unit) {
-    const job = unit[1].replace(/-/g, " ");
+    const job = UNIT_WORDS[unit[1]] ?? unit[1].replace(/-/g, " ");
     const kind = unit[2] === "timer" ? "schedule" : unit[2] === "service" ? "job" : unit[2];
     return `${job[0].toUpperCase()}${job.slice(1)} ${kind}: ${unit[3]}`;
   }
@@ -827,8 +849,7 @@ function NavItem({ href, label, place, count, countWords = "late", dot, on, onNa
     <Link
       href={href}
       onClick={onNavigate}
-      onPointerEnter={() => readAheadRoute(href)}
-      onFocus={() => readAheadRoute(href)}
+      {...aheadProps(href)}
       aria-current={current ? "page" : undefined}
       title={label}
       className={cn(
@@ -921,7 +942,7 @@ function SectionTabsAt({ section, className, search }: { section: string; classN
           <Link
             key={c.href}
             href={c.href}
-            onPointerEnter={() => readAheadRoute(c.href)}
+            {...aheadProps(c.href)}
             aria-current={on ? "page" : undefined}
             className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px]", on ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted hover:text-fg")}
           >
@@ -1279,7 +1300,7 @@ export function TabBar() {
         {tabs.map(({ key, href, label, icon: Icon, late: showLate }) => {
           const on = open?.key === key;
           return (
-            <Link key={href} href={href} onPointerDown={() => readAheadRoute(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
+            <Link key={href} href={href} {...aheadProps(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
               <Icon className="size-[22px]" strokeWidth={on ? 2 : 1.7} aria-hidden />
               {label}
               {showLate && typeof late === "number" && late > 0 && <span className="sr-only">, {late} late</span>}
@@ -1356,7 +1377,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/autopilot", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/records", "/account", "/order", "/insights", "/data-health"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/assist", "/orders", "/customers", "/suppliers", "/products", "/more", "/account", "/order", "/insights", "/data-health"];
 
 /** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
  * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */
@@ -1404,6 +1425,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // the page-complete flag (W6): a new page is not ready until its own reads and placeholders have come and gone
   const readyPath = usePathname();
   useEffect(() => watchReady(), []);
+  useEffect(() => warmStoredRoutes(), []);
   useEffect(() => resetReady(), [readyPath]);
   return (
     <CommandPaletteProvider>

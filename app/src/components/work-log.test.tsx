@@ -15,7 +15,7 @@ const sent = (over: Partial<WorkLogEvent> = {}): WorkLogEvent => ({
 describe("work log", () => {
   it("continues each kind of thread where it lives", () => {
     expect(continueHref("ask:abc123")).toBe("/ask?c=abc123");
-    expect(continueHref("autopilot:it-9")).toBe("/autopilot?item=it-9");
+    expect(continueHref("autopilot:it-9")).toBe("/assist?item=it-9");
     expect(continueHref("record:PurchaseOrder/PO-90412")).toContain("PO-90412");
     expect(continueHref("record:saved/question")).toBe("/work-log");
     // a note left on a general page continues on that page (WEB-035), as the server's resume says

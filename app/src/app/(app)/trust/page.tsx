@@ -6,6 +6,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
+import { StoredAge } from "@/components/ui/stored-age";
 import { getTrust } from "@/lib/api";
 import { useRead } from "@/lib/use-read";
 import { countdownText, roleLabel, rowStateShown, workflowLabel } from "@/lib/autopilot";
@@ -130,7 +131,7 @@ function AlertRow({ a }: { a: TrustAlert }) {
 // eval results, alert registry, autopilot scores, server switches); an unmeasured figure
 // says so. The owner and the Team readers only; anyone else gets the route's 404.
 export default function TrustRoute() {
-  const { data: page, error, retry } = useRead<TrustPage>("trust", (signal) => getTrust(signal));
+  const { data: page, error, retry, at } = useRead<TrustPage>("/api/trust", (signal) => getTrust(signal));
   const alerts = useMemo(() => {
     const all = page?.alerts ?? [];
     return { on: all.filter((a) => a.on), off: all.filter((a) => !a.on && a.judged != null), unmeasured: all.filter((a) => a.judged == null) };
@@ -145,6 +146,7 @@ export default function TrustRoute() {
       <Toolbar heading title="Trust" />
       <SectionTabs section="admin" />
       <PageIntro path="/trust" />
+      <StoredAge at={at} className="px-4 pb-1" />
       <div className="w-full max-w-5xl space-y-6 overflow-y-auto px-4 py-4 sm:px-6" data-testid="trust-page">
         {refused ? (
           <p className="text-[13px]" data-testid="trust-refused">{plainError(new ApiError(403, "forbidden"))}</p>

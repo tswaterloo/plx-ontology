@@ -52,7 +52,7 @@ class AnswerFormTest(unittest.TestCase):
             self.assertIn(rule, line)
         self.assertNotIn("150 words", line)
         self.assertEqual(1, sa.system_prompt().count("- The answer:"))
-        self.assertLess(len(sa.system_prompt()), 31000)   # the prompt's budget (spec 7)
+        self.assertLess(len(sa.system_prompt()), 32000)   # the prompt's budget (spec 7; 11-24 +1,000 for the name-finder method line)
 
 
 class ChartTest(unittest.TestCase):
@@ -263,7 +263,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(system.count("    handle: "), 1)
         self.assertNotIn("    customer_code: ", system)   # column meanings: describe
         self.assertLessEqual(len(system), sa.PROMPT_MOST)
-        self.assertLessEqual(sa.PROMPT_MOST, 31_000)
+        self.assertLessEqual(sa.PROMPT_MOST, 32_000)
         # A5b: no verdict on which system is of record or a pilot, nothing 'official'
         # (the view docs the model reads come through DOC_UNTIL_TRAIN until train B)
         for word in ("system of record", "pilot data", "is still a pilot", "not used",

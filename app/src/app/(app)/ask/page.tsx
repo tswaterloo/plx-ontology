@@ -1,5 +1,6 @@
 "use client";
 
+import { AskNote } from "@/components/ask-note";
 import { MessagesSquare, SquarePen } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -91,7 +92,11 @@ function Ask() {
   const meetingId = params.get("meeting");
   const itemId = params.get("item");
   const pagePath = params.get("page");
-  const page = meetingId
+  // asked from a brief: the brief (its record's type, the record in ``object``) goes with the line
+  const briefType = params.get("brief");
+  const page = briefType && scope
+    ? { context: { kind: "brief" as const, object_type: briefType, object_id: scope } }
+    : meetingId
     ? { context: { kind: "meeting" as const, meeting_id: meetingId } }
     : itemId
       ? { context: { kind: "autopilot" as const, item_id: itemId } }
@@ -101,14 +106,14 @@ function Ask() {
 
   useEffect(() => {
     // the whole of what the URL asks: the question and every scope or page it carries
-    const key = askUrlKey({ q, object: scope, source, meeting: meetingId, item: itemId, page: pagePath });
+    const key = askUrlKey({ q, object: scope, source, meeting: meetingId, item: itemId, page: pagePath, brief: briefType });
     if (q && started.current !== key) {
       started.current = key;
       if (turns.length > 0) reset();
       void run(q, scope ?? takePending(q)[0]?.object_id, source, [], page);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page follows the same URL params
-  }, [q, scope, source, meetingId, itemId, pagePath, run, reset, turns.length]);
+  }, [q, scope, source, meetingId, itemId, pagePath, briefType, run, reset, turns.length]);
 
   // "Continue" from the work log: the session's turns as they were answered; a follow-up
   // carries their history and conversation id like any other.
@@ -231,6 +236,7 @@ function Ask() {
                       onClarify={busy ? undefined : (words, reply) => run(words, undefined, undefined, [], { clarified: reply })}
                       onDeeper={busy ? undefined : () => deeper(t)}
                     />
+                    {t.phase === "done" && <AskNote record={t.request?.objectId ?? scope ?? undefined} />}
                   </section>
                 ))}
                 {turns[turns.length - 1]?.phase === "done" && (

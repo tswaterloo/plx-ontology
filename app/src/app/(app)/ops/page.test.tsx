@@ -122,10 +122,26 @@ describe("Reliability: open problems in words", () => {
     const { opsLine } = await import("@/components/shell");
     expect(opsLine("capture_undecided_list", "capture_undecided_list: 1 undecided address(es) since Nov 12")).toBe("Mail addresses the directory can't place: 1 undecided address(es) since Nov 12");
     expect(opsLine("unit:plx-reply-drafts.timer", "plx-reply-drafts.timer (system): stopped: no next run")).toBe("Reply drafts schedule: stopped: no next run");
-    expect(opsLine("unit:plx-autopilot-fast-serve.service", "plx-autopilot-fast-serve.service (system): enabled but not running")).toBe("Autopilot fast serve job: enabled but not running");
+    expect(opsLine("unit:plx-autopilot-fast-serve.service", "plx-autopilot-fast-serve.service (system): enabled but not running")).toBe("Autopilot fast feed job: enabled but not running");
     expect(opsLine("some_check", "some_check_other: x")).toBe("some_check_other: x");
     // a line the check already words is left alone
     expect(opsLine("disk_forecast:/data", "Disk forecast: /data fills in about 11.8 days")).toBe("Disk forecast: /data fills in about 11.8 days");
+  });
+
+  it("keeps owned alarms out of the count and says who has them and until when", async () => {
+    const at = new Date().toISOString();
+    const mk = (key: string, line: string) => ({ key, line, opened_at: at });
+    api.body = {
+      ...base,
+      open: [mk("unit:plx-search-follow.service", "plx-search-follow.service (system): failed (signal)")],
+      known: [{ ...mk("restore_test", "Backup restore test: last run failed"), known: { owner: "the ops lead", why: "It is being repaired.", until: at } }],
+    };
+    render(<OpsPage />);
+    expect(await screen.findByRole("heading", { name: "1 thing needs attention." })).toBeInTheDocument();
+    const known = screen.getByTestId("ops-known");
+    expect(known).toHaveTextContent("Backup restore test: last run failed");
+    expect(known).toHaveTextContent("With the ops lead");
+    expect(screen.getByTestId("ops-plain-list")).not.toHaveTextContent("restore test");
   });
 
   it("opens on plain words, the technical detail behind a toggle", async () => {

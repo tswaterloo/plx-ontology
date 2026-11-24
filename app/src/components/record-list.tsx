@@ -32,12 +32,12 @@ function isEmpty(c: BizCell | undefined): boolean {
  * link on every row to the record. Changing a filter, the text or the sort starts again
  * from the first row (a parent keys the list by its view, so another view starts clean); a failed read says so with Retry, never an empty list.
  */
-export function RecordList({ view }: { view: string }) {
+export function RecordList({ view, initialSort }: { view: string; initialSort?: { key: string; direction: "asc" | "desc" } }) {
   const router = useRouter();
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [text, setText] = useState("");
   const [q, setQ] = useState("");
-  const [sort, setSort] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const [sort, setSort] = useState<{ key: string; direction: "asc" | "desc" } | null>(initialSort ?? null);
   const [page, setPage] = useState(0);
   const [got, setGot] = useState<List | null>(null);
   const [offered, setOffered] = useState<List["filters"]>([]);

@@ -5,6 +5,7 @@ import { eastern, opsLabel, opsLine, SectionTabs } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
+import { StoredAge } from "@/components/ui/stored-age";
 import { LoadProblem } from "@/components/ui/notice";
 import { getOpsAlarms, type OpsAlarms, type OpsCheck, type OpsIncident, type OpsQueue } from "@/lib/api";
 import { useRead } from "@/lib/use-read";
@@ -130,7 +131,7 @@ const STATE_WORD: Record<OpsCheck["state"], string> = { breach: "Problem", ok: "
 // when ops mail is on (operating/ops_notify.py). The owner and the Team readers read it;
 // anyone else gets the route's 403.
 export default function OpsPage() {
-  const { data: alarms, error, retry } = useRead<OpsAlarms>("ops", (signal) => getOpsAlarms(signal));
+  const { data: alarms, error, retry, at } = useRead<OpsAlarms>("/api/ops/status", (signal) => getOpsAlarms(signal));
   const checks = alarms?.checks ?? [];
   const count = (s: OpsCheck["state"]) => checks.filter((c) => c.state === s).length;
   // the plain words come first; the checks, units and history are IT's and open on request
@@ -140,6 +141,7 @@ export default function OpsPage() {
       <Toolbar heading title="Reliability" />
       <SectionTabs section="admin" />
       <PageIntro path="/ops" />
+      <StoredAge at={at} className="px-4 pb-1" />
       <div className="w-full max-w-5xl space-y-5 overflow-y-auto px-4 py-4 sm:px-6" data-testid="ops-page">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
@@ -171,10 +173,24 @@ export default function OpsPage() {
                       <span className="text-muted">{areaOf(i.key)}: </span>
                       {problemParts(opsLine(i.key, i.line)).head}
                       <span className="text-muted"> (open {span(i.opened_at)})</span>
+                      {i.known && <span className="block text-[12px] text-muted">{i.known.why} With {i.known.owner}.</span>}
                     </li>
                   ))}
                   {alarms.open.length > 6 && <li className="text-muted">The other {alarms.open.length - 6} are listed in the technical detail.</li>}
                 </ul>
+              )}
+              {(alarms.known?.length ?? 0) > 0 && (
+                <div className="mt-3" data-testid="ops-known">
+                  <h3 className="text-[13px] font-semibold">Already with someone ({alarms.known!.length})</h3>
+                  <ul className="mt-1 space-y-1 text-[13px]">
+                    {alarms.known!.map((i: OpsIncident) => (
+                      <li key={i.key}>
+                        {problemParts(opsLine(i.key, i.line)).head}
+                        <span className="block text-[12px] text-muted">{i.known?.why} With {i.known?.owner}; it shows as a problem again after {eastern(i.known?.until)} if still open.</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
               <button type="button" onClick={() => setDetail((v) => !v)} aria-expanded={detail} data-testid="ops-detail-toggle" className="mt-3 text-[12px] font-medium text-fg underline-offset-2 hover:underline cursor-pointer">
                 {detail ? "Hide the technical detail" : "Show the technical detail"}
@@ -275,7 +291,7 @@ export default function OpsPage() {
                           {span(i.opened_at)}
                           <span className="block text-[12px] text-muted">since {eastern(i.opened_at)}</span>
                         </td>
-                        <td className="py-1.5 text-[12px] text-muted max-md:hidden">{NEXT[areaOf(i.key)]}</td>
+                        <td className="py-1.5 text-[12px] text-muted max-md:hidden">{i.known ? `${i.known.why} With ${i.known.owner}.` : NEXT[areaOf(i.key)]}</td>
                       </tr>
                     ))}
                   </tbody>

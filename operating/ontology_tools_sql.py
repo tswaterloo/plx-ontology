@@ -594,13 +594,18 @@ class SqlTool:
             until = cs.instant(args.get("until") if moment is None else
                                read_ceiling.clamp_until(args.get("until"), moment), end=True)
             by_attachment = str(args.get("cursor") or "").startswith("a1:")
+            by_meaning = str(args.get("cursor") or "").startswith("m1:")
             attach_at = cs.read_attach_cursor(args["cursor"]) if by_attachment else None
-            cur = (cs.read_cursor(args["cursor"]) if args.get("cursor") and not by_attachment
-                   else None)
+            meaning_at = cs.read_meaning_cursor(args["cursor"]) if by_meaning else None
+            cur = (cs.read_cursor(args["cursor"]) if args.get("cursor")
+                   and not by_attachment and not by_meaning else None)
         except cs.SearchInputError as exc:
             raise ToolError("invalid_input", str(exc)) from None
         wanted = set(args.get("sources") or [s for _, _, s in cs.VIEWS.values()])
         files = "sharepoint" in wanted and self._files_reader(actor)
+        if meaning_at is not None:
+            return self._meaning_page(conn, settings, guarded, actor, args, words, since,
+                                      until, limit, meaning_at, wanted, files)
         if attach_at is not None:
             return self._attachment_page(conn, settings, guarded, actor, args, words, q, since,
                                          until, limit, attach_at, wanted)
@@ -621,7 +626,8 @@ class SqlTool:
                                 until=until is not None,
                                 cursor=cur is not None and cur[2] is not None,
                                 cursor_tier=cur[0] if cur and cur[0] is not None else 0,
-                                side=frozenset(side))
+                                side=frozenset(side),
+                                direct=cs.direct_reads(pg, q, views, side, biz=biz))
             if not sql:
                 return views, who, []
             return views, who, pg.execute(sql, {
@@ -660,6 +666,8 @@ class SqlTool:
             if words and cur is None and "graph_mail" in wanted and not args.get("participant")
             and self._files_reader(actor) else None)
         from operating.call_phases import phase
+        meaning_rest: dict[str, Any] = {}
+        meaning_next = None   # the cursor of the rows close in meaning past this page's
 
         def stemmed(pg: Any, *_: Any) -> Any:
             # the rows holding every word by its stem ("renovating" for "Renovation"),
@@ -727,16 +735,23 @@ class SqlTool:
                     "holding every word by its stem"
             rows = rows + srows
             few = len(rows) < min(limit, WIDEN_BELOW)
-        room = min(max(limit - len(rows) if few else 0,
-                       MEANING_EXTRA if ranking is not None else 0), HITS_MAX - len(rows))
-        if words and cur is None and room > 0:
+        room = max(0, min(max(limit - len(rows) if few else 0,
+                              MEANING_EXTRA if ranking is not None else 0),
+                          HITS_MAX - len(rows)))
+        # a page with no room left (a full page of the most hits one result holds) still asks
+        # the ranking: its rows then continue by their cursor, never dropped unsaid
+        if words and cur is None and (room > 0 or ranking is not None):
             # few rows hold every word: the rows holding some of them; and, on any first
             # page, the rows close in meaning; all through the same views
             # (``_comms_widened``)
             with phase("comms.widened"):
                 extra, how = self._comms_widened(
                     conn, settings, guarded, actor, views, args["query"], words, who,
-                    since, until, room, {r[1] for r in rows}, ranking, few, meaning)
+                    since, until, room, {r[1] for r in rows}, ranking, few, meaning,
+                    rest=meaning_rest)
+            if "pos" in meaning_rest:
+                # rows close in meaning past the ones shown: their own stream, by cursor
+                meaning_next = cs.meaning_cursor(few, meaning_rest["pos"])
             documents += cs.hits(extra, words=words, party_=who)
             for hit, (held, near) in zip(documents[len(rows):], how or []):
                 hit["match"] = held
@@ -745,11 +760,13 @@ class SqlTool:
                     # ``match``)
                     hit["meaning_rank"] = near
             if how:
-                searched["widened"] = "; ".join(filter(None, (searched.get("widened"), (
-                    f"fewer than {WIDEN_BELOW} items held every word: also items holding "
-                    "some of the words or close in meaning, each with its match" if few else
-                    f"also up to {MEANING_EXTRA} items close in meaning that the word "
-                    "match did not list, each with its match"))))
+                says = (f"fewer than {WIDEN_BELOW} items held every word: also items holding "
+                        "some of the words or close in meaning, each with its match" if few else
+                        f"also up to {MEANING_EXTRA} items close in meaning that the word "
+                        "match did not list, each with its match")
+                if meaning_next:
+                    says += "; the rest of those continue by the cursor in completeness.continue"
+                searched["widened"] = "; ".join(filter(None, (searched.get("widened"), says)))
         # a participant's search: the pass needs the party ``search_rows`` resolved, so it
         # runs after the word search (as before the parallel pass), bound to that party
         attach_next = None   # the cursor of the attachment-only mail past this page's
@@ -795,17 +812,20 @@ class SqlTool:
                "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more, "returned": len(rows),
                                 "next_cursor": nxt if more and nxt else None}}
-        if attach_next:
-            # mail holding the words only in an attachment's text, past the ones shown: its
-            # own stream, read on by its cursor (the word list's, when it has one, continues
-            # the word matches)
+        if attach_next or meaning_next:
+            # mail holding the words only in an attachment's text, and rows close in meaning,
+            # past the ones shown: each its own stream, read on by its cursor (the word list's,
+            # when it has one, continues the word matches)
             done = out["completeness"]
             done["continue"] = ([{"sources": list(searched.get("sources") or ()),
-                                  "cursor": nxt}] if more and nxt else []) + [
-                {"sources": ["graph_mail"], "cursor": attach_next}]
+                                  "cursor": nxt}] if more and nxt else []) + (
+                [{"sources": ["graph_mail"], "cursor": attach_next}] if attach_next else []) + (
+                [{"sources": list(searched.get("sources") or ()), "cursor": meaning_next}]
+                if meaning_next else [])
             done.update({"complete": False, "truncated": True,
-                         "reason": "page_cap" if more else "attachments_continue"})
-            done["next_cursor"] = done["next_cursor"] or attach_next
+                         "reason": "page_cap" if more else (
+                             "attachments_continue" if attach_next else "meaning_continue")})
+            done["next_cursor"] = done["next_cursor"] or attach_next or meaning_next
         if more:
             # a run of refused files longer than a cursor skips: stopped, said, no cursor
             out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
@@ -850,6 +870,54 @@ class SqlTool:
                 "completeness": {"complete": not more, "truncated": more,
                                  "returned": len(rows),
                                  "next_cursor": cs.attach_cursor(rows[-1]) if more else None,
+                                 **({"reason": "page_cap"} if more else {})}}
+
+    def _meaning_page(self, conn: Any, settings: Any, guarded: str, actor: Any,
+                      args: dict[str, Any], words: Sequence[str], since: Any, until: Any,
+                      limit: int, after: tuple[bool, int], wanted: set,
+                      files: bool) -> dict[str, Any]:
+        """A search continued by an ``m1:`` cursor (``comms_search.meaning_cursor``): the next
+        ``limit`` rows close in meaning that the first page did not show, in the ranking's
+        own order, with their own cursor while more follow. The ranking is the first page's
+        (same query, reader and sources), so a place in its order means the same row; the
+        reader, the dates and the party are the first page's, sent again. A ranking that
+        cannot be had now is an error (never an empty page that says the stream ended)."""
+        from operating.pg import comms_search as cs
+        few, pos = after
+        if not words:
+            raise ToolError("invalid_input", "not a cursor of this search")
+        who = None
+        if args.get("participant"):
+            def bind(pg: Any, *_: Any) -> Any:
+                return cs.party(args["participant"], pg, bv.SCHEMA)
+            try:
+                who = self._comms_scoped(conn, settings, bind, actor)
+            except cs.SearchInputError as exc:
+                raise ToolError("invalid_input", str(exc)) from None
+        ranking = self._meaning_started(args["query"], actor, wanted)
+        if ranking is None:
+            raise ToolError("not_ready", "the meaning ranking is not available now")
+
+        def views_of(pg: Any, *_: Any) -> list[str]:
+            return [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
+                    and (files or v not in cs.SEARCH_ONLY)]
+        views = self._comms_scoped(conn, settings, views_of, actor)
+        rest: dict[str, Any] = {}
+        extra, how = self._comms_widened(
+            conn, settings, guarded, actor, views, args["query"], words, who, since, until,
+            limit, set(), ranking, few, None, skip=pos, rest=rest)
+        documents = cs.hits(extra, words=words, party_=who)
+        for hit, (held, near) in zip(documents, how or []):
+            hit["match"] = held
+            if near is not None:
+                hit["meaning_rank"] = near
+        more = "pos" in rest
+        return {"documents": documents, "searched": cs.searched(views, args, words),
+                "gaps": [],
+                "completeness": {"complete": not more, "truncated": more,
+                                 "returned": len(documents),
+                                 "next_cursor": cs.meaning_cursor(few, rest["pos"])
+                                 if more else None,
                                  **({"reason": "page_cap"} if more else {})}}
 
     def _comms_attached(self, conn: Any, settings: Any, guarded: str, actor: Any, q: str,
@@ -984,7 +1052,8 @@ class SqlTool:
                        views: Sequence[str],
                        query: str, words: Sequence[str], who: Any, since: Any, until: Any,
                        room: int, seen: set, ranking: Any, few: bool,
-                       meaning: Any = None) -> tuple[list[Any], Any]:
+                       meaning: Any = None, skip: int = 0,
+                       rest: Optional[dict[str, Any]] = None) -> tuple[list[Any], Any]:
         """Up to ``room`` more rows: the rows ``ranking`` (``_meaning_started``) ranks
         close in meaning that the word search lists on no page, and, for a query whose every-word match found ``few``, the rows
         holding any of its words (``comms_search.tsquery_any``) when there is no such
@@ -994,7 +1063,14 @@ class SqlTool:
         ``meaning_sql``) in the same scoped reader, and each file row passes the item
         gate: the ranking only names candidates, never a row. Returns the rows and, per
         row, how it matched ("n of m words" and/or "close in meaning") with its meaning
-        rank (None when the ranking did not name it); ``([], None)`` when neither ran."""
+        rank (None when the ranking did not name it); ``([], None)`` when neither ran.
+
+        Every candidate is ordered whatever ``seen``; ``seen`` rows are passed over when the
+        rows are taken, so a row's place in that order is the same on every page of the
+        stream. ``skip``: how many places of the order are already past (a continuation,
+        ``_meaning_page``); ``rest`` (when given) is set to ``{"pos": n}``, the place the
+        next page starts from, when rows remain past the ``room`` taken (the extras are no
+        longer cut at ``MEANING_EXTRA`` unsaid: ``comms_search.meaning_cursor``)."""
         from operating.pg import comms_search as cs
         from operating.search import plug
         from operating.call_phases import phase
@@ -1030,7 +1106,9 @@ class SqlTool:
                 side = cs.sidecar(pg)
                 sql = cs.search_sql(views, guarded=guarded, biz=bv.SCHEMA, query=True, party_kind=who.kind if who else None,
                                     since=since is not None, until=until is not None,
-                                    cursor=False, side=frozenset(side))
+                                    cursor=False, side=frozenset(side),
+                                    direct=cs.direct_reads(pg, any_q, views, side,
+                                                           biz=bv.SCHEMA))
                 some = pg.execute(sql, {
                     "q": any_q, "party": who.value if who else None, "since": since,
                     "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
@@ -1064,7 +1142,7 @@ class SqlTool:
         for row in near:
             # a row the word search matches is on this page or a later one: never here
             # too (a full page's extra came back on the next page)
-            if row[1] in seen or row[-1] not in rank or row[-2]:
+            if row[-1] not in rank or row[-2]:
                 continue
             got = found.setdefault(row[1], {"row": row, "order": len(some),
                                             "held": cs.words_held(row, words)})
@@ -1077,12 +1155,22 @@ class SqlTool:
             f.get("meaning", 10 ** 6), f["order"]))
         kept: list[Any] = []
         how: list[tuple[str, Any]] = []
-        for f in ordered:
-            if len(kept) >= room:
-                break
+
+        def takable(f: dict[str, Any]) -> bool:
             row = f["row"]
-            if row[0] in cs.SEARCH_ONLY and not self.base._item_allowed(actor, row[1]):
+            return row[1] not in seen and not (
+                row[0] in cs.SEARCH_ONLY and not self.base._item_allowed(actor, row[1]))
+        for place in range(skip, len(ordered)):
+            f = ordered[place]
+            if len(kept) >= room:
+                # a row the page had no room for: the stream goes on from here
+                if rest is not None and ids and takable(f):
+                    rest["pos"] = place
+                    break
                 continue
+            if not takable(f):
+                continue
+            row = f["row"]
             kept.append(row)
             how.append((", ".join(
                 ([f"{min(f['held'], n)} of {n} words"] if f["held"] else [])

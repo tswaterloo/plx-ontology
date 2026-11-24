@@ -49,6 +49,7 @@ class Prepared(unittest.TestCase):
                                "ORDER BY subject_key").fetchall()
 
     def serve(self, session, people=(ANN,), **kw):
+        kw.setdefault("screen", lambda text: None)
         return prep.serve(self.pg, list(people), session, inputs_of, nearest, model="stand-in", **kw)
 
     def test_the_people_are_named_by_the_environment_and_nobody_by_default(self):
@@ -146,12 +147,123 @@ class Prepared(unittest.TestCase):
         out = plan.run_plans(self.pg, lambda p: (calls.append(p), json.dumps(
             {"acts": [{"act": "reply"}], "why": "w"}))[1], lambda m: m["title"],
             lambda ms: {m["matter_id"]: ([], 0) for m in ms}, model="x", prepared=[ANN])
-        self.assertEqual(out["matters"], 2, self.matters())                  # Bob's mail, Ann's task
+        self.assertEqual(out["matters"], 1, self.matters())                  # Bob's mail only
         self.assertEqual(sorted(r[0] for r in self.pg.execute(
-            "SELECT subject_key FROM assist.matters WHERE plan_status = 'planned'").fetchall()),
-            ["PT1", "t-bob"])
-        self.assertEqual(self.pg.execute("SELECT plan_status FROM assist.matters WHERE subject_key = 't-ann'"
-                                         ).fetchone()[0], "none")
+            "SELECT subject_key FROM assist.matters WHERE plan_status = 'planned'").fetchall()), ["t-bob"])
+        # Ann's mail and her Planner task (a typed record of its own) both wait for the session
+        self.assertEqual(sorted(r[0] for r in self.pg.execute(
+            "SELECT subject_key FROM assist.matters WHERE owner_person = %s AND plan_status = 'none'",
+            (ANN,)).fetchall()), ["PT1", "t-ann"])
+
+    def test_a_precedent_that_fails_its_own_screen_is_left_out_and_said_never_the_matter_refused(self):
+        self.ask("t1")
+        self.cycle()
+        cases = [{"at": f"2026-10-0{i}", "counterpart": "Croda", "situation": "asks", "act": "reply",
+                  "act_to": [], "why": "own", "act_text": text}
+                 for i, text in ((1, "fine words"), (2, "payroll for ann@excluded.example"), (3, "more fine words"))]
+        seen = []
+
+        def session(owner, oid, extra="", as_of=""):
+            seen.append(extra)
+            return REPLY
+        out = prep.serve(self.pg, [ANN], session, inputs_of,
+                         lambda ms, gs: {m["matter_id"]: (cases, 3) for m in ms}, model="m",
+                         screen=lambda t: "excluded_in_thread" if "excluded.example" in t else None)
+        self.assertEqual((out["served"], out["drafted"]), (1, 1))
+        self.assertNotIn("excluded.example", seen[0])                        # never reaches the model
+        self.assertIn("fine words", seen[0])
+        self.assertIn("more fine words", seen[0])
+        self.assertIn("(2 of 3 past cases", seen[0])
+        self.assertIn("1 past cases are left out", seen[0])
+        left = self.pg.execute("SELECT plan->'prepared'->'precedents_left_out' FROM assist.matters").fetchone()[0]
+        self.assertEqual(left, [{"at": "2026-10-02", "why": "excluded_in_thread"}])
+
+    def test_one_ten_and_sixty_precedents_none_lost_none_repeated_and_the_window_is_the_only_bound(self):
+        matter = {"owner_person": ANN}
+        for n in (1, 10, 60):
+            cases = [{"at": f"2026-01-{i + 1:02d}", "counterpart": "C", "situation": "s", "act": "reply",
+                      "act_to": [], "why": "own", "act_text": f"case-{i:03d} " + "w" * 50} for i in range(n)]
+            bad = {f"case-{i:03d}" for i in range(0, n, 5)}
+            asked = []
+
+            def screen(text):
+                asked.append(text)
+                return "excluded_in_thread" if any(b in text for b in bad) else None
+            text, left = prep.extra_of(matter, {"text": "m"}, cases, n, when="now", unread=[], screen=screen)
+            shown = [c for c in range(n) if f"case-{c:03d}" in text]
+            self.assertEqual(len(left), len(bad), n)                           # every failing one reported
+            self.assertEqual(sorted(shown), [i for i in range(n) if f"case-{i:03d}" not in bad])
+            self.assertEqual(len(asked), n)                                      # each screened once
+            self.assertEqual(len(shown) + len(left), n)
+        # a window that holds only some: the rest are counted, never silently dropped
+        plan.WINDOW_CHARS, was = 1200, plan.WINDOW_CHARS
+        try:
+            text, left = prep.extra_of(matter, {"text": "m"}, cases, 60, when="now", unread=[],
+                                       screen=lambda t: None)
+        finally:
+            plan.WINDOW_CHARS = was
+        self.assertRegex(text, r"\d+ more past cases are not shown here")
+
+    def test_the_persons_own_notes_reach_the_session_whole_and_a_replay_reads_none(self):
+        """W1/W2 (owner 11-24): every note of theirs, newest first, in the session's input; a
+        person with none gets no block; a replay as of the past (--as-of-basis) reads none
+        (today's notes would leak the future)."""
+        matter = {"owner_person": ANN}
+        notes = [f"note {i:02d} " + "w" * 40 for i in range(60)]
+        text, _ = prep.extra_of(matter, {"text": "m"}, [], 0, when="now", unread=[],
+                                screen=lambda t: None, notes=notes)
+        self.assertEqual([n for n in notes if n in text], notes)       # N=60: none lost
+        self.assertIn("private to them", text)
+        bare, _ = prep.extra_of(matter, {"text": "m"}, [], 0, when="now", unread=[],
+                                screen=lambda t: None)
+        self.assertNotIn("TOLD THE WORKBENCH", bare)
+
+    def test_the_matters_own_words_failing_the_screen_is_that_matters_typed_failure_with_no_session(self):
+        self.ask("t1")
+        self.cycle()
+        ran = []
+        out = self.serve(lambda *a, **k: ran.append(1) or REPLY, screen=lambda t: "pay_or_hr")
+        self.assertEqual((out["failed"], ran), (1, []))
+        self.assertEqual(self.pg.execute("SELECT plan_reason FROM assist.matters").fetchone()[0], "pay_or_hr")
+
+    def test_a_task_with_no_message_is_served_from_its_own_record_with_its_cost_and_tool_reads(self):
+        from operating import session_trace
+        self.obj("PT1", "PlannerTask", "plan:P", title="Book the truck", assignees=json.dumps([ANN]),
+                 created_at="2026-11-22T10:00:00Z")
+        self.cycle()
+        seen = []
+
+        def session(owner, oid, extra="", as_of=""):
+            seen.append(oid)
+            session_trace.note("0.1234", [{"tool": "plx.sql", "arguments": {"q": "select 1"}, "failed": False}])
+            return [{"kind": "your_call", "ask": "Which truck?", "options": []}]
+        out = self.serve(session)
+        self.assertEqual((out["served"], out["needs_you"], seen), (1, 1, ["PT1"]))
+        row = self.pg.execute("SELECT plan->'prepared'->'tool_reads', plan->'prepared'->>'reads_traced', "
+                              "plan->'prepared'->>'usd' FROM assist.matters").fetchone()
+        self.assertEqual(row[0], [{"tool": "plx.sql", "arguments": {"q": "select 1"}, "failed": False}])
+        self.assertEqual((row[1], row[2]), ("true", None))                   # the cost is the run row's
+        self.assertEqual(self.pg.execute("SELECT tier, usd, usd_basis FROM assist.worker_runs").fetchall(),
+                         [("draft", __import__("decimal").Decimal("0.1234"), "reported")])
+
+    def test_a_mission_control_question_is_placed_on_its_asking_event_and_an_unplaced_one_is_left_out(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        state = Path(tempfile.mkdtemp())
+        (state / "mc-capture").mkdir()
+        with sqlite3.connect(state / "mc-capture" / "capture.sqlite") as c:
+            c.execute("CREATE TABLE versions (kind TEXT, path TEXT, payload TEXT, superseded_at TEXT)")
+            for path, kind, q in (("live/task_events/T1~7", "question.asked", "q_1"),
+                                  ("live/task_events/T1~8", "question.answered", "q_2")):
+                c.execute("INSERT INTO versions VALUES ('mission_control', ?, ?, NULL)",
+                          (path, json.dumps({"row": {"kind": kind, "payload": {"questionId": q}}})))
+        key = '{"event_id":"T1~7","scope":"live"}'
+        self.pg.execute("INSERT INTO ontology.objects VALUES (%s, 'MCTaskEvent', 'mc:x', "
+                        "'2026-11-20T10:00:00Z', NULL, %s)", ("MCTaskEvent:mission_control.task_events:" + key, key))
+        self.assertEqual(prep.question_oids(self.pg, state, ["q_1", "q_2", "q_9"]),
+                         {"q_1": "MCTaskEvent:mission_control.task_events:" + key})
+        self.assertEqual(prep.question_oids(self.pg, None, ["q_1"]), {})      # no capture to read: none placed
 
     def test_a_database_with_no_freshness_table_says_so_not_none_unread(self):
         self.assertEqual(prep.unread_sources(self.pg), ["every source: the freshness table is not there"])

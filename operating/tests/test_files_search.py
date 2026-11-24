@@ -195,17 +195,32 @@ class TheGate(unittest.TestCase):
         tool._comms_scoped = lambda conn, settings, work, actor: ([], near)
 
         class Ranking:
-            def result(self, timeout):
+            def result(self, timeout=None):
                 return plug.Ranked([{"object_id": r[-1], "handle": None} for r in near],
                                    "hybrid:x")
+
+            def cancel(self):
+                return True
         with mock.patch.object(plug, "_gated", side_effect=lambda r, *a: r):
             for room in (3, 5, 20):
+                rest: dict = {}
                 kept, how = tool._comms_widened(
                     None, {}, "g", "actor", ["emails", "sharepoint_files"], "oral rinse",
-                    ["oral", "rinse"], None, None, None, room, {"h00"}, Ranking(), False)
+                    ["oral", "rinse"], None, None, None, room, {"h00"}, Ranking(), False,
+                    rest=rest)
                 got = [r[1] for r in kept]
                 want = [r[1] for r in near if r[1] not in refused | {"h00", "h11"}]
                 self.assertEqual(got, want[:room], room)
+                # rows past the room are not dropped: the stream goes on from their place,
+                # and its next page is exactly the rows after these
+                self.assertEqual("pos" in rest, len(want) > room, room)
+                if "pos" in rest:
+                    more, _ = tool._comms_widened(
+                        None, {}, "g", "actor", ["emails", "sharepoint_files"], "oral rinse",
+                        ["oral", "rinse"], None, None, None, 100, set(), Ranking(), False,
+                        skip=rest["pos"])
+                    self.assertEqual([r[1] for r in more],
+                                     [h for h in want[room:]])
                 self.assertEqual([h for h, _ in how], ["close in meaning"] * len(got))
                 self.assertFalse(set(tool.base.asked) - {r[1] for r in near
                                                          if r[0] == "sharepoint_files"})

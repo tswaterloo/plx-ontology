@@ -11,7 +11,8 @@
 #     views    remake the guarded views (the plan view gains its "current" column)
 #     fill     the first full fill: every open order, all four families, on the Spark (plan_batch,
 #              14 shards), then loaded in place of the table; prints the pass's wall time
-#     fill-closed  the closed orders (the rest of the purchase orders), 1,500 ids a round on the Spark,
+#     fill-closed  the closed orders (the rest of the purchase orders), 1,500 ids a round on the Sparks of
+#              PLX_PLAN_HOSTS (rounds spread over them; complete files of an earlier run are loaded, not recomputed; resume with PLAN_FILL_DIR=<its folder>),
 #              each round put in place with `plan_sections upsert` (the open orders' rows stay);
 #              safe to leave running for hours: the app is not waiting on it
 #     start    enable and start plx-plan-pull and plx-plan-resident@0-of-N .. @(N-1)-of-N
@@ -27,12 +28,12 @@ set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 . "$here/../lib.sh" 2>/dev/null || true
-sha="" shards=8 phases=()
+sha="" shards=8 phases=() shards_per_round=8
 while [ $# -gt 0 ]; do case "$1" in
   --sha) sha=$2; shift 2 ;; --shards) shards=$2; shift 2 ;;
   check|env|units|views|fill|fill-closed|start|switch|measure) phases+=("$1"); shift ;;
-  *) sed -n 2,26p "$0"; exit 2 ;; esac; done
-[ ${#phases[@]} -gt 0 ] || { sed -n 2,26p "$0"; exit 2; }
+  *) sed -n 2,27p "$0"; exit 2 ;; esac; done
+[ ${#phases[@]} -gt 0 ] || { sed -n 2,27p "$0"; exit 2; }
 [[ "$shards" =~ ^[0-9]+$ ]] && [ "$shards" -ge 1 ] && [ "$shards" -le 16 ] || { echo "--shards is 1..16"; exit 2; }
 releases=${PLX_RELEASES:-/data/plx-releases}
 [ -n "$sha" ] || sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha"])' "$releases/current/RELEASE.json")
@@ -102,6 +103,43 @@ EOF
   printf 'PLX_PLAN_HOSTS="%s"\n' "${PLX_PLAN_HOSTS:-s7d3d}"
 }
 
+# run_rounds PARTS_DIR FILL_DIR: one round per ids file, spread over the Sparks of PLX_PLAN_HOSTS (round K goes
+# to host K mod H; each host takes its rounds one after another, so every Spark works at once). A round whose
+# files from an earlier run are complete (every shard file, every id, every family) is loaded as it stands and
+# not computed again. Upserts stage in tables of their own, so rounds finishing together are safe. The phase fails if any round failed, naming it.
+run_rounds() {
+  local parts=$1 dir=$2 hosts n i part lane failed=0 pids=() names=()
+  read -ra hosts <<< "${PLX_PLAN_HOSTS:-s7d3d}"
+  [ ${#hosts[@]} -ge 1 ] || { echo "PLX_PLAN_HOSTS is empty"; return 1; }
+  n=${#hosts[@]}
+  for lane in $(seq 0 $(( n - 1 ))); do
+    (
+      rc=0; i=0
+      for part in "$parts"/r*; do
+        [ $(( i % n )) -eq "$lane" ] || { i=$(( i + 1 )); continue; }
+        i=$(( i + 1 ))
+        out="$dir/closed-$(basename "$part")"; t0=$(date +%s)
+        if why=$(cd "$repo" && python3 -m operator_api.plan_batch complete --ids "$part" --out "$out" --shard "$shards_per_round" 2>&1); then
+          echo "round $(basename "$part"): files from an earlier run are complete, not computed again"
+        else
+          echo "round $(basename "$part") on ${hosts[$lane]}: computing ($why)"
+          [ ! -d "$out" ] || mv "$out" "$out.replaced-$t0"   # never delete earlier compute
+          ${PLAN_BATCH_CMD:-$repo/deploy/spark/plan_batch.sh} --out "$out" --env-file "$envf" --shards "$shards_per_round" --ids "$part" --sha "$sha" --host "${hosts[$lane]}" \
+            || { echo "round $(basename "$part"): the batch on ${hosts[$lane]} failed"; rc=1; continue; }
+        fi
+        ( set -a; . /etc/plx/ingest.env; . "$HOME/.config/plx/plx.env"; set +a
+          cd "$repo" && PLX_ONTOLOGY_PG=only ${PLAN_UPSERT_CMD:-python3 -m operating.pg.plan_sections upsert} "$out"/shard-*.jsonl ) \
+          || { echo "round $(basename "$part"): the upsert failed (its files stay in $out)"; rc=1; continue; }
+        echo "round $(basename "$part") on ${hosts[$lane]}: $(( $(date +%s) - t0 )) s"
+      done
+      exit $rc
+    ) &
+    pids+=($!)
+  done
+  for p in "${pids[@]}"; do wait "$p" || failed=1; done
+  [ "$failed" -eq 0 ] || { echo "fill-closed: some rounds failed (above); run it again, finished rounds are kept"; return 1; }
+}
+
 for phase in "${phases[@]}"; do
   case "$phase" in
   check)
@@ -145,16 +183,16 @@ for phase in "${phases[@]}"; do
   fill-closed)
     say "fill-closed: every purchase order record not open, in rounds of 1,500"
     ids=$fill_dir.closed-ids; mkdir -p "$fill_dir"
-    psql postgresql:///plx -Atc "SELECT DISTINCT i.record_id FROM biz.record_page_items i JOIN biz.purchase_orders p ON p.handle = i.src_handle WHERE i.section = 'header' AND NOT (p.verdict IN ('late','unknown') OR p.status IN ('open','draft','unknown')) ORDER BY 1" > "$ids"
-    echo "$(wc -l < "$ids") closed records"
-    rm -rf "$ids.parts"; mkdir -p "$ids.parts"; split -l 1500 -d "$ids" "$ids.parts/r"
-    for part in "$ids.parts"/r*; do
-      out="$fill_dir/closed-$(basename "$part")"; t0=$(date +%s)
-      "$repo/deploy/spark/plan_batch.sh" --out "$out" --env-file "$envf" --shards 8 --ids "$part" --sha "$sha"
-      ( set -a; . /etc/plx/ingest.env; . "$HOME/.config/plx/plx.env"; set +a
-        cd "$repo" && PLX_ONTOLOGY_PG=only python3 -m operating.pg.plan_sections upsert "$out"/shard-*.jsonl )
-      echo "round $(basename "$part"): $(( $(date +%s) - t0 )) s"
-    done
+    if [ -n "${PLAN_FILL_DIR:-}" ] && [ -s "$ids" ] && [ -d "$ids.parts" ]; then
+      # resuming in an earlier run's folder: its id list and rounds stay as they were, so its finished
+      # files still match their ids (a fresh list would shift the round boundaries)
+      echo "resuming with $ids ($(wc -l < "$ids") closed records, $(ls "$ids.parts" | wc -l) rounds)"
+    else
+      psql postgresql:///plx -Atc "SELECT DISTINCT i.record_id FROM biz.record_page_items i JOIN biz.purchase_orders p ON p.handle = i.src_handle WHERE i.section = 'header' AND NOT (p.verdict IN ('late','unknown') OR p.status IN ('open','draft','unknown')) ORDER BY 1" > "$ids"
+      echo "$(wc -l < "$ids") closed records"
+      rm -rf "$ids.parts"; mkdir -p "$ids.parts"; split -l 1500 -d "$ids" "$ids.parts/r"
+    fi
+    run_rounds "$ids.parts" "$fill_dir"
     ;;
   start)
     say "start: puller and $shards resident shards"

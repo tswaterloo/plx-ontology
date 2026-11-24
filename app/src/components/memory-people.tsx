@@ -34,7 +34,7 @@ export function MemoryPeopleSection() {
       getMemoryPeople(c.signal)
         .then((got) => {
           if (c.signal.aborted) return;
-          if (got.reading && tries++ < 15) timer = setTimeout(load, 2000);
+          if (got.reading) timer = setTimeout(load, Math.min(15_000, 2000 * 1.5 ** tries++));
           else setData(got);
         })
         .catch(() => !c.signal.aborted && setFailed(true));

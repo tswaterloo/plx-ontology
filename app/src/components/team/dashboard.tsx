@@ -6,7 +6,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { getInsight, getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { onSessionReset } from "@/lib/session-cache";
+import { readAhead as keepAhead, useRead } from "@/lib/use-read";
 import { eastern } from "@/lib/format";
 import type { InsightResult, TeamItem, TeamPerson, TeamPersonDetail, TeamTrackerWeek, TeamView } from "@/lib/types";
 
@@ -18,19 +18,19 @@ import type { InsightResult, TeamItem, TeamPerson, TeamPersonDetail, TeamTracker
 
 type Channel = "mail_sent" | "mail_received" | "teams" | "meetings" | "mc_approvals" | "mc_questions" | "mc_tasks" | "planner" | "sharepoint" | "bc" | "portal" | "sage";
 
-const CHANNELS: { key: Channel; head: string; title: string; system: string }[] = [
-  { key: "mail_sent", head: "Sent", title: "Mail sent", system: "mail" },
-  { key: "mail_received", head: "Recv", title: "Mail received from people", system: "mail" },
-  { key: "teams", head: "Msgs", title: "Teams messages sent", system: "teams" },
-  { key: "meetings", head: "Mtgs", title: "Meetings organised or attended", system: "meetings" },
-  { key: "mc_approvals", head: "Appr", title: "Mission Control approvals requested or decided", system: "mc" },
-  { key: "mc_questions", head: "Q&A", title: "Mission Control questions asked or answered", system: "mc" },
-  { key: "mc_tasks", head: "Steps", title: "Other Mission Control task steps", system: "mc" },
-  { key: "planner", head: "Plan", title: "Planner tasks created, assigned or completed", system: "planner" },
-  { key: "sharepoint", head: "Files", title: "SharePoint files created or changed", system: "sharepoint" },
-  { key: "bc", head: "BC", title: "Business Central records created or changed", system: "bc" },
-  { key: "portal", head: "Portal", title: "Portal records created or changed", system: "portal" },
-  { key: "sage", head: "Sage", title: "Sage entries", system: "sage" },
+const CHANNELS: { key: Channel; short: string; head: string; title: string; system: string }[] = [
+  { key: "mail_sent", short: "Mail sent", head: "Sent", title: "Mail sent", system: "mail" },
+  { key: "mail_received", short: "Mail received", head: "Recv", title: "Mail received from people", system: "mail" },
+  { key: "teams", short: "Teams messages", head: "Msgs", title: "Teams messages sent", system: "teams" },
+  { key: "meetings", short: "Meetings", head: "Mtgs", title: "Meetings organised or attended", system: "meetings" },
+  { key: "mc_approvals", short: "MC approvals", head: "Appr", title: "Mission Control approvals requested or decided", system: "mc" },
+  { key: "mc_questions", short: "MC questions", head: "Q&A", title: "Mission Control questions asked or answered", system: "mc" },
+  { key: "mc_tasks", short: "MC steps", head: "Steps", title: "Other Mission Control task steps", system: "mc" },
+  { key: "planner", short: "Planner tasks", head: "Plan", title: "Planner tasks created, assigned or completed", system: "planner" },
+  { key: "sharepoint", short: "SharePoint files", head: "Files", title: "SharePoint files created or changed", system: "sharepoint" },
+  { key: "bc", short: "BC records", head: "BC", title: "Business Central records created or changed", system: "bc" },
+  { key: "portal", short: "Portal records", head: "Portal", title: "Portal records created or changed", system: "portal" },
+  { key: "sage", short: "Sage entries", head: "Sage", title: "Sage entries", system: "sage" },
 ];
 
 const GROUPS: Record<string, { label: string; tone: string }> = {
@@ -171,25 +171,15 @@ export function plannerByKey(result: InsightResult | null): Map<string, { open: 
   return out;
 }
 
-// The planner read the Team page started beside its people read (`readPlannerAhead`), so the
-// dashboard does not wait for the people before asking for it (measured 11-22: it was sent
-// only once /api/team answered, 100-280 ms later). Used once, while young; dropped on sign-out.
-const PLANNER_AHEAD_MS = 10_000;
-let plannerAhead: { at: number; read: Promise<InsightResult> } | null = null;
-onSessionReset(() => (plannerAhead = null));
+// The planner read is a kept read like the people's (key: its API path): the Team page starts it
+// beside its people read (`readPlannerAhead`), so the dashboard does not wait for the people before
+// asking, and a visit after the first draws the kept answer and reads again behind it.
+const PLANNER_PATH = `/api/insights/${PLANNER_INSIGHT}`;
+const plannerRead = (signal?: AbortSignal) => getInsight(PLANNER_INSIGHT, signal);
 
 /** Start the planner read now (the Team page, beside its people read); a failure is dropped. */
 export function readPlannerAhead(): void {
-  const read = getInsight(PLANNER_INSIGHT);
-  read.catch(() => undefined);
-  plannerAhead = { at: Date.now(), read };
-}
-
-function plannerRead(signal: AbortSignal): Promise<InsightResult> {
-  const ahead = plannerAhead;
-  plannerAhead = null;
-  if (ahead && Date.now() - ahead.at < PLANNER_AHEAD_MS) return ahead.read.catch(() => getInsight(PLANNER_INSIGHT, signal));
-  return getInsight(PLANNER_INSIGHT, signal);
+  keepAhead(PLANNER_PATH, (s) => plannerRead(s));
 }
 
 // A person's panel is read once the pointer rests on their row: the server keeps the answer, so the
@@ -208,12 +198,8 @@ function readAhead(key: string) {
 const readAheadStop = () => clearTimeout(readAheadTimer);
 
 export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: string }) {
-  const [planner, setPlanner] = useState<Map<string, { open: number; overdue: number }> | null>(null);
-  useEffect(() => {
-    const ctl = new AbortController();
-    plannerRead(ctl.signal).then((r) => !ctl.signal.aborted && setPlanner(plannerByKey(r)), () => !ctl.signal.aborted && setPlanner(null));
-    return () => ctl.abort();
-  }, []);
+  const { data: plannerResult } = useRead<InsightResult>(PLANNER_PATH, plannerRead);
+  const planner = useMemo(() => (plannerResult ? plannerByKey(plannerResult) : null), [plannerResult]);
   const tasksOf = (p: TeamPerson) => planner?.get(p.key)?.open ?? 0;
   // shared mailboxes and accounts with no one on record behind them are listed apart: not people, so
   // out of the people count, the rankings and the totals above
@@ -462,16 +448,18 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
 }
 
 const BUCKETS: { key: TeamItem["bucket"]; label: string }[] = [
-  { key: "awaiting_reply", label: "Waiting on them" },
+  { key: "awaiting_reply", label: "Replies owed to them" },
   { key: "tasks", label: "Open tasks" },
   { key: "alerts", label: "Other alerts" },
 ];
 
 // The productivity tracker (internal; the owner is never listed): per week what they got
 // done against what came in, alerts closed, reply time and the time the Workbench saved.
-export function WeekTracker({ weeks, waiting }: { weeks: TeamTrackerWeek[]; waiting: number }) {
+export function WeekTracker({ weeks, waiting }: { weeks: TeamTrackerWeek[]; waiting: number | { replies: number; tasks: number; alerts: number } }) {
   const saved = weeks.some((w) => w.saved_minutes != null);
   const cell = "px-2 py-1 text-right num";
+  const parts = typeof waiting === "number" ? null : waiting;
+  const total = parts ? parts.replies + parts.tasks + parts.alerts : waiting as number;
   return (
     <div className="space-y-1.5">
       <table className="w-full border-collapse text-[12.5px]" data-testid="team-weeks">
@@ -491,14 +479,14 @@ export function WeekTracker({ weeks, waiting }: { weeks: TeamTrackerWeek[]; wait
               <td className="whitespace-nowrap px-2 py-1">{weekOf(w.week)}{w.partial && <span className="ml-1.5 text-[11px] text-muted">to {weekOf(w.to)}</span>}</td>
               <td className={cn(cell, "font-medium")}>{w.done.toLocaleString("en-US")}</td>
               <td className={cell}>{w.received.toLocaleString("en-US")}</td>
-              <td className={cell}>{w.closed || <span className="text-faint">·</span>}</td>
-              <td className={cn(cell, "whitespace-nowrap")}>{w.reply_minutes != null ? <>{minutes(w.reply_minutes)}<span className="ml-1 text-[11px] text-muted">({w.replies})</span></> : <span className="text-faint">·</span>}</td>
-              {saved && <td className={cell}>{w.saved_minutes ? minutes(w.saved_minutes) : <span className="text-faint">·</span>}</td>}
+              <td className={cell}>{w.closed ?? 0}</td>
+              <td className={cn(cell, "whitespace-nowrap")}>{w.reply_minutes != null ? <>{minutes(w.reply_minutes)}<span className="ml-1 text-[11px] text-muted">({w.replies})</span></> : <span className="text-muted">no replies</span>}</td>
+              {saved && <td className={cell}>{w.saved_minutes ? minutes(w.saved_minutes) : <span className="text-muted">none</span>}</td>}
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="text-[12px] text-muted" data-testid="team-waiting">{waiting ? `${waiting.toLocaleString("en-US")} waiting on them now (replies, tasks and alerts).` : "Nothing waiting on them now."}</p>
+      <p className="text-[12px] text-muted" data-testid="team-waiting">{total ? (parts ? `${total.toLocaleString("en-US")} open on them now: ${parts.replies.toLocaleString("en-US")} replies owed to them, ${parts.tasks.toLocaleString("en-US")} tasks and ${parts.alerts.toLocaleString("en-US")} alerts.` : `${total.toLocaleString("en-US")} waiting on them now (replies, tasks and alerts).`) : "Nothing waiting on them now."}</p>
     </div>
   );
 }
@@ -525,18 +513,20 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
             <div className="text-[12px] text-muted">{[p.team, ...(p.roles ?? []).filter((r) => r !== p.team)].filter(Boolean).join(" · ") || "No team or role on record"}</div>
           </div>
 
-          <h3 className="-mb-3 text-[12px] font-medium text-muted" data-testid="team-window">Counts for the last 28 days</h3>
-          <dl className="grid grid-cols-3 gap-x-4 gap-y-2 text-[12px] sm:grid-cols-6">
+          <section className="space-y-2">
+          <h3 className="text-[12px] font-medium text-muted" data-testid="team-window">Counts for the last 28 days</h3>
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-[12px] sm:grid-cols-4">
             {CHANNELS.filter((c) => (p.d28?.[c.key] ?? 0) > 0).map((c) => (
-              <div key={c.key} title={c.title}><dt className="truncate text-muted">{c.title.split(" ").slice(0, 2).join(" ")}</dt><dd className="num text-[15px]">{p.d28?.[c.key]}</dd></div>
+              <div key={c.key} title={c.title}><dt className="text-muted">{c.short}</dt><dd className="num text-[15px]">{p.d28?.[c.key]}</dd></div>
             ))}
-            <div title="Median time to reply, last 28 days"><dt className="text-muted">Median reply</dt><dd className="num text-[15px]">{minutes(p.reply_minutes_28) || "·"}</dd></div>
+            <div title="Median time to reply, last 28 days"><dt className="text-muted">Median reply</dt><dd className="num text-[15px]">{minutes(p.reply_minutes_28) || "none yet"}</dd></div>
           </dl>
+          </section>
 
           {(p.weeks ?? []).length > 0 && (
             <section className="cv-auto cv-tile space-y-2">
               <h3 className="text-[12px] font-medium text-muted">Week by week</h3>
-              <WeekTracker weeks={p.weeks ?? []} waiting={p.awaiting_reply + p.tasks + p.alerts} />
+              <WeekTracker weeks={p.weeks ?? []} waiting={{ replies: p.awaiting_reply, tasks: p.tasks, alerts: p.alerts }} />
             </section>
           )}
 
@@ -614,7 +604,7 @@ function Timeline({ days }: { days: { day: string; counts?: Record<string, numbe
           const max = Math.max(1, ...days.map((d) => d.counts?.[c.key] ?? 0));
           return (
             <tr key={c.key}>
-              <th scope="row" className="sticky left-0 z-[1] whitespace-nowrap bg-raised pr-3 text-left font-normal text-muted">{c.title.split(" ").slice(0, 2).join(" ")}</th>
+              <th scope="row" className="sticky left-0 z-[1] whitespace-nowrap bg-raised pr-3 text-left font-normal text-muted">{c.short}</th>
               {days.map((d) => {
                 const n = d.counts?.[c.key] ?? 0;
                 return (

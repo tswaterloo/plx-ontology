@@ -164,6 +164,22 @@ Changed:
 - the name finder gives each kind's total
 - the call watcher no longer dies
 
+## Update 2026-11-24
+Changed:
+- The covering-read pass can record its verdict
+- the prompt's size budget makes room for the name-finder line
+- Assist: each past case is screened on its own so one bad case no longer refuses the session
+- sessions get their lookup tools
+- tasks and approvals have their basis
+- session reads and cost are recorded
+- The desktop app keeps running when its window closes, starts at sign-in, and holds an encrypted store of what you have seen, wiped on sign-out or any change to your access
+- answers carry a door value for it
+- Ask searches read headers and Teams text straight from their index when that is faster, with the same rows
+- similar-meaning results page instead of stopping at five
+- Teams results name their author
+- Genie compares every part of a dimension
+- Records opens on Orders, Customers, Suppliers and Products lists with what you opened lately and saved on top
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

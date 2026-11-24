@@ -656,12 +656,15 @@ class Jobber:
             [str(t) for t in looked]
 
     def run(self, event: Mapping[str, Any], owner: str, event_text: str, person: str,
-            people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True
-            ) -> tuple[Optional[Job], str]:
+            people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True,
+            extra: str = "") -> tuple[Optional[Job], str]:
         """(``Job``, "") or (None, why): ``no_system_work``, a screen (the drafter's),
         ``job_failed`` (tried again), ``job_no_session``, or with a ``key``
         ``job_pending`` (running on the pool: ask again with the same key). ``as_of``: a
-        past event replayed for a grade (``AS_OF``); never set by the live cycle."""
+        past event replayed for a grade (``AS_OF``); never set by the live cycle. ``extra``:
+        text the caller has screened itself, part by part (a prepared session's precedents:
+        ``assist_prepared``): the session reads it after ``event_text``, the thread screen reads
+        ``event_text`` only, so a past case that fails its own screen cannot refuse the matter."""
         running = self._running.get(key) if key else None
         if running is not None:
             if not running.done():
@@ -686,6 +689,7 @@ class Jobber:
         # for one, never a message's
         fields = event.get("fields") if isinstance(event.get("fields"), Mapping) else {}
         brief_ok = not message and fields.get("brief") is True
+        event_text = f"{event_text}\n{extra}" if extra else event_text
         if key is None:
             return self._finish(*self._session(owner, event_text, person, message, as_of,
                                                brief_ok, reads), people, event, person)

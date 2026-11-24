@@ -305,8 +305,8 @@ class Assistant(aj.Jobber):
         return got is not None and got.get("reply") is False
 
     def run(self, event: Mapping[str, Any], owner: str, event_text: str, person: str,
-            people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True
-            ) -> tuple[Optional[Decision], str]:
+            people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True,
+            extra: str = "") -> tuple[Optional[Decision], str]:
         """The jobber's ``run`` (pool, keys, screens); a time-driven look event
         (``autopilot_agent_io.LOOK_EVENT``: the day's start, the hour) is the look's own
         task, never a message to answer."""
@@ -314,7 +314,7 @@ class Assistant(aj.Jobber):
         self._people = people
         if event.get("event_type") != LOOK_EVENT:
             return super().run(event, owner, event_text, person, people, key=key,
-                               as_of=as_of, reads=reads)
+                               as_of=as_of, reads=reads, extra=extra)
         fields = event.get("fields") if isinstance(event.get("fields"), Mapping) else {}
         changes = look_changes(fields.get("changes"))
         if not changes:

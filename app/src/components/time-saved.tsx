@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { StoredAge } from "@/components/ui/stored-age";
+import { useRead } from "@/lib/use-read";
 import { getTimeSaved } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { TimeSaved, TimeSavedPerson } from "@/lib/types";
@@ -50,13 +51,7 @@ function Weeks({ p, weeks, max }: { p: TimeSavedPerson; weeks: string[]; max: nu
  * with "Everyone" one row per person. Always an estimate; the method is one click away.
  */
 export function TimeSavedPanel({ everyone }: { everyone: boolean }) {
-  const [data, setData] = useState<TimeSaved | null>(null);
-  useEffect(() => {
-    const c = new AbortController();
-    setData(null);
-    getTimeSaved(everyone, c.signal).then(setData, () => undefined);
-    return () => c.abort();
-  }, [everyone]);
+  const { data, at } = useRead<TimeSaved>(`/api/time-saved${everyone ? "?everyone=true" : ""}`, (s) => getTimeSaved(everyone, s));
   if (!data || !data.available) return null;
   const weeks = data.weeks ?? [];
   const people = data.people ?? [];
@@ -74,6 +69,7 @@ export function TimeSavedPanel({ everyone }: { everyone: boolean }) {
     const last = me?.weeks[me.weeks.length - 2];
     return (
       <section aria-label="Time saved" className="mx-6 mt-3 border-b border-border pb-3" data-testid="time-saved">
+        <StoredAge at={at} />
         <div className="flex flex-wrap items-end gap-x-6 gap-y-1">
           <div>
             <p className="text-[12px] text-muted">Time saved this week (estimate)</p>
@@ -92,6 +88,7 @@ export function TimeSavedPanel({ everyone }: { everyone: boolean }) {
   return (
     <section aria-label="Time saved by person" className="mx-6 mt-3 border-b border-border pb-3" data-testid="time-saved">
       <h2 className="text-[12px] font-medium text-muted">Time saved per person (estimate)</h2>
+      <StoredAge at={at} />
       {people.length === 0 ? (
         <p className="mt-1 text-[13px] text-muted">Nobody&apos;s work log counts any yet.</p>
       ) : (

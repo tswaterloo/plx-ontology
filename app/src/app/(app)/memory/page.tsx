@@ -1,8 +1,10 @@
 "use client";
 
+import { StoredAge } from "@/components/ui/stored-age";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
+import { useRead } from "@/lib/use-read";
 import { refusal } from "@/components/templates";
 import { useViewingAs } from "@/components/view-as";
 import { byDue, DoneButton, dueLine, todayET } from "@/components/your-commitments";
@@ -173,18 +175,8 @@ function Memory() {
   // ?record=<id> (from a record's Related panel): only what you keep about that record
   const record = useSearchParams()?.get("record") || null;
   const viewing = useViewingAs();
-  const [list, setList] = useState<MemoryItems | null>(null);
-  const [problem, setProblem] = useState<unknown>(null);
-  const load = useCallback(() => {
-    const c = new AbortController();
-    setProblem(null);
-    getMemory(c.signal)
-      .then(setList)
-      .catch((e) => !c.signal.aborted && setProblem(e));
-    return () => c.abort();
-  }, []);
   // viewing as someone reads nothing of theirs (the server refuses it too)
-  useEffect(() => (viewing ? undefined : load()), [load, viewing]);
+  const { data: list, error: problem, retry: load, at } = useRead<MemoryItems>("/api/memory", getMemory, !viewing);
   const all = list?.items ?? [];
   const items = record ? all.filter((i) => (i.records ?? []).includes(record)) : all;
   return (
@@ -200,6 +192,7 @@ function Memory() {
           <>
             {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
             {!list && !problem && <Pending label="Reading your memory" />}
+            <StoredAge at={list ? at : null} />
             {list && !list.available && <EmptyState title="Memory can't be read right now." line="Nothing is lost. Try again in a few minutes." />}
             {list?.available && (
               <>

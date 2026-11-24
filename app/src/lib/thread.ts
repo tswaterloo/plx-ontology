@@ -43,8 +43,8 @@ export function applyEvent(turn: Turn, ev: AskEvent): Turn {
 }
 
 /** What the Ask URL asks for, as one key: the same question with another scope, source, meeting, item or page is another request. */
-export function askUrlKey(p: { q: string | null; object: string | null; source?: string; meeting: string | null; item: string | null; page: string | null }): string {
-  return [p.q, p.object, p.source, p.meeting, p.item, p.page].join("\u0000");
+export function askUrlKey(p: { q: string | null; object: string | null; source?: string; meeting: string | null; item: string | null; page: string | null; brief?: string | null }): string {
+  return [p.q, p.object, p.source, p.meeting, p.item, p.page, p.brief ?? ""].join("\u0000");
 }
 
 /** The request a turn was sent with, kept whole so Retry sends exactly it again. */

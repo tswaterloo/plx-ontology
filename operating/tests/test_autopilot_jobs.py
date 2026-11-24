@@ -371,6 +371,20 @@ class JobberBoundary(unittest.TestCase):
                                        barred)
         self.assertEqual((got, why), (None, "excluded_in_thread"))
 
+    def test_an_extra_the_caller_screened_reaches_the_session_but_not_the_thread_screen(self):
+        """A prepared session's past cases are screened one by one by their caller: one naming a
+        barred address must not refuse the matter (11-24: every prepared session was refused)."""
+        session = Session(calls=[("plx.prepare_write", TASK)])
+        barred = People(barred={"cos@plx.example"})
+        got, why = jobber(session).run(MAIL, "me", aj.described(MAIL, ""), "me@plx.example", barred,
+                                       extra="PAST CASE kept: cos@plx.example")
+        self.assertEqual(why, "")
+        self.assertIn("PAST CASE kept", session.runs[0][1])
+        # the same text in the thread itself is still refused
+        got, why = jobber(session).run(MAIL, "me", aj.described(MAIL, "") + "\ncos@plx.example",
+                                       "me@plx.example", barred)
+        self.assertEqual((got, why), (None, "excluded_in_thread"))
+
     def test_the_pool_answers_pending_then_the_job(self):
         session = Session(calls=[("plx.prepare_write", PO_DATE)])
         j = jobber(session)

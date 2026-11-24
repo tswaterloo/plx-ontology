@@ -175,7 +175,7 @@ function NoRecordNamed({ what }: { what: string }) {
           Search
         </Button>
         <Button size="sm" variant="secondary" asChild>
-          <Link href="/records">Open Records</Link>
+          <Link href="/orders">Open Orders</Link>
         </Button>
       </div>
     </div>

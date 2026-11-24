@@ -15,8 +15,8 @@ const ROUTES = readdirSync(join(__dirname, "../app/(app)"), { withFileTypes: tru
   .map((d) => `/${d.name}`);
 
 describe("the sidebar: one fixed list (owner, 11-17: items moved depending on the page)", () => {
-  it("a plain reader sees Home, Ask, Insights, Records, Meetings; no Team, no Admin; Memory, Templates and Work log in the account menu; the switches are Home's tab (one queue)", () => {
-    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings"]);
+  it("a plain reader sees Home, Assist, Ask, Insights, Orders, Customers, Suppliers, Products, More, Meetings; no Team, no Admin; Memory, Templates and Work log in the account menu; the switches are Home's tab (one queue)", () => {
+    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Assist", "Ask", "Insights", "Orders", "Customers", "Suppliers", "Products", "More", "Meetings"]);
     expect(navSectionsFor({}).filter((s) => s.group === "account").map((s) => s.href)).toEqual(["/memory", "/templates", "/work-log"]);
     expect(navSectionsFor({}).some((s) => s.group === "last")).toBe(false);
   });
@@ -45,7 +45,7 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
 
   it("sub-pages are tabs of the page they belong to, never of another item", () => {
     const of = (key: string) => NAV_SECTIONS.find((s) => s.key === key)!.children.map((c) => c.href);
-    expect(of("home")).toEqual(["/", "/?show=alerts", "/?show=late", "/autopilot"]); // the queue and its switches; Data health is Admin's
+    expect(of("home")).toEqual(["/", "/?show=alerts", "/?show=late"]); // the queue; Data health is Admin's
     expect(of("work-log")).toEqual(["/work-log", "/activity"]);
     expect(of("ask")).toEqual([]); // Memory and Templates are their own items, never under Ask
     expect(NAV_SECTIONS.some((x) => x.key === "autopilot")).toBe(false); // folded into Home
@@ -78,14 +78,14 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
   });
 
   it("each old place opens under the item that now holds it", () => {
-    expect(sectionOf("/supplier/S-1")?.key).toBe("records");
-    expect(sectionOf("/object/PurchaseOrder/x")?.key).toBe("records");
+    expect(sectionOf("/supplier/S-1")?.key).toBe("suppliers");
+    expect(sectionOf("/object/PurchaseOrder/x")?.key).toBe("more");
     expect(sectionOf("/memory")?.key).toBe("memory");
     expect(sectionOf("/templates")?.key).toBe("templates");
     expect(sectionOf("/late")?.key).toBe("home");
     expect(sectionOf("/watching")?.key).toBe("home");
-    expect(sectionOf("/account/C-1")?.key).toBe("records");
-    expect(sectionOf("/order/SO-1")?.key).toBe("records");
+    expect(sectionOf("/account/C-1")?.key).toBe("customers");
+    expect(sectionOf("/order/SO-1")?.key).toBe("orders");
     expect(sectionOf("/my-work")?.key).toBe("home");
     expect(sectionOf("/activity")?.key).toBe("work-log");
     expect(sectionOf("/meetings/abc")?.key).toBe("meetings");
@@ -123,9 +123,9 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(pinnable("/rd-projects")).toBe(false);
   });
 
-  it("the owner's sidebar is Home, Ask, Insights, Records, Meetings, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
+  it("the owner's sidebar is Home, Assist, Ask, Insights, Orders, Customers, Suppliers, Products, More, Meetings, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
     const secs = navSectionsFor({ owner: true, ops_reader: true, feedback_admin: true });
-    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Team", "Admin"]);
+    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Assist", "Ask", "Insights", "Orders", "Customers", "Suppliers", "Products", "More", "Meetings", "Team", "Admin"]);
     expect(secs.filter((s) => s.group === "account").map((s) => s.key)).toEqual(["memory", "templates", "work-log"]);
   });
 });
@@ -141,8 +141,8 @@ describe("the sidebar drawn on every page is identical", () => {
     // path, #fragment, the one row that is highlighted
     ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"], ["/data-health", "", "/ops"],
     ["/ask", "", "/ask"], ["/memory", "", ""], ["/templates", "", ""],
-    ["/autopilot", "", "/"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
-    ["/records", "", "/records"], ["/supplier/S-1", "", "/records"], ["/object/PurchaseOrder/x", "", "/records"],
+    ["/assist", "", "/assist"], ["/assist?show=switches", "", "/assist"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
+    ["/orders", "", "/orders"], ["/customers", "", "/customers"], ["/products", "", "/products"], ["/supplier/S-1", "", "/suppliers"], ["/object/PurchaseOrder/x", "", "/more"],
     ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"], ["/trust", "", "/ops"],
     ["/feedback", "", "/ops"], ["/help", "", ""],
   ];
@@ -165,7 +165,7 @@ describe("the sidebar drawn on every page is identical", () => {
     const hrefs = first!.map(([h]) => h);
     expect(new Set(hrefs).size).toBe(hrefs.length);
     // the six items, then the one pin that is a view of its own (purchasing's supplier alerts)
-    expect(first!.map(([, l]) => l)).toEqual(["Home", "Ask", "Insights", "Records", "Meetings", "Team", "Admin", "Supplier issues"]);
+    expect(first!.map(([, l]) => l)).toEqual(["Home", "Assist", "Ask", "Insights", "Orders", "Customers", "Suppliers", "Products", "More", "Meetings", "Team", "Admin", "Supplier issues"]);
     expect(first!.map(([, l]) => l).join("|")).not.toMatch(/Watching|Memory|Templates|Approvals|Autopilot review queue|Alerts|Autopilot log|Prepared for you|Your actions|Lists|ops targets? missed/);
   });
 
@@ -180,7 +180,7 @@ describe("the sidebar drawn on every page is identical", () => {
 
 describe("each page says what it is for", () => {
   it("every page outside a record opens with its one sentence (Memory and Templates have their own opening line)", () => {
-    const records = new Set(["/account", "/order", "/customer", "/supplier", "/po", "/ao", "/object", "/source"]);
+    const records = new Set(["/account", "/order", "/customer", "/supplier", "/po", "/ao", "/object", "/source", "/orders", "/customers", "/suppliers", "/products", "/more"]);
     const own = new Set(["/memory", "/templates"]);
     // /my-work only opens Home now
     const pages = ["/", ...ROUTES.filter((r) => !records.has(r) && !own.has(r))];

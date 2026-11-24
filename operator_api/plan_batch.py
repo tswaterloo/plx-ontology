@@ -224,9 +224,47 @@ def run(args: argparse.Namespace) -> int:
     return case_console.main(argv, serve_with=serve)
 
 
+def round_gaps(ids_path: str, out_dir: str, shards: int) -> list[str]:
+    """Why a finished round's files cannot be loaded as they stand (empty: complete). A round is
+    complete when every shard file 0..N-1 is there with its own header and whole lines, and every
+    id of the round has a line for every family. Used to resume a fill without running again."""
+    with open(ids_path, encoding="utf-8") as fh:
+        ids = {x.rstrip("\n") for x in fh if x.strip()}
+    seen: dict[str, set[str]] = {}
+    gaps: list[str] = []
+    for i in range(shards):
+        path = os.path.join(out_dir, f"shard-{i}.jsonl")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                lines = fh.read().split("\n")
+        except OSError as exc:
+            gaps.append(f"shard {i}: {exc.__class__.__name__}")
+            continue
+        if lines and lines[-1] == "":
+            lines.pop()
+        else:
+            gaps.append(f"shard {i}: ends inside a line")
+        try:
+            head = json.loads(lines[0]) if lines else None
+            rows = [json.loads(x) for x in lines[1:]]
+        except ValueError:
+            gaps.append(f"shard {i}: a line is not JSON")
+            continue
+        if not isinstance(head, dict) or head.get("shard") != f"{i}/{shards}" \
+                or not isinstance(head.get("stamps"), dict):
+            gaps.append(f"shard {i}: no header for {i}/{shards}")
+        for row in rows:
+            if isinstance(row, dict) and "record_id" in row:
+                seen.setdefault(row["record_id"], set()).add(row.get("family"))
+    short = sum(1 for r in ids if seen.get(r, set()) != set(FAMILIES))
+    if short:
+        gaps.append(f"{short} of {len(ids)} ids lack a line for some family")
+    return gaps
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m operator_api.plan_batch")
-    ap.add_argument("command", choices=("run",))
+    ap.add_argument("command", choices=("run", "complete"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--family", action="append", default=[])
     ap.add_argument("--ids")
@@ -234,6 +272,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--host-config")
     args = ap.parse_args(argv)
     args.family = args.family or list(FAMILIES)
+    if args.command == "complete":   # --out is the round's folder, --shard N the shard count
+        count = int(args.shard) if args.shard.isdigit() else 0
+        if not args.ids or count < 1:
+            print("complete needs --ids FILE and --shard N", file=sys.stderr)
+            return 2
+        gaps = round_gaps(args.ids, args.out, count)
+        print("; ".join(gaps) if gaps else "complete")
+        return 1 if gaps else 0
     return run(args)
 
 

@@ -15,7 +15,6 @@ import { AlertFired } from "./alert-fired";
 import { DraftSheet, SuggestionActions } from "./record/next-step";
 import { SourceChip } from "./source-chip";
 import { lateFigure, DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
-import { RECORD_LIMIT_MS } from "./ui/skeleton";
 import { ShowAll } from "@/components/show-all";
 
 export interface QueueRow {
@@ -323,8 +322,6 @@ export function TodayDetail({
     setDoor(null);
     setTrailOnly(null);
     setFailed(false);
-    // no wait without an end: past the record limit the pane says it didn't load (a later answer still shows)
-    const limit = setTimeout(() => !c.signal.aborted && setFailed(true), RECORD_LIMIT_MS);
     // the trail is the old engine's slow read (10-50 s cold): asked for only once the record has
     // been looked at for a moment, so moving down the list with the arrow keys reads none
     const looked: number[] = [];
@@ -334,7 +331,6 @@ export function TodayDetail({
       getObject(row.type, row.objectId, c.signal, true)
         .then((p) => {
           if (c.signal.aborted) return;
-          clearTimeout(limit);
           setFailed(false);
           // the briefing already read this PO's trail: shown at once, then the page's own
           const withTrail = !p.trail && row.item?.trail ? ({ ...p, trail: row.item.trail } as ObjectPage) : p;
@@ -353,7 +349,6 @@ export function TodayDetail({
       bizPage(k.kind, { h: k.h, record: k.record }, c.signal, true).then(
         (p) => {
           if (c.signal.aborted) return;
-          clearTimeout(limit);
           setDoor(p);
           // the evidence trail is the old engine's: read after, never waited on
           if (trailOf && !row.item?.trail)
@@ -365,7 +360,7 @@ export function TodayDetail({
         () => !c.signal.aborted && own(),
       );
     return () => {
-      clearTimeout(limit);
+      
       looked.forEach(clearTimeout);
       c.abort();
     };

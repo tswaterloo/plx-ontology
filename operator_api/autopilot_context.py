@@ -526,6 +526,14 @@ class Lookup:
         looked = [str(e.get("result")) for e in ran.events
                   if e.get("type") == "tool_call" and e.get("name") in simple_ask.TOOLS
                   and not e.get("is_error") and e.get("result") is not None]
+        # the cost the model reported and every tool call the session made, for the caller that
+        # began a trace (``operating.session_trace``: a prepared session's run row and its reads)
+        from operating import session_trace
+        session_trace.note(
+            (ran.usage or {}).get("cost_usd_estimate"),
+            [{"tool": e.get("name"), "arguments": e.get("arguments"),
+              "failed": bool(e.get("is_error"))}
+             for e in ran.events if e.get("type") == "tool_call"])
         return session_text(ran), looked
 
 
@@ -640,6 +648,34 @@ def allowed_env(environ: Mapping[str, str]) -> dict[str, str]:
     return {k: v for k, v in found.items() if k not in environ}
 
 
+def person_notes(memory: Any) -> Callable[[str], list[str]]:
+    """``notes_of`` over the person's own memory (``operator_api.memory``): their facts and
+    commitments, all of them, newest first, read as them. A person with no memory key, or
+    memory that cannot be read, has none: said in the log, and the session says it read none."""
+    from operator_api.memory import KeyReader
+    keys = DraftContext(memory)
+
+    def notes(owner: str) -> list[str]:
+        key = keys._key(owner)
+        if not key:
+            LOG.info("prepared session: no memory key for %s", owner)
+            return []
+        try:
+            rows = memory.items(KeyReader(key), kinds=("fact", "commitment"), limit=None)
+        except Exception:  # noqa: BLE001 - the session goes on without them, said
+            LOG.warning("prepared session: notes of %s unreadable", owner, exc_info=True)
+            return []
+        return [" ".join(str(r["text"]).split()) + (f" (about {', '.join(r['records'])})"
+                                                    if r.get("records") else "")
+                for r in rows]
+    return notes
+
+
+def notes_factory(dsn: str):
+    from operator_api.memory import Memory
+    return person_notes(Memory.for_dsn(dsn))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """The autopilot's command; after a ``follow`` cycle, the Assist matters cycle
     (``operating.assist_matters``: open, re-verify, heartbeat) over the same state dir. A
@@ -648,6 +684,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ.update(allowed_env(os.environ))
     register()
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] in (["assist-worker"], ["assist-prepared"]):
+        # the Assist sessions (drafts asked for, prepared sessions) read through the same tool
+        # session as the autopilot's drafts: registered above, never by ``operating`` itself
+        from operating import assist_prepared, assist_worker
+        if args[0] == "assist-worker":
+            return assist_worker.main(args[1:])
+        return assist_prepared.main(args[1:], notes_factory=notes_factory)
     rc = autopilot.main(args)
     if args[:1] == ["follow"]:
         rc = max(rc, matters_cycle(args))

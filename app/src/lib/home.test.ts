@@ -48,10 +48,6 @@ describe("staleLine", () => {
   it("says only that a recent stale page is refreshing: the sidebar's Data as of is the one clock", () => {
     expect(staleLine(read, null, at(4))).toBe("Refreshing");
   });
-  it("says it stopped asking once the tries are spent, never 'refreshing' for good", () => {
-    expect(staleLine(read, null, at(4), true)).toBe("No newer read came in. Showing the read from 9:08 PM ET.");
-  });
-
   it("names the read's time, in Eastern time, once it is over an hour old", () => {
     expect(staleLine(read, null, at(61))).toBe("Showing the read from 9:08 PM ET · refreshing");
   });

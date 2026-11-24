@@ -779,6 +779,46 @@ class PlanSections(Door):
         with self.assertRaises(RuntimeError):
             ps.upsert(self.dsn, [], schema="no_such_schema")
 
+    def test_concurrent_upserts_each_stage_alone_and_lose_no_row(self):
+        # P17: a fixed staging name made two callers (the puller and a fill) drop each other's table
+        import threading
+        self.load([entry(r, []) for r in self.orders])
+        half = max(1, len(self.orders) // 2)
+        sets = [self.orders[:half], self.orders[half:] or self.orders[:1]]
+        results, errors = [None, None], []
+        gate = threading.Barrier(2)
+
+        def run(i):
+            try:
+                gate.wait()
+                results[i] = self.put([entry(r, [], state="not_late") for r in sets[i]])
+            except Exception as exc:     # the test fails below with the cause named
+                errors.append(repr(exc))
+        threads = [threading.Thread(target=run, args=(i,)) for i in (0, 1)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(errors, [])
+        self.assertEqual([r["placed"] for r in results], [len(s) for s in sets])
+        with psycopg.connect(self.dsn) as c:
+            self.assertEqual(c.execute(f"SELECT count(*), count(DISTINCT handle) FROM "
+                                       f"{bv.SCHEMA}.plan_section_items").fetchone(),
+                             (len(self.orders),) * 2)
+            self.assertEqual(c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = %s AND "
+                                       "tablename LIKE 'plan_section_items\\_inc%%'",
+                                       (bv.SCHEMA,)).fetchone()[0], 0)    # no staging table left
+
+    def test_a_failed_upsert_leaves_no_staging_table(self):
+        a = self.orders[0]
+        self.load([entry(a, [], state="late")])
+        with self.assertRaises(Exception):
+            ps.upsert(self.dsn, [({"purchase_orders": "t", **self.marks()}, [object()])])
+        with psycopg.connect(self.dsn) as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = %s AND "
+                                       "tablename LIKE 'plan_section_items\\_inc%%'",
+                                       (bv.SCHEMA,)).fetchone()[0], 0)
+
     def test_upserts_lose_and_repeat_no_row_at_1_10_and_60(self):
         self.load([entry(r, []) for r in self.orders])
         before = len(self.orders)

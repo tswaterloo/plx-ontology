@@ -12,7 +12,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), suggest: api.suggest, getRecordViews: api.views, getRecordList: api.list }));
 
-import RecordsPage from "./page";
+import { RecordsView as RecordsPage } from "./records-view";
 
 const row = (type: string, object_id: string, label: string, open_url: string) => ({ object_id, type, label, match: "exact" as const, score: 1, open_url, same_as: [] });
 
@@ -100,7 +100,7 @@ describe("Records page", () => {
     await waitFor(() => expect(screen.getByTestId("records-found").className).not.toContain("opacity-60"));
   });
 
-  it("a good answer is not replaced by 'stay good later, and a search that never answers gives up", async () => {
+  it("a good answer is not replaced by 'stay good later, and a search that has not answered keeps waiting, never giving up", async () => {
     vi.useFakeTimers();
     try {
       api.suggest.mockReset();
@@ -118,8 +118,9 @@ describe("Records page", () => {
       fireEvent.change(box, { target: { value: "never" } });
       await vi.advanceTimersByTimeAsync(9000);
       expect(screen.getByTestId("records-found").className).toContain("opacity-60");   // the earlier answer, dimmed
-      await vi.advanceTimersByTimeAsync(12000);
-      expect(screen.getByText(/taking too long/)).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(screen.queryByText(/taking too long/)).toBeNull();   // two minutes on: still waiting
+      expect(screen.getByTestId("records-found").className).toContain("opacity-60");
     } finally {
       vi.useRealTimers();
     }
@@ -176,5 +177,26 @@ describe("a Records tab before any search", () => {
     render(<RecordsPage />);
     expect(screen.queryByTestId("records-recent-list")).toBeNull();
     nav.params = new URLSearchParams("");
+  });
+});
+
+describe("the places that replaced Records", () => {
+  it("Orders opens on purchase orders, late first, with no kind tabs; its sales orders are one click away", async () => {
+    nav.params = new URLSearchParams("");
+    render(<RecordsPage place="orders" />);
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    await waitFor(() => expect(api.list).toHaveBeenCalledWith("purchase_orders", expect.objectContaining({ sort: "days_late", direction: "desc" }), expect.anything()));
+    expect(screen.getByRole("link", { name: /Sales orders/ })).toHaveAttribute("href", "/records?list=sales_orders");
+  });
+
+  it("Customers, Suppliers and Products open on their own list; More keeps the other kinds as tabs", async () => {
+    for (const [place, view] of [["customers", "customers"], ["suppliers", "suppliers"], ["products", "products"]] as const) {
+      api.list.mockClear();
+      const { unmount } = render(<RecordsPage place={place} />);
+      await waitFor(() => expect(api.list).toHaveBeenCalledWith(view, expect.anything(), expect.anything()));
+      unmount();
+    }
+    render(<RecordsPage place="more" />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["All", "Documents", "Production", "Lists"]);
   });
 });

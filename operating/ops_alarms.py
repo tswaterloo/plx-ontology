@@ -1759,8 +1759,9 @@ def read_status(state_dir: Any, now: Optional[datetime] = None) -> dict[str, Any
         return {"configured": True, "running": False, "checked_at": None, "open": [],
                 "recovered": [], "checks": []}
     age = _minutes(now, ops_health._parse(status.get("checked_at")))
-    return dict(status, configured=True,
-                running=age is not None and age <= STALE_MINUTES)
+    from . import ops_known     # owned alarms move from open to known (dated, with their owner)
+    return ops_known.apply(dict(status, configured=True,
+                                running=age is not None and age <= STALE_MINUTES), now)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

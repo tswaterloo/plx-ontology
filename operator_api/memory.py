@@ -44,10 +44,15 @@ session writes nothing.
   excluded person (``people``), citing their mailbox or chat, or whose text names them (a
   text the cleaning had to withhold anything from is refused whole); every row is checked
   again on every read; ``purge_excluded`` deletes what a later exclusion covers.
-* **Pay and finance are never stored**: a sentence carrying an amount of money, a
+* **Pay and finance are never stored** (owner 11-24: except a person's own private note,
+  below): a sentence carrying an amount of money, a
   finance or pay word or personal financial content (``operating.chunking.sensitive``)
   is dropped first (``finance_free``); an answer on such a topic keeps nothing;
-  ``remember`` and ``log_event`` refuse a text that still carries one.
+  ``remember`` and ``log_event`` refuse a text that still carries one. The one exception
+  is a note the person writes themselves (``write`` with ``personal=True``: the Memory
+  screen, "Add context", POST /api/memory; source ``you``, private to them, read back for
+  nobody else, never shared): "already paid PO123" is theirs to keep. Learned,
+  distilled and every other source, and anything shared, keep the refusal.
 * **Current access**: an item or log row whose citations the person can no longer open
   is withheld at read (``decide``: the read policy's decision; undecided: withheld).
   ``Decisions`` holds those decisions per person for ``DECIDE_SECONDS`` and asks for
@@ -104,6 +109,7 @@ WRITE_REFUSED = {
     "too_long": f"Keep it under {MAX_WRITE} characters.",
     "kind": "Choose an instruction, a preference, a commitment or a fact.",
     "not_found": "That item isn't in your memory any more.",
+    "records": "That note names a record by something that is not a record id.",
 }
 MAX_TEXT = 8000
 ANSWER_CHARS = 3000
@@ -773,7 +779,8 @@ class Memory:
         return _Named(guard, _name_pattern(frozenset(names)))
 
     def _cleared(self, reader: Any, text: Any, people: Iterable[str],
-                 citations: Iterable[Mapping[str, Any]], subject: Any = None
+                 citations: Iterable[Mapping[str, Any]], subject: Any = None,
+                 own_note: bool = False
                  ) -> Optional[tuple[str, Optional[str], list[str], list[dict[str, str]]]]:
         """(text, subject, people, citations) as kept, or None when nothing may be."""
         if _not_theirs(reader):
@@ -784,7 +791,7 @@ class Memory:
         people = sorted({str(p).strip().lower() for p in people if p and str(p).strip()})
         if any(wl._person_excluded(guard, p) for p in people):
             return None
-        if finance_text(text) or (subject and finance_text(subject)):
+        if not own_note and (finance_text(text) or (subject and finance_text(subject))):
             return None
         cleaned = fb.clean(text, guard, MAX_TEXT)
         subject = fb.clean(subject, guard, 300) if subject else None
@@ -833,20 +840,23 @@ class Memory:
                  confidence: float = 0.7, source_ref: Optional[str] = None,
                  conversation: Optional[str] = None, records: Iterable[str] = (),
                  citations: Iterable[Mapping[str, Any]] = (), people: Iterable[str] = (),
-                 log_ids: Iterable[int] = (), at: Optional[datetime] = None
-                 ) -> Optional[int]:
+                 log_ids: Iterable[int] = (), at: Optional[datetime] = None,
+                 own_note: bool = False) -> Optional[int]:
         """Keep one distilled item for ``reader``; its id, or None when it may not be kept
         (module doc). An item of the same kind and ``subject`` supersedes the person's
-        earlier one; the same text again refreshes it. Unknown kind or source, or an
+        earlier one; the same text again refreshes it. ``own_note`` (only with source ``you``,
+        from ``write``): the person's own words skip the finance refusal. Unknown kind or source, or an
         importance or confidence outside (0, 1]: ValueError."""
         if kind not in ITEM_KINDS or source not in SOURCES:
             raise ValueError("memory_kind_or_source_unknown")
+        if own_note and source != "you":
+            raise ValueError("memory_own_note_needs_source_you")
         importance = IMPORTANCE.get(kind, 0.5) if importance is None else importance
         for value in (importance, confidence):
             if not isinstance(value, (int, float)) or isinstance(value, bool) \
                     or not 0 < value <= 1:
                 raise ValueError("memory_score_invalid")
-        cleared = self._cleared(reader, text, people, citations, subject)
+        cleared = self._cleared(reader, text, people, citations, subject, own_note)
         if cleared is None:
             return None
         text, subject, people, cites = cleared
@@ -1412,19 +1422,29 @@ class Memory:
 
     # -- the person's own review --
 
-    def items(self, reader: Any, *, kinds: Sequence[str] = CORE_KINDS, limit: int = 200,
-              decide: Optional[Callable[[list[str]], Mapping[str, Any]]] = None
-              ) -> list[dict[str, Any]]:
-        """The person's own items as they now stand (newest first)."""
+    def items(self, reader: Any, *, kinds: Sequence[str] = CORE_KINDS, limit: Optional[int] = 200,
+              decide: Optional[Callable[[list[str]], Mapping[str, Any]]] = None,
+              about: Optional[Sequence[str]] = None) -> list[dict[str, Any]]:
+        """The person's own items as they now stand (newest first). ``limit`` None: all of
+        them. ``about``: only items that name one of these record ids."""
         if any(k not in ITEM_KINDS for k in kinds):
             raise ValueError("memory_kind_unknown")
         guard = self._reading(reader)
         if guard is None:
             return []
+        args: list[Any] = [reader.key, list(kinds)]
+        where = ""
+        if about is not None:
+            where = " AND records && %s::text[]"
+            args.append([str(a) for a in about])
+        tail = ""
+        if limit is not None:
+            tail = " LIMIT %s"
+            args.append(int(limit))
         rows = [_row(self._ITEM_COLUMNS, r) for r in self._query(None, None, (
             "SELECT " + ", ".join(self._ITEM_COLUMNS) + " FROM memory.item WHERE reader = %s "
             "AND kind = ANY(%s) AND deleted_at IS NULL AND superseded_by IS NULL" + ANSWER_FACT
-            + " ORDER BY at DESC, id DESC LIMIT %s"), (reader.key, list(kinds), int(limit)))]
+            + where + " ORDER BY at DESC, id DESC" + tail), tuple(args))]
         return [self._public(r) for r in self._openable(
             [r for r in rows if self._clear(guard, r)], decide)]
 
@@ -1474,14 +1494,23 @@ class Memory:
                         "lesson not forgotten: %s", type(error).__name__)
         return bool(gone)
 
-    def write(self, reader: Any, *, kind: str, text: str, replaces: Optional[int] = None
+    def write(self, reader: Any, *, kind: str, text: str, replaces: Optional[int] = None,
+              records: Iterable[str] = (), personal: bool = True
               ) -> tuple[Optional[int], Optional[str]]:
         """The person's own words kept as one of their items (source ``you``), or one of
         their items corrected (``replaces``: the new text supersedes it and keeps its
-        subject, so a learner never writes over the correction). (id, None), or (None, why)
+        subject, so a learner never writes over the correction). ``personal``: the words are the
+        person's own, typed by them (default), so a mention of pay or finance is kept private
+        to them; False (words a model composed) keeps the finance refusal. (id, None), or (None, why)
         with ``why`` a ``WRITE_REFUSED`` key. Every check of ``remember`` applies: view-as
-        writes nothing, the exclusion fails closed, pay and finance are never kept."""
+        writes nothing, the exclusion fails closed, pay and finance are never kept.
+        ``records``: the object ids the note is about (a meeting, customer or supplier the
+        person writes it from), kept with it so the brief of that record, the Ask and the
+        Assist sessions read it back; a note is private to the person who wrote it."""
         text = " ".join(str(text or "").split())
+        about = list(dict.fromkeys(str(r).strip() for r in records if str(r or "").strip()))
+        if any(":" not in r or len(r) > 700 for r in about):   # refused, never clipped
+            return None, "records"
         if _not_theirs(reader):
             return None, "view_as"
         if kind not in WRITE_KINDS:
@@ -1490,7 +1519,7 @@ class Memory:
             return None, "empty"
         if len(text) > MAX_WRITE:
             return None, "too_long"
-        if finance_text(text):
+        if not personal and finance_text(text):
             return None, "finance"
         if self._guard() is None:
             return None, "unavailable"
@@ -1498,22 +1527,24 @@ class Memory:
         if replaces is not None:
             with self.connect() as conn:
                 old = conn.execute(
-                    "SELECT subject FROM memory.item WHERE id = %s AND reader = %s AND kind = "
+                    "SELECT subject, records FROM memory.item WHERE id = %s AND reader = %s AND kind = "
                     "ANY(%s) AND deleted_at IS NULL AND superseded_by IS NULL",
                     (int(replaces), reader.key, list(WRITE_KINDS))).fetchone()
             if old is None:
                 return None, "not_found"
             subject = old[0] or f"you | {int(replaces)}"
+            about = about or list(old[1] or ())   # a correction keeps what the note was about
         else:
             with self.connect() as conn:
                 same = conn.execute(
                     "SELECT id FROM memory.item WHERE reader = %s AND kind = %s AND text = %s "
-                    "AND deleted_at IS NULL AND superseded_by IS NULL LIMIT 1",
-                    (reader.key, kind, text)).fetchone()
+                    "AND records = %s::text[] AND deleted_at IS NULL AND superseded_by IS NULL "
+                    "LIMIT 1", (reader.key, kind, text, about)).fetchone()
             if same is not None:
                 return int(same[0]), None
         new = self.remember(reader, kind=kind, text=text, source="you", subject=subject,
-                            confidence=1.0, importance=max(IMPORTANCE.get(kind, 0.5), 0.85))
+                            records=about, confidence=1.0, importance=max(IMPORTANCE.get(kind, 0.5), 0.85),
+                            own_note=personal)
         if new is None:
             return None, ("unavailable" if self._guard() is None else "excluded")
         if replaces is not None and new != int(replaces):

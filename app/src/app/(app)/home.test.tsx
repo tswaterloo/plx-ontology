@@ -33,7 +33,7 @@ describe("Home's three tabs (simpler tabs, 11-18): what needs you, Alerts (was /
       const a = render(<HomePage />);
       // the Alerts and Late POs tabs load as their own chunks (first drawn as "Reading ...")
       await screen.findAllByRole("link", { name: "Alerts" });
-      expect(within(tabs()).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Needs you", "/"], ["Alerts", "/?show=alerts"], ["Late POs", "/?show=late"], ["Switches", "/autopilot"]]);
+      expect(within(tabs()).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Needs you", "/"], ["Alerts", "/?show=alerts"], ["Late POs", "/?show=late"]]);
       expect(on()).toEqual(["Alerts"]);
       expect(screen.queryByTestId("needs-you")).toBeNull();
       a.unmount();

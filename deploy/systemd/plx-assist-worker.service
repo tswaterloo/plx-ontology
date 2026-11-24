@@ -26,7 +26,7 @@ Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only
 Environment=PLX_AUTOPILOT_ENV_FILE=@PLX_HOME@/.config/plx/plx.env
 Environment=PLX_AUTOPILOT_MEMORY_DSN=postgresql:///plx
-ExecStart=/data/venv/bin/python3 -m operating.assist_worker run --store /data/plx-state/projection/ontology.sqlite --state-dir /data/plx-state
+ExecStart=/data/venv/bin/python3 -m operator_api.autopilot_context assist-worker run --store /data/plx-state/projection/ontology.sqlite --state-dir /data/plx-state
 Nice=5
 CPUWeight=100
 MemoryHigh=4G

@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetKeptReads, keepRead } from "@/lib/use-read";
 import type { ApprovalsQueue } from "@/lib/types";
 
 const queue = vi.hoisted(() => ({ value: null as unknown }));
@@ -17,7 +18,25 @@ const item = (over: Record<string, unknown>) => ({
   card_id: null, offers: [], ...over,
 });
 
+beforeEach(() => forgetKeptReads());
+
 describe("approvals waiting on others", () => {
+  it("a queue drawn from the store says how old it is while the read behind it returns", async () => {
+    const old = { as_of: "2026-11-09", total: 1, sent: 0, writes: 0, by_aging: {}, groups: [{ waiting_on: "Vince", count: 1, oldest_days: 7, items: [item({})] }] } satisfies ApprovalsQueue;
+    keepRead("/api/approvals", old, true, 100, Date.now() - 600_000);
+    queue.value = old;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const orig = queue.value;
+    queue.value = gate.then(() => orig);
+    render(<TeamApprovals />);
+    expect(screen.getByTestId("approvals-queue")).toBeInTheDocument(); // drawn in the first render
+    expect(screen.getByText(/reading it again/i)).toBeInTheDocument();
+    release();
+    await screen.findByTestId("approvals-queue");
+    await vi.waitFor(() => expect(screen.queryByText(/reading it again/i)).toBeNull());
+  });
+
   it("reads as words: who it waits on, days in the singular when one, where it was asked, the draft marked unsent", async () => {
     queue.value = {
       as_of: "2026-11-09", total: 2, sent: 0, writes: 0, by_aging: { "0-2 business days": 1, "6-10 business days": 1 },

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetKeptReads } from "@/lib/use-read";
 import { ApiError } from "@/lib/errors";
 import { grantsOf, teamCode, teamName, WorkloadSection } from "./workload";
 
@@ -13,6 +14,7 @@ const B = "00000000-0000-4000-8000-0000000000b1";
 const C = "00000000-0000-4000-8000-0000000000b2";
 
 beforeEach(() => {
+  forgetKeptReads();
   Object.values(api).forEach((f) => f.mockReset());
   view.as = null;
   api.getWorkload.mockResolvedValue({

@@ -62,6 +62,16 @@ class FeedStateTest(unittest.TestCase):
                          "not_running")
         self.assertEqual(got["autopilot"]["state"], "running")   # its own units are fine
 
+    def test_the_autopilot_feed_stops_with_its_live_timer_not_with_the_fast_consumer(self):
+        fast = {"name": "unit:plx-autopilot-fast-serve.service", "state": "breach", "line": "x",
+                "detail": "enabled but not running", "unit": "h", "value": 82.1}
+        self.assertEqual(self.feeds(status(OK_CHECKS + [fast]))["autopilot"]["state"], "running")
+        live = {"name": "unit:plx-autopilot-follow.timer", "state": "breach", "line": "x",
+                "detail": "stopped: no next run"}
+        got = self.feeds(status(OK_CHECKS + [live]))["autopilot"]
+        self.assertEqual(got["state"], "not_running")
+        self.assertEqual(got["why"], "The autopilot's feed has stopped.")
+
     def test_a_stale_detector_pass_is_not_running_never_a_zero(self):
         stale = [dict(c, state="breach", detail="last good pass 9 h ago")
                  if c["name"] == "proactive_last_pass" else c for c in OK_CHECKS]

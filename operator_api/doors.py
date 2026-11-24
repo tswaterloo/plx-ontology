@@ -94,6 +94,10 @@ class Doors:
             return None
         return held.door, held.dsn, held.comms
 
+    def stamp(self) -> Optional[int]:
+        """The door stamp the refresher read last (None before its first pass)."""
+        return self._stamp
+
     def decide_now(self, reader: Any) -> Optional[tuple[Any, str]]:
         """Decide ``reader``'s door on this thread (a GET that found none: ``get`` logged it),
         then the door, or None when it could not be decided (the read is refused)."""

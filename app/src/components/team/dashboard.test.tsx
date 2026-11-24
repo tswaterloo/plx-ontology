@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetKeptReads } from "@/lib/use-read";
 import { getInsight, getTeamPerson } from "@/lib/api";
 import type { TeamPerson, TeamView } from "@/lib/types";
 import { PLANNER_INSIGHT, readPlannerAhead, TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
@@ -29,6 +30,8 @@ const view: TeamView = {
 };
 
 const names = () => screen.getAllByTestId("team-row").map((r) => within(r).getAllByRole("button")[0].textContent);
+
+beforeEach(() => forgetKeptReads());
 
 describe("Team dashboard", () => {
   it("lists people by name, sorts by any column and leaves out columns nobody has a figure in", () => {

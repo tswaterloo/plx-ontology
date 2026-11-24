@@ -12,7 +12,9 @@ import { SectionTabs } from "@/components/shell";
 import { AutopilotScorecardPanel } from "@/components/autopilot-scorecard";
 import { TimeSavedPanel } from "@/components/time-saved";
 import { KIND_LABEL, WorkLogRow } from "@/components/work-log";
-import { getWorkLog, type WorkLogFilters } from "@/lib/api";
+import { getWorkLog, workLogPath, type WorkLogFilters } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
+import { StoredAge } from "@/components/ui/stored-age";
 import { cn } from "@/lib/cn";
 import { useViewingAs } from "@/components/view-as";
 import { plainError } from "@/lib/errors";
@@ -30,19 +32,8 @@ function dayLabel(iso: string, now = new Date()): string {
 }
 
 function useLog(filters: WorkLogFilters) {
-  const [page, setPage] = useState<WorkLogPage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const key = JSON.stringify(filters);
-  const load = useCallback(() => {
-    const c = new AbortController();
-    setError(null);
-    getWorkLog(JSON.parse(key) as WorkLogFilters, c.signal)
-      .then(setPage)
-      .catch((e) => !c.signal.aborted && setError(plainError(e)));
-    return () => c.abort();
-  }, [key]);
-  useEffect(() => load(), [load]);
-  return { page, error, load };
+  const { data: page, error: failed, retry: load, at } = useRead<WorkLogPage>(workLogPath(filters), (s) => getWorkLog(filters, s));
+  return { page, error: failed ? plainError(failed) : null, load, at };
 }
 
 /** Everything you did or received in the Workbench, newest first: one log, searchable, and each line continues where you left it. */
@@ -118,6 +109,7 @@ function WorkLog() {
       />
       <SectionTabs section="work-log" />
       <PageIntro path="/work-log" />
+      <StoredAge at={main.at} className="px-6 pb-1" />
       {/* a closed log has no counts and nothing to search: no figures that read as zero */}
       {!closedLog && <form
         className="flex flex-wrap items-center gap-2 px-6 pt-3"

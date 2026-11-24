@@ -1,7 +1,8 @@
 "use client";
 
+import { StoredAge } from "@/components/ui/stored-age";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { CardActions } from "@/components/card-actions";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Pending } from "@/components/ui/skeleton";
@@ -9,6 +10,7 @@ import { cn } from "@/lib/cn";
 import { objectHref, plural } from "@/lib/format";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getApprovals } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { ActionResult, ApprovalsQueue } from "@/lib/types";
 
@@ -72,20 +74,8 @@ const COLS = "lg:grid-cols-[64px_minmax(0,1fr)_150px_128px_minmax(0,220px)]";
 
 export function TeamApprovals() {
   const [aging, setAging] = useState<string | null>(null);
-  const [queue, setQueue] = useState<ApprovalsQueue | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
+  const { data: queue, error, retry, at } = useRead<ApprovalsQueue>("/api/approvals", getApprovals);
   const [states, setStates] = useState<Record<string, ActionResult>>({});
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    setQueue(null);
-    getApprovals(ctl.signal).then(setQueue, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
-  }, [round]);
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!queue) return <Pending label="Reading the approvals" />;
   const all = queue.groups ?? [];
@@ -94,6 +84,7 @@ export function TeamApprovals() {
     .filter((g) => g.items.length > 0);
   return (
     <div className="space-y-5" data-testid="approvals-queue">
+      <StoredAge at={at} />
       <StaleNote since={queue.stale_since} readAt={queue.read_at} />
       {queue.total > 0 && <Summary groups={all} total={queue.total} />}
       {Object.keys(queue.by_aging ?? {}).length > 0 && (

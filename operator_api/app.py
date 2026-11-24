@@ -37,6 +37,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import feedback as fb
 from . import view_as as va
+from .door_value import DOOR_HEADER, SESSION_HEADER, SESSION_REFUSED, door_value
 from .routes import page as page_routes
 from . import work_log as wl
 from . import memory as mem
@@ -563,6 +564,11 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.exception_handler(AuthRequired)
     async def _auth(request: Request, error: AuthRequired) -> JSONResponse:
         response = problem(error.code, error.status)
+        if request.headers.get("authorization") or request.cookies.get(SESSION_COOKIE):
+            # credentials were sent and refused (expired, revoked, no access): the desktop app
+            # forgets what it kept. A request with none (Microsoft mode's first read, before
+            # the token is attached) says nothing about the person.
+            response.headers[SESSION_HEADER] = SESSION_REFUSED
         if error.status == 401 and auth.mode == "entra":
             response.headers["WWW-Authenticate"] = 'Bearer realm="plx-workbench"'
         return response
@@ -628,10 +634,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             pages.add(ms)
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        door = getattr(request.state, "plx_door", None)
+        if door is not None:   # the session's own door (``door_value``), for the desktop store
+            response.headers[DOOR_HEADER] = door
         return response
 
     def reader(request: Request) -> Reader:
         who = auth.authenticate(request.headers, request.cookies)
+        # none on a view-as read: its answer is the viewed person's, never kept on the machine
+        request.state.plx_door = None if request.headers.get(va.HEADER) is not None else door_value(
+            who, getattr(getattr(backend, "doors", None), "stamp", lambda: None)())
         if getattr(who.session, "warm_ahead", False):   # read-ahead serves nobody
             raise AuthRequired("sign_in_required")
         if getattr(who.session, "view_as", False):   # only ever made below, per request
@@ -2652,7 +2664,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         store = getattr(backend, "memory", None)
         if store is None:
             raise UserFacing("memory_refused", mem.WRITE_REFUSED["unavailable"], 503)
-        kept, why = store.write(who, kind=body.kind, text=body.text, replaces=replaces)
+        kept, why = store.write(who, kind=body.kind, text=body.text, replaces=replaces,
+                                records=body.records)
         if kept is None:
             if why == "not_found":
                 return problem("not_found", 404)

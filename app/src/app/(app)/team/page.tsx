@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { LabourView } from "@/components/labour-view";
 import { hasTeamGrant } from "@/components/shell";
@@ -12,24 +12,14 @@ import { PageIntro } from "@/components/ui/page-intro";
 import { readPlannerAhead, TeamDashboard } from "@/components/team/dashboard";
 import { WorkloadSection } from "@/components/team/workload";
 import { getLabour, getTeam } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
+import { StoredAge } from "@/components/ui/stored-age";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import type { LabourPage, TeamView } from "@/lib/types";
 
-function useLoad<T>(load: (s: AbortSignal) => Promise<T>, on: boolean) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    if (!on) return;
-    const ctl = new AbortController();
-    setError(null);
-    setData(null);
-    load(ctl.signal).then(setData, (e) => !ctl.signal.aborted && setError(e));
-    return () => ctl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [round, on]);
-  return { data, error, retry };
+/** A read of `key` (its API path) drawn from the kept reads, read again behind it. */
+function useLoad<T>(key: string, load: (s: AbortSignal) => Promise<T>, on: boolean) {
+  return useRead<T>(key, load, on);
 }
 
 /** Team: each person's activity across systems and open work (everyone for the owner and the
@@ -44,8 +34,8 @@ export default function TeamPage() {
   useEffect(() => {
     if (me) readPlannerAhead();
   }, [!!me]); // eslint-disable-line react-hooks/exhaustive-deps
-  const people = useLoad<TeamView>(getTeam, !!me);
-  const labour = useLoad<LabourPage>(getLabour, !!me);
+  const people = useLoad<TeamView>("/api/team", (s) => getTeam(s), !!me);
+  const labour = useLoad<LabourPage>("/api/labour", (s) => getLabour(s), !!me);
   const labourOn = !!labour.data && labour.data.state !== "not_granted";
   // /labour lands on #labour: a reader without the grant is told so there, never left on Team
   // wondering where the hours went (nobody else sees a word about labour)
@@ -74,6 +64,7 @@ export default function TeamPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Team" />
       <PageIntro path="/team" />
+      <StoredAge at={people.at} className="px-6 pb-1" />
       <div className="w-full space-y-10 px-4 py-5 lg:px-6">
         {!me ? <Pending page label="Checking your access" /> : null}
         {approvalsFirst && approvals}

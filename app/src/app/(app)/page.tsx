@@ -11,7 +11,7 @@ import { ALERTS_HREF, LATE_HREF, loadHome, loadLateRead, MobileAccount, MobileSe
 import { ReplyCard, ReplyList } from "@/components/reply-list";
 import type { QueueRow } from "@/components/today-detail";
 import dynamic from "next/dynamic";
-import { LIMIT_MS, Pending, SlowNote, TimedOut, useSlow } from "@/components/ui/skeleton";
+import { LIMIT_MS, Pending, SlowNote, StillReading, useSlow } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { FeedNote } from "@/components/feed-note";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
@@ -213,10 +213,9 @@ function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: bool
 
 function ListSkeleton({ onRetry }: { onRetry: () => void }) {
   const over = useSlow(LIMIT_MS);
-  if (over) return <TimedOut label="Reading your work" onRetry={onRetry} className="px-5 pt-3" />;
   return (
     <>
-    <SlowNote className="px-5 pt-3" />
+    {over ? <StillReading label="Reading your work" onRetry={onRetry} className="px-5 pt-3" since={Date.now() - LIMIT_MS} /> : <SlowNote className="px-5 pt-3" />}
     <ul className="space-y-1 px-2 pt-2" aria-busy="true" aria-label="Loading your work">
       {Array.from({ length: 9 }).map((_, i) => (
         <li key={i} className="flex gap-3 px-3 py-2.5">

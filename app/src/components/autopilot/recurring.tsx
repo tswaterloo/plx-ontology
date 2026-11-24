@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { StoredAge } from "@/components/ui/stored-age";
+import { useRead } from "@/lib/use-read";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadProblem } from "@/components/ui/notice";
@@ -25,19 +27,11 @@ function when(seconds: number): string {
 
 /** Your recurring instructions: when each runs, its last run, and change, pause or stop. */
 export function RecurringView() {
-  const [data, setData] = useState<RecurringInstructions | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    getRecurring(ctl.signal).then(setData, (e) => !ctl.signal.aborted && setError(e));
-    return () => ctl.abort();
-  }, [round]);
-  const reload = () => setRound((n) => n + 1);
+  const { data, error, retry: reload, at } = useRead<RecurringInstructions>("/api/instructions/recurring", getRecurring);
   return (
     <section className="mt-6" data-testid="recurring-instructions">
       <h2 className="mb-2 text-[13px] font-medium">Your recurring instructions</h2>
+      <StoredAge at={data ? at : null} />
       {error ? (
         <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={reload} />
       ) : !data ? (

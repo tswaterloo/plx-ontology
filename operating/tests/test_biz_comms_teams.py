@@ -378,18 +378,42 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
                 for word in ("note", "quote"):
                     for limit in (1, 10, 60):
                         with mock.patch.object(cs, "WALK_ROWS", 100000), \
-                                mock.patch.object(cs, "COMMON_CHUNKS", 0):
+                                mock.patch.object(cs, "COMMON_CHUNKS", 0), \
+                                mock.patch.object(cs, "COMMON_MESSAGES", 0):
                             whole = pages(actor, limit, word)
                         self.assertEqual(pages(actor, limit, word), whole)
                         for rows in (1, 2, 7):
                             with self.subTest(actor=sorted(actor.principals), word=word,
                                               limit=limit, walk=rows), \
                                     mock.patch.object(cs, "WALK_ROWS", rows), \
-                                    mock.patch.object(cs, "COMMON_CHUNKS", 0):
+                                    mock.patch.object(cs, "COMMON_CHUNKS", 0), \
+                                    mock.patch.object(cs, "COMMON_MESSAGES", 0):
                                 self.assertEqual(pages(actor, limit, word), whole)
                         walked += sum(map(len, whole)) > 7
         self.assertTrue(walked, "no search held more rows than the walk: the index read "
                                 "past the walk never ran")
+
+    def test_search_and_open_show_the_posters_name_not_the_raw_sender(self):
+        """D16: a Teams hit (and the opened message) names its poster by the view's
+        ``author``, read when the result is made, never the sender's raw JSON; a message
+        with no named poster states no address. n of m against the view itself, per reader."""
+        import psycopg
+        tool = ts.SqlTool(self.tool().base)
+        checked = 0
+        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+            for actor in READERS:
+                name = {_cell(r["cells"][0]): _cell(r["cells"][1]) for r in self.sql(
+                    actor, "SELECT handle, author FROM teams_messages")["rows"]}
+                out = tool.comms_search({"query": "note", "limit": 25}, actor)
+                for hit in out["documents"]:
+                    got = (hit["sender"].get("address") or {}).get("untrusted_text")
+                    self.assertEqual(got, name[hit["citation"]] or None, hit["citation"])
+                    self.assertFalse((got or "").startswith("{"))
+                    opened = tool.comms_open({"citation": hit["citation"]}, actor)
+                    said = (opened.get("sender") or {}).get("untrusted_text")
+                    self.assertEqual(said, name[hit["citation"]] or None)
+                    checked += 1
+        self.assertTrue(checked)
 
     def test_the_view_carries_the_author_and_the_whole_text(self):
         """``author`` is the sender's display name and ``said`` the message's whole text, for

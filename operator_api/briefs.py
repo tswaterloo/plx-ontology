@@ -113,8 +113,10 @@ def brief_model(raw: Mapping[str, Any]) -> m.Brief:
     subject = raw.get("subject") or {}
     question = None
     if raw.get("kind") == "meeting" and subject.get("label"):
-        question = (f"Prepare me for the meeting \"{subject['label']}\": what should I know "
-                    "about the open orders, late items, promises and quality issues?")
+        question = (f"Prepare me for the meeting \"{subject['label']}\": read everything about "
+                    "its people and topics (earlier meetings' notes and transcripts, mail, Teams, "
+                    "the records, my open work and my own notes) and tell me what I should know "
+                    "and what I have to do.")
     elif raw.get("kind") == "weekly":
         question = f"Summarise the {raw.get('title', 'weekly review').lower()}."
     return m.Brief(kind=raw["kind"], title=str(raw.get("title") or "")[:200],
@@ -174,15 +176,38 @@ def _decide(view: Any) -> Any:
     return decide
 
 
-def meeting_brief_of(view: Any, object_id: str, who: Any = None, state_dir: Any = None
-                     ) -> Optional[dict[str, Any]]:
+def meeting_brief_of(view: Any, object_id: str, who: Any = None, state_dir: Any = None,
+                     *, store: Any = None, reader: Optional[str] = None,
+                     refresh: bool = False) -> Optional[dict[str, Any]]:
+    """The meeting brief as this reader reads it, whole (no time budget: Guardrail 1). With
+    a ``store`` and the reader's key: the kept brief when the grant is the same and every
+    source it shows still opens (``MeetingBriefStore``), else built now and kept.
+    ``refresh``: built now whatever is kept. The brief carries ``kept`` (it came from the
+    store) and ``kept_age`` (seconds)."""
     held = _held(view)
     if held is None:
         return None
+    decide = _decide(view)
+    grant = None
+    if store is not None and reader:
+        with view._request():
+            grant = _grant_key(view, held)
+        kept = store.get(reader, object_id, grant, decide) if grant and not refresh else None
+        if kept is not None:
+            from .meeting_briefs import age_seconds
+            raw = with_carried_items(kept, held, who, state_dir)
+            raw["kept"] = True
+            raw["kept_age"] = age_seconds(kept.get("stored_at"))
+            return raw
     alerts = _alerts(view)
     with view._request():
-        brief = br.meeting_brief(view._call, held, alerts, object_id, decide=_decide(view),
-                                 people=_people())
+        brief = br.meeting_brief(view._call, held, alerts, object_id, decide=decide,
+                                 people=_people(), budget_seconds=None)
+    if store is not None and reader and grant:
+        if (brief.get("budget") or {}).get("stopped") or not store.put(reader, object_id,
+                                                                       grant, brief):
+            import logging
+            logging.getLogger("operator_api").info("meeting brief not kept")
     return with_carried_items(brief, held, who, state_dir)
 
 
@@ -831,18 +856,98 @@ class BriefsMixin:
                               priority=priority, long=long or priority >= ENRICH_PRIORITY)
 
     def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
+        """The brief, drawn from the one prepared ahead when there is one; else built whole
+        now (no time limit). A kept brief past ``REFRESH_AFTER`` is shown and prepared again
+        behind the read. The person's own notes about the meeting and its parties are
+        added to the draw."""
+        from . import meeting_briefs as mb
         if object_type not in br.MEETING_TYPES + br.PARTY_TYPES \
                 or br.type_of(object_id) != object_type:
             raise UserFacing("not_found", "A brief is prepared for a calendar event, a "
                              "meeting, a customer or a supplier.", 404)
+        store = self._meeting_store()
         try:
             raw = self._brief_run(reader, lambda view: meeting_brief_of(
-                view, object_id, reader, getattr(self, "state_dir", None)))
+                view, object_id, reader, getattr(self, "state_dir", None), store=store,
+                reader=reader.key), timeout=None, long=True)
         except br.BriefRefused:
             raw = None
         if raw is None:
             raise UserFacing("not_found", "That record is not one you can open.", 404)
-        return brief_model(raw)
+        if raw.get("kept") and raw.get("kept_age", 0) > mb.REFRESH_AFTER:
+            self._prepare_ahead(reader, [object_id], refresh=True)
+        return self._with_notes(reader, brief_model(raw))
+
+    def _meeting_store(self) -> Any:
+        from . import meeting_briefs as mb
+        data_dir = getattr(self, "data_dir", None)
+        return mb.MeetingBriefStore(Path(data_dir) / mb.DIR) if data_dir is not None else None
+
+    def _with_notes(self, reader: Reader, brief: m.Brief) -> m.Brief:
+        """``brief`` with the reader's own notes about it (``your_notes``, first section)."""
+        from . import meeting_briefs as mb
+        store = getattr(self, "memory", None)
+        ids = {r.object_id for r in [brief.subject, *brief.parties] if r is not None}
+        if store is None or not ids:
+            return brief
+        try:
+            items = store.items(reader, limit=None, about=sorted(ids))
+        except Exception:  # noqa: BLE001 - said in the section, never an empty one
+            import logging
+            logging.getLogger("operator_api").warning("brief notes unreadable", exc_info=True)
+            section = m.BriefSection(key="your_notes", title="Your notes", state="unread",
+                                     note="Your notes could not be read just now.")
+            return brief.model_copy(update={"sections": [section, *brief.sections]})
+        raw = mb.notes_section(items, ids)
+        section = m.BriefSection(
+            key=raw["key"], title=raw["title"], state=raw["state"], note=raw["note"],
+            rows=[m.BriefRow(**r) for r in raw["rows"]])
+        return brief.model_copy(update={"sections": [section, *brief.sections]})
+
+    def _prepare_ahead(self, reader: Reader, object_ids: list[str], *,
+                       refresh: bool = False) -> None:
+        """        A
+        failure is logged and the brief is built when the person opens it."""
+        import logging
+        import threading
+        log = logging.getLogger("operator_api")
+        store = self._meeting_store()
+        if store is None:
+            return
+
+        def run() -> None:
+            for oid in object_ids:
+                try:
+                    self._brief_run(reader, lambda view, oid=oid: meeting_brief_of(
+                        view, oid, None, None, store=store, reader=reader.key,
+                        refresh=refresh), timeout=None, priority=ENRICH_PRIORITY, long=True)
+                except Exception as error:  # noqa: BLE001 - built on open instead
+                    log.info("meeting brief not prepared ahead: %s", type(error).__name__)
+        threading.Thread(target=run, name="brief-ahead", daemon=True).start()
+
+    def prepare_day_ahead(self, reader: Reader, model: m.UpcomingMeetings) -> None:
+        """After the reader's upcoming meetings were read: prepare the briefs of today's and
+        tomorrow's, at most one pass per reader every ``AHEAD_EVERY`` seconds."""
+        import time
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from operating.time_window import BUSINESS_TZ
+        from . import meeting_briefs as mb
+        passes = self.__dict__.setdefault("_ahead_passes", {})
+        if time.monotonic() - passes.get(reader.key, -1e9) < mb.AHEAD_EVERY:
+            return
+        today = datetime.now(ZoneInfo(BUSINESS_TZ)).date()
+        ids = []
+        for e in model.meetings:
+            try:
+                day = datetime.fromisoformat(str(e.start)).astimezone(ZoneInfo(BUSINESS_TZ)).date()
+            except (TypeError, ValueError):
+                continue    # no readable start: prepared when opened
+            if 0 <= (day - today).days <= 1 and e.object is not None and not e.private:
+                ids.append(e.object.object_id)
+        passes[reader.key] = time.monotonic()
+        if ids:
+            self._prepare_ahead(reader, ids)
 
     def _weekly_archive(self) -> Any:
         data_dir = getattr(self, "data_dir", None)
@@ -948,8 +1053,10 @@ class BriefsMixin:
 
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
         try:
-            return self._brief_run(reader, lambda view: self._upcoming_cached(view, reader)) \
+            got = self._brief_run(reader, lambda view: self._upcoming_cached(view, reader)) \
                 or m.UpcomingMeetings(meetings=[])
+            self.prepare_day_ahead(reader, got)   # the day's briefs, kept before they are opened
+            return got
         except br.CalendarNotRead:
             # a failed search is never an empty calendar: the page offers to try again
             raise UserFacing("busy", "Your calendar could not be read just now. Try again "

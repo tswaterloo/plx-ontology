@@ -69,7 +69,7 @@ export function continueHref(thread: string): string {
     case "ask":
       return `/ask?c=${encodeURIComponent(ref)}`;
     case "autopilot":
-      return `/autopilot?item=${encodeURIComponent(ref)}`;
+      return `/assist?item=${encodeURIComponent(ref)}`;
     case "write":
       return "/my-work";
     case "record": {

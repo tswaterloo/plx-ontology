@@ -66,7 +66,7 @@ test("the window loads the Workbench page with the bridge and nothing else, and 
       });
     });
     assert.equal(report.app, true);
-    assert.deepEqual(report.keys, ["app", "notify", "onMenu", "saveServer", "version"]);
+    assert.deepEqual(report.keys, ["app", "notify", "onMenu", "saveServer", "store", "version"]);
     assert.equal(report.hasRequire, "undefined"); // no Node in the page
     assert.equal(report.hasProcess, "undefined");
     assert.equal(report.title, "stub");

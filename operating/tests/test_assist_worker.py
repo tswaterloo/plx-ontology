@@ -128,7 +128,7 @@ class Worker(unittest.TestCase):
         out = aw.run_queue(self.pg, lambda o, i: self.fail("no message, no session"))
         self.assertEqual(out["failed"], 1)
         self.assertEqual(self.pg.execute("SELECT plan_status, plan_reason FROM assist.matters"
-                                         ).fetchone(), ("failed", "no_message:task"))
+                                         ).fetchone(), ("failed", "no_basis:task"))
 
     def test_the_apis_log_row_is_what_the_worker_serves(self):
         """The row the route writes (its own insert through the pool, committed) is the one the

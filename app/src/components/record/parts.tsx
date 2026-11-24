@@ -13,7 +13,7 @@ import type { Source } from "@/lib/types";
 import { EvidenceDrawer } from "../source-chip";
 import { daysIn, DoneRing, lateFigure, OpenRing, StatusGlyph } from "../ui/glyphs";
 import { STATUS_INK } from "../ui/status-badge";
-import { LIMIT_MS, TimedOut, useSlow } from "../ui/skeleton";
+import { LIMIT_MS, StillReading, useSlow } from "../ui/skeleton";
 
 export function SectionTitle({ children, aside, as: Tag = "h2", className }: { children: React.ReactNode; aside?: React.ReactNode; as?: "h2" | "h3"; className?: string }) {
   return (
@@ -230,12 +230,14 @@ export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today" }
 /** Lines of placeholder while a part of the page is read. */
 export function Bars({ n = 3, className, label = "This part of the page" }: { n?: number; className?: string; label?: string }) {
   const over = useSlow(LIMIT_MS);
-  if (over) return <TimedOut label={label} className={className} />;
   return (
+    <>
+    {over && <StillReading label={label} className={className} since={Date.now() - LIMIT_MS} />}
     <div className={cn("space-y-3 pt-1", className)} aria-hidden>
       {Array.from({ length: n }, (_, i) => (
         <div key={i} className={cn("skeleton h-3.5", ["w-[72%]", "w-[58%]", "w-[66%]", "w-[44%]", "w-[52%]"][i % 5])} />
       ))}
     </div>
+    </>
   );
 }

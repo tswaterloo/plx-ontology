@@ -36,9 +36,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
+import uuid
 from typing import Any, Iterable, Mapping, Sequence
 
 from operating.pg import business_views as bv
@@ -826,58 +828,72 @@ def upsert(dsn: str, runs: Sequence[tuple[Mapping[str, Any], Sequence[Mapping[st
     from operating.pg import door
     s = schema or bv.SCHEMA
     started = time.monotonic()
-    new = f"{TABLE}_inc"
+    # a staging table of this call alone: the live puller and a fill both call upsert, and a shared
+    # name made each drop the other's table mid-run (P17); dropped when this call ends, however it ends
+    new = f"{TABLE}_inc_{os.getpid()}_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(dsn, autocommit=True) as pg:
-        # a table being swapped (the order pages' rebuild holds its lock for minutes) is waited
-        # for 15 s, then ``psycopg.errors.LockNotAvailable``: the caller tries again later
-        pg.execute(f"SET lock_timeout = {int(LOCK_WAIT_S * 1000)}")
-        for needed in (TABLE, "page_items", "records", "lineage", "access_classes"):
-            if pg.execute("SELECT to_regclass(%s)", (f"{s}.{needed}",)).fetchone()[0] is None:
-                raise RuntimeError(f"{s}.{needed} is not built: nothing to put rows into")
-        pg.execute(f"DROP TABLE IF EXISTS {s}.{new}")
-        pg.execute(DDL.format(s=s, t=new))
-        ensure_marks(pg, s)
-        cols = ", ".join(r[0] for r in pg.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND "
-            "table_name = %s ORDER BY ordinal_position", (s, new)))
-        pg.execute("DROP TABLE IF EXISTS pg_temp.ps_read")
-        pg.execute("CREATE TEMP TABLE ps_read (handle text PRIMARY KEY, ids text[])")
-        counts = {"stored": 0, "skipped": 0}
-        # oldest run first: a record answered twice keeps the answer of the newer state
-        for held, group in sorted(runs, key=lambda r: (_mark(r[0], "ver"), _mark(r[0], "link"))):
-            if group:
-                got = stage(pg, s, new, group, stamp_of(held), held)
-                counts = {k: counts[k] + got[k] for k in counts}
-        pg.execute(f"DELETE FROM {s}.{new} a USING {s}.{new} b WHERE a.handle = b.handle AND "
-                   "(a.dep_ver, a.dep_link, a.built_at, a.ctid::text) < (b.dep_ver, b.dep_link, "
-                   "b.built_at, b.ctid::text)")
-        placed = replaced = 0
-        with pg.transaction():
-            # the rows to put: not computed from an older state than the stored one
-            keep = [r[0] for r in pg.execute(
-                f"SELECT n.handle FROM {s}.{new} n LEFT JOIN {s}.{TABLE} t ON t.handle = n.handle "
-                "WHERE t.handle IS NULL OR (n.dep_ver >= t.dep_ver AND n.dep_link >= t.dep_link)")]
-            if keep:
-                now = dt.datetime.now(dt.timezone.utc)
-                replaced = pg.execute(f"DELETE FROM {s}.{TABLE} WHERE handle = ANY(%s)",
-                                      (keep,)).rowcount
-                pg.execute(f"INSERT INTO {s}.{TABLE} ({cols}) SELECT {cols} FROM {s}.{new} "
-                           "WHERE handle = ANY(%s)", (keep,))
-                _lineage(pg, s, new, keep)
-                have = pg.execute(f"SELECT count(*) FROM {s}.lineage WHERE view = %s AND "
-                                  "handle = ANY(%s)", (TABLE, keep)).fetchone()[0]
-                if have != len(keep):   # a row the exclusion could not follow is never served
-                    raise RuntimeError(f"{len(keep)} rows but {have} with a lineage: not put")
-                # the rows decided against the people exclusion as it stands (this table's lineage
-                # alone, as ``make_views`` follows a rebuilt table), then the class counts
-                door.follow(pg, s, TABLE)
-                door.recount(pg, s, TABLE)
-                track_hubs(pg, s)
-                placed = len(keep)
-                pg.execute(f"UPDATE {s}.state SET built_at = %s, rows = (SELECT count(*) FROM "
-                           f"{s}.{TABLE}) WHERE view = %s", (now.isoformat(timespec="seconds"),
-                                                              STATE_VIEW))
-        pg.execute(f"DROP TABLE IF EXISTS {s}.{new}")
+        try:
+            return _upsert_staged(pg, s, new, runs, started)
+        finally:
+            try:
+                pg.execute(f"DROP TABLE IF EXISTS {s}.{new}")
+            except Exception as exc:   # surfaced, never silent: a leftover is named for the operator
+                print(f"plan_sections.upsert: staging table {s}.{new} not dropped: {exc!r}",
+                      file=sys.stderr)
+
+
+def _upsert_staged(pg: Any, s: str, new: str, runs: Any, started: float) -> dict[str, Any]:
+    """The body of ``upsert`` over one connection and one staging table named for this call."""
+    from operating.pg import door
+    # a table being swapped (the order pages' rebuild holds its lock for minutes) is waited
+    # for 15 s, then ``psycopg.errors.LockNotAvailable``: the caller tries again later
+    pg.execute(f"SET lock_timeout = {int(LOCK_WAIT_S * 1000)}")
+    for needed in (TABLE, "page_items", "records", "lineage", "access_classes"):
+        if pg.execute("SELECT to_regclass(%s)", (f"{s}.{needed}",)).fetchone()[0] is None:
+            raise RuntimeError(f"{s}.{needed} is not built: nothing to put rows into")
+    pg.execute(f"DROP TABLE IF EXISTS {s}.{new}")
+    pg.execute(DDL.format(s=s, t=new))
+    ensure_marks(pg, s)
+    cols = ", ".join(r[0] for r in pg.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND "
+        "table_name = %s ORDER BY ordinal_position", (s, new)))
+    pg.execute("DROP TABLE IF EXISTS pg_temp.ps_read")
+    pg.execute("CREATE TEMP TABLE ps_read (handle text PRIMARY KEY, ids text[])")
+    counts = {"stored": 0, "skipped": 0}
+    # oldest run first: a record answered twice keeps the answer of the newer state
+    for held, group in sorted(runs, key=lambda r: (_mark(r[0], "ver"), _mark(r[0], "link"))):
+        if group:
+            got = stage(pg, s, new, group, stamp_of(held), held)
+            counts = {k: counts[k] + got[k] for k in counts}
+    pg.execute(f"DELETE FROM {s}.{new} a USING {s}.{new} b WHERE a.handle = b.handle AND "
+               "(a.dep_ver, a.dep_link, a.built_at, a.ctid::text) < (b.dep_ver, b.dep_link, "
+               "b.built_at, b.ctid::text)")
+    placed = replaced = 0
+    with pg.transaction():
+        # the rows to put: not computed from an older state than the stored one
+        keep = [r[0] for r in pg.execute(
+            f"SELECT n.handle FROM {s}.{new} n LEFT JOIN {s}.{TABLE} t ON t.handle = n.handle "
+            "WHERE t.handle IS NULL OR (n.dep_ver >= t.dep_ver AND n.dep_link >= t.dep_link)")]
+        if keep:
+            now = dt.datetime.now(dt.timezone.utc)
+            replaced = pg.execute(f"DELETE FROM {s}.{TABLE} WHERE handle = ANY(%s)",
+                                  (keep,)).rowcount
+            pg.execute(f"INSERT INTO {s}.{TABLE} ({cols}) SELECT {cols} FROM {s}.{new} "
+                       "WHERE handle = ANY(%s)", (keep,))
+            _lineage(pg, s, new, keep)
+            have = pg.execute(f"SELECT count(*) FROM {s}.lineage WHERE view = %s AND "
+                              "handle = ANY(%s)", (TABLE, keep)).fetchone()[0]
+            if have != len(keep):   # a row the exclusion could not follow is never served
+                raise RuntimeError(f"{len(keep)} rows but {have} with a lineage: not put")
+            # the rows decided against the people exclusion as it stands (this table's lineage
+            # alone, as ``make_views`` follows a rebuilt table), then the class counts
+            door.follow(pg, s, TABLE)
+            door.recount(pg, s, TABLE)
+            track_hubs(pg, s)
+            placed = len(keep)
+            pg.execute(f"UPDATE {s}.state SET built_at = %s, rows = (SELECT count(*) FROM "
+                       f"{s}.{TABLE}) WHERE view = %s", (now.isoformat(timespec="seconds"),
+                                                          STATE_VIEW))
     return {"placed": placed, "replaced": replaced, "older": counts["stored"] - placed,
             "skipped": counts["skipped"],
             "seconds": round(time.monotonic() - started, 2)}

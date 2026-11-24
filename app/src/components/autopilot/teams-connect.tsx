@@ -2,7 +2,9 @@
 
 // Your own Teams sign-in: once connected, a Teams reply you confirm posts as you.
 
-import { useEffect, useState } from "react";
+import { StoredAge } from "@/components/ui/stored-age";
+import { useRead } from "@/lib/use-read";
+import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice } from "@/components/ui/notice";
@@ -19,14 +21,9 @@ const WHY: Record<string, string> = {
 
 export function TeamsConnect() {
   const params = useSearchParams();
-  const [state, setState] = useState<TeamsConnection | null>(null);
+  const { data: state, set: setState, at } = useRead<TeamsConnection>("/api/teams/connection", getTeamsConnection);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    const ctl = new AbortController();
-    getTeamsConnection(ctl.signal).then(setState, () => setState(null));
-    return () => ctl.abort();
-  }, []);
   const failed = params?.get("teams") === "failed" ? WHY[params.get("why") ?? ""] ?? "The Teams sign-in did not complete." : null;
   if (!state) return null;
   const connect = async () => {
@@ -51,6 +48,7 @@ export function TeamsConnect() {
   };
   return (
     <div className="flex flex-wrap items-center gap-3 text-[13px]" data-testid="teams-connect">
+      <StoredAge at={at} />
       {state.connected ? (
         <>
           <span>Teams replies you confirm post as you. A posted reply cannot be taken back from here.</span>

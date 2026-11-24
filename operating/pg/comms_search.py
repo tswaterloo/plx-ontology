@@ -37,7 +37,10 @@ VIEWS = {"emails": ("email", "received_at", "graph_mail"),
 SEARCH_ONLY = frozenset({"sharepoint_files"})
 # a row's title and sender, per view (default: its subject and sender)
 _TITLE = {"sharepoint_files": "coalesce(nullif(btrim(e.path), ''), e.name)"}
-_SENDER = {"sharepoint_files": "NULL::text"}
+# a Teams message's sender column holds the poster's raw JSON ({display_name, id, kind}): a
+# hit shows the poster's name (``author``, read from the view when the result is made: the
+# chunk header in the store names only the kind, "Teams user", ``chunking/projection._role``)
+_SENDER = {"sharepoint_files": "NULL::text", "teams_messages": "e.author"}
 # a hit's snippet around its first matched word (was 1,200 cut again to 500 unsaid, and 240
 # before that): said cut (``truncated``) whenever the text goes on past it, so the model
 # knows to plx.open it; sized so a page of hits fits what the client shows of one result
@@ -195,6 +198,52 @@ def walk_rows(pg: Any, q: str | None) -> int:
     return WALK_ROWS if plan[0]["Plan"]["Plan Rows"] >= COMMON_CHUNKS else 1
 
 
+# a view's header tier, or the text tier of a view whose text sits in the sidecar, is read
+# from its own word index at once (no walk) when the index's whole match is under this many
+# MESSAGES (the planner's estimate, no row read): the match is then read in tens of ms
+# (emails header 34 ms, Teams sidecar 9 ms for 3,500 messages), where each walk read the
+# newest ~3,900 rows through the guarded view (0.93 s a walk, 6 walks a statement). The old
+# test counted text CHUNKS (``COMMON_CHUNKS``: "invoice payment" 68,577 estimated, 501,705
+# real, for 4,500 + 3,500 messages), a count of another unit than the rows read. Either
+# gives the same rows in the same order (``search_sql``'s ``direct``): only the time differs.
+COMMON_MESSAGES = 50000
+
+
+def _plan_rows(pg: Any, sql: str, params: Sequence[Any]) -> int:
+    plan = pg.execute("EXPLAIN (FORMAT JSON) " + sql, tuple(params)).fetchone()[0]
+    if isinstance(plan, str):
+        import json
+        plan = json.loads(plan)
+    return int(plan[0]["Plan"]["Plan Rows"])
+
+
+def direct_reads(pg: Any, q: str | None, views: Sequence[str], side: Mapping[str, Any],
+                 *, biz: str) -> frozenset[tuple[str, int]]:
+    """The (view, tier) pairs ``search_sql`` reads from the word index at once, with no walk
+    (``COMMON_MESSAGES``): tier 1 (header) of every mail and Teams view whose header index
+    matches fewer messages than that; tier 0 (text) of a sidecar view whose sidecar matches
+    fewer, and whose rows dated before the sidecar's ``cov`` (read the old way, by chunks)
+    are not more than that. Empty without query words or with the old test turned off."""
+    if q is None or COMMON_MESSAGES <= 0:
+        return frozenset()
+    out: set[tuple[str, int]] = set()
+    for view in views:
+        if view in SEARCH_ONLY:
+            continue
+        if _plan_rows(pg, f"SELECT 1 FROM {biz}.{view} b WHERE b.words @@ %s::tsquery",
+                      (q,)) < COMMON_MESSAGES:
+            out.add((view, 1))
+        if view in side:
+            when = VIEWS[view][1]
+            text = _plan_rows(pg, "SELECT 1 FROM biz.comm_text t WHERE t.view = %s AND "
+                              "t.tsv @@ %s::tsquery", (view, q))
+            older = _plan_rows(pg, f"SELECT 1 FROM {biz}.{view} b WHERE b.{when} < "
+                               "%s::timestamptz", (side[view][f"cov_{view}"],))
+            if text + older < COMMON_MESSAGES:
+                out.add((view, 0))
+    return frozenset(out)
+
+
 # the views the comms text sidecar (``biz.comm_text``, migration 0074, ``comm_text``) serves
 SIDE_VIEWS = frozenset({"emails", "teams_messages"})
 
@@ -308,7 +357,8 @@ def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
 
 def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                party_kind: str | None, since: bool, until: bool, cursor: bool,
-               cursor_tier: int = 0, side: frozenset[str] = frozenset()) -> str:
+               cursor_tier: int = 0, side: frozenset[str] = frozenset(),
+               direct: frozenset[tuple[str, int]] = frozenset()) -> str:
     """The one statement (named parameters: q, party, since, until, c_at, c_h, k, k_own,
     walk; ``k_own`` <= ``k``: the rows read of mail and Teams, ``k`` of the files and in all).
     Its rows end with ``tier`` (1: the header holds every query word; 0: the text does, or
@@ -327,7 +377,11 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
 
     ``side``: the views the text sidecar serves (``sidecar``): their word match is read from
     ``biz.comm_text`` (dated, by view) instead of the chunk word index's whole match; the
-    parameters ``cov_<view>`` and ``mark_<view>`` come with it."""
+    parameters ``cov_<view>`` and ``mark_<view>`` come with it.
+
+    ``direct``: the (view, tier) pairs read from the word index's match at once, with no walk
+    stage (``direct_reads``, by the message-level estimate); the rest walk as ``walk`` says.
+    The same rows either way."""
     parts, ctes = [], []
     for at, view in enumerate(views):
         kind, when, _ = VIEWS[view]
@@ -441,6 +495,12 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
             mine = own if tier == 0 else None
             fscope = dates + ([after, f"e.{when} <= %(c_at)s"] if after in scope else [])
             founds, top = [], None
+            if (view, tier) in direct:
+                # no walk: the word index's whole match (a few thousand messages: ``direct_reads``)
+                # by handle through the reader's view, newest ``kk`` of them. A walk stage reads
+                # the guarded view even for one row (0.9 s a stage on Teams, 4,267 units probed)
+                parts.append(part(tier, [*scope, f"e.handle = ANY(ARRAY({match}))", *keep]))
+                continue
             for stage in range(STAGES):
                 found, floor = f"found_{at}_{tier}_{stage}", f"floor_{at}_{tier}_{stage}"
                 ctes.append(_floor(floor, top, founds, fscope, biz=biz, view=view,
@@ -775,7 +835,8 @@ def open_sql(views: Sequence[str], *, guarded: str, biz: str) -> str:
         kind, when, _ = VIEWS[view]
         cols = ("e.to_addresses, e.cc_addresses" if view == "emails"
                 else "NULL::text[], NULL::text[]")
-        parts.append(f"SELECT '{view}'::text AS view, e.handle, e.subject, e.sender, "
+        parts.append(f"SELECT '{view}'::text AS view, e.handle, e.subject, "
+                     f"{_SENDER.get(view, 'e.sender')} AS sender, "
                      f"e.{when} AS at, {cols} FROM {guarded}.{view} e WHERE e.handle = %(h)s")
     return ("SELECT g.*, t.field_id, t.start, t.body, t.sender_class, t.field_path, "
             "t.text_digest FROM (" + " UNION ALL "
@@ -872,6 +933,22 @@ def read_attach_cursor(text: str) -> tuple[dt.datetime, str]:
     if at.tzinfo is None:
         raise SearchInputError("not a cursor of this search")
     return at, found.group(2)
+
+
+def meaning_cursor(few: bool, pos: int) -> str:
+    """The cursor of the stream of rows close in meaning past the ones a page showed:
+    ``m1:<few 0|1>:<place>`` (the place in the ranking's order the next page starts from;
+    ``few``: the first page widened a search with fewer than ``WIDEN_BELOW`` word matches,
+    which orders the rows by the words they hold first)."""
+    return f"m1:{1 if few else 0}:{int(pos)}"
+
+
+def read_meaning_cursor(text: str) -> tuple[bool, int]:
+    """(few, place) of a ``meaning_cursor``; anything else is refused."""
+    found = re.fullmatch(r"m1:([01]):([0-9]{1,6})", text) if isinstance(text, str) else None
+    if found is None:
+        raise SearchInputError("not a cursor of this search")
+    return found.group(1) == "1", int(found.group(2))
 
 
 # rows a cursor may skip past its returned row (the file rows the item gate refused):
@@ -1098,6 +1175,6 @@ def depth_said(query: str | None, attach: Mapping[str, Any], *, later: bool,
 
 __all__ = ["Party", "SEARCH_ONLY", "depth_said", "SearchInputError", "VIEWS", "assemble", "stem_tsquery",
            "attachment_blocked_sql", "attach_cursor", "read_attach_cursor", "attachment_floor_sql", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
-           "meaning_sql", "tsquery_any", "words_held",
+           "meaning_cursor", "read_meaning_cursor", "meaning_sql", "tsquery_any", "words_held",
            "hits", "instant", "open_sql", "opened", "party", "present", "read_cursor",
            "search_sql", "searched", "snippet", "terms", "tsquery"]

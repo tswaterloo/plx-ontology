@@ -55,9 +55,12 @@ ORDER BY rq.at"""
 _OIDS = ("SELECT handle, object_ids[1] FROM biz.emails WHERE handle = ANY(%s) UNION ALL "
          "SELECT handle, object_ids[1] FROM biz.teams_messages WHERE handle = ANY(%s)")
 
+# the channel of a reply by the basis message's source; a record matter (a task, an approval) has none
+_CHANNELS = {"emails": "mail", "teams_messages": "teams"}
+
 _DONE = f"""
 WITH v AS (SELECT * FROM jsonb_to_recordset(%(v)s::jsonb) AS x(matter text, status text,
-    reason text, plan jsonb, seconds double precision)),
+    reason text, plan jsonb, seconds double precision, usd text)),
 upd AS (UPDATE {SCHEMA}.matters m SET
           plan = CASE WHEN v.status = 'failed' THEN m.plan ELSE v.plan END,
           plan_status = CASE WHEN v.status = 'failed' AND m.plan_status IN ('drafted', 'needs_you')
@@ -65,13 +68,14 @@ upd AS (UPDATE {SCHEMA}.matters m SET
           plan_reason = v.reason, plan_ver = 1, plan_at = now(),
           ready_at = CASE WHEN v.status IN ('drafted', 'needs_you') THEN now() ELSE m.ready_at END
         FROM v WHERE m.matter_id = v.matter RETURNING m.matter_id, v.status, v.reason, m.owner_person,
-          v.seconds),
+          v.seconds, v.usd),
 lg AS (INSERT INTO {SCHEMA}.matter_log (matter_id, what, detail)
        SELECT matter_id, CASE WHEN status = 'failed' THEN 'plan_failed' ELSE 'drafted' END,
               jsonb_build_object('status', status, 'reason', reason) FROM upd RETURNING 1),
 wr AS (INSERT INTO {SCHEMA}.worker_runs (matter_id, person, tier, shadow, host, model, usd,
           usd_basis, seconds, status, reason)
-       SELECT matter_id, owner_person, 'draft', false, %(host)s, %(model)s, NULL, 'estimate',
+       SELECT matter_id, owner_person, 'draft', false, %(host)s, %(model)s, usd::numeric,
+              CASE WHEN usd IS NULL THEN 'estimate' ELSE 'reported' END,
               seconds, CASE WHEN status = 'failed' THEN 'failed' ELSE 'ok' END, reason
        FROM upd RETURNING 1)
 SELECT count(*) FROM upd"""
@@ -104,11 +108,11 @@ def _outcome(rows: Optional[Sequence[Mapping[str, Any]]], matter: Mapping[str, A
              ) -> dict[str, Any]:
     from operating import reply_drafts as rd
     if not matter.get("oid"):
-        return {"status": "failed", "reason": f"no_message:{matter.get('kind')}", "plan": None}
+        return {"status": "failed", "reason": f"no_basis:{matter.get('kind')}", "plan": None}
     got = rd.result_of(rows or [])
     if got["state"] == "ready" and got["kind"] == "reply":
-        prepared: dict[str, Any] = {"draft": {"channel": "mail" if matter.get("source") == "emails"
-                                              else "teams", "to": [], "body": got["body"]},
+        prepared: dict[str, Any] = {"draft": {"channel": _CHANNELS.get(str(matter.get("source") or ""), ""),
+                                              "to": [], "body": got["body"]},
                                     "note": got.get("ask") or "", "warning": got.get("why") or ""}
         return {"status": "drafted", "reason": "", "plan": {"prepared": prepared,
                                                             "drafted_by": "model"}}
@@ -140,11 +144,13 @@ def run_queue(pg: Any, draft: Callable[[str, str], Sequence[Mapping[str, Any]]],
 
         def one(matter: dict[str, Any]) -> None:
             t0 = time.monotonic()
-            rows, meta = None, None
+            rows, meta, usd = None, None, None
             if matter.get("oid"):
                 try:
                     if prepare is not None:       # a prepared session: its rows and what it read
                         rows, meta = prepare(matter)
+                        usd = meta.get("usd")      # the model's reported cost: the run row's, not the plan's
+                        meta = {k: v for k, v in meta.items() if k != "usd"}
                     else:
                         rows = draft(matter["owner_person"], matter["oid"])
                 except Exception as exc:  # noqa: BLE001 - typed on the matter, logged
@@ -152,7 +158,7 @@ def run_queue(pg: Any, draft: Callable[[str, str], Sequence[Mapping[str, Any]]],
                     rows = [{"why": f"draft_failed:{type(exc).__name__}"}]
             res = outcome(rows, matter, meta)
             result = {"matter": matter["matter_id"], "status": res["status"],
-                      "reason": res["reason"], "plan": res["plan"],
+                      "reason": res["reason"], "plan": res["plan"], "usd": usd,
                       "seconds": round(time.monotonic() - t0, 1)}
             with write:
                 pg.execute(_DONE, {"v": json.dumps([result]), "host": host or platform.node(),
@@ -191,6 +197,11 @@ def make_draft(store: str, state_dir: str) -> tuple[Callable[..., Sequence[Mappi
                               maps=apm._people_maps(people), assistant=ag.from_environ(os.environ),
                               held={})
                 apm.prime_memory(state, shared["held"])
+                if shared["assistant"] is not None and getattr(shared["assistant"], "lookup", None) is None:
+                    # no tool session registered or buildable (run through ``operator_api.autopilot_context
+                    # assist-worker|assist-prepared``, with the readers file and session secret): every
+                    # session ends ``agent_no_session``, typed on its matter
+                    LOG.error("the Assistant has no tool session: nothing can be read for any matter")
         return shared
 
     def draft(owner: str, oid: str, extra: str = "", as_of: str = "") -> Sequence[Mapping[str, Any]]:
@@ -207,9 +218,16 @@ def make_draft(store: str, state_dir: str) -> tuple[Callable[..., Sequence[Mappi
                              owner, oid, state_dir=state, held=sh["held"], queue=local.queue,
                              extra=extra, as_of=as_of)
 
+    def screen(text: str) -> Optional[str]:
+        """Why ``text`` may not go to the model (the drafts' thread screen: pay or HR matter, a person
+        the exclusion names; undecidable counts as a hit), or None."""
+        from operating.autopilot_drafter import thread_screen
+        return thread_screen(setup()["people"], text)
+
     def close() -> None:
         for st in stores:
             st.close()
+    draft.screen = screen        # type: ignore[attr-defined]
     return draft, (lambda: getattr(shared.get("assistant"), "model", "") or ""), close
 
 

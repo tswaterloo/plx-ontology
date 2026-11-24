@@ -4637,6 +4637,10 @@ class MemorySave(_Model):
     """Something to remember in your own words, or a correction of one of your items."""
     kind: Literal["instruction", "preference", "commitment", "fact"]
     text: str = Field(min_length=1, max_length=1000)
+    records: list[str] = Field(
+        default_factory=list, max_length=20,
+        description="The record ids (a meeting, customer, supplier, order) the note is about: "
+                    "the brief of that record, Ask and Assist read it back. Private to you.")
 
 
 TemplateDocType = Literal["quote", "order_confirmation", "supplier_email", "customer_email",
@@ -5016,7 +5020,7 @@ class WorkLogSave(_Model):
 class InstructContext(_Model):
     """The page the instruction was typed on, attached by the app: an email (its citation),
     a record, a meeting, an autopilot item, or just the page."""
-    kind: Literal["email", "source", "record", "meeting", "autopilot", "page"]
+    kind: Literal["email", "source", "record", "meeting", "autopilot", "page", "brief"]
     handle: Optional[str] = Field(None, max_length=4096)
     object_type: Optional[str] = Field(None, max_length=60)
     object_id: Optional[str] = Field(None, max_length=700)

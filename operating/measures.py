@@ -44,7 +44,6 @@ REPORTS = HERE.parent / "operator_api" / "insights_builtin.json"
 TIME_DIMENSIONS = ("week", "month")
 MAX_DAYS = 3650
 TREND_DAYS = 365          # a breakdown by week or month with no period named
-TOP = 50                  # parts of a breakdown returned, largest first
 # a measure's value: one plain aggregate over one of its view's columns (or rows)
 _VALUE = re.compile(r"^(sum|count|avg|min|max)\((DISTINCT )?([a-z_]+|\*)\)$")
 _NAME = re.compile(r"^[a-z_]+$")
@@ -473,7 +472,6 @@ def _said(p: Period) -> str:
 
 SCAN = "*"                # with unusual: every dated measure at once
 EVERY = "*"               # by, with compare: every dimension of the measure at once
-EACH = 6                  # parts shown per dimension of an every-dimension breakdown
 UNUSUAL_DAYS = 7          # a period's length when unusual names none
 UNUSUAL_PERIODS = 12      # the earlier periods the usual level is read from
 UNUSUAL_LEAST = 4         # fewer earlier periods within the source's reach: nothing judged
@@ -922,26 +920,17 @@ def statement(name: Any, by: Any = None, days: Any = None,
         elif every and why:
             sql = _why(inner, shown, change, per)
         elif every:
-            # per dimension (and currency or unit) its EACH largest changes and, for a sum
-            # or count, one "All others (n)" row: each dimension's rows add up to the whole
-            # change; a rate's parts are its own rates, never summed
+            # per dimension (and currency or unit) every part, the largest change first:
+            # each dimension's rows add up to the whole change, a rate's parts are its own
+            # rates, never summed. No part is cut or folded into a rest row (Guardrail 1): the
+            # rows are paged by the reader like any long list
             cols = ["dimension", "part", *([per] if per else []), "current", "previous",
                     "current_rows", "previous_rows", "unread_cells", "data_from", "covered",
                     "change", "share_of_change_pct", "incomplete"]
-            rest = ("CASE WHEN count(change) < count(*) THEN NULL ELSE sum(change) END")
             ranked = (f"WITH p AS ({inner}), c AS ({shown}, sum({change}){part} AS whole, "
                       f"row_number() OVER (PARTITION BY {', '.join(within)} ORDER BY "
                       f"abs({change}) DESC NULLS FIRST, part) AS rank FROM p) ")
-            top = (f"SELECT {', '.join(cols)}, rank FROM c WHERE rank <= {EACH}")
-            others = ("" if rate else
-                      " UNION ALL SELECT dimension, 'All others (' || count(*) || ')', "
-                      + (f"{per}, " if per else "")
-                      + "sum(current), sum(previous), sum(current_rows), sum(previous_rows), "
-                      "sum(unread_cells), min(data_from), bool_and(covered), " + rest + ", "
-                      "round(100.0 * (" + rest + ") / nullif(max(whole), 0), 1), "
-                      f"bool_or(incomplete), {EACH + 1} FROM c WHERE rank > {EACH} "
-                      f"GROUP BY {', '.join(within)}")
-            sql = (ranked + f"SELECT {', '.join(cols)} FROM ({top}{others}) u "
+            sql = (ranked + f"SELECT {', '.join(cols)} FROM c "
                    f"ORDER BY {', '.join(within)}, rank")
         elif by:
             # every part, the largest change first (rate parts are each their own rate, never
@@ -966,12 +955,11 @@ def statement(name: Any, by: Any = None, days: Any = None,
             said += (f"; one row per {by} of the period, each set against the same {by} of "
                      f"the earlier one (step 0 is the first)")
         period = (f"{said}; "
-                  + (f"per dimension ({', '.join(dims)}), its {EACH} largest changes"
-                     + ("" if rate else ", the rest one 'All others (n)' row (each "
-                        "dimension's rows add up to the whole change)") + "; "
+                  + (f"per dimension ({', '.join(dims)}), every part, the largest change "
+                     "first" + ("" if rate else " (each dimension's rows add up to the whole "
+                                "change)") + "; "
                      if every else
-                     f"the {TOP} largest changes, the rest one 'All others (n)' row"
-                     + (f" per {per}" if per else "") + " (the rows add up to the whole "
+                     "every part, the largest change first (the rows add up to the whole "
                      "change); " if by else "") + f"a row whose "
                   f"data_from (the source's first record, shown when it is after the earlier period "
                   f"starts) has that period not covered: previous and change are unknown (NULL), "

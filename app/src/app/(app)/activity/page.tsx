@@ -12,9 +12,11 @@ import { SectionTabs } from "@/components/shell";
 import { actionChip, realName } from "@/lib/actions";
 import { cn } from "@/lib/cn";
 import { getActionsLog } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
+import { StoredAge } from "@/components/ui/stored-age";
 import { plainError } from "@/lib/errors";
 import { clockET, formatDateTime, plural } from "@/lib/format";
-import type { ActionLogRow } from "@/lib/types";
+import type { ActionLogRow, ActionsLog } from "@/lib/types";
 
 const TZ = "America/Toronto";
 
@@ -203,17 +205,9 @@ const VIEWS: { key: string; label: string; test: (r: ActionLogRow) => boolean }[
 
 /** Your actions journal: every action you confirmed, newest first (append-only on the server). */
 export default function ActivityPage() {
-  const [rows, setRows] = useState<ActionLogRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(() => {
-    const c = new AbortController();
-    setError(null);
-    getActionsLog(c.signal)
-      .then((r) => setRows(r.rows ?? []))
-      .catch((e) => !c.signal.aborted && setError(plainError(e)));
-    return () => c.abort();
-  }, []);
-  useEffect(() => load(), [load]);
+  const { data: log, error: failed, retry: load, at } = useRead<ActionsLog>("/api/actions/log", (s) => getActionsLog(s));
+  const rows: ActionLogRow[] | null = log ? (log.rows ?? []) : null;
+  const error = failed ? plainError(failed) : null;
 
   const [view, setView] = useState("all");
   const counts = useMemo(() => Object.fromEntries(VIEWS.map((v) => [v.key, (rows ?? []).filter(v.test).length])), [rows]);
@@ -244,6 +238,7 @@ export default function ActivityPage() {
       />
       <SectionTabs section="work-log" />
       <PageIntro path="/activity" />
+      <StoredAge at={at} className="px-6 pb-1" />
       {error ? (
         <div className="p-5">
           <LoadProblem message={error} onRetry={load} />

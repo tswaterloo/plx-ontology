@@ -273,6 +273,25 @@ class MCQuestions:
                 "question_id": str(payload.get("questionId") or ""),
                 "addressee": str(payload.get("addressee") or "")}
 
+    def question_events(self, question_ids: Sequence[str]) -> dict[str, tuple[str, str]]:
+        """(scope, event id) of the ``question.asked`` event of each question id (a question the
+        capture holds no asking event for is left out of the answer)."""
+        found: dict[str, tuple[str, str]] = {}
+        wanted = sorted({q for q in question_ids if q})
+        if not wanted:
+            return found
+        marks = ",".join("?" * len(wanted))
+        for path, qid in self.conn.execute(
+                "SELECT path, json_extract(payload, '$.row.payload.questionId') FROM versions "
+                "WHERE kind = ? AND superseded_at IS NULL AND path LIKE '%/task_events/%' AND "
+                "json_extract(payload, '$.row.kind') = 'question.asked' AND "
+                f"json_extract(payload, '$.row.payload.questionId') IN ({marks})",
+                (self.KIND, *wanted)):
+            scope, _sep, rest = str(path).partition("/task_events/")
+            if scope and rest:
+                found[str(qid)] = (scope, rest)
+        return found
+
     def asked(self, scope: str, event_id: str) -> dict[str, Any] | None:
         """The question a ``question.asked`` event names, else None (unreadable: no item)."""
         ev = self.event(scope, event_id)

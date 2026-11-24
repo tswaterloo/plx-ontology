@@ -8787,7 +8787,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "email" | "source" | "record" | "meeting" | "autopilot" | "page";
+            kind: "email" | "source" | "record" | "meeting" | "autopilot" | "page" | "brief";
             /** Meeting Id */
             meeting_id?: string | null;
             /** Object Id */
@@ -9932,6 +9932,11 @@ export type components = {
              * @enum {string}
              */
             kind: "instruction" | "preference" | "commitment" | "fact";
+            /**
+             * Records
+             * @description The record ids (a meeting, customer, supplier, order) the note is about: the brief of that record, Ask and Assist read it back. Private to you.
+             */
+            records?: string[];
             /** Text */
             text: string;
         };

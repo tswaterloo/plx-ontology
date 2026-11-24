@@ -41,7 +41,8 @@ FEATURE = "ask_check"     # the call's name in the model ledger
 # same prompt, each with the answer and its share of the reads, and the claims are merged
 # (``merged``); the check says how many parts it took.
 from operating.context_window import CONTEXT_CHARS  # noqa: E402  (one definition)
-TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document", "plx.insight", "plx.my_work")
+TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document", "plx.insight", "plx.my_work",
+         "plx.my_open_work")
 # checked: nothing listed. repaired: claims listed and the answer was sent back to its session
 # once (a repair turn ran). flagged: claims listed, no turn to send them back on (a one-run
 # session), the answer shown as written. disagrees: a second pass still finds them (off).

@@ -38,7 +38,7 @@ TZ = ZoneInfo("America/New_York")
 SQL_TOOL = "plx.sql"
 # tools whose results back a typed figure (their text, cells and profiles)
 EVIDENCE_TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document", "plx.insight",
-                  "plx.my_work")
+                  "plx.my_work", "plx.my_open_work")
 
 _REF = re.compile(r"\{\{(.*?)\}\}", re.S)
 _FENCE = re.compile(r"(```.*?(?:```|$))", re.S)

@@ -424,9 +424,10 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     from .autopilot_handlers import Ctx
     import time
     directory, addresses_of, domains = maps
-    events, _skipped = apm.discover(st, [oid], registry, people)
+    events, skipped = apm.discover(st, [oid], registry, people)
     if not events:
-        return [{"why": "no_event"}]
+        # the feed's own reason when it names one (``approval_not_cleared``...), never a bare "no event"
+        return [{"why": next(iter(sorted(k for k, n in skipped.items() if n)), "no_event")}]
     event = events[0]
     if event.get("event_type") == "message.received" and not event.get("cleared"):
         return [{"why": "participants_not_cleared"}]
@@ -457,12 +458,14 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
     described, _inside = io.agent_input(event, text, material, addresses_of)
     described += "\n" + OWED.format(person=person)
-    if extra:      # the prepared session's matter, nearest precedents and ground rules (``assist_prepared``)
-        described += "\n" + extra
     # the person's memory and past corrections (``autopilot.person_memory``)
     described += apm.person_memory(state_dir, held if held is not None else {}, owner, mine,
                                    event, prepared.get("work") or {})
-    got, why = assistant.run(event, owner, described, str(person), people, reads=True, as_of=as_of)
+    # ``extra``: the prepared session's matter, nearest precedents and ground rules
+    # (``assist_prepared``), already screened part by part there; the thread screen reads the
+    # thread above only (a past case's own words must not refuse this matter)
+    got, why = assistant.run(event, owner, described, str(person), people, reads=True, as_of=as_of,
+                             **({"extra": extra} if extra else {}))
     if got is None:
         got = io.invitation_only(event, material, why)
     if got is None:

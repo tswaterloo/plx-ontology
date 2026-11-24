@@ -359,6 +359,51 @@ class Privacy(MemoryCase):
 class OwnWords(MemoryCase):
     """The Memory screen: a person writes, corrects and forgets their own items."""
 
+    def test_a_note_about_a_record_is_read_back_by_that_record_for_its_writer_only(self):
+        """W1/W2 (owner 11-24): notes are the person's own, about the records they name; the
+        same words about two records are two notes; a correction keeps what it was about;
+        everything is read (limit None), never another person's."""
+        ana, ben = reader("ana"), reader("ben")
+        meeting, customer = "CalendarEvent:graph.c1", "Customer:bc.7"
+        one, why = self.store.write(ana, kind="fact", text="Net 60 was agreed.", records=[meeting])
+        self.assertIsNone(why)
+        two, _ = self.store.write(ana, kind="fact", text="Net 60 was agreed.", records=[customer])
+        self.assertNotEqual(one, two)
+        self.assertEqual(self.store.write(ana, kind="fact", text="Net 60 was agreed.",
+                                          records=[meeting])[0], one)       # same words, same record
+        self.assertEqual([i["id"] for i in self.store.items(ana, about=[meeting])], [one])
+        self.assertEqual({i["id"] for i in self.store.items(ana, about=[meeting, customer])}, {one, two})
+        self.assertEqual(self.store.items(ben, about=[meeting, customer]), [])
+        fixed, _ = self.store.write(ana, kind="fact", text="Net 45 was agreed.", replaces=one)
+        self.assertEqual(self.store.items(ana, about=[meeting])[0]["id"], fixed)   # kept its record
+        self.assertEqual(self.store.write(ana, kind="fact", text="x", records=["no colon"]),
+                         (None, "records"))
+        for n in range(250):        # more than the default page: all are read when asked for all
+            self.store.write(ana, kind="fact", text=f"Note {n}", records=[meeting])
+        self.assertGreaterEqual(len(self.store.items(ana, about=[meeting], limit=None)), 251)
+
+    def test_a_personal_note_may_mention_payment_but_nothing_learned_or_composed_may(self):
+        """Owner 11-24: the person's own private note keeps 'already paid PO123'; the same
+        text learned, distilled or composed by a model is still refused; nobody else reads it."""
+        ana, ben = reader("ana"), reader("ben")
+        said = "Already paid PO123."
+        self.assertTrue(mem.finance_text(said))
+        kept, why = self.store.write(ana, kind="fact", text=said)
+        self.assertIsNone(why)
+        self.assertEqual([i["text"] for i in self.store.items(ana)], [said])
+        self.assertEqual(self.store.items(ben, limit=None), [])
+        self.assertEqual(self.store.search(ben, "paid PO123"), [])
+        self.assertNotIn("PO123", self.store.context(ben, "paid PO123"))
+        self.assertIn("PO123", self.store.context(ana, "paid PO123"))
+        for source in ("learn", "ask", "clarify", "working"):
+            with self.subTest(source):
+                self.assertIsNone(self.store.remember(ana, kind="fact", source=source, text=said))
+        with self.assertRaises(ValueError):       # the exception is only for the person's own source
+            self.store.remember(ana, kind="fact", source="learn", text=said, own_note=True)
+        self.assertEqual(self.store.write(ana, kind="fact", text="Already paid PO124.",
+                                          personal=False), (None, "finance"))
+        self.assertEqual([i["text"] for i in self.store.items(ana)], [said])
+
     def test_write_correct_and_the_learner_never_writes_over_it(self):
         ana, ben = reader("ana"), reader("ben")
         kept, why = self.store.write(ana, kind="instruction", text="  Always give quantities in cases. ")
@@ -467,7 +512,7 @@ class OwnWords(MemoryCase):
             (ana, dict(kind="summary", text="x"), "kind"),
             (ana, dict(kind="fact", text="   "), "empty"),
             (ana, dict(kind="fact", text="x" * 1001), "too_long"),
-            (ana, dict(kind="fact", text="Ben earns 95k a year."), "finance"),
+            (ana, dict(kind="fact", text="Ben earns 95k a year.", personal=False), "finance"),
             (ana, dict(kind="fact", text="Ask Quinn Harrow about lot K-2."), "excluded"),
             (ana, dict(kind="fact", text=f"Copy {EXCLUDED} on lot K-3."), "excluded"),
             (ben, dict(kind="fact", text="Kestrel ships Mondays.", replaces=mine), "not_found"),
@@ -614,9 +659,10 @@ class Routes(MemoryCase):
         self.assertEqual(ben.get("/api/memory").json()["items"], [])
         self.assertEqual(ben.put(f"/api/memory/{fixed.json()['id']}",
                                  json={"kind": "fact", "text": "x"}).status_code, 404)
-        refused = ana.post("/api/memory", json={"kind": "fact", "text": "Her hourly rate is 30."})
-        self.assertEqual(refused.status_code, 422)
-        self.assertIn("pay or finance", refused.json()["error"]["message"])
+        mine = ana.post("/api/memory", json={"kind": "fact", "text": "Her hourly rate is 30."})
+        self.assertEqual(mine.status_code, 200, mine.text)      # owner 11-24: own note, private
+        self.assertEqual(ben.get("/api/memory").json()["items"], [])
+        self.assertEqual(ana.delete(f"/api/memory/{mine.json()['id']}").status_code, 200)
         self.assertEqual(ana.post("/api/memory", json={"kind": "summary", "text": "x"}).status_code,
                          422)
         todo = ana.post("/api/memory", json={"kind": "commitment",

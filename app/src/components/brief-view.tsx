@@ -165,7 +165,7 @@ export function BriefView({ brief, level = 1 }: { brief: Brief; eyebrow?: string
   const parties = brief.parties ?? [];
   const possible = brief.possible_parties ?? [];
   const ask = brief.summary_question
-    ? `/ask?q=${encodeURIComponent(brief.summary_question)}${subject ? `&object=${encodeURIComponent(subject.object_id)}` : ""}`
+    ? `/ask?q=${encodeURIComponent(brief.summary_question)}${subject ? `&object=${encodeURIComponent(subject.object_id)}${brief.kind === "meeting" ? `&brief=${encodeURIComponent(subject.type)}` : ""}` : ""}`
     : null;
   return (
     <div className="space-y-4" data-testid="brief">

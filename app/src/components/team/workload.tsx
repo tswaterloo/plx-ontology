@@ -6,7 +6,9 @@
 // never message content. The owner also gets the grant sheet: each person's team and the
 // teams a manager sees person by person.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { StoredAge } from "@/components/ui/stored-age";
+import { useEffect, useMemo, useState } from "react";
+import { useRead } from "@/lib/use-read";
 import { Button } from "@/components/ui/button";
 import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -39,22 +41,6 @@ export function teamCode(text: string): string | null {
 function Num({ n, warn }: { n: number | null | undefined; warn?: boolean }) {
   if (n === null || n === undefined) return <span className="text-faint" title="Fewer than three people: a total would name one of them">·</span>;
   return <span className={cn("num", n > 0 && warn ? "font-medium text-risk" : n === 0 ? "text-faint" : undefined)}>{n}</span>;
-}
-
-function useRead<T>(read: (s: AbortSignal) => Promise<T>, on = true) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    if (!on) return;
-    const c = new AbortController();
-    setError(null);
-    read(c.signal).then(setData, (e) => !c.signal.aborted && setError(e));
-    return () => c.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [round, on]);
-  return { data, error, retry, setData };
 }
 
 export function WorkloadTables({ data }: { data: Workload }) {
@@ -245,8 +231,8 @@ export function GrantSheet({ sheet, onSaved }: { sheet: WorkloadGrantSheet; onSa
 export function WorkloadSection({ owner: isOwner }: { owner: boolean }) {
   // viewing as someone: their Workload, never the owner's sheet (the server refuses writes then)
   const owner = isOwner && !useViewingAs();
-  const load = useRead(getWorkload);
-  const sheet = useRead(getWorkloadGrants, owner);
+  const load = useRead("/api/workload", getWorkload);
+  const sheet = useRead("/api/workload/grants", getWorkloadGrants, owner);
   const [editing, setEditing] = useState(false);
   const refused = sheet.error instanceof ApiError && sheet.error.status === 403;
   return (
@@ -254,7 +240,10 @@ export function WorkloadSection({ owner: isOwner }: { owner: boolean }) {
       {load.error ? (
         <LoadProblem message={plainError(load.error)} busy={noticeKind(load.error) === "busy"} onRetry={load.retry} />
       ) : load.data ? (
-        <WorkloadTables data={load.data} />
+        <>
+          <StoredAge at={load.at} />
+          <WorkloadTables data={load.data} />
+        </>
       ) : (
         <Pending label="Counting open work" />
       )}
@@ -268,6 +257,7 @@ export function WorkloadSection({ owner: isOwner }: { owner: boolean }) {
               </button>
             )}
           </div>
+          {sheet.data ? <StoredAge at={sheet.at} className="mb-2" /> : null}
           {sheet.error ? (
             <LoadProblem message={sheet.error instanceof ApiError && sheet.error.detail ? sheet.error.detail : plainError(sheet.error)} onRetry={sheet.retry} />
           ) : !sheet.data ? (

@@ -16,13 +16,16 @@ from typing import Any, Mapping, Optional
 # feed key -> (label, the plain reason shown when it is not running, the alarm checks that stand
 # for its job). A unit check exists only while that unit is stopped or failing (system scope
 # ``unit:<name>``, user scope ``unit:user:<name>``: both are matched); a detector check always.
+# The autopilot's job is the live feed (plx-autopilot-follow), which runs on its own timer and is
+# the backstop of the continuous fast consumer (plx-autopilot-fast-serve): a stopped fast
+# consumer slows replies (the reply-time alarm and the Reliability page say so) but the
+# feed still runs, so it must not read "the feed has stopped" on Home.
 # The reason is fixed words, never the alarm's own text (unit names, hours, paths).
 FEEDS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "reply_drafts": ("Reply drafts", "Reply drafts have stopped.",
                      ("plx-reply-drafts.timer",)),
     "autopilot": ("Autopilot entries", "The autopilot's feed has stopped.",
-                  ("plx-autopilot-fast.timer", "plx-autopilot-follow.timer",
-                   "plx-autopilot-fast-serve.service")),
+                  ("plx-autopilot-follow.timer",)),
     "comms_findings": ("Findings from mail and Teams", "Findings from mail and Teams have "
                        "stopped.", ("plx-assist-readings.timer",)),
     "late_pos": ("Late purchase orders and alerts", "The late-order and alert checks are "

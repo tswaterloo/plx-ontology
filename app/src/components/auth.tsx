@@ -7,6 +7,7 @@ import { ApiError, plainError } from "@/lib/errors";
 import { safeNext } from "@/lib/format";
 import { clearPending } from "@/lib/pending";
 import { clearSavedFor, setSavedUser } from "@/lib/saved";
+import { startReadStore, storeMayDraw, wipeStoreNow } from "@/lib/read-store";
 import { resetSessionCaches } from "@/lib/session-cache";
 import { captureTicket, ticketComing } from "@/lib/ticket";
 import type { AuthConfig, Me } from "@/lib/types";
@@ -44,6 +45,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Any page an access link opens: take the #ticket= out of the URL first.
   useLayoutEffect(() => captureTicket(), []);
+  // the desktop app: answers kept on this machine fill the page's memory (a browser: nothing)
+  useEffect(() => startReadStore(), []);
 
   useEffect(() => {
     const principal = state.status === "signed-in" ? state.me.principal : null;
@@ -87,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (principalRef.current !== null && principalRef.current !== me.principal) resetSessionCaches();
         // what this tab kept for anyone else (also across a reload) is dropped before Home reads
         setBundlePrincipal(me.principal);
+        storeMayDraw();   // the desktop store's answers may be drawn now that /api/me has answered
         setState({ status: "signed-in", config, me });
       } catch (e) {
         settleAuth();
@@ -111,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async (): Promise<boolean> => {
     const config = configRef.current;
     setSignOutError(null);
+    wipeStoreNow();   // before the server is asked: still wiped when it cannot be reached
     try {
       await logout();
     } catch (e) {

@@ -210,7 +210,7 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
     docs = [] if wanted.get("participant") and comms else [
         x for x in sources if x not in comms]
     if isinstance(cursor, str):
-        comms, docs, records = ((comms, [], False) if cursor.startswith(("c1:", "a1:")) else
+        comms, docs, records = ((comms, [], False) if cursor.startswith(("c1:", "a1:", "m1:")) else
                                 ([], [], records) if cursor.startswith("r1:") else
                                 ([], docs, False))
     if not (comms or docs or records):
