@@ -146,36 +146,13 @@ WRAP_UP_NEXT = ("time is nearly up: start no new part; read only what an open pa
 
 
 
-# Question intents an open question has (``query_understanding.classify_intent``): a
-# reason, a comparison or a rule needs the deep method even when it names one record.
-OPEN_INTENTS = frozenset({"why", "compare", "policy"})
 
 
-def is_lookup(question: Any) -> bool:
-    """Whether ``question`` is a lookup of one named record: the identifier grammar reads
-    exactly one identifier in it (``query_understanding.identifier_leads``) and its intent
-    is not an open one (``OPEN_INTENTS``). A lookup gets the short method
-    (``method_rule(lookup=True)``); any other question, and anything the analysis cannot
-    read, the deep one."""
-    from operating import query_understanding as qu
-    if not isinstance(question, str) or not question.strip():
-        return False
-    try:
-        leads = qu.identifier_leads(question)
-        intent = qu.classify_intent(question)
-    except Exception:  # noqa: BLE001 - unread: the deep method
-        return False
-    return len(leads) == 1 and intent not in OPEN_INTENTS
-
-
-def question_budget(question: Any, cap: float | None = None, route: str | None = None
-                    ) -> float:
-    """The agent session's seconds for ``question``: ``LOOKUP_SECONDS`` when the front
-    door read it as a lookup (``operating.front_door``: ``route``), else
-    ``DEEP_SECONDS``; never above ``cap`` (the app's hard cap of one Ask, when given). No
-    wording of the question decides it: the model's reading does, and without one the
-    question gets the deep budget."""
-    seconds = float(LOOKUP_SECONDS if route == "lookup" else DEEP_SECONDS)
+def question_budget(question: Any, cap: float | None = None) -> float:
+    """The agent session's seconds for ``question``: ``DEEP_SECONDS``, never above ``cap``
+    (the app's hard cap of one Ask, when given). No wording of the question decides it
+    (no lookup/deep router since owner 11-22)."""
+    seconds = float(DEEP_SECONDS)
     return min(seconds, float(cap)) if cap else seconds
 
 
@@ -385,18 +362,16 @@ DECOMPOSE = (
 
 
 def method_for(question: Any, route: str | None = None) -> str:
-    """The method a question is asked with: the short one for a lookup (the front door's
-    reading, else one named record by the identifier grammar, ``is_lookup``), the deep one
-    otherwise, each stating the question's own budget (``question_budget``: research
-    ends at 60 % of it)."""
-    seconds = question_budget(question, route=route)
-    lookup = route == "lookup" if route else is_lookup(question)
-    return method_rule(int(seconds), reserve=round(seconds * 0.4), lookup=lookup)
+    """The method a question is asked with: the deep one, stating the question's own
+    budget (``question_budget``: research ends at 60 % of it). ``route`` is not read (no
+    lookup/deep router since owner 11-22)."""
+    seconds = question_budget(question)
+    return method_rule(int(seconds), reserve=round(seconds * 0.4), lookup=False)
 
 
 def lookup_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
                 reserve: int = RESERVE_SECONDS) -> str:
-    """The method for a lookup of one named record (``is_lookup``): the record first, its
+    """The method for a lookup of one named record (no router picks it now): the record first, its
     plan and links in the same turn, mail and documents only for what the question asks
     of them, then the answer: no written plan and no broad search (measured: a lookup
     run with the deep method took a median 11 turns)."""

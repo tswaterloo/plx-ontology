@@ -50,14 +50,16 @@ class Decode(unittest.TestCase):
             z.writestr("xl/workbook.xml", "<workbook/>")
             z.writestr("xl/sharedStrings.xml", b"<sst>" + b" " * (at.MAX_UNZIPPED + 10)
                        + b"</sst>")
-        long_text = ("word " * (at.MAX_TEXT // 4)).encode()
+        from operating.context_window import PROMPT_FILES_CHARS
+        long_text = ("word " * (PROMPT_FILES_CHARS // 4)).encode()   # 250,000 characters
         batch = at.decode([
             item("po.pdf", pdf("PO 4501 total 7319.55")),
             item("scan.pdf", pdf("")),
             item("bomb.xlsx", bomb.getvalue()),
             item("binary.bin", b"\x00\x01\x02\xff" * 10),
-            item("notes.txt", long_text),
-            item("sixth.txt", b"one more")])
+            *[item(f"extra{i}.txt", b"\x00\x01") for i in range(30)],
+            item("one-of-many.txt", b"one more"),
+            item("notes.txt", long_text)])
         by = {f.name: f for f in batch.files}
         broken = at.decode([{"name": "broken.txt", "data": "not base64 !!"}]).files[0]
         self.assertIn("PO 4501 total 7319.55", by["po.pdf"].text)
@@ -67,11 +69,70 @@ class Decode(unittest.TestCase):
         self.assertIn("reads PDFs, spreadsheets", by["binary.bin"].unread)
         self.assertIn("empty or damaged", broken.unread)
         self.assertTrue(by["notes.txt"].cut)
-        self.assertEqual(len(by["notes.txt"].text), at.MAX_TEXT)
-        self.assertIn("Only the first 5", by["sixth.txt"].unread)
+        # the question holds the share the files may take of the prompt; the rest of the text
+        # and the file are kept whole to read on (no per-file cut of its own)
+        self.assertEqual(len(by["notes.txt"].text) + len(by["po.pdf"].text)
+                         + len(by["one-of-many.txt"].text), PROMPT_FILES_CHARS)
+        self.assertEqual(len(by["notes.txt"].whole), len(long_text))
+        self.assertEqual(by["notes.txt"].data, long_text)
+        # no file is left out for how many there are: the last of 36 is read like the first
+        self.assertEqual(len(batch.files), 36)
+        self.assertNotIn("Only the first", str(by["one-of-many.txt"].unread))
+        self.assertEqual(by["one-of-many.txt"].text, "one more")
         # what a saved Ask keeps: never the content
         self.assertNotIn("7319.55", repr([f.meta for f in batch.files]))
-        self.assertEqual([f.name for f in batch.read], ["po.pdf", "notes.txt"])
+        self.assertEqual([f.name for f in batch.read], ["po.pdf", "one-of-many.txt", "notes.txt"])
+
+    def test_a_big_file_from_disk_is_read_whole_and_one_past_the_share_is_kept_not_refused(self):
+        """No 25 MB refusal and no per-file cut (owner 11-23): a 30 MB text file streamed to
+        disk is read whole (its whole text and bytes kept to read on), and a file that comes
+        after the prompt's share is used up is listed with its text kept, never 'unread'."""
+        import os
+        import tempfile
+        from operating.context_window import PROMPT_FILES_CHARS
+        # (no text bound: the document reader reads whole)
+        body = (b"line of the big file 0123456789\n" * 400_000)[:12 * 1024 * 1024]
+        heavy = bytes(range(256)) * (30 * 1024 * 1024 // 256)   # 30 MB of no known kind
+        with tempfile.TemporaryDirectory() as d:
+            big, small = os.path.join(d, "a.bin"), os.path.join(d, "b.bin")
+            open(big, "wb").write(body)
+            open(small, "wb").write(b"a small second file")
+            batch = at.decode([{"name": "big.txt", "path": big},
+                               {"name": "second.txt", "path": small},
+                               {"name": "heavy.bin", "data": base64.b64encode(heavy).decode()},
+                               {"name": "gone.txt", "missing": True},
+                               {"name": "lost.txt", "path": os.path.join(d, "nope")}])
+        first, second, heavy_file, gone, lost = batch.files
+        self.assertNotIn("larger than", heavy_file.unread)   # no size refusal, only its kind
+        self.assertIsNone(first.unread)
+        self.assertTrue(first.cut)
+        self.assertEqual(len(first.text), PROMPT_FILES_CHARS)
+        self.assertEqual(len(first.whole), len(body))
+        self.assertEqual(first.size, len(body))
+        self.assertIsNone(second.unread)
+        self.assertEqual((second.text, second.cut, second.whole), ("", True, "a small second file"))
+        self.assertIn("attach it again", gone.unread)
+        self.assertIn("attach it again", lost.unread)
+
+
+class LargePictures(unittest.TestCase):
+    def test_a_picture_over_the_models_limit_is_scaled_down_never_refused(self):
+        import io
+        import random
+        from PIL import Image
+        rnd = random.Random(7)
+        img = Image.new("RGB", (2400, 2400))
+        img.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
+                     for _ in range(2400 * 2400)])
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        data = buf.getvalue()
+        self.assertGreater(len(data), at.MAX_IMAGE_BYTES)
+        batch = at.decode([item("big.png", data)])
+        (got,) = batch.files
+        self.assertIsNone(got.unread)
+        self.assertEqual(got.kind, "image")
+        self.assertLessEqual(len(base64.b64decode(got.image)), at.MAX_IMAGE_BYTES)
 
 
 W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
@@ -169,38 +230,12 @@ def png(*chunks: tuple[bytes, bytes]) -> bytes:
             + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
 
 
-class FreightcomScreen(unittest.TestCase):
-    """The owner's no-AI rule on what the person attaches: a file is withheld whole when
-    its name, its text, or (an image) the words it carries beside its pixels name
-    Freightcom; an image naming nothing passes with its pixels."""
+class FreightcomIsReadLikeAnyOther(unittest.TestCase):
+    """The owner dropped the Freightcom no-AI rule (11-23): a file naming it keeps its text."""
 
-    def screen(self, name: str, data: bytes) -> at.Attached:
-        [f] = at.screened(at.decode([item(name, data)]).files)
-        return f
-
-    def test_an_image_is_withheld_by_its_name_or_carried_words(self):
-        import zlib
-        plain = self.screen("label.png", png((b"tEXt", b"Comment\x00drum label")))
-        self.assertIsNotNone(plain.image)
-        self.assertIsNone(plain.unread)
-        for name, data in (
-                ("freightcom-label.png", png()),
-                ("label.png", png((b"tEXt", b"Comment\x00Shipped via Freightcom"))),
-                ("label.png", png((b"zTXt", b"Comment\x00\x00"
-                                   + zlib.compress(b"freight.com quote")))),
-                ("label.png", png((b"iTXt", b"Title\x00\x01\x00en\x00\x00"
-                                   + zlib.compress("FREIGHT-COM".encode())))),
-                ("label.jpg", b"\xff\xd8\xff\xfe\x00\x20" + "Freightcom".encode("utf-16-le")
-                 + b"\xff\xd9")):
-            with self.subTest(name=name, data=data[-60:]):
-                f = self.screen(name, data)
-                self.assertIsNone(f.image)
-                self.assertEqual(f.unread, at.WITHHELD)
-
-    def test_a_document_is_withheld_by_its_name(self):
-        f = self.screen("freightcom quote.txt", b"rates for lane 4")
-        self.assertEqual((f.text, f.unread), ("", at.WITHHELD))
-        self.assertEqual(self.screen("quote.txt", b"rates for lane 4").text, "rates for lane 4")
+    def test_a_file_naming_freightcom_keeps_its_text(self):
+        [f] = at.screened(at.decode([item("freightcom quote.txt", b"rates for lane 4")]).files)
+        self.assertEqual((f.text, f.unread), ("rates for lane 4", None))
 
 
 if __name__ == "__main__":

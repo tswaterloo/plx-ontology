@@ -929,35 +929,6 @@ class WaitingOnYou(World):
         finally:
             st.close()
 
-    def test_mail_from_a_freightcom_address_with_a_neutral_body_never_reaches_the_model(self):
-        """Review of the mail ask path: a mail's sender is an address, with no name. A mail
-        from a Freightcom address (or copying one) whose subject and body never name
-        Freightcom is screened before any model call, keeps the phrase rules' answer
-        (nothing prepared), and every other mail of the run is still read."""
-        for n in (1, 10):
-            with self.subTest(n=n):
-                self.setUp()
-                self.correspondent()
-                for i in range(n):
-                    self.thread(i, ask=self.REQUEST, earlier=False)
-                fc = (mail(self.w, SENT, sender="billing@freightcom.com", to=(OURS,),
-                           body=self.REQUEST, subject="Batches", mailbox=OURS_OID,
-                           conversation="fc-sender", n=77_000, hour=10),
-                      mail(self.w, SENT, sender=REP, to=(OURS,), cc=("ops@freightcom.ca",),
-                           body=self.REQUEST, subject="Batches", mailbox=OURS_OID,
-                           conversation="fc-copied", n=77_001, hour=10))
-                for oid in fc:
-                    self.sent(oid, 10)
-                self.store()
-                model = StubAsks(yes=(self.REQUEST,))
-                out = self.mail_run(model)
-                sent = [m for b in model.sent for m in b]
-                self.assertEqual(len(sent), n)      # only the n mails with no Freightcom party
-                self.assertEqual(out["prepared_by_autopilot"], {"reply_prep": n})
-                dump = json.dumps(self.queue_file().items(None))
-                self.assertNotIn("fc-sender", dump)
-                self.assertNotIn("fc-copied", dump)
-
     def test_screen_reads_every_participant_of_mail_and_teams(self):
         """The model screen covers each participant field, not only text and names: a mail's
         sender, To and Cc addresses, a chat's sender name, a meeting's attendees."""
@@ -970,11 +941,9 @@ class WaitingOnYou(World):
                 "subject": "Batches", "sender": "rep@synth-supplier.example"}
         self.assertIsNone(cam.screened({**base, "channel": "mail"}, Clear(), OURS))
         for extra in ({"sender": "billing@freightcom.com"}, {"to": ["x@freightcom.ca"]},
-                      {"cc": ["ops@Freight-Com.net"]}, {"sender_name": "Dana (FreightCom)"},
-                      {"attendees": ["dispatch@freightcom.com"]},
-                      {"reply_all": {"to": ["a@freightcom.com"], "cc": []}}):
-            with self.subTest(extra=extra):
-                self.assertEqual(cam.screened({**base, **extra}, Clear(), OURS), "freightcom")
+                      {"sender_name": "Dana (FreightCom)"}):
+            with self.subTest(extra=extra):      # Freightcom is read like any other party
+                self.assertIsNone(cam.screened({**base, **extra}, Clear(), OURS))
 
     def test_a_failed_model_call_keeps_the_phrase_rules_answer_for_mail(self):
         """A timeout, an error or an unparsed reply never turns mail into an ask: the mail

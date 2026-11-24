@@ -5,6 +5,8 @@ the readiness and the code version only."""
 
 from __future__ import annotations
 
+from pathlib import Path
+import re
 import threading
 import time
 import types
@@ -19,7 +21,19 @@ from operator_api.app import create_app
 from operator_api.auth import DevAuth, fixture_identity
 from operator_api.mock import MockBackend
 from operator_api.page_store import code_version
+from operator_api.serving import KNOWN_READERS
 from tools.timing_policy import budget
+
+
+class _Settles:
+    def __init__(self, waited):
+        self.waited = waited
+
+    def __call__(self):
+        return None
+
+    def settle(self, seconds):
+        self.waited.append(seconds)
 
 
 class _Value:
@@ -172,49 +186,23 @@ class ScreensAgain(unittest.TestCase):
         self.assertEqual(calls, ["bank"])   # past the limit: not read again
 
 
-class WeeklyScreenAfterACut(unittest.TestCase):
-    def test_the_weekly_screen_is_not_read_ahead_while_its_week_was_cut_lately(self):
+class WeeklyScreenReadWhole(unittest.TestCase):
+    def test_the_weekly_screen_is_read_ahead_for_every_reader_every_round_with_no_cut_mark(self):
         import tempfile
-        from datetime import date, timedelta
         from pathlib import Path
-        from operating import briefs as br
         from operator_api import briefs
         backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
         self.addCleanup(backend.stop)
         read = []
-        backend.weekly_review = lambda reader, week, **k: read.append(reader.key)
+        backend.weekly_review = lambda reader, week, **k: read.append((reader.key, k))
         with tempfile.TemporaryDirectory() as tmp:
             backend.data_dir = Path(tmp)
-            week = br.week_of(date.today()) - timedelta(days=7)
-            briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE).mark("r1", week)
-            self.assertEqual(backend._screens_ahead(
-                mock.Mock(key="r1"), (("weekly_review", None),)), 0)
-            self.assertEqual(backend._screens_ahead(
-                mock.Mock(key="r2"), (("weekly_review", None),)), 1)
-            briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE).mark(
-                "r1", week, now=be.time.time() - briefs.WEEKLY_CUT_SECONDS - 1)
-            self.assertEqual(backend._screens_ahead(
-                mock.Mock(key="r1"), (("weekly_review", None),)), 1)
-        self.assertEqual(read, ["r2", "r1"])
-
-
-class WeeklyScreenMarksItsCut(unittest.TestCase):
-    def test_a_weekly_screen_read_cut_by_its_budget_is_not_read_ahead_again(self):
-        import tempfile
-        from pathlib import Path
-        backend = be.WorkspaceBackend(lambda session: mock.MagicMock(), data_label="t")
-        self.addCleanup(backend.stop)
-        runs = []
-        backend._weekly_archive = lambda: None
-        backend._serving = lambda reader, key, read, inputs: read()
-        backend._brief_run = lambda reader, job, **k: runs.append(reader.key) or {
-            "budget": {"stopped": reader.key == "cut"}}
-        with tempfile.TemporaryDirectory() as tmp:
-            backend.data_dir = Path(tmp)
-            for _ in range(2):
-                for key in ("cut", "whole"):
-                    backend._screens_ahead(mock.Mock(key=key), (("weekly_review", None),))
-        self.assertEqual(runs, ["cut", "whole", "whole"])   # the cut one read once
+            for key in ("r1", "r2", "r1"):
+                self.assertEqual(backend._screens_ahead(
+                    mock.Mock(key=key), (("weekly_review", None),)), 1)
+            self.assertFalse(hasattr(briefs, "WeeklyCuts"))
+            self.assertEqual(list(Path(tmp).iterdir()), [])   # no "cut" file is written
+        self.assertEqual([k for k, _ in read], ["r1", "r2", "r1"])
 
 
 class ScreensSideBySide(unittest.TestCase):
@@ -321,46 +309,233 @@ class FirstPass(unittest.TestCase):
         self.assertEqual(warmed.value, 1)
 
 
-class FirstPassDirectory(unittest.TestCase):
-    """11-19: up to 60 directory employees' main screens kept every deploy's first pass,
-    and so the API's port, held to its whole 420 s budget. The first pass waits for every
-    reader's Today reads, the directory's too, but not the directory's screens."""
+class FirstPassActiveReaders(unittest.TestCase):
+    """11-22 (two deploys ~7 min each, one failed): the first pass read every known reader's
+    and up to 60 directory employees' Today and screens before the API was ready. Now it
+    reads only the readers active within ``READY_ACTIVE_SECONDS`` (an app load or an opened
+    page, from the known readers' file), most recent first; everyone else is read right after
+    (``rest``), once the API is ready."""
 
-    backend = FirstPass.backend
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="ready-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def test_the_first_pass_waits_for_the_directory_s_today_not_its_screens(self):
-        gate = threading.Event()
-        gate.set()
-        backend = self.backend(gate)
-        stuck = threading.Event()
-        self.addCleanup(stuck.set)
-        later: dict[str, bool] = {}
+    def backend(self, known: dict) -> tuple[be.WorkspaceBackend, list[str]]:
+        view = mock.MagicMock()
+        backend = be.WorkspaceBackend(lambda session: view, data_label="t", data_dir=self.tmp)
+        self.addCleanup(backend.stop)
+        backend._write_known(known)
+        backend.warm_enabled = True
+        backend.yield_to_live = False
+        backend.warmer = backend.reads
+        read: list[str] = []
+        done = lambda *a, **k: None   # noqa: E731
+        backend._attention_cached = done
+        backend._suggestions_cached = done
+        backend._late_held = done
+        backend._upcoming_cached = lambda view, reader: read.append(reader.key)
+        backend._briefing_ahead = lambda reader: done
+        backend._weekly_ahead = lambda reader: done
+        backend._screens_ahead = lambda reader, *args, **kw: None
+        backend.revoked = lambda ref: False
 
-        def screens(reader, screens=(), until=None, behind=False):
-            later[reader.key] = behind
-            return stuck.wait(10) if reader.key == "d1" else None
-        backend._screens_ahead = screens
-        today: list[str] = []
-        backend._upcoming_cached = lambda view, reader: today.append(reader.key)
-        session = mock.Mock(view_as=False, principals=["d1"])
-        backend.identity_for = lambda oid, exp: session
-        backend.directory_for = lambda: ["d1"]
-        backend.signed_out = lambda: set()
-        backend.recent_users = lambda: []
-        known = backend.warm_known
-        backend.warm_known = lambda **kw: known() + backend._warm_directory(set())
+        def identity(oid, exp):
+            session = mock.Mock(view_as=False, principals=[oid])
+            session.employee.object_id = oid
+            return session
+        backend.identity_for = identity
+        backend.directory_for = lambda: [DIRECTORY]
+        threading.Thread(target=backend.reads.loop, daemon=True).start()
+        return backend, read
+
+    def test_only_the_readers_active_lately_hold_readiness_and_everyone_follows(self):
+        now = time.time()
+        entry = lambda seen, **kw: {"seen": seen, "ref": "a" * 64,   # noqa: E731
+                                    "exp": int(now) + 3600, "pages": [], **kw}
+        backend, read = self.backend({
+            ACTIVE: entry(now - 300), LATEST: entry(now - 20),
+            EARLIER: entry(now - 3 * 3600),                       # a session, not active
+            ENDED: {"seen": now - 600, "ref": "b" * 64, "exp": int(now) - 60, "pages": []},
+            GONE: {"seen": now - 30, "signed_out": True}})
         warmed, stop = _Value("b", 0), threading.Event()
         self.addCleanup(stop.set)
-        threading.Thread(target=backend.reads.loop, daemon=True).start()
         began = time.monotonic()
-        self.assertGreater(wp.first_pass(backend, stop, warmed, budget=5.0), 0)
-        self.assertLess(time.monotonic() - began, 4.0)   # not held to the budget
+        self.assertGreater(wp.first_pass(backend, stop, warmed, budget=5.0, active=1800), 0)
+        self.assertLess(time.monotonic() - began, 4.0)
         self.assertEqual(warmed.value, 1)
-        self.assertEqual(sorted(today), ["d1", "r1", "r2"])   # every reader's Today
-        self.assertFalse(stuck.is_set())                 # d1's screens still running
-        self.assertFalse(getattr(be.DIRECTORY_ROUND, "on", False))
-        # the directory employee's screens queue behind every session reader's
-        self.assertEqual(later, {"r1": False, "r2": False, "d1": True})
+        # the active ones, latest first (a session ended 10 min ago is still active); never
+        # the one who signed out, the earlier session or the directory
+        self.assertEqual(read, [LATEST, ACTIVE, ENDED])
+        self.assertTrue(wp.rest(backend, stop))
+        self.assertTrue(until(lambda: len(read) == 8))
+        time.sleep(0.2)
+        self.assertEqual(sorted(read[3:]), sorted([LATEST, ACTIVE, EARLIER, ENDED, DIRECTORY]))
+        self.assertNotIn(GONE, read)
+
+    def test_every_active_reader_is_read_once_in_the_pass_at_1_10_and_60(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                now = time.time()
+                oids = [f"11111111-2222-4333-8444-{i:012d}" for i in range(100, 100 + n)]
+                backend, read = self.backend({
+                    oid: {"seen": now - 10 - i, "ref": "a" * 64, "exp": int(now) + 3600,
+                          "pages": []} for i, oid in enumerate(oids)})
+                backend.directory_for = lambda: []
+                warmed, stop = _Value("b", 0), threading.Event()
+                self.addCleanup(stop.set)
+                began = time.monotonic()
+                wp.first_pass(backend, stop, warmed, budget=10.0, active=1800)
+                self.assertLess(time.monotonic() - began, budget(5))
+                # each once, latest first, none lost (the file keeps the latest
+                # ``KNOWN_READERS``: the others are the directory's, read after)
+                kept = oids[:min(n, KNOWN_READERS)]
+                self.assertEqual(read, kept)
+                wp.rest(backend, stop)
+                self.assertTrue(until(lambda: len(read) == 2 * len(kept)))
+                time.sleep(0.1)
+                self.assertEqual(sorted(read[len(kept):]), sorted(kept))
+
+    def test_nobody_active_is_ready_at_once_and_the_rest_reads_everyone(self):
+        now = time.time()
+        backend, read = self.backend({
+            EARLIER: {"seen": now - 60 * 3600, "ref": "a" * 64, "exp": int(now) - 1,
+                      "pages": []}})   # 11-22 live: one reader, last seen 60 h before
+        warmed, stop = _Value("b", 0), threading.Event()
+        self.addCleanup(stop.set)
+        began = time.monotonic()
+        self.assertEqual(wp.first_pass(backend, stop, warmed, budget=5.0, active=1800), 0)
+        self.assertLess(time.monotonic() - began, 1.0)
+        self.assertEqual(warmed.value, 1)
+        self.assertEqual(read, [])
+        wp.rest(backend, stop)
+        self.assertTrue(until(lambda: len(read) == 2))
+        self.assertEqual(sorted(read), sorted([EARLIER, DIRECTORY]))
+
+    def test_the_window_comes_from_the_environment_and_a_bad_value_is_the_default(self):
+        for raw, want in (("", wp.READY_ACTIVE_SECONDS), ("600", 600.0), ("x", 1800.0),
+                          ("-5", 0.0), ("nan", 1800.0)):
+            with mock.patch.dict("os.environ", {"PLX_WARM_READY_ACTIVE_S": raw}):
+                self.assertEqual(wp.ready_active_seconds(), want, raw)
+
+
+class WarmProcessMemory(unittest.TestCase):
+    """11-22: the warm-up process held 1.3 GB resident and 6.2 GB swapped 30 min after start
+    (the API itself 2.2 GB), and the standby's unit peaked at 12.3 GB. Its read workers keep a
+    few readers' workspaces (``WARM_WORKSPACES``), and past ``WARM_MEMORY_MB`` with its reads
+    done it ends and the API starts a fresh one: what it read is on disk."""
+
+    def test_the_child_ends_only_past_the_limit_with_its_pass_kept_and_nothing_reading(self):
+        from operator_api.serving import Worker
+        backend = types.SimpleNamespace(reads=Worker(lambda s: None))
+        for name in ("access_worker", "check_worker", "state_worker"):
+            setattr(backend, name, None)
+        warmed, stop = _Value("b", 0), threading.Event()
+        self.addCleanup(stop.set)
+        used = {"mb": 5000}
+        ended: list[bool] = []
+        run = threading.Thread(target=lambda: ended.append(wp.recycle_when_large(
+            backend, stop, warmed, limit_mb=3072, every=0.02, memory=lambda: used["mb"])),
+            daemon=True)
+        backend.reads.running = 1          # a read under way
+        run.start()
+        time.sleep(0.2)
+        self.assertEqual(ended, [])        # not warmed yet
+        warmed.value = 1
+        time.sleep(0.2)
+        self.assertEqual(ended, [])        # still reading
+        backend.reads.running = 0
+        used["mb"] = 2000
+        time.sleep(0.2)
+        self.assertEqual(ended, [])        # under the limit
+        with self.assertLogs("operator_api.warm", level="WARNING") as logs:
+            used["mb"] = 3100
+            self.assertTrue(until(lambda: ended == [True]))
+        self.assertIn("at 3100 MB (limit 3072 MB)", logs.output[0])
+        stop.set()
+        self.assertFalse(wp.recycle_when_large(backend, stop, warmed, limit_mb=1, every=0.01,
+                                               memory=lambda: 9999))
+        backend.reads.jobs.put((0, 0, None))   # a queued job: not idle
+        self.assertFalse(wp.idle(backend))
+
+    def test_a_child_that_ended_for_its_memory_is_replaced_and_the_api_stays_ready(self):
+        made: list["_Child"] = []
+
+        class _Child(_Process):
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.exitcode = None
+                self.done = threading.Event()
+                made.append(self)
+
+            def join(self, timeout=None) -> None:
+                self.done.wait(timeout)
+
+            def end(self, code: int) -> None:
+                self.exitcode, self.alive = code, False
+                self.done.set()
+
+        context = _Context()
+        context.Process = lambda **kw: _Child(**kw)
+        with mock.patch.object(wp.multiprocessing, "get_context", return_value=context):
+            process = wp.WarmProcess(["serve"], {}, "dev", busy=lambda: False)
+        floor = mock.patch.object(wp, "MIN_CHILD_SECONDS", 0.0)
+        floor.start()
+        self.addCleanup(floor.stop)
+        process.start_now()
+        self.assertTrue(until(process.ready))
+        made[0].end(wp.RECYCLE_EXIT)
+        self.assertTrue(until(lambda: len(made) == 2 and made[1].alive))
+        self.assertTrue(process.ready())             # the pass is kept: still ready
+        self.assertEqual(process.respawns, 1)
+        self.assertIs(made[1].args[-1], made[0].args[-1])   # one ``warmed`` for both
+        made[1].end(1)                               # a crash: not replaced
+        time.sleep(0.3)
+        self.assertEqual(len(made), 2)
+        self.assertFalse(process.ready())
+        self.assertTrue(until(process.ended.is_set))
+
+    def test_a_child_that_ends_for_its_memory_right_after_its_start_is_not_replaced(self):
+        made: list = []
+
+        class _Child(_Process):
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.exitcode = wp.RECYCLE_EXIT if made else None
+                made.append(self)
+
+            def join(self, timeout=None) -> None:   # ends at once, for its memory
+                self.exitcode, self.alive = wp.RECYCLE_EXIT, False
+
+        context = _Context()
+        context.Process = lambda **kw: _Child(**kw)
+        with mock.patch.object(wp.multiprocessing, "get_context", return_value=context):
+            process = wp.WarmProcess(["serve"], {}, "dev", busy=lambda: False)
+        with self.assertLogs("operator_api.warm", level="ERROR") as logs:
+            process.start_now()
+            self.assertTrue(until(process.ended.is_set))
+        self.assertEqual(len(made), 1)               # never a loop of fresh children
+        self.assertIn("not started again", logs.output[0])
+
+    def test_own_memory_is_resident_plus_swapped(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix="status", delete=False) as handle:
+            handle.write("Name:\tpython3\nVmRSS:\t 1363148 kB\nVmSwap:\t 6347776 kB\n")
+        self.addCleanup(__import__("os").unlink, handle.name)
+        self.assertEqual(wp.own_memory_mb(handle.name), (1363148 + 6347776) // 1024)
+        self.assertIsNone(wp.own_memory_mb(handle.name + ".gone"))
+        for raw, want in (("", wp.WARM_MEMORY_MB), ("4096", 4096), ("1", 512), ("x", 3072)):
+            with mock.patch.dict("os.environ", {"PLX_WARM_MEMORY_MB": raw}):
+                self.assertEqual(wp.memory_limit_mb(), want, raw)
+
+
+ACTIVE = "11111111-2222-4333-8444-000000000001"
+LATEST = "11111111-2222-4333-8444-000000000002"
+EARLIER = "11111111-2222-4333-8444-000000000003"
+ENDED = "11111111-2222-4333-8444-000000000004"
+GONE = "11111111-2222-4333-8444-000000000005"
+DIRECTORY = "11111111-2222-4333-8444-000000000006"
 
 
 class FirstPassBounded(unittest.TestCase):
@@ -505,6 +680,26 @@ class HoldUntilWarm(unittest.TestCase):
             self.assertFalse(server.held("plx-api-standby"))
         self.assertEqual(server.HOLD_DIR, "/run/plx-api")
 
+    def test_the_excluded_names_are_read_at_the_start_not_by_the_first_reader(self):
+        from operator_api import server
+        called = []
+        backend = types.SimpleNamespace(
+            memory=types.SimpleNamespace(names=lambda: called.append("names")), ready=lambda: True)
+        self.assertTrue(server.hold_until_ready(backend, poll=0.01))
+        self.assertEqual(called, ["names"])
+        # a names object that can be waited on is waited for (the first answer is final)
+        waited = []
+        names = types.SimpleNamespace(settle=lambda seconds: waited.append(seconds))
+        names.__call__ = lambda: None
+        settling = types.SimpleNamespace(memory=types.SimpleNamespace(names=_Settles(waited)), ready=lambda: True)
+        self.assertTrue(server.hold_until_ready(settling, poll=0.01))
+        self.assertEqual(waited, [server.NAMES_WAIT_SECONDS])
+        # a names read that raises never keeps the port shut
+        def boom():
+            raise RuntimeError("graph down")
+        broken = types.SimpleNamespace(memory=types.SimpleNamespace(names=boom), ready=lambda: True)
+        self.assertTrue(server.hold_until_ready(broken, poll=0.01))
+
     def test_the_port_waits_for_ready_and_opens_at_the_limit_or_a_stop(self):
         from operator_api import server
         calls = []
@@ -522,7 +717,11 @@ class HoldUntilWarm(unittest.TestCase):
         started = time.monotonic()
         self.assertFalse(server.hold_until_ready(never, poll=0.01, limit=0.2))
         self.assertLess(time.monotonic() - started, budget(5))
-        self.assertGreater(server.HOLD_MAX_SECONDS, 300)   # past the deploy's own 300 s
+        # the deploy waits past the hold (``plx-release`` READY_S)
+        tool = (Path(server.__file__).resolve().parents[1] / "deploy" / "release"
+                / "plx-release").read_text()
+        ready_s = int(re.search(r"READY_S=\$\{PLX_API_READY_S:-(\d+)\}", tool).group(1))
+        self.assertGreater(ready_s, server.HOLD_MAX_SECONDS + 30)
         stop = threading.Event()
         stop.set()
         self.assertFalse(server.hold_until_ready(never, stop=stop, poll=0.01))

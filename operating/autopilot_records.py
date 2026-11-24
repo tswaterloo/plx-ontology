@@ -13,6 +13,27 @@ from typing import Any, Iterable, Mapping, Sequence
 
 # ----------------------------------------------------------------------------- links
 
+def shown(text: Any, most: int) -> str:
+    """``text`` to ``most`` characters; when cut, the cut is said in the text itself, so
+    the model reading it knows there was more."""
+    text = str(text or "")
+    if len(text) <= most:
+        return text
+    return f"{text[:most]} [cut: {len(text) - most} more characters not shown]"
+
+
+def shown_list(items: Sequence[Any], most: int, *, newest: bool = True) -> list[Any]:
+    """At most ``most`` of ``items`` (the newest when ``newest``), with a line saying how
+    many were left out when any were."""
+    items = list(items)
+    if len(items) <= most:
+        return items
+    left = len(items) - most
+    kept = items[-most:] if newest else items[:most]
+    note = f"[{left} {'earlier' if newest else 'more'} not shown]"
+    return [note, *kept] if newest else [*kept, note]
+
+
 def object_href(object_id: Any) -> str:
     """The app address of a record's page, ``/object/<type>/<id>`` (the type is the id's own
     prefix, ``SalesOrder:portal...`` -> ``SalesOrder``); a card link built any other way opens

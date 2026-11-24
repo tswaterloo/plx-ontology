@@ -119,10 +119,10 @@ class Clock:
         return self.now
 
 
-def stack(graph=None, *, policy=None, ttl=300, clock=None, max_pages=5, role="STAFF"):
+def stack(graph=None, *, policy=None, ttl=300, clock=None, role="STAFF"):
     graph = graph or FakeGraph()
     api, _transport = build_graph(ENV, sender=graph)
-    provider = EntraDirectoryProvider(GraphDirectoryReader(api, max_pages=max_pages),
+    provider = EntraDirectoryProvider(GraphDirectoryReader(api),
                                       ttl_seconds=ttl, clock=clock or Clock())
     resolver = EmployeePermissionResolver(
         EmployeePermissionPolicy.from_json(policy or DEPARTMENT_POLICY),
@@ -184,9 +184,21 @@ class FailClosedTests(unittest.TestCase):
         self.assertEqual(ent.source_identities, frozenset())
         return ent
 
-    def test_incomplete_paging_denies(self):
-        # Two pages, one allowed: page cap with a continuation left.
-        self.denied(FakeGraph(), "entra_directory:membership_truncated", max_pages=1)
+    def test_a_nextlink_that_repeats_a_page_denies_loudly_never_reads_forever(self):
+        graph = FakeGraph()
+        graph.next_link = f"{GRAPH}{MEMBERSHIP}?$select=id&$top=999&$skiptoken=0"
+        self.denied(graph, "entra_directory:unreadable:pagination_loop")
+        self.assertLess(len(graph.gets()), 20)
+
+    def test_a_long_membership_is_read_to_its_last_page(self):
+        # 130 pages (past the 50 the old bound read): the group on the last page counts.
+        graph = FakeGraph()
+        others = [[{"@odata.type": "#microsoft.graph.group",
+                    "id": f"00000000-0000-4000-8000-{i:012d}"}] for i in range(129)]
+        graph.pages = others + [[{"@odata.type": "#microsoft.graph.group", "id": QA_GROUP.upper()}]]
+        _, resolver = stack(graph)
+        self.assertIn("staff:quality", held(resolver.resolve(EMPLOYEE)))
+        self.assertEqual(len([u for u in graph.gets() if MEMBERSHIP in u]), 130)
 
     def test_a_nextlink_leaving_the_collection_denies(self):
         graph = FakeGraph()
@@ -310,7 +322,6 @@ class GroupFallbackTests(unittest.TestCase):
         escaped = f"{GRAPH}/v1.0/users/{OTHER_OID}/joinedTeams?$select=id&$skiptoken=1"
         cases = {"refused": dict(joined_status=403), "outage": dict(joined_status=500),
                  "not_found": dict(joined_status=404),
-                 "truncated": dict(joined_pages=two_pages),
                  "nextlink_escaped": dict(joined_pages=two_pages, joined_next_link=escaped),
                  "malformed": dict(joined_pages=[[{"id": QA_GROUP}, {"id": "not-a-guid"}]]),
                  "duplicate": dict(joined_pages=[[{"id": QA_GROUP}, {"id": QA_GROUP.upper()}]]),
@@ -318,8 +329,7 @@ class GroupFallbackTests(unittest.TestCase):
                                                     "id": QA_GROUP}]])}
         for name, fields in cases.items():
             with self.subTest(name):
-                _, resolver = stack(without_consent(**fields),
-                                    max_pages=1 if name == "truncated" else 5)
+                _, resolver = stack(without_consent(**fields))
                 ent = resolver.resolve(EMPLOYEE)
                 # Groups neither read nor derived: never narrowed to the Portal role alone.
                 self.assertIsNone(ent.actor)

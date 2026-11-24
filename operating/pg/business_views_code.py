@@ -1,25 +1,23 @@
-"""A view's code fingerprint: what ``refresh`` compares to rebuild a view whose own code
-changed (a landed fix to its logic) even when its sources did not move (11-21: the Sage
-invoice-discount fix to ``sales_invoice_lines`` stayed invisible until the next day).
+"""A view's print: what ``refresh`` compares to rebuild a view whose rows' definition changed
+(a landed fix to its logic) even when its sources did not move.
 
-Recorded in ``state.notes['code']`` by every build of the view. The fingerprint is a hash
-of the syntax trees (no comments, docstrings or line numbers: a tidy-up changes nothing)
-of
+Recorded in ``state.notes['code']`` by every build of the view. Since speed specs P4 the
+print (``fingerprint``, prefix ``v1:``) is the view's DECLARED ``version`` (``View.version``,
+bumped by hand when its output can change; ``tests/test_view_versions.py`` refuses an
+output change without a bump) plus its name, columns and kinds, hidden columns, reads, the
+common door columns and the door's contract version. Never source text: a comment, a
+docstring, a refactor or an ops guard moves nothing (on 11-23 a disk-guard edit moved every
+comms print and the box tried to rebuild 3.3M mails).
 
-* the function that builds the view (a communications table: ``fill`` and its ``Spec``),
-* every top-level definition of the view modules (``MODULES``) it names, followed by name,
-* the declared shape (column names and kinds, reads, memos, hidden columns, ``covers``),
-* for a business view, ``engine``: the shared reading and access code every view runs
-  through (``Reader``, ``build_view`` ...); a change there is every view's change.
+A stored print of the old style (source text, ``_fingerprint_v0``, kept for one release) is
+*adopted* (re-stamped without a rebuild) only when it equals the old-style print of the code
+now deployed, i.e. it is proven to have been built by this code; else the view counts as
+changed: a business view is rebuilt in place, a comms view never is on the box
+(``needs_train``: its rows keep serving until a Spark train swaps in a table built by this
+code). A view with no stored print is adopted as before. ``PLX_BIZ_CODE_REFRESH=0`` turns
+the comparison off.
 
-Names are followed within the view modules only (a deliberate bound: ``business_views``
-reaches ~1,100 definitions of the whole repository through ``Reader``, so a closure over
-all of them made every view's digest move on any landing). Code outside the view modules
-(``operating.po_status`` ...) is still picked up by the daily rebuild, as before.
-
-A view with no recorded fingerprint (built before this existed) is *adopted*: its current
-fingerprint is recorded without a rebuild, so the first run after a deploy rebuilds only
-what its own rules already rebuild.  ``PLX_BIZ_CODE_REFRESH=0`` turns the comparison off.
+``python3 -m operating.pg.business_views_code prints`` prints every view's print.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ from typing import Any, Iterable, Mapping
 MODULES = ("business_views", "business_views_supply", "business_views_ar", "business_views_access",
            "business_comms", "business_staff")
 ENGINE_ROOTS = ("Reader", "Row", "Cell", "Col", "View", "columns", "build_view",
-                "_resolved_rows", "_ddl", "freightcom")
+                "_resolved_rows", "_ddl")
 
 # Helper modules a view's rows depend on that live outside the view modules, by view: each
 # module's whole source (syntax tree, docstrings and comments left out) is part of the
@@ -49,7 +47,11 @@ EXTERNAL: dict[str, tuple[str, ...]] = {
     "sales_order_lines": _ORDERS,
     "purchase_orders": ("operating.po_status",),
     "purchase_order_lines": ("operating.po_status",),
-    "emails": _COMMS,
+    "emails": _COMMS + ("operating.pg.mail_said", "operating.pg.mail_owners"),
+    "suppliers": ("operating.pg.party_keys",),
+    "customers": ("operating.pg.party_keys",),
+    "supplier_balances": ("operating.pg.payee_class",),
+    "supplier_invoices": ("operating.pg.payee_class",),
     "teams_messages": _COMMS,
     "meetings": _COMMS,
     "meeting_transcripts": _COMMS + ("operating.employee_permissions",),
@@ -196,11 +198,12 @@ def _spec(fn: Any) -> str:
     return ""
 
 
-_CACHE: dict[int, str] = {}
+_CACHE: dict[int, str] = {}   # the old-style prints, by view object
 
 
-def fingerprint(v: Any) -> str:
-    """The code fingerprint of one ``business_views.View`` (module doc)."""
+def _fingerprint_v0(v: Any) -> str:
+    """The old-style print (source text of the view's code, module doc): kept for one
+    release, only to prove a stored state was built by the code now deployed (``adopt``)."""
     key = id(v)
     if key in _CACHE:
         return _CACHE[key]
@@ -227,6 +230,27 @@ def fingerprint(v: Any) -> str:
     return _CACHE[key]
 
 
+STYLE = "v1:"
+# The door's contract version (DOOR v2: access_class / col_class / ai_ok / lineage, migration
+# 0041): a change of how every row carries its door is every view's change.
+DOOR_VERSION = 2
+
+
+def fingerprint(v: Any) -> str:
+    """The print of one ``business_views.View`` (speed specs P4): its declared ``version``
+    (bumped by hand when its rows can change: ``tests/test_view_versions.py`` refuses an
+    output change without a bump), its name, columns and kinds, hidden columns, reads, the
+    common door columns and the door's contract version. Never source text: a comment, a
+    docstring, a refactor or an ops guard moves nothing."""
+    from operating.pg import business_views as bv
+    shape = {"name": v.name, "version": int(getattr(v, "version", 1)),
+             "cols": [(c.name, c.kind) for c in v.cols], "internal": [list(x) for x in v.internal],
+             "reads": list(v.reads), "listed": v.listed, "covers": v.covers,
+             "common": [list(x) for x in bv.COMMON], "door": DOOR_VERSION}
+    return STYLE + hashlib.sha256(json.dumps(shape, sort_keys=True).encode("utf-8")
+                                  ).hexdigest()[:29]
+
+
 def recorded(notes: Any) -> str | None:
     notes = notes if isinstance(notes, dict) else json.loads(notes or "{}")
     return notes.get("code")
@@ -247,15 +271,44 @@ def code_changed(meta: Any, schema: str, views: Mapping[str, Any]) -> list[str]:
 
 
 def adopt(meta: Any, schema: str, views: Mapping[str, Any]) -> list[str]:
-    """Record the current fingerprint of each built view that has none, without a rebuild."""
+    """Record the current print of each built view that has none, or whose stored print is
+    old-style and PROVEN made by the code now deployed: equal to the old-style print of
+    this code (``_fingerprint_v0``). A stored old-style print that differs is left as it is
+    (the view is then ``code_changed``: a business view is rebuilt in place, a comms view
+    waits for its train, ``needs_train``). Never adopted blind."""
     if not enabled():
         return []
     done = []
     for name, notes in meta.execute(f"SELECT view, notes FROM {schema}.state").fetchall():
         v = views.get(name)
-        if v is not None and recorded(notes) is None:
+        have = recorded(notes)
+        if v is None or (have is not None and have.startswith(STYLE)):
+            continue
+        if have is None or have == _fingerprint_v0(v):
             meta.execute(f"UPDATE {schema}.state SET notes = COALESCE(notes, '{{}}'::jsonb) "
                          "|| jsonb_build_object('code', %s::text) WHERE view = %s",
                          (fingerprint(v), name))
             done.append(name)
     return done
+
+
+def needs_train(meta: Any, schema: str, views: Mapping[str, Any]) -> list[str]:
+    """The comms views (``fill``) whose stored print is not the code's: never rebuilt on
+    the box (a whole comms build is a Spark train); their old rows keep serving."""
+    return [n for n in code_changed(meta, schema, views)
+            if getattr(views.get(n), "fill", None) is not None]
+
+
+def main(argv: list[str] | None = None) -> int:
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args != ["prints"]:
+        print("usage: python3 -m operating.pg.business_views_code prints", file=sys.stderr)
+        return 2
+    from operating.pg import business_views as bv
+    print(json.dumps({n: fingerprint(v) for n, v in sorted(bv.VIEWS.items())}, indent=1))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

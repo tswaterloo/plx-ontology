@@ -238,6 +238,48 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/ask/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask Upload
+         * @description Send one file to attach to a question: the request body IS the file (any size),
+         *     written to disk as it arrives, held for the person until they remove it (or a week).
+         *     The answer is its id, which ``/api/ask`` names in ``attachments``.
+         */
+        post: operations["ask_upload_api_ask_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ask/files/{upload_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Ask Upload Remove
+         * @description Take a file off a question: remove what ``POST /api/ask/files`` kept.
+         */
+        delete: operations["ask_upload_remove_api_ask_files__upload_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/config": {
         parameters: {
             query?: never;
@@ -430,10 +472,11 @@ export type paths = {
             cookie?: never;
         };
         /**
-         * Autopilot Prepared List
-         * @description Your open prepared replies and "your call" cards, newest first.
+         * Assist List
+         * @description Your open work, newest first: each item kept true against its source; the last
+         *     14 days unless ``all_ages`` (``older`` says how many more).
          */
-        get: operations["autopilot_prepared_list_api_autopilot_drafts_get"];
+        get: operations["assist_list_api_autopilot_drafts_get"];
         put?: never;
         /**
          * Autopilot Drafts
@@ -485,6 +528,26 @@ export type paths = {
          *     workflow passed the fresh gate for you and you switched it on for yourself.
          */
         post: operations["autopilot_decide_api_autopilot_items__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/items/{item_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assist Draft
+         * @description Draft this item now (it goes to the front of the drafting queue).
+         */
+        post: operations["assist_draft_api_autopilot_items__item_id__draft_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1374,6 +1437,30 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/home/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Home Bundle
+         * @description Home's seven first reads in ONE answer (home, sidebar, briefing with its group pages,
+         *     the first 100 late orders, suggestions, replies, approvals): each part is exactly what
+         *     its own route answers this reader, from the same kept pages and the same permission
+         *     checks, with its own status (a part that failed carries its own error; the others
+         *     stand). One round trip instead of seven; the parts run side by side.
+         */
+        get: operations["home_bundle_api_home_bundle_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/insight-news": {
         parameters: {
             query?: never;
@@ -1471,8 +1558,8 @@ export type paths = {
         };
         /**
          * Insight Result
-         * @description One insight as you read it (kept from your read of the last few minutes; again:
-         *     read now): its definition (the statement), rows, chart and the people they name.
+         * @description One insight as you read it (its stored value with its read time; never read in this
+         *     request: a Refresh starts the read behind it, a tile with nothing stored says 202): its definition (the statement), rows, chart and the people they name.
          */
         get: operations["insight_result_api_insights__insight_id__get"];
         put?: never;
@@ -1482,6 +1569,27 @@ export type paths = {
          * @description Remove one of your saved insights.
          */
         delete: operations["insight_delete_api_insights__insight_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/{insight_id}/filtered": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Insight Filtered
+         * @description One insight read now with filters you changed or took out (its own statement's
+         *     conditions only), as you: nothing is saved or kept.
+         */
+        post: operations["insight_filtered_api_insights__insight_id__filtered_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1501,6 +1609,27 @@ export type paths = {
          *     access) and when what it finds comes to you on Home.
          */
         put: operations["insight_schedule_api_insights__insight_id__schedule_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/{insight_id}/why": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insight Why
+         * @description Why did this figure change: step by step (one JSON object per line), each step read
+         *     as you and sent as it is read with the best answer so far; stop reading at any step.
+         */
+        get: operations["insight_why_api_insights__insight_id__why_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1998,6 +2127,49 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/page/history/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * History
+         * @description A record's History tab from the served store (``models.RecordHistory``'s shape),
+         *     newest first, a page at a time; not found reads the same as a record the reader may
+         *     not open (speed specs 9.3 V2).
+         */
+        get: operations["history_api_page_history__key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/page/{kind}/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Page
+         * @description A page's stored items in one read: status ok / stale / not_run, its as-of and
+         *     every section's items (each ``{v, withheld, col}``).
+         */
+        get: operations["page_api_page__kind___key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/prepared": {
         parameters: {
             query?: never;
@@ -2156,10 +2328,33 @@ export type paths = {
         };
         /**
          * Records List
-         * @description A list of records from the business tables, as you may see them, with its
-         *     filters: ``production`` is the batches (status, QC hold, text).
+         * @description A list of one business view's records as you may see them: its columns, sort,
+         *     filters (``f=<column>:<value>``, repeated) and text search come from the view's
+         *     metadata. ``facets=false`` leaves the filters' choices out (a later page of the same
+         *     list).
          */
         get: operations["records_list_api_records_list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/records/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Records Views
+         * @description Every list Records offers: one per business view the door serves, from the
+         *     views' own metadata.
+         */
+        get: operations["records_views_api_records_views_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2248,6 +2443,27 @@ export type paths = {
         get: operations["source_records_api_source_records_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/statement/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Statement Read
+         * @description An answer's query read now with filters you changed or took out, as you (your
+         *     door, as your Ask reads): nothing is saved.
+         */
+        post: operations["statement_read_api_statement_read_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3405,6 +3621,69 @@ export type components = {
             /** Type */
             type: string;
         };
+        /**
+         * AnswerCheck
+         * @description One call with no tools checked the answer against what the session read before it
+         *     was shown (Ask plan A4): checked (nothing wrong), repaired (sent back once and written
+         *     again), flagged (claims it could not confirm, with no turn to send them back on; the
+         *     answer is shown as written), disagrees (a claim it found wrong is still in the answer: each is shown under
+         *     it with what the records hold) or not_checked (why).
+         */
+        AnswerCheck: {
+            /**
+             * Claims
+             * @description How many claims it checked.
+             * @default 0
+             */
+            claims: number;
+            /**
+             * Disagrees
+             * @description Each claim it still disagrees with, with what the records show.
+             */
+            disagrees?: string[];
+            /**
+             * Seconds
+             * @default 0
+             */
+            seconds: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "checked" | "repaired" | "flagged" | "disagrees" | "not_checked";
+            /**
+             * Why
+             * @description Why it was not checked.
+             * @default null
+             */
+            why: string | null;
+        };
+        /**
+         * AnswerPart
+         * @description One part of the question (``plx.legs``): what it asks, the sources it needs, its
+         *     period, and how many reads touched those sources and what they found.
+         */
+        AnswerPart: {
+            /**
+             * Found
+             * @default 0
+             */
+            found: number;
+            /** Part */
+            part: string;
+            /**
+             * Period
+             * @default
+             */
+            period: string;
+            /**
+             * Reads
+             * @default 0
+             */
+            reads: number;
+            /** Sources */
+            sources?: string[];
+        };
         /** AnswerPayload */
         AnswerPayload: {
             /**
@@ -3432,17 +3711,34 @@ export type components = {
              * @description Charts the answer draws (any kind of operator_api.charts), each from the rows of one query result the session read (never numbers the model wrote).
              */
             charts?: components["schemas"]["AskChart"][];
+            /** @description The second check of the answer against the database (Ask plan A4). */
+            check?: components["schemas"]["AnswerCheck"] | null;
             /**
              * Cited
              * @description The simple Ask's sources: every result its session read. Present (maybe empty) only on that path, whose answer page is the answer and one collapsed 'Sources (n records)' line opening to these rows.
              */
             cited?: components["schemas"]["CitedTable"][] | null;
+            /**
+             * Cited More
+             * @description Results the answer read past the ones listed in ``cited`` (counted, not listed).
+             */
+            cited_more?: number;
             /** @description One question asked back because the answer turns on a choice the question leaves open; nothing else is answered until it is picked. */
             clarify?: components["schemas"]["Clarify"] | null;
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
             /** Conversation Id */
             conversation_id: string;
+            /**
+             * Coverage
+             * @description The question's parts the answer declared (plx.legs) and what read each (Ask plan A3b-4): shown under the answer as what was read.
+             */
+            coverage?: components["schemas"]["AnswerPart"][];
+            /**
+             * Definitions
+             * @description The named measures the answer's figures rest on, once each: what each counts, its owner and its definition's version.
+             */
+            definitions?: components["schemas"]["MeasureCited"][];
             /**
              * Did You Mean
              * @description Choices when a name or number matched several records; never merged.
@@ -3506,6 +3802,11 @@ export type components = {
             subjects?: components["schemas"]["ObjectRef"][];
             /** @description The evidence trail (optional: older clients ignore it). */
             trail?: components["schemas"]["EvidenceTrail"] | null;
+            /**
+             * Untraced
+             * @description Figures, dates or record numbers in the answer that no result of its own (nor the person's words) holds (Ask plan A2c).
+             */
+            untraced?: string[];
         };
         /** ApprovalGroup */
         ApprovalGroup: {
@@ -3639,18 +3940,25 @@ export type components = {
         };
         /**
          * AskAttachment
-         * @description A file or image attached to one question (``operating.ask_attachments``): read in
-         *     memory for that answer only; a Word, Excel or PowerPoint file is also kept as your own
-         *     file (yours only), so the Ask can edit it and give you the edited copy.
+         * @description A file or image attached to one question (``operating.ask_attachments``): read for that
+         *     answer only; a Word, Excel or PowerPoint file is also kept as your own file (yours only),
+         *     so the Ask can edit it and give you the edited copy. A file arrives by ``upload`` (the id
+         *     ``POST /api/ask/files`` answered: streamed to disk, no size limit); ``data`` (base64 in the
+         *     body, as every JSON body is held in memory) is for a small file a client sends inline.
          */
         AskAttachment: {
             /**
              * Data
-             * @description The file's bytes, base64 (8 MB a file, 10 MB together).
+             * @description The file's bytes, base64, in this body (a small file; a larger one goes to POST /api/ask/files).
              */
-            data: string;
+            data?: string | null;
             /** Name */
             name: string;
+            /**
+             * Upload
+             * @description The id of a file sent to POST /api/ask/files.
+             */
+            upload?: string | null;
         };
         /**
          * AskAttachmentNote
@@ -3732,6 +4040,11 @@ export type components = {
              * @description Rows of the result it was drawn from.
              */
             rows?: number | null;
+            /**
+             * Rows Total
+             * @description How many rows the statement has in all, when the result held only its first rows.
+             */
+            rows_total?: number | null;
             /** Series */
             series: components["schemas"]["AskChartSeries"][];
             /**
@@ -4001,7 +4314,7 @@ export type components = {
         AskRequest: {
             /**
              * Attachments
-             * @description Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.
+             * @description Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): any number.
              */
             attachments?: components["schemas"]["AskAttachment"][];
             /** @description An answer to the question an earlier answer asked back (or another reading of its assumption): continues that question. */
@@ -4036,6 +4349,31 @@ export type components = {
              * @description Ask about this document: the citation of a mail, attachment or file the person has open or picked; read for them as they may read it.
              */
             source?: string | null;
+        };
+        /**
+         * AskUpload
+         * @description A file received by ``POST /api/ask/files``.
+         */
+        AskUpload: {
+            /** Digest */
+            digest: string;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+        };
+        /**
+         * AssistWorking
+         * @description A draft asked for: it is being prepared; the list shows it when ready.
+         */
+        AssistWorking: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "working";
         };
         /**
          * Assumption
@@ -4531,7 +4869,7 @@ export type components = {
         };
         /**
          * AutopilotDrafts
-         * @description Your open prepared replies, newest first; mail you already answered is not here.
+         * @description Your open work, newest first: each item kept true against its source.
          */
         AutopilotDrafts: {
             /** Items */
@@ -4542,10 +4880,22 @@ export type components = {
              */
             never_senders?: string[];
             /**
+             * Older
+             * @description How many more items are older than the list's 14 days (``all_ages=true`` lists them).
+             */
+            older?: number;
+            /** Reason */
+            reason?: string;
+            /**
              * Stale Since
              * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
              */
             stale_since?: string | null;
+            /**
+             * Status
+             * @description C1: ok; off (not shown to you: no opt-in, or its settings could not be read: ``reason``); stale (not re-checked lately: ``stale_since``); not_run.
+             */
+            status?: ("ok" | "partial" | "cut" | "stale" | "unknown" | "not_run" | "off" | "failed") | null;
         };
         /**
          * AutopilotDraftsPerson
@@ -5111,6 +5461,13 @@ export type components = {
              * @description On a "your call" card: the replies written for each choice you could make; pick one to edit and confirm.
              */
             options?: components["schemas"]["AutopilotOption"][];
+            /** Plan Reason */
+            plan_reason?: string | null;
+            /**
+             * Plan Status
+             * @description none, planned, drafted, needs_you, deferred (draft on request) or failed (``plan_reason`` says why; ask again).
+             */
+            plan_status?: string | null;
             /**
              * Pooled
              * @description On an item no record names a person for: the role whose list it is on until one of them takes it (Take); empty on your own items.
@@ -5125,6 +5482,11 @@ export type components = {
             redo: boolean;
             /** Sender */
             sender: string;
+            /**
+             * State
+             * @description An Assist item: open, or unverified (its source could not be re-checked: ``note`` says which; never counted as true).
+             */
+            state?: ("open" | "unverified") | null;
             /**
              * Subject
              * @default
@@ -5145,6 +5507,11 @@ export type components = {
             todos?: components["schemas"]["AutopilotTodo"][];
             /** @description Your preferences and memory the draft applied (and those read but not applied), and its template. */
             used_for_draft?: components["schemas"]["AutopilotDraftUse"] | null;
+            /**
+             * Verified At
+             * @description When the item was last re-checked against its source.
+             */
+            verified_at?: string | null;
         };
         /**
          * AutopilotReplay
@@ -5600,7 +5967,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order" | "product" | "batch";
+            kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order" | "product" | "batch" | "supplier_invoice";
             /** Sections */
             sections: components["schemas"]["BizTable"][];
             /** Sources */
@@ -5661,6 +6028,16 @@ export type components = {
              * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
              */
             read_at?: string | null;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /**
+             * Ready About
+             * @description With ``reading``: about when the review will be ready (ISO), from the time this server took to build the last reviews; absent when it has none yet.
+             */
+            ready_about?: string | null;
             /** Sections */
             sections: components["schemas"]["BriefSection"][];
             /**
@@ -5762,6 +6139,11 @@ export type components = {
              * @default 0
              */
             more: number;
+            /**
+             * More Href
+             * @description Where every row opens (an app path), when the section has one.
+             */
+            more_href?: string | null;
             /** Note */
             note?: string | null;
             /** Rows */
@@ -6007,7 +6389,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "customer_order_slower_than_usual" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** First Found */
             first_found?: string | null;
             /**
@@ -6054,7 +6436,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "customer_order_slower_than_usual" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** In Top */
             in_top: number;
             /** Label */
@@ -6135,7 +6517,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "customer_order_slower_than_usual" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -6217,7 +6599,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "customer_order_slower_than_usual" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -6443,6 +6825,13 @@ export type components = {
             as_of: string | null;
             /** Columns */
             columns: string[];
+            /** @description The named measure the rows answer, when they come from one. */
+            measure?: components["schemas"]["MeasureCited"] | null;
+            /**
+             * Query
+             * @description The statement the session ran for these rows (a named measure's: the one the catalogue made).
+             */
+            query?: string | null;
             /**
              * Records
              * @description The rows or hits the result held (``rows`` may show fewer).
@@ -6450,6 +6839,8 @@ export type components = {
             records: number;
             /** Rows */
             rows: (string | null)[][];
+            /** @description The views the query reads and the filters it applies. */
+            work?: components["schemas"]["QueryWork"] | null;
         };
         /** CitedText */
         CitedText: {
@@ -6725,6 +7116,11 @@ export type components = {
          *     how many more it found on records they may not open (counted, never named).
          */
         DataHealthCheck: {
+            /**
+             * Checked At
+             * @description When the check's rule last ran (ISO); null with ``open`` null: it has never run.
+             */
+            checked_at?: string | null;
             /**
              * Count
              * @description Open findings this reader may see.
@@ -7282,6 +7678,32 @@ export type components = {
             trails?: components["schemas"]["PoTrail"][];
         };
         /**
+         * ExcludedCount
+         * @description What a measure's definition leaves out unless counted in (a registry parameter,
+         *     S2): how many records, said in its own words.
+         */
+        ExcludedCount: {
+            /**
+             * N
+             * @description How many records it leaves out; null when they could not be counted (``why``).
+             */
+            n?: number | null;
+            /** Parameter */
+            parameter: string;
+            /** Says */
+            says: string;
+            /**
+             * Value
+             * @description The measure's value over those records.
+             */
+            value?: string | null;
+            /**
+             * Why
+             * @description Why they could not be counted.
+             */
+            why?: string | null;
+        };
+        /**
          * Explore
          * @description A record's neighbours one hop out, grouped by kind of link, for the link explorer.
          *     Walking on is the same read from a neighbour (lazy expansion), so two hops are two
@@ -7373,6 +7795,11 @@ export type components = {
             key: string;
             /** Label */
             label: string;
+            /**
+             * Since
+             * @description When a stopped job last ran (UTC, to the minute), from the hours the reliability check measured; empty when unknown.
+             */
+            since?: string;
             /**
              * State
              * @description not_running: its timer is stopped or its detector pass is stale (the list is then not 'nothing to do'); unknown: the reliability checks have not run lately.
@@ -7599,6 +8026,24 @@ export type components = {
             subject: string;
             /** To */
             to: string[];
+        };
+        /** FilterEdit */
+        FilterEdit: {
+            /** Index */
+            index: number;
+            /**
+             * Text
+             * @description The new condition; null takes the filter out.
+             */
+            text?: string | null;
+        };
+        /**
+         * FilterEdits
+         * @description Changed filters of a statement, each by its place in the statement's own list.
+         */
+        FilterEdits: {
+            /** Edits */
+            edits: components["schemas"]["FilterEdit"][];
         };
         /**
          * FormulaComponent
@@ -8006,6 +8451,18 @@ export type components = {
             /** Unknown */
             unknown?: string[];
         };
+        /**
+         * InsightChecked
+         * @description Whether a measure tile's rows add up to the measure's own figure for the same window,
+         *     read through the same door when the tile was stored (``status``: reconciles, differs or
+         *     not_checked, with ``says`` in words and the totals compared).
+         */
+        InsightChecked: {
+            /** Says */
+            says: string;
+            /** Status */
+            status: string;
+        };
         /** InsightDeleted */
         InsightDeleted: {
             /** Deleted */
@@ -8039,6 +8496,8 @@ export type components = {
              * @description A scheduled one: when it last ran by itself and what it found, in plain words.
              */
             last_run?: string | null;
+            /** @description A catalogue measure's tile: the definition its figures are, with owner, version and the day it was set. */
+            measure?: components["schemas"]["MeasureCited"] | null;
             /**
              * Notify
              * @default never
@@ -8134,9 +8593,16 @@ export type components = {
             /** As Of */
             as_of?: string | null;
             chart?: components["schemas"]["ChartSpec"] | null;
+            /** @description The 'checked' line of a measure tile: do its rows add up to the measure's own total. */
+            checked?: components["schemas"]["InsightChecked"] | null;
             /** Columns */
             columns: string[];
             drawn?: components["schemas"]["AskChart"] | null;
+            /**
+             * Excluded
+             * @description A measure tile's stated exclusions (S2): the records its definition leaves out, each with its count, shown under the value.
+             */
+            excluded?: components["schemas"]["ExcludedCount"][];
             /**
              * Fixed Dates
              * @description A saved one whose statement names fixed dates: the first and last it names ('2026-01-01 to 2026-11-21'); it reads the rows again but not later dates.
@@ -8154,6 +8620,13 @@ export type components = {
              * @description A scheduled one: when it last ran by itself and what it found, in plain words.
              */
             last_run?: string | null;
+            /** @description A catalogue measure's tile: the definition its figures are, with owner, version and the day it was set. */
+            measure?: components["schemas"]["MeasureCited"] | null;
+            /**
+             * Not Measurable
+             * @description Why a tile that read no rows cannot be measured (a column it needs holds no value anywhere): shown instead of an empty chart.
+             */
+            not_measurable?: string | null;
             /**
              * Notify
              * @default never
@@ -8181,6 +8654,8 @@ export type components = {
              * @enum {string}
              */
             schedule: "" | "hourly" | "daily" | "weekly";
+            /** @description Set when the shared fast copy did not serve this answer (status failed, with why): it was read live instead. */
+            served?: components["schemas"]["InsightServed"] | null;
             /**
              * Sql
              * @description The statement it reads (its definition, exactly).
@@ -8188,10 +8663,17 @@ export type components = {
             sql: string;
             /** Title */
             title: string;
+            /**
+             * Total Rows
+             * @description How many rows the statement has in all when ``truncated`` (row_count is the rows shown); null when it could not be counted.
+             */
+            total_rows?: number | null;
             /** Truncated */
             truncated: boolean;
             /** @description The number it watches (notify crosses). */
             watch?: components["schemas"]["InsightWatch"] | null;
+            /** @description The views its statement reads and the filters it applies. */
+            work?: components["schemas"]["QueryWork"] | null;
         };
         /** InsightSave */
         InsightSave: {
@@ -8236,6 +8718,23 @@ export type components = {
              */
             schedule: "" | "hourly" | "daily" | "weekly";
             watch?: components["schemas"]["InsightWatch"] | null;
+        };
+        /**
+         * InsightServed
+         * @description How an insight's answer was served (contract C1 status words): ``failed`` when the
+         *     shared fast copy could not serve it and it was read live instead, with why.
+         */
+        InsightServed: {
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "cut" | "stale" | "unknown" | "not_run" | "off" | "failed";
         };
         /**
          * InsightWatch
@@ -9182,6 +9681,29 @@ export type components = {
             tenant: string;
         };
         /**
+         * MeasureCited
+         * @description A named measure of the catalogue (``operating/measures.json``) an answer's figures
+         *     rest on: what it counts, the team that owns the definition and its version (changes
+         *     whenever what it counts does).
+         */
+        MeasureCited: {
+            /**
+             * Defined On
+             * @description The day this version of the definition was set (ISO).
+             */
+            defined_on?: string | null;
+            /** Definition */
+            definition: string;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Owner */
+            owner: string;
+            /** Version */
+            version: string;
+        };
+        /**
          * MeasureInfo
          * @description One agreed business measure (``operating/measures.json``): its definition only, no
          *     figure. The same for every reader: what it reads is decided when it runs.
@@ -9192,6 +9714,11 @@ export type components = {
              * @description A question it answers, to try in Ask.
              */
             ask?: string | null;
+            /**
+             * Defined On
+             * @description The day that version was set (ISO).
+             */
+            defined_on?: string | null;
             /** Definition */
             definition: string;
             /**
@@ -9223,6 +9750,11 @@ export type components = {
              * @description money, count, quantity or percent.
              */
             unit: string;
+            /**
+             * Version
+             * @description Its definition version.
+             */
+            version?: string | null;
         };
         /**
          * MeetingFollowUp
@@ -9606,6 +10138,11 @@ export type components = {
             /** At Risk */
             at_risk?: components["schemas"]["AtRisk"][];
             /**
+             * At Risk Total
+             * @description Every open alert of the at-risk types this reader may read; at_risk lists the first of them (more than listed: the rest are in Alerts).
+             */
+            at_risk_total?: number | null;
+            /**
              * Checked On
              * @description While refreshing: when the checks left out last ran (ISO time).
              */
@@ -9669,6 +10206,28 @@ export type components = {
             where_it_would_live: string;
         };
         /**
+         * NotRun
+         * @description A section whose answer has not been made: the runner has not answered this record yet (or
+         *     ran its plan and it gave no complete answer, or ``failed``: its run failed and is run again).
+         *     Typed, never blank: ``why`` says which, and
+         *     ``requested`` says whether the record was asked of the runner (it appears on a later read).
+         */
+        NotRun: {
+            /**
+             * Requested
+             * @default false
+             */
+            requested: boolean;
+            /**
+             * Status
+             * @default not_run
+             * @enum {string}
+             */
+            status: "not_run" | "failed";
+            /** Why */
+            why: string;
+        };
+        /**
          * NoteFeedbackRequest
          * @description A free note on a page, a record, a list, the app itself or anything else.
          */
@@ -9705,6 +10264,11 @@ export type components = {
              * @description 'Viewing with full-read access' when served under the reader's declared full-read grant.
              */
             access_label?: string | null;
+            /**
+             * Choices
+             * @description Set only when the page's reference (a bare PO or order number) names several records: numbers repeat across systems and counterparties, so it is never one record. Each business record it names that this reader may see, by its number and counterparty, to open (status.state 'choose'); copies of one order are one choice.
+             */
+            choices?: components["schemas"]["ObjectRef"][];
             /**
              * Complete
              * @description False on a quick first read (?quick=1): the record, its timeline and links without the checks (lateness, landed cost, people, how we know), which the full read adds.
@@ -9854,6 +10418,8 @@ export type components = {
              * @description trail: the page's not-found items said against the trail (replace the quick read's); omitted for the other sections.
              */
             not_found?: components["schemas"]["NotFound"][] | null;
+            /** @description Set when this section's answer has not been made (see NotRun): the section is neither empty nor absent; it says so and why. */
+            not_run?: components["schemas"]["NotRun"] | null;
             /** Object Id */
             object_id: string;
             /** People */
@@ -10628,6 +11194,42 @@ export type components = {
             /** Why */
             why: string;
         };
+        /** QueryFilter */
+        QueryFilter: {
+            /**
+             * Index
+             * @description Its place among the statement's filters.
+             */
+            index: number;
+            /**
+             * Text
+             * @description The condition as the statement writes it.
+             */
+            text: string;
+        };
+        /**
+         * QueryWork
+         * @description What a statement reads and filters on, read from the statement itself
+         *     (``operating.sql_work``).
+         */
+        QueryWork: {
+            /**
+             * Filters
+             * @description Each AND-part of its WHERE and HAVING clauses: what can be changed or taken out.
+             */
+            filters: components["schemas"]["QueryFilter"][];
+            /**
+             * More Filters
+             * @description Filters past the ones listed.
+             * @default 0
+             */
+            more_filters: number;
+            /**
+             * Views
+             * @description The business views it reads.
+             */
+            views: string[];
+        };
         /** RecentQuestion */
         RecentQuestion: {
             /** Answer Id */
@@ -10767,6 +11369,16 @@ export type components = {
         RecordList: {
             /** As Of */
             as_of?: string | null;
+            /**
+             * Column Keys
+             * @description Each column's key, to sort by.
+             */
+            column_keys: string[];
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "asc" | "desc";
             /** Filters */
             filters: components["schemas"]["RecordFilter"][];
             /** More */
@@ -10775,6 +11387,10 @@ export type components = {
             next_offset: number;
             /** Offset */
             offset: number;
+            /** Searchable */
+            searchable: boolean;
+            /** Sort */
+            sort: string;
             table: components["schemas"]["BizTable"];
             /** Title */
             title: string;
@@ -10910,6 +11526,24 @@ export type components = {
             outcome: "not_found" | "unreadable" | "not_looked_up";
             /** Record */
             record: string;
+        };
+        /**
+         * RecordView
+         * @description One list Records offers (``/api/records/views``).
+         */
+        RecordView: {
+            /** Title */
+            title: string;
+            /** View */
+            view: string;
+        };
+        /**
+         * RecordViews
+         * @description Every list Records offers, one per business view the reader's door serves.
+         */
+        RecordViews: {
+            /** Views */
+            views: components["schemas"]["RecordView"][];
         };
         /** RecurringChange */
         RecurringChange: {
@@ -11277,6 +11911,42 @@ export type components = {
             /** Sources */
             sources: components["schemas"]["Source"][];
         };
+        /** StatementEdit */
+        StatementEdit: {
+            /** Edits */
+            edits: components["schemas"]["FilterEdit"][];
+            /**
+             * Sql
+             * @description The statement an answer showed (its source's query).
+             */
+            sql: string;
+        };
+        /**
+         * StatementRead
+         * @description A statement read now as you with changed filters: its rows and what it reads.
+         */
+        StatementRead: {
+            /** As Of */
+            as_of?: string | null;
+            /** Columns */
+            columns: string[];
+            /** Read At */
+            read_at: string;
+            /** Row Count */
+            row_count: number;
+            /** Rows */
+            rows: (string | null)[][];
+            /**
+             * Sql
+             * @description The statement read (with the changes).
+             */
+            sql: string;
+            /** Total Rows */
+            total_rows?: number | null;
+            /** Truncated */
+            truncated: boolean;
+            work?: components["schemas"]["QueryWork"] | null;
+        };
         /** StatusEvent */
         StatusEvent: {
             /** Elapsed Ms */
@@ -11642,6 +12312,11 @@ export type components = {
              */
             self: boolean;
             /**
+             * Shared
+             * @description A shared mailbox or an account with no one on record behind it (``team_accounts``): listed apart from the people, out of their count and rankings.
+             */
+            shared?: boolean;
+            /**
              * Tasks
              * @default 0
              */
@@ -11668,6 +12343,11 @@ export type components = {
         TeamPersonDetail: {
             /** Items */
             items?: components["schemas"]["TeamItem"][];
+            /**
+             * Items Unread
+             * @description The open items could not be read just now (a busy or slow read): the rest of the panel stands.
+             */
+            items_unread?: boolean;
             /** Partners */
             partners?: components["schemas"]["TeamPartner"][];
             person: components["schemas"]["TeamPerson"];
@@ -13998,6 +14678,84 @@ export interface operations {
             };
         };
     };
+    ask_upload_api_ask_files_post: {
+        parameters: {
+            query: {
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskUpload"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    ask_upload_remove_api_ask_files__upload_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     auth_config_route_api_auth_config_get: {
         parameters: {
             query?: never;
@@ -14350,9 +15108,11 @@ export interface operations {
             };
         };
     };
-    autopilot_prepared_list_api_autopilot_drafts_get: {
+    assist_list_api_autopilot_drafts_get: {
         parameters: {
-            query?: never;
+            query?: {
+                all_ages?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -14375,6 +15135,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -14541,6 +15310,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AutopilotItem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    assist_draft_api_autopilot_items__item_id__draft_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorking"];
                 };
             };
             /** @description Unauthorized */
@@ -15483,7 +16310,7 @@ export interface operations {
     biz_page_api_biz_page_get: {
         parameters: {
             query: {
-                kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order" | "product" | "batch";
+                kind: "customer" | "chain" | "supplier" | "purchase_order" | "sales_order" | "product" | "batch" | "supplier_invoice";
                 h?: string;
                 chain?: string;
                 record?: string;
@@ -15705,7 +16532,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "customer_order_slower_than_usual" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -15748,7 +16575,7 @@ export interface operations {
     briefing_pages_api_briefing_pages_get: {
         parameters: {
             query: {
-                event_type: ("po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference")[];
+                event_type: ("po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "customer_order_slower_than_usual" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_stuck" | "mc_approval_pending" | "portal_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference")[];
                 limit?: number;
                 view?: "all" | "since_visit";
             };
@@ -16811,6 +17638,35 @@ export interface operations {
             };
         };
     };
+    home_bundle_api_home_bundle_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     insight_news_api_insight_news_get: {
         parameters: {
             query?: never;
@@ -17204,6 +18060,86 @@ export interface operations {
             };
         };
     };
+    insight_filtered_api_insights__insight_id__filtered_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                insight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FilterEdits"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightResult"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     insight_schedule_api_insights__insight_id__schedule_put: {
         parameters: {
             query?: never;
@@ -17227,6 +18163,80 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["InsightInfo"];
                 };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_why_api_insights__insight_id__why_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                insight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Unauthorized */
             401: {
@@ -18488,6 +19498,117 @@ export interface operations {
             };
         };
     };
+    history_api_page_history__key__get: {
+        parameters: {
+            query?: {
+                /** @description next_cursor of the page before, for older changes */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    page_api_page__kind___key__get: {
+        parameters: {
+            query?: {
+                sections?: string;
+                comms_view?: string;
+                comms_at?: string;
+                comms_handle?: string;
+            };
+            header?: never;
+            path: {
+                kind: "record" | "home" | "alias";
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     prepared_list_api_prepared_get: {
         parameters: {
             query?: never;
@@ -18864,10 +19985,12 @@ export interface operations {
     records_list_api_records_list_get: {
         parameters: {
             query: {
-                view: "production";
-                status?: string;
-                hold?: "" | "yes" | "no";
+                view: string;
+                f?: string[];
                 q?: string;
+                sort?: string;
+                direction?: "" | "asc" | "desc";
+                facets?: boolean;
                 offset?: number;
                 limit?: number;
             };
@@ -18915,6 +20038,35 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    records_views_api_records_views_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordViews"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19077,6 +20229,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    statement_read_api_statement_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StatementEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatementRead"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

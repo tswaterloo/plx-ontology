@@ -1,16 +1,16 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SuggestResponse } from "@/lib/types";
 
 const nav = vi.hoisted(() => ({ params: new URLSearchParams(""), push: vi.fn(), replace: vi.fn() }));
-const api = vi.hoisted(() => ({ suggest: vi.fn() }));
+const api = vi.hoisted(() => ({ suggest: vi.fn(), views: vi.fn(), list: vi.fn() }));
 vi.mock("next/navigation", () => ({
   useSearchParams: () => nav.params,
   useRouter: () => ({ push: nav.push, replace: nav.replace }),
   usePathname: () => "/records",
 }));
-vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), suggest: api.suggest }));
+vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), suggest: api.suggest, getRecordViews: api.views, getRecordList: api.list }));
 
 import RecordsPage from "./page";
 
@@ -34,6 +34,11 @@ describe("Records page", () => {
     nav.push.mockReset();
     api.suggest.mockReset();
     api.suggest.mockImplementation((q: string) => Promise.resolve(found(q)));
+    // a tab shows its list of records under the box
+    api.list.mockReset();
+    api.list.mockImplementation((view: string) =>
+      Promise.resolve({ view, title: view, total: 0, offset: 0, more: false, next_offset: 0, table: { key: view, title: view, columns: ["Name"], rows: [], total: 0 }, column_keys: ["name"], sort: "name", direction: "asc", searchable: true, filters: [] }),
+    );
   });
 
   it("opens on the All tab, which lists every kind the box found", async () => {
@@ -68,14 +73,84 @@ describe("Records page", () => {
     expect(nav.push).toHaveBeenCalledWith("/account?kind=supplier&handle=sup-1");
   });
 
+  it("an empty search box says what to type, and a kind's tab lists its newest records", async () => {
+    render(<RecordsPage />);
+    expect(screen.getByTestId("records-empty-help")).toHaveTextContent("Type a name or a number above");
+    nav.params = new URLSearchParams("kind=orders");
+    render(<RecordsPage />);
+    await waitFor(() => expect(api.list).toHaveBeenCalledWith("purchase_orders", expect.anything(), expect.anything()));
+  });
+
+  it("the answer for the earlier words stays up, dimmed, until the next one lands, and Enter never opens a stale one", async () => {
+    let release: (r: SuggestResponse) => void = () => undefined;
+    const one = { query: "cro", source: "business", took_ms: 1, suggestions: [{ object_id: "s1", type: "Supplier", label: "Croda Canada", match: "prefix", score: 0.9, open_url: "/account?kind=supplier&handle=s1" }] } as SuggestResponse;
+    api.suggest.mockReset();
+    api.suggest.mockResolvedValueOnce(one).mockImplementationOnce(() => new Promise<SuggestResponse>((r) => (release = r)));
+    render(<RecordsPage />);
+    const box = screen.getByTestId("records-search");
+    await userEvent.type(box, "cro");
+    expect(await screen.findByTestId("records-found")).toHaveTextContent("Croda Canada");
+    await userEvent.type(box, "d");
+    await waitFor(() => expect(api.suggest).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("records-found").className).toContain("opacity-60");
+    nav.push.mockClear();
+    await userEvent.type(box, "{Enter}");
+    expect(nav.push).not.toHaveBeenCalled();
+    release({ ...one, query: "crod" });
+    await waitFor(() => expect(screen.getByTestId("records-found").className).not.toContain("opacity-60"));
+  });
+
+  it("a good answer is not replaced by 'stay good later, and a search that never answers gives up", async () => {
+    vi.useFakeTimers();
+    try {
+      api.suggest.mockReset();
+      api.suggest.mockImplementation((q: string) => Promise.resolve(found(q)));
+      render(<RecordsPage />);
+      const box = screen.getByTestId("records-search");
+      fireEvent.change(box, { target: { value: "106093" } });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(screen.getByTestId("records-found")).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(screen.getByTestId("records-found")).toBeTruthy();
+      expect(screen.queryByText(/taking too long/)).toBeNull();
+      // one that never answers
+      api.suggest.mockImplementation(() => new Promise(() => undefined));
+      fireEvent.change(box, { target: { value: "never" } });
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(screen.getByTestId("records-found").className).toContain("opacity-60");   // the earlier answer, dimmed
+      await vi.advanceTimersByTimeAsync(12000);
+      expect(screen.getByText(/taking too long/)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("Enter with nothing found goes nowhere", async () => {
     api.suggest.mockImplementation((q: string) => Promise.resolve({ query: q, source: "business", took_ms: 1, suggestions: [] } satisfies SuggestResponse));
     render(<RecordsPage />);
     const box = screen.getByTestId("records-search");
     await userEvent.type(box, "zzz");
-    await screen.findByTestId("records-none");
+    expect(await screen.findByTestId("records-none")).toHaveTextContent("No match for “zzz”. Try a different spelling, or a number.");
     await userEvent.type(box, "{Enter}");
     expect(nav.push).not.toHaveBeenCalled();
+  });
+});
+
+describe("the Lists tab", () => {
+  it("offers a list for every view the server names and opens the one chosen", async () => {
+    api.views.mockResolvedValue({ views: [{ view: "batches", title: "Batches" }, { view: "sales_orders", title: "Sales orders" }, { view: "suppliers", title: "Suppliers" }] });
+    api.list.mockImplementation((view: string) =>
+      Promise.resolve({ view, title: view, total: 0, offset: 0, more: false, next_offset: 0, table: { key: view, title: view, columns: ["Name"], rows: [], total: 0 }, column_keys: ["name"], sort: "name", direction: "asc", searchable: true, filters: [] }),
+    );
+    nav.params = new URLSearchParams("kind=lists&view=sales_orders");
+    render(<RecordsPage />);
+    const picker = await screen.findByRole("combobox", { name: "List" });
+    expect([...picker.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["Batches", "Sales orders", "Suppliers"]);
+    expect(await screen.findByTestId("record-list-sales_orders")).toBeInTheDocument();
+    expect(await screen.findByTestId("record-list-empty")).toHaveTextContent("Nothing on record here that you can see.");
+    await userEvent.selectOptions(picker, "suppliers");
+    expect(nav.replace).toHaveBeenCalledWith("/records?kind=lists&view=suppliers");
+    nav.params = new URLSearchParams("");
   });
 });
 

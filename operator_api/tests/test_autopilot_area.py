@@ -44,6 +44,12 @@ FLOW = "customer_order_intake"
 ENV = {"PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY}
 
 
+def listed_kind(item: dict) -> dict:
+    """A queue item of a trigger that stays on the list at L1 (the 28 others are matters
+    now, read in ``operating/tests/test_assist_matters``): for the list's own behaviours."""
+    return {**item, "autopilot": "invoice_entry"}
+
+
 def queued(item_id: str, owner: str, *, markings=(), created: str | None = None) -> dict:
     found = po_item()
     created = created or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1108,7 +1114,7 @@ class TodoItems(unittest.TestCase):
                     ("ap_msg_work_sam", COLLEAGUE[1], {"kind": "todo", "summary": "x",
                                                        "todos": [{"what": "file it"}]}),
                     ("ap_blank", OWNER[1], {**todo, "todos": [{"system": "bc", "what": " "}]})):
-                item = queued(item_id, OWNER[1] if owner == OWNER[1] else owner)
+                item = listed_kind(queued(item_id, OWNER[1] if owner == OWNER[1] else owner))
                 item["body"]["prepared"] = prepared
                 q.add_item(item)
             card = ReplyFromLine.card("ap_card_todo", OWNER[1])
@@ -1223,25 +1229,16 @@ class NeverSender(unittest.TestCase):
 
 
 class AlertCards(unittest.TestCase):
-    """An approval asked of the person, a QC hold or a Mission Control question sits in
-    their Assist list as an alert: what happened, why, where it is decided and its records;
-    only Later and Not needed act on it here, and nothing is written."""
+    """A QC hold (one of the queue triggers that stay until their replacement lands) sits in
+    the person's Assist list as an alert: what happened, why and its records; only Later and
+    Not needed act on it here, and nothing is written. Approvals and Mission Control
+    questions are matters now (``operating/tests/test_assist_matters``)."""
 
     client = AutopilotArea.client
 
     def setUp(self) -> None:
         AutopilotArea.setUp(self)
         q = ap.Queue(self.backend.autopilot_queue)
-        task = 'MCTask:mission_control.tasks:{"id":"TASK-1","scope":"live"}'
-        approval = ReplyFromLine.card("ap_appr", OWNER[1])
-        approval.update(autopilot="approval_request", title="Approval requested: TASK-1")
-        approval["body"]["prepared"] = {
-            "summary": "Approval requested for TASK-1: merge gate.",
-            "reasons": ["no earlier approval of this task"], "evidence": [{"object_id": task}],
-            "recommendation": "review",
-            "mc": {"link": "https://mc.plxcustomer.io/tasks/TASK-1"},
-            "action": {"kind": "mc_approval", "gate": "apg_secret1",
-                       "note": "Decide in Mission Control."}}
         hold = ReplyFromLine.card("ap_hold", OWNER[1])
         hold.update(autopilot="qc_hold", title="QC hold: Lot L-1")
         hold["body"]["prepared"] = {
@@ -1250,11 +1247,17 @@ class AlertCards(unittest.TestCase):
             "mc": {"link": "https://elsewhere.example/tasks/TASK-1"},
             "affected": [{"customer": "Three Ships", "order_number": "OR-9",
                           "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s1"}'}]}
-        theirs = json.loads(json.dumps(approval))
-        theirs.update(item_id="ap_appr2", event_id="e-ap_appr2", owner=COLLEAGUE[1],
+        second = ReplyFromLine.card("ap_lot2", OWNER[1])
+        second.update(autopilot="qc_hold", title="QC hold: Lot L-2")
+        second["body"]["prepared"] = {"summary": "Lot L-2 is on-hold; it holds up 1 open order.",
+                                      "lot": "L-2", "affected": [{
+                                          "customer": "Soapbox", "order_number": "OR-20",
+                                          "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s20"}'}]}
+        theirs = json.loads(json.dumps(second))
+        theirs.update(item_id="ap_lot2_sam", event_id="e-ap_lot2_sam", owner=COLLEAGUE[1],
                       audiences=["mail:" + COLLEAGUE[1]])
         with q.conn:
-            for item in (approval, hold, theirs):
+            for item in (second, hold, theirs):
                 q.add_item(item)
         q.close()
 
@@ -1266,27 +1269,19 @@ class AlertCards(unittest.TestCase):
     def test_alerts_are_the_persons_own_with_records_and_no_secret_and_set_aside_only(self):
         owner, sam = self.client(OWNER), self.client(COLLEAGUE)
         mine = self.alerts(owner)
-        self.assertEqual(set(mine), {"ap_appr", "ap_hold"})
-        appr, hold = mine["ap_appr"], mine["ap_hold"]
-        self.assertEqual((appr["channel"], appr["note"], appr["facts"]),
-                         ("system", "Decide in Mission Control.",
-                          ["Recommended: review", "no earlier approval of this task"]))
-        self.assertEqual([(lk["label"], lk["href"]) for lk in appr["links"]][0],
-                         ("Decide in Mission Control", "https://mc.plxcustomer.io/tasks/TASK-1"))
-        self.assertEqual([lk["label"] for lk in appr["links"]],
-                         ["Decide in Mission Control", "Open the task"])
-        self.assertEqual(appr["links"][1]["href"], object_href(
-            'MCTask:mission_control.tasks:{"id":"TASK-1","scope":"live"}'))
+        self.assertEqual(set(mine), {"ap_lot2", "ap_hold"})
+        hold = mine["ap_hold"]
+        # a link not on MC's own task pages is never shown
+        self.assertNotIn("elsewhere.example", json.dumps(mine))
         self.assertEqual([lk["label"] for lk in hold["links"]], ["Open the order"])
         self.assertEqual(hold["links"][0]["href"],
                          "/object/SalesOrder/" + quote('SalesOrder:portal.app_sales_order:{"id":"s1"}', safe=""))
         self.assertEqual(hold["facts"], ["OR-9, Three Ships"])
         self.assertEqual(hold["links"][0]["label"], "Open the order")
-        self.assertNotIn("apg_secret1", json.dumps(mine))
-        self.assertEqual(set(self.alerts(sam)), {"ap_appr2"})
+        self.assertEqual(set(self.alerts(sam)), {"ap_lot2_sam"})
         got = owner.post("/api/autopilot/items/ap_hold/decision", json={"decision": "reject"})
         self.assertEqual(got.status_code, 200, got.text)
-        self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
+        self.assertEqual(set(self.alerts(owner)), {"ap_lot2"})
         self.assertEqual(self.bc.calls, [])
 
     def test_every_record_link_on_a_card_opens_a_record_page(self):
@@ -1295,7 +1290,7 @@ class AlertCards(unittest.TestCase):
         one-part form again."""
         q = ap.Queue(self.backend.autopilot_queue)
         old = ReplyFromLine.card("ap_old", OWNER[1])
-        old.update(autopilot="order_entry", title="Order entered")
+        old.update(autopilot="qc_hold", title="QC hold: Lot L-3")
         order = 'SalesOrder:portal.app_sales_order:{"id":"s2"}'
         old["body"]["prepared"] = {"summary": "PO 7 is entered as order OR-7.",
                                    "links": [{"label": "Open the order", "href": "/object/" + order},
@@ -1348,7 +1343,7 @@ class AlertCards(unittest.TestCase):
         q.close()
         owner = self.client(OWNER)
         mine = self.alerts(owner)
-        self.assertEqual(set(mine), {"ap_appr", "ap_hold2"})
+        self.assertEqual(set(mine), {"ap_lot2", "ap_hold2"})
         hold = mine["ap_hold2"]
         # the stored summary counted each copy; the card counts the orders it lists
         self.assertEqual((hold["subject"], hold["summary"]), (
@@ -1359,7 +1354,7 @@ class AlertCards(unittest.TestCase):
         # set aside, the lot's card is gone: the older item never comes back in its place
         got = owner.post("/api/autopilot/items/ap_hold2/decision", json={"decision": "reject"})
         self.assertEqual(got.status_code, 200, got.text)
-        self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
+        self.assertEqual(set(self.alerts(owner)), {"ap_lot2"})
 
     def newer_hold(self) -> None:
         """A newer item about lot L-1 (another batch record), with the engine's settle note
@@ -1385,7 +1380,7 @@ class AlertCards(unittest.TestCase):
                          json={"decision": "snooze", "until": later})
         self.assertEqual(got.status_code, 200, got.text)
         self.newer_hold()
-        self.assertEqual(set(self.alerts(owner)), {"ap_appr"})
+        self.assertEqual(set(self.alerts(owner)), {"ap_lot2"})
 
     def test_a_pass_to_a_colleague_carries_to_the_newer_item_about_the_same_lot(self):
         from operator_api import view_as as va
@@ -1397,7 +1392,7 @@ class AlertCards(unittest.TestCase):
         got = owner.post("/api/autopilot/items/ap_hold/hand", json={"to": key})
         self.assertEqual(got.status_code, 200, got.text)
         self.newer_hold()
-        self.assertEqual(set(self.alerts(sam)), {"ap_appr2", "ap_hold3"})
+        self.assertEqual(set(self.alerts(sam)), {"ap_lot2_sam", "ap_hold3"})
         self.assertEqual(self.alerts(sam)["ap_hold3"]["handed_from"], "Ana")
         self.assertEqual(self.alerts(owner)["ap_hold3"]["handed_to"], "Sam")
 
@@ -1451,7 +1446,7 @@ class AlertCards(unittest.TestCase):
         self.assertEqual(hand(owner, "ap_hold").status_code, 200)
         self.assertEqual(self.alerts(owner)["ap_hold"]["handed_to"], "Sam")
         theirs = self.alerts(sam)
-        self.assertEqual(set(theirs), {"ap_appr2", "ap_hold"})
+        self.assertEqual(set(theirs), {"ap_lot2_sam", "ap_hold"})
         self.assertEqual(theirs["ap_hold"]["handed_from"], "Ana")
         for decision in ("accept", "edit"):
             got = sam.post("/api/autopilot/items/ap_hold/decision",
@@ -1463,7 +1458,7 @@ class AlertCards(unittest.TestCase):
         q.close()
         self.assertEqual(hand(owner, "ap_call").status_code, 422)     # only an alert
         gone["sam"] = True                                              # excluded since
-        self.assertEqual(hand(owner, "ap_appr").status_code, 404)
+        self.assertEqual(hand(owner, "ap_lot2").status_code, 404)
         self.assertEqual(owner.get("/api/autopilot/colleagues").json()["people"], [])
         gone["sam"] = False
         got = sam.post("/api/autopilot/items/ap_hold/decision", json={"decision": "reject"})
@@ -1488,7 +1483,7 @@ class PooledItems(unittest.TestCase):
         (path.parent / autopilot_queue.ROLES_FILE).write_text(json.dumps(
             {"roles": {"purchasing": [OWNER[1], COLLEAGUE[1]]}}))
         item = queued("ap_pool", "pool:purchasing")
-        item.update(autopilot="po_followup", title="Supplier PO without confirmation: PO P-80",
+        item.update(autopilot="invoice_entry", title="Supplier PO without confirmation: PO P-80",
                     audiences=[])
         item["body"]["prepared"] = {
             "summary": "PO P-80 was ordered 7 days ago; no confirmation from the supplier.",
@@ -1592,7 +1587,7 @@ class ReplyFromLine(unittest.TestCase):
 
     @staticmethod
     def card(item_id: str, owner: str) -> dict:
-        item = queued(item_id, owner)
+        item = listed_kind(queued(item_id, owner))
         text = "Hi Ana, can you do 12.50 a case on PO P-1 if we take 400 cases?"
         item["body"]["prepared"] = {
             "draft": {"channel": "email", "to": [{"address": "buyer@customer.example"}],

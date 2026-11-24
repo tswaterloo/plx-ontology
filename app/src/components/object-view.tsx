@@ -4,14 +4,15 @@ import { PartyPulse } from "./record/party-pulse";
 import { DocumentsSection } from "@/components/record/documents";
 import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { BRIEF_TYPES, DOCUMENT_LIST_TYPES, PACK_TYPES, getActionStates, getObject, getObjectCore, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
+import { afterReady, usePageReady } from "@/lib/ready";
+import { BRIEF_TYPES, DOCUMENT_LIST_TYPES, PACK_TYPES, bizPage, getActionStates, getObject, getObjectCore, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useStaleRefresh } from "@/lib/stale-refresh";
+import { useStaleRefreshOnReturn } from "@/lib/stale-refresh";
 import { custodyOf } from "@/lib/custody";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
-import { formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
+import { doorKey, formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { activityTitle, factMap, groupLinked, groupRelated, identifierLabel, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { rememberOpened, toggleSaved, useSaved } from "@/lib/saved";
 import { lateness, recordState, type Shown } from "@/lib/status";
@@ -47,6 +48,7 @@ import { DocumentLists } from "./record/document-lists";
 import { ShowMore } from "./ui/show-more";
 import { RECORD_LIMIT_MS, TimedOut } from "./ui/skeleton";
 import { STATUS_INK, StatusBadge, StatusWord } from "./ui/status-badge";
+import { ShowAll } from "@/components/show-all";
 
 /** Status words the API uses, mapped to a tone (kept for callers outside the record page). */
 export function toneOf(state: string): Tone {
@@ -1149,11 +1151,63 @@ function RecordMissing({ type }: { type: string }) {
   );
 }
 
+/** The records a number names when it is no one record (numbers repeat across systems and
+ * counterparties): each by its number and counterparty, as the server read them for this
+ * reader. One alone opens at once. */
+export function RecordChoices({ type, refText, page }: { type: string; refText: string; page: ObjectPage }) {
+  const router = useRouter();
+  const choices = page.choices ?? [];
+  const only = choices.length === 1 ? safeHref(choices[0].open_url) : null;
+  useEffect(() => {
+    if (only) router.replace(only);
+  }, [only, router]);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Toolbar heading={false} title={<Crumb type={type} />} />
+      <div className="max-w-[880px] space-y-6 px-5 pt-6 pb-12 sm:px-8 sm:pt-7" data-testid="record-choices">
+        <header>
+          <h1 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em] break-words">
+            {recordLabel(type, refText)}: {plural(choices.length, "record")}
+          </h1>
+          {page.summary && <p className="mt-1 text-[13px] leading-5 text-muted">{page.summary}</p>}
+        </header>
+        <ul className="-mx-3">
+          {choices.map((c) => (
+            <li key={c.object_id}>
+              <Link href={safeHref(c.open_url) ?? "/"} className="flex items-center gap-3 rounded-[3px] px-3 py-2.5 hover:bg-hover">
+                <span className="min-w-0 flex-1 truncate text-[13px] leading-[18px] font-semibold">{c.label}</span>
+                <ArrowUpRight className="size-3.5 shrink-0 text-faint" aria-hidden />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 /**
  * A record's page. `missing`: shown instead of the not-found notice when the record
  * resolves to nothing for this reader (a friendly URL's chooser).
  */
-export function ObjectView({ type, id, missing, door }: { type: string; id: string; missing?: ReactNode; door?: BizPage | null }) {
+/**
+ * An order's head over its business tables' page, when it is read: the total and the status
+ * are the order's (its lines' sum, its one status), not one copy's own header fields (a Portal
+ * copy holding "Total cost 0.00" and "Pending" for an order whose lines sum to 875.84). Without
+ * a door total or status the record's own stand, as they are.
+ */
+export function withDoor(head: RecordHead, door: BizPage | null | undefined): RecordHead {
+  if (!door || (door.kind !== "purchase_order" && door.kind !== "sales_order")) return head;
+  const total = door.facts.find((f) => f.label.startsWith("Total") && f.value.money);
+  const status = door.facts.find((f) => f.label === "Status" && f.value.text)?.value.text;
+  const stats = total
+    ? [{ label: total.label, value: money(total.value.money).replace(/\s+[A-Z]{3}$/, ""), caption: total.value.money!.currency }, ...head.stats.filter((s) => !s.label.startsWith("Total"))]
+    : head.stats;
+  const keyFacts = status ? head.keyFacts.map((k) => (k.label === "Status" ? { ...k, value: status, source: undefined } : k)) : head.keyFacts;
+  return { ...head, stats, keyFacts };
+}
+
+export function ObjectView({ type, id, missing, door: given }: { type: string; id: string; missing?: ReactNode; door?: BizPage | null }) {
   const params = useSearchParams();
   const routeLabel = params?.get("label");
   const [obj, setObj] = useState<ObjectPage | null>(null);
@@ -1172,6 +1226,13 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   const [card, setCard] = useState<ProactiveSuggestion | null>(null);
   const [cardState, setCardState] = useState<ActionResult | null>(null);
   const saved = useSaved();
+  // Sections landed for this record, and which of them the server answered stale: a stale
+  // refresh asks again for those sections only and merges them in; the page is never read again
+  // for a section (W2).
+  const landedRef = useRef(new Map<SectionName, ObjectSection>());
+  const staleSecRef = useRef(new Set<SectionName>());
+  const objRef = useRef<ObjectPage | null>(null);
+  objRef.current = obj;
   /**
    * Read the record. `quiet` is the follow-up read of a page served stale: the page stays on
    * screen and is replaced when the fresh read lands, and a failed quiet read leaves it be.
@@ -1189,9 +1250,12 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
       setPending(new Set());
       setFailed(new Set());
       setSectionStale(null);
+      landedRef.current.clear();
+      staleSecRef.current.clear();
     }
     // the sections landed so far, merged again into the quick read when it replaces the core
-    const landed: ObjectSection[] = [];
+    // (a quiet read starts from every section the page already holds)
+    const landed: ObjectSection[] = quiet ? [...landedRef.current.values()] : [];
     let quickIn = false;
     let started = false;
     const sections = (first: ObjectPage) => {
@@ -1202,11 +1266,14 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
       const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person") && (n !== "documents" || DOCUMENT_LIST_TYPES.includes(first.type)) && (n !== "formula" || FORMULA_TYPES.includes(first.type)));
       if (!quiet) setPending(new Set(names));
       else setFailed(new Set());
+      // a quiet read asks again only for the sections the server last answered stale
+      const ask = quiet ? names.filter((n) => staleSecRef.current.has(n)) : names;
       // a quiet read states the sections' age once they have all landed, so the "refreshing"
       // note does not blink off between reads (that would restart the retry budget)
-      let waiting = names.length;
+      let waiting = ask.length;
       let oldest: string | null = null;
-      for (const name of names) {
+      if (quiet && waiting === 0) setSectionStale(null);
+      for (const name of ask) {
         getObjectSection(name, first.type, first.object_id, c.signal)
           .then((sec) => {
             if (c.signal.aborted) return;
@@ -1215,6 +1282,9 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
               if (!quiet) setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
             }
             landed.push(sec);
+            landedRef.current.set(name, sec);
+            if (sec.stale_since) staleSecRef.current.add(name);
+            else staleSecRef.current.delete(name);
             setObj((o) => (o ? mergeSection(o, sec) : o));
           })
           .catch(() => {
@@ -1293,11 +1363,33 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   }, [load, attempt]);
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
   const refreshStale = useCallback(() => {
-    quietNext.current = true;
-    setAttempt((n) => n + 1);
+    const page = objRef.current;
+    // the page itself is stale: read it again (its held sections are kept)
+    if (!page || page.stale_since || staleSecRef.current.size === 0) {
+      quietNext.current = true;
+      setAttempt((n) => n + 1);
+      return;
+    }
+    // only sections are stale: read those sections, merge each in, read nothing else
+    for (const name of [...staleSecRef.current]) {
+      getObjectSection(name, page.type, page.object_id)
+        .then((sec) => {
+          landedRef.current.set(name, sec);
+          if (sec.stale_since) staleSecRef.current.add(name);
+          else staleSecRef.current.delete(name);
+          setObj((o) => (o ? mergeSection(o, sec) : o));
+          setSectionStale(() => {
+            const left = [...staleSecRef.current].map((n) => landedRef.current.get(n)?.stale_since).filter((x): x is string => !!x).sort()[0];
+            return left ?? null;
+          });
+        })
+        .catch(() => undefined);
+    }
   }, []);
+  // the page is complete when its record and every section have answered, or it failed
+  usePageReady((!!obj && pending.size === 0) || !!error);
   const staleSince = [obj?.stale_since, sectionStale].filter((t): t is string => !!t).sort()[0];
-  useStaleRefresh(staleSince, refreshStale);
+  useStaleRefreshOnReturn(staleSince, refreshStale);
 
   // the card for this record (an order or a customer), read beside the record
   const objectId = obj?.object_id;
@@ -1307,22 +1399,49 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
     setCardState(null);
     if (!objectId || !/^(PurchaseOrder|SalesOrder|Customer)$/.test(objType ?? "")) return;
     const c = new AbortController();
-    // the cards and their action states are read at once, not one after the other
-    const states = getActionStates(c.signal);
-    states.catch(() => undefined);
-    getSuggestions(c.signal)
-      .then((s) => {
-        if (c.signal.aborted || s?.status !== "read") return;
-        const mine = (s.items ?? []).find((x) => x.subject?.object_id === objectId) ?? null;
-        setCard(mine);
-        if (mine)
-          states
-            .then((r) => !c.signal.aborted && setCardState(r.cards?.[mine.id] ?? null))
-            .catch(() => undefined);
-      })
-      .catch(() => undefined);
-    return () => c.abort();
+    // the card is not the page's own content: read once the page is ready, when the browser is
+    // idle, marked as a read-ahead (W3); its action states are read with it
+    const cancel = afterReady(() => {
+      const states = getActionStates(c.signal);
+      states.catch(() => undefined);
+      getSuggestions(c.signal, true)
+        .then((s) => {
+          if (c.signal.aborted || s?.status !== "read") return;
+          const mine = (s.items ?? []).find((x) => x.subject?.object_id === objectId) ?? null;
+          setCard(mine);
+          if (mine)
+            states
+              .then((r) => !c.signal.aborted && setCardState(r.cards?.[mine.id] ?? null))
+              .catch(() => undefined);
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      cancel();
+      c.abort();
+    };
   }, [objectId, objType]);
+
+  // One page per record: a page opened by a reference (/po/PO100523, /customer/DIVE11) reads
+  // the business tables' page of the record it resolved to, as /object and Home's pane do, so
+  // every path to one record shows the same total, status and lines. A route that reads it
+  // itself passes `door` (null while it reads): no second read.
+  const [ownDoor, setOwnDoor] = useState<BizPage | null>(null);
+  const ownKey = given === undefined && objectId && objType ? doorKey(null, objType, objectId) : null;
+  useEffect(() => {
+    setOwnDoor(null);
+    if (!ownKey?.record) return;
+    const c = new AbortController();
+    // no business page for it (404) or a failed read: the record's own page stands, as on /object
+    // a page of another kind, or not shaped as one, is no door for this record (fails closed)
+    const kind = ownKey.kind;
+    bizPage(kind, { record: ownKey.record }, c.signal).then(
+      (p) => !c.signal.aborted && p?.kind === kind && Array.isArray(p.facts) && Array.isArray(p.sections) && setOwnDoor(p),
+      () => undefined,
+    );
+    return () => c.abort();
+  }, [ownKey?.kind, ownKey?.record]);
+  const door = given ?? ownDoor;
 
   // "Chase →" lands on the card
   useEffect(() => {
@@ -1357,8 +1476,12 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   if (!obj)
     // a friendly path's reference ("106001", "DIVE11") names the record while it loads
     return <ObjectSkeleton type={type} label={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} onRetry={retry} />;
+  // a number several records hold (2 suppliers' orders share a PO number): pick one
+  if (obj.choices?.length) return <RecordChoices type={type} refText={id} page={obj} />;
 
-  const head = recordHead(obj);
+  // a supplier invoice's page over the business tables names the invoice (not the record's raw type)
+  const invoiceDoor = door?.kind === "supplier_invoice" ? door : null;
+  const head = withDoor(invoiceDoor ? { ...recordHead(obj), title: invoiceDoor.title } : recordHead(obj), door);
   // an order's life drawn as one line (PO, sales order, assembly); none for a customer or supplier
   const custody = /^(PurchaseOrder|SalesOrder|AssemblyOrder|ManufacturingOrder)$/.test(obj.type) ? custodyOf(obj) : null;
   const isPo = obj.type === "PurchaseOrder";
@@ -1393,7 +1516,7 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   const byLink = (obj.links ?? []).length > 0;
 
   // the header's status line: each status its shape and words in ink
-  const badges: Shown[] = head.badges.slice(0, 2);
+  const badges: Shown[] = head.badges;   // every status: a late badge is never hidden
   // a record with one status and a sentence says the sentence beside the status's shape
   const merged = !isPo && !isParty && !isAo && !!head.lead && badges.length === 1 && !head.leadStatus ? { status: badges[0].status, label: head.lead } : null;
   const leadShown = !merged && head.lead && (head.leadStatus === "suspect" || (badges.length === 0 && head.stats.length === 0)) && !badges.some((b) => b.label.trim().toLowerCase() === head.lead!.trim().toLowerCase());
@@ -1402,14 +1525,14 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   // total and dates; every other record its head's figures
   const f = factMap(obj.facts);
   const got = isPo ? receivedOf(trail) : null;
-  const total = head.stats.find((s) => s.label === "Total");
+  const total = head.stats.find((s) => s.label.startsWith("Total"));
   const so = isSalesOrder ? salesFigures(obj) : null;
   const ordered = isPo ? dayOf(f.get("order_date")?.value ?? f.get("document_date")?.value) : (so?.ordered ?? null);
   const neededIso = isPo ? neededOf(obj) : null;
   const needed = isPo ? dayOf(neededIso) : (so?.needed ?? null);
   // a supplier whose lateness was not established is not said to have none late
   const unknownLate = isSupplier && obj.status?.state === "not_established" && !(obj.late_lines ?? []).length;
-  const otherStats = isPo ? head.stats.filter((s) => !/^(Total|Received|Needed by|Ordered)$/.test(s.label)) : head.stats.filter((s) => !(unknownLate && s.label === "Late"));
+  const otherStats = isPo ? head.stats.filter((s) => !/^(Total\b.*|Received|Needed by|Ordered)$/.test(s.label)) : head.stats.filter((s) => !(unknownLate && s.label === "Late"));
   const revenue = isCustomer ? (obj.customer?.revenue ?? []) : [];
 
   // a supplier is known by its code under its name
@@ -1457,7 +1580,7 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
 
   const header = (
     <>
-    <StaleNote since={staleSince} className="mb-3" />
+    <StaleNote since={staleSince} onReturn className="mb-3" />
     <header className="flex gap-4 sm:gap-5">
       <div className="min-w-0 flex-1">
         <h1 className="flex flex-wrap items-baseline gap-x-2.5 break-words" data-testid="object-title">
@@ -1537,7 +1660,7 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   const figures = hasFigures && (
     <section className="space-y-6" data-testid="detail-stats">
       <div className="flex flex-wrap gap-x-12 gap-y-5 empty:hidden">
-        {(isPo ? total : null) && <Figure label="Total" value={total!.value} unit={total!.caption} />}
+        {(isPo ? total : null) && <Figure label={total!.label} value={total!.value} unit={total!.caption} />}
         {so?.total && <Figure label={so.totalLabel} value={so.total.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so.total)?.[0]} source={so.totalSource} />}
         {so && so.needed == null && so.ordered != null && <Figure label="Ordered" value={formatDate(new Date(so.ordered).toISOString().slice(0, 10))} />}
         {got && (
@@ -1589,7 +1712,7 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   // number linking to its record. Its open orders stay the record page's own list.
   // an item's or a batch's page over the business tables (stock from the stock view, its
   // batches or QC readings) stands in for the record's raw field list
-  const itemDoor = door && (door.kind === "product" || door.kind === "batch") ? door : null;
+  const itemDoor = door && (door.kind === "product" || door.kind === "batch" || door.kind === "supplier_invoice") ? door : null;
   const doorLines = door?.sections.find((s) => s.key === "lines" && s.rows.length > 0) ?? null;
   const doorAccount = (door?.sections ?? []).filter((s) => ["owed", "invoices", "years", "same_name"].includes(s.key) && s.rows.length > 0);
 
@@ -1614,7 +1737,7 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
   if (tab === "history")
     return (
       <Frame
-        crumb={<Crumb type={obj.type} typeName={obj.type_label} title={head.title} />}
+        crumb={<Crumb type={obj.type} typeName={obj.type_label ?? (invoiceDoor ? "Supplier invoice" : null)} title={head.title} />}
         actions={actions}
         main={
           <>
@@ -1760,14 +1883,14 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
         <section>
           <SectionTitle>Sources</SectionTitle>
           <ul className="space-y-2">
-            {sources.slice(0, 5).map((src, i) => (
+            <ShowAll items={sources} first={5} as="li" noun="sources">{(src, i) => (
               <li key={i} className="flex items-center gap-2.5 text-[13px]">
                 <SystemCode system={src.system} size={18} />
                 <span className="min-w-0 truncate">
                   <SourceChip source={src} record={head.title} />
                 </span>
               </li>
-            ))}
+            )}</ShowAll>
           </ul>
         </section>
       )}
@@ -1779,7 +1902,7 @@ export function ObjectView({ type, id, missing, door }: { type: string; id: stri
     </>
   );
 
-  return <Frame crumb={<Crumb type={obj.type} typeName={obj.type_label} title={head.title} />} actions={actions} main={main} inspector={inspector} />;
+  return <Frame crumb={<Crumb type={obj.type} typeName={obj.type_label ?? (invoiceDoor ? "Supplier invoice" : null)} title={head.title} />} actions={actions} main={main} inspector={inspector} />;
 }
 
 /** "2505" -> "2,505"; anything that is not a bare number as given. */

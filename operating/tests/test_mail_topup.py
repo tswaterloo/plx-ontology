@@ -31,7 +31,6 @@ from integrations.tests.test_capture_mail import (BOX_A, BOX_B, CAPTURE, ENV, OU
 from ontology import mentions
 from ontology import schema as schema_loader
 from ontology.project import MailCaptures, build_store
-from operating import fast_answer as fa
 from operating import mail_topup
 from operating import ontology_tools as ot
 from operating.case_mail_scope import MailScope
@@ -482,29 +481,6 @@ class ScanTests(unittest.TestCase):
         self.db.execute("UPDATE messages SET removed_reason = 'deleted' WHERE version_id = 2")
         self.assertEqual(self.scan(), [])
         self.assertEqual(self.reads, 4)
-
-
-class FastPathTests(unittest.TestCase):
-    class Reads:
-        def row(self, handle, need=()):
-            return {"citation": handle, "row.received_at": "2026-10-02T09:30:00Z",
-                    "row.subject": "Re: shipped"}
-
-    def test_the_latest_message_says_it_is_newer_than_the_last_full_refresh(self):
-        found = [{"kind": "email", "date": "2026-10-02T11:00:00+02:00",
-                  "citation": "graph-mail://m/old@c", "title": "Projected"},
-                 {"kind": "email", "date": "2026-10-02T09:30:00Z",
-                  "citation": "graph-mail://m/new@c", "title": "Newer",
-                  mail_topup.FLAG: True}]
-        # 11:00+02:00 is 09:00Z: compared as instants, the newer capture wins.
-        last = fa._latest_message(found)
-        self.assertEqual(last["citation"], "graph-mail://m/new@c")
-        draft = fa.Draft()
-        fa._say_message(self.Reads(), draft, last, "The latest message was sent")
-        self.assertIn("(newer than the last full refresh)", draft.sentences[0])
-        draft = fa.Draft()
-        fa._say_message(self.Reads(), draft, found[0], "The latest message was sent")
-        self.assertNotIn("refresh", draft.sentences[0])
 
 
 if __name__ == "__main__":

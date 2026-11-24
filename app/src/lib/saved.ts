@@ -45,6 +45,10 @@ export interface OpenedRecord {
   at: string;
 }
 const RECENT_MAX = 30;
+/** Saved questions and records kept per person (browser storage: about 200 bytes each). */
+export const SAVED_MAX = 500;
+/** Pinned pages kept per person (lib/pins). */
+export const PINS_MAX = 100;
 const EMPTY_RECENT: OpenedRecord[] = [];
 let recentCache: OpenedRecord[] | null = null;
 
@@ -146,9 +150,9 @@ function read(): SavedItem[] {
 
 function write(items: SavedItem[]) {
   if (!user) return;
-  // up to 50 saved questions and records, plus the pinned pages (lib/pins caps those at 20)
-  const pages = items.filter((s) => s.kind === "page").slice(0, 21);
-  cache = [...pages, ...items.filter((s) => s.kind !== "page").slice(0, 50)];
+  // up to SAVED_MAX saved questions and records, plus the pinned pages (lib/pins caps those at PINS_MAX)
+  const pages = items.filter((s) => s.kind === "page").slice(0, PINS_MAX + 1);
+  cache = [...pages, ...items.filter((s) => s.kind !== "page").slice(0, SAVED_MAX)];
   try {
     window.localStorage.setItem(storageKey(user), JSON.stringify(cache));
   } catch {
@@ -162,8 +166,30 @@ function write(items: SavedItem[]) {
 export function writePages(pages: SavedItem[]): boolean {
   if (!user) return false;
   const rest = read().filter((s) => s.kind !== "page");
-  write([...pages.filter((p) => p.kind === "page"), ...rest.slice(0, 50)]);
+  write([...pages.filter((p) => p.kind === "page"), ...rest.slice(0, SAVED_MAX)]);
   return true;
+}
+
+// why the last save or pin did not happen (the list is full): said, never an item dropped
+let notice: string | null = null;
+
+/** Say why a save or pin was refused (null clears it). */
+export function setSavedNotice(text: string | null): void {
+  if (notice === text) return;
+  notice = text;
+  listeners.forEach((l) => l());
+}
+
+/** Why the last save or pin was refused, or null. */
+export function useSavedNotice(): string | null {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    () => notice,
+    () => null,
+  );
 }
 
 export function useSaved(): SavedItem[] {
@@ -182,6 +208,12 @@ export function toggleSaved(item: Omit<SavedItem, "at"> & { kind: "question" | "
   if (!user) return false;
   const items = read();
   const saved = !items.some((s) => s.key === item.key);
+  if (saved && items.filter((s) => s.kind !== "page").length >= SAVED_MAX) {
+    // full: nothing older is dropped to make room; the person is told
+    setSavedNotice(`You have ${SAVED_MAX} saved items, the most kept. Remove one to save another.`);
+    return false;
+  }
+  setSavedNotice(null);
   write(saved ? [{ ...item, at: new Date().toISOString() }, ...items] : items.filter((s) => s.key !== item.key));
   // "o:<type>/<id>": a record; "q:<question>": a question
   const record = item.kind === "object" ? /^o:([^/]+)\/(.+)$/.exec(item.key) : null;

@@ -159,18 +159,13 @@ class DocumentEditMixin:
 
     @staticmethod
     def _pw_withheld(text: str, guard: Any) -> Optional[str]:
-        """Why a document's text may not reach the model (None: it may): Freightcom named
-        anywhere in it, an excluded (or undecidable) person's address or id in it, or the
+        """Why a document's text may not reach the model (None: it may): an excluded (or undecidable) person's address or id in it, or the
         exclusion list not loaded. The same detection every read uses; the reason never
         names what was found."""
-        from integrations.image_ocr_gpu import touches_freightcom
         from .feedback import _ADDRESS, _UUID, _excluded_address, _excluded_id
-        if touches_freightcom(text):
-            return ("That document holds material the assistant may not read, so it is not "
-                    "edited here: edit it in SharePoint.")
         if guard is None or getattr(guard, "unavailable", "absent"):
-            return ("The list of people whose data stays out is not loaded, so no document "
-                    "is edited now.")
+            return ("Documents can't be edited right now; nothing was changed. Try again in "
+                    "a few minutes.")
         if any(_excluded_id(guard, oid.lower()) for oid in _UUID.findall(text)) or any(
                 _excluded_address(guard, a.lower()) for a in _ADDRESS.findall(text)):
             return ("That document names a person whose data the assistant may not read, "

@@ -20,10 +20,22 @@ PROTOCOL_VERSION = "2025-11-25"
 MAX_LINE_BYTES = 65536
 
 
-MAX_RESULT_BYTES = 48000
+MAX_RESULT_BYTES = 48000   # the case tools' result bound: the frozen contract's limits.max_result_bytes
+# The Ask's read tools: results sized to the model's context (owner 11-22; they had the
+# case tools' 48,000 bytes, ~24 KB of text once the host sends a value twice)
+ASK_RESULT_BYTES = 800000
+ASK_RESULT_TOOLS = frozenset({"plx.sql", "plx.search", "plx.open", "plx.read_document",
+                              "plx.insight"})
+# ...but the client shows the model one MCP result only up to 50,000 characters: Claude Code
+# (2.1.330, its persistence ceiling) saves a longer one to a file and shows a path, which
+# the Ask's session has no tool to open, so the whole result is lost (11-23 HARD20 on the
+# live code: 8 of 151 read calls, in 7 of 20 answers, 53,761 to 194,116 characters). An Ask
+# read tool's result as the client shows it (its JSON text) stays within this; the tools
+# cut their own rows, hits and windows to fit and say what they left for a next call.
+CLIENT_SHOWN_CHARS = 48000
 
 
-MAX_ORIGINAL_TEXT_CHARS = 40000
+MAX_ORIGINAL_TEXT_CHARS = 200000
 
 
 DEFAULT_ORIGINAL_TEXT_CHARS = 16000
@@ -104,7 +116,7 @@ def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 MAX_OPENED_FIELDS = 16
 
 
-MAX_OPENED_ITEMS = 12   # plx.open's citations maxItems
+MAX_OPENED_ITEMS = 40   # plx.open's citations maxItems
 
 
 def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:

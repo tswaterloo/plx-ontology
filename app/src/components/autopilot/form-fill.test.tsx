@@ -39,11 +39,11 @@ describe("Fill a form", () => {
   it("refuses a form over the size limit before sending it, and says why", () => {
     render(<FormFill />);
     const big = new File(["x"], "huge.pdf");
-    Object.defineProperty(big, "size", { value: 9 * 1024 * 1024 });
+    Object.defineProperty(big, "size", { value: 26 * 1024 * 1024 });
     pick(big);
     fireEvent.change(screen.getByLabelText("Record"), { target: { value: "PO 1" } });
     fireEvent.click(screen.getByRole("button", { name: "Fill" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("huge.pdf is larger than 8 MB.");
+    expect(screen.getByRole("alert")).toHaveTextContent("huge.pdf is larger than 25 MB.");
     expect(api.fill).not.toHaveBeenCalled();
   });
 

@@ -137,7 +137,7 @@ export function custodyOf(obj: ObjectPage, now: Date = new Date()): Custody | nu
   const push = (e: CustodyEvent, fromTrail = false) => {
     const h = e.source?.handle;
     if (!fromTrail && h && handles.has(h)) return;
-    const keys = [h ? `h:${h}:${e.mark}` : null, `t:${e.track}:${e.day}:${e.title.toLowerCase().slice(0, 40)}`].filter(Boolean) as string[];
+    const keys = [h ? `h:${h}:${e.mark}` : null, `t:${e.track}:${e.day}:${e.title.toLowerCase()}`].filter(Boolean) as string[];
     if (keys.some((k) => seen.has(k))) return;
     keys.forEach((k) => seen.add(k));
     if (h) handles.add(h);

@@ -171,7 +171,7 @@ from operating.excluded_people import people_excluded, strings
 
 from operating.ontology_tools import OntologyTools
 from operating.ontology_tools_identity import LIVE_LOOKUP_HINT, ToolError, _error, _gap
-from operating.ontology_tools_policy import _IDENTITY_TIERS, _parse_time
+from operating.ontology_tools_policy import _IDENTITY_TIERS, _parse_time, note_opened
 from operating.ontology_tools_results import _completeness
 from operating.playbook_originals import extraction_skipped
 
@@ -1358,7 +1358,8 @@ class EvidenceTools:
         return sorted(self.schema.identity_link_types()) if self.schema else []
 
     def _visible_links(self, scope: Any, object_ids: Sequence[str], extra: str = "",
-                       params: Mapping[str, Any] | None = None) -> list[sqlite3.Row]:
+                       params: Mapping[str, Any] | None = None,
+                       cap: int = LINK_SCAN_CAP) -> list[sqlite3.Row]:
         """Links touching ``object_ids`` the reader may see at T (live, markings held,
         every evidence handle passes the item gate, both ends visible)."""
         gate = scope.gate
@@ -1370,21 +1371,23 @@ class EvidenceTools:
                  OR l.to_object IN (SELECT value FROM json_each(:ids)))
                 AND {tt._live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                 {extra}""",
-            f"""SELECT l.*, fo.object_type AS from_type, xo.object_type AS to_type,
+            # the links by id first, materialized (joined to their ends in one plan the planner
+            # re-read and gated each link once per end: 4x on a batch's documents)
+            f"""WITH page_links AS MATERIALIZED (
+                    SELECT l.* FROM links l WHERE l.link_id IN (SELECT value FROM json_each(:link_ids))
+                    AND {tt._live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
+                    AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h WHERE NOT {gate}(h.value))
+                    {extra})
+                SELECT l.*, fo.object_type AS from_type, xo.object_type AS to_type,
                        fo.audience_key AS from_audience, xo.audience_key AS to_audience
-                FROM links l JOIN objects fo ON fo.object_id = l.from_object
+                FROM page_links l JOIN objects fo ON fo.object_id = l.from_object
                 JOIN objects xo ON xo.object_id = l.to_object
-                WHERE l.link_id IN (SELECT value FROM json_each(:link_ids))
-                AND fo.object_id IN (SELECT value FROM json_each(:from_ids))
+                WHERE fo.object_id IN (SELECT value FROM json_each(:from_ids))
                 AND xo.object_id IN (SELECT value FROM json_each(:to_ids))
-                AND {tt._live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
-                AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                WHERE NOT {gate}(h.value))
                 AND {tt._visible_object('fo', gate)} AND {tt._visible_object('xo', gate)}
-                {extra}
                 ORDER BY l.link_id""",
             {"ids": json.dumps(sorted(set(object_ids))), **dict(params or {})},
-            LINK_SCAN_CAP, pages=None) or []
+            cap, pages=None) or []
         ends = {r["from_object"] for r in rows} | {r["to_object"] for r in rows}
         strict = self.traverse._visible_ids(scope, ends)
         return [r for r in rows if r["from_object"] in strict and r["to_object"] in strict]
@@ -2286,8 +2289,26 @@ class EvidenceTools:
         """Fill ``mentions`` (and a missing snippet) of the page's store documents."""
         scope = self.traverse._scope(actor, arguments, gate, pinned)
         gaps: list[dict[str, Any]] = []
+        # the page's mention links (its documents' own) and their ends' lineages in one read
+        # each; past the scan cap together (or one document past it) read alone as before
+        ids = [doc["_object"] for doc in page]
+        whole = LINK_SCAN_CAP * len(ids)
+        links = self._visible_links(
+            scope, ids, "AND l.binding_kind = 'mention' "
+            "AND l.from_object IN (SELECT value FROM json_each(:ids))",
+            cap=whole) if len(ids) > 1 else None
+        links = None if links is not None and len(links) > whole else links
+        by_doc: dict[str, list] = {}
+        for row in links or ():   # (only the page's documents' own links were read)
+            by_doc.setdefault(row["from_object"], []).append(row)
+        lineages = None if links is None else self._lineages(
+            scope, [r["to_object"] for r in links] + ids)
+        alone = {d for d, rows in by_doc.items() if len(rows) > LINK_SCAN_CAP}
         for doc in page:
-            mentions, mention_gaps = self._mentions(scope, doc["_object"], actor)
+            mentions, mention_gaps = self._mentions(
+                scope, doc["_object"], actor,
+                None if links is None or doc["_object"] in alone
+                else by_doc.get(doc["_object"], []), lineages)
             gaps.extend(mention_gaps)
             doc["mentions"] = list(mentions)
             if doc["snippet"] is None:
@@ -2969,13 +2990,19 @@ class EvidenceTools:
                 best[row["object_id"]] = (rank, row["property"], row["value"])
         return {oid: value for oid, (_, _, value) in best.items()}
 
-    def _mentions(self, scope: Any, doc: str, actor: Actor
+    def _mentions(self, scope: Any, doc: str, actor: Actor,
+                  rows: Sequence[Mapping[str, Any]] | None = None,
+                  lineages: Mapping[str, str] | None = None
                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """The document's stored mention links the reader may see, in the contract's
-        mention shape, each span re-read from the cited text."""
-        rows = [r for r in self._visible_links(scope, [doc], "AND l.binding_kind = 'mention'")
-                if r["from_object"] == doc]
-        lineages = self._lineages(scope, [r["to_object"] for r in rows] + [doc])
+        mention shape, each span re-read from the cited text. ``rows``, ``lineages``: the
+        page's reads (``_page_mentions``); None: read here."""
+        if rows is None:
+            rows = [r for r in self._visible_links(scope, [doc], "AND l.binding_kind = 'mention'")
+                    if r["from_object"] == doc]
+            lineages = None
+        if lineages is None:
+            lineages = self._lineages(scope, [r["to_object"] for r in rows] + [doc])
         texts: dict[tuple[str, str], str | None] = {}
         out: list[dict[str, Any]] = []
         gaps: list[dict[str, Any]] = []
@@ -3212,6 +3239,7 @@ class EvidenceTools:
 
     def _read(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         handle = arguments["citation"]
+        note_opened([handle])   # a stored plan run depends on every citation it read (``snapshot_reads``)
         scheme = _scheme(handle)
         page = arguments.get("page")
         if page is not None and scheme not in ("original", "sharepoint"):

@@ -72,7 +72,7 @@ class Check:
         self.prompts.append(input)
         if self.fail is not None:
             raise self.fail
-        ids = re.findall(r"^\[([RNQOPT]\d*)\]", input, re.M)
+        ids = re.findall(r"^\[([RNQOPTB]\d*)\]", input, re.M)
         out = self.answer if self.answer is not None else json.dumps(
             {"items": [{"id": i, "keep": "no" if i in self.drop else "yes", "why": "-",
                         **({"fixed": self.fixed} if i == "R" and i in self.drop else {})}
@@ -98,21 +98,19 @@ def run(a, event=ASKED, people=None):
 
 
 class AssistantBoundary(unittest.TestCase):
-    def test_excluded_people_pay_and_freightcom_never_reach_the_model(self):
+    def test_excluded_people_and_pay_never_reach_the_model(self):
         session = Session()
         cases = {
             "not_cleared": (GATE, People(barred={"dev@plx.example"})),
             "not_cleared ": ({**MAIL, "cleared": False}, People()),
             "pay_or_hr": ({**GATE, "text": PAYSTUB}, People()),
-            "freightcom": ({**MAIL, "sender": "billing@freightcom.com"}, People()),
         }
         for why, (event, people) in cases.items():
             with self.subTest(why):
                 self.assertEqual(run(assistant(session), event, people), (None, why.strip()))
         self.assertEqual(session.runs, [])
         # what the session read or wrote is screened too: a hit drops the whole decision
-        for looked, why in ((["carrier: Freightcom, pickup 20 Nov"], "freightcom"),
-                            (["{'requested_by': 'cos@plx.example'}"], "excluded_in_thread")):
+        for looked, why in ((["{'requested_by': 'cos@plx.example'}"], "excluded_in_thread"),):
             with self.subTest(why):
                 got = run(assistant(Session(looked=looked)),
                           people=People(barred={"cos@plx.example"}))
@@ -228,7 +226,7 @@ class ReplySort(unittest.TestCase):
                 self.assertEqual((why, got.reply), ("", "Yes, Nov 20 works for PO 77."))
                 self.assertEqual(len(session.runs), 1)
 
-    def test_no_sort_by_default_and_never_before_the_people_and_freightcom_screens(self):
+    def test_no_sort_by_default_and_never_before_the_people_screens(self):
         session, sort = Session(), Sort()
         quiet = ag.Assistant("opus", lookup=session, binary=BIN, home=HOME, per_cycle=100,
                              checker=ck.Checker(binary=BIN, home=HOME, call=Check()), call=sort)
@@ -238,8 +236,7 @@ class ReplySort(unittest.TestCase):
         for event, people, why in (
                 (GATE, People(barred={"dev@plx.example"}), "not_cleared"),
                 ({**MAIL, "cleared": False}, People(), "not_cleared"),
-                ({**GATE, "text": PAYSTUB}, People(), "pay_or_hr"),
-                ({**MAIL, "sender": "billing@freightcom.com"}, People(), "freightcom")):
+                ({**GATE, "text": PAYSTUB}, People(), "pay_or_hr")):
             with self.subTest(why):
                 self.assertEqual(run(sorted_by(session, sort), event, people), (None, why))
         self.assertEqual((session.runs, sort.prompts), ([], []))
@@ -283,7 +280,6 @@ class ScreenedReads(unittest.TestCase):
 
     def test_a_screened_read_retries_from_the_thread_alone(self):
         for looked, why in (([self.SEEN], "excluded_in_thread"),
-                            (["carrier: Freightcom, pickup 20 Nov"], "freightcom"),
                             ([PAYSTUB], "pay_or_hr")):
             with self.subTest(why):
                 session = Reads(looked, [final(reply="Plan B ships Friday, cos agreed."),
@@ -299,7 +295,7 @@ class ScreenedReads(unittest.TestCase):
                 self.assertNotIn("Plan B", again)
                 # the check sees only the retry: one call, none of the screened session
                 self.assertEqual(len(check.prompts), 1)
-                for gone in ("secret plan B", "cos@plx.example", "Plan B ships", "Freightcom",
+                for gone in ("secret plan B", "cos@plx.example", "Plan B ships",
                              PAYSTUB[:40]):
                     self.assertNotIn(gone, check.prompts[0])
 
@@ -611,9 +607,8 @@ class SecondCheck(unittest.TestCase):
 
     def test_screened_material_never_reaches_the_check(self):
         for looked, people, why in (
-                (["carrier: Freightcom, pickup 20 Nov"], People(), "freightcom"),
                 (["{'requested_by': 'cos@plx.example'}"], People(barred={"cos@plx.example"}),
-                 "excluded_in_thread")):
+                 "excluded_in_thread"),):
             with self.subTest(why):
                 check = Check()
                 self.assertEqual(run(assistant(Session(looked=looked), check), people=people),
@@ -864,6 +859,33 @@ class OutsideReaders(ta.Fixture):
                                assistant(Session(answer=final(ask=ask))))
         self.assertEqual([o["label"] for o in self.body(items)["your_call"]["options"]],
                          ["Yes", "No"])
+
+    def test_a_card_left_without_two_answers_offers_its_blank_reply_instead(self):
+        """A question whose answers do not leave two ready to send is the person's to write:
+        the reply with the answer as a [placeholder] stands in (checked as any reply); with
+        two answers left the card stays and the blank is never shown; no blank, or one
+        that names another customer: the card as before."""
+        blank = "Thanks for asking. SO-1 [ships Friday or not]."
+        yes = {"label": "Yes", "reply": "Yes, SO-1 ships Friday."}
+        leak = {"label": "After", "reply": "After SO-9931 for Northwind Soapworks."}
+        no = {"label": "No", "reply": "No, SO-1 ships Monday."}
+        for n, (options, b, card, draft) in enumerate((
+                ([yes, leak], blank, None, blank),
+                ([yes, leak, no], blank, ["Yes", "No"], ""),
+                ([yes, leak], "", [], ""),
+                ([yes, leak], "After SO-9931 for Northwind Soapworks: [ships].", [], ""))):
+            with self.subTest(n=n):
+                self.setUp()
+                ask = {"question": "Ship Friday?", "options": options,
+                       **({"blank": b} if b else {})}
+                out, items = self.live([self.message(95 + n, "Can SO-1 ship Friday?")],
+                                       assistant(Session(answer=final(ask=ask))))
+                body = self.body(items)
+                self.assertEqual(body["draft"]["body"] if body.get("draft") else "", draft)
+                got = body.get("your_call")
+                self.assertEqual([o["label"] for o in got["options"]] if got else None, card)
+        self.assertIn('"blank"', ag.TASK)
+        self.assertIn("[B]", ck.PROMPT)
 
     def test_a_message_to_an_outside_reader_from_an_inside_thread_is_held_back(self):
         leak = {"system": "mail", "operation": "send_email", "target": {},

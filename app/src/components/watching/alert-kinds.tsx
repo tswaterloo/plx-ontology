@@ -8,7 +8,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { dataHealthExportHref, getAlertKinds, getBriefing, getBriefingItems, getDataHealth, getDataHealthPage } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { objectHref, readable, recordLabel, safeHref } from "@/lib/format";
+import { eastern, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AlertKinds, AlertType, Briefing, BriefingItem, DataHealth } from "@/lib/types";
 
@@ -82,9 +82,15 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
               <div className="flex items-baseline gap-3">
                 <span className="min-w-0 flex-1 font-medium">{c.label}</span>
                 <span className="shrink-0 tabular-nums text-muted" data-testid={`data-health-count-${c.type}`}>
-                  {c.read === false ? (c.open ? `${c.open}` : "None") : c.count > 0 ? `${c.count}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
+                  {c.read === false ? (c.open === null || c.open === undefined ? "Not checked" : c.open ? c.open.toLocaleString("en-US") : "None") : c.count > 0 ? `${c.count.toLocaleString("en-US")}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
                 </span>
               </div>
+              {c.read === false && (c.open === null || c.open === undefined) && (
+                <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-unchecked-${c.type}`}>This check has not run yet, so there is no count.</p>
+              )}
+              {c.read === false && c.checked_at && (
+                <p className="mt-0.5 text-[12px] text-muted">Last checked {eastern(c.checked_at)}.</p>
+              )}
               {c.hidden > 0 && (
                 <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-hidden-${c.type}`}>
                   {c.count > 0 ? "Also " : ""}{c.hidden} on records your access doesn&rsquo;t open.
@@ -143,7 +149,7 @@ function CheckItems({ check, onRead }: { check: Check; onRead?: (c: Check) => vo
       <ul className="mt-1 space-y-1">
         {items.map((it) => (
           <li key={it.id} className="flex min-w-0 items-baseline gap-2">
-            <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block min-w-0 flex-1 truncate text-fg hover:underline" title={it.summary}>
+            <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block min-w-0 flex-1 line-clamp-2 text-fg hover:underline" title={it.summary}>
               {readable(it.summary)}
             </Link>
             {assigned[it.id] ? (
@@ -209,7 +215,7 @@ export function TypeItems({ type, count, more: label, skip = [] }: { type: strin
         <ul className="space-y-1" data-testid={`items-${type}`}>
           {items.map((it) => (
             <li key={it.id} className="min-w-0">
-              <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block truncate text-fg hover:underline" title={it.summary}>
+              <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block line-clamp-2 text-fg hover:underline" title={it.summary}>
                 {it.subject_label ? recordLabel(it.object_type, it.subject_label) : it.label}
                 {it.summary ? <span className="text-muted"> · {it.summary}</span> : null}
               </Link>

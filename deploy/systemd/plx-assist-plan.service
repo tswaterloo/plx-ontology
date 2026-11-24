@@ -1,0 +1,34 @@
+# Assist background work (shadow): drafts nothing, sends nothing; reads the matters and what people did, writes assist.* only. Off the request path.
+# No deadline ends a run; only a hung process is stopped (TimeoutStartSec).
+[Unit]
+Description=PLX Assist plan tier: what each person would do with an open matter, from their own precedents
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/workbench-session.env
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PLX_CHAT_ASK_MODEL=haiku
+Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
+Environment=PLX_AUTOPILOT_READERS_FILE=@PLX_HOME@/.config/plx/autopilot-readers.json
+Environment=PLX_AUTOPILOT_HOST_CONFIG=@PLX_HOME@/.config/plx/workbench-host-vince/host.json
+Environment=PLX_AUTOPILOT_HOST_STATE=/data/plx-state
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PLX_AUTOPILOT_ENV_FILE=@PLX_HOME@/.config/plx/plx.env
+Environment=PLX_AUTOPILOT_MEMORY_DSN=postgresql:///plx
+ExecStart=/data/venv/bin/python3 -m operating.assist_plan run --state-dir /data/plx-state
+Nice=5
+CPUWeight=100
+MemoryHigh=4G
+MemoryMax=6G
+MemorySwapMax=512M
+TimeoutStartSec=4h
+UMask=0077

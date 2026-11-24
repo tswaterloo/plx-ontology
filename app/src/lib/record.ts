@@ -62,6 +62,13 @@ export function isBlocked(v: string | undefined): boolean {
   return !!t && !/^(?:no|none|false|0)$/i.test(t);
 }
 
+const BLOCKED_WORDS: Record<string, string> = { all: "Blocked for everything", ship: "Blocked for shipping", invoice: "Blocked for invoicing", no: "Not blocked", none: "Not blocked" };
+
+/** BC's Blocked field says what is blocked in one word ("All"): said as a phrase; any other field or value stays as it is. */
+export function blockedWords(label: string, value: string): string {
+  return (/^blocked$/i.test(label.trim()) && BLOCKED_WORDS[decodeEscapes(value).trim().toLowerCase()]) || value;
+}
+
 export interface StatSpec {
   label: string;
   value: string;
@@ -446,7 +453,7 @@ function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
       // the same value under a second name ("Lot text" beside "Lot number") is said once
       .filter((x, i, all) => all.findIndex((y) => factValue(y.value) === factValue(x.value) && aliasLabels(y.label, x.label)) === i)
       .slice(0, 6)
-      .map((x) => ({ label: x.label, value: factValue(x.value), source: x.source })),
+      .map((x) => ({ label: x.label, value: blockedWords(x.label, factValue(x.value)), source: x.source })),
     askLabel: name,
   };
 }
@@ -491,11 +498,26 @@ export interface Thread {
 /** A mail's inline picture ("image006.png", "Outlook-abc.png"): a signature logo, not a document. */
 export const INLINE_IMAGE = /^(?:image\d{3}|Outlook-[\w-]+)\.(?:png|jpe?g|gif|bmp)$/i;
 
+const FILE_EXT = /\.(?:pdf|docx?|xlsx?|csv|pptx?|txt|png|jpe?g|msg|eml|zip)$/i;
+
+/** A file's name as a person would say it: "Invoice_106093-v2 (1).pdf" is "Invoice 106093 v2". Anything that is not a file name stays as it is. */
+export function fileTitle(label: string): string {
+  const t = label.trim();
+  if (!FILE_EXT.test(t)) return label;
+  const base = t.replace(FILE_EXT, "").replace(/\s*\((?:\d+)\)$/, "").replace(/[_]+/g, " ").replace(/\s+/g, " ").trim();
+  // a scanner's name is its timestamp ("20261104221657521"): said as the scan it is
+  const scan = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})\d{2,}(?: \d+)?$/.exec(base);
+  if (scan && +scan[2] >= 1 && +scan[2] <= 12 && +scan[3] >= 1 && +scan[3] <= 31) return `Scan of ${formatDate(`${scan[1]}-${scan[2]}-${scan[3]}`)}, ${scan[4]}:${scan[5]}`;
+  return base || label;
+}
+
 export function groupLinked(items: LinkedItem[]): Thread[] {
   const map = new Map<string, Thread>();
   for (const l of items) {
     if (l.kind !== "email" && l.kind !== "teams" && INLINE_IMAGE.test(l.label.trim())) continue;
-    const subject = threadSubject(l.label) || l.label;
+    // a document's file name said plainly; the same file saved twice ("x.pdf", "x (1).pdf") is one row with a count
+    const file = l.kind !== "email" && l.kind !== "teams" && FILE_EXT.test(l.label.trim());
+    const subject = file ? fileTitle(l.label) : threadSubject(l.label) || l.label;
     const key = `${l.kind}|${subject.toLowerCase()}`;
     const t = map.get(key) ?? { subject, count: 0, latest: null, kind: l.kind, items: [] };
     t.count += 1;

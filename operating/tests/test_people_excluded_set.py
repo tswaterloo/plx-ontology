@@ -359,5 +359,56 @@ class UnreadableStoreTest(unittest.TestCase):
             self.assertEqual(people_excluded.open_stores(tmp)[0], {})
 
 
+class CurrentTagIsReadOnceUntilTheListMoves(unittest.TestCase):
+    """``current_exclusion`` (asked by every kept page's check, per request) parses the list
+    again only when its settings or files moved; never serves a tag for another list."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "excluded.txt"
+        self.write([OID_X])
+        env = {"PLX_EXCLUDED_PEOPLE_FILE": str(self.path)}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        people_excluded._TAG = None
+
+    def write(self, ids):
+        import json
+        from integrations.people_exclusion import SCHEMA
+        self.path.write_text(json.dumps({"schema": SCHEMA, "object_ids": ids}))
+
+    def test_same_list_parsed_once_and_a_changed_list_gives_its_own_tag(self):
+        from integrations.people_exclusion import PeopleExclusion
+        real = PeopleExclusion.from_env.__func__
+        calls = []
+        with mock.patch.object(PeopleExclusion, "from_env", classmethod(
+                lambda cls, environ, **kw: calls.append(1) or real(cls, environ, **kw))):
+            first = people_excluded.current_exclusion()
+            self.assertTrue(first)
+            for _ in range(5):
+                self.assertEqual(people_excluded.current_exclusion(), first)
+            self.assertEqual(len(calls), 1)
+            self.write([OID_X, OID_OK])       # the list moved
+            second = people_excluded.current_exclusion()
+            self.assertNotEqual(second, first)
+            self.assertEqual(people_excluded.current_exclusion(), second)
+            self.assertEqual(len(calls), 2)
+            # a mapping that is not the process's own is read every time, never remembered
+            other = dict(os.environ)
+            people_excluded.current_exclusion(other)
+            people_excluded.current_exclusion(other)
+            self.assertEqual(len(calls), 4)
+
+    def test_an_unreadable_list_is_none_and_is_read_again_when_it_returns(self):
+        self.assertTrue(people_excluded.current_exclusion())
+        self.path.unlink()
+        self.assertIsNone(people_excluded.current_exclusion())   # unavailable: fail closed
+        self.write([OID_X])
+        self.assertTrue(people_excluded.current_exclusion())
+
+
 if __name__ == "__main__":
     unittest.main()

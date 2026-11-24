@@ -377,12 +377,19 @@ def duplicate_parties(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             sys_a, sys_b = _system(binding.get(a)), _system(binding.get(b))
             what = "company" if object_type in ("Customer", "Vendor", "Supplier") else noun
             shared_words = [said[k] for k in shared]
+            one = [f"{_text(name_a) or 'one with no name'} in {_system_words(sys_a)}",
+                   f"{_text(name_b) or 'one with no name'} in {_system_words(sys_b)}"]
+            if one[0] == one[1]:
+                # the same name in the same system: each told apart by its own number there
+                # (the number a person looks it up by), else by which one was made first
+                nums = [next((_text(r) for r in _said(found[x]["props"], ("code", "erp_code"))),
+                             "") for x in (a, b)]
+                one = [f"{d} (no. {n})" if n and nums[0] != nums[1] else
+                       f"{d} ({'first' if i == 0 else 'second'} of the two)"
+                       for i, (d, n) in enumerate(zip(one, nums))]
             made = gap(DUPLICATE, DUP_RULE, a, object_type, b,
                        summary=f"Two {noun} records may be the same {what}: "
-                               f"{_text(name_a) or 'one with no name'} in "
-                               f"{_system_words(sys_a)} and "
-                               f"{_text(name_b) or 'one with no name'} in "
-                               f"{_system_words(sys_b)}."
+                               f"{one[0]} and {one[1]}."
                                + (f" Both have the same {' and '.join(shared_words)}."
                                   if shared_words else "")
                                + (" One of them is blocked or deleted, so it is likely the "

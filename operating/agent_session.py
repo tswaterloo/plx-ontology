@@ -500,7 +500,11 @@ class LocalTool:
     name, description, inputSchema, annotations) and ``call(arguments) -> JSON value``,
     bound by the app to one reader before the session."""
     spec: Mapping[str, Any]
-    call: Callable[[dict[str, Any]], Any]
+    call: Callable[..., Any]
+    # called as ``call(arguments, seen)``: ``seen`` = the session's host reads that
+    # returned so far, as events ({type, name, result}) (a tool that prints the answer's
+    # references from them: ``ask_refs.rendering``)
+    sees_results: bool = False
 
 
 def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
@@ -606,6 +610,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     from_cache: set[str] = set()       # calls answered from the read cache
     began_at: dict[str, float] = {}    # forwarded budgeted call -> its start (``clock``)
     refs: dict[str, str] = {}          # a short ref the results showed -> its handle
+    names: dict[str, str] = {}         # the client's forwarded call -> its tool's name
+    seen: list[dict[str, Any]] = []    # their results, for a tool that ``sees_results``
 
     def note(entry: Mapping[str, Any]) -> None:
         if timing is None:
@@ -627,6 +633,12 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 waiting.discard(key)
         if "id" in message and key in calls:
             calls.discard(key)
+            with lock:
+                name = names.pop(key, None)
+                if name is not None and isinstance(message.get("result"), Mapping):
+                    seen.append({"type": "tool_call", "name": name,
+                                 "is_error": bool(message["result"].get("isError")),
+                                 "result": message["result"].get("content")})
             # where the call's time went, as the host said it (``call_phases``)
             phases = ((message.get("result") or {}).get("_meta") or {}).get("phases") \
                 if isinstance(message.get("result"), Mapping) else None
@@ -758,7 +770,13 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
 
     def answer_local(ident: Any, tool: "LocalTool", arguments: Any) -> None:
         try:
-            value = tool.call(dict(arguments) if isinstance(arguments, Mapping) else {})
+            args = dict(arguments) if isinstance(arguments, Mapping) else {}
+            if getattr(tool, "sees_results", False):
+                with lock:
+                    so_far = list(seen)
+                value = tool.call(args, so_far)
+            else:
+                value = tool.call(args)
             text, failed = json.dumps(value, ensure_ascii=False, default=str), False
         except Exception as error:  # noqa: BLE001 - its type only, never a value
             text, failed = json.dumps({"ok": False, "error": "local_tool_failed",
@@ -934,6 +952,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             calls.add(json.dumps(message["id"]))
             note({"event": "start", "id": message["id"], "name": params.get("name"),
                   "arguments": params.get("arguments")})
+            if params.get("name") not in local:
+                with lock:
+                    names[json.dumps(message["id"])] = str(params.get("name"))
         if message.get("method") == "tools/call" and params.get("name") not in allowed:
             with log.open("a", encoding="utf-8") as refused:
                 refused.write(json.dumps(str(params.get("name"))) + "\n")
@@ -2318,7 +2339,6 @@ class ClaudeCodeAgent:
                  case_tools: bool = False, max_turns: int | None = None,
                  spawn: Spawn = _spawn, proposals: bool = False,
                  budget_seconds: float | None = None, max_steps: int | None = None,
-                 lookup_model: str | None = None,
                  aliases: bool = True, end_at_gate: bool = True,
                  prefetch: bool = True, helpers: int = 0) -> None:
         """``case_tools``, ``proposals``: the gate's options (``allowed_tools``).
@@ -2326,8 +2346,6 @@ class ClaudeCodeAgent:
         the tool gate enforces (``deep_investigation.Budget``: research ends
         ``RESERVE_SECONDS`` before ``budget_seconds`` or after ``max_steps`` calls, and the
         agent submits what it established); None: no budget (``timeout`` alone).
-        ``lookup_model``: the model a lookup of one named record runs on (``routed``);
-        None: every question runs on ``model``.
         ``aliases``: the session reads and cites short handle aliases
         (``operating.handle_aliases``); its transcript and final message are read back with
         the full handles (``_restored``) before anything checks them.
@@ -2345,7 +2363,6 @@ class ClaudeCodeAgent:
         # the session's reasoning effort (``--effort``); None: the CLI's default
         self.effort: str | None = None
         self.helpers = helpers
-        self.lookup_model = lookup_model
         self.extra_args, self.spawn, self.case_tools = list(extra_args), spawn, case_tools
         self.max_turns, self.proposals = max_turns, proposals
         self.budget_seconds, self.max_steps = budget_seconds, max_steps
@@ -2396,16 +2413,6 @@ class ClaudeCodeAgent:
         told.first_reads = session_prefetch.first_reads(question, self.looked_up)
         told.follow_reads = session_prefetch.follow_reads if told.first_reads else None
         return told
-
-    def routed(self, question: str) -> "ClaudeCodeAgent":
-        """The agent for ``question``: a copy on ``lookup_model`` for a lookup of one named
-        record (``deep_investigation.is_lookup``, the question the short method is asked
-        for), else this agent. Never changed in place: one agent serves parallel runs."""
-        if not self.lookup_model or not deep.is_lookup(question):
-            return self
-        routed = copy.copy(self)
-        routed.model = self.lookup_model
-        return routed
 
     def argv(self, prompt: str, config: str, allowed: Sequence[str] = (),
              refused: Sequence[str] = ()) -> list[str]:
@@ -2600,6 +2607,10 @@ class ClaudeCodeAgent:
             submission, finished, turn, ran = None, False, 0, None
             attach = AttachCheck() if allowed else None
             env = {**agent_environment(os.environ), "MCP_TIMEOUT": str(MCP_STARTUP_MS)}
+            # a tool result reaches the model whole up to the host's own bound
+            # (mcp_server_evidence.MAX_RESULT_BYTES): Claude Code's own cut (25,000 tokens by
+            # default) is set above it unless the environment sets one
+            env.setdefault("MAX_MCP_OUTPUT_TOKENS", str(MCP_OUTPUT_TOKENS))
             # ``prestart`` (a warm session opened before its question): its host is waited
             # for and its Claude Code process started now, so the first turn pays neither;
             # that turn's clock and budget start when its question comes, as a follow-up's
@@ -2609,7 +2620,8 @@ class ClaudeCodeAgent:
                     not_ready = gate.host_ready(HOST_READY_SECONDS)
                     if not_ready is not None:
                         abandon(not_ready)
-                    argv = self.argv("", str(config), allowed, refused)
+                    argv = _prompt_filed(self.argv("", str(config), allowed, refused),
+                                         Path(work))
                     state["process"] = (getattr(self, "warm_spawn", None) or WarmProcess)(
                         [argv[0], "-p", *argv[3:], "--input-format", "stream-json"],
                         str(session), env)
@@ -2658,7 +2670,8 @@ class ClaudeCodeAgent:
                                 deadline += waited
                             started += waited
                     try:
-                        argv = self.argv(prompt, str(config), allowed, refused)
+                        argv = _prompt_filed(
+                            self.argv(prompt, str(config), allowed, refused), Path(work))
                         options: dict[str, Any] = {}
                         if feeds and turn == 1:
                             # The task goes in on stdin once the host's first reads are in.
@@ -2690,6 +2703,15 @@ class ClaudeCodeAgent:
                                         "stream-json"]
                             options["feed"] = _shown_with(images, options.get("feed"),
                                                           prompt)
+                        if not warm and "feed" not in options \
+                                and getattr(self.spawn, "feeds", False):
+                            # The task goes in on stdin, never as an argument: Linux caps
+                            # one argv string at 128 KiB, so a long question, conversation
+                            # or attached file failed the whole session (E2BIG) or had to
+                            # be cut to fit.
+                            argv = [argv[0], "-p", *argv[3:], "--input-format",
+                                    "stream-json"]
+                            options["feed"] = lambda prompt=prompt: _task_line(prompt)
                         if warm or (getattr(self.spawn, "stops", False) and (
                                 ends is not None or attach is not None
                                 or cancel is not None)):
@@ -2711,11 +2733,11 @@ class ClaudeCodeAgent:
                             code, stdout = process.turn(
                                 text, self.timeout, on_line=on_line, stop=options["stop"],
                                 **({"images": images} if images else {}))
-                        elif options:
+                        else:
                             code, stdout = self.spawn(argv, str(session), env, self.timeout,
                                                       **options)
-                        else:
-                            code, stdout = self.spawn(argv, str(session), env, self.timeout)
+                        if not warm and "stop" not in options:
+                            # no stop watched the stream as it came: read it whole now
                             if attach is not None:
                                 attach.scan(stdout)
                             if ends is not None and not (attach and attach.failed):
@@ -3088,10 +3110,30 @@ def _fed(prompt: str, gate: "HostGate") -> str:
                      f" returned:\n{text}")
     task = prompt if not shown else (prompt + "\n\n" + PREFETCH_HEADING + "\n\n"
                                      + "\n\n".join(shown))
+    return _task_line(task)
+
+
+def _prompt_filed(argv: list[str], work: Path) -> list[str]:
+    """``argv`` with its ``--system-prompt`` text moved to a file in the session's ``work``
+    directory (``--system-prompt-file``): Linux caps one argv string at 128 KiB, and the
+    Ask's system prompt is ~89 KB, so it would fail the session (E2BIG) as it grows. The
+    file goes masked as the task does (``card_text.mask_served``)."""
+    if "--system-prompt" not in argv[:-1]:
+        return argv
+    from operating.card_text import mask_served
+    at = argv.index("--system-prompt")
+    path = work / "system-prompt.txt"
+    path.write_text(mask_served(argv[at + 1]), encoding="utf-8")
+    return [*argv[:at], "--system-prompt-file", str(path), *argv[at + 2:]]
+
+
+def _task_line(task: str) -> str:
+    """A session's task as its one input message (``--input-format stream-json``)."""
     return json.dumps({"type": "user", "message": {"role": "user", "content": task}}) + "\n"
 
 
 # The most sources of a task's own text read in its session (``told_reads``).
+MCP_OUTPUT_TOKENS = 300_000   # above MAX_RESULT_BYTES (800,000 bytes, its text ~half of it)
 MAX_TOLD_READS = 12
 
 
@@ -3479,8 +3521,7 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
 
 def ask_prompt(question: str, route: str | None = None) -> str:
     """The task for a question asked about the sources as they stand now (the app's Ask;
-    the scoreboard's untimed cards get the same text). ``route``: the front door's
-    reading (``operating.front_door``), which sets the method and budget."""
+    the scoreboard's untimed cards get the same text). ``route``: not read (the front door is gone)."""
     return task_prompt(question, UNPINNED, route=route)
 
 
@@ -3571,7 +3612,7 @@ class ReaderHost:
                            + STORE_ENV + (JOURNAL_DIR_ENV,) if os.environ.get(name)},
                         **self._extra_env,
                         # The app asked its person before the session
-                        # (operating.clarify); no person reads an agent's session.
+                        # (operating.ask_back); no person reads an agent's session.
                         "PLX_MCP_ASK_BACK": "off"}}
 
     def mcp_server(self) -> dict[str, Any]:

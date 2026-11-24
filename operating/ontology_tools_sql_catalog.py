@@ -13,15 +13,16 @@ from operating.pg import sql_views
 
 
 RULES = (
-    "One SELECT per call over these views (bare names), at most 200 rows back. Each row is "
+    "One SELECT per call over these views (bare names); a long result comes back cut and says "
+    "so. Each row is "
     "one real thing (its Portal, Sage, BC and FileMaker copies joined); records deleted at "
-    "the source are left out; money columns sit beside a <column>_currency column: never "
-    "add across currencies (GROUP BY the currency). Dates are business dates (America/"
-    "New_York). sales_invoices.pilot = true marks BC pilot invoices (Sage is the system of "
-    "record): leave them out unless asked. Text compares case-sensitively: use ILIKE "
+    "the source are left out; money columns sit beside a <column>_currency column (CAD and "
+    "USD rows exist). Dates are business dates (America/"
+    "New_York). sales_invoices.pilot = true marks Business Central invoices. Text compares "
+    "case-sensitively: use ILIKE "
     "'%word%' for names. An array column (addresses, domains, customers, suppliers, "
     "records) is indexed for containment: domains @> ARRAY['univar.com'] (exact, lower "
-    "case) answers at once, where unnest() with ILIKE reads every row and runs past the "
+    "case) uses the index, where unnest() with ILIKE reads every row and runs past the "
     "time limit. A column in a row's withheld list is one you may not read (NULL). "
     "Each row has a handle: select it to cite the record. A result row's cells line up "
     "with its columns.")
@@ -41,15 +42,15 @@ RULES_GENERIC = (
     "reads every record and runs past the time limit: find a word in any record with "
     "plx.search (sources records). A record's links: record_links WHERE from_id (or "
     "to_id) = ANY(ARRAY(SELECT record_id FROM records WHERE type = '<Type>' AND ...)) "
-    "reads them by index in milliseconds. To join views row by row (records to "
+    "reads them by index. To join views row by row (records to "
     "record_links, a link to the record at its other end, records to a business view), "
     "read the other side in a fenced lateral: LEFT JOIN LATERAL (SELECT l.to_id FROM "
     "record_links l WHERE l.from_id = r.record_id AND l.link_type = '<link>' OFFSET 0) l "
-    "ON true (OFFSET 0 is what makes each row's match an index read, milliseconds); a "
+    "ON true (OFFSET 0 is what makes each row's match an index read); a "
     "plain JOIN, IN (SELECT ...) or a lateral without OFFSET 0 between these views reads "
     "every row of the other one (past the time limit). "
     "Mail and Teams: a count or list within a received_at / created_at window reads its "
-    "index (under a second); over the whole table it reads every message (about 30 s).")
+    "index; over the whole table it reads every message.")
 RULES_TAIL = " Mail text, chats and documents: plx.search."
 RULES_BASE = RULES
 RULES = RULES_BASE + RULES_GENERIC + RULES_TAIL
@@ -62,7 +63,13 @@ GENERIC_ABOUT = {
                          "systems": "text[]: the systems holding records of it",
                          "sources": "text[]: the source tables (records.source)",
                          "label_fields": "text[]: fields that name a record",
-                         "date_fields": "text[]: fields that date a record",
+                         "date_fields": "text[]: fields that date a record; the first is its date of record",
+                         "dates": "jsonb: [{field, role, means, dated_share, oldest, newest, "
+                                  "future_share}]: each declared date, what it means (role "
+                                  "record = the date of record, stamp = the system's own "
+                                  "last-write day, other) and the share of the type's records "
+                                  "that carry it; a type with none has no date of record "
+                                  "(records.record_date is NULL)",
                          "identity_links": "text[]: link types joining copies of one thing",
                          "fields": "jsonb: [{name, kind, description}]",
                          "links_out": "jsonb: [{link_type, to}]",
@@ -74,7 +81,10 @@ GENERIC_ABOUT = {
         "record_id": "text: the record's id (record_links.from_id / to_id)",
         "type": "text: the record type (filter on it)", "system": "text",
         "source": "text: the source table", "label": "text: its display name or number",
-        "record_date": "text YYYY-MM-DD: its key date (record_types.date_fields)",
+        "record_date": "text YYYY-MM-DD: its date of record (the first of record_types.date_fields); "
+                       "where that date's record_types.dates role is stamp it is only the day the "
+                       "source system last wrote the row, not a business date: never read it as "
+                       "when the thing happened",
         "first_seen": "text: when it was first captured", "changed_at": "text",
         "fields": "jsonb: field -> value (the authority-first value of each field)"}),
     "record_links": ("one row per live link between two records this reader may read "
@@ -94,8 +104,7 @@ COMMS_DERIVED_ABOUT = {
         "decisions, requests, complaints and praise read out of mail and Teams messages "
         "(one row per item a message states; a message this reader cannot read shows none; "
         "the summary is a model's one-line reading: open the handle with plx.open to quote "
-        "the message). Customer feedback = kind complaint or praise; GROUP BY topic or "
-        "customers for themes", {
+        "the message)", {
             "kind": "text: decision, request, complaint or praise",
             "topic": "text: delivery, pricing, quality, documents, order, payment, product, "
                      "samples, packaging, schedule, stock, service or other",
@@ -156,6 +165,17 @@ def catalog_keys(fields: Any) -> list[str]:
     return [k for k in CATALOG_KEYS if k in names][:3]
 
 
+def date_bit(dates: Sequence[str], stamp: Any) -> str:
+    """The prompt's words for a type's dates: the first two, each one that is only the
+    source system's last-write day (``role`` stamp in ``record_types.dates``) said to be."""
+    if not dates:
+        return ""
+    shown = list(dates[:2])
+    marked = [f for f in shown if f in stamp]
+    return f"date {'/'.join(shown)}" + (
+        f" ({', '.join(marked)}: last-write stamp, not a business date)" if marked else "")
+
+
 def catalog_lines(pg: Any = None) -> list[str]:
     """The record types the door holds as prompt lines, one per system: each type with its
     plain name, the fields that label and date it and, when a curated or communications
@@ -163,7 +183,6 @@ def catalog_lines(pg: Any = None) -> list[str]:
     catalog (``<biz>.record_types``, read by the store's role: no row of any record, no
     count). Kept per process until the catalog is built again; none when it cannot be read
     (the prompt then lists the views alone)."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
     try:
         if pg is None:
             from operating.pg import pool
@@ -179,11 +198,10 @@ def catalog_lines(pg: Any = None) -> list[str]:
                               f"{bv.SCHEMA}.record_types").fetchone()
         if _CATALOG.get("built") == built and built is not None:
             return list(_CATALOG["lines"])
-        # the guarded view's own Freightcom rule (``generic_views.listed_sql``)
         from operating.pg import generic_views
         rows = pg.execute(
             f"SELECT t.type, t.name, t.systems, t.label_fields, t.date_fields, t.tables, "
-            f"t.fields FROM "
+            f"t.fields, t.dates FROM "
             f"{bv.SCHEMA}.record_types t WHERE cardinality(t.tables) > 0 AND "
             f"{generic_views.listed_sql('t')} ORDER BY t.type").fetchall()
     except Exception:  # noqa: BLE001 - no catalog: the views alone
@@ -192,11 +210,12 @@ def catalog_lines(pg: Any = None) -> list[str]:
     for row in rows:
         tid, name, systems, labels, dates, tables = row[:6]
         fields = row[6] if len(row) > 6 else None
-        if FREIGHTCOM.search(" ".join(map(str, (tid, name)))):
-            continue   # the plain name too (made from the type: the same words)
+        # the date of record says what it is when it is only the system's last-write stamp
+        stamp = {d.get("field") for d in (row[7] if len(row) > 7 and row[7] else [])
+                 if d.get("role") == "stamp"}
         # a type held by a curated or comms view is named with it (records lacks it)
         bits = [f"label {'/'.join(labels[:2])}" if labels else "",
-                f"date {'/'.join(dates[:2])}" if dates else "",
+                date_bit(dates, stamp),
                 "in " + "/".join(tables) if list(tables) != ["records"] else "",
                 # the fields that say what kind of record a row is (field names only)
                 "kinds by " + "/".join(keys) if (keys := catalog_keys(fields)) else ""]
@@ -240,10 +259,200 @@ def served_views(names: Sequence[str] | None = None, pg: Any = None) -> frozense
     return got
 
 
+def view_names() -> tuple[str, ...]:
+    """Every view the model is told it may query (the names of ``_dictionary``)."""
+    return tuple(_dictionary())
+
+
+# The view docs as the train-B docs change writes them (what each column holds, no
+# system-of-record or pilot verdict), served to the model until train B carries that branch:
+# its SYSTEMS_DOC edit moves every view's fingerprint, so only a Spark train may change the view
+# code. (view, column) -> doc; column "" is the view's about. HOLD (guardrail 5): delete this
+# mapping in the first landing after train B's swap; owner ASK, logged in DEFERRED-1122.
+DOC_UNTIL_TRAIN: dict[tuple[str, str], str] = {
+    ('batches', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('customer_balances', ''):
+        'What customers owe now: every open (unpaid) Sage AR document with its remaining '
+        "balance, aged by due date, in its own currency. Business Central's aged receivab"
+        'les are not in this view.',
+    ('customer_balances', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('customers', 'currency'):
+        "text: the customer's billing currency: its Sage account's (Customer.currency of "
+        'the Sage copy, the account its invoices and balances are booked on), else the fi'
+        "rst other copy's",
+    ('customers', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('products', 'category'):
+        "text: item category: the item's category, read from Sage's item master first (it"
+        's codes are product lines such as PLABEL, LIQUID, VCARE; no Sage category table '
+        "is captured, so the code stands), else from BC's item category (PACK, FG, DIST, "
+        'RAW: a different, coarser list)',
+    ('products', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('purchase_order_lines', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('purchase_orders', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('receivable_documents', ''):
+        'Every Sage AR document ever booked, paid or open: invoice, credit note, receipt '
+        'and the rest, with its date, due date and the date Sage shows it paid (paid_date'
+        '). For the invoices owed on a past day D: sum original_amount of the invoices wi'
+        "th document_date <= D and (status = 'open' or paid_date > D), per currency. Appr"
+        'oximate: Sage dates only the final payment (paid_date), so a part payment before'
+        ' D is not netted, and receipts and prepayments (live 11-22: 25,407 and 1,526 of '
+        'them) and 416 invoices Sage marks paid carry no paid date, so restrict history t'
+        "o document_type = 'invoice' and say so. What is owed today is customer_balances."
+        " Business Central's aged receivables are not in this view.",
+    ('receivable_documents', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('sales_invoice_lines', ''):
+        'Every line of every customer invoice (sales_invoices: Sage first; Business Centr'
+        'al lines carry pilot = true): product, quantity and its unit, revenue (before ta'
+        'x, after the invoice discount), cost and margin per line, each in its own curren'
+        'cy. Sage states unit cost in the home currency (CAD): a line sold in another cur'
+        "rency has its cost converted at its own invoice's exchange rate for the margin ("
+        'margin_basis = cost_converted_at_invoice_rate; cost stays as stated, in CAD).',
+    ('sales_invoice_lines', 'category'):
+        "text: the product's category: the item's category, read from Sage's item master "
+        'first (its codes are product lines such as PLABEL, LIQUID, VCARE; no Sage catego'
+        "ry table is captured, so the code stands), else from BC's item category (PACK, F"
+        'G, DIST, RAW: a different, coarser list)',
+    ('sales_invoice_lines', 'pilot'):
+        'boolean: true: a Business Central record (its rows are in this view; filter on p'
+        'ilot)',
+    ('sales_invoice_lines', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('sales_invoices', ''):
+        'Every customer invoice once, Sage first; Business Central invoices carry pilot ='
+        " true. Each amount in the invoice's own currency; total includes tax, subtotal i"
+        's before tax.',
+    ('sales_invoices', 'pilot'):
+        'boolean: true: a Business Central record (its rows are in this view; filter on p'
+        'ilot)',
+    ('sales_invoices', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('sales_order_lines', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('sales_orders', 'of_record'):
+        'boolean: true: a Sage order header carries the order; false: held only in FileMa'
+        'ker order entry, the Portal or BC',
+    ('sales_orders', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('sales_orders', 'status_basis'):
+        "text: sage: Sage's own order-complete code (1/2 open, 3/4/5 complete) for a Sage"
+        ' order; rule: the cross-system sales-order rule (Portal, FileMaker and BC copies'
+        ')',
+    ('staff', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('stock', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('supplier_balances', ''):
+        'What PLX owes suppliers now: every open (unpaid) Sage AP document with its remai'
+        'ning balance, aged by due date, in its own currency (prepayments and credit note'
+        "s negative). Business Central's aged payables are not in this view.",
+    ('supplier_balances', 'document_type'):
+        "text: the document's kind by Sage's own type (txttrxtype): invoice, debit note, "
+        'credit note, interest, unapplied cash, prepayment, payment; other: a type Sage n'
+        'ames that is none of these. A count or total of invoices (bills) is document_typ'
+        "e = 'invoice'; payments, prepayments, unapplied cash and credit notes are not in"
+        'voices; a Business Central purchase invoice is an invoice',
+    ('supplier_balances', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('supplier_invoices', ''):
+        'Every supplier document once: Sage AP documents of every kind (invoices, debit a'
+        'nd credit notes, interest, prepayments, payments; paid or not: document_type tel'
+        "ls them apart, an invoice count is document_type = 'invoice') and Business Centr"
+        "al's purchase invoices (pilot = true). Amounts in the document's own currency.",
+    ('supplier_invoices', 'document_type'):
+        "text: the document's kind by Sage's own type (txttrxtype): invoice, debit note, "
+        'credit note, interest, unapplied cash, prepayment, payment; other: a type Sage n'
+        'ames that is none of these. A count or total of invoices (bills) is document_typ'
+        "e = 'invoice'; payments, prepayments, unapplied cash and credit notes are not in"
+        'voices; a Business Central purchase invoice is an invoice',
+    ('supplier_invoices', 'payee_class'):
+        "text: who the payable is owed to, by the GL account Sage posts the vendor's invo"
+        "ices to (the vendor's default account's group category): trade (inventory and co"
+        'st of sales: raw materials, packaging, freight in, product testing), expense (se'
+        'rvices, freight out, rent, IT, consulting), capital (fixed assets), tax_payroll '
+        '(source deductions, sales tax, workplace insurance, income tax), finance (cards,'
+        ' lenders), other, or unknown (no default account in Sage, e.g. card issuers). Tr'
+        "ade payables = payee_class 'trade'; a Business Central invoice: unknown",
+    ('supplier_invoices', 'pilot'):
+        'boolean: true: a Business Central record (its rows are in this view; filter on p'
+        'ilot)',
+    ('supplier_invoices', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+    ('supplier_balances', ''):
+        'What PLX owes suppliers now: every open (unpaid) Sage AP document with its remain'
+        'ing balance, aged by due date, in its own currency (prepayments and credit notes'
+        " negative). The rows are Sage's (source_systems sage); Business Central's purcha"
+        'se invoices are in supplier_invoices (source_systems bc).',
+    ('supplier_invoices', ''):
+        'Every supplier document once: Sage AP documents of every kind (invoices, debit an'
+        "d credit notes, interest, prepayments, payments; paid or not: document_type tell"
+        "s them apart, an invoice count is document_type = 'invoice') and Business Centra"
+        "l's purchase invoices (source_systems bc, pilot = true). Amounts in the document"
+        "'s own currency.",
+    ('suppliers', 'source_systems'):
+        'text: the systems holding a copy of this row, sorted and comma separated: bc (Bu'
+        "siness Central), filemaker, portal (the Portal app), sage; e.g. 'bc,filemaker,po"
+        "rtal' (one system's rows: source_systems LIKE '%bc%'); the row's other columns a"
+        "re the joined thing's. 'bc,portal' is held in Business Central and the Portal",
+}
+
+
 def _dictionary() -> dict[str, Any]:
     out = {}
     for name, entry in bv.dictionary().items():
-        cols = dict(entry["columns"])
+        cols = {c: DOC_UNTIL_TRAIN.get((name, c), doc) for c, doc in entry["columns"].items()}
+        entry = {**entry, "about": DOC_UNTIL_TRAIN.get((name, ""), entry["about"])}
         for cname, kind, cdoc in sql_views.SHOWN_COMMON:
             cols[cname] = f"{kind}: {cdoc}"
         out[name] = {"about": entry["about"], "columns": cols}

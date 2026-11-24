@@ -4,7 +4,8 @@ Each case plays a person's earlier turns, noise turns between them, then one fol
 question that needs the earlier context, and checks what reaches the agent:
 
 * ``none``: the question alone (what the Ask agent was given before memory),
-* ``work_log``: the work log's own recall (``work_log.recall``: words over the last days),
+* ``work_log``: the person's last 50 work-log entries (``work_log.recall``, as ``plx.my_work``
+  returns them with no arguments),
 * ``context``: memory's start-of-turn context (no tool call),
 * ``context+tool``: that, or what one ``plx.memory`` search for the question returns.
 
@@ -170,7 +171,7 @@ def run_real(store: Any, work: Any, dsn: str) -> dict[str, Any]:
                 took.append((time.perf_counter() - started) * 1000)
                 tool = json.dumps(store.tool(who).call({"query": turn["question"]}))
                 mark = f"#{target[0]}, "   # a log row as the context names it (``say``)
-                found = wl.recall(work, who.key, turn["question"])
+                found = wl.recall(work, who.key, limit=50)
                 hits["work_log"] += any(e.get("source_id") == target[1]
                                         for e in found["events"])
                 hits["context"] += mark in context or f"#{target[0]} " in context
@@ -229,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
                 {"query": probe["question"], **({"records": probe["records"]}
                                                if probe.get("records") else {})})["items"]
                 if not i.get("superseded")])
-            found = wl.recall(work, who.key, probe["question"])
+            found = wl.recall(work, who.key, limit=50)
             logged = " ".join(f"{e['title']} {e.get('detail') or ''}"
                               for e in found["events"])
             expect, never = probe["expect"], probe.get("never")

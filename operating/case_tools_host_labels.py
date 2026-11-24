@@ -201,10 +201,86 @@ class _LabelsMixin:
                     return _error("contract_violation", ("trimmed output failed the "
                                                          "contract: " + "; ".join(problems))[:600])
                 result = trimmed
+        if not self._fits(result) and name == "plx.sql":
+            paged = self._paged_sql_rows(result)
+            if paged is not None:
+                problems = validate(paged, contracts["tools"][name]["output"], root=contracts,
+                                    limit=5)
+                if problems:
+                    return _error("contract_violation", "paged output failed the contract: "
+                                  + "; ".join(problems))
+                result = paged
         if not self._fits(result):
             return _error("result_too_large", "the answer and its capture labels do not "
                           "fit one response", "narrow the question or lower limit")
         return result
+
+    def _paged_sql_rows(self, result: Mapping[str, Any]) -> dict[str, Any] | None:
+        """A ``plx.sql`` answer whose rows and capture labels do not fit one response, as its
+        first page that does: the most rows that fit (at least one), the rest named by their
+        page pointer (``{"page": "sql://<id>", "offset": n}``: the host holds every row of
+        the result under its id), never refused. None: nothing to page (no rows held under
+        an id, or not even one row fits)."""
+        import re
+        rows = result.get("rows")
+        rid = result.get("result")
+        if not (isinstance(rows, list) and rows and isinstance(rid, str)):
+            return None
+        first = re.search(r"#row=(\d+)$", str((rows[0] or {}).get("cite", "")))
+        if first is None:
+            return None
+        start = int(first.group(1))
+        profile = dict(result.get("profile") or {})
+        held = re.search(r"to (\d+) are held", str(profile.get("page", "")))
+        last = int(held.group(1)) if held else start + len(rows) - 1
+
+        def page(k: int) -> dict[str, Any]:
+            nxt = start + k
+            prof = {**profile, "shown": k}
+            if nxt <= last:
+                prof["page"] = (f"rows {nxt} to {last} are held: read them with "
+                                f'{{"page": "{rid}", "offset": {nxt}}}')
+            else:
+                prof.pop("page", None)
+            return {**result, "rows": rows[:k], "row_count": k, "profile": prof,
+                    "truncated": True,
+                    "note": (f"this page shows rows {start} to {nxt - 1}; the whole result "
+                             "was too large for one response. The profile's counts and sums "
+                             "cover the whole result. Read the next rows with profile.page")}
+        low, high = 0, len(rows)       # page(low) fits or low == 0; page(high) does not fit
+        while high - low > 1:
+            mid = (low + high) // 2
+            low, high = (mid, high) if self._fits(page(mid)) else (low, mid)
+        return page(low) if low >= 1 else self._one_row_in_parts(page, rows[0], rid, start)
+
+    def _one_row_in_parts(self, page: Any, row: Mapping[str, Any], rid: str, at: int
+                          ) -> dict[str, Any] | None:
+        """One row too wide for a response even alone (its cells and capture labels): its
+        text cells cut to the longest length that fits, each cut cell said (``chars`` is its
+        whole length) and read on with {"page", "offset", "column", "from"}; never refused."""
+        from operating import ontology_tools_sql_rows as rows_mod
+        keep = rows_mod.CELL_PAGE
+        while keep >= 0:
+            cut = rows_mod.cut_row(dict(row), keep)
+            trial = page(1)
+            trial["rows"] = [cut]
+            columns = [i for i, cell in enumerate(cut.get("cells") or ())
+                       if isinstance(cell, Mapping) and cell.get("truncated")]
+            columns += [i for i, cell in enumerate(cut.get("cells") or ())
+                        if isinstance(cell, list) and any(
+                            isinstance(c, Mapping) and c.get("truncated") for c in cell)]
+            trial["note"] = (
+                f"row {at} alone was too large for one response: its long texts are cut to "
+                f"{keep} characters (chars says each one's whole length). Read the rest of a "
+                f"cut cell with " + '{"page": "' + rid + '", "offset": ' + str(at)
+                + ', "column": <its index>, "from": <characters read>}; cut cells: '
+                + ", ".join(str(i) for i in sorted(set(columns))))
+            if self._fits(trial):
+                return trial
+            if keep == 0:
+                return None
+            keep //= 2
+        return None
 
     def _trimmed_object(self, result: Mapping[str, Any]) -> dict[str, Any] | None:
         out = json.loads(json.dumps(result))   # never edit the caller's answer

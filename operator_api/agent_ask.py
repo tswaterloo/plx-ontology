@@ -67,15 +67,6 @@ CATALOG_SECONDS = 3600     # a reader's tool catalog is listed again after this
 PREWARM_SECONDS = 240.0
 _PREWARMED: dict[str, float] = {}
 _PREWARMED_LOCK = threading.Lock()
-# The model an Ask about one named record runs on (``ClaudeCodeAgent.routed``: the
-# questions the short method is asked for); any other question stays on the session's.
-# None: every Ask on the session's model.
-LOOKUP_MODEL: Optional[str] = None
-# The reasoning effort of an Ask about one named record (the front door's lookup route or
-# ``deep_investigation.is_lookup``): its records are read before its first turn, so its
-# turns are mechanical; an investigation keeps the CLI's default. "" or "default": none.
-LOOKUP_EFFORT_ENV = "PLX_ASK_LOOKUP_EFFORT"
-LOOKUP_EFFORT = "medium"
 
 
 # The app's reader is a business user: the words around the answer block say what the
@@ -177,7 +168,11 @@ LIMIT_TEXT = re.compile(r"hit your (?:\w+[ -])?limit|usage limit|limit reached|r
 AUTH_TEXT = re.compile(r"invalid api key|run /login|please log ?in|not logged in"
                        r"|oauth token (?:has )?expired|authentication[_ ](?:error|failed)"
                        r"|unauthori[sz]ed|credit balance is too low", re.I)
-FAILURES = ("usage_limit", "sign_in", "timeout", "error")
+# the CLI's own words when the conversation no longer fits the model's context window
+# (a session that ended in an error with no answer: ``session_failure``): the CLI's one message
+# for it, read from its result text. Live-unverified: no run of this server has hit it yet.
+CONTEXT_FULL_MESSAGE = "prompt is too long"
+FAILURES = ("usage_limit", "sign_in", "timeout", "context_full", "error")
 
 
 def session_failure(final_text: str, usage: Mapping[str, Any], events: list,
@@ -200,6 +195,8 @@ def session_failure(final_text: str, usage: Mapping[str, Any], events: list,
         return "usage_limit"
     if AUTH_TEXT.search(text):
         return "sign_in"
+    if CONTEXT_FULL_MESSAGE in text.lower():
+        return "context_full"
     return "error" if errored else None
 
 
@@ -255,12 +252,12 @@ class AgentAsk:
     def __init__(self, *, state_dir: Path | None = None, host_config: Path | None = None,
                  secret: str | None = None, seconds: float = ASK_SECONDS,
                  claude_bin: str = "claude", model: str | None = None,
-                 max_turns: int = MAX_TURNS, lookup_model: str | None = LOOKUP_MODEL,
+                 max_turns: int = MAX_TURNS,
                  host_for: Callable[[Any], Any] | None = None,
                  agent_for: Callable[[Callable[[str], None]], Any] | None = None) -> None:
         self.state_dir, self.host_config, self.secret = state_dir, host_config, secret
         self.seconds, self.claude_bin, self.model = seconds, claude_bin, model
-        self.max_turns, self.lookup_model = max_turns, lookup_model
+        self.max_turns = max_turns
         self._host_for, self._agent_for = host_for, agent_for
 
     @classmethod
@@ -332,7 +329,6 @@ class AgentAsk:
                                       # no card number or credential in the task
                                       spawn=masked_spawn(runner.streaming_spawn(on_line)),
                                       budget_seconds=seconds, max_steps=MAX_STEPS,
-                                      lookup_model=self.lookup_model,
                                       helpers=host_helpers())
 
     def prewarm(self, session: Any) -> bool:
@@ -489,7 +485,7 @@ class AgentAsk:
                 remembered, recall_tool = memory
                 prompt += "\n\n" + MEMORY_RULE + (
                     "\n\n" + remembered.strip() if remembered and remembered.strip() else "")
-            budget = deep.question_budget(question, self.seconds, route)
+            budget = deep.question_budget(question, self.seconds)
             agent = self.agent_for(on_line, budget)
             if cancel is not None:
                 agent.cancel_event = cancel
@@ -506,10 +502,6 @@ class AgentAsk:
             agent.known_roots = [dict(root) for root in roots if isinstance(root, Mapping)]
             if looked is not None and hasattr(agent, "looked_up"):
                 agent.looked_up = dict(looked)
-            if route == "lookup" or (route is None and deep.is_lookup(question)):
-                effort = os.environ.get(LOOKUP_EFFORT_ENV, LOOKUP_EFFORT).strip()
-                if effort and effort != "default" and hasattr(agent, "effort"):
-                    agent.effort = effort
             # the Ask resolved records the question names (the brief's roots): a text
             # search waits for the agent's first record read
             agent.records_named = bool(re.search(r'" names (?:one |the record)', context))

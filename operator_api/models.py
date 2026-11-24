@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
 
+from operating.value import VALUE_STATUSES
+
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 API_VERSION = "1.0.0"
@@ -27,6 +29,7 @@ SignIn = Literal["microsoft", "access_link", "demo"]
 Intent = Literal["status", "why", "who", "how_much", "compare", "find_document", "policy",
                  "timeline", "other"]
 Outcome = Literal["answered", "partial", "not_found", "abstained", "refused"]
+
 
 
 class _Model(BaseModel):
@@ -632,6 +635,62 @@ class ClarifyReply(_Model):
         return self
 
 
+class MeasureCited(_Model):
+    """A named measure of the catalogue (``operating/measures.json``) an answer's figures
+    rest on: what it counts, the team that owns the definition and its version (changes
+    whenever what it counts does)."""
+    id: str
+    name: str
+    definition: str
+    owner: str
+    version: str
+    defined_on: Optional[str] = Field(None, json_schema_extra=_optional, description="The "
+                                      "day this version of the definition was set (ISO).")
+
+
+class QueryFilter(_Model):
+    index: int = Field(ge=0, description="Its place among the statement's filters.")
+    text: str = Field(description="The condition as the statement writes it.")
+
+
+class QueryWork(_Model):
+    """What a statement reads and filters on, read from the statement itself
+    (``operating.sql_work``)."""
+    views: list[str] = Field(description="The business views it reads.")
+    filters: list[QueryFilter] = Field(description="Each AND-part of its WHERE and HAVING "
+                                       "clauses: what can be changed or taken out.")
+    more_filters: int = Field(0, ge=0, description="Filters past the ones listed.")
+
+
+class FilterEdit(_Model):
+    index: int = Field(ge=0, le=63)
+    text: Optional[str] = Field(None, max_length=1000, description="The new condition; "
+                                "null takes the filter out.")
+
+
+class FilterEdits(_Model):
+    """Changed filters of a statement, each by its place in the statement's own list."""
+    edits: list[FilterEdit] = Field(min_length=1, max_length=12)
+
+
+class StatementEdit(FilterEdits):
+    sql: str = Field(min_length=1, max_length=8000, description="The statement an answer "
+                     "showed (its source's query).")
+
+
+class StatementRead(_Model):
+    """A statement read now as you with changed filters: its rows and what it reads."""
+    sql: str = Field(description="The statement read (with the changes).")
+    columns: list[str]
+    rows: list[list[Optional[str]]]
+    row_count: int
+    truncated: bool
+    total_rows: Optional[int] = None
+    as_of: Optional[str] = None
+    read_at: str
+    work: Optional[QueryWork] = None
+
+
 class CitedTable(_Model):
     """One result the simple Ask read (a query's rows, or the mail, Teams and document hits
     of a search), as the reader's own session got it: what the answer's Sources line opens."""
@@ -641,6 +700,39 @@ class CitedTable(_Model):
     records: int = Field(ge=0, description="The rows or hits the result held (``rows`` may "
                                            "show fewer).")
     as_of: Optional[str] = None
+    query: Optional[str] = Field(None, json_schema_extra=_optional, description="The "
+                                 "statement the session ran for these rows (a named "
+                                 "measure's: the one the catalogue made).")
+    measure: Optional[MeasureCited] = Field(None, json_schema_extra=_optional,
+                                              description="The named measure the rows "
+                                              "answer, when they come from one.")
+    work: Optional[QueryWork] = Field(None, json_schema_extra=_optional,
+                                      description="The views the query reads and the filters it applies.")
+
+
+
+class AnswerPart(_Model):
+    """One part of the question (``plx.legs``): what it asks, the sources it needs, its
+    period, and how many reads touched those sources and what they found."""
+    part: str
+    sources: list[str] = Field(default_factory=list)
+    period: str = ""
+    reads: int = Field(0, ge=0)
+    found: int = Field(0, ge=0)
+
+
+class AnswerCheck(_Model):
+    """One call with no tools checked the answer against what the session read before it
+    was shown (Ask plan A4): checked (nothing wrong), repaired (sent back once and written
+    again), flagged (claims it could not confirm, with no turn to send them back on; the
+    answer is shown as written), disagrees (a claim it found wrong is still in the answer: each is shown under
+    it with what the records hold) or not_checked (why)."""
+    status: Literal["checked", "repaired", "flagged", "disagrees", "not_checked"]
+    claims: int = Field(0, ge=0, description="How many claims it checked.")
+    seconds: float = Field(0, ge=0)
+    why: Optional[str] = Field(None, description="Why it was not checked.")
+    disagrees: list[str] = Field(default_factory=list, description="Each claim it still "
+                                 "disagrees with, with what the records show.")
 
 
 class AnswerPayload(_Model):
@@ -714,6 +806,17 @@ class AnswerPayload(_Model):
         None, json_schema_extra=_optional,
         description="When the box was told to do something: its question, exact writes, "
                     "documents or proposed workflow (the drafts are in ``drafts``).")
+    coverage: list["AnswerPart"] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="The question's parts the answer declared (plx.legs) and what read each "
+                    "(Ask plan A3b-4): shown under the answer as what was read.")
+    untraced: list[str] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Figures, dates or record numbers in the answer that no result of its "
+                    "own (nor the person's words) holds (Ask plan A2c).")
+    check: Optional["AnswerCheck"] = Field(
+        None, json_schema_extra=_optional,
+        description="The second check of the answer against the database (Ask plan A4).")
     clarify: Optional[Clarify] = Field(
         None, json_schema_extra=_optional,
         description="One question asked back because the answer turns on a choice the "
@@ -722,27 +825,55 @@ class AnswerPayload(_Model):
         None, json_schema_extra=_optional,
         description="What the answer took an open question to mean, with the other "
                     "readings to change it.")
+    cited_more: int = Field(0, ge=0, json_schema_extra=_optional, description="Results the "
+                            "answer read past the ones listed in ``cited`` (counted, not listed).")
     cited: Optional[list[CitedTable]] = Field(
         None, json_schema_extra=_optional,
         description="The simple Ask's sources: every result its session read. Present "
                     "(maybe empty) only on that path, whose answer page is the answer and "
                     "one collapsed 'Sources (n records)' line opening to these rows.")
+    definitions: list[MeasureCited] = Field(
+        default_factory=list, description="The named measures the answer's figures rest "
+        "on, once each: what each counts, its owner and its definition's version.")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
 
+# the conversation the app sends with a question is carried whole (owner 11-23: no count or
+# length limit); what the model is told of it is bounded by its window (``simple_ask``), said
+
+
 class HistoryTurn(_Model):
     role: Literal["user", "assistant"]
-    text: str = Field(max_length=4000)
+    text: str
 
 
 class AskAttachment(_Model):
-    """A file or image attached to one question (``operating.ask_attachments``): read in
-    memory for that answer only; a Word, Excel or PowerPoint file is also kept as your own
-    file (yours only), so the Ask can edit it and give you the edited copy."""
+    """A file or image attached to one question (``operating.ask_attachments``): read for that
+    answer only; a Word, Excel or PowerPoint file is also kept as your own file (yours only),
+    so the Ask can edit it and give you the edited copy. A file arrives by ``upload`` (the id
+    ``POST /api/ask/files`` answered: streamed to disk, no size limit); ``data`` (base64 in the
+    body, as every JSON body is held in memory) is for a small file a client sends inline."""
     name: str = Field(min_length=1, max_length=200)
-    data: str = Field(min_length=1, max_length=11_200_000,
-                      description="The file's bytes, base64 (8 MB a file, 10 MB together).")
+    upload: Optional[str] = Field(None, pattern=r"^[0-9a-f]{32}$", json_schema_extra=_optional,
+                                  description="The id of a file sent to POST /api/ask/files.")
+    data: Optional[str] = Field(None, min_length=1, json_schema_extra=_optional,
+                                description="The file's bytes, base64, in this body (a small "
+                                            "file; a larger one goes to POST /api/ask/files).")
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "AskAttachment":
+        if (self.upload is None) == (self.data is None):
+            raise ValueError("an attachment is sent by upload id or by data, one of them")
+        return self
+
+
+class AskUpload(_Model):
+    """A file received by ``POST /api/ask/files``."""
+    id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    name: str
+    size: int
+    digest: str
 
 
 class AskAttachmentNote(_Model):
@@ -756,9 +887,9 @@ class AskAttachmentNote(_Model):
 
 
 class AskRequest(_Model):
-    question: str = Field(min_length=1, max_length=1000)
+    question: str = Field(min_length=1)
     conversation_id: Optional[str] = Field(None, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
-    history: list[HistoryTurn] = Field(default_factory=list, max_length=12)
+    history: list[HistoryTurn] = Field(default_factory=list)
     object_id: Optional[str] = Field(None, max_length=700,
                                      description="Ask about this record (object page).")
     source: Optional[str] = Field(None, max_length=4096,
@@ -766,9 +897,9 @@ class AskRequest(_Model):
                                               "mail, attachment or file the person has open "
                                               "or picked; read for them as they may read it.")
     attachments: list[AskAttachment] = Field(
-        default_factory=list, max_length=5,
+        default_factory=list,
         description="Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, "
-                    "text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.")
+                    "text, PNG, JPEG, GIF, WebP): any number.")
     context: Optional["InstructContext"] = Field(
         None, json_schema_extra=_optional,
         description="The page the box was opened on (a meeting, an autopilot item, a page); "
@@ -791,20 +922,11 @@ class AskRequest(_Model):
 
     @model_validator(mode="after")
     def _attachments_fit(self) -> "AskRequest":
-        if sum(len(a.data) for a in self.attachments) > ATTACHMENTS_BASE64_MAX:
-            raise ValueError("Attachments together can be up to 10 MB.")
         if self.clarified is not None and (self.instruction is not None
                                            or self.mode is not None):
             raise ValueError("An answer to a question asked back continues only that "
                              "question.")
         return self
-
-
-# the base64 length of 10 MB (``operating.ask_attachments.MAX_TOTAL``), and the largest
-# /api/ask body the app reads at all (``operator_api.app``): that and the question,
-# history and names with room for JSON escapes
-ATTACHMENTS_BASE64_MAX = -(-10 * 1024 * 1024 // 3) * 4
-ASK_BODY_MAX = ATTACHMENTS_BASE64_MAX + 600_000
 
 
 class Candidate(_Model):
@@ -928,6 +1050,10 @@ class NeedsAttention(_Model):
         None, json_schema_extra=_optional,
         description="Every late purchase order this reader may see; late_pos lists the "
                     "longest late of them.")
+    at_risk_total: Optional[int] = Field(
+        None, json_schema_extra=_optional,
+        description="Every open alert of the at-risk types this reader may read; at_risk "
+                    "lists the first of them (more than listed: the rest are in Alerts).")
     refreshing: bool = Field(False, description="True while some checks' findings are of "
                                                 "older data than the records now show: those "
                                                 "are left out until the checks re-run on it.")
@@ -1062,6 +1188,10 @@ class RecordList(_Model):
     view: str
     title: str
     table: BizTable
+    column_keys: list[str] = Field(description="Each column's key, to sort by.")
+    sort: str
+    direction: Literal["asc", "desc"]
+    searchable: bool
     filters: list[RecordFilter]
     total: int
     offset: int
@@ -1070,11 +1200,22 @@ class RecordList(_Model):
     as_of: Optional[str] = None
 
 
+class RecordView(_Model):
+    """One list Records offers (``/api/records/views``)."""
+    view: str
+    title: str
+
+
+class RecordViews(_Model):
+    """Every list Records offers, one per business view the reader's door serves."""
+    views: list[RecordView]
+
+
 class BizPage(_Model):
     """A customer, chain or supplier account page, or a PO / sales order page: every number
     from the business tables through the reader's door, in one read."""
     kind: Literal["customer", "chain", "supplier", "purchase_order", "sales_order", "product",
-                  "batch"]
+                  "batch", "supplier_invoice"]
     title: str
     subtitle: Optional[str] = None
     facts: list[BizFact]
@@ -1607,6 +1748,11 @@ class ObjectPage(_Model):
     landed_cost: Optional[LandedCost] = None
     late_lines: list[LateLine] = Field(default_factory=list)
     related: list[ObjectRef] = Field(default_factory=list)
+    choices: list[ObjectRef] = Field(default_factory=list, description=(
+        "Set only when the page's reference (a bare PO or order number) names several "
+        "records: numbers repeat across systems and counterparties, so it is never one "
+        "record. Each business record it names that this reader may see, by its number and "
+        "counterparty, to open (status.state 'choose'); copies of one order are one choice."))
     links: list[LinkGroup] = Field(default_factory=list, description=(
         "The records one hop away, one group per link kind the schema declares for this "
         "record's type, each record with the evidence the link was read from."))
@@ -1811,6 +1957,16 @@ class ImpactPanel(_Model):
     applies: bool = Field(True, description="False: this kind of record has no impact walk.")
 
 
+class NotRun(_Model):
+    """A section whose answer has not been made: the runner has not answered this record yet (or
+    ran its plan and it gave no complete answer, or ``failed``: its run failed and is run again).
+    Typed, never blank: ``why`` says which, and
+    ``requested`` says whether the record was asked of the runner (it appears on a later read)."""
+    status: Literal["not_run", "failed"] = "not_run"
+    why: str
+    requested: bool = False
+
+
 class ObjectSection(_Model):
     """One slow part of a record's page, read after the quick first read (``?quick=1``)
     and merged into it by the app: ``late`` (the late-PO check: ``status`` when it
@@ -1819,6 +1975,10 @@ class ObjectSection(_Model):
     it), ``margin`` (a BC customer's or sales order's margin and why). The full page (no ``quick``) is the quick read with every section merged."""
     object_id: str
     section: Literal["late", "people", "landed_cost", "trail", "margin", "knows", "documents", "formula"]
+    not_run: Optional[NotRun] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when this section's answer has not been made (see NotRun): the section "
+                    "is neither empty nor absent; it says so and why.")
     applies: bool = Field(True, description="False: this kind of record has no such "
                                             "section (nothing to show, nothing withheld).")
     status: Optional[ObjectStatus] = Field(
@@ -1920,9 +2080,9 @@ _PAGE = Field(None, max_length=300, description="The app path the feedback was g
 class FeedbackRequest(_Model):
     answer_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     rating: Literal[1, -1]
-    note: Optional[str] = Field(None, max_length=2000,
+    note: Optional[str] = Field(None, max_length=20000,
                                 description="'What was wrong', in the person's words.")
-    expected: Optional[str] = Field(None, max_length=2000, json_schema_extra=_optional,
+    expected: Optional[str] = Field(None, max_length=20000, json_schema_extra=_optional,
                                     description="'The right answer is', in the person's "
                                                 "words (a thumbs-down only).")
     claims: Optional[list[int]] = Field(None, max_length=50, json_schema_extra=_optional,
@@ -1952,7 +2112,7 @@ class ItemFeedbackRequest(_Model):
     object_type: Optional[str] = Field(None, max_length=40)
     object_id: Optional[str] = Field(None, max_length=200)
     label: Optional[str] = Field(None, max_length=300)
-    note: Optional[str] = Field(None, max_length=2000)
+    note: Optional[str] = Field(None, max_length=20000)
     page: Optional[str] = _PAGE
     app_version: Optional[str] = _APP_VERSION
 
@@ -1960,7 +2120,7 @@ class ItemFeedbackRequest(_Model):
 class NoteFeedbackRequest(_Model):
     """A free note on a page, a record, a list, the app itself or anything else."""
     kind: Literal["page", "record", "list", "ui", "general"] = "general"
-    note: str = Field(min_length=1, max_length=2000)
+    note: str = Field(min_length=1, max_length=20000)
     page: Optional[str] = _PAGE
     object_type: Optional[str] = Field(None, max_length=40)
     object_id: Optional[str] = Field(None, max_length=200)
@@ -2023,6 +2183,7 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "vendor_terms_unapplied", "negative_margin", "lot_near_expiry",
                     "lot_on_hold", "quote_accepted_no_order", "quantity_mismatch",
                     "customer_order_at_risk", "po_undated", "customer_order_late",
+                    "customer_order_slower_than_usual",
                     "watcher_attention", "stock_out_risk", "overdue_receivable",
                     "unit_cost_jump", "customer_demand_drop", "promise_date_slip",
                     "margin_erosion", "supplier_reliability",
@@ -2984,6 +3145,9 @@ class TeamPerson(_Model):
     team: Optional[str] = None
     roles: list[str] = Field(default_factory=list)
     self: bool = False
+    shared: bool = Field(False, json_schema_extra=_optional, description=(
+        "A shared mailbox or an account with no one on record behind it (``team_accounts``): "
+        "listed apart from the people, out of their count and rankings."))
     d7: dict[str, int] = Field(default_factory=dict, description="Counts per channel, last 7 "
                                "days (mail_sent, mail_received, teams, meetings, mc_approvals, "
                                "mc_questions, mc_tasks, planner, sharepoint, bc, portal, sage).")
@@ -3083,6 +3247,8 @@ class TeamPersonDetail(_Model):
     items: list[TeamItem] = Field(default_factory=list)
     withheld: int = 0
     truncated: bool = False
+    items_unread: bool = Field(False, json_schema_extra=_optional, description=(
+        "The open items could not be read just now (a busy or slow read): the rest of the panel stands."))
 
 
 class LabelChange(_Model):
@@ -3262,6 +3428,8 @@ class BriefSection(_Model):
     note: Optional[str] = None
     rows: list[BriefRow] = Field(default_factory=list)
     more: int = Field(0, description="Rows you may read beyond those listed.")
+    more_href: Optional[str] = Field(None, json_schema_extra=_optional, description="Where "
+                                     "every row opens (an app path), when the section has one.")
     figures: list[BriefFigure] = Field(default_factory=list)
 
 
@@ -3297,6 +3465,11 @@ class Brief(_Model):
                           "still opens for you.")
     stale_since: Optional[str] = _stale_since()
     read_at: Optional[str] = _read_at()
+    reading: bool = _reading()
+    ready_about: Optional[str] = Field(
+        None, json_schema_extra=_optional, description=(
+            "With ``reading``: about when the review will be ready (ISO), from the time "
+            "this server took to build the last reviews; absent when it has none yet."))
 
 
 class MeetingInvitee(_Model):
@@ -3886,6 +4059,9 @@ class DataHealthCheck(_Model):
                                 "(``read`` false).")
     read: bool = Field(True, description="False: only ``open`` is known; ask for the check "
                        "(``check=``) to read its findings.")
+    checked_at: Optional[str] = Field(None, json_schema_extra=_optional,
+                                      description="When the check's rule last ran (ISO); "
+                                      "null with ``open`` null: it has never run.")
 
 
 class DataHealth(_Model):
@@ -3995,14 +4171,35 @@ class AutopilotPrepared(_Model):
         "as the Workbench learns it for your next drafts (greeting, sign-off, length, a "
         "sentence you add or take out).")
     created_at: str
+    state: Optional[Literal["open", "unverified"]] = Field(
+        None, json_schema_extra=_optional, description="An Assist item: open, or unverified "
+        "(its source could not be re-checked: ``note`` says which; never counted as true).")
+    verified_at: Optional[str] = Field(None, json_schema_extra=_optional, description="When "
+                                       "the item was last re-checked against its source.")
+    plan_status: Optional[str] = Field(
+        None, json_schema_extra=_optional, description="none, planned, drafted, needs_you, "
+        "deferred (draft on request) or failed (``plan_reason`` says why; ask again).")
+    plan_reason: Optional[str] = Field(None, json_schema_extra=_optional)
 
 
 class AutopilotDrafts(_Model):
-    """Your open prepared replies, newest first; mail you already answered is not here."""
+    """Your open work, newest first: each item kept true against its source."""
     items: list[AutopilotPrepared] = Field(default_factory=list)
     never_senders: list[str] = Field(default_factory=list, description="Senders you said "
                                      "never to prepare anything for you from (yours only).")
     stale_since: Optional[str] = _stale_since()
+    older: int = Field(0, json_schema_extra=_optional, description="How many more items are "
+                       "older than the list's 14 days (``all_ages=true`` lists them).")
+    status: Optional[Literal[VALUE_STATUSES]] = Field(  # type: ignore[valid-type]
+        None, json_schema_extra=_optional, description="C1: ok; off (not shown to you: no "
+        "opt-in, or its settings could not be read: ``reason``); stale (not re-checked "
+        "lately: ``stale_since``); not_run.")
+    reason: str = Field("", json_schema_extra=_optional)
+
+
+class AssistWorking(_Model):
+    """A draft asked for: it is being prepared; the list shows it when ready."""
+    status: Literal["working"]
 
 
 class AutopilotNeverRequest(_Model):
@@ -4515,7 +4712,7 @@ class TemplateSave(_Model):
     a placeholder must name a known field."""
     name: str = Field(min_length=1, max_length=120)
     doc_type: TemplateDocType
-    body: str = Field(min_length=1, max_length=8000)
+    body: str = Field(min_length=1, max_length=100_000)  # templates.MAX_BODY (migration 0059)
     style_notes: str = Field("", max_length=2000)
     shared_with: list[str] = Field(default_factory=list, max_length=50, description=(
         "Who else may use it: ``person:<a colleague's address>`` or ``role:<role>``; "
@@ -4531,7 +4728,7 @@ class TemplateDeleted(_Model):
 class TemplateProposeRequest(_Model):
     """A draft, form or document's text to turn into a template: each value a fact of the
     record holds exactly becomes its placeholder."""
-    text: str = Field(min_length=1, max_length=8000)
+    text: str = Field(min_length=1, max_length=100000)
     record: Optional[str] = Field(None, max_length=700, description="The record the text "
                                   "is about (an identifier such as \"PO 1234\" or an id).")
 
@@ -4607,6 +4804,9 @@ class FeedState(_Model):
         "not_running: its timer is stopped or its detector pass is stale (the list is then "
         "not 'nothing to do'); unknown: the reliability checks have not run lately."))
     why: str = Field("", json_schema_extra=_optional, description="The check's own words.")
+    since: str = Field("", json_schema_extra=_optional, description=(
+        "When a stopped job last ran (UTC, to the minute), from the hours the reliability "
+        "check measured; empty when unknown."))
 
 
 class FeedStates(_Model):
@@ -5000,6 +5200,9 @@ class AskChart(_Model):
                                  description="Rows of those the chart shows.")
     partial: bool = Field(False, json_schema_extra=_optional,
                           description="The result held only its statement's first rows.")
+    rows_total: Optional[int] = Field(None, json_schema_extra=_optional,
+                                      description="How many rows the statement has in all, "
+                                      "when the result held only its first rows.")
     omitted: int = Field(0, json_schema_extra=_optional,
                          description="Series (split values, panels) not drawn.")
     currency: Optional[str] = Field(None, json_schema_extra=_optional,
@@ -5051,6 +5254,10 @@ class InsightInfo(_Model):
                                        "fixed dates: the first and last it names "
                                        "('2026-01-01 to 2026-11-21'); it reads the rows "
                                        "again but not later dates.")
+    measure: Optional[MeasureCited] = Field(None, json_schema_extra=_optional,
+                                            description="A catalogue measure's tile: the "
+                                            "definition its figures are, with owner, "
+                                            "version and the day it was set.")
 
 
 class MeasureInfo(_Model):
@@ -5066,6 +5273,10 @@ class MeasureInfo(_Model):
     period: str = Field(description="The period it reads when none is named.")
     ask: Optional[str] = Field(None, json_schema_extra=_optional,
                                description="A question it answers, to try in Ask.")
+    version: Optional[str] = Field(None, json_schema_extra=_optional,
+                                   description="Its definition version.")
+    defined_on: Optional[str] = Field(None, json_schema_extra=_optional,
+                                      description="The day that version was set (ISO).")
 
 
 class InsightList(_Model):
@@ -5078,6 +5289,13 @@ class InsightList(_Model):
                                         "use, with their definitions.")
 
 
+class InsightServed(_Model):
+    """How an insight's answer was served (contract C1 status words): ``failed`` when the
+    shared fast copy could not serve it and it was read live instead, with why."""
+    status: Literal[VALUE_STATUSES]  # type: ignore[valid-type]  (C1: operating/value.py)
+    reason: str = ""
+
+
 class InsightResult(InsightInfo):
     """An insight read now as you: its statement, rows, chart and the people they name."""
     sql: str = Field(description="The statement it reads (its definition, exactly).")
@@ -5087,9 +5305,46 @@ class InsightResult(InsightInfo):
                                         "it is about (open /team), or null.")
     row_count: int
     truncated: bool
+    total_rows: Optional[int] = Field(None, description="How many rows the statement has in "
+                                      "all when ``truncated`` (row_count is the rows shown); "
+                                      "null when it could not be counted.")
+    not_measurable: Optional[str] = Field(None, description="Why a tile that read no rows "
+                                          "cannot be measured (a column it needs holds no "
+                                          "value anywhere): shown instead of an empty chart.")
     as_of: Optional[str] = None
     read_at: str
     drawn: Optional[AskChart] = None
+    work: Optional[QueryWork] = Field(None, json_schema_extra=_optional,
+                                      description="The views its statement reads and the filters it applies.")
+    served: Optional[InsightServed] = Field(
+        None, json_schema_extra=_optional, description="Set when the shared fast copy did "
+        "not serve this answer (status failed, with why): it was read live instead.")
+    checked: Optional["InsightChecked"] = Field(None, json_schema_extra=_optional,
+                                                 description="The 'checked' line of a measure tile: "
+                                                 "do its rows add up to the measure's own total.")
+    excluded: list["ExcludedCount"] = Field(default_factory=list, description="A measure "
+                                            "tile's stated exclusions (S2): the records its "
+                                            "definition leaves out, each with its count, "
+                                            "shown under the value.")
+
+
+class InsightChecked(_Model):
+    """Whether a measure tile's rows add up to the measure's own figure for the same window,
+    read through the same door when the tile was stored (``status``: reconciles, differs or
+    not_checked, with ``says`` in words and the totals compared)."""
+    status: str
+    says: str
+
+
+class ExcludedCount(_Model):
+    """What a measure's definition leaves out unless counted in (a registry parameter,
+    S2): how many records, said in its own words."""
+    parameter: str
+    says: str
+    n: Optional[int] = Field(None, description="How many records it leaves out; null when "
+                             "they could not be counted (``why``).")
+    value: Optional[str] = Field(None, description="The measure's value over those records.")
+    why: Optional[str] = Field(None, description="Why they could not be counted.")
 
 
 class InsightSave(_Model):

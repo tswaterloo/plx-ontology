@@ -148,7 +148,7 @@ class RecurringMixin:
             answer = None
             until = time.monotonic() + RECURRING_RUN_SECONDS
             events = self.instruct_ask(  # type: ignore[attr-defined]
-                reader, m.AskRequest(question=ins.one_off(text)[:1000],
+                reader, m.AskRequest(question=ins.one_off(text),
                                      object_id=object_id))
             for event, payload in events:
                 if event == "answer":

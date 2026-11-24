@@ -20,6 +20,9 @@ tools.tests.test_layer_contract
 # No write or HTTP path outside the one GET-only client (the egress scan of the tree).
 tests.test_no_write_http_paths
 
+# The write classes: nothing but a class A write goes by itself (ASSIST specs 2.10; Postgres CHECKs too).
+tests.test_write_classes
+
 # The answer gate: claims are checked before an answer states them.
 operating.tests.test_structured_claims
 evals.tests.test_answer_gate_one_path

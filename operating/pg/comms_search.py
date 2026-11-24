@@ -38,7 +38,11 @@ SEARCH_ONLY = frozenset({"sharepoint_files"})
 # a row's title and sender, per view (default: its subject and sender)
 _TITLE = {"sharepoint_files": "coalesce(nullif(btrim(e.path), ''), e.name)"}
 _SENDER = {"sharepoint_files": "NULL::text"}
-SNIPPET_CHARS = 240
+# a hit's snippet around its first matched word (was 1,200 cut again to 500 unsaid, and 240
+# before that): said cut (``truncated``) whenever the text goes on past it, so the model
+# knows to plx.open it; sized so a page of hits fits what the client shows of one result
+# (``mcp_server_evidence.CLIENT_SHOWN_CHARS``)
+SNIPPET_CHARS = 800
 MAX_TERMS = 16
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -191,9 +195,116 @@ def walk_rows(pg: Any, q: str | None) -> int:
     return WALK_ROWS if plan[0]["Plan"]["Plan Rows"] >= COMMON_CHUNKS else 1
 
 
+# the views the comms text sidecar (``biz.comm_text``, migration 0074, ``comm_text``) serves
+SIDE_VIEWS = frozenset({"emails", "teams_messages"})
+
+
+def sidecar(pg: Any) -> dict[str, dict[str, Any]]:
+    """The views the sidecar covers now, with the parameters ``search_sql`` reads for them
+    (``cov_<view>``: rows dated before it are read the old way; ``mark_<view>``: text fields
+    past it are read the old way). Empty: none built (migration 0074 or a first build not
+    yet there), and the search reads as before."""
+    from operating.pg import comm_text
+    got = comm_text.state(pg)
+    return {v: {f"cov_{v}": st["covered_from"], f"mark_{v}": st["built_field_id"]}
+            for v, st in got.items() if v in SIDE_VIEWS}
+
+
+def _side_pieces(view: str, biz: str, when: str, ops: Sequence[tuple[str, str]],
+                 checked: str, words_from: str = "wm w") -> tuple[str, str]:
+    """(the handles whose text holds every word of ``q``, as one derived table ``b`` with
+    ``handle`` and the date column; one row's own check) from the sidecar. Three parts, the
+    same rows as the chunk word index's match: the sidecar's rows at or after the view's
+    ``cov`` whose field is still unmarked (read now, so a marking set or lifted after the
+    build is followed); the text fields past the sidecar's ``mark`` the sidecar has no row
+    for yet, read the old way; and the rows dated before ``cov``, the old way."""
+    cov, mark = f"%(cov_{view})s", f"%(mark_{view})s"
+    on_t = "".join(f" AND t.at {op} %({name})s" for op, name in ops)
+    on_b = "".join(f" AND b.{when} {op} %({name})s" for op, name in ops)
+    old = ("FROM ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = "
+           "fd.field_id JOIN {src} ON w.chunk_id = c.chunk_id JOIN "
+           f"{biz}.{view} b ON b.handle = fd.version_handle AND b.object_ids[1] = fd.object_id "
+           f"WHERE fd.markings = '[]'{checked}")
+    # an old-way read below ``cov`` is skipped (a gate on the window's own parameters) when
+    # the window starts at or after it
+    below = ("true" if not any(name == "since" for _, name in ops)
+             else f"%(since)s::timestamptz < {cov}::timestamptz")
+    match = (
+        f"SELECT b.handle FROM ("
+        f"SELECT DISTINCT t.handle, t.at AS {when} FROM biz.comm_text t JOIN "
+        f"ontology.text_fields fd ON fd.field_id = t.field_id AND fd.markings = '[]' "
+        f"WHERE t.view = '{view}' AND t.whole AND "
+        f"t.tsv @@ %(q)s::tsquery AND t.at >= {cov}{on_t} "
+        # a field held in pieces (migration 0075): read the old way, so words that sit in two
+        # pieces still match (a piece's own vector would miss them)
+        f"UNION ALL SELECT b.handle, b.{when} FROM biz.comm_text t JOIN "
+        f"ontology.text_fields fd ON fd.field_id = t.field_id AND fd.markings = '[]' AND "
+        f"NOT t.whole JOIN {biz}.{view} b ON b.handle = t.handle WHERE t.view = '{view}' "
+        f"AND t.part = 0 AND b.{when} >= {cov}{on_b} AND EXISTS (SELECT 1 FROM "
+        "ontology.text_chunks c JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id "
+        "WHERE c.field_id = fd.field_id AND w.words @@ %(q)s::tsquery) "
+        f"UNION ALL SELECT b.handle, b.{when} FROM ontology.text_fields fd JOIN {biz}.{view} b "
+        f"ON b.handle = fd.version_handle AND b.object_ids[1] = fd.object_id WHERE "
+        f"fd.field_id > {mark} AND fd.markings = '[]' AND b.{when} >= {cov}{on_b} AND NOT "
+        "EXISTS (SELECT 1 FROM biz.comm_text t2 WHERE t2.handle = b.handle AND t2.field_id = "
+        "fd.field_id) AND EXISTS "
+        "(SELECT 1 FROM ontology.text_chunks c JOIN ontology.chunk_words w ON w.chunk_id = "
+        "c.chunk_id WHERE c.field_id = fd.field_id AND w.words @@ %(q)s::tsquery) "
+        f"UNION ALL SELECT b.handle, b.{when} "
+        + old.format(src=words_from) + f" AND {below} AND b.{when} < {cov}{on_b}"
+        f") b WHERE b.{when} IS NOT NULL")
+    # one row (``e.handle``): its sidecar row when it has one, else the old per-row read
+    old_one = ("(SELECT 1 FROM ontology.text_fields fd JOIN ontology.text_chunks c ON "
+               "c.field_id = fd.field_id JOIN ontology.chunk_words w ON w.chunk_id = "
+               "c.chunk_id WHERE fd.version_handle = e.handle AND fd.object_id = "
+               f"(SELECT b.object_ids[1] FROM {biz}.{view} b WHERE b.handle = e.handle) AND "
+               f"fd.markings = '[]'{checked} AND w.words @@ %(q)s::tsquery LIMIT 1)")
+    # a message with no sidecar text, or a field held in pieces, is read the old way; else the
+    # sidecar's rows of its fields (each field's own check)
+    own = ("(SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM biz.comm_text t0 WHERE t0.handle = "
+           "e.handle AND t0.field_id IS NOT NULL) OR EXISTS (SELECT 1 FROM biz.comm_text t1 "
+           "WHERE t1.handle = e.handle AND NOT t1.whole) THEN " + old_one + " ELSE (SELECT 1 "
+           "FROM biz.comm_text t JOIN ontology.text_fields fd2 ON fd2.field_id = t.field_id "
+           "AND fd2.markings = '[]' WHERE t.handle = e.handle AND t.tsv @@ %(q)s::tsquery "
+           "LIMIT 1) END)")
+    return match, own
+
+
+def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
+              until: bool, side: frozenset[str] = frozenset()) -> str:
+    """One statement (named parameters q, since, until) counting every row of ``views``
+    the reader may read (through ``guarded``) that holds every query word in its header
+    or its text, in the dates: how many a word search matched in all, read from the word
+    indexes (handles only, never a row). Files (``SEARCH_ONLY``) are re-gated row by row
+    after the statement, so they are not counted here (the caller says so)."""
+    parts = []
+    for view in views:
+        if view in SEARCH_ONLY:
+            continue
+        _kind, when, _ = VIEWS[view]
+        window = "".join(f" AND b.{when} {op} %({name})s" for on, op, name in (
+            (since, ">=", "since"), (until, "<", "until")) if on)
+        header = (f"SELECT b.handle FROM {biz}.{view} b WHERE b.words @@ %(q)s::tsquery"
+                  f"{window}")
+        text = ("SELECT b.handle FROM ontology.text_fields fd JOIN ontology.text_chunks c ON "
+                "c.field_id = fd.field_id JOIN ontology.chunk_words w ON w.chunk_id = "
+                f"c.chunk_id JOIN {biz}.{view} b ON b.handle = fd.version_handle AND "
+                "b.object_ids[1] = fd.object_id WHERE w.words @@ %(q)s::tsquery AND "
+                f"fd.markings = '[]'{window}")
+        if view in side:   # the sidecar's match (the same rows: ``_side_pieces``)
+            text = _side_pieces(view, biz, when, [(op, name) for on, op, name in (
+                (since, ">=", "since"), (until, "<", "until")) if on], "",
+                words_from="ontology.chunk_words w")[0]
+        dates = "".join(f" AND e.{when} {op} %({name})s" for on, op, name in (
+            (since, ">=", "since"), (until, "<", "until")) if on)
+        parts.append(f"(SELECT count(*) FROM {guarded}.{view} e WHERE e.{when} IS NOT NULL"
+                     f"{dates} AND e.handle IN ({header} UNION {text}))")
+    return ("SELECT " + " + ".join(parts)) if parts else ""
+
+
 def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                party_kind: str | None, since: bool, until: bool, cursor: bool,
-               cursor_tier: int = 0) -> str:
+               cursor_tier: int = 0, side: frozenset[str] = frozenset()) -> str:
     """The one statement (named parameters: q, party, since, until, c_at, c_h, k, k_own,
     walk; ``k_own`` <= ``k``: the rows read of mail and Teams, ``k`` of the files and in all).
     Its rows end with ``tier`` (1: the header holds every query word; 0: the text does, or
@@ -208,7 +319,11 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
     the word index's whole match (``_fallback``: never read otherwise). The floor splits
     the reader's rows in two by (date, handle), so together they are the same rows, in the
     same order, as one read of every match: whatever the word's frequency, the page is
-    found where it is cheap."""
+    found where it is cheap.
+
+    ``side``: the views the text sidecar serves (``sidecar``): their word match is read from
+    ``biz.comm_text`` (dated, by view) instead of the chunk word index's whole match; the
+    parameters ``cov_<view>`` and ``mark_<view>`` come with it."""
     parts, ctes = [], []
     for at, view in enumerate(views):
         kind, when, _ = VIEWS[view]
@@ -262,6 +377,11 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         own_header = (f"(SELECT 1 FROM {biz}.{view} b WHERE b.handle = e.handle AND "
                       "b.words @@ %(q)s::tsquery LIMIT 1)")
         own_text = f"(SELECT 1 {text} AND b.handle = e.handle LIMIT 1)"
+        use_side = view in side
+        if use_side:
+            side_match, own_text = _side_pieces(view, biz, when, [
+                (op, name) for on, op, name in ((since, ">=", "since"), (until, "<", "until"),
+                                                (dated, "<=", "c_at")) if on], checked)
         if party_kind is not None and not cursor:
             # the party's own rows first (``PARTY_ROWS``): from its table by the party's
             # index in the dates (handles only, never a row shown), then each through the
@@ -296,7 +416,7 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                "fd.field_id JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id WHERE "
                "fd.version_handle = b.handle AND fd.object_id = b.object_ids[1] AND "
                f"w.words @@ %(q)s::tsquery AND fd.markings = '[]'{checked} LIMIT 1) IS NOT "
-               f"NULL{window}") if view in OWN_TEXT_VIEWS else None
+               f"NULL{window}") if view in OWN_TEXT_VIEWS and not use_side else None
         # the word index's whole match read once for every view (``wm``): the same chunks
         # for each, and each view's scan of the index took 0.5 s (a stem query, 3 views)
         shared = ("FROM ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = "
@@ -305,7 +425,8 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                   f"fd.object_id WHERE fd.markings = '[]'{checked}")
         tiers.append((0, conds + ([after] if dated else []),
                       f"{own_header} IS NULL AND {own_text} IS NOT NULL",
-                      f"SELECT b.handle {shared}{window}", [f"{own_header} IS NULL"]))
+                      side_match if use_side else f"SELECT b.handle {shared}{window}",
+                      [f"{own_header} IS NULL"]))
         # the walk's floors: the ``walk``-th newest row of the table itself in the dates
         # (the index on the date column read in order, ``walk`` rows), then (``STAGES``)
         # the ``walk * DEEPER``-th: each stage walks the reader's rows between its floor and
@@ -366,9 +487,6 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
 # appearing": 0.06 s; its walk of 4,000 mails took 2.2 s and found none). Reading every
 # match of a common word took 17.8 s.
 ATTACH_WALK = 4000
-# an attachment's whole text is checked for Freightcom before its mail is listed: one
-# stored in more pieces than this is left out unchecked (live: at most 56)
-ATTACH_CHECK_CHUNKS = 400
 # a rare word's attachment matches are read as at most this many mails (their newest
 # ingest first), then those mails through the reader's view by handle: joined whole, the
 # planner scanned the reader's 300k mails (live 11-20: past 25 s; by handle 0.07 s)
@@ -442,15 +560,6 @@ def listed_sql(biz: str) -> str:
             "%(q)s::tsquery))")
 
 
-def attachment_check_sql() -> str:
-    """Every stored piece of every field (marked or not) of the attachment versions
-    (parameters ids, handles): ``attachment_clear``'s text."""
-    return ("SELECT fd.version_handle, fd.field_id, c.start, c.body FROM "
-            "ontology.text_fields fd JOIN ontology.text_chunks c ON c.field_id = fd.field_id "
-            "WHERE fd.object_id = ANY(%(ids)s::text[]) AND fd.version_handle = "
-            "ANY(%(handles)s::text[]) ORDER BY fd.version_handle, fd.field_id, c.start")
-
-
 def attachment_blocked_sql() -> str:
     """The attachment objects of ``ids`` a reader is kept from on their own (the guarded
     view checks only the mail's object): in the people exclusion's objects, or one of
@@ -469,29 +578,6 @@ def attachment_blocked_sql() -> str:
             " OR x IN (SELECT "
             "json_array_elements_text("
             "coalesce(nullif(current_setting('plx.reader_hidden', true), ''), '[]')::json))")
-
-
-def attachment_clear(rows: Sequence[Sequence[Any]], pieces: Sequence[Sequence[Any]]
-                     ) -> tuple[list[Any], int]:
-    """``attachment_sql``'s ``rows`` whose attachment's whole text (``pieces``, every field
-    of its version) names no Freightcom (``image_ocr_gpu.FREIGHTCOM``), and how many were
-    left out: one naming it, or not checkable (no pieces, too many, unreadable), is left
-    out (fail closed)."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    by: dict[str, list[Any]] = {}
-    for handle, field, start, body in pieces:
-        by.setdefault(handle, []).append((field, start, body))
-    kept = []
-    for row in rows:
-        got = by.get(row[-2])
-        try:
-            clear = bool(got) and len(got) <= ATTACH_CHECK_CHUNKS and not FREIGHTCOM.search(
-                assemble(got))
-        except (zlib.error, TypeError, ValueError):
-            clear = False
-        if clear:
-            kept.append(row)
-    return kept, len(rows) - len(kept)
 
 
 def tsquery_any(query: str) -> str | None:
@@ -696,7 +782,9 @@ def _text(value: Any, citation: str, cut: int = 20000) -> dict[str, Any]:
     return out
 
 
-def snippet(body: Any, words: Sequence[str]) -> str | None:
+def snippet(body: Any, words: Sequence[str]) -> tuple[str, bool] | None:
+    """The body's window around its first matched word (whitespace folded) and whether the
+    text goes on before or after it; None: no body, or one that cannot be read."""
     if body is None:
         return None
     try:
@@ -706,7 +794,8 @@ def snippet(body: Any, words: Sequence[str]) -> str | None:
     low = text.lower()
     at = min((i for i in (low.find(w.lower()) for w in words) if i >= 0), default=0)
     start = max(0, at - SNIPPET_CHARS // 3)
-    return " ".join(text[start:start + SNIPPET_CHARS].split())
+    end = start + SNIPPET_CHARS
+    return " ".join(text[start:end].split()), start > 0 or end < len(text)
 
 
 def hits(rows: Sequence[Sequence[Any]], *, words: Sequence[str], party_: Party | None
@@ -721,8 +810,12 @@ def hits(rows: Sequence[Sequence[Any]], *, words: Sequence[str], party_: Party |
         cls = sclass if sclass in ("internal", "external") else "unknown"
         hit["sender"] = ({"address": _text(sender, handle, 300), "sender_class": cls}
                          if sender else {"sender_class": cls})
-        cut = snippet(body, words)
-        hit["snippet"] = _text(cut, handle, 500) if cut else None
+        got = snippet(body, words)
+        hit["snippet"] = None
+        if got is not None and got[0]:
+            hit["snippet"] = _text(got[0], handle, SNIPPET_CHARS)
+            if got[1]:
+                hit["snippet"]["truncated"] = True
         if party_ is not None and party_.kind in ("address", "domain"):
             mine = (sender == party_.value if party_.kind == "address"
                     else sender_domain == party_.value)
@@ -812,6 +905,39 @@ def near_offset(text: str, words: Sequence[str], most: int) -> int | None:
     return at
 
 
+# A ``near`` window opens past the item's start; its first part (the newest message of a
+# reply, the part that says how a thread came out) is served with it, ahead of the window
+# (11-22: Ask opened a supplier's reply at the word "complaint", the window began in the
+# quoted history, and the answer "Very happy to hear that!" above it was never shown). The
+# head is the text of the first ``HEAD_MAX`` characters without its links (a safety
+# notice's link alone is ~900: each is shown as ``LINK_GAP``), at most ``HEAD_WORDS``
+# characters and at most half the window (a window under ``HEAD_MIN`` twice: no head).
+HEAD_WORDS = 400
+HEAD_MIN = 80
+HEAD_MAX = 2500
+_LINK = re.compile(r"<?(?:https?|mailto):[^\s<>]*>?", re.IGNORECASE)
+HEAD_GAP = "\n[...]\n"
+LINK_GAP = "<link>"
+
+
+def head_pieces(text: str, most: int) -> list[tuple[int, int]]:
+    """The ``(start, end)`` parts of ``text`` its head serves (``HEAD_WORDS``)."""
+    room = min(HEAD_WORDS, most // 2 - len(HEAD_GAP))
+    if room < HEAD_MIN:   # a window too small to hold a head as well: none
+        return []
+    cap, at, out = min(len(text), HEAD_MAX), 0, []
+    for m in [*_LINK.finditer(text, 0, cap), None]:
+        end = cap if m is None else m.start()
+        take = min(end - at, room)
+        if take > 0:
+            out.append((at, at + take))
+            room -= take + len(LINK_GAP)
+        if m is None or room <= 0:
+            break
+        at = m.end()
+    return out
+
+
 def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int,
            near: Sequence[str] = ()) -> dict[str, Any]:
     """One opened item: its text (every field, joined as ``assemble`` joins them) from
@@ -820,19 +946,34 @@ def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int,
     ``most`` characters, and what of each field that window served
     (``fields_served``: the field, its text digest, the field's own span served, the
     field's length and where that part starts in ``text``), so the session keeps it as
-    it keeps a ``plx.read`` (``mcp_server_evidence._served_texts``)."""
+    it keeps a ``plx.read`` (``mcp_server_evidence._served_texts``). A ``near`` window
+    that starts past the item's head serves the head first (``head_pieces``: the first
+    ``head_chars`` of ``text``, ending in ``HEAD_GAP``), the window after it, both
+    within ``most``."""
     view, handle, subject, sender, at, to, cc = rows[0][:7]
     text = assemble([(r[7], r[8], r[9]) for r in rows])
     found = near_offset(text, near, most) if near and not offset else None
+    # (start, end) of ``text`` in the order served, and what is shown after each
+    pieces: list[tuple[int, int, str]] = []
     if found is not None:
         offset = found
-    window = text[offset:offset + most]
+        head = head_pieces(text, most)
+        if head and head[-1][1] < offset:
+            pieces = [(a, b, LINK_GAP) for a, b in head]
+            pieces[-1] = (*head[-1], HEAD_GAP)
+            most -= sum(b - a + len(g) for a, b, g in pieces)
+        elif head:   # the place asked about is in the head: the window starts at the top
+            offset = 0
+    pieces.append((offset, min(len(text), offset + most), ""))
+    window = "".join(text[a:b] + gap for a, b, gap in pieces)
     out: dict[str, Any] = {"citation": handle, "kind": VIEWS[view][0],
                            "title": _text(subject, handle, 500) if subject else None,
                            "date": _iso(at),
                            "sender": _text(sender, handle, 300) if sender else None,
                            "text": {"untrusted_text": window, "origin": {"citation": handle}},
                            "text_offset": offset, "text_chars": len(text)}
+    if len(pieces) > 1:
+        out["head_chars"] = len(window) - (pieces[-1][1] - pieces[-1][0])
     if to:
         out["to"] = list(to)
     if cc:
@@ -844,16 +985,20 @@ def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int,
         out["next_offset"] = offset + most
     if not text:
         out["text_note"] = "no readable text is indexed for this item"
-    served, at_ = [], 0
+    served = []
     named = {r[7]: (r[11], r[12]) for r in rows if r[7] is not None and len(r) > 12}
-    for field in sorted(named):
-        length = len(assemble([(r[7], r[8], r[9]) for r in rows if r[7] == field]))
-        lo, hi = max(offset, at_), min(offset + most, at_ + length)
-        if hi > lo and isinstance(named[field][0], str):
-            served.append({"field": named[field][0], "version": named[field][1],
-                           "offset": lo - at_, "chars": hi - lo, "total_chars": length,
-                           "at": lo - offset})
-        at_ += length + 2       # the "\n\n" ``assemble`` joins fields with
+    shown_at = 0   # where each piece starts in ``window``
+    for lo_t, hi_t, gap in pieces:
+        at_ = 0
+        for field in sorted(named):
+            length = len(assemble([(r[7], r[8], r[9]) for r in rows if r[7] == field]))
+            lo, hi = max(lo_t, at_), min(hi_t, at_ + length)
+            if hi > lo and isinstance(named[field][0], str):
+                served.append({"field": named[field][0], "version": named[field][1],
+                               "offset": lo - at_, "chars": hi - lo, "total_chars": length,
+                               "at": shown_at + lo - lo_t})
+            at_ += length + 2       # the "\n\n" ``assemble`` joins fields with
+        shown_at += hi_t - lo_t + len(gap)
     if served:
         out["fields_served"] = served
     return out
@@ -877,8 +1022,39 @@ def searched(views: Sequence[str], args: Mapping[str, Any], words: Sequence[str]
     return out
 
 
-__all__ = ["Party", "SEARCH_ONLY", "SearchInputError", "VIEWS", "assemble", "stem_tsquery",
-           "attachment_blocked_sql", "attachment_check_sql", "attachment_clear", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
+def depth_said(query: str | None, attach: Mapping[str, Any], *, later: bool,
+               attachments: bool) -> str | None:
+    """How deep a search with ``query`` looked, said to the model (``searched.depth``)
+    where it did not read every match: the words past ``MAX_TERMS`` (not searched), and
+    the attachment pass (``attach``: what ``SqlTool._comms_attached`` recorded; it runs on
+    a first page only, ``attachments``: it applies to this reader and search). None when
+    the search read everything it was asked for."""
+    parts = []
+    rest = _WORD.findall(query or "")[MAX_TERMS:]
+    if rest:
+        parts.append(f"only the first {MAX_TERMS} words were searched; not searched: "
+                     + " ".join(rest))
+    if query and attachments:
+        if later:
+            parts.append("this later page lists the word matches only: matches in "
+                         "attachments' text and close in meaning are on the first page")
+        elif attach.get("unread"):
+            parts.append("attachments' text was not searched this time (that pass ran out "
+                         "of its time): a mail holding the words only in an attachment "
+                         "may be missing")
+        elif attach.get("common"):
+            parts.append(f"attachments' text: only the newest {ATTACH_WALK:,} mails with "
+                         "attachments in the dates were checked (a common word); set "
+                         "until to reach older ones")
+        elif attach.get("mails", 0) >= ATTACH_MAILS:
+            parts.append(f"attachments' text: only the {ATTACH_MAILS:,} most recently "
+                         "captured mails whose attachments hold the words were checked; "
+                         "set since/until to reach others")
+    return "; ".join(parts)[:600] or None
+
+
+__all__ = ["Party", "SEARCH_ONLY", "depth_said", "SearchInputError", "VIEWS", "assemble", "stem_tsquery",
+           "attachment_blocked_sql", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
            "meaning_sql", "tsquery_any", "words_held",
            "hits", "instant", "open_sql", "opened", "party", "present", "read_cursor",
            "search_sql", "searched", "snippet", "terms", "tsquery"]

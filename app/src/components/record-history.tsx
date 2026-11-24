@@ -146,6 +146,8 @@ function AsOf({ type, id }: { type: string; id: string }) {
  * Every read is as this reader: a change they may not see is not shown, and the tab says
  * some are hidden without a number.
  */
+const HISTORY_RETRY_MS = 3000;
+
 export function RecordHistory({ type, id }: { type: string; id: string }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -162,17 +164,36 @@ export function RecordHistory({ type, id }: { type: string; id: string }) {
     setMessage(null);
     setError(null);
     setLoading(true);
-    getHistory(type, id, null, c.signal)
-      .then((d) => {
-        if (c.signal.aborted) return;
-        setEntries(d.entries ?? []);
-        setCursor(d.next_cursor ?? null);
-        setPartial(!!d.partial);
-        setMessage(d.message ?? null);
-      })
-      .catch((e) => !c.signal.aborted && setError(e?.status === 404 ? "You can't see this record's history." : plainError(e)))
-      .finally(() => !c.signal.aborted && setLoading(false));
-    return () => c.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () =>
+      getHistory(type, id, null, c.signal)
+        .then((d) => {
+          if (c.signal.aborted) return;
+          setEntries(d.entries ?? []);
+          setCursor(d.next_cursor ?? null);
+          setPartial(!!d.partial);
+          setMessage(d.message ?? null);
+          setError(null);
+          setLoading(false);
+        })
+        .catch((e) => {
+          if (c.signal.aborted) return;
+          if (e?.status === 503 && e?.code === "page_unavailable") {
+            // the server is preparing this history (it asked for it on this visit): ask again
+            // until it is there, saying so; nothing here gives up
+            setError(null);
+            setMessage("This history is being prepared; it will appear here.");
+            timer = setTimeout(read, HISTORY_RETRY_MS);
+            return;
+          }
+          setError(e?.status === 404 ? "You can't see this record's history." : plainError(e));
+          setLoading(false);
+        });
+    read();
+    return () => {
+      c.abort();
+      if (timer) clearTimeout(timer);
+    };
   }, [type, id]);
 
   const older = () => {
@@ -201,7 +222,7 @@ export function RecordHistory({ type, id }: { type: string; id: string }) {
           </ul>
         )}
         {!error && loading && <p className="mt-2 text-[13px] text-muted" role="status">Reading changes</p>}
-        {!loading && !error && entries.length === 0 && message && <p className="text-[13px] text-muted" role="status">{message}</p>}
+        {!error && message && !partial && <p className="text-[13px] text-muted" role="status">{message}</p>}
         {partial && (
           <p className="mt-2 text-[13px] text-muted" role="status" data-testid="history-partial">
             Some changes are not shown: they are of values or records you may not see.

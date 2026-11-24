@@ -41,7 +41,9 @@ Process memory only; nothing is written. Evidence: isolated-fixture
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import hashlib
+import logging
 import re
 import threading
 import time
@@ -56,6 +58,7 @@ TICK_SECONDS = 10.0       # how often the copies are checked against the exclusi
 WARM_SECONDS = 3600.0     # kept ready this long after a fast tile was last opened
 COPY_MOST = 50_000        # rows of another view copied whole; a bigger one is read live
 EXCLUSION_STATE = "ontology.people_excluded_state"
+LOG = logging.getLogger(__name__)
 EXCLUDED = "ontology.people_excluded_objects"
 _INTERVAL = re.compile(r"interval\s+'(\d+)\s+(day|days|week|weeks)'", re.I)
 
@@ -69,11 +72,20 @@ class Unserved(Exception):
 DERIVED = {"comms_findings": ("emails", "teams_messages")}
 
 
+@functools.lru_cache(maxsize=4096)
+def _words(sql: str) -> frozenset[str]:
+    """Every whole word of ``sql``, lower case (a view name is one word: ``\\w`` only)."""
+    return frozenset(w.lower() for w in re.findall(r"\w+", sql))
+
+
 def views_read(sql: str) -> list[str]:
     """The business views ``sql`` names (as ``plx.sql`` lists them), the views made over
-    them (``DERIVED``) too."""
+    them (``DERIVED``) too: a name standing as a whole word, any case. The statement's
+    words are read once per statement (11-22: one regular expression per view per tile,
+    twice per dashboard stream, was half the stream's time with every tile kept)."""
     from operating.pg import business_views as bv
-    return sorted(v for v in (*bv.VIEWS, *DERIVED) if re.search(rf"\b{v}\b", sql, re.I))
+    words = _words(sql)
+    return sorted(v for v in (*bv.VIEWS, *DERIVED) if v.lower() in words)
 
 
 def window_days(sql: str) -> int:
@@ -197,7 +209,7 @@ def _error(exc: Exception) -> dict[str, str]:
 def compute(pg: Any, specs: Sequence[Any], covered: int) -> dict[str, dict[str, Any]]:
     """Every spec's answer (``{"got": plx.sql-shaped result, "read_at"}`` or
     ``{"error": {...}}``) from the copies made in one transaction on ``pg``."""
-    from operating.ontology_tools_sql import MAX_ROWS, _cell
+    from operating.ontology_tools_sql import _cell
     from operating.pg import business_comms as bc
     from operating.pg import business_views as bv
     schema = bv.SCHEMA
@@ -249,11 +261,19 @@ def compute(pg: Any, specs: Sequence[Any], covered: int) -> dict[str, dict[str, 
             pg.execute(f"ANALYZE pg_temp.{name}")
         for name in sorted(derived):
             parts = [t for t in DERIVED[name] if t in made]
-            if len(parts) != len(DERIVED[name]) or name not in have:
+            # the findings are the readings' (contract C4), read through the one face the
+            # API's role may read (``comms_findings.FEED``); not there yet (between the
+            # migration and the first reading run on a database without it): read live, where
+            # plx.sql says "not built yet"
+            from operating.pg import comms_findings as cf
+            stored = pg.execute("SELECT to_regclass(%s) IS NOT NULL", (cf.FEED,)
+                                ).fetchone()[0]
+            if len(parts) != len(DERIVED[name]) or not stored:
                 big.add(name)   # a table it reads (or its own) is missing: read live
+                LOG.warning("insights fast copy: %s read live (%s)", name,
+                            "findings feed not built" if not stored else "a source not copied")
                 continue
             pg.execute(f"DROP TABLE IF EXISTS pg_temp.{name}")
-            # (the findings table is read by its own name: the search path still holds it)
             pg.execute(_derived_ddl(name, schema, parts), (WINDOW_DAYS,))
             made.append(name)
             built[name] = min((built[t] for t in parts if built.get(t)), default=None)
@@ -268,16 +288,16 @@ def compute(pg: Any, specs: Sequence[Any], covered: int) -> dict[str, dict[str, 
                 with pg.transaction():   # a savepoint: one failing statement fails alone
                     cur = pg.execute(spec.sql)
                     cols = [d.name for d in cur.description or ()]
-                    rows = cur.fetchmany(MAX_ROWS + 1)
+                    rows = cur.fetchall()   # every row: no cut
             except Exception as exc:  # noqa: BLE001 - said as plx.sql says it
                 out[spec.id] = {"error": _error(exc)}
                 continue
             views = views_read(spec.sql)
             stamps = [built[v] for v in views if built.get(v)]
             out[spec.id] = {"read_at": read_at, "got": {
-                "columns": cols, "truncated": len(rows) > MAX_ROWS, "views": views,
+                "columns": cols, "truncated": False, "views": views,
                 "as_of": min(stamps) if stamps else None,
-                "rows": [{"cells": [_cell(v)[0] for v in r]} for r in rows[:MAX_ROWS]]}}
+                "rows": [{"cells": [_cell(v)[0] for v in r]} for r in rows]}}
         for name in made:   # gone with the transaction, and now under an outer one too
             pg.execute(f"DROP TABLE IF EXISTS pg_temp.{name}")
     return out

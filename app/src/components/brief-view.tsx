@@ -95,7 +95,7 @@ const EMPTY: Record<string, string> = {
   quality_marked: "Quality-marked: shown only to readers who hold quality control.",
   not_available: "Not captured yet.",
   unread: "Could not be read; this section may still have items.",
-  blocked: "Not shown: the people exclusion is not loaded; this section may still have items.",
+  blocked: "Not shown right now; this section may still have items. Try again in a few minutes.",
 };
 
 /** The section's own note already says what the empty line would (unread may still have items; finance only): said once. */
@@ -132,7 +132,14 @@ export function BriefSectionView({ section, repeat = false }: { section: BriefSe
       ) : (
         figures.length === 0 && !saidInNote(section) && <p className="text-[13px] text-muted">{EMPTY[section.state] ?? EMPTY.empty}</p>
       )}
-      {more > 0 && <p className="mt-2 text-[12px] text-muted">{more} more not listed.</p>}
+      {more > 0 &&
+        (section.more_href ? (
+          <Link href={section.more_href} className="mt-2 inline-block text-[12px] text-accent hover:underline" data-testid="brief-more">
+            Show all {more + (section.rows ?? []).length}
+          </Link>
+        ) : (
+          <p className="mt-2 text-[12px] text-muted">{more} more not listed.</p>
+        ))}
     </Section>
   );
 }

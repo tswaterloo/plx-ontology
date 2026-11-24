@@ -108,9 +108,10 @@ CADDY_ADMIN=${PLX_CADDY_ADMIN:-/var/lib/caddy/admin.sock}   # the caddy user's 0
 CADDY_USER=${PLX_CADDY_USER:-caddy}
 PASS_OVER_S=${PLX_API_PASS_OVER_S:-3}            # > Caddy's fail_duration (2 s)
 UNIT_DIR=${PLX_SYSTEMD_DIR:-/etc/systemd/system}
-# past the API's own hold limit (operator_api/server.py HOLD_MAX_SECONDS, 600 s): a 300 s wait
-# gave up on a standby still warming (11-15 7:18 AM ET: briefing read 145 s) and rolled back
-READY_S=${PLX_API_READY_S:-660}
+# past the API's own hold limit (operator_api/server.py HOLD_MAX_SECONDS, 180 s) and its start-up:
+# its first pass reads only the readers active lately and is cut at 25 s (11-22: a pass over
+# everyone took ~7 min under load; operator_api/warm_process.py FIRST_PASS_SECONDS)
+READY_S=${PLX_API_READY_S:-240}
 MEM_RESERVE_MB=${PLX_API_MEM_RESERVE_MB:-2048}   # left on the host with both APIs up
 MEM_FLOOR_MB=${PLX_API_MEM_FLOOR_MB:-1024}       # a standby is stopped below this
 PG_MARGIN=${PLX_API_PG_MARGIN:-8}                # sessions left to everyone else
@@ -835,7 +836,10 @@ deploy() {
   local id=${1:?deploy needs a release id}
   migrate "$id"   # nothing applied and nothing switched when it fails or a window is open
   switch "$id"
-  restart   # a release that does not serve is rolled back by restart itself (exit 1)
+  # a release that does not serve is rolled back by restart itself (exit 1); the release
+  # switched to restarts its units with its own copy of this tool (current_tool)
+  local tool
+  if tool=$(current_tool); then "$tool" restart 8>&-; else restart; fi
   echo "$(plx_now) deployed release $id"
 }
 
@@ -1212,7 +1216,32 @@ verify() {   # verify [<id>]: sealed = owned by the release owner, nothing group
   echo "release $id sealed: owned by $owner, nothing writable by group or others"
 }
 
+# The serving release's own copy of this tool drives its units. Any other copy (the repository
+# checkout on PATH, or the release a deploy started from) knows only what it knew when it was
+# written: 11-22 5:11 PM ET a checkout from before the restart guard asked for a direct
+# `systemctl restart plx-api`, the host refused it (RefuseManualStop), and a warm switch whose
+# standby was ready failed. current_tool: that copy's path when it is another file than this one
+# (and, sealed, owned by the release owner with nothing group/other-writable), else nothing.
+current_tool() {
+  local t="$PLX_CURRENT/deploy/release/plx-release"
+  [ -f "$t" ] && [ -x "$t" ] || return 1
+  [ "$(readlink -f "$t")" != "$(readlink -f "$0")" ] || return 1
+  if sealed; then
+    [ "$(stat -L -c %U "$t")" = "$PLX_RELEASE_OWNER" ] || return 1
+    [ -z "$(find -L "$t" -perm /022)" ] || return 1
+  fi
+  echo "$t"
+}
+
 cmd=${1:-status}; shift || true
+# once per run (PLX_RELEASE_HOP): a rollback's nested restart runs "$0", the current link's copy
+if [ -z "${PLX_RELEASE_HOP:-}" ] && case $cmd in restart|slots) true ;; *) false ;; esac; then
+  if tool=$(current_tool); then
+    echo "$(plx_now) plx-release $cmd: the serving release's copy ($(current_id)) runs it" >&2
+    PLX_RELEASE_HOP=1 exec "$tool" "$cmd" "$@"
+  fi
+fi
+export PLX_RELEASE_HOP=1
 case $cmd in
   build|preflight|migrate|switch|rollback|restart|deploy|slots|status|list|prune|verify) "$cmd" "$@" ;;
   *) die "unknown command $cmd (build|preflight|migrate|switch|rollback|restart|deploy|slots|status|list|prune|verify)" ;;

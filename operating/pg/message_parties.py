@@ -427,7 +427,7 @@ def redo(write: Any, view: str) -> dict[str, Any]:
     return out
 
 
-def redo_batched(write: Any, view: str, *, batch: int = 20000, min_free_gb: float = 40.0,
+def redo_batched(write: Any, view: str, *, batch: int = 20000, min_free_gb: float | None = None,
                  path: str = "/data", log: Any = None) -> dict[str, Any]:
     """``redo`` for a hand run over the whole table: the decision is staged in temp tables
     (the stored links by the build's rule, the rule-inferred parties; nothing written), then
@@ -437,7 +437,10 @@ def redo_batched(write: Any, view: str, *, batch: int = 20000, min_free_gb: floa
     refresh never repeats it. ``write`` must be on an autocommit connection (temp tables
     live across the batches)."""
     import shutil
+    from operating import disk_budget
     from operating.pg import business_comms as bc
+    if min_free_gb is None:   # the one disk floor
+        min_free_gb = disk_budget.floor_gb()
     spec = bc.SPECS[view]
     t = f"{bc.bv.SCHEMA}.{view}"
     say = log or (lambda *_: None)
@@ -514,7 +517,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--dsn", default="dbname=plx")
     ap.add_argument("--where", default="true", help="SQL over the table (default every row)")
     ap.add_argument("--batch", type=int, default=20000, help="rows per transaction (redo)")
-    ap.add_argument("--min-free-gb", type=float, default=40.0, help="redo stops below this")
+    ap.add_argument("--min-free-gb", type=float, default=None,
+                    help="redo stops below this (default: the disk budget's floor)")
     args = ap.parse_args(argv)
     if args.mode == "derive":
         # the derived links into the narrow table only (no update of the message table)

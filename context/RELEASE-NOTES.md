@@ -131,6 +131,26 @@ Changed:
 - Insights tiles load near the view with the reader's last answer when access is unchanged
 - drafts and Home's first records are kept warm
 
+## Update 2026-11-24
+Changed:
+- The Insights and Ask streams are compressed, flushed line by line
+- A stale page asks again sooner
+- the search lookup runs its branches in parallel
+- a smaller font file
+- question links don't prefetch
+- Search uses at most two parallel workers
+- Home loads its detail pane and side tabs as their own chunks
+- an unused font package is gone
+- The web app waits out its own restart during a deploy instead of showing the error page
+- Each mail carries what it newly says
+- opening several mails fits a size budget
+- POs carry the supplier's own PO number
+- same-business records are linked
+- payables carry a payee class from Sage's GL
+- The warm-up can read the hot standby instead of the box's database, when the standby is current
+- Opening several mails at once fits the size the host actually sends
+- A record's links read by key, so Home's record pane opens at once
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

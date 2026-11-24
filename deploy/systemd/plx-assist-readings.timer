@@ -1,0 +1,13 @@
+[Unit]
+Description=PLX one reading per message: a minute after the last run ended (also run after each business views refresh)
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+# a calendar beat too, so a stopped chain of runs starts again by itself
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

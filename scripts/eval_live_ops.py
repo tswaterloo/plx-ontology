@@ -1380,23 +1380,17 @@ def sealed(row: Mapping[str, Any]) -> bool:
 
 
 class RoutedAgent:
-    """The app's routing for one question (``operator_api.backend``'s Ask), decided as the
-    app decides it: the front door's reading (``front_door``, read by the app's own
-    ``read_shortcut``; none given, as an app without one: no ready answer), so a question
-    it reads as a margin question takes the app's profit route
-    (``WorkspaceBackend.profit_job`` over the reader's own session: the answer Vince reads,
-    its facts' cited records as the answer's values); then the deterministic fast answer
-    (``operating.fast_answer``); the wrapped ``agent`` only when neither serves or both
-    decline. The run records ``agent["routed"]`` (``profit``, ``fast_path`` or ``agent``)
-    and, for the agent, why the routes before it did not answer (``agent["declined"]``).
-    A session that cannot start goes to the agent. A list of late purchase orders takes
-    the app's late-list route (``WorkspaceBackend.late_job``: the reader's gap inbox, as
-    Home shows it); the app never sends it on, so neither does the scoreboard."""
+    """The scoreboard's routing for one question: an injected deterministic fast answer
+    (``fast``; none since the phrase-rule path was retired 11-23), else the wrapped ``agent`` (the app has no question
+    router since owner 11-22: no front door, profit or late-list route). The run records
+    ``agent["routed"]`` (``fast_path`` or ``agent``) and, for the agent, why the fast
+    answer did not serve (``agent["declined"]``). A session that cannot start goes to the
+    agent."""
 
     def __init__(self, agent: Any, question: str, *, session: Callable[[Any], Any] | None = None,
-                 fast: Any = None, front_door: Any = None) -> None:
+                 fast: Any = None) -> None:
         self.agent, self.question = agent, question
-        self._session, self._fast, self._front_door = session, fast, front_door
+        self._session, self._fast = session, fast
         self._fast_ran = False
 
     @property
@@ -1405,30 +1399,16 @@ class RoutedAgent:
 
     def run(self, prompt: str, host: Any) -> Any:
         declined: list[str] = []
-        route = self._shortcut()
-        if route == "profit":
-            ran = self._profit(host, declined)
-            if ran is not None:
-                self._fast_ran = True
-                return ran
-        elif route == "late_list":
-            ran = self._late(host, declined)
-            if ran is not None:
-                self._fast_ran = True
-                return ran
-        fast = self._fast
-        if fast is None:
-            from operating import fast_answer as fast
+        fast = self._fast   # an injected fast path (the phrase-rule one was retired 11-23)
         ran = None
         tried: list[dict[str, Any]] = []
-        if fast.serves(self.question):
+        if fast is not None and fast.serves(self.question):
             try:
                 _session_host, server = self._open(host)
                 why: list[str] = []
                 reads = fast.Reads.of_server(server)
                 tried = getattr(reads, "events", [])
-                ran = fast.answer(self.question, reads, why) \
-                    if self._fast is None else fast.answer(self.question, reads)
+                ran = fast.answer(self.question, reads)
                 declined += [f"fast_path:{code}" for code in why[-1:]]
             except Exception as error:  # noqa: BLE001 - any failure here: the agent answers
                 declined.append(f"fast_path_unavailable:{type(error).__name__}")
@@ -1443,18 +1423,14 @@ class RoutedAgent:
         told = getattr(self.agent, "for_question", None)
         agent = told(self.question) if told is not None else self.agent
         # The app's own session limit (``operator_api.agent_ask``: ``question_budget`` under
-        # the Ask's hard cap): a lookup of one named record the short one, any other
-        # question the deep one, never the 60 s ``answer_budget`` of the old Ask; its hard
-        # timeout is that budget, as the app's ``agent_for`` sets it. The app's front door
-        # reads a lookup; here the identifier grammar does (``deep_investigation.is_lookup``,
-        # as ``ClaudeCodeAgent.routed``).
+        # the Ask's hard cap), never the 60 s ``answer_budget`` of the old Ask; its hard
+        # timeout is that budget, as the app's ``agent_for`` sets it.
         given = getattr(agent, "budget_seconds", None)
         if given is not None:
             import copy
             from operating import deep_investigation as deep
             agent = copy.copy(agent)
-            agent.budget_seconds = deep.question_budget(
-                self.question, given, "lookup" if deep.is_lookup(self.question) else None)
+            agent.budget_seconds = deep.question_budget(self.question, given)
             if getattr(agent, "timeout", None) is not None:
                 agent.timeout = int(agent.budget_seconds)
         result = agent.run(prompt, host)
@@ -1475,161 +1451,13 @@ class RoutedAgent:
             session = real.agent_session
         return session(host)
 
-    def _shortcut(self) -> str | None:
-        if self._front_door is None:
-            return None
-        from operator_api import backend as be
-        from operator_api import models as m
-        try:
-            reading = self._front_door.read(self.question, [])
-        except Exception:  # noqa: BLE001 - as the app: the question routes as typed
-            return None
-        return None if reading is None else be.read_shortcut(
-            m.AskRequest(question=self.question), reading)
-
-    def _profit(self, host: Any, declined: list[str]) -> Any:
-        """The app's profit route for the question, as the reader: None when it names no
-        customer or order the reader can find, or answers with a did-you-mean (the app
-        then shows choices: no answer), as the app's Ask goes on from it."""
-        from operating import fast_answer as fa
-        from operator_api import backend as be
-        from operator_api import models as m
-        try:
-            _session_host, server = self._open(host)
-            reads = fa.Reads.of_server(server)
-            view = AppView(reads)
-            backend = be.WorkspaceBackend(lambda _session: view, data_label="live-captures")
-            started = time.monotonic()
-            request = m.AskRequest(question=self.question)
-            job = backend.profit_job(request, "eval", lambda: int(
-                (time.monotonic() - started) * 1000))
-            payload = None if job is None else job(view)
-        except Exception as error:  # noqa: BLE001 - as the app: the next route answers
-            declined.append(f"profit_unavailable:{type(error).__name__}")
-            return None
-        if payload is None:
-            declined.append("profit:no_customer")
-            return None
-        if payload.did_you_mean:
-            # The app shows the choices and nothing else: what Vince reads is a question back.
-            return runner.AgentRun(events=list(reads.events), final_text=profit_text(
-                payload, reads.events), usage={}, agent={"routed": "profit",
-                                                         "did_you_mean": len(payload.did_you_mean)})
-        return runner.AgentRun(events=list(reads.events),
-                               final_text=profit_text(payload, reads.events), usage={},
-                               agent={"routed": "profit", "outcome": payload.outcome})
 
 
-    def _late(self, host: Any, declined: list[str]) -> Any:
-        """The app's late-list route for the question, as the reader: the late purchase
-        orders of the reader's gap inbox (``WorkspaceBackend.late_job``), the answer Vince
-        reads. None only when the reader's session cannot start (the app would show its
-        error; the scoreboard lets the next route answer and records why)."""
-        from operating import fast_answer as fa
-        from operator_api import backend as be
-        from operator_api import models as m
-        try:
-            _session_host, server = self._open(host)
-            reads = fa.Reads.of_server(server)
-            view = AppView(reads)
-            backend = be.WorkspaceBackend(lambda _session: view, data_label="live-captures")
-            started = time.monotonic()
-            payload = backend.late_job(m.AskRequest(question=self.question), "eval", lambda: int(
-                (time.monotonic() - started) * 1000))(view)
-        except Exception as error:  # noqa: BLE001 - recorded; the next route answers
-            declined.append(f"late_list_unavailable:{type(error).__name__}")
-            return None
-        return runner.AgentRun(events=list(reads.events),
-                               final_text=late_text(payload, reads.events), usage={},
-                               agent={"routed": "late_list", "outcome": payload.outcome})
 
 
-class AppView:
-    """A reader's workspace as the app's Ask jobs use it (``operator_api.workspace.object_workspace``'s
-    view and ``HostAccess``), over the reader's eval session (``fast_answer.Reads``): every
-    tool call is the session's, recorded as a transcript event, and each cited record is
-    decided for the reader by the console's own rule (``HostAccess._decide``)."""
-
-    def __init__(self, reads: Any) -> None:
-        self.reads = reads
-        self.access = self
-        self.actor = reads.actor
-        # the store the reader's host answers from: the gap inbox is read beside it
-        self.store_status = SimpleNamespace(store_path=getattr(reads.host, "store_path", None))
-        self._memo: dict[str, Any] = {}
-
-    def gap_inbox(self, *, limit: int | None = None) -> dict[str, Any]:
-        """The reader's gap inbox as the app's workspace reads it
-        (``ObjectWorkspace.gap_inbox``: the inbox beside the store, trimmed by this
-        reader's grant and per-item decision)."""
-        from operator_api.workspace.object_workspace import ObjectWorkspace
-        return ObjectWorkspace.gap_inbox(self, limit=limit)  # type: ignore[arg-type]
-
-    def grant(self) -> tuple[Callable[[str], bool], frozenset[str]]:
-        """(may this reader read an audience key, the markings it holds), from the policy
-        its tool calls are decided by, as ``HostAccess.grant``; inside ``_request``."""
-        reads = self.reads
-        policy = reads.host.policy_now(reads._gated)
-        return (lambda key: policy.may_read(reads._gated, key)), \
-            frozenset(policy.held_markings(reads._gated))
-
-    def _call(self, name: str, arguments: dict) -> dict[str, Any]:
-        from operating.fast_answer import Unanswerable
-        try:
-            return self.reads.call(name, arguments)
-        except Unanswerable:
-            # the console's tools answer a refused call with its error (``_call``)
-            last = self.reads.events[-1] if self.reads.events else {}
-            result = last.get("result")
-            return dict(result) if isinstance(result, Mapping) else {
-                "error": {"code": "tool_execution_failed"}}
-
-    def _request(self) -> Any:
-        return self.reads.request()
-
-    def _base(self) -> dict[str, Any]:
-        return {}
-
-    def _can_open(self, handle: str) -> bool:
-        return False   # no console here to open it in
-
-    def decide(self, handles: Iterable[str]) -> dict[str, Any]:
-        from operator_api.workspace.object_workspace import HostAccess
-        reads = self.reads
-        gated = reads._gated
-        todo = [h for h in dict.fromkeys(handles) if h not in self._memo]
-        if todo:
-            policy = reads.host.policy_now(gated)
-            item_gate = getattr(reads.host.tools, "item_gate", None)
-            for handle in todo:
-                self._memo[handle] = HostAccess._decide(handle, gated, policy, item_gate)
-        return {h: self._memo[h] for h in handles}
 
 
-def late_text(payload: Any, events: Sequence[Mapping[str, Any]]) -> str:
-    """The late-list route's answer as the scoreboard grades an answer: the words Vince
-    reads and, as the answer's values, each late order's name as the session served it
-    (``plx.object``'s display) where a fact cites that record. Nothing the app did not show
-    is added."""
-    cited = {s.handle for f in payload.facts for s in f.sources}
-    values: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for event in events:
-        if event.get("name") != "plx.object" or event.get("is_error"):
-            continue
-        display = ((event.get("result") or {}).get("object") or {}).get("display") or {}
-        origin = display.get("origin") if isinstance(display, Mapping) else None
-        text = display.get("untrusted_text") if isinstance(display, Mapping) else None
-        if not isinstance(origin, Mapping) or not isinstance(text, str) \
-                or origin.get("citation") not in cited or origin["citation"] in seen:
-            continue
-        seen.add(origin["citation"])
-        # named by its place in the list, never by a figure word: the grader reads a value
-        # as its name and its value ("late purchase order 1" would state a late count of 1)
-        values.append({"name": f"listed_purchase_order_{len(values) + 1}", "value": text,
-                       "citations": [{"l1_handle": origin["citation"],
-                                      "field_path": origin.get("field_path")}]})
-    return app_text(payload, values)
+
 
 
 def app_text(payload: Any, values: Sequence[Mapping[str, Any]]) -> str:
@@ -1644,66 +1472,16 @@ def app_text(payload: Any, values: Sequence[Mapping[str, Any]]) -> str:
     return text + "\n\n```json\n" + json.dumps(block, ensure_ascii=False) + "\n```"
 
 
-def profit_text(payload: Any, events: Sequence[Mapping[str, Any]]) -> str:
-    """The profit route's answer as the scoreboard grades an answer: the words Vince reads
-    (the direct answer, then each fact) and, as the answer's values, every checked input
-    (``plx.investigate`` answer entries that passed their claim check) on a record a fact
-    cites as its source, cited to its field. Nothing the app did not show is added."""
-    cited = {s.handle for f in payload.facts for s in f.sources}
-    values: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for event in events:
-        if event.get("name") != "plx.investigate" or event.get("is_error"):
-            continue
-        for entry in (event.get("result") or {}).get("answer") or ():
-            citation = entry.get("citation") if isinstance(entry, Mapping) else None
-            if entry.get("check") != "passed" or not isinstance(citation, Mapping) \
-                    or citation.get("l1_handle") not in cited:
-                continue
-            value = entry.get("value")
-            if isinstance(value, Mapping):
-                value = value.get("untrusted_text", value.get("value"))
-            key = (citation["l1_handle"], str(citation.get("field_path")))
-            if not isinstance(value, (str, int, float)) or key in seen:
-                continue
-            seen.add(key)
-            out = {"name": f"{entry.get('name')}_{len(values) + 1}", "value": str(value),
-                   "citations": [{"l1_handle": citation["l1_handle"],
-                                  "field_path": citation.get("field_path")}]}
-            for extra in ("currency", "unit", "quantity_role"):
-                if isinstance(entry.get(extra), str):
-                    out[extra] = entry[extra]
-            values.append(out)
-    return app_text(payload, values)
 
 
-class BoundedDoor:
-    """``door`` read by at most its session limit (``size``) of the scoreboard's workers
-    at once. The app's front door makes a question beyond its warm sessions wait
-    ``front_door.QUEUE_SECONDS``, then routes it as typed; the scoreboard's ``--workers``
-    reading one door at once would push its own questions past that wait and score routes
-    the app's Ask would not take. Here a worker waits its turn for a session instead, so
-    every question is routed by its reading, as in the app; the workers' agent runs stay
-    parallel (only the reading is bounded)."""
-
-    def __init__(self, door: Any) -> None:
-        self.door = door
-        self.size = max(1, int(getattr(door, "size", 1) or 1))
-        self._turn = threading.BoundedSemaphore(self.size)
-
-    def read(self, question: str, earlier: Sequence[str] = ()) -> Any:
-        with self._turn:
-            return self.door.read(question, earlier)
 
 
 def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
               make_host: Callable[[], Any], *, out_dev: Path, out_held: Path | None,
               evidence_label: str, workers: int, budget_seconds: float,
               agent_only: bool = False, fast: Any = None,
-              session: Callable[[Any], Any] | None = None, front_door: Any = None) -> None:
+              session: Callable[[Any], Any] | None = None) -> None:
     deadline = time.monotonic() + budget_seconds
-    if front_door is not None and not isinstance(front_door, BoundedDoor):
-        front_door = BoundedDoor(front_door)
 
     def one(pair: tuple[Mapping, Mapping]) -> None:
         item = pair[0]
@@ -1712,8 +1490,7 @@ def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
         out = out_dev if item["split"] == "dev" else out_held
         try:
             routed = agent if agent_only else RoutedAgent(
-                agent, item["question"]["text"], session=session, fast=fast,
-                front_door=front_door)
+                agent, item["question"]["text"], session=session, fast=fast)
             runner.run_items([item], routed, lambda _item: make_host(), out=out,
                              evidence_label=evidence_label)
         except runner.RunnerError as error:
@@ -1728,7 +1505,6 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
          make_host: Callable[[], Any] | None = None,
          environ: Mapping[str, str] | None = None, world: keys.World | None = None,
          fast: Any = None, session: Callable[[Any], Any] | None = None,
-         front_door: Any = None,
          spawn: Callable[[list[str], str], str] | None = None) -> int:
     """``agent``, ``make_host``, ``world``, ``fast``, ``session``, ``spawn`` (tests): an
     injected agent, host, world, fast-answer module, session opener and blind generator."""
@@ -1781,8 +1557,6 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
             sub.add_argument("--max-steps", type=int, default=deep.MAX_STEPS)
             sub.add_argument("--claude-bin", default="claude")
             sub.add_argument("--model")
-            sub.add_argument("--lookup-model",
-                             help="the model a lookup of one named record runs on")
             sub.add_argument("--reader-env", default=real.READER_ENV)
             sub.add_argument("--host-config")
             sub.add_argument("--live-host-config",
@@ -1798,12 +1572,12 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     environ = os.environ if environ is None else environ
     with contextlib.ExitStack() as cleanup:
         return _main(args, environ, cleanup, agent=agent, make_host=make_host, world=world,
-                     fast=fast, session=session, front_door=front_door, spawn=spawn)
+                     fast=fast, session=session, spawn=spawn)
 
 
 def _main(args: argparse.Namespace, environ: Mapping[str, str],
           cleanup: contextlib.ExitStack, *, agent: Any, make_host: Any, world: Any,
-          fast: Any, session: Any, front_door: Any = None, spawn: Any = None) -> int:
+          fast: Any, session: Any, spawn: Any = None) -> int:
     from scripts import eval_case_cards as cards_run
     from scripts import eval_owner_host as owner_host
     from scripts import eval_real_agent as real
@@ -1871,20 +1645,11 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str],
                 agent = runner.ClaudeCodeAgent(
                     binary=args.claude_bin, model=args.model, timeout=args.timeout,
                     max_turns=args.max_turns, budget_seconds=args.session_budget or None,
-                    max_steps=args.max_steps or None, lookup_model=args.lookup_model)
-                if front_door is None and not args.agent_only:
-                    # the app's own front door (``backend`` serve: started beside the agent)
-                    from operating.front_door import FrontDoor
-                    if FrontDoor.enabled():
-                        front_door = FrontDoor(binary=args.claude_bin)
-                        # closed when the run ends (its sessions are the run's own)
-                        cleanup.callback(front_door.close)
-                        front_door.warm()   # as the app's serve: warm before any question
-                        front_door.ready(120.0)
+                    max_steps=args.max_steps or None)
             run_items(pairs, agent, make_host, out_dev=out_dev, out_held=out_held,
                       evidence_label=evidence_label, workers=args.workers,
                       budget_seconds=args.budget_seconds, agent_only=args.agent_only, fast=fast,
-                      session=session, front_door=front_door)
+                      session=session)
         if args.command == "rescore" and args.rekey_state:
             fresh_world, _gens = load_world(args.rekey_state, now=run_moment(pairs))
             pairs = rekey(pairs, fresh_world,

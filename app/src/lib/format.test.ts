@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, fieldValue, formatMoney, money, objectHref, plainServerNote, readable, safeHref, safeNext, typeLabel, withoutFloatNoise, groupDigits } from "./format";
+import { ago, fieldValue, formatMoney, money, objectHref, plainServerNote, readable, safeHref, safeNext, typeLabel, withoutFloatNoise, groupDigits, formatNumber } from "./format";
 import { countedWords, recordLabel } from "./format";
 
 describe("safeHref", () => {
@@ -163,6 +163,11 @@ describe("a float's noise", () => {
     expect(groupDigits("116.25000000000001")).toBe("116.25");
     expect(groupDigits("12345678901234567890.5")).toBe("12,345,678,901,234,567,890.5");
     expect(groupDigits("10 kg")).toBe("10 kg");
+    // a figure with its unit: the figure grouped, the unit as given
+    expect(formatNumber("1234567.5 kg")).toBe("1,234,567.5 kg");
+    expect(formatNumber("-1200")).toBe("-1,200");
+    expect(formatNumber("12 000")).toBe("12 000");
+    expect(formatNumber("n/a")).toBe("n/a");
   });
 });
 
@@ -216,5 +221,16 @@ describe("countedWords", () => {
     expect(countedWords("3 open order(s) affected, 0 lot(s)")).toBe("3 open orders affected, 0 lots");
     expect(countedWords("2 address(s)")).toBe("2 addresses");
     expect(readable("1 open order(s) affected")).toBe("1 open order affected");
+  });
+});
+
+describe("plainDates keeps a stated local time", () => {
+  it("says the day and keeps the hour of a time with no zone; a bare date and a zoned stamp say the day", async () => {
+    const { plainDates, formatDate } = await import("./format");
+    const d = formatDate("2026-11-23");
+    expect(plainDates("last checked 2026-11-23 12:48 PM ET")).toBe(`last checked ${d} 12:48 PM ET`);
+    expect(plainDates("last checked 2026-11-23 9:05 AM ET")).toBe(`last checked ${d} 9:05 AM ET`);
+    expect(plainDates("due 2026-11-23.")).toBe(`due ${d}.`);
+    expect(plainDates("at 2026-11-01T02:00:00Z")).toBe(`at ${formatDate("2026-10-31")}`);
   });
 });

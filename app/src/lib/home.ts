@@ -59,12 +59,16 @@ export const STALE_CLOCK_AFTER_MS = 60 * 60 * 1000;
  * reader's page read a moment ago, served as kept): "As of 9:08 PM ET", as other people's
  * decisions on it are as of then.
  */
-export function staleLine(staleSince?: string | null, readAt?: string | null, now: number = Date.now()): string | null {
+export function staleLine(staleSince?: string | null, readAt?: string | null, now: number = Date.now(), gaveUp = false, onReturn = false): string | null {
   const at = staleSince || readAt;
   const t = at ? new Date(at) : null;
   if (!t || Number.isNaN(t.getTime())) return null;
   const clock = t.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
   if (!staleSince) return `As of ${clock} ET`;
+  // the tries to read again are spent (about 22 s): "refreshing" would be untrue
+  // read again when the person comes back to the window, not on a timer (useStaleRefreshOnReturn)
+  if (onReturn) return `Showing the read from ${clock} ET. It is read again when you come back to this window.`;
+  if (gaveUp) return `No newer read came in. Showing the read from ${clock} ET.`;
   return now - t.getTime() < STALE_CLOCK_AFTER_MS ? "Refreshing" : `Showing the read from ${clock} ET · refreshing`;
 }
 

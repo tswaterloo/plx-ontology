@@ -26,21 +26,19 @@ def holders():
 
 class PilotPurchaseOrder(unittest.TestCase):
     def test_the_rule_in_words(self):
-        for held, pilot in (("bc", True), ("bc,portal", True), ("portal", False),
+        """Only a BC-only order is a pilot one; any other system holding it makes it count
+        (PO 106001, held by BC and the Portal, is a late PO the PO view shows)."""
+        for held, pilot in (("bc", True), ("bc,portal", False), ("portal", False),
                             ("sage", False), ("filemaker,portal", False),
-                            ("bc,filemaker,portal", False), ("bc,sage", False), (None, False)):
+                            ("bc,filemaker,portal", False), ("bc,sage", False), (None, False),
+                            ("", False)):
             self.assertIs(is_bc_pilot_po(held), pilot, held)
 
     def test_the_sql_agrees_with_the_python_rule_for_every_set_of_holders(self):
-        """The fragment's two regexes (Postgres ARE, the same here) against the rule."""
         sql = bc_pilot_po_sql("p")
-        yes, no = re.findall(r"coalesce\(p\.source_systems, ''\) (!?~) '([^']+)'", sql), None
-        self.assertEqual([op for op, _ in yes], ["~", "!~"])
-        has_bc, no_record = (re.compile(r) for _, r in yes)
+        self.assertEqual(sql, "(coalesce(p.source_systems, '') = 'bc')")
         for held in holders():
-            text = held or ""
-            self.assertIs(bool(has_bc.search(text)) and not no_record.search(text),
-                          is_bc_pilot_po(held), held)
+            self.assertIs((held or "") == "bc", is_bc_pilot_po(held), held)
 
     def test_every_late_po_check_and_the_lead_time_tile_use_the_one_fragment(self):
         for rule in ("po_late", "po_due", "po_undated"):

@@ -39,11 +39,13 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from . import models as m
+from .backend_pages import same_answer_access
 from .errors import UserFacing
 
 BUILTIN_FILE = Path(__file__).with_name("insights_builtin.json")
@@ -56,10 +58,9 @@ WATCH_OPS = ("above", "below")
 # come to them; the "total" of the column over the rows (of one currency)
 WATCH_ROWS = ("any", "latest", "total")
 _COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-MAX_SAVED = 60          # saved insights per person
 STREAM_WORKERS = 8      # tiles of the one-response dashboard read at the same time
 log = logging.getLogger(__name__)
-RUN_SECONDS = 30.0      # one insight's read, queue wait included
+RUN_SECONDS = 1800.0    # a read that has hung (no socket answer), queue wait included: never a cut for speed
 AHEAD_PRIORITY = 3      # reads nobody waits on: after page reads (-1..1) and warm-ups (2)
 SAVED_ID = re.compile(r"^s([1-9][0-9]{0,17})$")
 BUILTIN_ID = re.compile(r"^[a-z][a-z0-9_]{0,60}$")
@@ -72,8 +73,6 @@ REFUSED = {
     "view_as_refused": ("Nothing is saved while you view as someone else.", 403),
     "insight_not_saved": ("Insights can't be saved just now: who may be named in them "
                           "could not be checked. Try again shortly.", 503),
-    "insight_too_many": (f"You can keep up to {MAX_SAVED} saved insights; delete one to save "
-                         "another.", 409),
     "insight_invalid_sql": ("That statement can't be saved: {detail}", 422),
     "insight_chart": ("That chart can't be drawn from this statement: {detail}", 422),
     "insight_watch": ("A number to watch needs its line: {detail}.", 422),
@@ -90,6 +89,8 @@ REFUSED = {
     "insight_unreadable": ("This view could not be read just now. Refresh to try again; if it "
                            "keeps failing, tell the Workbench team.", 503),
     "not_found": ("No such insight.", 404),
+    "filter_unworkable": ("That filter can't be applied: {detail}.", 422),
+    "view_as_statement": ("Changed filters aren't read while you view as someone else.", 403),
 }
 
 
@@ -115,6 +116,10 @@ class Spec:
     question: str = ""
     # a built-in answered from the shared copies when its reader may be (``insights_fast``)
     fast: bool = False
+    # "view.column" the statement cannot be measured without: when it returns nothing and
+    # that column holds no value anywhere, the tile says it is not measurable (an empty
+    # chart would read as "nothing waiting")
+    needs: tuple[str, ...] = ()
     schedule: str = ""
     notify: str = "never"
     watch: Mapping[str, Any] = field(default_factory=dict)   # notify "crosses": the line
@@ -137,16 +142,30 @@ def _rollup(raw: Any) -> dict[str, Any]:
             "order": "count_desc" if raw.get("order") == "count_desc" else "as_read"}
 
 
+def _needs(raw: Any) -> tuple[str, ...]:
+    """The declared ``view.column`` needs that name a column a business view has; one that
+    does not is dropped (a test holds every declared one valid)."""
+    from operating.pg import business_views as bv
+    out = []
+    for n in raw if isinstance(raw, list) else ():
+        view, _, col = str(n).partition(".")
+        v = bv.VIEWS.get(view)
+        if v is not None and any(c.name == col for c in v.cols):
+            out.append(f"{view}.{col}")
+    return tuple(out)
+
+
 @functools.lru_cache(maxsize=1)
 def builtin() -> tuple[Spec, ...]:
     """The declared built-in insights; one whose statement ``plx.sql``'s checker refuses,
     or of an unknown scope, is left out (a test holds every one valid)."""
+    from operating import measures
     from operating.ontology_tools_sql import ToolError, check
     from operating.pg import business_views as bv
     raw = json.loads(BUILTIN_FILE.read_text(encoding="utf-8"))
     out = []
     for e in raw.get("insights") or ():
-        sql = str(e.get("sql") or "").replace("{business_tz}", bv.BUSINESS_TZ)
+        sql = measures.fill(str(e.get("sql") or ""))
         if not BUILTIN_ID.match(str(e.get("id") or "")) or e.get("scope") not in SCOPES:
             continue
         try:
@@ -156,7 +175,8 @@ def builtin() -> tuple[Spec, ...]:
         out.append(Spec(id=e["id"], title=str(e["title"]), about=str(e["about"]), sql=sql,
                         chart=_chart_spec(e.get("chart")), group=str(e.get("group") or ""),
                         person=str(e.get("person") or ""), scope=e["scope"],
-                        rollup=_rollup(e.get("rollup")), fast=e.get("fast") is True))
+                        rollup=_rollup(e.get("rollup")), fast=e.get("fast") is True,
+                        needs=_needs(e.get("needs"))))
     return tuple(out)
 
 
@@ -299,8 +319,6 @@ class Store:
         with self.connect() as conn:
             (n,) = conn.execute("SELECT count(*) FROM insights.insight WHERE owner = %s AND "
                                 "deleted_at IS NULL", (reader.key,)).fetchone()
-            if n >= MAX_SAVED:
-                raise Refused("insight_too_many")
             (rid,) = conn.execute(
                 "INSERT INTO insights.insight (owner, title, question, sql, chart, schedule, "
                 "notify, watch, position) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
@@ -328,6 +346,30 @@ class Store:
 
 # ----------------------------------------------------------------------------- reading
 
+def _every_row(view: Any, sql: str) -> Any:
+    """``plx.sql``'s result of ``sql`` with EVERY row: the tool shows one page of a result
+    and holds the rest under its id (``{"page": id, "offset": n}``), so a tile or page that
+    does arithmetic on rows reads page after page until the result's last row. An error
+    from a later page is returned as the error (never a first page said whole)."""
+    out = view._call("plx.sql", {"sql": sql})
+    if not isinstance(out, Mapping) or "error" in out or not isinstance(out.get("rows"), list):
+        return out
+    rows = list(out["rows"])
+    page = out
+    while (page.get("profile") or {}).get("page") and page.get("result"):
+        page = view._call("plx.sql", {"page": page["result"], "offset": len(rows)})
+        if not isinstance(page, Mapping) or "error" in page or not page.get("rows"):
+            return page if isinstance(page, Mapping) and "error" in page else {
+                "error": {"code": "query_failed", "message": "a result page came back empty"}}
+        rows.extend(page["rows"])
+    if len(rows) == len(out["rows"]):
+        return out
+    # every row held is now read: rows past the first page are no longer unseen
+    return {**out, "rows": rows, "row_count": len(rows),
+            "truncated": bool(page.get("truncated")),
+            "profile": {**(out.get("profile") or {}), "shown": len(rows)}}
+
+
 def read_sql(backend: Any, reader: Any, sql: str,
              seconds: float = RUN_SECONDS, ahead: bool = False) -> Mapping[str, Any]:
     """``plx.sql``'s result of ``sql`` as ``reader`` (their door), or ``Refused`` saying in
@@ -340,7 +382,7 @@ def read_sql(backend: Any, reader: Any, sql: str,
     # as a long read, so one read worker always stays free for the pages.
     worker = getattr(backend, "reads", None) or getattr(backend, "access_worker", None)
     try:
-        out = worker.run(reader, lambda view: view._call("plx.sql", {"sql": sql}),
+        out = worker.run(reader, lambda view: _every_row(view, sql),
                          timeout=seconds, priority=AHEAD_PRIORITY if ahead else 0,
                          long=ahead)
     except TimeoutError:
@@ -623,14 +665,47 @@ def unusual_sql(entry: Mapping[str, Any], days: int) -> str:
 
 
 def measure_list() -> list[m.MeasureInfo]:
-    """The agreed measures' definitions (``operating.measures.listing``): no data read,
-    the same for every reader; none when the catalogue cannot be read."""
+    """The agreed measures' definitions (``operating.measures.listing``) with each one's
+    version and the day it was set: no data read, the same for every reader; none when
+    the catalogue cannot be read."""
     from operating import measures as ms
     try:
-        listed = ms.listing()["measures"]
+        listed, entries = ms.listing()["measures"], _catalogue()
     except (OSError, ValueError, KeyError):
         return []
-    return [m.MeasureInfo(**e) for e in listed]
+    return [m.MeasureInfo(**e, version=ms.version(entries[e["id"]]),
+                          defined_on=ms.defined_on(entries[e["id"]]) or None)
+            for e in listed if e["id"] in entries]
+
+
+def _catalogue() -> Mapping[str, Mapping[str, Any]]:
+    """``measures.measures()``, read again only when the catalogue file changes (every
+    tile's ``info`` asks for its entry)."""
+    from operating import measures as ms
+    return _catalogue_at(ms.CATALOGUE.stat().st_mtime_ns)
+
+
+@functools.lru_cache(maxsize=2)
+def _catalogue_at(_mtime: int) -> Mapping[str, Mapping[str, Any]]:
+    from operating import measures as ms
+    return ms.measures()
+
+
+def measure_of(spec: Spec) -> Optional[m.MeasureCited]:
+    """A catalogue measure's tile: the definition its figures are (``MeasureCited``), with
+    the day its version was set only when the catalogue's recorded version is current."""
+    if spec.saved or not spec.id.startswith(MEASURE_TILE):
+        return None
+    from operating import measures as ms
+    try:
+        entry = _catalogue().get(spec.id[len(MEASURE_TILE):])
+    except (OSError, ValueError, KeyError):
+        return None
+    if not entry:
+        return None
+    return m.MeasureCited(id=entry["id"], name=entry["name"], definition=entry["definition"],
+                          owner=entry["owner"], version=ms.version(entry),
+                          defined_on=ms.defined_on(entry) or None)
 
 
 def info(spec: Spec) -> m.InsightInfo:
@@ -640,7 +715,8 @@ def info(spec: Spec) -> m.InsightInfo:
                          schedule=spec.schedule, notify=spec.notify,
                          watch=m.InsightWatch(**spec.watch) if spec.watch else None,
                          last_run=spec.last_run or None,
-                         fixed_dates=fixed_dates(spec.sql) if spec.saved else None)
+                         fixed_dates=fixed_dates(spec.sql) if spec.saved else None,
+                         measure=measure_of(spec))
 
 
 _DATE_LITERAL = re.compile(r"'(\d{4}-\d{2}-\d{2})")
@@ -656,16 +732,65 @@ def fixed_dates(sql: str) -> Optional[str]:
     return days[0] if len(days) == 1 else f"{days[0]} to {days[-1]}"
 
 
+def count_rows(backend: Any, reader: Any, sql: str, seconds: float = RUN_SECONDS,
+               ahead: bool = False) -> Optional[int]:
+    """How many rows ``sql`` has in all as ``reader`` reads it (a second read; only for a
+    result a cap cut), None when it could not be counted: a cut list says so, never a
+    cut count taken for the whole."""
+    try:
+        got = read_sql(backend, reader, f"SELECT count(*) AS n FROM (\n{sql.strip().rstrip(';')}\n) AS plx_all",
+                       seconds, ahead=ahead)
+        return int(str(got["rows"][0]["cells"][0]))
+    except Exception:  # noqa: BLE001 - the list still shows, saying only its first rows
+        return None
+
+
 def read_now(backend: Any, reader: Any, sql: str,
              seconds: float = RUN_SECONDS, ahead: bool = False) -> dict[str, Any]:
-    """``read_sql`` with when it was read."""
+    """``read_sql`` with when it was read, and (when a cap cut it) how many rows there are."""
     started = dt.datetime.now(dt.timezone.utc)
-    return {"got": read_sql(backend, reader, sql, seconds, ahead=ahead),
-            "read_at": started.isoformat(timespec="seconds")}
+    got = read_sql(backend, reader, sql, seconds, ahead=ahead)
+    out: dict[str, Any] = {"got": got, "read_at": started.isoformat(timespec="seconds")}
+    if got.get("truncated"):
+        out["total"] = count_rows(backend, reader, sql, seconds, ahead=ahead)
+    return out
+
+
+_KNOWN: dict[tuple, tuple[float, bool]] = {}   # (reader, need) -> (when, any value)
+KNOWN_SECONDS = 600.0
+
+
+def _reader_key(reader: Any) -> tuple:
+    principals = getattr(getattr(reader, "session", None), "principals", None) or ()
+    return (getattr(reader, "key", None), getattr(reader, "mode", None),
+            ",".join(sorted(principals)))
+
+
+def _unknown_base(backend: Any, reader: Any, spec: Spec) -> Optional[str]:
+    """Plain words saying why ``spec`` (which read no rows) cannot be measured: a column it
+    needs (``spec.needs``) holds no value in any row the reader may read; None when each
+    holds one (the statement's answer is then really empty) or cannot be checked. Kept
+    ``KNOWN_SECONDS`` per column."""
+    for need in spec.needs:
+        view, _, col = need.partition(".")
+        at = time.monotonic()
+        slot = (_reader_key(reader), need)   # what a reader may read is theirs: kept per reader
+        hit = _KNOWN.get(slot)
+        if hit is None or at - hit[0] > KNOWN_SECONDS:
+            try:
+                got = read_sql(backend, reader, f"SELECT 1 FROM {view} WHERE {col} IS NOT NULL "
+                               "LIMIT 1", 10.0)
+            except Exception:  # noqa: BLE001 - unchecked: the empty answer stands
+                return None
+            hit = _KNOWN[slot] = (at, bool(got.get("rows")))
+        if not hit[1]:
+            return (f"Not measurable yet: {view}.{col} is not filled in for any message, so "
+                    "this cannot tell who is waiting. It is not that nobody is.")
+    return None
 
 
 def result(backend: Any, reader: Any, spec: Spec, scope: tuple,
-           read: Optional[Mapping[str, Any]] = None) -> m.InsightResult:
+           read: Optional[Mapping[str, Any]] = None, stored: bool = False) -> m.InsightResult:
     """``spec`` as ``reader`` reads it (``read``: an answer ``read_now`` gave them, kept
     a few minutes; else read now): its rows (cells as text), its chart drawn from them, the
     people its rows are about (their Team keys) and its definition. The Team rule and the
@@ -678,17 +803,191 @@ def result(backend: Any, reader: Any, spec: Spec, scope: tuple,
     raw = [r.get("cells", []) for r in got.get("rows") or () if isinstance(r, Mapping)]
     columns, rows, people = visible_rows(spec, [str(c) for c in got["columns"]], raw,
                                          everyone, frozenset(me), gone)
+    if rows:
+        unknown = None
+    elif stored:
+        unknown = read.get("unknown_base")   # read with the tile in the background
+    else:
+        unknown = _unknown_base(backend, reader, spec)
+    total = None
+    if got.get("truncated") and not spec.person and not spec.rollup and \
+            not (stored and "total" not in read):
+        # a statement the Team rule can drop rows of (person rows, a rolled-up count) has no
+        # total the count read could give: it says only its first rows, never a wrong "of M"
+        total = read["total"] if "total" in read else count_rows(backend, reader, spec.sql)
     chart = None
     if spec.chart:
         drawn = draw(spec.chart, columns, rows, title=spec.title, as_of=got.get("as_of"),
                      sql=spec.sql, truncated=bool(got.get("truncated")))
+        if drawn and total is not None:
+            drawn["rows_total"] = total
         chart = m.AskChart(**drawn) if drawn else None
     return m.InsightResult(
         **info(spec).model_dump(), sql=spec.sql, columns=columns,
+        excluded=excluded_of(backend, reader, spec, read, stored=stored),
         rows=[[_text(c) for c in r] for r in rows],
         people=[key_of(p) if p else None for p in people],
-        row_count=len(rows), truncated=bool(got.get("truncated")),
-        as_of=_text(got.get("as_of")), read_at=read["read_at"], drawn=chart)
+        row_count=len(rows), truncated=bool(got.get("truncated")), total_rows=total,
+        checked=(m.InsightChecked(**read["checked"]) if isinstance(read.get("checked"), Mapping)
+                 else None),
+        not_measurable=unknown, as_of=_text(got.get("as_of")), read_at=read["read_at"], drawn=chart,
+        work=work_of(spec.sql),
+        served=m.InsightServed(**read["fast"]) if isinstance(read.get("fast"), Mapping) else None)
+
+
+def excluded_of(backend: Any, reader: Any, spec: Spec, read: Optional[Mapping[str, Any]] = None,
+                seconds: float = RUN_SECONDS, ahead: bool = False,
+                stored: bool = False) -> list[m.ExcludedCount]:
+    """A measure tile's stated exclusions (S2), read as the reader over the tile's own
+    period (``measures.excluded_statements``: one statement per parameter left off); one
+    that cannot be read says why, never a 0. ``read``: the tile's kept answer; the counts
+    it was kept WITH (``excluded``, read at the same time through the same door,
+    ``with_excluded``) are returned as they are, so an open of a kept tile reads nothing
+    (11-23: sixteen counts read live on every open, one after another, were 56 s of the
+    dashboard's stream). Without them (a tile kept before they were), read now."""
+    if spec.saved or not spec.id.startswith(MEASURE_TILE):
+        return []
+    held = (read or {}).get("excluded")
+    if isinstance(held, list):
+        return [m.ExcludedCount(**e) for e in held]
+    if stored:
+        # said, never dropped: a stored read has no counts only when they could not be read
+        # with it; the next background read tries again
+        from operating import measures as ms
+        name = spec.id[len(MEASURE_TILE):]
+        return [m.ExcludedCount(parameter=p["id"], says=str(p.get("says") or ""),
+                                why="not counted")
+                for p, _sql in ms.excluded_statements(
+                    name, ms.TREND_DAYS if (ms.measures().get(name) or {}).get("date") else None)]
+    return _read_excluded(backend, reader, spec, seconds, ahead)
+
+
+def _read_excluded(backend: Any, reader: Any, spec: Spec, seconds: float = RUN_SECONDS,
+                   ahead: bool = False) -> list[m.ExcludedCount]:
+    from operating import measures as ms
+    name = spec.id[len(MEASURE_TILE):]
+    entry = ms.measures().get(name) or {}
+    out = []
+    for p, sql in ms.excluded_statements(name, ms.TREND_DAYS if entry.get("date") else None):
+        try:
+            got = read_sql(backend, reader, sql, seconds, ahead=ahead)
+        except Refused as exc:
+            out.append(m.ExcludedCount(parameter=p["id"], says=str(p.get("says") or ""),
+                                       why=str(exc)))
+            continue
+        said = ms.excluded_of(p, [str(c) for c in got["columns"]],
+                              [r.get("cells", []) for r in got.get("rows") or ()
+                               if isinstance(r, Mapping)])
+        out.append(m.ExcludedCount(parameter=said["parameter"], says=said["says"], n=said["n"],
+                                   value=None if said["value"] is None else _text(said["value"]),
+                                   why=None if said["n"] is not None else "not counted"))
+    return out
+
+
+def with_excluded(backend: Any, reader: Any, spec: Spec, out: dict[str, Any],
+                  seconds: float = RUN_SECONDS, ahead: bool = False) -> dict[str, Any]:
+    """A measure tile's read with its exclusion counts kept beside it (read through the same
+    door, now): the kept answer is the whole tile, so opening it reads nothing."""
+    if spec.saved or not spec.id.startswith(MEASURE_TILE):
+        return out
+    counted = _read_excluded(backend, reader, spec, seconds, ahead)
+    out = {**out, "checked": checked_of(backend, reader, spec, out, seconds, ahead)}
+    if any(e.n is None for e in counted):
+        # a count that could not be read is not kept: the next open reads it again, and says
+        # why in the meantime (never a kept "could not count" served for minutes)
+        return out
+    return {**out, "excluded": [e.model_dump(mode="json") for e in counted]}
+
+
+def checked_of(backend: Any, reader: Any, spec: Spec, out: Mapping[str, Any],
+               seconds: float = RUN_SECONDS, ahead: bool = False) -> dict[str, str]:
+    """The 'checked' line of a measure tile: its monthly rows summed (per currency or unit)
+    against the measure's own total over the same window, read through the same door. A
+    snapshot tile IS the measure's statement; a rate or a figure that does not add up across
+    months (a distinct count) is said not to be checked, never passed."""
+    from decimal import Decimal, InvalidOperation
+    from operating import measures as ms
+    name = spec.id[len(MEASURE_TILE):]
+    entry = ms.measures().get(name) or {}
+    if not entry.get("date"):
+        return {"status": "not_checked", "says": "This tile is the measure's own statement, "
+                "read once: there is no second figure to set it against."}
+    if ms.is_rate(entry) or not str(entry["value"]).startswith(("sum(", "count(*)")):
+        return {"status": "not_checked", "says": "This measure is a rate or a count of distinct "
+                "things: months do not add up to it, so the rows are not totalled."}
+    try:
+        sql, _cite = ms.statement(name, days=ms.TREND_DAYS)
+        whole = read_sql(backend, reader, sql, seconds, ahead=ahead)
+    except Refused as exc:
+        return {"status": "not_checked", "says": f"The measure's own total could not be read: {exc.message}"}
+    per = entry.get("per")
+
+    def totals(cols: Sequence[Any], rows: Sequence[Sequence[Any]]) -> dict[str, Decimal]:
+        names = [str(c) for c in cols]
+        v = names.index("value")
+        k = names.index(per) if per and per in names else None
+        got: dict[str, Decimal] = {}
+        for r in rows:
+            key = _text(r[k]) if k is not None else ""
+            try:
+                got[key or ""] = got.get(key or "", Decimal(0)) + Decimal(str(_text(r[v]) or 0))
+            except InvalidOperation:
+                got[key or ""] = got.get(key or "", Decimal(0))
+        return got
+    try:
+        tile = totals((out.get("got") or {}).get("columns") or [],
+                      [r.get("cells", []) for r in (out.get("got") or {}).get("rows") or ()
+                       if isinstance(r, Mapping)])
+        own = totals(whole.get("columns") or [], [r.get("cells", []) for r in whole.get("rows") or ()
+                                                  if isinstance(r, Mapping)])
+    except ValueError:
+        return {"status": "not_checked", "says": "The tile's rows or the measure's own total "
+                "carry no value column to add up."}
+    unit = f" ({per})" if per else ""
+    # a month the window cuts in two is partial in the rows and whole nowhere: the rows are
+    # the window's own rows, so the totals are the same rows summed two ways
+    differs = {k: (tile.get(k, Decimal(0)), own.get(k, Decimal(0)))
+               for k in set(tile) | set(own) if tile.get(k, Decimal(0)) != own.get(k, Decimal(0))}
+    if not differs:
+        total = ", ".join(f"{k + ' ' if k else ''}{v:,}" for k, v in sorted(own.items())) or "0"
+        return {"status": "reconciles", "says": f"The months add up to the measure's own "
+                f"{ms.TREND_DAYS}-day total{unit}: {total}."}
+    first = sorted(differs)[0]
+    a, b = differs[first]
+    if len(differs) == 1:
+        return {"status": "differs", "says": f"The months add up to {a:,} but the measure's own "
+                f"{ms.TREND_DAYS}-day total is {b:,}{(' for ' + first) if first else ''}. "
+                "Rows near the window's edge can move between the two reads: read again to confirm."}
+    # the count first, then every one that differs (a list is never cut)
+    each = "; ".join(f"{k or 'total'}: the months add up to {x:,}, the measure's own total is {y:,}"
+                     for k, (x, y) in sorted(differs.items()))
+    return {"status": "differs", "says": f"The months and the measure's own {ms.TREND_DAYS}-day "
+            f"total differ in {len(differs)} places: {each}. "
+            "Rows near the window's edge can move between the two reads: read again to confirm."}
+
+
+def work_of(sql: str) -> Optional[m.QueryWork]:
+    """What a statement reads and filters on (``sql_work``), its views among the business
+    views and the views made over them."""
+    from operating.pg import business_views as bv
+    from . import insights_fast as fast
+    from operating.sql_work import work
+    got = work(sql, (*bv.VIEWS, *fast.DERIVED))
+    return m.QueryWork(**got) if got else None
+
+
+def filtered_sql(sql: str, edits: Sequence[Any]) -> str:
+    """``sql`` with the reader's filter edits (``sql_work.edited``), checked as ``plx.sql``
+    checks any statement; ``Refused`` in plain words otherwise."""
+    from operating.ontology_tools_sql import ToolError, check
+    from operating.sql_work import Unworkable, edited
+    try:
+        return check(edited(sql, [e.model_dump() if hasattr(e, "model_dump") else e
+                                  for e in edits]))
+    except Unworkable as exc:
+        raise Refused("filter_unworkable", str(exc)) from None
+    except ToolError as exc:
+        raise Refused("filter_unworkable", exc.message) from None
 
 
 # ----------------------------------------------------------------------------- the backend
@@ -737,6 +1036,15 @@ class StreamOnce:
     def builtins(self) -> list[Spec]:
         return self._once("builtins", lambda: self._host._builtin_for(
             self._reader, bool(self._scope[0])))
+
+
+class NotStored(Exception):
+    """Nothing stored for this reader's tile yet (stored-only reads, ``insight_result``): its
+    read has been started in the background; the request never waits for it."""
+
+
+FILLING = UserFacing("insight_filling", "This chart is being prepared. It appears here when "
+                     "its first read is stored.", 425)
 
 
 class NotKept(Exception):
@@ -825,15 +1133,14 @@ class InsightsMixin:
 
         def one(iid: str, kept: bool) -> dict[str, Any]:
             try:
-                got = self.insight_result(reader, iid, False, scope=scope, kept_only=kept,
+                got = self.insight_result(reader, iid, False, scope=scope, stored_only=True,
                                           shared=shared)
                 return {"id": iid, "result": got.model_dump(mode="json")}
-            except NotKept:
-                if not kept or iid.startswith(MEASURE_TILE):
-                    # a measure tile with nothing kept for the reader: the page reads it
-                    # once it nears the view (its read ahead started with the listing)
-                    return {"id": iid, "later": True}
-                return {"id": iid, "read": True}
+            except NotStored:
+                # nothing stored for this reader yet: its read runs in the background (it
+                # started with the listing) and the page asks again for the stored value;
+                # the stream never computes a tile (speed 10.6 #6, KNOWN-GAPS P3)
+                return {"id": iid, "later": True, "waiting": True}
             except UserFacing as exc:
                 return {"id": iid, "error": {"code": exc.code, "message": exc.message,
                                              "status": exc.status}}
@@ -847,35 +1154,96 @@ class InsightsMixin:
                                              "message": "This chart could not be read. "
                                                         "Try Refresh."}}
 
-        # first every tile that is kept (or the reader's last answer under the same access
-        # state), each sent at once; then the others read, side by side
-        unread = []
+        # every tile is a stored value (or the reader's last answer under the same access
+        # state), sent at once with its read time; one with nothing stored is "waiting" and
+        # its background read is already running. Nothing is computed in this request.
         for item in listed.items:
-            got = one(item.id, True)
-            if got.get("read"):
-                unread.append(item.id)
-            else:
-                yield got
-        if not unread:
+            yield one(item.id, True)
+
+    def insight_why_stream(self, reader: Any, iid: str) -> Iterator[dict[str, Any]]:
+        """"Why did this change?" for a measure tile, as steps: the change itself, which
+        dimension holds it (``measures.statement(why=True)``), then that dimension's parts. Each
+        step is one statement read as the reader (their door), sent as soon as it is read with
+        ``answer``: the best sentence so far, so stopping after any step ("answer now") leaves a
+        true answer. A step that cannot be read ends the stream with its typed error."""
+        from operating import measures as ms
+        from operating.ontology_tools_sql import ToolError
+        if not iid.startswith(MEASURE_TILE):
+            raise UserFacing("insight_not_measure", "Only a measure's change can be explained "
+                             "this way.", 422)
+        name = iid[len(MEASURE_TILE):]
+        entry = ms.measures().get(name)
+        if entry is None or not entry.get("date"):
+            raise UserFacing("insight_no_period", "This figure is a snapshot as it stands: it "
+                             "has no earlier period to change from.", 422)
+        self._insight_scope(reader)       # the reader's own door decides every read below
+        title = str(entry.get("name") or name)
+        per = entry.get("per")
+        best = ""
+
+        def run(n: int, says: str, **kw: Any) -> Optional[dict[str, Any]]:
+            try:
+                sql, cite = ms.statement(name, **kw)
+                got = read_sql(self, reader, sql, ahead=False)
+            except ToolError as exc:
+                return {"step": n, "of": 3, "says": says, "answer": best,
+                        "error": {"code": exc.code, "message": exc.message, "status": 422}}
+            except UserFacing as exc:
+                return {"step": n, "of": 3, "says": says, "answer": best,
+                        "error": {"code": exc.code, "message": exc.message, "status": exc.status}}
+            cols = [str(c) for c in got["columns"]]
+            rows = [[_text(c) for c in r.get("cells", [])] for r in got.get("rows") or ()
+                    if isinstance(r, Mapping)]
+            return {"step": n, "of": 3, "says": says, "period": cite.get("period"),
+                    "columns": cols, "rows": rows, "sql": sql}
+
+        def at(row: Sequence[Any], cols: Sequence[str], c: str) -> Optional[str]:
+            return row[cols.index(c)] if c in cols else None
+
+        one = run(1, f"How {title} changed", compare=True)
+        if "error" in one:
+            yield one
             return
-        pool = ThreadPoolExecutor(max_workers=STREAM_WORKERS,
-                                  thread_name_prefix="insights-stream")
-        try:
-            futures = [pool.submit(contextvars.copy_context().run, one, iid, False)
-                       for iid in unread]
-            for fut in as_completed(futures):
-                yield fut.result()
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+        parts = []
+        for r in one["rows"]:
+            unit = f" {at(r, one['columns'], per)}" if per and at(r, one["columns"], per) else ""
+            parts.append(f"{at(r, one['columns'], 'current')} now against "
+                         f"{at(r, one['columns'], 'previous')} before, a change of "
+                         f"{at(r, one['columns'], 'change')}{unit}")
+        best = f"{title}: " + "; ".join(parts) if parts else f"{title}: no rows in either period."
+        yield {**one, "answer": best}
+        two = run(2, "Which dimension holds the change", why=True)
+        if "error" in two:
+            yield two
+            return
+        cols = two["columns"]
+        top = next((r for r in two["rows"] if at(r, cols, "concentration_pct") is not None), None)
+        if top is None:
+            yield {**two, "answer": best + " No dimension holds a readable part of it."}
+            return
+        dim = at(top, cols, "dimension")
+        best = (f"{best}. It sits most in {dim}: {at(top, cols, 'top_part')} "
+                f"({at(top, cols, 'top_change')}, {at(top, cols, 'top_share_of_change_pct')}% of "
+                f"the whole change); {at(top, cols, 'parts_for_half')} of "
+                f"{at(top, cols, 'parts')} parts hold half of what moved")
+        yield {**two, "answer": best}
+        three = run(3, f"The parts of {dim}", by=dim, compare=True)
+        if "error" in three:
+            yield three
+            return
+        yield {**three, "answer": best + "."}
 
     def insight_result(self, reader: Any, iid: str, again: bool = False,
                        scope: Optional[tuple] = None,
-                       kept_only: bool = False,
+                       kept_only: bool = False, stored_only: bool = False,
                        shared: Optional["StreamOnce"] = None) -> m.InsightResult:
         """One insight as ``reader`` reads it: kept from a read of the last few minutes
         under the same door (``insights_cache``), else read now; ``again`` (their Refresh):
         read now. ``kept_only``: ``NotKept`` instead of a read now when nothing kept (or the
-        reader's last answer under the same access state) would answer it."""
+        reader's last answer under the same access state) would answer it. ``stored_only``:
+        never reads in this request: the stored value (with its read time), else the read is
+        started in the background and ``NotStored`` is raised; ``again`` then only starts the
+        read again and the value stored now is returned."""
         from .insights_cache import reader_key
         scope = scope or self._insight_scope(reader)
         spec = self._insight(reader, iid, scope[0],
@@ -888,10 +1256,40 @@ class InsightsMixin:
             # restart) only while the reader's access state is the one it was read under
             was = held.get("access") if isinstance(held, dict) else None
             now = shared.access() if shared is not None else self._insight_access(reader)
-            return was is not None and now is not None and was == now
+            return was is not None and now is not None and same_answer_access(now, was)
         if kept_only and (key is None or again or not keeper.kept.servable(
                 (key, ref(spec)), prior=same_access, stamp=stamp)):
             raise NotKept(iid)
+        if stored_only and key is not None:
+            keeper.opened(reader, ref(spec))
+            have = keeper.kept.servable((key, ref(spec)), prior=same_access, stamp=stamp)
+            if not have:
+                why = keeper.failed.get((key, ref(spec)))
+                if why is not None:
+                    # its last background read failed: say why (it is started again below)
+                    keeper.ahead(reader, [ref(spec)])
+                    if isinstance(why, UserFacing):
+                        raise why
+                    log.error("insight %s: background read failed: %r", ref(spec), why)
+                    raise UserFacing("internal", "This chart could not be read. Try Refresh.",
+                                     500)
+                keeper.ahead(reader, [ref(spec)])
+            elif again:
+                try:
+                    keeper.again((key, ref(spec)))   # their Refresh: read behind the value
+                except LookupError:
+                    keeper.ahead(reader, [ref(spec)])
+            if not have:
+                raise NotStored(iid)
+
+            def nothing() -> Any:
+                raise NotStored(iid)
+            try:
+                return result(self, reader, spec, scope, keeper.kept.get(
+                    (key, ref(spec)), nothing, prior=same_access, stamp=stamp), stored=True)
+            except NotStored:
+                keeper.ahead(reader, [ref(spec)])
+                raise
         if key is None:
             return result(self, reader, spec, scope, self._insight_read(reader, ref(spec)))
         keeper.opened(reader, ref(spec))
@@ -909,11 +1307,45 @@ class InsightsMixin:
             # state cannot be read now or was not confirmed when it was read
             if read is not None:
                 held, now = read.get("access"), self._insight_access(reader)
-                if held is None or now is None or held != now:
+                if held is None or now is None or not same_answer_access(now, held):
                     read = None
             if read is None:
                 raise
         return result(self, reader, spec, scope, read)
+
+    def insight_filtered(self, reader: Any, iid: str, edits: Sequence[Any]
+                         ) -> m.InsightResult:
+        """One insight read now with the reader's changed filters (their edits of its
+        own statement's filters, never of its columns): through their door, the Team rule
+        and the chart applied as on every open; never kept."""
+        scope = self._insight_scope(reader)
+        spec = self._insight(reader, iid, scope[0])
+        from dataclasses import replace
+        changed = replace(spec, sql=filtered_sql(spec.sql, edits))
+        return result(self, reader, changed, scope, read_now(self, reader, changed.sql))
+
+    def statement_read(self, reader: Any, sql: str, edits: Sequence[Any]
+                       ) -> m.StatementRead:
+        """An answer's statement read now with the reader's changed filters, through their
+        own door (what their Ask reads); refused when viewing as someone else or when the
+        reader could not save it as an insight (a statement read as them is what saving
+        one does)."""
+        if _viewing_as(reader):
+            raise Refused("view_as_statement")
+        store = self.insight_store()
+        if store is None:
+            raise Refused("unavailable")
+        store._writable(reader)
+        changed = filtered_sql(sql, edits)
+        read = read_now(self, reader, changed)
+        got = read["got"]
+        rows = [[_text(c) for c in r.get("cells", [])] for r in got.get("rows") or ()
+                if isinstance(r, Mapping)]
+        return m.StatementRead(sql=changed, columns=[str(c) for c in got["columns"]],
+                               rows=rows, row_count=len(rows),
+                               truncated=bool(got.get("truncated")),
+                               total_rows=read.get("total"), as_of=_text(got.get("as_of")),
+                               read_at=read["read_at"], work=work_of(changed))
 
     def _insight_access(self, reader: Any) -> Any:
         """The reader's access state now (``_access_now``: policy fingerprint, unrestricted,
@@ -939,6 +1371,13 @@ class InsightsMixin:
         state is that one."""
         before = self._insight_access(reader)
         out = self._insight_read_as(reader, what, seconds, ahead=ahead)
+        if ahead and not (out.get("got") or {}).get("rows"):
+            # an empty tile is stored with why it cannot be measured, so the page never
+            # reads it in a request
+            sp = next((x for x in declared() if ref(x) == what), None)
+            why = _unknown_base(self, reader, sp) if sp is not None else None
+            if why:
+                out = {**out, "unknown_base": why}
         after = self._insight_access(reader) if before is not None else None
         return {**out, "access": before if before is not None and before == after else None}
 
@@ -948,18 +1387,28 @@ class InsightsMixin:
         the shared copies (``insights_fast.serves``) from there; anything else (or nothing
         made there now) through ``plx.sql`` as them (``read_now``). A saved statement is
         always read as them, even one whose text is a built-in's."""
-        from . import insights_fast as fast
         spec = next((s for s in declared() if ref(s) == what), None)
         if spec is None:
             return read_now(self, reader, what, seconds, ahead=ahead)
+        return with_excluded(self, reader, spec, self._insight_read_spec(
+            reader, spec, seconds, ahead), seconds, ahead)
+
+    def _insight_read_spec(self, reader: Any, spec: Spec, seconds: float,
+                           ahead: bool) -> dict[str, Any]:
+        from . import insights_fast as fast
         if spec.fast:
             maker = self._insight_fast()
             if maker is not None and fast.serves(spec, reader,
                                                  bool(self._insight_scope(reader)[0])):
                 try:
                     return maker.get(spec)
-                except fast.Unserved:
-                    pass
+                except fast.Unserved as exc:
+                    # said, never silent: the live read below answers, and the answer
+                    # carries why the shared copy did not (C1 status ``failed``)
+                    log.warning("insight %s: fast copy not served (%s); read live",
+                                 ref(spec), exc)
+                    out = read_now(self, reader, spec.sql, seconds, ahead=ahead)
+                    return {**out, "fast": {"status": "failed", "reason": str(exc)}}
         return read_now(self, reader, spec.sql, seconds, ahead=ahead)
 
     _insight_fast_maker: Any = None

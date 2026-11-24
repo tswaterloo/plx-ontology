@@ -46,11 +46,11 @@ describe("Today's shared reads", () => {
     off();
   });
 
-  it("Today still reads up to 300 late orders, with the count the server holds", async () => {
-    api.total = 501;
+  it("Today reads up to HOME_LATE_MOST (1,000) late orders, with the count the server holds", async () => {
+    api.total = 1501;
     const read = await loadLateRead(true);
-    expect(read.items).toHaveLength(300);
-    expect(read.total).toBe(501);
+    expect(read.items).toHaveLength(1000);
+    expect(read.total).toBe(1501);
   });
 });
 

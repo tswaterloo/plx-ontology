@@ -1130,6 +1130,101 @@
         "title": "AlertType",
         "type": "object"
       },
+      "AnswerCheck": {
+        "additionalProperties": false,
+        "description": "One call with no tools checked the answer against what the session read before it\nwas shown (Ask plan A4): checked (nothing wrong), repaired (sent back once and written\nagain), flagged (claims it could not confirm, with no turn to send them back on; the\nanswer is shown as written), disagrees (a claim it found wrong is still in the answer: each is shown under\nit with what the records hold) or not_checked (why).",
+        "properties": {
+          "claims": {
+            "default": 0,
+            "description": "How many claims it checked.",
+            "minimum": 0,
+            "title": "Claims",
+            "type": "integer"
+          },
+          "disagrees": {
+            "description": "Each claim it still disagrees with, with what the records show.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Disagrees",
+            "type": "array"
+          },
+          "seconds": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Seconds",
+            "type": "number"
+          },
+          "status": {
+            "enum": [
+              "checked",
+              "repaired",
+              "flagged",
+              "disagrees",
+              "not_checked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Why it was not checked.",
+            "title": "Why"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "AnswerCheck",
+        "type": "object"
+      },
+      "AnswerPart": {
+        "additionalProperties": false,
+        "description": "One part of the question (``plx.legs``): what it asks, the sources it needs, its\nperiod, and how many reads touched those sources and what they found.",
+        "properties": {
+          "found": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Found",
+            "type": "integer"
+          },
+          "part": {
+            "title": "Part",
+            "type": "string"
+          },
+          "period": {
+            "default": "",
+            "title": "Period",
+            "type": "string"
+          },
+          "reads": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Reads",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "part"
+        ],
+        "title": "AnswerPart",
+        "type": "object"
+      },
       "AnswerPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1189,6 +1284,17 @@
             "title": "Charts",
             "type": "array"
           },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The second check of the answer against the database (Ask plan A4)."
+          },
           "cited": {
             "anyOf": [
               {
@@ -1203,6 +1309,12 @@
             ],
             "description": "The simple Ask's sources: every result its session read. Present (maybe empty) only on that path, whose answer page is the answer and one collapsed 'Sources (n records)' line opening to these rows.",
             "title": "Cited"
+          },
+          "cited_more": {
+            "description": "Results the answer read past the ones listed in ``cited`` (counted, not listed).",
+            "minimum": 0,
+            "title": "Cited More",
+            "type": "integer"
           },
           "clarify": {
             "anyOf": [
@@ -1225,6 +1337,22 @@
           "conversation_id": {
             "title": "Conversation Id",
             "type": "string"
+          },
+          "coverage": {
+            "description": "The question's parts the answer declared (plx.legs) and what read each (Ask plan A3b-4): shown under the answer as what was read.",
+            "items": {
+              "$ref": "#/components/schemas/AnswerPart"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "definitions": {
+            "description": "The named measures the answer's figures rest on, once each: what each counts, its owner and its definition's version.",
+            "items": {
+              "$ref": "#/components/schemas/MeasureCited"
+            },
+            "title": "Definitions",
+            "type": "array"
           },
           "did_you_mean": {
             "description": "Choices when a name or number matched several records; never merged.",
@@ -1371,6 +1499,14 @@
               }
             ],
             "description": "The evidence trail (optional: older clients ignore it)."
+          },
+          "untraced": {
+            "description": "Figures, dates or record numbers in the answer that no result of its own (nor the person's words) holds (Ask plan A2c).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Untraced",
+            "type": "array"
           }
         },
         "required": [
@@ -1721,25 +1857,43 @@
       },
       "AskAttachment": {
         "additionalProperties": false,
-        "description": "A file or image attached to one question (``operating.ask_attachments``): read in\nmemory for that answer only; a Word, Excel or PowerPoint file is also kept as your own\nfile (yours only), so the Ask can edit it and give you the edited copy.",
+        "description": "A file or image attached to one question (``operating.ask_attachments``): read for that\nanswer only; a Word, Excel or PowerPoint file is also kept as your own file (yours only),\nso the Ask can edit it and give you the edited copy. A file arrives by ``upload`` (the id\n``POST /api/ask/files`` answered: streamed to disk, no size limit); ``data`` (base64 in the\nbody, as every JSON body is held in memory) is for a small file a client sends inline.",
         "properties": {
           "data": {
-            "description": "The file's bytes, base64 (8 MB a file, 10 MB together).",
-            "maxLength": 11200000,
-            "minLength": 1,
-            "title": "Data",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file's bytes, base64, in this body (a small file; a larger one goes to POST /api/ask/files).",
+            "title": "Data"
           },
           "name": {
             "maxLength": 200,
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "upload": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id of a file sent to POST /api/ask/files.",
+            "title": "Upload"
           }
         },
         "required": [
-          "name",
-          "data"
+          "name"
         ],
         "title": "AskAttachment",
         "type": "object"
@@ -1943,6 +2097,18 @@
             ],
             "description": "Rows of the result it was drawn from.",
             "title": "Rows"
+          },
+          "rows_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many rows the statement has in all, when the result held only its first rows.",
+            "title": "Rows Total"
           },
           "series": {
             "items": {
@@ -2502,11 +2668,10 @@
         "additionalProperties": false,
         "properties": {
           "attachments": {
-            "description": "Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.",
+            "description": "Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): any number.",
             "items": {
               "$ref": "#/components/schemas/AskAttachment"
             },
-            "maxItems": 5,
             "title": "Attachments",
             "type": "array"
           },
@@ -2554,7 +2719,6 @@
             "items": {
               "$ref": "#/components/schemas/HistoryTurn"
             },
-            "maxItems": 12,
             "title": "History",
             "type": "array"
           },
@@ -2599,7 +2763,6 @@
             "title": "Object Id"
           },
           "question": {
-            "maxLength": 1000,
             "minLength": 1,
             "title": "Question",
             "type": "string"
@@ -2622,6 +2785,53 @@
           "question"
         ],
         "title": "AskRequest",
+        "type": "object"
+      },
+      "AskUpload": {
+        "additionalProperties": false,
+        "description": "A file received by ``POST /api/ask/files``.",
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size",
+          "digest"
+        ],
+        "title": "AskUpload",
+        "type": "object"
+      },
+      "AssistWorking": {
+        "additionalProperties": false,
+        "description": "A draft asked for: it is being prepared; the list shows it when ready.",
+        "properties": {
+          "status": {
+            "const": "working",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "AssistWorking",
         "type": "object"
       },
       "Assumption": {
@@ -3811,7 +4021,7 @@
       },
       "AutopilotDrafts": {
         "additionalProperties": false,
-        "description": "Your open prepared replies, newest first; mail you already answered is not here.",
+        "description": "Your open work, newest first: each item kept true against its source.",
         "properties": {
           "items": {
             "items": {
@@ -3828,6 +4038,15 @@
             "title": "Never Senders",
             "type": "array"
           },
+          "older": {
+            "description": "How many more items are older than the list's 14 days (``all_ages=true`` lists them).",
+            "title": "Older",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
           "stale_since": {
             "anyOf": [
               {
@@ -3839,6 +4058,28 @@
             ],
             "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
             "title": "Stale Since"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "partial",
+                  "cut",
+                  "stale",
+                  "unknown",
+                  "not_run",
+                  "off",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "C1: ok; off (not shown to you: no opt-in, or its settings could not be read: ``reason``); stale (not re-checked lately: ``stale_since``); not_run.",
+            "title": "Status"
           }
         },
         "title": "AutopilotDrafts",
@@ -4892,6 +5133,29 @@
             "title": "Options",
             "type": "array"
           },
+          "plan_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Reason"
+          },
+          "plan_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "none, planned, drafted, needs_you, deferred (draft on request) or failed (``plan_reason`` says why; ask again).",
+            "title": "Plan Status"
+          },
           "pooled": {
             "default": "",
             "description": "On an item no record names a person for: the role whose list it is on until one of them takes it (Take); empty on your own items.",
@@ -4907,6 +5171,22 @@
           "sender": {
             "title": "Sender",
             "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "unverified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An Assist item: open, or unverified (its source could not be re-checked: ``note`` says which; never counted as true).",
+            "title": "State"
           },
           "subject": {
             "default": "",
@@ -4944,6 +5224,18 @@
               }
             ],
             "description": "Your preferences and memory the draft applied (and those read but not applied), and its template."
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the item was last re-checked against its source.",
+            "title": "Verified At"
           }
         },
         "required": [
@@ -6048,7 +6340,8 @@
               "purchase_order",
               "sales_order",
               "product",
-              "batch"
+              "batch",
+              "supplier_invoice"
             ],
             "title": "Kind",
             "type": "string"
@@ -6209,6 +6502,23 @@
             ],
             "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
             "title": "Read At"
+          },
+          "reading": {
+            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
+            "title": "Reading",
+            "type": "boolean"
+          },
+          "ready_about": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With ``reading``: about when the review will be ready (ISO), from the time this server took to build the last reviews; absent when it has none yet.",
+            "title": "Ready About"
           },
           "sections": {
             "items": {
@@ -6510,6 +6820,18 @@
             "description": "Rows you may read beyond those listed.",
             "title": "More",
             "type": "integer"
+          },
+          "more_href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where every row opens (an app path), when the section has one.",
+            "title": "More Href"
           },
           "note": {
             "anyOf": [
@@ -6970,6 +7292,7 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
+              "customer_order_slower_than_usual",
               "watcher_attention",
               "stock_out_risk",
               "overdue_receivable",
@@ -7160,6 +7483,7 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
+              "customer_order_slower_than_usual",
               "watcher_attention",
               "stock_out_risk",
               "overdue_receivable",
@@ -7414,6 +7738,7 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
+              "customer_order_slower_than_usual",
               "watcher_attention",
               "stock_out_risk",
               "overdue_receivable",
@@ -7673,6 +7998,7 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
+              "customer_order_slower_than_usual",
               "watcher_attention",
               "stock_out_risk",
               "overdue_receivable",
@@ -8213,6 +8539,29 @@
             "title": "Columns",
             "type": "array"
           },
+          "measure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasureCited"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The named measure the rows answer, when they come from one."
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The statement the session ran for these rows (a named measure's: the one the catalogue made).",
+            "title": "Query"
+          },
           "records": {
             "description": "The rows or hits the result held (``rows`` may show fewer).",
             "minimum": 0,
@@ -8235,6 +8584,17 @@
             },
             "title": "Rows",
             "type": "array"
+          },
+          "work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryWork"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The views the query reads and the filters it applies."
           }
         },
         "required": [
@@ -8987,6 +9347,18 @@
         "additionalProperties": false,
         "description": "One data-health check as this reader reads it: what it found that they may see, and\nhow many more it found on records they may not open (counted, never named).",
         "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the check's rule last ran (ISO); null with ``open`` null: it has never run.",
+            "title": "Checked At"
+          },
           "count": {
             "default": 0,
             "description": "Open findings this reader may see.",
@@ -10311,6 +10683,62 @@
         "title": "EvidenceTrail",
         "type": "object"
       },
+      "ExcludedCount": {
+        "additionalProperties": false,
+        "description": "What a measure's definition leaves out unless counted in (a registry parameter,\nS2): how many records, said in its own words.",
+        "properties": {
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many records it leaves out; null when they could not be counted (``why``).",
+            "title": "N"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "says": {
+            "title": "Says",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The measure's value over those records.",
+            "title": "Value"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why they could not be counted.",
+            "title": "Why"
+          }
+        },
+        "required": [
+          "parameter",
+          "says"
+        ],
+        "title": "ExcludedCount",
+        "type": "object"
+      },
       "Explore": {
         "additionalProperties": false,
         "description": "A record's neighbours one hop out, grouped by kind of link, for the link explorer.\nWalking on is the same read from a neighbour (lazy expansion), so two hops are two\nreads, each as this reader sees it. No counts of what the reader may not see.",
@@ -10484,6 +10912,11 @@
           },
           "label": {
             "title": "Label",
+            "type": "string"
+          },
+          "since": {
+            "description": "When a stopped job last ran (UTC, to the minute), from the hours the reliability check measured; empty when unknown.",
+            "title": "Since",
             "type": "string"
           },
           "state": {
@@ -10897,7 +11330,7 @@
           "expected": {
             "anyOf": [
               {
-                "maxLength": 2000,
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -10910,7 +11343,7 @@
           "note": {
             "anyOf": [
               {
-                "maxLength": 2000,
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -11155,6 +11588,55 @@
           "missing"
         ],
         "title": "FillReply",
+        "type": "object"
+      },
+      "FilterEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "maximum": 63.0,
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The new condition; null takes the filter out.",
+            "title": "Text"
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "title": "FilterEdit",
+        "type": "object"
+      },
+      "FilterEdits": {
+        "additionalProperties": false,
+        "description": "Changed filters of a statement, each by its place in the statement's own list.",
+        "properties": {
+          "edits": {
+            "items": {
+              "$ref": "#/components/schemas/FilterEdit"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Edits",
+            "type": "array"
+          }
+        },
+        "required": [
+          "edits"
+        ],
+        "title": "FilterEdits",
         "type": "object"
       },
       "FormulaComponent": {
@@ -11841,7 +12323,6 @@
             "type": "string"
           },
           "text": {
-            "maxLength": 4000,
             "title": "Text",
             "type": "string"
           }
@@ -12172,6 +12653,26 @@
         "title": "ImpactPanel",
         "type": "object"
       },
+      "InsightChecked": {
+        "additionalProperties": false,
+        "description": "Whether a measure tile's rows add up to the measure's own figure for the same window,\nread through the same door when the tile was stored (``status``: reconciles, differs or\nnot_checked, with ``says`` in words and the totals compared).",
+        "properties": {
+          "says": {
+            "title": "Says",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "says"
+        ],
+        "title": "InsightChecked",
+        "type": "object"
+      },
       "InsightDeleted": {
         "additionalProperties": false,
         "properties": {
@@ -12237,6 +12738,17 @@
             ],
             "description": "A scheduled one: when it last ran by itself and what it found, in plain words.",
             "title": "Last Run"
+          },
+          "measure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasureCited"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A catalogue measure's tile: the definition its figures are, with owner, version and the day it was set."
           },
           "notify": {
             "default": "never",
@@ -12456,6 +12968,17 @@
               }
             ]
           },
+          "checked": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsightChecked"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The 'checked' line of a measure tile: do its rows add up to the measure's own total."
+          },
           "columns": {
             "items": {
               "type": "string"
@@ -12472,6 +12995,14 @@
                 "type": "null"
               }
             ]
+          },
+          "excluded": {
+            "description": "A measure tile's stated exclusions (S2): the records its definition leaves out, each with its count, shown under the value.",
+            "items": {
+              "$ref": "#/components/schemas/ExcludedCount"
+            },
+            "title": "Excluded",
+            "type": "array"
           },
           "fixed_dates": {
             "anyOf": [
@@ -12505,6 +13036,29 @@
             ],
             "description": "A scheduled one: when it last ran by itself and what it found, in plain words.",
             "title": "Last Run"
+          },
+          "measure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasureCited"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A catalogue measure's tile: the definition its figures are, with owner, version and the day it was set."
+          },
+          "not_measurable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why a tile that read no rows cannot be measured (a column it needs holds no value anywhere): shown instead of an empty chart.",
+            "title": "Not Measurable"
           },
           "notify": {
             "default": "never",
@@ -12584,6 +13138,17 @@
             "title": "Schedule",
             "type": "string"
           },
+          "served": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsightServed"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the shared fast copy did not serve this answer (status failed, with why): it was read live instead."
+          },
           "sql": {
             "description": "The statement it reads (its definition, exactly).",
             "title": "Sql",
@@ -12592,6 +13157,18 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "total_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many rows the statement has in all when ``truncated`` (row_count is the rows shown); null when it could not be counted.",
+            "title": "Total Rows"
           },
           "truncated": {
             "title": "Truncated",
@@ -12607,6 +13184,17 @@
               }
             ],
             "description": "The number it watches (notify crosses)."
+          },
+          "work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryWork"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The views its statement reads and the filters it applies."
           }
         },
         "required": [
@@ -12728,6 +13316,36 @@
           "notify"
         ],
         "title": "InsightSchedule",
+        "type": "object"
+      },
+      "InsightServed": {
+        "additionalProperties": false,
+        "description": "How an insight's answer was served (contract C1 status words): ``failed`` when the\nshared fast copy could not serve it and it was read live instead, with why.",
+        "properties": {
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "partial",
+              "cut",
+              "stale",
+              "unknown",
+              "not_run",
+              "off",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "InsightServed",
         "type": "object"
       },
       "InsightWatch": {
@@ -13526,7 +14144,7 @@
           "note": {
             "anyOf": [
               {
-                "maxLength": 2000,
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -15200,6 +15818,53 @@
         "title": "Me",
         "type": "object"
       },
+      "MeasureCited": {
+        "additionalProperties": false,
+        "description": "A named measure of the catalogue (``operating/measures.json``) an answer's figures\nrest on: what it counts, the team that owns the definition and its version (changes\nwhenever what it counts does).",
+        "properties": {
+          "defined_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The day this version of the definition was set (ISO).",
+            "title": "Defined On"
+          },
+          "definition": {
+            "title": "Definition",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "definition",
+          "owner",
+          "version"
+        ],
+        "title": "MeasureCited",
+        "type": "object"
+      },
       "MeasureInfo": {
         "additionalProperties": false,
         "description": "One agreed business measure (``operating/measures.json``): its definition only, no\nfigure. The same for every reader: what it reads is decided when it runs.",
@@ -15215,6 +15880,18 @@
             ],
             "description": "A question it answers, to try in Ask.",
             "title": "Ask"
+          },
+          "defined_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The day that version was set (ISO).",
+            "title": "Defined On"
           },
           "definition": {
             "title": "Definition",
@@ -15255,6 +15932,18 @@
             "description": "money, count, quantity or percent.",
             "title": "Unit",
             "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its definition version.",
+            "title": "Version"
           }
         },
         "required": [
@@ -16067,6 +16756,18 @@
             "title": "At Risk",
             "type": "array"
           },
+          "at_risk_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every open alert of the at-risk types this reader may read; at_risk lists the first of them (more than listed: the rest are in Alerts).",
+            "title": "At Risk Total"
+          },
           "checked_on": {
             "anyOf": [
               {
@@ -16211,6 +16912,35 @@
         "title": "NotFound",
         "type": "object"
       },
+      "NotRun": {
+        "additionalProperties": false,
+        "description": "A section whose answer has not been made: the runner has not answered this record yet (or\nran its plan and it gave no complete answer, or ``failed``: its run failed and is run again).\nTyped, never blank: ``why`` says which, and\n``requested`` says whether the record was asked of the runner (it appears on a later read).",
+        "properties": {
+          "requested": {
+            "default": false,
+            "title": "Requested",
+            "type": "boolean"
+          },
+          "status": {
+            "default": "not_run",
+            "enum": [
+              "not_run",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "why"
+        ],
+        "title": "NotRun",
+        "type": "object"
+      },
       "NoteFeedbackRequest": {
         "additionalProperties": false,
         "description": "A free note on a page, a record, a list, the app itself or anything else.",
@@ -16254,7 +16984,7 @@
             "title": "Label"
           },
           "note": {
-            "maxLength": 2000,
+            "maxLength": 20000,
             "minLength": 1,
             "title": "Note",
             "type": "string"
@@ -16317,6 +17047,14 @@
             ],
             "description": "'Viewing with full-read access' when served under the reader's declared full-read grant.",
             "title": "Access Label"
+          },
+          "choices": {
+            "description": "Set only when the page's reference (a bare PO or order number) names several records: numbers repeat across systems and counterparties, so it is never one record. Each business record it names that this reader may see, by its number and counterparty, to open (status.state 'choose'); copies of one order are one choice.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Choices",
+            "type": "array"
           },
           "complete": {
             "default": true,
@@ -16700,6 +17438,17 @@
             ],
             "description": "trail: the page's not-found items said against the trail (replace the quick read's); omitted for the other sections.",
             "title": "Not Found"
+          },
+          "not_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this section's answer has not been made (see NotRun): the section is neither empty nor absent; it says so and why."
           },
           "object_id": {
             "title": "Object Id",
@@ -18769,6 +19518,63 @@
         "title": "ProposedChange",
         "type": "object"
       },
+      "QueryFilter": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "description": "Its place among the statement's filters.",
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "text": {
+            "description": "The condition as the statement writes it.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "text"
+        ],
+        "title": "QueryFilter",
+        "type": "object"
+      },
+      "QueryWork": {
+        "additionalProperties": false,
+        "description": "What a statement reads and filters on, read from the statement itself\n(``operating.sql_work``).",
+        "properties": {
+          "filters": {
+            "description": "Each AND-part of its WHERE and HAVING clauses: what can be changed or taken out.",
+            "items": {
+              "$ref": "#/components/schemas/QueryFilter"
+            },
+            "title": "Filters",
+            "type": "array"
+          },
+          "more_filters": {
+            "default": 0,
+            "description": "Filters past the ones listed.",
+            "minimum": 0.0,
+            "title": "More Filters",
+            "type": "integer"
+          },
+          "views": {
+            "description": "The business views it reads.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Views",
+            "type": "array"
+          }
+        },
+        "required": [
+          "views",
+          "filters"
+        ],
+        "title": "QueryWork",
+        "type": "object"
+      },
       "RecentQuestion": {
         "additionalProperties": false,
         "properties": {
@@ -19083,6 +19889,22 @@
             ],
             "title": "As Of"
           },
+          "column_keys": {
+            "description": "Each column's key, to sort by.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Column Keys",
+            "type": "array"
+          },
+          "direction": {
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
           "filters": {
             "items": {
               "$ref": "#/components/schemas/RecordFilter"
@@ -19101,6 +19923,14 @@
           "offset": {
             "title": "Offset",
             "type": "integer"
+          },
+          "searchable": {
+            "title": "Searchable",
+            "type": "boolean"
+          },
+          "sort": {
+            "title": "Sort",
+            "type": "string"
           },
           "table": {
             "$ref": "#/components/schemas/BizTable"
@@ -19122,6 +19952,10 @@
           "view",
           "title",
           "table",
+          "column_keys",
+          "sort",
+          "direction",
+          "searchable",
           "filters",
           "total",
           "offset",
@@ -19427,6 +20261,44 @@
           "ask_line"
         ],
         "title": "RecordQuestion",
+        "type": "object"
+      },
+      "RecordView": {
+        "additionalProperties": false,
+        "description": "One list Records offers (``/api/records/views``).",
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "view": {
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view",
+          "title"
+        ],
+        "title": "RecordView",
+        "type": "object"
+      },
+      "RecordViews": {
+        "additionalProperties": false,
+        "description": "Every list Records offers, one per business view the reader's door serves.",
+        "properties": {
+          "views": {
+            "items": {
+              "$ref": "#/components/schemas/RecordView"
+            },
+            "title": "Views",
+            "type": "array"
+          }
+        },
+        "required": [
+          "views"
+        ],
+        "title": "RecordViews",
         "type": "object"
       },
       "RecurringChange": {
@@ -20334,6 +21206,122 @@
         "title": "SourcesEvent",
         "type": "object"
       },
+      "StatementEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "edits": {
+            "items": {
+              "$ref": "#/components/schemas/FilterEdit"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Edits",
+            "type": "array"
+          },
+          "sql": {
+            "description": "The statement an answer showed (its source's query).",
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edits",
+          "sql"
+        ],
+        "title": "StatementEdit",
+        "type": "object"
+      },
+      "StatementRead": {
+        "additionalProperties": false,
+        "description": "A statement read now as you with changed filters: its rows and what it reads.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "read_at": {
+            "title": "Read At",
+            "type": "string"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "sql": {
+            "description": "The statement read (with the changes).",
+            "title": "Sql",
+            "type": "string"
+          },
+          "total_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rows"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryWork"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "sql",
+          "columns",
+          "rows",
+          "row_count",
+          "truncated",
+          "read_at"
+        ],
+        "title": "StatementRead",
+        "type": "object"
+      },
       "StatusEvent": {
         "additionalProperties": false,
         "properties": {
@@ -21130,6 +22118,11 @@
             "title": "Self",
             "type": "boolean"
           },
+          "shared": {
+            "description": "A shared mailbox or an account with no one on record behind it (``team_accounts``): listed apart from the people, out of their count and rankings.",
+            "title": "Shared",
+            "type": "boolean"
+          },
           "tasks": {
             "default": 0,
             "title": "Tasks",
@@ -21180,6 +22173,11 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "items_unread": {
+            "description": "The open items could not be read just now (a busy or slow read): the rest of the panel stands.",
+            "title": "Items Unread",
+            "type": "boolean"
           },
           "partners": {
             "items": {
@@ -21917,7 +22915,7 @@
             "title": "Record"
           },
           "text": {
-            "maxLength": 8000,
+            "maxLength": 100000,
             "minLength": 1,
             "title": "Text",
             "type": "string"
@@ -21953,7 +22951,7 @@
         "description": "A template to save (new) or a change to one of yours. Pay and finance are refused;\na placeholder must name a known field.",
         "properties": {
           "body": {
-            "maxLength": 8000,
+            "maxLength": 100000,
             "minLength": 1,
             "title": "Body",
             "type": "string"
@@ -26195,6 +27193,107 @@
         ]
       }
     },
+    "/api/ask/files": {
+      "post": {
+        "description": "Send one file to attach to a question: the request body IS the file (any size),\nwritten to disk as it arrives, held for the person until they remove it (or a week).\nThe answer is its id, which ``/api/ask`` names in ``attachments``.",
+        "operationId": "ask_upload_api_ask_files_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskUpload"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Ask Upload",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
+    "/api/ask/files/{upload_id}": {
+      "delete": {
+        "description": "Take a file off a question: remove what ``POST /api/ask/files`` kept.",
+        "operationId": "ask_upload_remove_api_ask_files__upload_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "upload_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Upload Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask Upload Remove",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
     "/api/auth/config": {
       "get": {
         "description": "Public: how to sign in (identifiers only).",
@@ -26605,8 +27704,20 @@
     },
     "/api/autopilot/drafts": {
       "get": {
-        "description": "Your open prepared replies and \"your call\" cards, newest first.",
-        "operationId": "autopilot_prepared_list_api_autopilot_drafts_get",
+        "description": "Your open work, newest first: each item kept true against its source; the last\n14 days unless ``all_ages`` (``older`` says how many more).",
+        "operationId": "assist_list_api_autopilot_drafts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "all_ages",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "All Ages",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -26627,9 +27738,19 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
-        "summary": "Autopilot Prepared List",
+        "summary": "Assist List",
         "tags": [
           "actions"
         ]
@@ -26886,6 +28007,79 @@
           }
         },
         "summary": "Autopilot Decide",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/items/{item_id}/draft": {
+      "post": {
+        "description": "Draft this item now (it goes to the front of the drafting queue).",
+        "operationId": "assist_draft_api_autopilot_items__item_id__draft_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorking"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Assist Draft",
         "tags": [
           "actions"
         ]
@@ -28034,7 +29228,8 @@
                 "purchase_order",
                 "sales_order",
                 "product",
-                "batch"
+                "batch",
+                "supplier_invoice"
               ],
               "title": "Kind",
               "type": "string"
@@ -28046,7 +29241,7 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 600,
+              "maxLength": 4000,
               "title": "H",
               "type": "string"
             }
@@ -28057,7 +29252,7 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 200,
+              "maxLength": 4000,
               "title": "Chain",
               "type": "string"
             }
@@ -28068,7 +29263,7 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 700,
+              "maxLength": 4000,
               "title": "Record",
               "type": "string"
             }
@@ -28391,6 +29586,7 @@
                 "customer_order_at_risk",
                 "po_undated",
                 "customer_order_late",
+                "customer_order_slower_than_usual",
                 "watcher_attention",
                 "stock_out_risk",
                 "overdue_receivable",
@@ -28565,6 +29761,7 @@
                   "customer_order_at_risk",
                   "po_undated",
                   "customer_order_late",
+                  "customer_order_slower_than_usual",
                   "watcher_attention",
                   "stock_out_risk",
                   "overdue_receivable",
@@ -29048,7 +30245,7 @@
             "required": false,
             "schema": {
               "default": 0,
-              "maximum": 20000,
+              "maximum": 10000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -30177,6 +31374,36 @@
         ]
       }
     },
+    "/api/home/bundle": {
+      "get": {
+        "description": "Home's seven first reads in ONE answer (home, sidebar, briefing with its group pages,\nthe first 100 late orders, suggestions, replies, approvals): each part is exactly what\nits own route answers this reader, from the same kept pages and the same permission\nchecks, with its own status (a part that failed carries its own error; the others\nstand). One round trip instead of seven; the parts run side by side.",
+        "operationId": "home_bundle_api_home_bundle_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Home Bundle",
+        "tags": [
+          "home"
+        ]
+      }
+    },
     "/api/insight-news": {
       "get": {
         "description": "What your scheduled insights found that came to you (counts only: open the\ninsight to read its rows, live, as you).",
@@ -30544,7 +31771,7 @@
         ]
       },
       "get": {
-        "description": "One insight as you read it (kept from your read of the last few minutes; again:\nread now): its definition (the statement), rows, chart and the people they name.",
+        "description": "One insight as you read it (its stored value with its read time; never read in this\nrequest: a Refresh starts the read behind it, a tile with nothing stored says 202): its definition (the statement), rows, chart and the people they name.",
         "operationId": "insight_result_api_insights__insight_id__get",
         "parameters": [
           {
@@ -30641,6 +31868,110 @@
           }
         },
         "summary": "Insight Result",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/{insight_id}/filtered": {
+      "post": {
+        "description": "One insight read now with filters you changed or took out (its own statement's\nconditions only), as you: nothing is saved or kept.",
+        "operationId": "insight_filtered_api_insights__insight_id__filtered_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "insight_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9_]{1,61}$",
+              "title": "Insight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilterEdits"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Filtered",
         "tags": [
           "insights"
         ]
@@ -30745,6 +32076,93 @@
           }
         },
         "summary": "Insight Schedule",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/{insight_id}/why": {
+      "get": {
+        "description": "Why did this figure change: step by step (one JSON object per line), each step read\nas you and sent as it is read with the best answer so far; stop reading at any step.",
+        "operationId": "insight_why_api_insights__insight_id__why_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "insight_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9_]{1,61}$",
+              "title": "Insight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Why",
         "tags": [
           "insights"
         ]
@@ -31341,7 +32759,7 @@
             "required": false,
             "schema": {
               "default": 0,
-              "maximum": 20000,
+              "maximum": 10000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -32412,6 +33830,170 @@
         ]
       }
     },
+    "/api/page/history/{key}": {
+      "get": {
+        "description": "A record's History tab from the served store (``models.RecordHistory``'s shape),\nnewest first, a page at a time; not found reads the same as a record the reader may\nnot open (speed specs 9.3 V2).",
+        "operationId": "history_api_page_history__key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "description": "next_cursor of the page before, for older changes",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "next_cursor of the page before, for older changes",
+              "maxLength": 40,
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "History",
+        "tags": [
+          "object"
+        ]
+      }
+    },
+    "/api/page/{kind}/{key}": {
+      "get": {
+        "description": "A page's stored items in one read: status ok / stale / not_run, its as-of and\nevery section's items (each ``{v, withheld, col}``).",
+        "operationId": "page_api_page__kind___key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "record",
+                "home",
+                "alias"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sections",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 400,
+              "title": "Sections",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "comms_view",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Comms View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "comms_at",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 60,
+              "title": "Comms At",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "comms_handle",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 2000,
+              "title": "Comms Handle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Page",
+        "tags": [
+          "object"
+        ]
+      }
+    },
     "/api/prepared": {
       "get": {
         "description": "Your open prepared changes (Ask and your autopilots prepared them): nothing in\nthem is done before you confirm it.",
@@ -32893,7 +34475,7 @@
     },
     "/api/records/list": {
       "get": {
-        "description": "A list of records from the business tables, as you may see them, with its\nfilters: ``production`` is the batches (status, QC hold, text).",
+        "description": "A list of one business view's records as you may see them: its columns, sort,\nfilters (``f=<column>:<value>``, repeated) and text search come from the view's\nmetadata. ``facets=false`` leaves the filters' choices out (a later page of the same\nlist).",
         "operationId": "records_list_api_records_list_get",
         "parameters": [
           {
@@ -32901,35 +34483,23 @@
             "name": "view",
             "required": true,
             "schema": {
-              "const": "production",
+              "maxLength": 60,
               "title": "View",
               "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "status",
+            "name": "f",
             "required": false,
             "schema": {
-              "default": "",
-              "maxLength": 80,
-              "title": "Status",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "hold",
-            "required": false,
-            "schema": {
-              "default": "",
-              "enum": [
-                "",
-                "yes",
-                "no"
-              ],
-              "title": "Hold",
-              "type": "string"
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "F",
+              "type": "array"
             }
           },
           {
@@ -32945,11 +34515,47 @@
           },
           {
             "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 60,
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "asc",
+                "desc"
+              ],
+              "title": "Direction",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "facets",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Facets",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "offset",
             "required": false,
             "schema": {
               "default": 0,
-              "maximum": 20000,
+              "maximum": 10000000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -33021,6 +34627,38 @@
           }
         },
         "summary": "Records List",
+        "tags": [
+          "search"
+        ]
+      }
+    },
+    "/api/records/views": {
+      "get": {
+        "description": "Every list Records offers: one per business view the door serves, from the\nviews' own metadata.",
+        "operationId": "records_views_api_records_views_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordViews"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Records Views",
         "tags": [
           "search"
         ]
@@ -33229,6 +34867,98 @@
         "summary": "Source Records",
         "tags": [
           "object"
+        ]
+      }
+    },
+    "/api/statement/read": {
+      "post": {
+        "description": "An answer's query read now with filters you changed or took out, as you (your\ndoor, as your Ask reads): nothing is saved.",
+        "operationId": "statement_read_api_statement_read_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatementEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatementRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Statement Read",
+        "tags": [
+          "insights"
         ]
       }
     },
@@ -33747,7 +35477,6 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
                   "type": "string"
                 },
                 {

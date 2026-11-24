@@ -1,10 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const readStatement = vi.fn();
+vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), readStatement: (...a: unknown[]) => readStatement(...a) }));
 import { applyEvent } from "@/lib/thread";
 import type { Answer } from "@/lib/types";
 import { AnswerCard, type Turn } from "./answer-card";
-import { AnswerText, sourceCount, splitTables } from "./simple-answer";
+import { AnswerText, checkLine, partLine, sourceCount, splitTables } from "./simple-answer";
 
 const simple: Answer = {
   answer_id: "a1",
@@ -63,6 +66,67 @@ describe("simple Ask answer", () => {
     expect(sources).toHaveAttribute("open");
     expect(sources).toHaveTextContent("Statement attached");
     expect(sourceCount(simple.cited)).toBe(3);
+  });
+
+  it("shows the work under Sources: each read's query and the measure definitions the figures rest on", async () => {
+    const worked: Answer = {
+      ...simple,
+      cited: [{ ...simple.cited![0], query: "SELECT supplier, owed, currency FROM supplier_balances", measure: null }, simple.cited![1]],
+      definitions: [{ id: "payables_open", name: "Payables open", definition: "Open supplier invoices, by currency.", owner: "Finance", version: "v1a2b3c4d", defined_on: "2026-11-23" }],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: worked }} />);
+    // the definition the figures rest on is beside the answer, not folded into Sources
+    expect(screen.getByTestId("simple-definitions")).toHaveTextContent("Payables open (agreed definition): Open supplier invoices, by currency. Owner Finance, definition v1a2b3c4d, set 23 Nov 2026.");
+    await userEvent.click(screen.getByText("Sources (3 records)"));
+    const queries = screen.getAllByTestId("simple-query");
+    expect(queries).toHaveLength(1);   // the search hit list ran no statement
+    expect(queries[0]).toHaveTextContent("SELECT supplier, owed, currency FROM supplier_balances");
+  });
+
+  it("lists what a source's query reads and filters on; a changed or removed filter reads again as the reader and Reset goes back", async () => {
+    const sql = "SELECT supplier, owed, currency FROM supplier_balances WHERE owed > 0 AND currency = 'CAD'";
+    const worked: Answer = {
+      ...simple,
+      cited: [{ ...simple.cited![0], query: sql, measure: null, work: { views: ["supplier_balances"], more_filters: 0, filters: [{ index: 0, text: "owed > 0" }, { index: 1, text: "currency = 'CAD'" }] } }],
+    };
+    readStatement.mockReset().mockResolvedValueOnce({ sql: "x", columns: ["supplier", "owed", "currency"], rows: [["West Inc", "77.00", "USD"]], row_count: 1, truncated: false, read_at: "2026-11-23T17:00:00Z", as_of: null, work: null });
+    readStatement.mockRejectedValueOnce(Object.assign(new Error("x"), { code: "filter_unworkable" }));
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: worked }} />);
+    await userEvent.click(screen.getByText("Sources (2 records)"));
+    const work = screen.getByTestId("simple-work");
+    expect(work).toHaveTextContent("Reads supplier_balances");
+    await userEvent.click(screen.getByRole("button", { name: "currency = 'CAD'" }));
+    await userEvent.click(screen.getByRole("button", { name: "Take out" }));
+    await waitFor(() => expect(screen.getByText("West Inc")).toBeTruthy());
+    expect(readStatement).toHaveBeenCalledWith(sql, [{ index: 1, text: null }]);
+    expect(screen.getByText(/Read again with your filters: 1 row/)).toBeTruthy();
+    // the next change carries every change so far, by the original statement's places
+    await userEvent.click(screen.getByRole("button", { name: "owed > 0" }));
+    const box = screen.getByLabelText("Filter 1");
+    await userEvent.clear(box);
+    await userEvent.type(box, "owed > 1000{Enter}");
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(readStatement).toHaveBeenLastCalledWith(sql, [{ index: 0, text: "owed > 1000" }, { index: 1, text: null }]);
+    expect(screen.getByText("West Inc")).toBeTruthy();   // a refused change leaves the last read shown
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    await waitFor(() => expect(screen.queryByText("West Inc")).toBeNull());
+    expect(screen.getByText(/^supplier balances, as of/)).toBeTruthy();
+    expect(readStatement).toHaveBeenCalledTimes(2);
+  });
+
+  it("an answer that asks back offers the readings as quick replies, and a declared gap says what is not on record", async () => {
+    const onClarify = vi.fn();
+    const asked: Answer = { ...simple, outcome: "abstained", direct_answer: "Two Croda accounts match.", cited: [], clarify: { question: "Which Croda account?", options: [{ label: "Croda Inc (US)", detail: null, object: null }, { label: "Croda Canada", detail: null, object: null }], free_text: true }, not_found: [] };
+    const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: asked }} onClarify={onClarify} />);
+    expect(screen.getByText("Which Croda account?")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Croda Canada" }));
+    expect(onClarify).toHaveBeenCalled();
+    unmount();
+    const gap: Answer = { ...simple, outcome: "not_found", direct_answer: "Freight cost per shipment is not kept.", cited: [], not_found: [{ what: "freight cost per shipment", where_it_would_live: "carrier invoices" }] };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "Freight is not kept.\n```gap\n{\"missing\": \"x\"}\n```", answer: gap }} />);
+    expect(screen.getByTestId("simple-gaps")).toHaveTextContent("Not on record: freight cost per shipment (would be kept in carrier invoices).");
+    expect(screen.queryByText(/```gap/)).toBeNull();
   });
 
   it("a run that failed shows no Correct/Wrong and no Think it through", () => {
@@ -166,5 +230,23 @@ describe("simple Ask answer", () => {
     expect(turn.phase).toBe("streaming");
     render(<AnswerCard turn={turn} />);
     expect(screen.getByTestId("progress")).toHaveTextContent("Writing");
+  });
+});
+
+describe("the second check of an answer", () => {
+  it("says in one line what it found, and why when it did not run", () => {
+    expect(checkLine({ status: "checked", claims: 0, seconds: 11.6, why: null, disagrees: [] })).toBe("Checked against what was read: nothing found wrong (12 s).");
+    expect(checkLine({ status: "repaired", claims: 1, seconds: 9, why: null, disagrees: [] })).toBe("Checked against what was read: 1 statement sent back for correction.");
+    expect(checkLine({ status: "flagged", claims: 2, seconds: 9, why: null, disagrees: [] })).toBe("Checked against what was read: the check found a conflict or could not confirm 2 statements; shown as written.");
+    expect(checkLine({ status: "disagrees", claims: 3, seconds: 9, why: null, disagrees: ["Check: x: the reads show y"] })).toMatch(/still disagrees with what is noted under the answer/);
+    expect(checkLine({ status: "not_checked", claims: 0, seconds: 40, why: "ran out of time", disagrees: [] })).toBe("Not checked against what was read: ran out of time.");
+  });
+});
+
+describe("what was read", () => {
+  it("says per part: read with what it found, read with nothing found, or not read", () => {
+    expect(partLine({ reads: 2, found: 1200 })).toBe("read, 1,200 found");
+    expect(partLine({ reads: 1, found: 0 })).toBe("read, nothing found");
+    expect(partLine({ reads: 0, found: 0 })).toBe("not read");
   });
 });

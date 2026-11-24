@@ -11,8 +11,9 @@ import { useSearchParams } from "next/navigation";
 import { PreparedView } from "@/components/autopilot/prepared";
 import { Button } from "@/components/ui/button";
 import { LoadProblem } from "@/components/ui/notice";
-import { getAutopilotDrafts, setNeverSender, type PreparedItem } from "@/lib/api";
+import { getAutopilotDrafts, setNeverSender, type DraftList, type PreparedItem } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
+import { useFeed } from "@/lib/feeds";
 
 export const SWITCHES_HREF = "/autopilot";
 
@@ -33,9 +34,9 @@ export function splitPrepared(items: PreparedItem[]): { confirm: PreparedItem[];
 export type PreparedCount = { confirm: number; alerts: number };
 
 /** Lists on Home that each show part of the queue and mount together share one read of it. */
-let inFlight: Promise<{ items: PreparedItem[]; never_senders?: string[] }> | null = null;
-function readDrafts(round: number): Promise<{ items: PreparedItem[]; never_senders?: string[] }> {
-  if (round > 0) return getAutopilotDrafts();
+let inFlight: Promise<DraftList> | null = null;
+function readDrafts(round: number, allAges = false): Promise<DraftList> {
+  if (round > 0 || allAges) return getAutopilotDrafts(undefined, allAges);
   if (!inFlight) {
     const read = getAutopilotDrafts();
     inFlight = read;
@@ -59,13 +60,20 @@ export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?:
   const [never, setNever] = useState<string[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [round, setRound] = useState(0);
+  const [older, setOlder] = useState(0);
+  const [allAges, setAllAges] = useState(false);
+  const [listNote, setListNote] = useState("");
+  const feed = useFeed("autopilot");
   const reload = useCallback(() => setRound((n) => n + 1), []);
   useEffect(() => {
     let live = true;
-    readDrafts(round).then(
+    readDrafts(round, allAges).then(
       (r) => {
         if (!live) return;
         setItems(r.items);
+        setOlder(r.older ?? 0);
+        // the list says when it is not current or not shown (never a silent empty list)
+        setListNote(r.status === "stale" ? "The list was last re-checked a while ago; it may be behind." : r.status === "off" || r.status === "not_run" ? (r.reason ? `Your list is not shown: ${r.reason}.` : "") : "");
         setNever(r.never_senders ?? []);
         setError(null);
       },
@@ -74,7 +82,7 @@ export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?:
     return () => {
       live = false;
     };
-  }, [round]);
+  }, [round, allAges]);
   useEffect(() => {
     if (kind && onKind) onKind(items?.filter((i) => i.kind === "alert" && i.alert_kind === kind).length ?? 0);
   }, [items, kind, onKind]);
@@ -112,6 +120,7 @@ export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?:
           Switches
         </Link>
       </h2>
+      {listNote && <p className="py-1 text-[12px] text-muted" data-testid="list-note">{listNote}</p>}
       {linked && !items.some((i) => i.item_id === linked) && <p className="py-2 text-[13px] text-muted">That item is no longer waiting for you: it was answered, decided or set aside.</p>}
       {send + wait > 0 && (
         <p className="pt-1 text-[12px] text-muted" data-testid="auto-digest">
@@ -120,10 +129,21 @@ export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?:
       )}
       {listed.length === 0 ? (
         <p className="py-3 text-[13px] text-muted" data-testid="prepared-empty">
-          Nothing is waiting for you. What gets prepared is set on <Link href={SWITCHES_HREF} className="underline-offset-2 hover:underline">Switches</Link>.
+          {feed && feed.state !== "running"
+            ? "Nothing is waiting for you, but nothing new is being prepared either: the feed behind it is not running. "
+            : "Nothing is waiting for you. "}
+          What gets prepared is set on <Link href={SWITCHES_HREF} className="underline-offset-2 hover:underline">Switches</Link>.
         </p>
       ) : (
         <PreparedView items={listed} empty="" linked={linked} onGone={(id) => setItems((xs) => (xs ?? []).filter((x) => x.item_id !== id))} onChanged={reload} />
+      )}
+      {older > 0 && !allAges && (
+        <p className="py-2 text-[12px] text-muted" data-testid="older-items">
+          {older} older {older === 1 ? "item is" : "items are"} not shown.{" "}
+          <Button size="sm" variant="ghost" onClick={() => setAllAges(true)}>
+            Show them
+          </Button>
+        </p>
       )}
       {never.length > 0 && (
         <ul className="space-y-1 pt-2 pb-2 text-[12px] text-muted" aria-label="Never prepared from">

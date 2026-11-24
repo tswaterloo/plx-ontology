@@ -42,9 +42,6 @@ export function applyEvent(turn: Turn, ev: AskEvent): Turn {
   }
 }
 
-/** The longest question the server takes (AskRequest.question). Longer is refused in the box and here, never cut. */
-export const MAX_QUESTION = 1000;
-
 /** What the Ask URL asks for, as one key: the same question with another scope, source, meeting, item or page is another request. */
 export function askUrlKey(p: { q: string | null; object: string | null; source?: string; meeting: string | null; item: string | null; page: string | null }): string {
   return [p.q, p.object, p.source, p.meeting, p.item, p.page].join("\u0000");
@@ -58,18 +55,14 @@ export interface TurnRequest {
   extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep">;
 }
 
-/** API limits (operator_api AskRequest): at most 12 history turns of 4,000 characters. */
-export const MAX_HISTORY = 12;
-const MAX_TEXT = 4000;
-
-/** Prior turns sent as context so follow-ups ("and the other one?") resolve. */
+/** Every prior turn, whole, sent as context so follow-ups ("and the other one?") resolve. */
 export function historyOf(turns: Turn[]): HistoryTurn[] {
   const out: HistoryTurn[] = [];
   for (const t of turns) {
-    out.push({ role: "user", text: t.question.slice(0, MAX_TEXT) });
-    if (t.phase === "done" && t.answer) out.push({ role: "assistant", text: t.answer.direct_answer.slice(0, MAX_TEXT) });
+    out.push({ role: "user", text: t.question });
+    if (t.phase === "done" && t.answer) out.push({ role: "assistant", text: t.answer.direct_answer });
   }
-  return out.slice(-MAX_HISTORY);
+  return out;
 }
 
 /** The conversation id the server gave the last finished answer, if any. */
@@ -134,11 +127,6 @@ export function useThread() {
       turnsRef.current = [...prior, turn];
       setTurns((ts) => [...ts, turn]);
       try {
-        if (question.length > MAX_QUESTION) {
-          // never cut an instruction short: the part past the limit may hold its qualifiers
-          update(id, (t) => ({ ...t, phase: "error", error: `That question is ${question.length} characters; the limit is ${MAX_QUESTION}. Shorten it and ask again.` }));
-          return;
-        }
         const conversation_id = conversationOf(prior);
         for await (const ev of ask(
           {
@@ -147,7 +135,7 @@ export function useThread() {
             ...(conversation_id ? { conversation_id } : {}),
             ...(objectId ? { object_id: objectId } : {}),
             ...(source ? { source: source.slice(0, 4096) } : {}),
-            ...(files.length ? { attachments: files.map((f) => ({ name: f.name, data: f.data })) } : {}),
+            ...(files.length ? { attachments: files.map((f) => ({ name: f.name, upload: f.upload })) } : {}),
             ...extra,
           },
           c.signal,

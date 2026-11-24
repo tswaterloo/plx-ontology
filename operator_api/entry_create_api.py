@@ -156,7 +156,7 @@ class EntryCreateMixin:
             except Exception:  # noqa: BLE001 - refused or failed: not the reader's
                 raise _refuse("not_open") from None
             email = _mail_oid(handle)
-        attached = self._instruct_attached(request, guard)  # type: ignore[attr-defined]
+        attached = self._instruct_attached(request, guard, reader)  # type: ignore[attr-defined]
         # the text after the colon as typed: its lines are the PO's lines (``text`` is the
         # instruction with its whitespace folded to one line)
         raw = request.question if isinstance(request.question, str) and \

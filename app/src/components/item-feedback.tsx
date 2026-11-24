@@ -3,6 +3,7 @@
 import { useId, useState } from "react";
 import { sendItemFeedback } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { FEEDBACK_MAX } from "./feedback";
 import type { BriefingItem, ItemFeedbackRequest } from "@/lib/types";
 
 export type ItemVerdict = ItemFeedbackRequest["verdict"];
@@ -20,7 +21,7 @@ export function itemBody(item: BriefingItem, verdict: ItemVerdict, note?: string
     object_id: item.object_id,
     label: (item.subject_label || item.label || "").slice(0, 300),
   };
-  if (note?.trim()) body.note = note.trim().slice(0, 2000);
+  if (note?.trim()) body.note = note.trim().slice(0, FEEDBACK_MAX);
   return body;
 }
 
@@ -129,7 +130,7 @@ export function WrongReason({ item, onMarked, onCancel }: { item: BriefingItem; 
         id={noteId}
         autoFocus
         value={note}
-        maxLength={2000}
+        maxLength={FEEDBACK_MAX}
         onChange={(e) => setNote(e.target.value)}
         onKeyDown={(e) => e.key === "Escape" && onCancel()}
         placeholder="What's wrong? (optional)"

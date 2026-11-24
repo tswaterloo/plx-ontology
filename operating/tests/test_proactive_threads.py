@@ -249,6 +249,60 @@ class Threads(Engine):
         import tempfile
         self.assertIsNone(pe.open_counts(tempfile.gettempdir() + "/no-such-inbox.sqlite", self.store, kinds=[kind]))
 
+    def test_open_counts_are_kept_until_the_inbox_or_the_data_changes(self):
+        """Data health's first read comes from kept counts: asked again over the same inbox
+        and data nothing is recounted; a changed inbox is recounted, never served old."""
+        import os
+        w, _ = self.approval_world()
+        self.run_rules(w)
+        kind = pt.APPROVAL_KIND
+        pe._KEPT_COUNTS.clear()
+        with mock.patch.object(pe, "_open_counts", wraps=pe._open_counts) as counted:
+            first = pe.open_counts(self.inbox, self.store, kinds=[kind])
+            again = pe.open_counts(self.inbox, self.store, kinds=[kind])
+            self.assertEqual(first, again)
+            self.assertEqual(counted.call_count, 1)
+            first["x"] = 1                                   # a caller's change is not kept
+            self.assertNotIn("x", pe.open_counts(self.inbox, self.store, kinds=[kind]))
+            st = os.stat(self.inbox)
+            os.utime(self.inbox, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))   # the inbox moved
+            pe.open_counts(self.inbox, self.store, kinds=[kind])
+            self.assertEqual(counted.call_count, 2)
+            # a commit that sits only in the -wal file (no checkpoint yet) is seen too
+            wal = self.inbox.with_name(self.inbox.name + "-wal")
+            wal.write_bytes(b"x")
+            self.addCleanup(lambda: wal.unlink(missing_ok=True))
+            pe.open_counts(self.inbox, self.store, kinds=[kind])
+            self.assertEqual(counted.call_count, 3)
+            wal.write_bytes(b"xy")
+            pe.open_counts(self.inbox, self.store, kinds=[kind])
+            self.assertEqual(counted.call_count, 4)
+            # a different set of kinds is its own count
+            pe.open_counts(self.inbox, self.store, kinds=[kind, "no_such_kind"])
+            self.assertEqual(counted.call_count, 5)
+
+    def test_a_rule_not_yet_rerun_over_the_newest_data_is_counted_and_dated_not_zero(self):
+        """Data moves every few minutes: a rule's findings of the run before stay counted
+        (as the listing shows them, marked not rechecked), with when it last ran; a kind no
+        rule has a run of says so (None), never a count of 0."""
+        import sqlite3
+        w, _ = self.approval_world()
+        self.run_rules(w)
+        from unittest import mock
+        kind = pt.APPROVAL_KIND
+        off = mock.patch.object(pe.alert_kinds, "off_gap_kinds", return_value=set())
+        off.start()
+        self.addCleanup(off.stop)       # the kind is off for readers; it is counted here
+        fresh = (pe.open_counts(self.inbox, self.store, kinds=[kind]) or {}).get(kind, 0)
+        self.assertGreater(fresh, 0)
+        with sqlite3.connect(self.inbox) as c:       # the data moved on since each rule ran
+            c.execute("UPDATE meta SET value = json_set(value, '$.digest', 'sha256:moved@1') "
+                      "WHERE key LIKE 'generation:%'")
+        self.assertEqual(pe.open_counts(self.inbox, self.store, kinds=[kind]), {kind: fresh})
+        when = pe.last_checked(self.inbox, kinds=[kind, "no_rule_files_this"])
+        self.assertTrue(when[kind])
+        self.assertIsNone(when["no_rule_files_this"])
+
     def kinds(self, *kinds: str, **read) -> list[dict]:
         return self.read(kinds=list(kinds), limit=1000, **read)["gaps"]
 

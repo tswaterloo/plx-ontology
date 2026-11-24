@@ -1,9 +1,9 @@
 """Briefs the Meetings page reads, kept so a warm visit is quick and never wider than the
 reader:
 
-* a finished week's review is read whole once with the kept budget and served from the
-  archive after; this week (never kept) keeps a live brief's budget, and a budget-cut
-  week is never kept;
+* a finished week's review is read whole (no time budget, owner 11-23) once and served from
+  the archive after; this week (never kept) is read whole too, and a page that reports
+  itself cut is never kept;
 * the upcoming meetings are kept per reader and hour, and read again when a source they
   show no longer opens for the reader."""
 
@@ -66,7 +66,7 @@ class WeeklyKeptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             archive = br.WeeklyArchive(Path(tmp) / "w.sqlite")
             got, budgets = self.run_week(archive, None, date(2026, 11, 10))
-            self.assertEqual(budgets, [briefs.KEPT_WEEK_BUDGET_SECONDS])
+            self.assertEqual(budgets, [None])
             again, budgets = self.run_week(archive, None, date(2026, 11, 10))
             self.assertEqual(budgets, [])                 # from the archive
             self.assertEqual(again["sections"], got["sections"])
@@ -80,15 +80,30 @@ class WeeklyKeptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend = SimpleNamespace(data_dir=Path(tmp))
             backend._weekly_archive = lambda: briefs.BriefsMixin._weekly_archive(backend)
+            backend._weekly_times = lambda: briefs.BriefsMixin._weekly_times(backend)
+            backend._weekly_took = lambda s: briefs.BriefsMixin._weekly_took(backend, s)
             job = briefs.BriefsMixin._weekly_ahead(backend, SimpleNamespace(key="r1"))
             with mock.patch.object(br, "weekly_review", weekly), \
                     mock.patch.object(briefs, "_grant_key", lambda view, held: "g1"):
                 job(View())
                 job(View())
-            self.assertEqual(budgets, [briefs.WARM_WEEK_BUDGET_SECONDS])
+            self.assertEqual(budgets, [None])
             self.assertEqual(len(backend._weekly_archive().weeks("r1", "g1")), 1)
 
-    def test_a_read_ahead_cut_by_its_budget_waits_before_it_is_read_ahead_again(self):
+    def test_this_week_and_a_finished_week_are_read_with_no_budget_and_a_cut_page_is_not_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = br.WeeklyArchive(Path(tmp) / "w.sqlite")
+            _, budgets = self.run_week(archive, date(2026, 11, 9), date(2026, 11, 10))
+            self.assertEqual(budgets, [None])
+            _, budgets = self.run_week(archive, date(2026, 11, 2), date(2026, 11, 10),
+                                       stopped=True)
+            self.assertEqual(budgets, [None])
+            self.assertEqual(archive.weeks("r1", "g1"), [])          # a cut page is not kept
+            _, budgets2 = self.run_week(archive, date(2026, 11, 2), date(2026, 11, 10))
+            self.assertEqual(budgets2, [None])
+            self.assertEqual(len(archive.weeks("r1", "g1")), 1)
+
+    def test_the_read_ahead_has_no_cut_mark_and_reads_the_week_again_when_it_was_not_kept(self):
         budgets = []
 
         def weekly(call, held, alerts, *, budget_seconds, **kw):
@@ -97,41 +112,17 @@ class WeeklyKeptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backend = SimpleNamespace(data_dir=Path(tmp))
             backend._weekly_archive = lambda: briefs.BriefsMixin._weekly_archive(backend)
+            backend._weekly_times = lambda: briefs.BriefsMixin._weekly_times(backend)
+            backend._weekly_took = lambda s: briefs.BriefsMixin._weekly_took(backend, s)
             job = briefs.BriefsMixin._weekly_ahead(backend, SimpleNamespace(key="r1"))
-            other = briefs.BriefsMixin._weekly_ahead(backend, SimpleNamespace(key="r2"))
             with mock.patch.object(br, "weekly_review", weekly), \
                     mock.patch.object(briefs, "_grant_key", lambda view, held: "g1"):
                 job(View())
-                job(View())                       # cut just now: not read again
-                other(View())                     # another reader is read as before
-                self.assertEqual(len(budgets), 2)
-                self.assertEqual(backend._weekly_archive().weeks("r1", "g1"), [])
-                cuts = briefs.WeeklyCuts(Path(tmp) / briefs.WEEKLY_CUT_FILE)
-                week = br.week_of(date.today()) - briefs.timedelta(days=7)
-                self.assertTrue(cuts.recent("r1", week))
-                # a closed week cut once is cut again: no read-ahead 6 h later either
-                # (11-21: every 6 h each of 91 readers ran 300 s again and kept nothing)
-                self.assertTrue(cuts.recent("r1", week,
-                                            now=__import__("time").time() + 6 * 3600 + 1))
-                later = __import__("time").time() + briefs.WEEKLY_CUT_SECONDS + 1
-                self.assertFalse(cuts.recent("r1", week, now=later))
-                self.assertFalse(cuts.recent("r1", week - briefs.timedelta(days=7)))
-                (Path(tmp) / briefs.WEEKLY_CUT_FILE).write_text("not json")
-                job(View())                       # an unreadable file is a miss
-                self.assertEqual(len(budgets), 3)
+                job(View())
+            self.assertEqual(budgets, [None, None])
+            self.assertFalse((Path(tmp) / "weekly-cut.json").exists())
 
-    def test_this_week_keeps_the_live_budget_and_a_cut_week_is_read_again(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            archive = br.WeeklyArchive(Path(tmp) / "w.sqlite")
-            _, budgets = self.run_week(archive, date(2026, 11, 9), date(2026, 11, 10))
-            self.assertEqual(budgets, [br.BUDGET_SECONDS])
-            _, budgets = self.run_week(archive, date(2026, 11, 2), date(2026, 11, 10),
-                                       stopped=True)
-            self.assertEqual(budgets, [briefs.KEPT_WEEK_BUDGET_SECONDS])
-            _, budgets2 = self.run_week(archive, date(2026, 11, 2), date(2026, 11, 10))
-            self.assertEqual(budgets2, [briefs.KEPT_WEEK_BUDGET_SECONDS])
-
-    def test_no_archive_or_no_grant_keeps_the_live_budget(self):
+    def test_no_archive_or_no_grant_reads_with_no_budget(self):
         budgets = []
 
         def weekly(call, held, alerts, *, budget_seconds, **kw):
@@ -143,7 +134,7 @@ class WeeklyKeptTests(unittest.TestCase):
                     mock.patch.object(briefs, "_grant_key", lambda view, held: None):
                 briefs.weekly_review_of(View(), None, archive=br.WeeklyArchive(
                     Path(tmp) / "w.sqlite"), reader="r1", today=date(2026, 11, 10))
-        self.assertEqual(budgets, [br.BUDGET_SECONDS, br.BUDGET_SECONDS])
+        self.assertEqual(budgets, [None, None])
 
 
 class UpcomingKeptTests(unittest.TestCase):
@@ -230,3 +221,55 @@ class WeeklyLatePos(unittest.TestCase):
         def broken():
             raise RuntimeError("down")
         self.assertEqual(briefs.late_from_home(self.review(), broken), self.review())
+
+    def test_the_review_lists_a_page_of_late_orders_and_opens_every_one(self):
+        """Audit #10: the review listed 10 late orders and said "N more not listed" with no
+        way to them; it lists the late list's page and links the whole list."""
+        asked = []
+
+        def late():
+            asked.append(briefs.LATE_ROWS)
+            items = [m.LatePo(object_id=f"PurchaseOrder:{i}", label=f"PO {i}", open_url=f"/po/{i}",
+                              days_late=i, reason="past its promised date") for i in range(briefs.LATE_ROWS)]
+            return m.LateList(total=250, offset=0, items=items)
+        got = {s.key: s for s in briefs.late_from_home(self.review(), late).sections}["late_pos"]
+        self.assertEqual((len(got.rows), got.more, got.more_href), (100, 150, "/late"))
+        self.assertGreaterEqual(briefs.LATE_ROWS, 100)
+
+
+class WeeklyNoTimeoutTests(unittest.TestCase):
+    """The weekly review has no time limit (a reader's week takes 424-714 s): it is run
+    with no timeout, and while the first build goes on the page is told so, with an estimate
+    from the builds measured here."""
+
+    def backend(self, tmp):
+        b = SimpleNamespace(data_dir=Path(tmp), calls=[])
+        for name in ("_weekly_archive", "_weekly_times", "_weekly_seconds", "_weekly_took",
+                     "_brief_run"):
+            setattr(b, name, getattr(briefs.BriefsMixin, name).__get__(b))
+        b.late_list = lambda reader, limit=None: m.LateList(total=0, offset=0, items=[])
+
+        def run(reader, job):
+            b.calls.append(("weekly queue", job is not None))
+            return None
+        b.weekly_run = run
+        return b
+
+    def test_the_route_runs_the_week_on_the_weekly_workers_with_no_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self.backend(tmp)
+            with self.assertRaises(Exception):   # no signed-in reader in this fake: 404
+                briefs.BriefsMixin.weekly_review(b, SimpleNamespace(key="r1"), None)
+            self.assertEqual(b.calls, [("weekly queue", True)])
+
+    def test_the_reading_page_estimates_from_measured_builds_and_none_before_any(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self.backend(tmp)
+            b.weekly_reading = briefs.BriefsMixin.weekly_reading.__get__(b)
+            first = b.weekly_reading(SimpleNamespace(key="r1"))
+            self.assertEqual((first.reading, first.ready_about, first.sections), (True, None, []))
+            for seconds in (424.0, 600.0, 714.0):
+                b._weekly_took(seconds)
+            got = b.weekly_reading(SimpleNamespace(key="r1"))
+            self.assertTrue(got.reading and got.ready_about)
+            self.assertEqual(b._weekly_seconds(), 600.0)

@@ -149,13 +149,13 @@ class InstructAssistMixin:
             left = deadline - time.monotonic()
             if reads is None or not hasattr(reads, "run") or left <= 0:
                 return set()
-            from operating import fast_answer
+            from operating import record_reads
 
             def job(view: Any) -> set[str]:
                 access = view.access
                 if not all(hasattr(access, n) for n in ("host", "runtime", "agent_server")):
                     return set()
-                return assist.party_addresses(fast_answer.Reads(
+                return assist.party_addresses(record_reads.Reads(
                     access.host, access.runtime, access.actor, access.agent_server()),
                     name, side)
             try:

@@ -141,9 +141,14 @@ MAX_KEPT_KEYS = 400_000
 _LIST_ANY = re.compile(
     r"(= ANY|<> ALL)\(ontology\.(sq_json_array(?:_int)?)\("
     r"(%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s)\)\)")
-# A long list compared with a link's end (``links.from_object`` / ``to_object``): one array
-# parameter, an index condition on each end, never the key set (``_bound_lists``).
-_LINK_END = re.compile(r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:from_object|to_object)\s*\Z")
+# A long list compared with a link's end (``links.from_object`` / ``to_object``) or its id
+# (``link_id``): one array parameter, an index condition on each end (on the key), never the
+# key set (``_bound_lists``). Read through the person guard's ``UNION ALL`` (a subquery
+# Postgres does not flatten, ``person_link_guard``) a key-set ``IN`` became a join the
+# subquery could not take as an index condition: a hop's 213 link ids were hash-joined to
+# every live link row, 41.8M of them (11-22 live: 119 s; as an array 0.3 s).
+_LINK_END = re.compile(
+    r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:from_object|to_object|link_id)\s*\Z")
 ARRAY_SUFFIX = "__arr"
 _FALLBACK = {False: "SELECT array(SELECT value FROM ontology.sq_json_each(%s))",
              True: "SELECT array(SELECT value FROM ontology.sq_json_each_int(%s))"}
@@ -794,6 +799,34 @@ def _members(raw: Any, *, numeric: bool) -> list[Any] | None:
 def _long_members(raw: str, numeric: bool) -> tuple[Any, ...] | None:
     got = _members_read(raw, numeric=numeric)
     return None if got is None else tuple(got)
+
+
+@functools.lru_cache(maxsize=32)
+def _long_literal(raw: str, numeric: bool) -> str | None:
+    """A long member list (a reader's audience keys and marks) as ONE Postgres array literal
+    text, built once per distinct list: bound as a string and cast server side
+    (``%s::text[]``), the C-level string encoder takes it whole. Bound as a Python list, the
+    driver's array encoder walked every member again on every statement of a read (a cold
+    record's hundreds of 500-id reads each re-encoded the owner's 4,488 keys: 340 of 457
+    busy samples of one section's profile). None: not a plain list of members."""
+    got = _long_members(raw, numeric)
+    if got is None:
+        return None
+    if numeric:
+        return "{" + ",".join(str(v) for v in got) + "}"
+    return "{" + ",".join(
+        "NULL" if v is None else '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        for v in got) + "}"
+
+
+def _members_param(raw: Any, numeric: bool) -> Any:
+    """What to bind for a list's members: the one array literal of a long list, else the
+    members themselves (None: the caller falls back as before)."""
+    if isinstance(raw, str) and len(raw) >= LONG_LIST_CHARS:
+        lit = _long_literal(raw, numeric)
+        if lit is not None:
+            return lit
+    return _members(raw, numeric=numeric)
 
 
 def _members_read(raw: Any, *, numeric: bool) -> list[Any] | None:
@@ -1955,7 +1988,7 @@ class PgCompatConnection:
                            f"FROM {table} kept WHERE kept.digest = {bound})")
                 last = m.end()
                 continue
-            members = _members(raw, numeric=numeric)
+            members = _members_param(raw, numeric)
             if members is None:
                 continue   # the function reads it (another JSON shape, unreadable text)
             if name is None:
@@ -1993,8 +2026,8 @@ class PgCompatConnection:
             self._kept_keys += sum(len(members) for members in lists.values())
             cur.execute("ANALYZE pg_temp.sq_keys")
 
-    def _members_of(self, raw: Any, numeric: bool) -> list[Any]:
-        members = _members(raw, numeric=numeric)
+    def _members_of(self, raw: Any, numeric: bool) -> Any:
+        members = _members_param(raw, numeric)
         if members is None:
             with self._conn.cursor() as cur:
                 cur.execute(_FALLBACK[numeric], (raw,))

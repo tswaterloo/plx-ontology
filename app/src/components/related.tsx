@@ -13,6 +13,7 @@ import { useAuth } from "@/components/auth";
 import { TemplateFilledView, DOC_TYPE_LABEL, refusal } from "@/components/templates";
 import { useViewingAs } from "@/components/view-as";
 import { continueHref, recordName, verbLabel } from "@/components/work-log";
+import { ShowAll } from "@/components/show-all";
 import { fillTemplate, getAutopilotAudit, getMemory, getTemplates, getWorkLog } from "@/lib/api";
 import { auditWhat } from "@/lib/autopilot";
 import type { DraftUseData } from "@/components/autopilot/draft-use";
@@ -48,8 +49,9 @@ const MEMORY_KIND: Record<string, string> = {
   summary: "Summary",
 };
 
-const MAX_RECORDS = 4;
 const SHOWN = 5;
+// a record's work log rows read (Show all opens them past SHOWN)
+const LOG_READ = 50;
 
 /** The records an autopilot item is about: what happened's own record, then the ones it names. */
 export function itemRecords(happened: Record<string, unknown> | null | undefined): string[] {
@@ -192,7 +194,9 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
   const { state } = useAuth();
   const owner = state.status === "signed-in" && !!state.me.owner;
   const who = state.status === "signed-in" ? state.me.principal : "";
-  const recs = useMemo(() => [...new Set(records.filter(Boolean))].slice(0, MAX_RECORDS), [records]);
+  const unique = useMemo(() => [...new Set(records.filter(Boolean))], [records]);
+  // every record is read: there is no count past which the rest are left out
+  const recs = unique;
   const recKey = recs.join("|");
   const typeKey = docTypes.join("|");
   const [memory, setMemory] = useState<Read<MemoryItem>>(null);
@@ -213,7 +217,7 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
     if (ids.length) {
       settle(once(`memory:${who}`, () => getMemory()).then((m) => (m.available ? memoryFor(m.items ?? [], ids) : Promise.reject(new Error("unavailable")))), setMemory, c.signal);
       settle(
-        Promise.all(ids.map((r) => getWorkLog({ record: r, limit: SHOWN }, c.signal))).then((pages) => {
+        Promise.all(ids.map((r) => getWorkLog({ record: r, limit: LOG_READ }, c.signal))).then((pages) => {
           const seen = new Map<number, WorkLogEvent>();
           for (const p of pages) for (const e of p.events) if (!seen.has(e.seq)) seen.set(e.seq, e);
           return [...seen.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
@@ -244,6 +248,7 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
   // nothing to say (every read refused to this session, none failed): no empty heading
   if (!loading && !empty && !failed.length && !memoryRows.length && !templateRows.length && !log?.rows.length && !runs?.rows.length) return null;
   const memoryHref = first ? `/memory?record=${encodeURIComponent(first)}` : "/memory";
+  const logGroups = repeatsTogether(log?.rows ?? []);
   const logHref = first ? `/work-log?record=${encodeURIComponent(first)}` : "/work-log";
   return (
     <section aria-label="Related" className={cn("space-y-4", className)} data-testid="related-panel">
@@ -251,54 +256,62 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
       {loading && <p className="text-[12px] text-muted">Reading your memory, templates and work log</p>}
       {memoryRows.length > 0 && (
         <Block title={drafted ? "Memory, not applied" : "Memory"} href={memoryHref} linkText="Memory" count={memoryRows.length} testId="related-memory">
-          {memoryRows.slice(0, SHOWN).map((m) => (
-            <li key={m.id} className="text-[13px] leading-5" data-testid="related-memory-row">
-              <span className="text-muted">{MEMORY_KIND[m.kind] ?? m.kind}: </span>
-              {m.text}
-              {m.due && <span className="text-muted"> (due {formatDateTime(m.due)})</span>}
-            </li>
-          ))}
+          <ShowAll items={memoryRows} first={SHOWN} as="li">
+            {(m) => (
+              <li key={m.id} className="text-[13px] leading-5" data-testid="related-memory-row">
+                <span className="text-muted">{MEMORY_KIND[m.kind] ?? m.kind}: </span>
+                {m.text}
+                {m.due && <span className="text-muted"> (due {formatDateTime(m.due)})</span>}
+              </li>
+            )}
+          </ShowAll>
         </Block>
       )}
       {templateRows.length > 0 && (
         <Block title={drafted ? "Templates, not applied" : "Templates"} href="/templates" linkText="Templates" count={templateRows.length} testId="related-templates">
-          {templateRows.slice(0, SHOWN).map((t) => (
-            <TemplateRow key={t.id} t={t} record={first} label={name} dense={dense} />
-          ))}
+          <ShowAll items={templateRows} first={SHOWN} as="li">
+            {(t) => (
+              <TemplateRow key={t.id} t={t} record={first} label={name} dense={dense} />
+            )}
+          </ShowAll>
         </Block>
       )}
       {!!log?.rows.length && (
-        <Block title="Your work log" href={logHref} linkText="Work log" count={log.rows.length} testId="related-work-log">
-          {log.rows.slice(0, SHOWN).map((e) => (
-            <li key={e.seq} className={cn("flex gap-x-2 text-[13px] leading-5", dense ? "flex-col" : "items-baseline justify-between")} data-testid="related-log-row">
-              {/* wraps, never truncates: a clipped line still runs its link off a phone's screen */}
-              <span className="min-w-0 line-clamp-3 [overflow-wrap:anywhere]" data-testid="related-log-text">
-                <span className="text-muted">{verbLabel(e)}: </span>
-                {e.mine ? (
-                  <Link href={continueHref(e.thread)} className="hover:underline">
-                    {e.thread_name || e.title}
-                  </Link>
-                ) : (
-                  e.thread_name || e.title
-                )}
-              </span>
-              <span className="shrink-0 text-[12px] tabular-nums text-muted">{formatDateTime(e.at)}</span>
-            </li>
-          ))}
+        <Block title="Your work log" href={logHref} linkText="Work log" count={logGroups.length} testId="related-work-log">
+          <ShowAll items={logGroups} first={SHOWN} as="li">
+            {({ e, times }) => (
+              <li key={e.seq} className={cn("flex gap-x-2 text-[13px] leading-5", dense ? "flex-col" : "items-baseline justify-between")} data-testid="related-log-row">
+                {/* wraps, never truncates: a clipped line still runs its link off a phone's screen */}
+                <span className="min-w-0 line-clamp-3 [overflow-wrap:anywhere]" data-testid="related-log-text">
+                  <span className="text-muted">{verbLabel(e)}{times > 1 ? ` ${times} times` : ""}: </span>
+                  {e.mine ? (
+                    <Link href={continueHref(e.thread)} className="hover:underline">
+                      {e.thread_name || e.title}
+                    </Link>
+                  ) : (
+                    e.thread_name || e.title
+                  )}
+                </span>
+                <span className="shrink-0 text-[12px] tabular-nums text-muted">{formatDateTime(e.at)}</span>
+              </li>
+            )}
+          </ShowAll>
         </Block>
       )}
       {!!runs?.rows.length && (
         <Block title={itemId ? "Run log for this item" : "Run log"} href="/autopilot-log" linkText="Audit log" count={runs.rows.length} testId="related-run-log">
-          {runs.rows.slice(0, SHOWN).map((r, i) => (
-            <li key={`${r.at}-${r.event}-${i}`} className={cn("flex gap-x-2 text-[13px] leading-5", dense ? "flex-col" : "items-baseline justify-between")} data-testid="related-run-row">
-              <span className="min-w-0">
-                {auditWhat(r)}
-                {r.mode && r.mode !== "live" ? <span className="text-muted"> ({r.mode.replace(/_/g, " ")})</span> : null}
-                {r.by ? <span className="text-muted"> by {r.by}</span> : null}
-              </span>
-              <span className="shrink-0 text-[12px] tabular-nums text-muted">{formatDateTime(r.at)}</span>
-            </li>
-          ))}
+          <ShowAll items={runs.rows} first={SHOWN} as="li">
+            {(r, i) => (
+              <li key={`${r.at}-${r.event}-${i}`} className={cn("flex gap-x-2 text-[13px] leading-5", dense ? "flex-col" : "items-baseline justify-between")} data-testid="related-run-row">
+                <span className="min-w-0">
+                  {auditWhat(r)}
+                  {r.mode && r.mode !== "live" ? <span className="text-muted"> ({r.mode.replace(/_/g, " ")})</span> : null}
+                  {r.by ? <span className="text-muted"> by {r.by}</span> : null}
+                </span>
+                <span className="shrink-0 text-[12px] tabular-nums text-muted">{formatDateTime(r.at)}</span>
+              </li>
+            )}
+          </ShowAll>
         </Block>
       )}
       {empty && (
@@ -335,4 +348,16 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
       )}
     </section>
   );
+}
+
+/** The same thing done again and again in a row (the same question asked three times) is one
+ * line that says how many times, with the newest time; nothing is dropped from the count. */
+export function repeatsTogether(rows: readonly WorkLogEvent[]): { e: WorkLogEvent; times: number }[] {
+  const out: { e: WorkLogEvent; times: number }[] = [];
+  for (const e of rows) {
+    const last = out[out.length - 1];
+    if (last && last.e.kind === e.kind && last.e.verb === e.verb && last.e.thread === e.thread && (last.e.thread_name || last.e.title) === (e.thread_name || e.title)) last.times += 1;
+    else out.push({ e, times: 1 });
+  }
+  return out;
 }

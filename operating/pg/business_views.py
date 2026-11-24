@@ -25,8 +25,8 @@ What every build holds to:
   from and every link followed; ids are append-only, shared by every view),
   ``col_class`` (the id in ``<schema>.col_classes`` of the row's per-column markings and
   needs: what a column read from a record the row is not, a mailed promise date, requires;
-  ``business_views_access`` states the classes contract) and ``ai_ok`` (false when a text column or
-  the handle names Freightcom, ``image_ocr_gpu.FREIGHTCOM``: no Freightcom row reaches a
+  ``business_views_access`` states the classes contract) and ``ai_ok`` (always true now: the owner dropped the Freightcom rule 11-23; a text column or
+  the handle, ``image_ocr_gpu.FREIGHTCOM``: no Freightcom row reaches a
   model). Lineage (object ids, per-column cites [handle, field_path], systems, copies) is
   in ``<schema>.lineage`` by (view, handle). A row made from an object of
   ``ontology.people_excluded_objects`` (an excluded person's own data): the owner's alone.
@@ -48,6 +48,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field as dc_field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+
+from operating.pg import party_keys
 
 SERVED_SCHEMA = "biz"   # migration 0041's schema, the one Ask reads when nothing else is set
 
@@ -77,6 +79,11 @@ LINEAGE_COLS = ("view", "handle", "object_ids", "read_ids", "col_objects", "cite
 # indexed columns besides handle, the keys (*_handle) and the dates: what pages filter on
 STATUS_COLS = ("status", "order_status", "po_status", "verdict", "aging_bucket")
 NAME_COLS = ("name", "customer", "supplier", "item_name", "customer_chain", "chain")
+# numbers and codes, indexed bytewise (``text_pattern_ops``): an equality or a prefix range
+# on one reaches the index through the guarded views (leakproof operators), as the search
+# box's number lookups do (``page_reads._find_sql``)
+NUMBER_COLS = ("order_number", "customer_po", "po_number", "invoice_number",
+               "document_number", "batch_code", "lot_number", "item_code")
 CLASS_MAX = 2**31 - 1   # integer ids (the canonical classes contract, migration 0041)
 EXCLUDED_TABLE = "ontology.people_excluded_objects"
 STREAM_BATCH = 20_000   # rows per server-cursor batch of a whole-type read
@@ -606,9 +613,9 @@ def fill(row: Row, thing: Thing, column: str, prop: str,
     return value
 
 
-CATEGORY_DOC = ("the item's category, read from Sage's item master first (Sage is the system "
-                "of record for items sold and invoiced: its codes are product lines such as "
-                "PLABEL, LIQUID, VCARE; no Sage category table is captured, so the code stands), "
+CATEGORY_DOC = ("the item's category, read from Sage's item master first (its codes are "
+                "product lines such as PLABEL, LIQUID, VCARE; no Sage category table is "
+                "captured, so the code stands), "
                 "else from BC's item category (PACK, FG, DIST, RAW: a different, coarser list)")
 
 
@@ -738,6 +745,9 @@ class View:
     # re-gated by the item gate after the statement), never offered to a reader's queries:
     # left out of the dictionary, ``describe`` and the catalog (``listed``)
     listed: bool = True
+    # the declared version of what the view's rows are (speed specs P4): bumped by hand when
+    # its output can change; the print hashes it, never the code's text
+    version: int = 1
 
     def col(self, name: str) -> Col | None:
         return next((c for c in self.cols if c.name == name), None)
@@ -751,16 +761,14 @@ VIEWS: dict[str, View] = {}
 SYSTEMS_COL = "source_systems"
 SYSTEMS_DOC = ("the systems holding a copy of this row, sorted and comma separated: bc "
                "(Business Central), filemaker, portal (the Portal app), sage; e.g. "
-               "'bc,filemaker,portal'. A question about one system's records filters on it "
-               "(source_systems LIKE '%bc%'); the row's other columns are the joined thing's. "
-               "Business Central is still a pilot: a row held only in bc (or bc,portal, the "
-               "Portal's mirror of BC) is pilot data, not the system of record (Sage, "
-               "FileMaker and the Portal are); an answer resting on such a row says so, and "
-               "looks for the same business in the systems of record and in mail")
+               "'bc,filemaker,portal' (one system's rows: source_systems LIKE '%bc%'); the "
+               "row's other columns are the joined thing's. 'bc,portal' is held in Business "
+               "Central and the Portal")
 
 
 def view(name: str, doc: str, cols: Sequence[tuple[str, str, str]], reads: Sequence[str],
-         memos: Sequence[str] = (), covers: bool = True) -> Callable[[Callable], Callable]:
+         memos: Sequence[str] = (), covers: bool = True,
+         version: int = 1) -> Callable[[Callable], Callable]:
     def wrap(fn: Callable) -> Callable:
         made: list[Col] = []
         for cname, kind, cdoc in cols:
@@ -769,7 +777,8 @@ def view(name: str, doc: str, cols: Sequence[tuple[str, str, str]], reads: Seque
                 made.append(Col(cname + "_currency", "currency",
                                 f"ISO currency of {cname}; sums never mix currencies"))
         made.append(Col(SYSTEMS_COL, "text", SYSTEMS_DOC))
-        VIEWS[name] = View(name, doc, made, fn, tuple(reads), tuple(memos), covers=covers)
+        VIEWS[name] = View(name, doc, made, fn, tuple(reads), tuple(memos), covers=covers,
+                           version=version)
         return fn
     return wrap
 
@@ -804,8 +813,8 @@ CUSTOMER_PROPS = ("name", "erp_code", "code", "currency", "email", "bc_email",
         "code, per copy), comma separated: any system's code finds the customer"),
        ("merged_by", "text", MERGE_RULES_DOC),
        ("currency", "text", "the customer's billing currency: its Sage account's "
-        "(Customer.currency of the Sage copy; Sage is the system of record for AR, its "
-        "invoices and balances), else the first other copy's"),
+        "(Customer.currency of the Sage copy, the account its invoices and balances are "
+        "booked on), else the first other copy's"),
        ("email", "text", "main email"), ("phone", "text", "main phone"),
        ("contact_person", "text", "main contact"),
        ("salesperson", "text", "salesperson code"),
@@ -817,18 +826,22 @@ CUSTOMER_PROPS = ("name", "erp_code", "code", "currency", "email", "bc_email",
         "bill-to customer): one chain's store accounts share it"),
        ("chain_code", "text", "the chain's code"),
        ("chain_basis", "text", "national_account, bill_to or name_prefix (store accounts "
-        "named '<chain> - <store>', at least 3 of them)")],
+        "named '<chain> - <store>', at least 3 of them)"),
+       ("party_handles", "list", party_keys.HANDLES_DOC.format(kind="customer"))],
       reads=("Customer", NATIONAL_TYPE), memos=("customers", "chains"))
 def _customers(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     chains = customer_chains(rd)
     _r, things = customer_things(rd)
+    rows = []
     for thing in unique_things(things):
         row = customer_row(thing)
         add_chain(row, thing, chains, "chain")
         chain = chains.get(thing.rep.object_id)
         row.values["chain_code"] = chain.code if chain and chain.name else None
         row.values["chain_basis"] = chain.basis if chain and chain.name else None
-        yield row
+        rows.append(row)
+    party_keys.fill(rows)
+    yield from rows
 
 
 def unique_things(things: Mapping[str, Thing]) -> list[Thing]:
@@ -901,8 +914,8 @@ def doc_type_doc(kinds: Mapping[str, str], money: str) -> str:
 
 
 @view("customer_balances", "What customers owe now: every open (unpaid) Sage AR document "
-      "with its remaining balance, aged by due date, in its own currency. BC aged "
-      "receivables are pilot data and are not used.",
+      "with its remaining balance, aged by due date, in its own currency. Business "
+      "Central's aged receivables are not in this view.",
       [("customer", "text", "customer name (the linked customer)"),
        ("customer_code", "text", "Sage customer code"),
        ("document_number", "text", "invoice / credit note / receipt number"),
@@ -1170,16 +1183,15 @@ def pilot_binding(binding: str) -> bool:
     return (binding or "").startswith(("bc.", "portal.bc_"))
 
 
-PILOT_DOC = ("true: a BC pilot record (Sage is the system of record); plx.business leaves "
-             "pilot rows out unless the request filters on pilot")
+PILOT_DOC = "true: a Business Central record (its rows are in this view; filter on pilot)"
 INVOICE_PROPS = ("invoice_number", "bc_number", "order_number", "customer_number",
                  "customer_po", "status", "invoice_date", "due_date", "subtotal", "total_tax",
                  "total_amount", "remaining_amount", "currency", "exchange_rate",
                  "home_currency", "invoice_discount")
 
 
-@view("sales_invoices", "Every customer invoice once, Sage first: Sage is the invoice system "
-      "of record; BC invoices are pilot data (pilot = true), left out unless asked for. "
+@view("sales_invoices", "Every customer invoice once, Sage first; Business Central invoices "
+      "carry pilot = true. "
       "Each amount in the invoice's own currency; total includes tax, subtotal is before tax.",
       [("invoice_number", "text", "invoice number"),
        ("customer", "text", "customer name (the billed customer)"),
@@ -1447,7 +1459,7 @@ def line_economics(rec: Rec, fx: Rate | None = None) -> dict[str, Any]:
 
 
 @view("sales_invoice_lines", "Every line of every customer invoice (sales_invoices: Sage "
-      "first, BC pilot lines left out unless asked): product, quantity and its unit, revenue "
+      "first; Business Central lines carry pilot = true): product, quantity and its unit, revenue "
       "(before tax, after the invoice discount), cost and margin per line, each in its own "
       "currency. Sage states unit cost in the home currency (CAD): a line sold in another "
       "currency has its cost converted at its own invoice's exchange rate for the margin "
@@ -1478,7 +1490,9 @@ def line_economics(rec: Rec, fx: Rate | None = None) -> dict[str, Any]:
         "sales_invoices on handle), through its SalesInvoiceLine.line_of link"),
        ("customer_code", "text", "the invoice's customer_code (sales_invoices)"),
        handle_col("customer", "its invoice's SalesInvoice.billed_to link (the invoice's "
-                  "customer_handle)")],
+                  "customer_handle)"),
+       handle_col("product", "its line's item link: the key to join products on (item_code "
+                  "is the code the line states, which the product row may carry differently)")],
       reads=("SalesInvoiceLine", "SalesInvoice", "Customer", "Product"),
       memos=("customers", "chains", "invoices", "products"))
 def _sales_invoice_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
@@ -1518,6 +1532,7 @@ def _sales_invoice_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         row.values["invoice_handle"] = head.handle
         product = name_linked(row, [e for r in thing.members for e in item_of.get(r.object_id, ())],
                               pthings, "item_name")
+        party_handle(row, "product", product)
         if fill(row, thing, "item_code", "sage_item_code") is None and product is not None:
             if fill(row, product, "item_code", "code") is None:
                 fill(row, product, "item_code", "erp_code")
@@ -1589,10 +1604,8 @@ ORDER_LINK = "SalesOrder.ordered_by"
 # default (on the served data a third of those are unlinked copies of Sage orders: same
 # customer and PO)
 ORDER_RECORD_SYSTEM = "sage"
-OF_RECORD_DOC = ("true: a Sage order header carries the order (Sage is the system of record "
-                 "for orders); false: held only in FileMaker order entry, the Portal or BC. "
-                 "plx.business leaves of_record = false rows out unless the request filters "
-                 "or groups on of_record")
+OF_RECORD_DOC = ("true: a Sage order header carries the order; false: held only in "
+                 "FileMaker order entry, the Portal or BC")
 ITEM_LINK = "SalesOrderLine.for_item"
 # The systems whose order copies state the order's currency (``order_value``: the one
 # rule of an order's currency of record, every surface's)
@@ -1616,6 +1629,9 @@ class Order:
     currency: str | None = None      # the order's currency of record (``order_currency``)
     currency_basis: str | None = None   # invoice, sage_order, bc_order, customer or why none
     currency_from: tuple[str, str, str] | None = None   # (record id, handle, field path)
+    outstanding: Decimal | None = None    # sum of the lines' stated quantity still to ship
+    ordered_on: dt.date | None = None     # the earliest order date any copy states
+    last_invoice: dt.date | None = None   # the newest date of an invoice billing it
 
 
 def order_currency(group: Sequence[Rec], invoices: Sequence[Rec], customer: Thing | None
@@ -1660,7 +1676,7 @@ def _sales_orders_model(rd: Reader) -> dict[str, Any]:
     lines = rd.records(ov.LINE_TYPE, tuple(dict.fromkeys(
         (*ov.LINE_PROPS, *ov.LINE_TEXT, *ov.CHECK_PROPS, *SO_LINE_PROPS))))
     line_ids = rd.ids(ov.LINE_TYPE)
-    invoices = rd.records(ov.INVOICE_TYPE, ov.INVOICE_PROPS)
+    invoices = rd.records(ov.INVOICE_TYPE, (*ov.INVOICE_PROPS, "invoice_date"))
     invoice_ids = rd.ids(ov.INVOICE_TYPE)
     held_from = {"Shipment": rd.ids("Shipment"), ov.INVOICE_TYPE: invoice_ids}
     settled = set(ov.SETTLED)
@@ -1806,7 +1822,60 @@ def _sales_orders_model(rd: Reader) -> dict[str, Any]:
                             if carrier else [], found.get(carrier) if carrier else None, read,
                             marks, basis, order_kind, of_record.code, of_record.basis,
                             _cite_of(of_record.row))
-    return {"orders": orders, "lines": lines}
+        _activity(orders[top], group, props, lines, invoices, invoices_of)
+    return {"orders": orders, "lines": lines, "settle_days": _settle_days(orders.values())}
+
+
+def _activity(order: "Order", group: Sequence[str], props: Mapping[str, Any],
+              lines: Mapping[str, Rec], invoices: Mapping[str, Rec],
+              invoices_of: Mapping[str, set[str]]) -> None:
+    """What the records state of an order's progress, for ``open_state``: the quantity its
+    lines still owe (only when EVERY line states one), the day it was ordered and the newest
+    invoice billing it."""
+    stated = [lines[ln].cell("outstanding_quantity") for ln in order.lines if ln in lines]
+    owed = [to_decimal(c.value) if c is not None else None for c in stated]
+    order.outstanding = sum(owed, Decimal(0)) if owed and None not in owed else None
+    days = [to_date(r.get("value")) for m in group for r in props[m].get("order_date", ())]
+    order.ordered_on = min((d for d in days if d), default=None)
+    billed = [to_date(invoices[i].cell("invoice_date").value) for m in group
+              for i in invoices_of.get(m, ()) if i in invoices
+              and invoices[i].cell("invoice_date") is not None]
+    order.last_invoice = max((d for d in billed if d), default=None)
+
+
+SETTLE_MIN_ORDERS = 200      # closed orders needed before their pace says anything
+SETTLE_SHARE = 0.99          # the share of closed orders that were fully invoiced within it
+SETTLE_FLOOR_DAYS = 30
+
+
+def _settle_days(orders: Iterable["Order"]) -> int | None:
+    """How long closed orders take: the days from order to last invoice that
+    ``SETTLE_SHARE`` of the closed orders that state both were done within (measured on the
+    served data 11-23: 121 days for 72.8k closed Sage orders). None under
+    ``SETTLE_MIN_ORDERS`` such orders: no pace, so no order is called stale."""
+    spans = sorted((o.last_invoice - o.ordered_on).days for o in orders
+                   if o.status == "closed" and o.last_invoice and o.ordered_on
+                   and o.last_invoice >= o.ordered_on)
+    if len(spans) < SETTLE_MIN_ORDERS:
+        return None
+    return max(SETTLE_FLOOR_DAYS, spans[min(len(spans) - 1, int(len(spans) * SETTLE_SHARE))])
+
+
+def open_state(order: "Order", days_late: int | None, as_of: dt.date,
+               settle_days: int | None) -> str | None:
+    """Whether an open order is still going: ``nothing_outstanding`` (every line states
+    nothing left to ship: the header is open, the goods are not owed), ``stale`` (past its
+    required date by more than closed orders take to finish and nothing ordered or invoiced
+    within that time: nobody is working it) or ``live``. Not open: None."""
+    if order.status != "open":
+        return None
+    if order.outstanding is not None and order.outstanding <= 0:
+        return "nothing_outstanding"
+    if settle_days is not None and days_late is not None and days_late > settle_days:
+        last = max((d for d in (order.ordered_on, order.last_invoice) if d), default=None)
+        if last is None or (as_of - last).days > settle_days:
+            return "stale"
+    return "live"
 
 
 def _order_row(rd: Reader, order: Order, things: Mapping[str, Thing],
@@ -1887,13 +1956,25 @@ def _order_covers(orders: Mapping[str, Order], things: Mapping[str, Thing],
        ("status_reason", "text", "why the status is unknown (or sage_order_type_<code>: "
         "a Sage quote or other non-order document)"),
        ("status_basis", "text", "sage: Sage's own order-complete code (1/2 open, 3/4/5 "
-        "complete), the system of record for a Sage order; rule: the cross-system "
+        "complete) for a Sage order; rule: the cross-system "
         "sales-order rule (Portal, FileMaker and BC copies)"),
        ("order_type", "text", "Sage order type: order, quote or other (empty: not a Sage "
         "order)"),
        ("days_late", "integer", "as_of - required_date in days, for status open orders "
         "with a required_date; above 0 is late, 0 or less not yet due; empty when the "
         "order is not open or has no required_date"),
+       ("open_state", "text", "for an open order: live (counted late when days_late is above "
+        "0), nothing_outstanding (every line states nothing left to ship: the header is open, "
+        "nothing is owed), stale (past its required date by more than settle_days and "
+        "nothing ordered or invoiced within settle_days: nobody is working it) or "
+        "copy_of_record (held only outside Sage and the very order of record of the same "
+        "customer and customer PO, one of each: the order of record is the one counted). "
+        "Empty when the order is not open. Only live orders are counted late"),
+       ("settle_days", "integer", "the days within which 99% of closed orders were fully "
+        "invoiced after their order date (the build's own measure of all closed orders that "
+        "state both; empty when too few do): the line between late and stale"),
+       ("last_activity", "date", "the newest of the order date and the date of an invoice "
+        "billing the order"),
        ("value", "money", "the order's value (see value_basis)"),
        ("value_basis", "text", "source_total (its own total), invoices (sum of the invoices "
         "billing it, before tax) or order_lines (sum of its lines)"),
@@ -1906,6 +1987,39 @@ def _order_covers(orders: Mapping[str, Order], things: Mapping[str, Thing],
       reads=("SalesOrder", "SalesOrderLine", "SalesInvoice", "Shipment", "Customer"),
       memos=("customers", "sales_orders", "chains"))
 def _sales_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
+    rows = list(_sales_order_rows(rd, as_of))
+    mark_copies(rows)
+    yield from rows
+
+
+def mark_copies(rows: Sequence[Row]) -> None:
+    """An order only FileMaker, the Portal or BC hold that is the SAME order as an order of
+    record is its copy: same customer, same customer PO, and that pair held by exactly one
+    order of record and exactly one copy-only order (a generic PO such as "NA" or one held
+    twice proves nothing). The copy's ``open_state`` is ``copy_of_record`` and the order of
+    record's row is cited (its records join the column's class); the order of record is the
+    one counted. Measured 11-23: 21 of 100 open FileMaker-only and 31 of 73 BC-only orders."""
+    def key(row: Row) -> tuple[str, str] | None:
+        po = _norm_name(row.values.get("customer_po"))
+        owner = row.values.get("customer_handle")
+        return (owner, po) if po and owner else None
+    held: dict[tuple[str, str], tuple[list[Row], list[Row]]] = defaultdict(lambda: ([], []))
+    for row in rows:
+        k = key(row)
+        if k is not None:
+            held[k][0 if row.values.get("of_record") else 1].append(row)
+    for record, copies in held.values():
+        if len(record) != 1 or len(copies) != 1:
+            continue
+        copy = copies[0]
+        if copy.values.get("status") == "open" and copy.values.get("open_state") is not None:
+            copy.values["open_state"] = "copy_of_record"
+            for oid in record[0].objects:
+                copy.read_record(oid, "*", column="open_state")
+            copy.cites.pop("open_state", None)
+
+
+def _sales_order_rows(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     from operating import order_cover
     from operating import sales_order_status as so
     model = sales_orders_model(rd)
@@ -1968,6 +2082,11 @@ def _sales_orders(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         row.values["status_basis"], row.values["order_type"] = order.basis, order.order_type
         row.values["days_late"] = (as_of - day).days if day and order.status == "open" else None
         row.derive("days_late", row, "required_date")
+        row.values["open_state"] = open_state(order, row.values["days_late"], as_of,
+                                              model["settle_days"])
+        row.values["settle_days"] = model["settle_days"]
+        row.values["last_activity"] = max((d for d in (order.ordered_on, order.last_invoice)
+                                           if d), default=None)
         value = order.value
         if value is not None and value.amount is not None:
             row.values["value"] = cents(value.amount)
@@ -2039,7 +2158,11 @@ def _money_of_record(row: Row, column: str, cell: Cell | None, rec: Rec | None,
         "on handle)"),
        ("customer_code", "text", "the order's customer_code (sales_orders)"),
        handle_col("customer", "its order's SalesOrder.ordered_by link (the order's "
-                  "customer_handle)")],
+                  "customer_handle)"),
+       handle_col("product", f"the line's {ITEM_LINK} link: the key to join products on. "
+                  "item_code is the code the Sage line states and often is not the code the "
+                  "product row carries (Sage 'BR900', the product's own 'PT-BR900'): 64,485 "
+                  "of 219,175 lines (29%) on 11-23 named no product row by code; join on this")],
       reads=("SalesOrderLine", "SalesOrder", "Product", "Customer"),
       memos=("customers", "sales_orders", "products", "chains"))
 def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
@@ -2092,6 +2215,7 @@ def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
                     for _c, marks in ends:
                         row.marks.add(marks)
                     row.add_thing(product)
+            party_handle(row, "product", product)
             if product is not None:
                 cell, prec = pick(product, "name")
                 row.read(cell, "item_name", _text(cell.value) if cell else None, rec=prec)
@@ -2135,6 +2259,10 @@ from operating.pg import business_staff as _staff  # noqa: E402,F401
 # registered last, after the business views of their rank (stale_views orders them so):
 # the communications tables (emails, Teams, meetings, documents) register into VIEWS too
 from operating.pg import business_comms as _comms  # noqa: E402,F401
+# the company (party) and chain columns of the customer views (contract C7)
+from operating.pg import parties as _parties  # noqa: E402
+
+_parties.declare_columns(VIEWS)
 
 
 def product_things(rd: Reader) -> tuple[dict[str, Rec], dict[str, Thing]]:
@@ -2154,14 +2282,6 @@ def columns(v: View) -> list[tuple[str, str]]:
 def _ddl(v: View, table: str) -> str:
     cols = ", ".join(f'"{n}" {t}' for n, t in columns(v))
     return f"CREATE TABLE {SCHEMA}.{table} ({cols})"
-
-
-def freightcom(row: Row, v: View) -> bool:
-    """Whether a text column of the row, or its handle, names Freightcom (the rule the
-    door's views ran per row by regex, decided once here)."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    texts = [row.values.get(c.name) for c in v.cols if c.kind == "text"] + [row.handle]
-    return any(isinstance(t, str) and FREIGHTCOM.search(t) for t in texts)
 
 
 from operating.pg.business_views_access import (  # noqa: E402,F401  (split out for size)
@@ -2214,14 +2334,23 @@ def stamp(conn: Any) -> str:
 
 
 def refresh(dsn: str, *, schema: Any = None, as_of: dt.date | None = None,
-            force: bool = False) -> dict[str, Any]:
+            force: bool = False, heartbeat: Any = None) -> dict[str, Any]:
     """Rebuild the views whose inputs moved since they were built (``stale_views``: the
     change feed's rows of the types a view reads, else the store ``stamp``) or that are
     missing or were built on another day (aging and lateness are by day); else nothing.
     One refresh at a time (an advisory lock); before migration 0041 it does
-    nothing (``skipped``)."""
+    nothing (``skipped``).
+
+    Each view on its own (``view_state``, migration 0060; speed specs P2 + P6): a view that
+    fails keeps its old table and is recorded with its reason and class; the other views are
+    built all the same and the run returns normally, listing it under ``failed``
+    (``all_failed`` when every view it tried failed: the caller exits 1). The same failure
+    twice holds the view (``quarantined``). Without migration 0060 there is nowhere to
+    record a failure, so the run raises after every view was tried. ``heartbeat``
+    (``view_state.Heartbeat``) is told each step."""
     import psycopg
     from operating.pg.sqlite_compat import PgCompatConnection
+    from operating.pg import view_state as vs
     when = as_of or today()
     with psycopg.connect(dsn, autocommit=True) as meta:
         if meta.execute(f"SELECT to_regclass('{SCHEMA}.state')").fetchone()[0] is None:
@@ -2229,50 +2358,261 @@ def refresh(dsn: str, *, schema: Any = None, as_of: dt.date | None = None,
         if not meta.execute("SELECT pg_try_advisory_lock(%s)", (REFRESH_LOCK,)).fetchone()[0]:
             return {"skipped": "another refresh is running"}
         try:
-            conn = PgCompatConnection(dsn)
-            try:
-                now = stamp(conn)
-            finally:
-                conn.close()
-            swept = sweep_leftovers(meta)
-            from operating.pg import business_views_code as code
-            adopted = code.adopt(meta, SCHEMA, VIEWS)   # built before fingerprints: no rebuild
-            recoded = code.code_changed(meta, SCHEMA, VIEWS)
-            stale = stale_views(meta, VIEWS, now, when, force)
-            # a comms table built before moves by its changed records only, in place
-            marks = {row[0]: (row[1] if isinstance(row[1], dict) else json.loads(row[1] or
-                                                                               "{}")).get("marks")
-                     for row in meta.execute(f"SELECT view, notes FROM {SCHEMA}.state")}
-            # (a comms table whose code changed is built whole: its rows' rule moved)
-            changed = [n for n in stale if not force and VIEWS[n].fill and marks.get(n)
-                       and n not in recoded]
-            stale = [n for n in stale if n not in changed]
-            out: dict[str, Any] = {}
-            if changed:
-                from operating.pg import business_comms
-                with psycopg.connect(dsn, autocommit=True) as write:
-                    write.execute(f"SET statement_timeout = {BUILD_STATEMENT_MS}")
-                    out["updated"] = [business_comms.refresh_changed(
-                        write, n, marks[n], digest=now) for n in changed]
-            if swept:
-                out["swept"] = swept
-            if adopted:
-                out["code_recorded"] = adopted
-            if recoded:
-                out["code_changed"] = recoded
-            if stale:
-                # side by side (``business_views_parallel``): 29 min one after the other
-                from operating.pg import business_views_parallel as parallel
-                seconds = dict(meta.execute(f"SELECT view, seconds FROM {SCHEMA}.state"))
-                out["built"] = parallel.build(dsn, stale, schema=schema, as_of=when,
-                                              digest=now, seconds=seconds)
-            from operating.pg import generic_records   # records/record_links, once built
-            generic = generic_records.follow(dsn, when)
-            if generic:
-                out["generic"] = generic
-            return out or {"fresh": now}
+            if heartbeat is not None:
+                heartbeat.start()   # READY once the lock is held (speed specs P2)
+            return _refresh_locked(dsn, meta, schema, when, force, heartbeat, vs,
+                                   PgCompatConnection, psycopg)
         finally:
             meta.execute("SELECT pg_advisory_unlock(%s)", (REFRESH_LOCK,))
+
+
+def _refresh_locked(dsn: str, meta: Any, schema: Any, when: dt.date, force: bool,
+                    heartbeat: Any, vs: Any, PgCompatConnection: Any, psycopg: Any
+                    ) -> dict[str, Any]:
+    """``refresh`` under its lock (its doc)."""
+    conn = PgCompatConnection(dsn)
+    try:
+        now = stamp(conn)
+    finally:
+        conn.close()
+    swept = sweep_leftovers(meta)
+    from operating.pg import business_views_code as code
+    adopted = code.adopt(meta, SCHEMA, VIEWS)   # built before fingerprints: no rebuild
+    recoded = code.code_changed(meta, SCHEMA, VIEWS)
+    stale = stale_views(meta, VIEWS, now, when, force)
+    from operating.pg import parties
+    party_found = parties.lookup(meta)   # {} until the parties are built (migration 0066)
+    party_digest = parties.digest(party_found) if party_found else None
+    if party_found and not force:   # a view built under other parties is built again
+        stale = parties.stale_with_parties(meta, stale)
+    # a comms view whose print is not the code's is never rebuilt whole here (speed specs P4:
+    # that is a Spark train); its old rows keep serving and keep their in-place updates
+    train = [] if force else code.needs_train(meta, SCHEMA, VIEWS)
+    tracked = vs.ready(meta, SCHEMA)
+    prints = {n: code.fingerprint(v) for n, v in VIEWS.items()} if tracked else {}
+    out: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    attempted: list[str] = []
+    remade: list[str] = []   # views whose rows were made again: their health is measured
+    if tracked and not force:
+        from operating import disk_budget
+        stale, held = vs.runnable(meta, SCHEMA, stale, prints,
+                                  available_gb=lambda: disk_budget.status()["available_gb"])
+        if held:
+            out["quarantined"] = held
+    else:
+        held = {}
+    built_views = {r[0] for r in meta.execute(f"SELECT view FROM {SCHEMA}.state")}
+    checked_at, head = dt.datetime.now(dt.timezone.utc), feed_head(meta)
+    if tracked:   # nothing they read moved: current as of this check
+        vs.ok(meta, SCHEMA, [n for n in VIEWS if n not in stale and n not in held
+                             and n in built_views], watermark=head, at=checked_at)
+
+    def step(phase: str, views: Sequence[str]) -> None:
+        attempted.extend(v for v in views if v in VIEWS)
+        if heartbeat is not None:
+            heartbeat.step(phase, views)
+
+    def done(names: Sequence[str], at: dt.datetime, mark: Any) -> None:
+        good = [n for n in names if n not in failures]
+        remade.extend(good)
+        if heartbeat is not None:
+            heartbeat.moved()
+        if tracked:
+            took = dict(meta.execute(f"SELECT view, seconds FROM {SCHEMA}.state "
+                                     "WHERE view = ANY(%s)", (good,)).fetchall()) if good else {}
+            vs.ok(meta, SCHEMA, good, watermark=mark, versions=prints, seconds=took, at=at)
+        parties.record(meta, good, party_digest)
+
+    # a comms table built before moves by its changed records only, in place
+    marks = {row[0]: (row[1] if isinstance(row[1], dict) else json.loads(row[1] or
+                                                                       "{}")).get("marks")
+             for row in meta.execute(f"SELECT view, notes FROM {SCHEMA}.state")}
+    changed = [n for n in stale if not force and VIEWS[n].fill and marks.get(n)]
+    stale = [n for n in stale if n not in changed and n not in train]
+    if changed:
+        from operating.pg import business_comms
+        out["updated"] = []
+        with psycopg.connect(dsn, autocommit=True) as write:
+            write.execute(f"SET statement_timeout = {BUILD_STATEMENT_MS}")
+            for n in changed:
+                at, mark = dt.datetime.now(dt.timezone.utc), feed_head(meta)
+                step(f"update {n}", [n])
+                try:
+                    out["updated"].append(business_comms.refresh_changed(
+                        write, n, marks[n], digest=now))
+                except Exception as exc:  # noqa: BLE001 - recorded per view, the rest go on
+                    failures[n] = f"{type(exc).__name__}: {str(exc)}"
+                done([n], at, mark)
+    if swept:
+        out["swept"] = swept
+    if adopted:
+        out["code_recorded"] = adopted
+    if recoded:
+        out["code_changed"] = recoded
+    if train:   # said in the run, in view_state and as an alarm until the train swaps
+        out["needs_train"] = train
+    if stale:
+        # side by side (``business_views_parallel``): 29 min one after the other
+        from operating.pg import business_views_parallel as parallel
+        seconds = dict(meta.execute(f"SELECT view, seconds FROM {SCHEMA}.state"))
+        # the order views first, and the precomputed order pages made from them at
+        # once (the door serves a page only while it is as new as these views: made
+        # at the end of the whole refresh they were stale most of the time); the
+        # other views then; a view that fails never stops another (``view_state``)
+        from operating.pg import record_pages
+        first = [n for n in stale if n in record_pages.SOURCES]
+        rest = [n for n in stale if n not in first]
+        built: list[Any] = []
+        for group in (first, rest):
+            if not group:
+                continue
+            at, mark = dt.datetime.now(dt.timezone.utc), feed_head(meta)
+            step(f"build {', '.join(group)}", group)
+            try:
+                got, errors = parallel.build(dsn, group, schema=schema, as_of=when,
+                                             digest=now, seconds=seconds)
+            except Exception as exc:  # noqa: BLE001 - the whole call failed: each view did
+                got, errors = [], {n: f"{type(exc).__name__}: {str(exc)}"
+                                   for n in group}
+            built += got
+            failures.update(errors)
+            for g in got:   # a build that waited for its turn is not current
+                if isinstance(g, dict) and g.get("paused") and g.get("view") in group:
+                    failures.setdefault(g["view"], f"BuildPaused: {g['paused']}")
+            done(group, at, mark)
+            # the record pages of the families whose views were built now
+            if any(n in record_pages.SOURCES and n not in failures for n in group):
+                pages = _follow(meta, vs, tracked, failures, "record_page_items", step,
+                                lambda: record_pages.follow(dsn))
+                if pages:
+                    out["record_pages_early" if group is first else "record_pages"] = pages
+        out["built"] = built
+    hard = {n: r for n, r in failures.items() if not r.startswith("BuildPaused: ")}
+    if hard and not tracked:   # nowhere to record them: the run fails, after every view
+        from operating.pg.view_state import ViewsFailed
+        raise ViewsFailed(hard)
+    # the number columns' indexes, on every refresh (also when nothing was stale:
+    # a table in place before them gets them so; never in ``build``/``build_view``,
+    # whose code the views' fingerprints hash: a change there rebuilds every table)
+    # the search's number indexes only speed it up: a failure here never stops the
+    # refresh (the generic records still follow), it is reported and retried next run
+    try:
+        with psycopg.connect(dsn, autocommit=True) as write:
+            write.execute(f"SET statement_timeout = {BUILD_STATEMENT_MS}")
+            made = _number_indexes(write)
+    except psycopg.Error as exc:
+        made = []
+        out["number_indexes_failed"] = f"{type(exc).__name__}: {exc}"
+    if made:
+        out["number_indexes"] = made
+    from operating.pg import generic_records   # records/record_links, once built
+    generic = _follow(meta, vs, tracked, failures, "records", step,
+                      lambda: generic_records.follow(dsn, when))
+    if generic:
+        out["generic"] = generic
+    if "record_pages" not in out and "record_pages_early" not in out:
+        from operating.pg import record_pages   # the precomputed pages, once built
+        pages = _follow(meta, vs, tracked, failures, "record_page_items", step,
+                        lambda: record_pages.follow(dsn))
+        if pages:
+            out["record_pages"] = pages
+    # the companies (parties) over the customer and supplier rows made now: the views that
+    # carry them are rebuilt at the next refresh when what they carry changed
+    if {"customers", "suppliers"} & set(remade) or _parties_unbuilt(meta):
+        try:
+            out["parties"] = {k: v for k, v in parties.build(dsn).items()
+                              if not k.startswith("_")}
+        except Exception as exc:  # noqa: BLE001 - said; the customer views carry NULL until built
+            out["parties_failed"] = f"{type(exc).__name__}: {exc}"
+            print(json.dumps({"parties_failed": out["parties_failed"]}), file=sys.stderr,
+                  flush=True)
+    if tracked:
+        vs.seen(meta, SCHEMA, vs.newest_source(meta, {n: v.reads for n, v in VIEWS.items()}))
+        from operating.pg import column_health
+        unmeasured = {r[0] for r in meta.execute(
+            f"SELECT s.view FROM {SCHEMA}.state s WHERE NOT EXISTS (SELECT 1 FROM "
+            f"{SCHEMA}.column_health h WHERE h.view = s.view)")} & set(VIEWS)
+        todo = [n for n in VIEWS if n in set(remade) | unmeasured]
+        step("column health", [])
+        try:   # a health reading never stops the refresh: said in its output and the journal
+            out["column_health"] = column_health.measure(
+                meta, SCHEMA, todo, [n for n in todo if VIEWS[n].fill is not None])
+        except Exception as exc:  # noqa: BLE001 - reported, the views are built
+            out["column_health_failed"] = f"{type(exc).__name__}: {exc}"
+            print(json.dumps({"column_health_failed": out["column_health_failed"]}),
+                  file=sys.stderr, flush=True)
+    if train and tracked:   # after their in-place updates (``ok``) so the mark stays
+        for n in train:
+            vs.needs_train(meta, SCHEMA, n, version=prints.get(n))
+    try:   # every view the measure registry and the Ask catalog name must exist
+        from operating.pg import named_views
+        gone = named_views.report(meta, SCHEMA)
+        if gone:
+            out["views_named_missing"] = gone
+    except Exception as exc:  # noqa: BLE001 - said in the output; the ops alarm also checks
+        out["views_named_check_failed"] = f"{type(exc).__name__}: {exc}"
+        print(json.dumps({"views_named_check_failed": out["views_named_check_failed"]}),
+              file=sys.stderr, flush=True)
+    if remade:   # the measures over the views just made again (contract C3)
+        _measure_values(dsn, meta, sorted(set(remade)), out)
+    if failures and tracked:
+        out["failed"] = {n: {"reason": r, **vs.failed(meta, SCHEMA, n, r, version=prints.get(n))}
+                         for n, r in failures.items() if not r.startswith("BuildPaused: ")}
+        tried = set(attempted)
+        out["all_failed"] = bool(tried) and tried <= set(failures)
+        print(json.dumps({"views_failed": out["failed"]}, default=str), file=sys.stderr,
+              flush=True)
+    return out or {"fresh": now}
+
+
+def _parties_unbuilt(meta: Any) -> bool:
+    """Whether the party tables exist (migration 0066) and hold nothing yet."""
+    if meta.execute("SELECT to_regclass('biz.party_members')").fetchone()[0] is None:
+        return False
+    return meta.execute("SELECT NOT EXISTS (SELECT 1 FROM biz.party_members)").fetchone()[0]
+
+
+def _measure_values(dsn: str, meta: Any, views: Sequence[str], out: dict[str, Any]) -> None:
+    """``measure_values.build`` of the measures whose view was made again this run, once
+    migration 0061 made the table; its failure is said in the run's output and the journal
+    and never stops the refresh (the old rows keep their as_of)."""
+    if meta.execute(f"SELECT to_regclass('{SCHEMA}.measure_values')").fetchone()[0] is None:
+        return
+    from operating import measures
+    names = [n for n, m in measures.measures().items() if m["view"] in set(views)]
+    if not names:
+        return
+    from operating.pg import measure_values
+    try:
+        got = measure_values.build(dsn, dsn, names)
+    except Exception as exc:  # noqa: BLE001 - said; the views are built
+        out["measure_values_failed"] = f"{type(exc).__name__}: {exc}"
+        print(json.dumps({"measure_values_failed": out["measure_values_failed"]}),
+              file=sys.stderr, flush=True)
+        return
+    out["measure_values"] = {n: g.get("rows", g.get("served", g.get("error")))
+                             for n, g in got.items()}
+    bad = sorted(n for n, g in got.items() if "check" in g and not g["check"]["equal"])
+    if bad:   # stored and statement differ in one snapshot: said, an alarm reads it
+        out["measure_values_unequal"] = bad
+        print(json.dumps({"measure_values_unequal": bad}), file=sys.stderr, flush=True)
+
+
+def _follow(meta: Any, vs: Any, tracked: bool, failures: dict[str, str], name: str,
+            step: Any, run: Any) -> Any:
+    """One follower of the views (generic records, the record pages): its failure is
+    recorded under ``name`` like a view's, and never stops the refresh."""
+    at = dt.datetime.now(dt.timezone.utc)
+    step(f"follow {name}", [])
+    try:
+        got = run()
+    except Exception as exc:  # noqa: BLE001 - recorded under its name, the refresh goes on
+        failures[name] = f"{type(exc).__name__}: {str(exc)}"
+        return None
+    if tracked:
+        vs.ok(meta, SCHEMA, [name], watermark=None, at=at)
+    return got
 
 
 MIGRATION = os.path.join(os.path.dirname(__file__), "migrations", "0041_business_views.sql")
@@ -2353,6 +2693,12 @@ def build(dsn: str, names: Sequence[str] | None = None, *, schema: Any = None,
         conn.close()
 
 
+def _number_indexes(write: Any) -> list[str]:
+    """The number columns' bytewise indexes on the tables in place (``number_indexes``)."""
+    from operating.pg import number_indexes
+    return number_indexes.ensure(write, SCHEMA, VIEWS, NUMBER_COLS)
+
+
 LINEAGE_DOC = ("every row's source records (object ids, systems, citations) are in "
                "lineage (join on view and handle); the raw records stay reachable, so a "
                "derived column's definition can be checked or replaced")
@@ -2398,8 +2744,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # full speed (No nice on a build); the unit bounds memory, the build its disk
     _stop_on_term()
     if args.command == "refresh":
-        print(json.dumps(refresh(dsn, force=args.force), default=str))
-        return 0
+        from operating.pg import view_state
+        heartbeat = _heartbeat(dsn)
+        try:
+            got = refresh(dsn, force=args.force, heartbeat=heartbeat)
+        finally:
+            heartbeat.stop()
+        print(json.dumps(got, default=str))
+        return 1 if got.get("all_failed") else 0
     import psycopg
     with psycopg.connect(dsn, autocommit=True) as meta:   # one build at a time, as refresh
         if not meta.execute("SELECT pg_try_advisory_lock(%s)", (REFRESH_LOCK,)).fetchone()[0]:
@@ -2412,6 +2764,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             meta.execute("SELECT pg_advisory_unlock(%s)", (REFRESH_LOCK,))
     return 0
+
+
+def _heartbeat(dsn: str) -> Any:
+    """The refresh's ``view_state.Heartbeat``: progress = the newest statement start or end
+    of the run's own sessions (they carry the unit's ``PGAPPNAME``); each beat stamps the
+    current step's views. Its own connection (the run's connections are busy)."""
+    import psycopg
+    from operating.pg import view_state
+    app = os.environ.get("PGAPPNAME") or "business_views"
+    state: dict[str, Any] = {}
+
+    def conn() -> Any:
+        if state.get("c") is None or state["c"].closed:
+            state["c"] = psycopg.connect(dsn, autocommit=True, connect_timeout=10,
+                                         application_name=f"{app}-heartbeat")
+        return state["c"]
+
+    def progress() -> Any:
+        return conn().execute(view_state.PROGRESS_SQL, (app,)).fetchone()[0]
+
+    def on_beat(views: Sequence[str], phase: str) -> None:
+        if view_state.ready(conn(), SCHEMA):
+            view_state.beat(conn(), SCHEMA, [v for v in views if v in VIEWS], phase)
+    return view_state.Heartbeat(progress, on_beat)
 
 
 def _stop_on_term() -> None:

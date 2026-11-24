@@ -101,7 +101,7 @@ class AuthEveryRoute(unittest.TestCase):
                 if (method, route.path) in PUBLIC_ROUTES:
                     continue
                 path = route.path.replace("{object_type}", "PurchaseOrder") \
-                    .replace("{object_id:path}", "90412")
+                    .replace("{object_id:path}", "90412").replace("{item_id:matter}", "a" * 24)
                 response = client.request(method, path, params={"q": "po", "handle": "x://y"},
                                           json={"question": "q", "answer_id": "a",
                                                 "rating": 1})
@@ -342,7 +342,7 @@ class AskStream(unittest.TestCase):
 
     def test_a_bad_question_is_a_plain_422(self):
         client = signed_in()
-        for body in ({"question": ""}, {"question": "x" * 1001}, {"question": "q", "x": 1}):
+        for body in ({"question": ""}, {"question": "q", "x": 1}):
             response = client.post("/api/ask", json=body)
             self.assertEqual(response.status_code, 422)
             self.assertEqual(set(response.json()), {"error"})
@@ -389,7 +389,7 @@ class AskStream(unittest.TestCase):
             raise_server_exceptions=False)
         client.post("/api/auth/dev-login", json={})
         paths = ("/api/object/PurchaseOrder/90412", "/api/explore/PurchaseOrder/90412",
-                 "/api/history/PurchaseOrder/90412",
+                 "/api/history/SalesOrder/77120",
                  "/api/as-of/PurchaseOrder/90412?at=2026-10-01",
                  "/api/object-section/late/PurchaseOrder/90412",
                  "/api/object-impact/why/PurchaseOrder/90412")
@@ -546,14 +546,20 @@ class AskStream(unittest.TestCase):
 
 
 class AskBodySize(unittest.TestCase):
-    """Up to ten attachments of 11.2 MB each were parsed into memory
-    before the 5-file / 10 MB limit applied. Over the limit is refused at the HTTP layer,
-    before parsing; more than five files, or more than 10 MB together, is refused too."""
+    """A question's JSON body is bounded (its text and history); a file is not: it is sent to
+    ``POST /api/ask/files``, streamed to disk with no size limit (owner 11-23), and the question
+    names it by id. Any number of files."""
 
     def setUp(self):
+        import tempfile
+        from operating import ask_uploads
         self.client = signed_in()
         self.asked = []
-        backend = self.client.app.state.backend
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        app = self.client.app
+        app.state.ask_files = ask_uploads.Uploads(self.dir.name)
+        backend = app.state.backend
         original = backend.ask
         backend.ask = lambda who, body: self.asked.append(body) or original(who, body)
 
@@ -561,9 +567,9 @@ class AskBodySize(unittest.TestCase):
         return self.client.post("/api/ask", json={"question": "what is in this file?",
                                                   "attachments": files})
 
-    def test_an_oversized_body_is_refused_before_it_is_parsed(self):
-        big = [{"name": f"f{i}.pdf", "data": "A" * 3_000_000} for i in range(5)]
-        got = self.post(big)
+    def test_an_oversized_question_body_is_refused_before_it_is_parsed(self):
+        from operator_api.app import ASK_JSON_MAX
+        got = self.post([{"name": "f.pdf", "data": "A" * (ASK_JSON_MAX + 10)}])
         self.assertEqual(got.status_code, 413, got.text)
         self.assertEqual(got.json()["error"]["code"], "request_too_large")
         # streamed with no stated length: refused once it passes the limit
@@ -599,20 +605,38 @@ class AskBodySize(unittest.TestCase):
                                   headers={"Content-Type": "application/json"})
                 self.assertEqual(got.status_code, 413, got.text)
                 self.assertEqual(got.json()["error"]["code"], "request_too_large")
-        # under the limit the route answers as before; a question above a megabyte passes
         self.assertNotEqual(self.client.post("/api/feedback/note",
                                              json={"note": "fine"}).status_code, 413)
         files = [{"name": "f.pdf", "data": "A" * (BODY_MAX + 10)}]
         self.assertNotEqual(self.post(files).status_code, 413)
 
-    def test_more_than_five_files_or_ten_megabytes_is_refused(self):
-        six = [{"name": f"f{i}.txt", "data": "aGVsbG8="} for i in range(6)]
-        self.assertEqual(self.post(six).status_code, 422)
-        heavy = [{"name": f"f{i}.pdf", "data": "A" * 2_850_000} for i in range(5)]
-        self.assertEqual(self.post(heavy).status_code, 422)
-        self.assertEqual(self.asked, [])
-        self.assertEqual(self.post(six[:5]).status_code, 200)
-        self.assertEqual(len(self.asked), 1)
+    def test_a_file_of_any_size_streams_to_disk_and_the_question_names_it_by_id(self):
+        size = 64 * 1024 * 1024   # past the old 25 MB cap and every body limit
+        body = (b"0123456789abcdef" * 4096) * (size // 65536)
+        got = self.client.post("/api/ask/files?name=big.pdf", content=body,
+                               headers={"Content-Type": "application/octet-stream"})
+        self.assertEqual(got.status_code, 200, got.text)
+        sent = got.json()
+        self.assertEqual((sent["name"], sent["size"]), ("big.pdf", size))
+        import hashlib
+        self.assertEqual(sent["digest"], hashlib.sha256(body).hexdigest()[:16])
+        # any number of files: eleven inline small ones and the uploaded big one
+        eleven = [{"name": f"f{i}.txt", "data": "aGVsbG8="} for i in range(11)]
+        self.assertEqual(self.post([*eleven, {"name": "big.pdf", "upload": sent["id"]}]).status_code,
+                         200)
+        asked = self.asked[-1].attachments
+        self.assertEqual(len(asked), 12)
+        self.assertEqual(asked[-1].upload, sent["id"])
+        self.assertIsNone(asked[-1].data)
+        # removing it; removing an id never held is not an error; an empty file is refused
+        self.assertEqual(self.client.delete(f"/api/ask/files/{sent['id']}").status_code, 204)
+        self.assertEqual(self.client.delete(f"/api/ask/files/{sent['id']}").status_code, 204)
+        empty = self.client.post("/api/ask/files?name=e.txt", content=b"")
+        self.assertGreaterEqual(empty.status_code, 400)
+        # an attachment is an upload id or data, one of them
+        for bad in ({"name": "x"}, {"name": "x", "data": "QQ==", "upload": "a" * 32},
+                    {"name": "x", "upload": "../etc/passwd"}):
+            self.assertEqual(self.post([bad]).status_code, 422, bad)
 
 
 class MockMatchesOpenapi(unittest.TestCase):
@@ -633,7 +657,7 @@ class MockMatchesOpenapi(unittest.TestCase):
              "ObjectPage"),
             ("GET", "/api/object/PurchaseOrder/90412", None, None, "ObjectPage"),
             ("GET", "/api/explore/PurchaseOrder/90412", None, None, "Explore"),
-            ("GET", "/api/history/PurchaseOrder/90412", None, None, "RecordHistory"),
+            ("GET", "/api/history/SalesOrder/77120", None, None, "RecordHistory"),
             ("GET", "/api/as-of/PurchaseOrder/90412", {"at": "2026-10-01"}, None,
              "RecordAsOf"),
             *(("GET", f"/api/object-section/{name}/PurchaseOrder/90412", None, None,
@@ -662,6 +686,14 @@ class MockMatchesOpenapi(unittest.TestCase):
         self.assertEqual(set(SPEC["paths"]["/api/ask"]["post"]["responses"]["200"]["content"]
                              ["text/event-stream"]["schema"]["x-sse-events"]),
                          set(m.ASK_EVENTS))
+
+    def test_a_purchase_orders_history_is_never_computed_on_the_old_route(self):
+        """Its History tab is served from the store (/api/page/history, speed specs 9.3 V2):
+        the old route answers 410 for it, without asking the backend."""
+        client = signed_in()
+        got = client.get("/api/history/PurchaseOrder/90412")
+        self.assertEqual((got.status_code, got.json()["error"]["code"]), (410, "moved"))
+        self.assertIn("/api/page/history/", got.json()["error"]["message"])
 
     def test_suggest_tolerates_typos(self):
         client = signed_in()

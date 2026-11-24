@@ -67,6 +67,9 @@ class _Directory:
     def __init__(self, oid=EXCLUDED_OID, upn=EXCLUDED_UPN):
         self.oid, self.upn = oid, upn
 
+    def get_all_pages(self, url, **kw):
+        return self.get_pages(url, **kw)
+
     def get_pages(self, url, **bounds):
         if "/groups" in url:
             return ([], {"complete": True})

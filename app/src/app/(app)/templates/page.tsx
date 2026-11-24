@@ -241,17 +241,6 @@ export default function TemplatesPage() {
     return () => c.abort();
   }, []);
   useEffect(() => load(), [load]);
-  // "not available" is a read that could not be made yet (the server still loading what it
-  // checks first): read again once by itself, then offer Retry; never a lasting "not available"
-  const [again, setAgain] = useState(false);
-  useEffect(() => {
-    if (!list || list.available || again) return;
-    const t = setTimeout(() => {
-      setAgain(true);
-      load();
-    }, 3000);
-    return () => clearTimeout(t);
-  }, [list, again, load]);
   const mine = (list?.templates ?? []).filter((t) => t.mine);
   const shared = (list?.templates ?? []).filter((t) => !t.mine);
   return (
@@ -273,7 +262,7 @@ export default function TemplatesPage() {
         </p>
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
         {!list && !problem && <Pending label="Reading your templates" />}
-        {list && !list.available && (again ? <LoadProblem message="Your templates couldn't be read just now." onRetry={load} /> : <Pending label="Reading your templates" />)}
+        {list && !list.available && <LoadProblem message="Your templates couldn't be read just now." onRetry={load} />}
         {list?.available && adding && (
           <section className="mb-6 rounded-md bg-bg px-4 py-3.5">
             <h2 className="mb-2 text-[15px] font-semibold">New template</h2>

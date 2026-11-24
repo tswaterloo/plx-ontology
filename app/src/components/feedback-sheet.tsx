@@ -10,6 +10,7 @@ import { plainError } from "@/lib/errors";
 import type { NoteFeedbackRequest } from "@/lib/types";
 import { recordOfPage } from "./feedback-dialog";
 import { Sheet } from "./ui/sheet";
+import { FEEDBACK_MAX } from "./feedback";
 
 type NoteKind = NonNullable<NoteFeedbackRequest["kind"]>;
 
@@ -45,7 +46,7 @@ export default function FeedbackSheet({ onClose }: { onClose: () => void }) {
     setError(null);
     setState("sending");
     try {
-      const body: NoteFeedbackRequest = { kind, note: note.trim().slice(0, 2000), page };
+      const body: NoteFeedbackRequest = { kind, note: note.trim().slice(0, FEEDBACK_MAX), page };
       if (record && kind === "record") Object.assign(body, { object_type: record.object_type, object_id: record.object_id, label: record.label });
       await sendNoteFeedback(body);
       setState("sent");
@@ -135,7 +136,7 @@ export default function FeedbackSheet({ onClose }: { onClose: () => void }) {
                 }
               }}
               rows={6}
-              maxLength={2000}
+              maxLength={FEEDBACK_MAX}
               placeholder="What's wrong, missing or confusing, or what would help"
               className="w-full resize-none rounded-lg bg-surface px-3 py-2 text-[13px] leading-5 placeholder:text-faint focus:outline-2 focus:outline-ring"
             />

@@ -40,6 +40,48 @@ function serve(routes: (url: string) => Response) {
   return f;
 }
 
+describe("one page per record", () => {
+  // ALL-LIMITS-AUDIT-5 #3: the Portal copy of PO100523 holds "Total cost 0.00" and "Pending";
+  // its lines sum to 875.84 and the order is open. Every path to the record says the order's.
+  const PO_ID = 'PurchaseOrder:portal.app_purchase_order:{"id":"p1"}';
+  const copy = {
+    ...PAGE, object_id: PO_ID, type: "PurchaseOrder", label: "PO100523",
+    facts: [
+      { text: "Total cost: 0.00 CAD", sources: [], check: "read_from_record" },
+      { text: "Currency: CAD", sources: [], check: "read_from_record" },
+      { text: "Status: Pending", sources: [], check: "read_from_record" },
+    ],
+  };
+  const cell = (x: object) => ({ text: null, day: null, number: null, money: null, href: null, hidden: false, ...x });
+  const door = {
+    kind: "purchase_order", title: "PO100523", subtitle: "Purchase order", sources: "", as_of: null, took_ms: 0, sections: [],
+    facts: [
+      { label: "Status", value: cell({ text: "open" }) },
+      { label: "Total (sum of lines)", value: cell({ money: { amount: "875.84", currency: "CAD" } }) },
+    ],
+  };
+
+  it("/po/PO100523 shows the order's total and status from its business page, not the copy's own fields", async () => {
+    const f = serve((url) => new Response(JSON.stringify(url.startsWith("/api/biz/page") ? door : copy), { status: 200 }));
+    params = { ref: "PO100523" };
+    render(<FriendlyRecord kind="po" />);
+    expect(await screen.findByText("Total (sum of lines)")).toBeInTheDocument();
+    expect(screen.getByTestId("detail-stats")).toHaveTextContent("875.84");
+    expect(screen.getByTestId("detail-stats")).not.toHaveTextContent("0.00");
+    expect(screen.getByTestId("summary")).toHaveTextContent("open");
+    expect(screen.getByTestId("summary")).not.toHaveTextContent("Pending");
+    expect(f.mock.calls.map((c) => c[0])).toContain(`/api/biz/page?kind=purchase_order&record=${encodeURIComponent(PO_ID).replace(/%20/g, "+")}`);
+  });
+
+  it("a business page of another kind or shape is ignored: the record's own page stands", async () => {
+    serve((url) => new Response(JSON.stringify(url.startsWith("/api/biz/page") ? { ...door, kind: "customer" } : copy), { status: 200 }));
+    params = { ref: "PO100523" };
+    render(<FriendlyRecord kind="po" />);
+    expect(await screen.findByTestId("detail-stats")).toHaveTextContent("0.00");
+    expect(screen.queryByText("Total (sum of lines)")).toBeNull();
+  });
+});
+
 describe("friendly URLs", () => {
   it("takes a business reference, never a whole object id or a path", () => {
     expect(friendlyRef("AO-26253A")).toBe("AO-26253A");

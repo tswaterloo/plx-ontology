@@ -29,49 +29,9 @@ ROWS = {H_PO: ("public.app_purchase_order", {"id": "po-1"},
                {"id": "cu-1", "company_name": "Fixture Soap Co", "balance": "4821.75"})}
 
 
-def _door(recipe):
-    """A front door whose reading picks ``recipe`` (``operating.front_door.Reading``)."""
-    from types import SimpleNamespace as NS
-    from operating.front_door import Reading
-    return NS(read=lambda question, earlier: Reading(
-        question=question, rewrite=question, route="lookup", status="Reading", seconds=0.0,
-        recipe=recipe))
 
 
 
-class BoundedReads(unittest.TestCase):
-    def test_the_scoreboard_reads_its_front_door_within_the_session_limit(self):
-        """``run_items`` with more workers than the front door has sessions: at most
-        ``size`` readings at once (none waits past the app's queue and routes as typed),
-        every question read exactly once, at N=1/10/60 questions."""
-        import threading
-        import time as clock
-        from unittest import mock
-        from scripts import eval_live_ops as live
-        for count in (1, 10, 60):
-            lock, now, peak, read = threading.Lock(), [0], [0], []
-
-            def reading(question, earlier):
-                with lock:
-                    now[0] += 1
-                    peak[0] = max(peak[0], now[0])
-                clock.sleep(0.01)
-                with lock:
-                    now[0] -= 1
-                    read.append(question)
-                return None
-            door = __import__("types").SimpleNamespace(size=2, read=reading)
-
-            def ran(items, routed, make_host, **_kw):
-                routed._shortcut()
-            pairs = [({"id": f"i{n}", "split": "dev", "question": {"text": f"q{n}"}}, {})
-                     for n in range(count)]
-            with mock.patch.object(live.runner, "run_items", ran):
-                live.run_items(pairs, object(), lambda: None, out_dev=None, out_held=None,
-                               evidence_label="isolated-fixture", workers=6,
-                               budget_seconds=60, front_door=door)
-            self.assertLessEqual(peak[0], 2, count)
-            self.assertEqual(sorted(read), sorted(f"q{n}" for n in range(count)))
 
 class Host(fx.FakeHost):
     def __init__(self) -> None:
@@ -247,24 +207,6 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(grade(answer("Lots expiring before January 1: 5", PO_VALUES[1:]),
                                key(lots))["outcome"], "correct")
 
-    def test_a_late_list_states_its_count_beside_days_late_and_cited_order_numbers(self):
-        # "131 days late" is a duration and 106001 an order number the answer cites on its
-        # number column: neither is a second figure for the count of late orders
-        count = {"id": "late_count", "kind": "number", "value": "14", "tolerance": "0",
-                 "label": lk.LABELS["late_count"], "records": [H_PO], "allowed": ["api"]}
-        text = ("14 purchase orders you can see are late as of 2026-11-02. Longest late: "
-                "106001 (131 days). The first one is listed below.\n"
-                "- 106001: 131 days late.")
-        listed = [cited("listed_purchase_order_1", "106001", H_PO, "row.bc_number")]
-        got = grade(answer(text, listed), key(count))
-        self.assertEqual(got["outcome"], "correct", got)
-        # the same number not cited as the order's: a figure beside the count, no answer
-        got = grade(answer(text, PO_VALUES[1:]), key(count))
-        self.assertEqual(got["outcome"], "incomplete", got)
-        # a fact counted in days still reads its days
-        days = dict(count, id="days_late", value="131", label=["days late"])
-        self.assertEqual(lo._labelled_numbers("PO 106001 is 131 days late", days),
-                         [(Decimal("131"), False)])
 
     def test_a_form_in_parts_and_a_leading_no_state_an_absence(self):
         none = {"id": "no_accepted_quote", "kind": "absent", "value": "accepted",
@@ -1001,7 +943,7 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(len(agent_calls), 2)
 
     def test_a_lot_file_key_is_a_lot_document_never_a_file_sharing_its_number(self):
-        """The product's rule (``fast_answer.lot_document_name``): an R&D formula numbered
+        """The key's rule (``live_ops_more.lot_document_name``): an R&D formula numbered
         like the lot, or a screenshot's time, is no key; a COA naming the lot is."""
         from evals import live_ops_more as more
         w = world()
@@ -1015,71 +957,12 @@ class KeyTests(unittest.TestCase):
         found = {c.slots["lot"]: c.facts[0]["quote"] for c in more.sharepoint_lot_file(w)}
         self.assertEqual(found, {"3241766": "COA DayMoist CLR_3241766.pdf"})
 
-    def test_a_margin_question_takes_the_apps_profit_route_before_the_fast_path(self):
-        """The front door's reading decides the route as the app's Ask does
-        (``backend.read_shortcut``): a question it reads as a margin question runs the
-        profit route first; declined, the fast path, then the agent, with why each route
-        before it did not answer. No reading (no front door, or one that fails): no ready
-        answer, whatever the question's words."""
-        from types import SimpleNamespace as NS
-        tried, served = [], []
-        profit_door = _door("profit")
-
-        class Fast:
-            Reads = NS(of_server=staticmethod(lambda server: server))
-
-            @staticmethod
-            def serves(question):
-                served.append(question)
-                return False
-
-        class Agent:
-            def run(self, prompt, host):
-                return runner.AgentRun(events=[], final_text="", usage={}, agent={})
-
-        def profit(self, host, declined):
-            tried.append(self.question)
-            declined.append("profit:no_customer")
-            return None
-        with mock.patch.object(script.RoutedAgent, "_profit", profit):
-            routed = script.RoutedAgent(Agent(), "hows our margin on 1-Shoppe orders in BC?",
-                                        fast=Fast, session=lambda host: (None, object()),
-                                        front_door=profit_door)
-            run = routed.run("p", None)
-            self.assertEqual((tried, served), ([routed.question], [routed.question]))
-            self.assertEqual(run.agent, {"routed": "agent",
-                                         "declined": ["profit:no_customer"]})
-            tried.clear()
-            script.RoutedAgent(Agent(), "status on PO#10515?", fast=Fast,
-                               session=lambda host: (None, object()),
-                               front_door=_door(None)).run("p", None)
-            self.assertEqual(tried, [])          # no margin question: no profit route
-            # a margin question no reading routes (no front door; one that raises): the
-            # phrase rules no longer pick a ready answer
-            for door in (None, NS(read=mock.Mock(side_effect=RuntimeError("down")))):
-                served.clear()
-                run = script.RoutedAgent(Agent(), "is 1-Shoppe profitable?", fast=Fast,
-                                         session=lambda host: (None, object()),
-                                         front_door=door).run("p", None)
-                self.assertEqual((tried, served), ([], ["is 1-Shoppe profitable?"]))
-                self.assertEqual(run.agent, {"routed": "agent"})
-        answered = runner.AgentRun(events=[], final_text="x", usage={},
-                                   agent={"routed": "profit"})
-        with mock.patch.object(script.RoutedAgent, "_profit",
-                               lambda self, host, declined: answered):
-            served.clear()
-            run = script.RoutedAgent(Agent(), "is 1-Shoppe profitable?", fast=Fast,
-                                     session=lambda host: (None, object()),
-                                     front_door=profit_door).run("p", None)
-            self.assertIs(run, answered)
-            self.assertEqual(served, [])         # answered: the fast path never runs
 
     def test_an_agent_session_gets_the_apps_question_budget_not_the_old_60_seconds(self):
         """The scoreboard's agent session gets the app's own limit (``question_budget``
-        under the Ask's cap, ``agent_ask.ASK_SECONDS``): a deep question the deep budget, a
-        lookup of one named record the lookup budget, and the hard timeout the app's
-        (``agent_for``: that same budget). Derived from the app's constants, never
-        literals."""
+        under the Ask's cap, ``agent_ask.ASK_SECONDS``: the deep budget for every question,
+        no lookup router) and the hard timeout the app's (``agent_for``: that same budget).
+        Derived from the app's constants, never literals."""
         from operating import deep_investigation as deep
         from operator_api.agent_ask import ASK_SECONDS
         got = []
@@ -1096,129 +979,16 @@ class KeyTests(unittest.TestCase):
             def serves(question):
                 return False
         expected = []
-        for question, route in (("which customers' orders are at risk from late supplier "
-                                 "POs and what is the margin on each?", None),
-                                ("status on PO#10515?", "lookup")):
+        for question in ("which customers' orders are at risk from late supplier "
+                         "POs and what is the margin on each?", "status on PO#10515?"):
             script.RoutedAgent(Agent(), question, fast=NoFast).run("p", None)
-            app = deep.question_budget(question, ASK_SECONDS, route)
+            app = deep.question_budget(question, ASK_SECONDS)
             expected.append((app, int(app)))
         self.assertEqual(got, expected)
-        self.assertEqual([b for b, _ in got], [min(deep.DEEP_SECONDS, ASK_SECONDS),
-                                               min(deep.LOOKUP_SECONDS, ASK_SECONDS)])
+        self.assertEqual([b for b, _ in got], [min(deep.DEEP_SECONDS, ASK_SECONDS)] * 2)
 
-    def test_a_late_list_question_takes_the_apps_late_list_route_and_nothing_else(self):
-        """``how many POs are late`` is answered by the app's late-list job over the
-        reader's gap inbox (``WorkspaceBackend.late_job``), read with the reader's grant;
-        the fast path and the agent never run, as in the app. A reader whose inbox has not
-        run gets the app's own words for that."""
-        from contextlib import contextmanager
-        from types import SimpleNamespace as NS
-        granted = []
 
-        class Policy:
-            def may_read(self, gated, key):
-                granted.append(gated)
-                return False
 
-            def held_markings(self, gated):
-                return {"finance"}
-
-        class Host:
-            def __init__(self, store):
-                self.store_path = store
-
-            @contextmanager
-            def request(self):
-                yield self
-
-            def policy_now(self, gated):
-                return Policy()
-        actor = NS(tenant="t", principals=("vince@x",))
-
-        class Agent:
-            def run(self, prompt, host):
-                raise AssertionError("the agent never answers a late-list question")
-
-        class Fast:
-            @staticmethod
-            def serves(question):
-                raise AssertionError("the fast path never runs after the late list")
-        with tempfile.TemporaryDirectory() as tmp:
-            server = NS(ontology=Host(Path(tmp) / "store.sqlite"),
-                        case_runtime=NS(employee_gate=lambda a: ("gated", a)), actor=actor)
-            routed = script.RoutedAgent(Agent(), "how many POs are late rn", fast=Fast,
-                                        session=lambda host: (None, server),
-                                        front_door=_door("late_list"))
-            run = routed.run("p", None)
-        self.assertEqual(run.agent, {"routed": "late_list", "outcome": "not_found"})
-        self.assertTrue(run.final_text.startswith("The late-order check has not run for your "
-                                                  "records yet"), run.final_text)
-        block = json.loads(run.final_text.split("```json\n")[1].rstrip("`\n"))
-        self.assertEqual(block["answerability"], "blocked")
-
-        # a session that cannot start: the next route answers and the run says why
-        answered = runner.AgentRun(events=[], final_text="x", usage={}, agent={})
-
-        class Answering:
-            def run(self, prompt, host):
-                return answered
-
-        class NoFast:
-            @staticmethod
-            def serves(question):
-                return False
-
-        def broken(host):
-            raise RuntimeError("no session")
-        run = script.RoutedAgent(Answering(), "how many POs are late rn", fast=NoFast,
-                                 session=broken, front_door=_door("late_list")).run("p", None)
-        self.assertEqual(run.agent, {"routed": "agent",
-                                     "declined": ["late_list_unavailable:RuntimeError"]})
-
-    def test_the_late_list_answer_is_graded_on_the_orders_it_names(self):
-        """The values of a late-list answer are the late orders' names as the session
-        served them, on records its facts cite; a record no fact cites adds nothing."""
-        from types import SimpleNamespace as NS
-        h1, h2 = "api://public.app_purchase_order/1@g-1", "api://public.app_purchase_order/2@g-1"
-        payload = NS(direct_answer="1 purchase order you can see is late.", outcome="answered",
-                     facts=[NS(text="PO4154: 20 days late. Due 2026-10-12.",
-                               sources=[NS(handle=h1)])])
-
-        def card(handle, number):
-            return {"name": "plx.object", "is_error": False, "result": {"object": {
-                "display": {"origin": {"citation": handle, "field_path": "row.po_number"},
-                            "untrusted_text": number}}}}
-        text = script.late_text(payload, [card(h1, "PO4154"), card(h2, "PO4155"),
-                                          card(h1, "PO4154")])
-        values = json.loads(text.split("```json\n")[1].rstrip("`\n"))["values"]
-        self.assertEqual(values, [{"name": "listed_purchase_order_1", "value": "PO4154",
-                                   "citations": [{"l1_handle": h1,
-                                                  "field_path": "row.po_number"}]}])
-
-    def test_the_profit_answer_is_graded_on_what_it_shows_and_its_cited_inputs(self):
-        """The words are the app's answer; the values are the passed plan inputs on the
-        records the answer's facts cite, never an input it does not show or one that
-        failed its check."""
-        from types import SimpleNamespace as NS
-        h1, h2 = "bc://p/c/salesInvoices/1@g-1", "bc://p/c/salesInvoiceLines/9@g-2"
-        payload = NS(direct_answer="1-Shoppe is profitable: margin 99.52%.", outcome="answered",
-                     facts=[NS(text="Order SO1: revenue $100.00 CAD.",
-                               sources=[NS(handle=h1)])])
-
-        def entry(name, value, handle, field, check="passed"):
-            return {"name": name, "value": value, "check": check,
-                    "citation": {"l1_handle": handle, "field_path": field}}
-        events = [{"name": "plx.investigate", "is_error": False, "result": {"answer": [
-            entry("invoice", {"untrusted_text": "INV1"}, h1, "row.number"),
-            entry("status", "Open", h1, "row.status", check="failed"),
-            entry("revenue", "100", h2, "row.amountExcludingTax")]}}]
-        text = script.profit_text(payload, events)
-        said, block = text.split("\n\n```json\n")
-        self.assertEqual(said, "1-Shoppe is profitable: margin 99.52%.\n"
-                               "- Order SO1: revenue $100.00 CAD.")
-        values = json.loads(block.rstrip("`\n"))["values"]
-        self.assertEqual(values, [{"name": "invoice_1", "value": "INV1", "citations": [
-            {"l1_handle": h1, "field_path": "row.number"}]}])
 
     def test_in_process_session_starts_never_share_their_environment(self):
         """Two scoreboard workers starting sessions at once each start with their own

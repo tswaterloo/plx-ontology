@@ -612,6 +612,41 @@ class CompatTests(unittest.TestCase):
                     self.assertEqual(got, before)
                     self.assertEqual(got, want)
 
+    def test_a_long_list_inside_a_transaction_is_bound_as_one_array_literal_and_reads_the_same_rows(self):
+        """Inside a caller's transaction a long permission list cannot be kept as a key set;
+        it was bound as a Python list, which the driver's array encoder walked again on every
+        statement (75% of the busy time of a cold record section). Now one string, cast by
+        Postgres: the same rows, for keys holding quotes, backslashes and braces too."""
+        import psycopg
+        from operating.pg.sqlite_compat import LONG_LIST_CHARS, PgCompatConnection
+        odd = ['aud:q"uote', "aud:back\\slash", "aud:{brace}", "aud:mine"]
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("TRUNCATE ontology.objects")
+            for n, key in enumerate(odd + ["aud:other"], 1):
+                raw.execute("INSERT INTO ontology.objects (object_id, object_type, binding_id, "
+                            "native_key, audience_key, first_recorded_at, row_no) VALUES "
+                            "(%s, 'T', 'b', %s, %s, '2026', %s)", (f"A:{n}", f"A:{n}", key, n))
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sent = []
+        run = pg._run
+
+        def kept_run(cur, text, params):
+            sent.append((text, params))
+            return run(cur, text, params)
+        pg._run = kept_run
+        keys = json.dumps([f"aud:filler:{n:05d}" for n in range(500)] + odd)
+        self.assertGreaterEqual(len(keys), LONG_LIST_CHARS)
+        sql = ("SELECT object_id FROM objects WHERE audience_key IN (SELECT value FROM "
+               "json_each(:aud)) ORDER BY object_id")
+        with pg._conn.transaction():
+            got = [r[0] for r in pg.execute(sql, {"aud": keys}).fetchall()]
+        self.assertEqual(got, ["A:1", "A:2", "A:3", "A:4"])          # not A:5 (aud:other)
+        params = sent[-1][1]
+        values = list(params.values() if isinstance(params, dict) else params)
+        self.assertFalse([v for v in values if isinstance(v, list) and len(v) > 400])   # no Python list
+        self.assertTrue([v for v in values if isinstance(v, str) and v.startswith("{") and len(v) > 400])
+
     def test_a_principal_key_set_is_indexed_and_its_size_known_to_the_planner(self):
         """A long audience list is read from its key set by the set's index, and the
         planner knows how many keys it holds (the set is analyzed when written): kept as
@@ -937,6 +972,55 @@ class CompatTests(unittest.TestCase):
         self.assertEqual(pg.execute(negated, {"ids": json.dumps(ids + [None])}).fetchone()[0],
                          0)
 
+    def test_a_long_list_of_link_ids_through_the_person_guard_is_read_by_the_key(self):
+        """A long list of link ids (a hop's kept links, ``_link_pages``) read through a
+        relation shaped as the person guard's (``person_link_guard._relation``: a ``UNION
+        ALL`` of filtered branches, which Postgres does not flatten, so a join into it is
+        never an index condition) is bound as an array and read by the key: never every
+        row of the relation hashed against a key set (11-22 live: 213 link ids, 41.8M rows
+        read, 119 s; as an array 0.3 s)."""
+        import psycopg
+        from operating.pg.sqlite_compat import LONG_LIST_CHARS, PgCompatConnection
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("CREATE TABLE guarded (link_id text PRIMARY KEY, link_type text "
+                        "NOT NULL, tier text)")
+            raw.execute("INSERT INTO guarded SELECT 'L' || n, CASE WHEN n % 50 = 0 THEN "
+                        "'Person.same_person_as' ELSE 'Email.mentions_batch' END, CASE "
+                        "WHEN n % 100 = 0 THEN 'verified' ELSE 'lead' END "
+                        "FROM generate_series(1, 200000) n")
+            raw.execute("ANALYZE guarded")
+        self.addCleanup(lambda: psycopg.connect(self.dsn, autocommit=True).execute(
+            "DROP TABLE IF EXISTS guarded"))
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        ids = [f"L{n}" for n in range(1, 700)]
+        listed = json.dumps(ids)
+        self.assertGreaterEqual(len(listed), LONG_LIST_CHARS)
+        sql = ("SELECT l.link_id FROM (SELECT * FROM guarded g WHERE g.link_type <> "
+               "'Person.same_person_as' UNION ALL SELECT * FROM guarded g WHERE g.link_type "
+               "= 'Person.same_person_as' AND g.tier <> 'verified') l "
+               "WHERE l.link_id IN (SELECT value FROM json_each(:ids)) ORDER BY l.link_id")
+        ran = []
+        run = pg._run
+
+        def kept_run(cur, text, params):
+            ran.append((text, params))
+            return run(cur, text, params)
+        pg._run = kept_run
+        rows = [r[0] for r in pg.execute(sql, {"ids": listed})]
+        # every listed id but the hidden ones (the guard's second branch)
+        self.assertEqual(sorted(rows), sorted(set(ids) - {f"L{n}" for n in range(100, 700, 100)}))
+        text, params = ran[-1]
+        self.assertIn("::text[]", text)
+        self.assertNotIn("sq_keys", text)
+        plan = "\n".join(r[0] for r in pg._conn.execute("EXPLAIN " + text, params))
+        self.assertIn("guarded_pkey", plan)
+        self.assertNotIn("Seq Scan on guarded", plan)
+        # a long list of anything else still is the session's key set
+        tiers = json.dumps([f"tier-{n}" for n in range(1, 600)])
+        pg.execute("SELECT count(*) FROM guarded o WHERE o.tier IN (SELECT value FROM "
+                   "json_each(:ids))", {"ids": tiers}).fetchone()
+        self.assertIn("sq_keys", ran[-1][0])
 
 if __name__ == "__main__":
     unittest.main()

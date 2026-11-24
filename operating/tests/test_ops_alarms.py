@@ -142,6 +142,9 @@ class AlarmPassTest(unittest.TestCase):
         lines = {i["key"]: i["line"] for i in status["open"]}
         self.assertIn("killed: out of memory", lines["unit:plx-proactive.service"])
         self.assertIn("164 of 200", lines["pg_connections"])
+        # systemd's result word is said plainly, never "exit-code"
+        self.assertIn("last run failed (it ended with an error)", lines["backup"])
+        self.assertNotIn("exit-code", lines["backup"])
         self.assertIn("Data refresh (delta) last finished 16 h ago", lines["delta_last_cycle"])
         for i in status["open"]:
             self.assertNotIn("page", i)

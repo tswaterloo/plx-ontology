@@ -291,7 +291,7 @@ class MCQuestions:
         return {"question_id": ev["question_id"], "task_id": ev["task_id"],
                 "addressee": str(q.get("addressee") or ev["addressee"]).strip().lower(),
                 "asked_at": str(q.get("askedAt") or ""),
-                "text": str(q.get("text") or "")[:autopilot_queue.TEXT_CHARS],
+                "text": autopilot_records.shown(q.get("text"), autopilot_queue.TEXT_CHARS),
                 "context": str(q.get("context") or "")[:1500],
                 "options": options,
                 "recommended": rec if isinstance(rec, int) and 0 <= rec < len(options) else None,
@@ -1226,7 +1226,7 @@ def _impacted(ctx: Any, po: str, by: date) -> list[dict[str, Any]]:
 def h_supplier_eta(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     subject = event.get("subject") or ""
     text = body_text(ctx, event)
-    own = text.split("\nFrom:")[0][:4000]
+    own = text.split("\nFrom:")[0]
     pos = [o for o in event.get("records") or () if o.startswith("PurchaseOrder:")]
     pos += [o for o in autopilot_handlers.identified(ctx, subject, own) if o.startswith("PurchaseOrder:")]
     for no in autopilot_handlers._numbers(autopilot_queue.PO_NUMBER, subject, own):
@@ -1337,7 +1337,7 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     from . import proactive_threads as pt
     subject = event.get("subject") or ""
     text = body_text(ctx, event)
-    own = text.split("\nFrom:")[0][:4000]
+    own = text.split("\nFrom:")[0]
     intents = set(event.get("intents") or ())
     named = autopilot_handlers._records_named(ctx, {"subject": subject, "text": own,
                                     "records": event.get("records") or []})
@@ -1457,7 +1457,7 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     sent: the owner edits and sends from the card."""
     subject = event.get("subject") or ""
     text = body_text(ctx, event)
-    own = text.split("\nFrom:")[0][:4000]
+    own = text.split("\nFrom:")[0]
     asked = [q.strip() for q in QUESTION.findall(own)][:3]
     named = autopilot_handlers._records_named(ctx, {"subject": subject, "text": own,
                                     "records": event.get("records") or []})
@@ -1779,7 +1779,7 @@ def h_routine_update(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                        f"the last on {last_day}); the email is drafted to the same colleagues.",
             "object": {"object_id": event["object_id"], "series": event.get("series"),
                        "last_sent": last_day},
-            "draft": msg, "template": text[:autopilot_queue.TEXT_CHARS],
+            "draft": msg, "template": autopilot_records.shown(text, autopilot_queue.TEXT_CHARS),
             "gaps": ["the update's content: start from the last one"],
             "links": [{"label": "Open the last one", "href": autopilot_records.object_href(event['object_id'])}]}
 

@@ -1,0 +1,21 @@
+# PLX Assist scoreboard: yesterday (US Eastern business day) per person, what the Assist queue
+# had prepared before each act (operating/assist_nightly.py), scored on the s7d3d Spark against
+# its hot standby (deploy/spark/assist_nightly.sh); the board comes back to
+# /data/plx-scores/assist/<day>.json. Model-free, reads no business system. Not enabled by the
+# build: enabled by hand once (systemctl enable --now plx-assist-nightly.timer).
+[Unit]
+Description=PLX Assist scoreboard for yesterday (a Spark run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+# Reads no business system (SEC-S-05; tests/test_deploy_release.py).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@PLX_CURRENT@/deploy/spark/assist_nightly.sh
+TimeoutStartSec=2h
+UMask=0077

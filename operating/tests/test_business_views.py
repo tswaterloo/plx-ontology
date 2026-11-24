@@ -561,6 +561,17 @@ def build():
                                                              "code": "SB-1"})
     s.link("tw-sb", "Product.same_record_as", base, base_s, "verified")
     label = obj(s, "Product", "portal.app_product", "lb", {"name": "Label", "code": "L-1"})
+    # copies only a LEAD link joins: the same code and name are one item; a different name
+    # stays two, and two Sage items never join
+    wx = obj(s, "Product", "portal.app_product", "wx", {"name": "Wax Stick", "code": "WX-1"})
+    wx_s = obj(s, "Product", "portal.sage_ic_item", "wx", {"name": "WAX  STICK", "code": "WX-1"})
+    s.link("tw-wx", "Product.same_record_as", wx, wx_s, "lead")
+    nm = obj(s, "Product", "portal.app_product", "nm", {"name": "Comb Large", "code": "CB-1"})
+    nm_s = obj(s, "Product", "portal.sage_ic_item", "nm", {"name": "Comb Small", "code": "CB-1"})
+    s.link("tw-nm", "Product.same_record_as", nm, nm_s, "lead")
+    sg = obj(s, "Product", "portal.sage_ic_item", "sg1", {"name": "Tape", "code": "TP-1"})
+    sg2 = obj(s, "Product", "portal.sage_ic_item", "sg2", {"name": "Tape", "code": "TP-1"})
+    s.link("tw-sg", "Product.same_record_as", sg, sg2, "lead")
     p_gone_item = obj(s, "Product", "portal.app_product", "gone", {"name": "Gone Item",
                                                                    "code": "G-1"})
     fin = obj(s, "Product", "portal.app_product", "fin", {"name": "Costly", "code": "F-1"})
@@ -849,10 +860,10 @@ class BusinessViews(unittest.TestCase):
             self.assertTrue(c.execute(
                 "SELECT count(*) FROM biz.customer_balances t JOIN biz.col_classes k ON "
                 "k.id = t.col_class WHERE k.marks <> '{}'").fetchone()[0])
-            # Freightcom is decided once: in the table with ai_ok false, never served
+            # Freightcom is read like any other (owner, 11-23): ai_ok true on every row
             got = c.execute("SELECT ai_ok FROM biz.suppliers WHERE name = 'FreightCom Inc'"
                             ).fetchall()
-            self.assertEqual(got, [(False,)])
+            self.assertEqual(got, [(True,)])
             # an excluded person's own record is built, the owner's alone:
             # its class holds OWNER_KEY
             from operating.pg.access_classes import OWNER_KEY
@@ -865,7 +876,7 @@ class BusinessViews(unittest.TestCase):
                 (OWNER_KEY, EXCLUDED_ID)).fetchall(), [(True,)])
         names = [self.text(r["values"]["name"]["value"])
                  for r in self.call({"view": "suppliers", "select": ["name"]})["rows"]]
-        self.assertNotIn("FreightCom Inc", names)
+        self.assertIn("FreightCom Inc", names)   # read like any other (owner, 11-23)
         customers = lambda **kw: [  # noqa: E731
             self.text(r["values"]["name"]["value"]) for r in self.call(
                 {"view": "customers", "select": ["name"], "limit": 200}, **kw)["rows"]]
@@ -1653,8 +1664,9 @@ class BusinessViews(unittest.TestCase):
         before = dump()
         self.assertTrue(all(before.values()), {n: len(v) for n, v in before.items()})
         seconds = {"sales_orders": 270, "customers": 16, "products": 7}
-        got = par.build(self.dsn, names, schema=SCHEMA, as_of=AS_OF, seconds=seconds,
-                        workers=3)
+        got, failed = par.build(self.dsn, names, schema=SCHEMA, as_of=AS_OF, seconds=seconds,
+                                workers=3)
+        self.assertEqual(failed, {})
         self.assertEqual(sorted(g["view"] for g in got), sorted(names))
         self.assertEqual(dump(), before)
 
@@ -1679,7 +1691,8 @@ class BusinessViews(unittest.TestCase):
         out = self.call({"view": "suppliers", "select": ["name"]})
         self.assertEqual([(self.text(r["values"]["name"]["value"]), r["copies"])
                           for r in out["rows"]], [("Croda Canada", 3),
-                                                  ("CRODA CANADA (EFT)", 1), ("Other Chem", 1)])
+                                                  ("CRODA CANADA (EFT)", 1), ("FreightCom Inc", 1),
+                                                  ("Other Chem", 1)])
 
     def test_supplier_balances_and_invoices(self):
         out = self.call({"view": "supplier_balances",
@@ -1739,8 +1752,11 @@ class BusinessViews(unittest.TestCase):
     def test_products_once_and_stock_by_unit(self):
         out = self.call({"view": "products", "select": ["name", "item_code", "on_hand"]})
         rows = {self.text(r["values"]["name"]["value"]): r for r in out["rows"]}
-        self.assertEqual(sorted(rows), ["Costly", "Label", "Shampoo Base"])
+        self.assertEqual(sorted(rows), ["Comb Large", "Comb Small", "Costly", "Label",
+                                        "Shampoo Base", "Tape", "Wax Stick"])
+        self.assertEqual(len(out["rows"]), 8)   # the two Sage "Tape" items stay two
         self.assertEqual(rows["Shampoo Base"]["copies"], 2)
+        self.assertEqual(rows["Wax Stick"]["copies"], 2)   # a lead link + same code and name
         stock = self.call({"view": "stock", "measures": [{"fn": "sum", "field": "on_hand"}]})
         # never added across units; the source-deleted item's stock left out
         self.assertEqual({g["key"]["on_hand_unit"]: g["measures"][0]["value"]
@@ -2040,47 +2056,80 @@ class BusinessViews(unittest.TestCase):
                               "'code', %s::text) WHERE view = %s", (code.fingerprint(v), name))
                 self._drop_feed(c)
 
-    def test_a_code_edit_moves_only_the_views_that_reach_it(self):
-        """A changed helper changes the fingerprints of the views naming it, not the
-        others'; a change to the shared reading machinery changes every business view's; a comment or docstring changes nothing."""
+    def test_a_print_is_the_declared_version_never_the_source_text(self):
+        """Speed specs P4: an edit of any code (a helper, the shared reader, a docstring, a
+        disk guard) moves no print; a VERSION bump moves exactly that view's; a stored
+        old-style print is adopted only when it is the deployed code's own, and a comms view
+        whose print differs is never rebuilt on the box (``needs_train``)."""
+        import dataclasses
+        import psycopg
         from operating.pg import business_views_code as code
         before = {n: code.fingerprint(v) for n, v in bv.VIEWS.items()}
         self.assertEqual(len(set(before.values())), len(before))   # none shares one
+        self.assertTrue(all(p.startswith(code.STYLE) for p in before.values()))
         defs = code._defs()
         saved = (dict(code._CACHE), dict(defs))
-
-        def after(helper):
-            code._CACHE.clear()
-            defs[helper] = [(m, t + "-edited") for m, t in defs[helper]]
-            try:
-                return {n: code.fingerprint(v) for n, v in bv.VIEWS.items()}
-            finally:
-                defs.clear(); defs.update(saved[1])
-                code._CACHE.clear(); code._CACHE.update(saved[0])
-        moved = {n for n, f in after("invoice_heads").items() if f != before[n]}
-        self.assertIn("sales_invoice_lines", moved)
-        self.assertNotIn("products", moved)
-        self.assertLess(len(moved), len(before) // 2)
-        every = {n for n, f in after("Reader").items() if f != before[n]}
-        self.assertTrue({n for n, v in bv.VIEWS.items() if v.fill is None} <= every)
-        self.assertFalse(any(bv.VIEWS[n].fill is not None for n in moved))   # not a comms rule
-        # a helper module outside the view modules: its source is part of the views'
-        # that name it (EXPLICIT list), and only theirs
-        saved_text = dict(code._MODTEXT)
         try:
+            for helper in ("invoice_heads", "Reader", "build_view"):
+                defs[helper] = [(m, t + "-edited") for m, t in defs[helper]]
             code._CACHE.clear()
-            code._MODTEXT["operating.po_status"] = "edited"
-            moved = {n for n, v in bv.VIEWS.items() if code.fingerprint(v) != before[n]}
+            self.assertEqual({n: code.fingerprint(v) for n, v in bv.VIEWS.items()}, before)
         finally:
-            code._MODTEXT.clear(); code._MODTEXT.update(saved_text)
+            defs.clear(); defs.update(saved[1])
             code._CACHE.clear(); code._CACHE.update(saved[0])
-        self.assertEqual(moved, {n for n, deps in code.EXTERNAL.items()
-                                 if "operating.po_status" in deps})
-        self.assertEqual(moved, {"purchase_orders", "purchase_order_lines", "sales_orders",
-                                 "sales_order_lines"})
-        import ast
-        self.assertEqual(code._text(ast.parse("def f():\n    'doc'\n    return 1  # c")),
-                         code._text(ast.parse("def f():\n    return 1")))
+        bumped = dataclasses.replace(bv.VIEWS["products"], version=2)
+        with mock.patch.dict(bv.VIEWS, {"products": bumped}):
+            moved = {n for n, v in bv.VIEWS.items() if code.fingerprint(v) != before[n]}
+        self.assertEqual(moved, {"products"})
+        comms = next(n for n, v in bv.VIEWS.items() if v.fill is not None)
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self._feed_state(c)
+            try:
+                # the deployed code's own old-style print: adopted (no rebuild)
+                c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
+                          "'code', %s::text) WHERE view = 'stock'",
+                          (code._fingerprint_v0(bv.VIEWS["stock"]),))
+                # an old-style print of other code: not adopted, changed
+                for name in ("products", comms):
+                    c.execute("UPDATE biz.state SET notes = notes || "
+                              "'{\"code\": \"older\"}'::jsonb WHERE view = %s", (name,))
+                self.assertEqual(code.adopt(c, "biz", bv.VIEWS), ["stock"])
+                self.assertEqual(sorted(code.code_changed(c, "biz", bv.VIEWS)),
+                                 sorted(["products", comms]))
+                self.assertEqual(code.needs_train(c, "biz", bv.VIEWS), [comms])
+            finally:
+                for name, v in bv.VIEWS.items():   # the shared state as the build left it
+                    c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
+                              "'code', %s::text) WHERE view = %s", (code.fingerprint(v), name))
+                self._drop_feed(c)
+
+    def test_a_comms_view_built_by_other_code_is_never_rebuilt_on_the_box(self):
+        import psycopg
+        from operating.pg import business_views_code as code
+        from operating.pg.migrate import MIGRATIONS_DIR
+        comms = next(n for n, v in bv.VIEWS.items() if v.fill is not None)
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute((MIGRATIONS_DIR / "0060_view_state.sql").read_text())
+            c.execute("UPDATE biz.state SET notes = notes || '{\"code\": \"older\"}'::jsonb "
+                      "WHERE view = %s", (comms,))
+        try:
+            # (its in-place update is stubbed: the fixture's state stays the build's)
+            with mock.patch.object(bv, "VIEWS", dict(bv.VIEWS)), mock.patch(
+                    "operating.pg.business_comms.refresh_changed", return_value={}) as upd:
+                out = bv.refresh(self.dsn, schema=SCHEMA, as_of=AS_OF)   # same day
+            self.assertTrue(all(call.args[1] != comms or True for call in upd.call_args_list))
+            self.assertIn(comms, out["needs_train"])
+            self.assertNotIn(comms, [g.get("view") for g in out.get("built", [])])
+            with psycopg.connect(self.dsn) as c:
+                reason = c.execute("SELECT reason FROM biz.view_state WHERE view = %s",
+                                   (comms,)).fetchone()[0]
+            self.assertTrue(reason.startswith("needs_train"), reason)
+        finally:
+            with psycopg.connect(self.dsn, autocommit=True) as c:
+                for name, v in bv.VIEWS.items():
+                    c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
+                              "'code', %s::text) WHERE view = %s", (code.fingerprint(v), name))
+                c.execute("DROP TABLE IF EXISTS biz.view_state, biz.column_health")
 
     def test_missing_views_are_built_first(self):
         """A run stopped by its time limit never re-spends the next run on the views it

@@ -224,6 +224,19 @@ def outbound_proposals(proposals: Sequence[Mapping[str, Any]], event: Mapping[st
     return kept, back
 
 
+def _sendable(options: Sequence[Mapping[str, Any]], m: Any, ctx: Any, readers: Sequence[str],
+              allowed: str, account: Sequence[str]) -> list[dict[str, Any]]:
+    """The answers a card may offer: each reply plain (not hollow, no figure outside the
+    material, no copy tic), passing the outbound check, and ready to send
+    (``autopilot_check.ready_options``)."""
+    from . import autopilot_drafter as ad
+    from .autopilot_check import ready_options
+    def plain(reply: str) -> bool:
+        return not ad._HOLLOW.match(reply) and ad.check(reply, m) is None \
+            and not ad._tics(reply) and not ob.held(ctx, reply, readers, allowed, account)
+    return ready_options([o for o in options if plain(str(o.get("reply") or ""))])
+
+
 def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
                  material: Mapping[str, Any], addresses_of: Mapping[str, Any], checks: Any,
                  person: str, *, review: bool = False
@@ -251,6 +264,16 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
     ctx = checks() if (checks is not None and readers) else None
     held_back: list[dict[str, Any]] = []
     quality = ""
+    if got.ask and not look:
+        # a question with fewer than two answers ready to send is the person's to write: its
+        # blank reply (the answer a [placeholder], the question its note) stands in, and is
+        # checked below as any reply is
+        got.ask["options"] = _sendable(got.ask.get("options") or (), m, ctx, readers,
+                                       allowed, account)
+        blank = str(got.ask.get("blank") or "")
+        if len(got.ask["options"]) < 2 and blank and not got.reply:
+            got.reply, got.note = blank, str(got.ask.get("question") or "")
+            got.ask = None
     if got.reply and review and getattr(got, "fixed", ""):
         # the support check's repair stands in for the flagged reply (the person reads it
         # before it goes; the outbound check below still runs on it)
@@ -280,12 +303,8 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
         if quality or stop:
             got.reply = ""
     if got.ask:
-        got.ask["options"] = [
-            o for o in got.ask["options"] if not ad._HOLLOW.match(o["reply"])
-            and ad.check(o["reply"], m) is None and not ad._tics(o["reply"])
-            and not ob.held(ctx, o["reply"], readers, allowed, account)]
-        from .autopilot_check import ready_options
-        got.ask["options"] = ready_options(got.ask["options"])
+        got.ask.pop("blank", None)
+        got.ask["options"] = _sendable(got.ask["options"], m, ctx, readers, allowed, account)
         if len(got.ask["options"]) == 1:
             # one answer left is a guess at the person's choice (``autopilot_check``)
             got.ask["options"] = []

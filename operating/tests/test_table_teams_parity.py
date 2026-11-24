@@ -82,7 +82,8 @@ class TableTeamsParity(TeamsHostCase):
         return {json.loads(oid.split(":", 2)[2])["id"] for oid in oids}
 
     def fc(self):
-        return {o for o in self.messages if self.ids({o}) == {"3003"}}
+        """None: the Freightcom message (3003) is read like any other (owner 11-23)."""
+        return set()
 
     def test_sql_scoped_set_is_the_item_gates_row_for_row(self):
         tool = self.tool()
@@ -94,22 +95,14 @@ class TableTeamsParity(TeamsHostCase):
                 gate = self.gated(actor)
                 out, table = self.listed(tool, actor)
                 self.assertEqual(table, gate - self.fc())
-                self.assertEqual(self.ids(table), expected[actor])
+                self.assertEqual(self.ids(table), expected[actor] | (self.ids(gate) & {"3003"}))
                 counted = tool.call("plx.table", {"from": "TeamsChatMessage",
                                                   "measures": [{"fn": "count"}]}, actor)
                 value = counted["groups"][0]["measures"][0]["value"] if counted["groups"] \
                     else "0"
                 self.assertEqual(value, str(len(table)), counted)
-                text = json.dumps([out, counted])
-                self.assertNotIn("Freightcom", text)
-                if gate & self.fc():
-                    # the Freightcom message is withheld (counted, never shown): partial
-                    self.assertEqual((out.get("withheld") or {}).get("objects", 0), 1, out)
-                    self.assertTrue(out["partial"])
-                    self.assertIn("teams_withheld", {g["reason"] for g in out["gaps"]})
-                else:
-                    self.assertEqual((out.get("withheld") or {}).get("objects", 0), 0, out)
-                    self.assertFalse(out["partial"])
+                self.assertEqual((out.get("withheld") or {}).get("objects", 0), 0, out)
+                self.assertFalse(out["partial"])
 
     def test_cardinality_1_10_60_by_day_bucket(self):
         # the 63 messages are stamped 10 minutes apart from 2026-10-01T00:10Z (UTC):
@@ -144,7 +137,8 @@ class TableTeamsParity(TeamsHostCase):
         self.assertLess(table, gate)
         self.assertLessEqual(table, gate)
         self.assertTrue(out["partial"])
-        self.assertEqual((out.get("withheld") or {}).get("objects", 0), len(gate) + 1 - len(table), out)
+        # every message the gate serves and the capped call did not decide is withheld
+        self.assertEqual((out.get("withheld") or {}).get("objects", 0), len(gate) - len(table), out)
         self.assertIn("item_rules_capped", {g["reason"] for g in out["gaps"]})
         import time
         from operating import call_limits

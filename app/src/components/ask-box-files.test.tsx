@@ -17,7 +17,7 @@ vi.mock("@/lib/attachments", async (orig) => ({
 
 import { AskBox } from "./ask-box";
 
-const att = (name: string): Attachment => ({ id: name, name, size: 1, image: false, data: "QQ==" });
+const att = (name: string): Attachment => ({ id: name, name, size: 1, image: false, upload: "a".repeat(32) });
 const pdf = (name: string) => new File(["x"], name, { type: "application/pdf" });
 const pick = (...names: string[]) => fireEvent.change(screen.getByTestId("attach-input"), { target: { files: names.map(pdf) } });
 const finish = async (n: number, ...names: string[]) => {
@@ -74,14 +74,13 @@ describe("attachments in the box (WEB-023)", () => {
   });
 });
 
-describe("question length (WEB-024)", () => {
-  it("the box stops at 1000 characters and says so", () => {
+describe("question length", () => {
+  it("the box has no length limit and shows no counter", () => {
     render(<AskBox onSubmit={vi.fn()} />);
     const box = screen.getByLabelText(/ask/i, { selector: "textarea" }) as HTMLTextAreaElement;
-    expect(box.maxLength).toBe(1000);
-    fireEvent.change(box, { target: { value: "a".repeat(950) } });
-    expect(screen.getByTestId("question-count")).toHaveTextContent("950 of 1000");
-    fireEvent.change(box, { target: { value: "a".repeat(1000) } });
-    expect(screen.getByTestId("question-count")).toHaveTextContent("the limit");
+    expect(box.maxLength).toBe(-1);
+    fireEvent.change(box, { target: { value: "a".repeat(120000) } });
+    expect(box.value).toHaveLength(120000);
+    expect(screen.queryByTestId("question-count")).toBeNull();
   });
 });

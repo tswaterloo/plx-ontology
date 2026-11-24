@@ -736,6 +736,64 @@ class StoredPlanTests(tcm.CompactCase):
                                        "ATT-5": ct.TEXT_OCR})
 
 
+class SparkDocumentReadingTests(tcm.CompactCase):
+    """A document the Spark reader read (kind ``doc``) is applied as a new text version where
+    the attachment is still unread, never to a withheld mailbox, and a reading with no text
+    changes nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.memo = b"supplier,po\nCroda,4500012345\n"
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-1", attachments=[
+            tcm.attachment("ATT-1", self.memo, "memo.csv", "text/csv"),
+            tcm.attachment("ATT-2", b"x,y\n9,9\n", "other.csv", "text/csv")])
+        self.graph.put(tm.BOX_B, "MSG-2", "CK-2", attachments=[
+            tcm.attachment("ATT-3", self.memo, "memo.csv", "text/csv")])
+        self.capture(defer_ocr=True).run(tm.SCOPE)
+        with self.store.db:   # as the box's extractor left them: failed, unread
+            self.store.db.execute("UPDATE attachments SET text_status='failed'")
+        self.fetch_dir = Path(self.tmp.name) / "fetch"
+        self.fetch_dir.mkdir()
+        attach_fetch.FetchStore(self.fetch_dir).close()   # the apply needs its (empty) work list
+
+    def rows(self):
+        return {r[0]: r[1] for r in self.store.db.execute(
+            "SELECT attachment_id, text_status FROM attachments")}
+
+    def plan(self, att, status, text):
+        meta = json.loads(self.store.db.execute(
+            "SELECT metadata FROM attachments WHERE attachment_id=?", (att,)).fetchone()[0])
+        sha = self.store.db.execute("SELECT content_sha256 FROM attachments WHERE "
+                                    "attachment_id=?", (att,)).fetchone()[0]
+        key = attach_fetch.read_key(sha, meta)
+        plan = attach_fetch.StoredPlan(self.fetch_dir).db
+        plan.execute("INSERT OR IGNORE INTO stored VALUES (?,?,?,?,?,?)",
+                     (key, sha, "doc", json.dumps(meta), 1, 0.0))
+        plan.commit()
+        read = attach_fetch.Readings(self.fetch_dir).db
+        read.execute("INSERT OR REPLACE INTO readings VALUES (?,?,?,?,?,?,?)",
+                     (key, sha, status, text, None, 1.0, 0.0))
+        read.commit()
+
+    def apply(self, env):
+        api, _ = graph_read.build_graph(env, sender=self.graph)
+        return capture_mail.apply_fetched_pass(
+            self.store, GraphMailReader(api, tm.capture_audience()), tm.CAPTURE,
+            self.fetch_dir, budget_seconds=600)
+
+    def test_text_applies_to_unread_copies_only_and_nothing_else_changes(self):
+        env = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
+        self.plan("ATT-1", ct.TEXT_EXTRACTED, "supplier Croda po 4500012345")
+        self.plan("ATT-2", "no_text", None)   # an empty answer: never applied
+        out = self.apply(env)["stored"]
+        self.assertEqual((out["applied"], out["attachments_filled"], out["withheld"],
+                          out["not_applicable"]), (1, 1, 1, 1))
+        self.assertEqual(self.rows(), {"ATT-1": ct.TEXT_EXTRACTED, "ATT-2": "failed",
+                                       "ATT-3": "failed"})
+        again = self.apply(env)["stored"]   # idempotent: nothing unread left to fill
+        self.assertEqual(again["applied"], 0)
+
+
 class DroppedOriginalTests(StoredPlanTests):
     """DI-05: an unread image whose original the mail store dropped (kept as readings
     only) is fetched again by its ids, read once and applied as a new text version;

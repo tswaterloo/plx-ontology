@@ -5,7 +5,7 @@
 // "page". Until the person pins or unpins anything, their role's defaults show; the first
 // change writes those defaults down as real pins, so unpinning a default sticks.
 
-import { useSaved, writePages, type SavedItem } from "./saved";
+import { PINS_MAX, setSavedNotice, useSaved, writePages, type SavedItem } from "./saved";
 
 export interface PinnedPage {
   href: string;
@@ -89,11 +89,16 @@ export function togglePin(page: PinnedPage, items: SavedItem[], reader: PinReade
   if (!pinnable(page.href)) return false;
   const { pins } = pinsFrom(items, reader);
   const on = !pins.some((p) => p.href === page.href);
+  if (on && pins.length >= PINS_MAX) {
+    setSavedNotice(`You have ${PINS_MAX} pinned pages, the most kept. Unpin one to pin another.`);
+    return false;
+  }
+  setSavedNotice(null);
   const next = on ? [...pins, { href: page.href, label: page.label.slice(0, 80) || "Page" }] : pins.filter((p) => p.href !== page.href);
   const at = new Date().toISOString();
   const wrote = writePages([
     { key: SET, kind: "page", label: "", href: "/", at },
-    ...next.slice(0, 20).map((p) => ({ key: `p:${p.href}`, kind: "page" as const, label: p.label, href: p.href, at })),
+    ...next.slice(0, PINS_MAX).map((p) => ({ key: `p:${p.href}`, kind: "page" as const, label: p.label, href: p.href, at })),
   ]);
   return wrote && on;
 }

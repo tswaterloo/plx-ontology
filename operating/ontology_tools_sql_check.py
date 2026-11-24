@@ -11,8 +11,10 @@ from typing import Any
 from operating.ontology_tools_identity import ToolError
 from operating.pg import business_views as bv
 
-MAX_SQL = 8000
 
+# to_jsonb (11-23): a measure's row definition names a column a view may not have yet
+# (``to_jsonb(sales_orders) ->> 'open_state'`` reads NULL on a table built before it, where a
+# bare name is an error); the row it makes is the GUARDED view's own, so a masked cell is NULL
 FUNCTIONS = frozenset("""
 count sum avg min max stddev stddev_samp stddev_pop variance var_samp var_pop
 percentile_cont percentile_disc mode string_agg array_agg bool_and bool_or every
@@ -25,7 +27,7 @@ regexp_replace regexp_match regexp_matches regexp_count regexp_substr starts_wit
 cardinality array_length array_position array_remove array_to_string string_to_array
 unnest generate_series row_number rank dense_rank percent_rank cume_dist ntile lag lead
 first_value last_value nth_value to_tsvector to_tsquery plainto_tsquery phraseto_tsquery
-websearch_to_tsquery ts_rank ts_rank_cd ts_headline
+websearch_to_tsquery ts_rank ts_rank_cd ts_headline to_jsonb
 jsonb_each_text jsonb_object_keys jsonb_array_elements_text jsonb_typeof jsonb_array_length
 jsonb_extract_path_text
 corr covar_pop covar_samp regr_slope regr_intercept regr_r2 regr_count regr_avgx regr_avgy
@@ -146,8 +148,6 @@ def check(sql: Any, *, schemas: frozenset[str] = frozenset(), allowed_schema: st
     """The statement as it will run (one trailing ``;`` dropped), or ``invalid_sql``."""
     if not isinstance(sql, str) or not sql.strip():
         raise _bad("sql is one SELECT statement as text")
-    if len(sql) > MAX_SQL:
-        raise _bad(f"the statement is longer than {MAX_SQL} characters")
     if "\x00" in sql:
         raise _bad("the statement holds a NUL character")
     text = sql.strip()

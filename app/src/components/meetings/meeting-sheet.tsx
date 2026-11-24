@@ -149,7 +149,7 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
               <div>
                 <H count={people.length}>People{people.length > 0 && <span className="font-normal normal-case">· {accepted} accepted</span>}</H>
                 {m.people_withheld ? (
-                  <p className="text-muted">Not shown: the people exclusion list is not loaded.</p>
+                  <p className="text-muted">Not shown right now. Try again in a few minutes.</p>
                 ) : people.length === 0 ? (
                   <p className="text-muted">No attendee on the invitation.</p>
                 ) : (

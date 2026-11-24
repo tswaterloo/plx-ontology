@@ -11,7 +11,8 @@ unit) admits every file to both; the item permissions are the per-file check's
 (``item_gate_from_case_runtime``: the case host's citation check). For a full reader
 (``people_excluded.full_reader``) of either kind, every page ``SqlTool.comms_search``
 returns, walked by its cursor at limits 1, 3 and 50, is exactly the files the item gate
-serves among the matches, each once (none refused, none lost); the Freightcom file never;
+serves among the matches, each once (none refused, none lost); the Freightcom file like any
+other (owner, 11-23: Freightcom is read like any other source);
 the text-less file found by its name; and a reader who is not full searches no file at all
 (its files go to the documents search, as before).
 
@@ -66,10 +67,12 @@ def tearDownModule():
     _NO_FLOOR.stop()
 
 
+TEXTS = {FREIGHTCOM: b"Freightcom pickup quote for lot 7 widget"}   # content only, no name hit
+
+
 def _drive():
     drive = seeded_drive()
-    drive.file(FREIGHTCOM, "pickup.txt", "01AOS",
-               b"Freightcom pickup quote for lot 7 widget", mime="text/plain",
+    drive.file(FREIGHTCOM, "pickup.txt", "01AOS", TEXTS[FREIGHTCOM], mime="text/plain",
                acl=(RICARDO, SALES))
     drive.file(NO_TEXT, "Dandylion widget COA.png", "01AOS", b"\x89PNG\r\n\x1a\n0000",
                mime="image/png", acl=(RICARDO, SALES))
@@ -194,11 +197,14 @@ class FilesTableThroughTheGate(unittest.TestCase):
         raise AssertionError("the cursor never ended")
 
     def matching(self, word):
-        """The files whose name, folder or text holds ``word`` (the fixture's own record)."""
+        """The files whose name, folder or text holds ``word`` (the fixture's own record:
+        the projected values, and the content of the files whose word is in their text
+        only, ``TEXTS``)."""
         out = set()
         for handle, oid in self.files.items():
             text = " ".join(str(v) for (v,) in self.sqlite.execute(
                 "SELECT value FROM object_values WHERE object_id = ?", (oid,)))
+            text += " ".join(c.decode() for f, c in TEXTS.items() if f in handle)
             if word in text.lower():
                 out.add(handle)
         return out
@@ -207,8 +213,6 @@ class FilesTableThroughTheGate(unittest.TestCase):
         runtime = self.runtime()
         gate = item_gate_from_case_runtime(runtime)
         matches = self.matching("widget")
-        fc = {h for h, o in self.files.items() if FREIGHTCOM.lower() in h.lower()}
-        self.assertEqual(len(fc), 1, fc)
         self.assertGreaterEqual(len(matches), N + 1)
         served_by = {a: {h for h in matches if gate(a, h)} for a in (QUALITY, EMPLOYEE)}
         # the per-file check serves quality every file it matches, sales only the files
@@ -224,8 +228,7 @@ class FilesTableThroughTheGate(unittest.TestCase):
                     self.assertIn("sharepoint", searched["sources"])
                     self.assertEqual(len(got), len(set(got)), "a file came back twice")
                     self.assertFalse(set(got) & refused, "a refused file was returned")
-                    self.assertEqual(set(got), served - fc)
-                    self.assertFalse(set(got) & fc, "the Freightcom file was returned")
+                    self.assertEqual(set(got), served)   # the Freightcom file is read like any
 
     def test_a_files_search_is_the_same_whatever_rows_the_walk_reads_first(self):
         """A files search walks the newest rows before it reads the word index's whole

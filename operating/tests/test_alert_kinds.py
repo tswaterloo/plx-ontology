@@ -48,7 +48,7 @@ class Registry(unittest.TestCase):
             self.assertIn(t["kind"], kinds, t["type"])
         # the merge: dozens of detector types, about eighteen alert kinds
         alerts = [k for k in ak.registry()["kinds"] if k["surface"] == "alert"]
-        self.assertLessEqual(len(alerts), 20)
+        self.assertLessEqual(len(alerts), 21)
         self.assertGreater(len(types), 3 * len(alerts))
 
     def test_data_health_and_trends_never_reach_my_work(self):

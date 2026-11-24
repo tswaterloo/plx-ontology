@@ -1,6 +1,6 @@
 """``plx.sql``: one read-only SQL ``SELECT`` per call over the reader-scoped business views
-(``<biz schema>_sql.<view>``, ``operating.pg.sql_views``), its rows returned (at most
-``MAX_ROWS``), so an agent can look at the data, refine and check its own totals the way
+(``<biz schema>_sql.<view>``, ``operating.pg.sql_views``), every row of its result kept (``operating.result_rows``: in
+memory up to ``HELD_ROWS``, past that on disk) and shown a page at a time, so an agent can look at the data, refine and check its own totals the way
 an analyst at a SQL prompt does. ``{"describe": true}`` lists the views and their columns in
 plain words; ``{"describe": "<view>"}`` adds a few rows and the commonest values of its text
 columns, read as the reader.
@@ -19,8 +19,7 @@ transaction (the door's stamp and the people exclusion read as its first stateme
 as transaction-local settings with the role in one statement; a schema without the door, or
 whose door is behind the people exclusion, is refused (``not_ready``); a refusal that only
 lasts while a writer swaps or re-decides the tables (``Busy``) is asked again inside the
-call for up to ``BUSY_WAIT_SECONDS`` (a psql session would wait on the lock), never past
-the call's own limit; after the read the
+call until it ends (a psql session would wait on the lock); after the read the
 tool checks the role and every setting are still its own and refuses the result otherwise.
 
 The text is checked before it is sent (fail closed): one statement starting SELECT or WITH;
@@ -30,8 +29,8 @@ no ``pg_*`` or ``information_schema`` name and no schema but the views'; every f
 called is one of ``FUNCTIONS`` (plain SQL arithmetic, text, date, aggregate, window and
 full-text functions: no ``set_config``, ``current_setting``, ``query_to_xml``, ``dblink``,
 file or large-object function). The plan's cost is checked with EXPLAIN first
-(``MAX_COST``); ``statement_timeout`` is ``STATEMENT_MS``; the answer is cut at
-``MAX_ROWS`` rows and ``MAX_BYTES`` of text (``truncated``).
+(``MAX_COST``); ``statement_timeout`` is none; one answer shows ``MAX_BYTES`` of text (the
+rest is read with ``page``; ``truncated`` says so).
 
 The answer names each row ``sql://<result id>#row=<n>`` and the result ``sql://<result
 id>``: the query, the reader and the views it read are kept (``RESULTS``) so the answer
@@ -43,21 +42,25 @@ import contextvars
 import datetime as dt
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
 from collections import OrderedDict
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from operating.ontology_tools_identity import ToolError
 from operating import insight_statements as ins
 from operating import read_ceiling
+from operating import result_profile
+from operating.ontology_tools_sql_rows import (  # noqa: F401  (re-exported)
+    MAX_BYTES, SHOWN_ROWS, CELL_PAGE, cell_text, _piece, RESULTS_KEPT, RESULTS_BYTES, CELL_PATTERN,
+    _CODE, _cell, _Results, RESULTS, _actor_key, _shown, _narrowed, _profiled)
 from operating.pg import business_views as bv
 from operating.pg import sql_views
 from operating.ontology_tools_sql_check import (  # noqa: F401  (re-exported)
-    FUNCTIONS, MAX_SQL, STATEMENT_WORDS, SYNTAX, _LOCKING, _WORD, _bad, _column_list,
+    FUNCTIONS, STATEMENT_WORDS, SYNTAX, _LOCKING, _WORD, _bad, _column_list,
     _tokens, check)
 
 TOOL_NAME = "plx.sql"
@@ -66,11 +69,10 @@ TOOL_NAMES = (TOOL_NAME,)
 COMMS_SEARCH = "plx.sql_comms_search"
 COMMS_OPEN = "plx.sql_comms_open"
 RECORDS_SEARCH = "plx.sql_records_search"   # plx.search's records leg (ontology_tools_search)
-MAX_ROWS = 200
-# the rows' text, measured as plx.sql writes it; the host sends a result twice (text and
-# structured content, ``mcp_server._envelope_bytes``) within MAX_RESULT_BYTES (48,000):
-# past ~23,000 here a whole result was refused (result_too_large), none of it shown
-MAX_BYTES = 20_000
+from operating.result_rows import HELD_ROWS, DiskRefused, RowStore  # noqa: E402  (every row is kept: no cap)
+# the rows' text, measured as plx.sql writes it: the result as the client shows it stays
+# within ``mcp_server_evidence.CLIENT_SHOWN_CHARS`` (48,000) with its columns and notes; the
+# rows past it are cut (``truncated``) and read with another statement (OFFSET, narrower)
 # a comms search whose every-word match finds fewer rows than this (and than its limit)
 # fills its page with rows holding some of the words and rows close in meaning
 # (``_comms_widened``)
@@ -85,49 +87,27 @@ MEANING_EXTRA = 5
 ATTACH_EXTRA = 5
 # the attachment passes run beside their word searches (``_comms_search``)
 _ATTACH_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-attach")
-# the attachment pass's own statement budget: past it, no attachment rows (the word page
-# answers alone); a common word's walk ran ~24 s live 11-19 under load
-ATTACH_MS = 2_500
 # the meaning ranking's best objects read for it
 MEANING_K = 40
-# the longest the search waits, past its word match, for the meaning ranking it started
-# beside it (live: the ranking 1.9-2.3 s, the word match 4-6 s)
-MEANING_WAIT_S = 5.0
-# the ranking's rows are read ahead for at most this many of its objects (the gate keeps
-# MEANING_K of them), and waited for at most this long past the ranking's own wait
+# the ranking's rows are read ahead for this many of its objects (the gate keeps MEANING_K)
 MEANING_READ_K = 80
-MEANING_READ_S = 15.0
 # a plx.search hit list's most (its contract's maxItems)
 HITS_MAX = 50
-MAX_CELL = 400
-STATEMENT_MS = 10_000
-# a FULL reader (no permission checks
-# but the people exclusion and Freightcom, both inside the views) reads as an analyst at a
-# psql prompt does: statements up to FULL_STATEMENT_MS, no plan-cost cap and no records
-# scan guard (the ceiling run 11-18: plain Claude with 60 s psql scored 82/87 where the
-# Ask, held to 10 s and a cost cap, scored 58)
-FULL_STATEMENT_MS = 60_000
-# plx.search's own legs (mail/Teams text, records) for a full reader: inside plx.search's
-# 40 s call, leaving the documents leg its time (a common word over 3M mails took >10 s)
-SEARCH_FULL_MS = 25_000
-# plx.search's records leg: the label index read for its candidates (``_label_candidates``;
-# a word the index finds: ~0.2 s live over 17M records). Past it, every label is read
-# through the door as before.
-CANDIDATE_MS = 3_000
-# the comms stem pass's own statement budget: past it, no stem rows (the any-word and
-# meaning widening still answer); its prefix stems took ~11 s live 11-19 under load
-STEM_MS = 3_000
-# A third waits up to FULL_COSTLY_WAIT_SECONDS for a slot (holding no connection), then is
-# told to narrow it
+# Ask's reads have no time limit (no cut-offs): a statement,
+# a search leg or a pass beside it runs to its end (statement_timeout 0). What stays is
+# Postgres's own lock protection (``lock_ms``), the connection's own connect timeout, and
+# the pool's queue for a free connection (a call waits its turn): none ends a read that is
+# running. Where a heavy read runs (the standby, a Spark replica) is how the live app is
+# protected, never a limit.
+# A third waits for a slot (holding no connection), however long, and then runs
 FULL_COSTLY_SLOTS = 2
 FULL_COSTLY_LOCK = 0x706C7873
-FULL_COSTLY_WAIT_SECONDS = 20.0
 FULL_COSTLY_POLL_SECONDS = 0.5
 MAX_COST = 5e7
 SAMPLE_VALUES = 6
-RESULTS_KEPT = 512
 # a ``Busy`` refusal (a view swapped or re-created, the door re-decided after the people
-# exclusion moved) is asked again every BUSY_POLL_SECONDS for up to this long in one call
+# exclusion moved: Postgres's own lock protection, kept) is asked again every
+# BUSY_POLL_SECONDS for up to this long in one call, as a psql session waits on a lock
 BUSY_WAIT_SECONDS = 20.0
 BUSY_POLL_SECONDS = 2.0
 
@@ -155,66 +135,6 @@ class Busy(ToolError):
                          "query again once, then answer from what you have")
 
 
-class _Results:
-    """The results answered lately (bounded): id -> what the gate needs to bind to them."""
-
-    def __init__(self, most: int = RESULTS_KEPT) -> None:
-        self.most, self._lock, self._got = most, threading.Lock(), OrderedDict()
-
-    def put(self, rid: str, entry: dict[str, Any]) -> None:
-        with self._lock:
-            self._got[rid] = entry
-            self._got.move_to_end(rid)
-            while len(self._got) > self.most:
-                self._got.popitem(last=False)
-
-    def get(self, rid: str) -> dict[str, Any] | None:
-        with self._lock:
-            return self._got.get(rid)
-
-
-RESULTS = _Results()
-
-
-def _actor_key(actor: Any) -> str:
-    return json.dumps([getattr(actor, "tenant", None),
-                       sorted(getattr(actor, "principals", ()) or ())], default=str)
-
-
-# A cell the contract types bare (``cells`` items, ontology_tool_contracts.json): a
-# number, an ISO date or time, or one whitespace-free code (currency, status, document
-# number, handle). Anything else (names, descriptions, notes) leaves as an envelope.
-CELL_PATTERN = (r"-?[0-9]{1,30}(?:\.[0-9]{1,30})?"
-                r"|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}"
-                r"(?:\.[0-9]{1,9})?)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?"
-                r"|[A-Za-z0-9][A-Za-z0-9_.:/@+=!,#%?&~-]{0,255}")
-_CODE = re.compile(f"(?:{CELL_PATTERN})")
-
-
-def _cell(value: Any) -> tuple[Any, bool]:
-    """A result cell as the tools state it (number as Decimal text, date ISO, source text
-    in an ``untrusted_text`` envelope; a code-like word bare) and whether it was cut."""
-    if value is None or isinstance(value, bool):
-        return value, False
-    if isinstance(value, (int, Decimal)):
-        return format(Decimal(value), "f"), False
-    if isinstance(value, float):
-        return format(Decimal(repr(value)), "f"), False
-    if isinstance(value, (dt.date, dt.datetime)):
-        return value.isoformat(), False
-    if isinstance(value, (list, tuple)):
-        got = [_cell(v) for v in value[:50]]
-        return [g for g, _ in got], len(value) > 50 or any(c for _, c in got)
-    text = value if isinstance(value, str) else json.dumps(value, default=str)
-    if _CODE.fullmatch(text):
-        return text, False
-    cut = len(text) > MAX_CELL
-    env: dict[str, Any] = {"untrusted_text": text[:MAX_CELL]}
-    if cut:
-        env["truncated"] = True
-    return env, cut
-
-
 # plx.sql's own connections, one per call running at once (``POOL_SIZE`` per database):
 # the session's parallel calls never share one, and a call stopped at its time limit
 # holds only its own until the statement timeout ends it (on the host's shared
@@ -233,15 +153,26 @@ def _pool(dsn: str) -> Any:
     with _POOLS_LOCK:
         pool = _POOLS.get(dsn)
         if pool is None:
-            pool = _POOLS[dsn] = Pool(dsn, max_size=POOL_SIZE, timeout=5.0,
+            pool = _POOLS[dsn] = Pool(dsn, max_size=POOL_SIZE, timeout=None,
                                       configure=configure, connect_timeout=5,
-                                      statement_timeout_ms=STATEMENT_MS)
+                                      statement_timeout_ms=0)
         return pool
 
 
+_ROUTE = threading.local()   # how this thread's last pooled read was routed (``_lent``)
+
+
+def last_route() -> tuple[str, str | None]:
+    """("standby" | "primary", why the primary) of this thread's last read of the Ask's pool."""
+    return getattr(_ROUTE, "last", ("primary", None))
+
+
 class _lent:
-    """A connection of plx.sql's own pool for one call (the store's DSN); a store with no
-    DSN: its own connection, held under its lock for the call."""
+    """A connection of plx.sql's own pool for one call: the standby's when it answers as a
+    replica (``standby_route``: heavy reads are protected by where they run, never by a
+    limit), else the primary's (the store's DSN), with why. A call waits for a free
+    connection however long it takes. A store with no DSN: its own connection, held under its
+    lock for the call."""
 
     def __init__(self, conn: Any) -> None:
         self.conn, self._cm = conn, None
@@ -249,14 +180,22 @@ class _lent:
     def __enter__(self) -> Any:
         dsn = getattr(self.conn, "dsn", None)
         if isinstance(dsn, str) and dsn:
-            from operating.pg.pool import PoolTimeout
+            from operating import standby_route
+            target, why = standby_route.route(dsn)
+            if why is None:
+                try:
+                    self._cm = _pool(target).connection()
+                    got = self._cm.__enter__()
+                    _ROUTE.last = ("standby", None)
+                    return got
+                except Exception as exc:  # noqa: BLE001 - the primary reads, and says so
+                    self._cm = None
+                    standby_route.failed(target, type(exc).__name__)
+                    why = f"the standby could not be reached ({type(exc).__name__})"
+            _ROUTE.last = ("primary", why)
             self._cm = _pool(dsn).connection()
-            try:
-                return self._cm.__enter__()
-            except PoolTimeout:
-                self._cm = None
-                raise ToolError("busy", f"{POOL_SIZE} plx.sql calls are already running",
-                                "send this one again when one returns") from None
+            return self._cm.__enter__()
+        _ROUTE.last = ("primary", "no database address for this store")
         self.conn._lock.acquire()
         return self.conn._pg
 
@@ -265,6 +204,26 @@ class _lent:
             return self._cm.__exit__(*exc)
         self.conn._lock.release()
         return None
+
+
+def psycopg_errors() -> type:
+    import psycopg
+    return psycopg.Error
+
+
+def data_as_of(pg: Any) -> dict[str, Any]:
+    """Where the read this connection just made came from and as of when: a standby's
+    replay time (the newest primary commit it holds), the primary's now, and when the
+    standby was meant but not used, why. Read on the connection that read (never another)."""
+    from_, why = last_route()
+    recovering, replayed, now = pg.execute(
+        "SELECT pg_is_in_recovery(), pg_last_xact_replay_timestamp(), now()").fetchone()
+    at = replayed if recovering and replayed is not None else now
+    out: dict[str, Any] = {"read_from": "standby" if recovering else "primary",
+                           "as_of": at.isoformat(timespec="seconds")}
+    if not recovering and why:
+        out["note"] = f"read on the primary: {why}"
+    return out
 
 
 class SqlTool:
@@ -281,33 +240,141 @@ class SqlTool:
             error = {"code": exc.code, "message": exc.message[:600]}
             if exc.hint:
                 error["hint"] = exc.hint[:600]
+            if exc.gap is not None:
+                # nothing covers what was asked: said, and kept on the gap list (the read is
+                # answered, never refused for it)
+                from operating import gap_list
+                error["gap"] = gap_list.said(*exc.gap, gap_list.record(*exc.gap))
             return {"error": error}
 
     def _call(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
         unknown = sorted(set(args) - set(INPUT_SCHEMA["properties"]))
-        modes = [k for k in ("sql", "describe", "measure") if k in args]
+        if "names" in args:
+            if len(args) != 1:
+                raise ToolError("invalid_request", "names goes alone: {\"names\": \"<words>\"}")
+            # what a name names (``name_finder``): one statement over the reader's own views,
+            # run as any other (same door, result id, profile and scope line)
+            from operating import name_finder
+            try:
+                found = self._call({"sql": name_finder.statement(args["names"])}, actor)
+            except name_finder.NamesInputError as exc:
+                raise ToolError("invalid_request", str(exc)) from None
+            if "scope" in found:   # one statement per kind joined: the generic line would read as one filter
+                found["scope"] = name_finder.scope(args["names"], found.get("scope"))
+            return found
+        modes = [k for k in ("sql", "describe", "measure", "page", "chain") if k in args]
         loose = [k for k in ("by", "days", "compare", "period", "against", "filter",
-                             "unusual", "forecast") if k in args]
-        if unknown or len(modes) != 1 or (loose and modes != ["measure"]):
+                             "unusual", "forecast", "parameters", "why") if k in args]
+        chained = [k for k in ("hops", "party", "type") if k in args]
+        if unknown or len(modes) != 1 or (loose and modes != ["measure"]) \
+                or (chained and modes != ["chain"]) \
+                or (("offset" in args or "column" in args or "from" in args)
+                    and modes != ["page"]) or ("from" in args and "column" not in args):
             raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"}, "
-                            "{\"describe\": true | \"<view>\"} or {\"measure\": true | "
-                            "\"<id>\"} (by, days, period, against, compare, filter, unusual and "
-                            "forecast go with measure only)")
+                            "{\"describe\": true | \"<view>\"}, {\"names\": \"<words>\"} or {\"measure\": true | "
+                            "\"<id>\"} or {\"page\": \"sql://<result>\", \"offset\": N} "
+                            "(with \"column\": C, \"from\": K for the rest of one long cell) or "
+                            "{\"chain\": \"<record handle or number>\", \"hops\": N} (by, "
+                            "days, period, against, compare, filter, unusual and forecast go "
+                            "with measure only; hops, party and type with chain only; offset "
+                            "with page only)")
+        if "page" in args:
+            return self._page(str(args["page"]), args.get("offset", 0), actor,
+                              args.get("column"), args.get("from", 0))
         if "measure" in args:
             return self._measure(args, actor)
+        if "chain" in args:
+            if _ceiling() is not None:
+                raise ToolError("not_ready", "a chain is not read as of a past moment: "
+                                "read the links with a statement")
+            from operating import ontology_tools_chain
+            conn, scope = self._reader(actor)
+            return ontology_tools_chain.walk(self, conn, scope, actor, args)
         if "describe" in args:
             if _ceiling() is not None:
                 return self._described_only(args["describe"])
             return self._describe(args["describe"], actor)
         conn, scope = self._reader(actor)
+        return self._query(conn, scope, self._statement(conn, args["sql"]), actor)
+
+    def _statement(self, conn: Any, sql: Any) -> str:
+        """``sql`` as it will run: checked (fail closed) and, under a replay's ceiling,
+        bounded to that moment; the one gate of every statement this tool reads."""
         moment = _ceiling()
         guarded = sql_views.guarded_schema()
-        sql = check(args["sql"], schemas=self._schema_names(conn),
+        sql = check(sql, schemas=self._schema_names(conn),
                     allowed_schema="" if moment is not None else guarded)
         if moment is not None:
             # a replay of a past moment (``read_ceiling``): the views read as then
             sql = read_ceiling.bounded_sql(sql, moment, guarded)
-        return self._query(conn, scope, sql, actor)
+        return sql
+
+    def _page(self, result: str, offset: Any, actor: Any, column: Any = None,
+              start: Any = 0) -> dict[str, Any]:
+        """``{"page": "sql://<id>", "offset": n}``: the held rows of an earlier result of
+        this reader's from row ``n`` (the same cites, the same profile). A result this host
+        no longer holds (or another reader's) is refused: run the query again."""
+        rid = result.split("//", 1)[-1]
+        kept = RESULTS.get(rid)
+        if kept is None or kept.get("actor") != _actor_key(actor):
+            raise ToolError("not_found", f"{result} is not held here (results are kept for "
+                            f"the last {RESULTS_KEPT} reads of this session)",
+                            "run the query again")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ToolError("invalid_request", "offset is a row number (0 or more)")
+        rows = kept["rows"]
+        if offset >= len(rows):
+            raise ToolError("invalid_request", f"{result} holds rows 0 to {len(rows) - 1}")
+        if column is not None:
+            return self._cell_page(result, kept, offset, column, start)
+        shown, _cut, cut_cells = _shown(result, kept["columns"], rows, offset,
+                                        kept.get("profile"))
+        profile = {**kept.get("profile", {}), "shown": len(shown)}
+        nxt = offset + len(shown)
+        if nxt < len(rows):
+            profile["page"] = (f"rows {nxt} to {len(rows) - 1} are held: read them with "
+                               f'{{"page": "{result}", "offset": {nxt}}}')
+        out: dict[str, Any] = {"result": result,
+                               "scope": result_profile.scope_line(
+                                   kept.get("sql") or "", kept.get("views") or [], profile,
+                                   len(shown)),
+                               **({"continue": {"shown": len(shown), "from": offset,
+                                                "rows_found": len(rows),
+                                                "next": {"page": result, "offset": nxt}}}
+                                  if nxt < len(rows) else {}),
+                               "columns": kept["columns"], "rows": shown,
+                               "row_count": len(shown), "profile": profile,
+                               "truncated": nxt < len(rows) or not kept.get("complete", True),
+                               "views": kept.get("views", [])}
+        if cut_cells:
+            out["cells_cut"] = cut_cells
+        return out
+
+    def _cell_page(self, result: str, kept: Mapping[str, Any], row: int, column: Any,
+                   start: Any) -> dict[str, Any]:
+        """``{"page": id, "offset": row, "column": c, "from": k}``: ``CELL_PAGE`` characters of
+        one held cell from character ``k`` (an array: its JSON text), so a long cell is read
+        whole in pieces; ``next`` is the character to continue from (null: the end)."""
+        cols = kept["columns"]
+        if isinstance(column, str) and column in cols:
+            column = cols.index(column)
+        if not isinstance(column, int) or isinstance(column, bool) or not 0 <= column < len(cols):
+            raise ToolError("invalid_request", f"column is a column number 0 to {len(cols) - 1} "
+                            f"or one of {cols}")
+        if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+            raise ToolError("invalid_request", "from is a character number (0 or more)")
+        value = kept["rows"][row][column]
+        if value is None:
+            return {"result": result, "cite": f"{result}#row={row}", "column": cols[column],
+                    "cell": None, "chars": 0, "from": 0, "next": None}
+        text = cell_text(value)
+        if start > len(text):
+            raise ToolError("invalid_request", f"the cell holds {len(text)} characters")
+        env, _ = _piece(text, start)
+        end = start + len(env["untrusted_text"])
+        return {"result": result, "cite": f"{result}#row={row}", "column": cols[column],
+                "cell": env, "chars": len(text), "from": start,
+                "next": end if end < len(text) else None}
 
     def _measure(self, args: dict[str, Any], actor: Any) -> dict[str, Any]:
         """``{"measure": ...}`` (``operating.measures``): true lists the catalogue's
@@ -330,7 +397,9 @@ class SqlTool:
             made, entry = measures.statement(args["measure"], args.get("by"),
                                              args.get("days"), args.get("compare", False),
                                              args.get("period"), args.get("against"),
-                                             args.get("filter"), args.get("unusual", False))
+                                             args.get("filter"), args.get("unusual", False),
+                                             parameters=args.get("parameters"),
+                                             why=args.get("why", False))
         if entry.get("scope") == "full" and not self._full(actor):
             # Insights lists such a report only for the readers who see everyone
             raise ToolError("not_readable", f"{entry['id']} is for readers who see everyone")
@@ -349,11 +418,13 @@ class SqlTool:
             except ToolError as exc:
                 # the scan of every measure: a view not served here (not built, being
                 # rebuilt) leaves its measures out, named, never the whole scan
-                gone = re.search(r'relation "([a-z_]+)" does not exist', exc.message or "")
-                if entry["id"] != measures.SCAN or exc.code != "unknown_view" or gone is None \
-                        or gone.group(1) in missing or len(missing) >= 5:
+                gone = re.search(r'relation "([a-z_]+)" does not exist|^([a-z_]+) is not built '
+                                 'yet', exc.message or "")
+                name = next((g for g in gone.groups() if g), None) if gone else None
+                if entry["id"] != measures.SCAN or exc.code not in ("unknown_view", "not_ready") \
+                        or name is None or name in missing or len(missing) >= 5:
                     raise
-                missing.add(gone.group(1))
+                missing.add(name)
                 made, entry = measures.statement(measures.SCAN, None, args.get("days"),
                                                  unusual=True, without=frozenset(missing))
                 sql = check(made, schemas=self._schema_names(conn),
@@ -364,6 +435,8 @@ class SqlTool:
             if "forecast" in entry:
                 return self._forecasted(out, entry)
             out["measure"] = entry
+            from operating.measure_exclusions import excluded
+            out["excluded"] = excluded(self, args, actor, conn, scope, guarded, moment)
         return out
 
     def _forecasted(self, out: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
@@ -376,7 +449,7 @@ class SqlTool:
         if kept is None or out.get("truncated"):
             raise ToolError("invalid_request", "the history is longer than one result: "
                             "forecast by month, or filter to fewer parts")
-        cols, rows, cite = measures.forecasted(kept["columns"], kept["rows"], entry)
+        cols, rows, cite = measures.forecasted(kept["columns"], list(kept["rows"]), entry)
         RESULTS.put(rid, {**kept, "columns": cols, "rows": rows})
         out["columns"] = cols
         out["rows"] = [{"cite": f"{out['result']}#row={n}", "cells": [_cell(v)[0] for v in r]}
@@ -393,7 +466,7 @@ class SqlTool:
         conn = getattr(getattr(self.base, "store", None), "conn", None)
         if conn is None or not getattr(conn, "postgres", False):
             raise ToolError("not_served", "plx.sql reads the Postgres store only",
-                            "use plx.table")
+                            "use plx.search")
         return conn, self.base._scope(actor, self.base.clock())
 
     def _comms_reader(self, actor: Any) -> tuple[Any, dict[str, str]]:
@@ -440,17 +513,9 @@ class SqlTool:
         return self._schemas
 
     def _seconds(self, full: "bool | int" = False) -> float:
-        """A statement's time: ``full`` True: FULL_STATEMENT_MS; a number: that many ms;
-        else STATEMENT_MS; never past what is left of the call."""
-        from operating import call_limits
-        left = call_limits.seconds_left()
-        if left is not None and left <= 0.5:
-            raise ToolError("timeout", "no time is left in this call for plx.sql")
-        ms = FULL_STATEMENT_MS if full is True else (
-            full if isinstance(full, int) and not isinstance(full, bool) and full > 0
-            else STATEMENT_MS)
-        top = ms / 1000.0
-        return top if left is None else max(0.5, min(top, left - 0.5))
+        """A statement's time limit in seconds: 0, none (``statement_timeout`` 0). ``full``
+        is kept for the callers that still pass it; no read of the Ask is cut."""
+        return 0.0
 
     def _scoped(self, conn: Any, door: "Door | None", work: Any, *, role: bool = True,
                 extra: Mapping[str, str] | None = None, after: Any = None,
@@ -461,7 +526,6 @@ class SqlTool:
         as the store's own role; the rows still come only through the guarded views and
         their settings. ``door`` None: no door (comms reads no door class:
         ``_comms_reader``)."""
-        from operating import call_limits
         waited_until = time.monotonic() + BUSY_WAIT_SECONDS
         while True:
             seconds = self._seconds(full)
@@ -470,12 +534,9 @@ class SqlTool:
                     return scoped_read(pg, door, work, seconds, as_role=role, extra=extra,
                                        after=after)
             except Busy:
-                # ask again only while the wait and a whole statement still fit the call
-                left = call_limits.seconds_left()
-                now = time.monotonic()
-                if now + BUSY_POLL_SECONDS > waited_until or (
-                        left is not None
-                        and left - BUSY_POLL_SECONDS < STATEMENT_MS / 1000.0 + 1.0):
+                # a view swap or a door re-decide ends within seconds: ask again, as a lock
+                # wait would
+                if time.monotonic() + BUSY_POLL_SECONDS > waited_until:
                     raise
                 time.sleep(BUSY_POLL_SECONDS)
 
@@ -548,20 +609,29 @@ class SqlTool:
             views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
                      and (files or v not in cs.SEARCH_ONLY)]
             who = cs.party(args["participant"], pg, biz) if args.get("participant") else None
+            side = cs.sidecar(pg) if q is not None else {}
             sql = cs.search_sql(views, guarded=guarded, biz=biz, query=q is not None,
                                 party_kind=who.kind if who else None, since=since is not None,
                                 until=until is not None,
                                 cursor=cur is not None and cur[2] is not None,
-                                cursor_tier=cur[0] if cur and cur[0] is not None else 0)
+                                cursor_tier=cur[0] if cur and cur[0] is not None else 0,
+                                side=frozenset(side))
             if not sql:
                 return views, who, []
             return views, who, pg.execute(sql, {
                 "q": q, "party": who.value if who else None, "since": since, "until": until,
                 "c_at": cur[1] if cur else None, "c_h": cur[2] if cur else None,
-                "k": k, "k_own": own, "walk": cs.walk_rows(pg, q)}).fetchall()
+                "k": k, "k_own": own, "walk": cs.walk_rows(pg, q),
+                **{n: v for one in side.values() for n, v in one.items()}}).fetchall()
+
+        read_at: dict[str, Any] = {}
 
         def work(pg: Any, *_: Any) -> Any:
-            return search_rows(pg, q, cur)
+            got = search_rows(pg, q, cur)
+            # where this very read ran and as of when: asked on the same connection, in the
+            # same snapshot and route as the rows (never by a statement of its own after)
+            read_at["data_as_of"] = data_as_of(pg)
+            return got
         # a first page's meaning ranking runs beside the word search (``_comms_widened``)
         ranking = (self._meaning_started(args["query"], actor, wanted)
                    if words and cur is None else None)
@@ -573,13 +643,14 @@ class SqlTool:
             contextvars.copy_context().run, self._meaning_rows, conn, settings, guarded,
             actor, wanted, files, args["query"], since, until, ranking)
             if ranking is not None and not args.get("participant") else None)
+        attach_depth: dict[str, Any] = {}
         # and a first page's attachment pass (``_comms_attached``): its own statements on
         # its own pooled connection with the same settings; its rows are kept only after
         # the word rows are known (none of theirs again)
         attaching = (_ATTACH_POOL.submit(
             contextvars.copy_context().run, self._comms_attached, conn, settings, guarded,
             actor, q, None, since, until, ATTACH_EXTRA,
-            set(), limit + MEANING_EXTRA + 1)
+            set(), limit + MEANING_EXTRA + 1, attach_depth)
             if words and cur is None and "graph_mail" in wanted and not args.get("participant")
             and self._files_reader(actor) else None)
         from operating.call_phases import phase
@@ -592,10 +663,7 @@ class SqlTool:
             sq = cs.stem_tsquery(stems)
             if not sq or sq == q:
                 return None, None, []
-            (budget,) = pg.execute("SELECT current_setting('statement_timeout')").fetchone()
-            pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(STEM_MS),))
             got = search_rows(pg, sq, None)
-            pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
             return got
         # a first page's stem pass runs beside the word pass on its own pooled connection
         # with the same settings (``_comms_scoped``, as the meaning and attachment passes):
@@ -625,6 +693,7 @@ class SqlTool:
         more = nxt is not None
         documents = cs.hits(rows, words=words, party_=who)
         searched = cs.searched(views, args, words)
+        searched["data_as_of"] = read_at["data_as_of"]   # the word pass's own read
         few = not more and len(rows) < min(limit, WIDEN_BELOW)
         if stemming is not None and not (few and words and cur is None):
             stemming.cancel()   # not needed: a pass already running ends on its own budget
@@ -634,9 +703,7 @@ class SqlTool:
             try:
                 with phase("comms.stems"):
                     if stemming is not None:
-                        # its own budget (STEM_MS) bounds it; the wait has a margin
-                        _, _, srows = stemming.result(
-                            timeout=STEM_MS / 1000 + BUSY_WAIT_SECONDS + 1.0)
+                        _, _, srows = stemming.result()
                     else:
                         _, _, srows = self._comms_scoped(conn, settings, stemmed, actor)
                 srows, _ = self._gated_files(srows, actor, limit - len(rows), k, None)
@@ -686,14 +753,15 @@ class SqlTool:
                 with phase("comms.attachments"):
                     attached = self._comms_attached(
                         conn, settings, guarded, actor, q, who, since, until, ATTACH_EXTRA,
-                        set(), limit + MEANING_EXTRA + 1)
+                        set(), limit + MEANING_EXTRA + 1, attach_depth)
             else:
                 try:
                     with phase("comms.attachments_wait"):
-                        attached = attaching.result(timeout=ATTACH_MS / 1000 + 1.0)
+                        attached = attaching.result()
                 except Exception:  # noqa: BLE001 - late or failed: the word page answers alone
                     attaching.cancel()
                     attached = []
+                    attach_depth["unread"] = True
             seen = {h["citation"] for h in documents}
             attached = [r for r in attached if r[1] not in seen][
                 :max(0, min(ATTACH_EXTRA, HITS_MAX - len(documents)))]
@@ -704,6 +772,12 @@ class SqlTool:
                 searched["widened"] = "; ".join(filter(None, (
                     searched.get("widened"), f"also up to {ATTACH_EXTRA} mails whose "
                     "attachment's text holds every word, each with its match")))
+        depth = cs.depth_said(args.get("query") if words else None, attach_depth,
+                              later=cur is not None,
+                              attachments="graph_mail" in wanted and "emails" in views
+                              and bool(self._files_reader(actor)))
+        if depth:
+            searched["depth"] = depth
         out = {"documents": documents,
                "searched": searched, "gaps": [],
                "completeness": {"complete": not more, "truncated": more, "returned": len(rows),
@@ -711,40 +785,38 @@ class SqlTool:
         if more:
             # a run of refused files longer than a cursor skips: stopped, said, no cursor
             out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
+            if words and cur is None and not args.get("participant"):
+                # how many matched in all (A1a), when one statement can count them
+                total = self._comms_count(conn, settings, guarded, actor, views, q, since,
+                                          until)
+                if total is not None:
+                    out["completeness"]["total"] = total
         return out
 
     def _comms_attached(self, conn: Any, settings: Any, guarded: str, actor: Any, q: str,
                         who: Any, since: Any, until: Any, room: int, seen: set,
-                        spare: int = 0) -> list[Any]:
+                        spare: int = 0, depth: Optional[dict] = None) -> list[Any]:
         """Up to ``room`` rows of the reader's mail (``comms_search.attachment_sql``, the
         same guarded view as the word search) whose attachment's text holds every word of
         ``q``, newest first: none in ``seen`` or that a word page lists (``listed_sql``),
         none whose attachment the reader is kept from (``attachment_blocked_sql``),
-        and each only once its attachment's whole text names no Freightcom
-        (``attachment_clear``: unreadable or unchecked is left out). The read failing or
-        late: none (the word search answers alone)."""
+        The read failing or
+        late: none (the word search answers alone). ``depth`` (when given) is told how
+        deep the pass looked (``comms_search.depth_said``)."""
         from operating.pg import comms_search as cs
+        depth = {} if depth is None else depth
         if room <= 0:
             return []
 
-        def work(pg: Any) -> tuple[list[Any], list[Any]]:
-            (budget,) = pg.execute("SELECT current_setting('statement_timeout')").fetchone()
-            # ATTACH_MS bounds the whole pass: each statement gets what is left of it
-            deadline = time.monotonic() + ATTACH_MS / 1000
-
-            def left() -> None:
-                ms = int((deadline - time.monotonic()) * 1000)
-                if ms < 50:
-                    raise ToolError("timeout", "the attachment pass ran out of time")
-                pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(ms),))
-            left()
+        def work(pg: Any) -> list[Any]:
             common = cs.walk_rows(pg, q) > 1
-            left()
+            depth["common"] = common
             mails = None if common else [r[0] for r in pg.execute(
                 cs.attachment_mails_sql(), {"q": q, "mails": cs.ATTACH_MAILS})]
+            if mails is not None:
+                depth["mails"] = len(mails)
             if mails == []:
-                return [], []
-            left()
+                return []
             sql = cs.attachment_sql(guarded=guarded, party_kind=who.kind if who else None,
                                     since=since is not None, until=until is not None,
                                     common=common)
@@ -752,23 +824,20 @@ class SqlTool:
                 "q": q, "party": who.value if who else None, "since": since,
                 "until": until, "k": 2 * room + len(seen) + spare, "walk": cs.ATTACH_WALK,
                 "mails": mails}) if r[1] not in seen]
-            pg.execute("SELECT set_config('statement_timeout', %s, true)", (budget,))
             if not rows:
-                return [], []
+                return []
             listed = {r[0] for r in pg.execute(cs.listed_sql(bv.SCHEMA), {
                 "handles": [r[1] for r in rows], "q": q})}
             blocked = {r[0] for r in pg.execute(cs.attachment_blocked_sql(), {
                 "ids": [r[-1] for r in rows]})}
-            rows = [r for r in rows if r[1] not in listed and r[-1] not in blocked]
-            pieces = pg.execute(cs.attachment_check_sql(), {
-                "ids": [r[-1] for r in rows], "handles": [r[-2] for r in rows]}
-                ).fetchall() if rows else []
-            return rows, pieces
+            return [r for r in rows if r[1] not in listed and r[-1] not in blocked]
         try:
-            rows, pieces = self._comms_scoped(conn, settings, work, actor)
+            rows = self._comms_scoped(conn, settings, work, actor)
         except ToolError:
+            depth["unread"] = True
             return []
-        return cs.attachment_clear(rows, pieces)[0][:room]
+        depth["read"] = True
+        return rows[:room]
 
     def _meaning_started(self, query: str, actor: Any, wanted: set) -> Any:
         """The hybrid ranking (``operating/search``) of ``query`` over the mail, Teams
@@ -788,13 +857,13 @@ class SqlTool:
                       wanted: set, files: bool, query: str, since: Any, until: Any,
                       ranking: Any) -> tuple[Any, list[Any]]:
         """(the meaning ranking, its objects' rows): the ranking waited for at most
-        ``MEANING_WAIT_S``, then every object it names read through the same guarded views
+        the model service's own answer (no wait is cut), then every object it names read through the same guarded views
         as the word search (``meaning_sql``, in the reader's own scope) on a connection of
         its own, so this runs beside the word passes; the caller gates the ranking
         (``plug._gated``) and keeps only the rows of the objects that passed. No objects:
         no statement."""
         from operating.pg import comms_search as cs
-        raw = ranking.result(timeout=MEANING_WAIT_S)
+        raw = ranking.result()
         everyone = [h["object_id"] for h in getattr(raw, "hits", None) or ()
                     if isinstance(h, Mapping) and isinstance(h.get("object_id"), str)]
         everyone = list(dict.fromkeys(everyone))[:MEANING_READ_K]
@@ -835,7 +904,7 @@ class SqlTool:
         if meaning is not None:
             try:
                 with phase("comms.meaning_wait"):
-                    raw, read_ahead = meaning.result(timeout=MEANING_WAIT_S + MEANING_READ_S)
+                    raw, read_ahead = meaning.result()
                 ranked = plug._gated(raw, self.base.policy, actor, self.base._item_allowed)
                 ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
             except Exception:  # noqa: BLE001 - late or failed: the words answer alone
@@ -845,7 +914,7 @@ class SqlTool:
         elif ranking is not None:
             try:
                 with phase("comms.meaning_wait"):
-                    raw = ranking.result(timeout=MEANING_WAIT_S)
+                    raw = ranking.result()
                 ranked = plug._gated(raw, self.base.policy, actor, self.base._item_allowed)
                 ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
             except Exception:  # noqa: BLE001 - late or failed: the words answer alone
@@ -856,16 +925,18 @@ class SqlTool:
             return [], None
         k = 3 * room + len(seen) + 1
 
-        def work(pg: Any) -> tuple[list[Any], list[Any]]:
+        def work(pg: Any) -> list[Any]:
             some: list[Any] = []
             if any_q is not None:
+                side = cs.sidecar(pg)
                 sql = cs.search_sql(views, guarded=guarded, biz=bv.SCHEMA, query=True, party_kind=who.kind if who else None,
                                     since=since is not None, until=until is not None,
-                                    cursor=False)
+                                    cursor=False, side=frozenset(side))
                 some = pg.execute(sql, {
                     "q": any_q, "party": who.value if who else None, "since": since,
                     "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
-                    "walk": cs.walk_rows(pg, any_q)}).fetchall() if sql else []
+                    "walk": cs.walk_rows(pg, any_q),
+                    **{n: v for one in side.values() for n, v in one.items()}}).fetchall() if sql else []
             near: list[Any] = []
             if ids and read_ahead is not None:
                 # read ahead for every ranked object; kept: the ones the gate passed
@@ -1050,6 +1121,34 @@ class SqlTool:
                  "mime_type": mime, "linked_by": via}
                 for fh, name, path, mime, via in rows]
 
+    def _comms_count(self, conn: Any, settings: Mapping[str, str], guarded: str, actor: Any,
+                     views: Sequence[str], q: Any, since: Any, until: Any) -> Optional[int]:
+        """Every row of ``views`` the reader may read holding every query word in the dates
+        (``comms_search.count_sql``, one statement); None (logged) when
+        it cannot count: files among the views (each is re-gated after the statement), or
+        the statement failed."""
+        from operating.pg import comms_search as cs
+        if any(v in cs.SEARCH_ONLY for v in views):
+            return None
+        if not cs.count_sql(views, guarded=guarded, biz=bv.SCHEMA, since=since is not None,
+                            until=until is not None):
+            return None
+
+        def work(pg: Any, *_: Any) -> Any:
+            side = cs.sidecar(pg)
+            sql = cs.count_sql(views, guarded=guarded, biz=bv.SCHEMA, since=since is not None,
+                               until=until is not None, side=frozenset(side))
+            return pg.execute(sql, {"q": q, "since": since, "until": until,
+                                    **{n: v for one in side.values() for n, v in one.items()}}
+                              ).fetchone()[0]
+        try:
+            got = self._comms_scoped(conn, settings, work, actor)
+        except Exception as exc:  # noqa: BLE001 - not counted: said in the coverage, logged
+            logging.getLogger("operating.ontology_tools_sql").warning(json.dumps(
+                {"search_count_failed": type(exc).__name__}))
+            return None
+        return int(got) if got is not None else None
+
     def _comms_scoped(self, conn: Any, settings: Mapping[str, str], work: Any,
                       actor: Any) -> Any:
         """``_scoped`` for the comms statements (as the store's own role: ``_scoped``). The
@@ -1058,7 +1157,7 @@ class SqlTool:
         way instead of failing every search and open."""
         try:
             return self._scoped(conn, None, work, role=False, extra=settings,
-                                full=SEARCH_FULL_MS if self._full(actor) else False)
+                                full=True)
         except ToolError as exc:
             if exc.code != "not_readable":
                 raise
@@ -1104,7 +1203,7 @@ class SqlTool:
                 generic_views.guard(plan, sql, generic_views.table_sizes(pg))
                 return pg.execute(sql, bound).fetchall()
             return self._scoped(conn, door, work,
-                                full=SEARCH_FULL_MS if self._full(actor) else False)
+                                full=True)
         # the labels holding the words, by the label index, as handles in the hits' order
         # (``rs.candidates_sql``); the hits are read through the reader's door among them.
         # Every match was a candidate, or the page filled from the first ones (any later
@@ -1121,8 +1220,9 @@ class SqlTool:
         if rows is None:
             rows = read(rs.search_sql(len(words), **dated), bound)
         more = len(rows) > limit
+        capped = more and off + limit > rs.MAX_OFFSET
         rows = rows[:limit]
-        documents, searched = rs.hits(rows), rs.searched(args, words)
+        documents, searched = rs.hits(rows), rs.searched(args, words, capped=capped)
         if not off and not more and len(rows) < min(limit, WIDEN_BELOW):
             # few labels hold every word: the labels holding every word by its stem
             # ("calibrating" for "calibration"), then those spelled close to the query
@@ -1180,9 +1280,9 @@ class SqlTool:
                "completeness": {"complete": not more, "truncated": more,
                                 "returned": len(rows),
                                 "next_cursor": f"r1:{off + limit}" if more and
-                                off + limit <= rs.MAX_OFFSET else None}}
+                                not capped else None}}
         if more:
-            out["completeness"]["reason"] = "page_cap"
+            out["completeness"]["reason"] = "depth_cap" if capped else "page_cap"
         return out
 
     def _records_stemmed(self, conn: Any, bound: Mapping[str, Any],
@@ -1191,7 +1291,7 @@ class SqlTool:
         """Up to ``room`` rows of the reader's guarded ``records`` (``read``: the door's
         own statement) whose label holds every word of the query by its English stem,
         none in ``seen``: the store names the candidates (``rs.stem_candidates_sql``, a
-        read-only transaction of its own, at most ``CANDIDATE_MS``), the door reads the
+        read-only transaction of its own, ), the door reads the
         rows. None when no stem is long enough for the label index or the candidate read
         failed or ran out of time."""
         import psycopg
@@ -1199,7 +1299,7 @@ class SqlTool:
         query = str(bound.get("q") or "")
         if room <= 0 or not query:
             return []
-        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        ms = 0   # no limit
         try:
             with _lent(conn) as pg:
                 kept = (pg.isolation_level, pg.read_only)
@@ -1232,12 +1332,12 @@ class SqlTool:
         own statement) of a type the query names by its plain name's stems
         (``record_types.name``, ``rs.named_types``) whose label holds the query's other
         words by their stem, none in ``seen``: the store names the candidates (a read-only
-        transaction of its own, at most ``CANDIDATE_MS``), the door reads the rows."""
+        transaction of its own, ), the door reads the rows."""
         import psycopg
         from operating.pg import records_search as rs
         if room <= 0 or not words:
             return []
-        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        ms = 0   # no limit
         handles: list[str] = []
         try:
             with _lent(conn) as pg:
@@ -1281,14 +1381,14 @@ class SqlTool:
         own statement) whose label is spelled close to the query, closest first, none in
         ``seen``: the store names the candidates by the label's trigram index
         (``rs.close_candidates_sql``, a read-only transaction of its own, at most
-        ``CANDIDATE_MS``), the door reads the rows. None when the query is too short or the
+        the label index), the door reads the rows. None when the query is too short or the
         candidate read failed or ran out of time, or pg_trgm is not installed."""
         import psycopg
         from operating.pg import records_search as rs
         query = str(bound.get("q") or "")
         if room <= 0 or sum(ch.isalnum() for ch in query) < rs.CLOSE_MIN_LETTERS:
             return []
-        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        ms = 0   # no limit
         try:
             with _lent(conn) as pg:
                 kept = (pg.isolation_level, pg.read_only)
@@ -1320,7 +1420,7 @@ class SqlTool:
                           ) -> "list[str] | None":
         """``records_search``'s candidates (``rs.candidates_sql``): the store's own read of
         its records table (as the comms search reads its text index), in a read-only
-        transaction of its own, at most ``CANDIDATE_MS``; never returned to the caller.
+        transaction of its own, ; never returned to the caller.
         None: no word the label index finds, or the read failed or ran out of time (the
         search then reads every label through the door, as before)."""
         import psycopg
@@ -1329,7 +1429,7 @@ class SqlTool:
         if not positions:
             return None
         sql = rs.candidates_sql(positions, biz=bv.SCHEMA, whole=whole, **dated)
-        ms = int(min(CANDIDATE_MS, self._seconds() * 1000))
+        ms = 0   # no limit
         try:
             with _lent(conn) as pg:
                 kept = (pg.isolation_level, pg.read_only)
@@ -1342,12 +1442,18 @@ class SqlTool:
                 finally:
                     if not pg.closed and pg.info.transaction_status == 0:
                         pg.isolation_level, pg.read_only = kept
-        except (psycopg.Error, ToolError):
+        except (psycopg.Error, ToolError) as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "label candidates unavailable, reading every label: %s", (str(e).splitlines() or [""])[0])
             return None
 
     # ------------------------------------------------------------------ query
 
-    def _query(self, conn: Any, scope: Any, sql: str, actor: Any) -> dict[str, Any]:
+    def _read(self, conn: Any, scope: Any, sql: str, actor: Any) -> dict[str, Any]:
+        """One checked statement read as ``actor`` through the door (the one read of
+        ``plx.sql``: ``_query`` shows it, ``chain`` walks with it): its columns, every row,
+        the profile, the sources and what the reader's door withheld."""
         wrapped = f"SELECT * FROM (\n{sql}\n) AS plx_q"
         views = sorted(v for v in bv.VIEWS if re.search(rf"\b{v}\b", sql, re.I))
         derived = [v for v in COMMS_DERIVED if re.search(rf"\b{v}\b", sql, re.I)]
@@ -1366,97 +1472,108 @@ class SqlTool:
         views += [v for v in GENERIC if re.search(rf"\b{v}\b", sql, re.I)]
         full = self._full(actor)
         door = Door(reader_grant(scope, full=full))
-        started = time.monotonic()
 
         def work(pg: Any) -> Any:
             refused = [v for v in views if v in door.decided["refused"]]
             if refused:
                 # a view whose rows carry a mark it does not mask: no wait ends that
                 raise ToolError("not_ready", f"{', '.join(refused)} cannot be read here "
-                                "yet", "use plx.search or plx.table")
+                                "yet", "use plx.search")
             (plan,) = pg.execute("EXPLAIN (FORMAT JSON) " + wrapped).fetchone()
             plan = plan if isinstance(plan, list) else json.loads(plan)
             cost = float(plan[0]["Plan"]["Total Cost"])
-            if full:
-                # a full reader: the statement's own time limit bounds it (FULL_STATEMENT_MS);
-                # a costly one waits for one of the box's few slots for those (``_costly_slot``)
-                if cost > MAX_COST:
-                    _costly_slot(pg)
-                cols, rows, stopped = _fetch(pg, sql)
-                return cols, rows, stopped, _built(pg, views), _visible(pg, views, cols, rows)
+            # every reader reads as an analyst at a psql prompt does (owner 11-22: the same
+            # database reach for all, the permission door unchanged): the statement's own
+            # time limit: none; a costly one waits for one of the
+            # box's few slots for those (``_costly_slot``)
             if cost > MAX_COST:
-                raise ToolError("too_costly", f"the plan's cost ({cost:.3g}) is past "
-                                f"{MAX_COST:.3g}: it would read too much",
-                                "filter (where on a date or key) or aggregate first")
-            if any(v in GENERIC_TABLES for v in views):
-                # records/record_links: a plan reading past MAX_RECORDS rows of them is
-                # refused with what to filter on (``generic_views.guard``)
-                from operating.pg import generic_views
-                generic_views.guard(plan, sql, generic_views.table_sizes(pg))
-            cols, rows, stopped = _fetch(pg, sql)
-            return cols, rows, stopped, _built(pg, views), _visible(pg, views, cols, rows)
+                _costly_slot(pg)
+            cols, rows, stopped, profile = _fetch(pg, sql)
+            return (cols, rows, stopped, _built(pg, views), _visible(pg, views, cols, rows),
+                    profile, data_as_of(pg))
 
         def lineage(pg: Any, got: Any) -> list[dict[str, Any]]:
             return _sources(pg, got[4])
 
-        until = None
         while True:
             try:
-                (cols, rows, stopped, built, _seen), sources = self._scoped(
-                    conn, door, work, extra=extra, after=lineage, full=full)
+                (cols, rows, stopped, built, _seen, profile, read_at), sources = self._scoped(
+                    conn, door, work, extra=extra, after=lineage, full=True)
                 break
             except _NoSlot:
                 # the slot wait holds no pooled connection: the try's transaction ended
-                until = _costly_until() if until is None else until
-                now = time.monotonic()
-                if now >= until:
-                    raise ToolError("busy", f"{FULL_COSTLY_SLOTS} long queries are already "
-                                    "running", "filter (where on a date or key) or aggregate "
-                                    "so it reads less, or send it again shortly") from None
-                time.sleep(min(FULL_COSTLY_POLL_SECONDS, until - now))
+                time.sleep(FULL_COSTLY_POLL_SECONDS)   # queued behind the box's slots, never refused
         # per view read, per column, how many rows the reader may read hold a value it
         # may not (they read NULL there), from ``class_counts`` when its door was decided
         withheld = {v: dict(door.decided["withheld"][v]) for v in views
                     if door.decided["withheld"].get(v)}
-        truncated = len(rows) > MAX_ROWS or stopped
-        rows = rows[:MAX_ROWS]
+        return {"cols": cols, "rows": rows, "stopped": stopped, "built": built,
+                "profile": profile, "sources": sources, "read_at": read_at, "views": views,
+                "withheld": withheld}
+
+    def _query(self, conn: Any, scope: Any, sql: str, actor: Any) -> dict[str, Any]:
+        started = time.monotonic()
+        return self._present(sql, self._read(conn, scope, sql, actor), actor, started)
+
+    def _present(self, sql: str, got: dict[str, Any], actor: Any, started: float
+                 ) -> dict[str, Any]:
+        """A read (``_read``) as the answer: every row held under a new result id, the
+        first page shown, the profile, what was withheld and the note on a cut."""
+        cols, rows, stopped, built, profile, sources, read_at = (
+            got["cols"], got["rows"], got["stopped"], got["built"], got["profile"],
+            got["sources"], got["read_at"])
+        views, withheld = got["views"], got["withheld"]
+        truncated = False   # every row is kept: what one answer shows is paged (``_shown``)
+        # the rows found: the profile's exact count
+        found = profile["rows"] if profile.get("exact") else len(rows)
         rid = hashlib.sha256(json.dumps([_actor_key(actor), sql, built, time.time()],
                                         default=str).encode()).hexdigest()[:20]
         result = f"sql://{rid}"
-        shown, size, cut_cells = [], 0, 0
-        for n, raw in enumerate(rows):
-            # cells line up with ``columns``: under one contract-typed key (``cells``)
-            # numbers, dates and codes stay bare at the output boundary; keyed by the
-            # query's own column names every cell would leave as an envelope.
-            cells: list[Any] = []
-            for value in raw:
-                cell, cut = _cell(value)
-                cut_cells += cut
-                cells.append(cell)
-            entry = {"cite": f"{result}#row={n}", "cells": cells}
-            size += len(json.dumps(entry, default=str))
-            if size > MAX_BYTES:
-                truncated = True
-                break
-            shown.append(entry)
+        shown, cut, cut_cells = _shown(result, cols, rows, 0, profile)
+        truncated = truncated or cut
+        # the host holds every row of the result under its id: the
+        # rest of a result is read by paging it ({"page": result, "offset": n}), and the
+        # answer's references resolve against it
         RESULTS.put(rid, {"actor": _actor_key(actor), "sql": sql, "columns": cols,
-                          "rows": [list(r) for r in rows[:len(shown)]],
+                          "rows": rows,
                           "complete": not truncated and not withheld, "views": views,
-                          "built": built, "sources": sources})
+                          "built": built, "sources": sources, "profile": profile})
+        profile = {**profile, "shown": len(shown)}
+        if withheld:
+            # a cell the reader may not read is NULL in every row: its nulls count it too
+            profile["nulls_include_withheld"] = True
+        if len(shown) < len(rows):
+            profile["page"] = (f"rows {len(shown)} to {len(rows) - 1} are held: read them "
+                               f'with {{"page": "{result}", "offset": {len(shown)}}}')
         out: dict[str, Any] = {
-            "result": result, "columns": cols, "rows": shown, "row_count": len(shown),
+            "result": result,
+            # what this result covers and where it goes on, at its top (the host writes
+            # both: the model reads them before the rows)
+            "scope": result_profile.scope_line(sql, views, profile, len(shown)),
+            **({"continue": {"shown": len(shown), "rows_found": found,
+                             "next": {"page": result, "offset": len(shown)}}}
+               if len(shown) < len(rows) else {}),
+            "columns": cols, "rows": shown, "row_count": len(shown),
+            "profile": profile,
             "truncated": truncated, "views": views,
             # under a replay's ceiling the data are as of the replayed moment, never the
             # tables' build time (it would tell the model the real date)
             "as_of": (_ceiling().isoformat() if _ceiling() is not None else
                       _cell(built)[0] if built is not None else None),
             "seconds": round(time.monotonic() - started, 2),
-            "partial": bool(withheld), "withheld": withheld}
+            "partial": bool(withheld), "withheld": withheld,
+            # where the rows were read and as of when (the standby's replay time)
+            "data_as_of": read_at}
         if sources:
             out["sources"] = len(sources)
         if truncated:
-            out["note"] = (f"only the first {len(shown)} rows are shown: aggregate (count, "
-                           "sum ... GROUP BY) or filter to see the rest")
+            # how much was not seen: the model reads on before resting on the unseen rows
+            # (a newest-first mail read cut at its 28th of 176 rows hid the later reply)
+            out["rows_found"] = found
+            out["note"] = (f"only the first {len(shown)} of {found} rows are shown; the "
+                           "profile's counts and sums cover the whole result. Read the "
+                           "others by paging (profile.page) or with fewer or narrower "
+                           "columns or a filter past the last row shown")
         if cut_cells:
             out["cells_cut"] = cut_cells
         return out
@@ -1508,7 +1625,7 @@ class SqlTool:
         if not isinstance(what, str) or what not in bv.listed():
             raise ToolError("unknown_view", f"no view {str(what)[:64]!r}",
                             "views: " + ", ".join(sorted(bv.listed())) + "; or a record "
-                            "type record_types lists")
+                            "type record_types lists").uncovered("view", str(what))
         conn, scope = self._reader(actor)
         v = bv.VIEWS[what]
         extra = self._comms_settings(scope, actor) if v.fill else None
@@ -1517,6 +1634,11 @@ class SqlTool:
             sample = pg.execute(f"SELECT * FROM {what} LIMIT 3")
             cols = [d.name for d in sample.description]
             rows = [dict(zip(cols, (_cell(x)[0] for x in r))) for r in sample.fetchall()]
+            if v.fill:
+                # a mail / Teams / files view holds millions of rows: its commonest values and
+                # count are never sampled live (``describe emails`` timed out at 10 s), they
+                # are read from what the refresh measured (``biz.column_health``)
+                return rows, None, None, self._health(pg, what)
             common: dict[str, Any] = {}
             ends = time.monotonic() + 4.0
             for c in v.cols:
@@ -1527,15 +1649,42 @@ class SqlTool:
                     f"GROUP BY 1 ORDER BY 2 DESC LIMIT {SAMPLE_VALUES}").fetchall()
                 common[c.name] = [[_cell(val)[0], n] for val, n in got]
             (total,) = pg.execute(f"SELECT count(*) FROM {what}").fetchone()
-            return rows, common, total
+            return rows, common, total, None
 
-        rows, common, total = self._scoped(conn, Door(reader_grant(
+        rows, common, total, health = self._scoped(conn, Door(reader_grant(
             scope, full=self._full(actor))), work,
-                                           extra=extra)
+                                                   extra=extra)
+        if common is None:
+            return {**doc, "views": {what: doc["views"][what]},
+                    "sample": {"rows": rows, "column_health": health["columns"],
+                               "column_health_note": health["note"]}}
         return {**doc, "views": {what: doc["views"][what]},
                 "sample": {"rows_you_can_read": total, "rows": rows,
                            "commonest_values": common}}
 
+    @staticmethod
+    def _health(pg: Any, view: str) -> dict[str, Any]:
+        """What the last refresh measured of ``view``'s columns (``biz.column_health``: fill,
+        distinct count, cut share), or the reason it is not there: not built yet, or this
+        reader's role may not read it. Never a live scan."""
+        try:
+            with pg.transaction():
+                got = pg.execute(
+                    f'SELECT "column", fill, distinct_n, cut_share, measured_at FROM '
+                    f"{bv.SCHEMA}.column_health WHERE view = %s ORDER BY 1", (view,)).fetchall()
+        except Exception as exc:  # noqa: BLE001 - said in the result, never a live scan
+            logging.getLogger("operating.ontology_tools_sql").info(json.dumps(
+                {"describe_health_unavailable": type(exc).__name__}))
+            return {"columns": [], "note": "how full each column is has not been measured "
+                    "for this view yet (read a few rows with LIMIT, filter on a date)"}
+        if not got:
+            return {"columns": [], "note": "how full each column is has not been measured "
+                    "for this view yet"}
+        return {"columns": [{"column": c, "fill": None if f is None else round(float(f), 4),
+                             "distinct": d, "cut_share": None if k is None else round(
+                                 float(k), 4), "measured": str(at)[:10]}
+                            for c, f, d, k, at in got],
+                "note": "measured by the last refresh on a 2% sample of the rows"}
 
     def _describe_type(self, what: str, actor: Any, doc: dict[str, Any]) -> dict[str, Any]:
         """One record type as this reader may read it (through the door): its catalog
@@ -1567,7 +1716,8 @@ class SqlTool:
         if got is None:
             raise ToolError("unknown_view", f"no view or record type {what[:64]!r}",
                             "plx.sql {\"describe\": true} lists the views; "
-                            "SELECT type, name FROM record_types lists the record types")
+                            "SELECT type, name FROM record_types lists the record types"
+                            ).uncovered("view", what)
         entry, sample, common, total = got
         values: dict[str, list[Any]] = {}
         for key, value, n in common:
@@ -1584,15 +1734,19 @@ class SqlTool:
 # ``trimmed``: free text (each value once) out of the commonest values, then those values
 # and the sample's field texts shorter, then fewer sample rows, then fewer values per field;
 # when no cut fits, the whole sample (the host then sends it once as text, or refuses).
+
+
 DESCRIBE_STEPS = (("free_text", None), ("text", 160), ("rows", 1), ("text", 80),
                   ("values", 3), ("text", 40), ("values", 1))
 
 
 def _fits_response(out: Mapping[str, Any]) -> bool:
     """Whether ``out`` fits one response as the host sends it (wrapped for a client,
-    written twice: ``mcp_server._envelope_bytes``)."""
+    written twice: ``mcp_server._envelope_bytes``) and is shown whole by the client
+    (``mcp_server.value_shown_fits``)."""
     from operating import mcp_server
-    return mcp_server._envelope_bytes(dict(out)) <= mcp_server.MAX_RESULT_BYTES
+    return mcp_server._envelope_bytes(dict(out)) <= mcp_server.ASK_RESULT_BYTES \
+        and mcp_server.value_shown_fits(dict(out), TOOL_NAME)
 
 
 def _short(value: Any, most: int | None) -> Any:
@@ -1810,10 +1964,10 @@ def _decide(pg: Any, grant: Grant) -> dict[str, Any]:
     except psycopg.Error:
         # anything else does not end by itself: refused at once, never waited on
         raise ToolError("not_ready", "the business tables cannot be read right now",
-                        "use plx.search or plx.table") from None
+                        "use plx.search") from None
     if got is None:
         raise ToolError("not_ready", "the business tables are not built for plx.sql "
-                        "yet", "use plx.search or plx.table")
+                        "yet", "use plx.search")
     stamp, serves = got
     if not serves:
         # fail closed: the people exclusion changed after the tables were decided
@@ -1821,7 +1975,7 @@ def _decide(pg: Any, grant: Grant) -> dict[str, Any]:
         # a door behind it is one a follow failed on, decided whole within minutes, not
         # seconds: refused at once, not waited on)
         raise ToolError("not_ready", "the business tables are catching up with a change "
-                        "to who is excluded", "use plx.search or plx.table")
+                        "to who is excluded", "use plx.search")
     key = (grant.digest, src, stamp)
     now = time.monotonic()
     with _DOOR_LOCK:
@@ -1892,20 +2046,10 @@ def _costly_slot(pg: Any) -> None:
     raise _NoSlot()
 
 
-def _costly_until() -> float:
-    """When a costly statement stops waiting for a slot: FULL_COSTLY_WAIT_SECONDS from now,
-    never past the call's own time less a quarter statement."""
-    from operating import call_limits
-    wait = FULL_COSTLY_WAIT_SECONDS
-    left = call_limits.seconds_left()
-    if left is not None:
-        wait = min(wait, max(0.0, left - FULL_STATEMENT_MS / 1000.0 / 4))
-    return time.monotonic() + wait
-
-
 def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
                 person: bool = False, as_role: bool = True,
-                extra: Mapping[str, str] | None = None, after: Any = None) -> Any:
+                extra: Mapping[str, str] | None = None, after: Any = None,
+                lock_ms: int = 2000) -> Any:
     """Run ``work(pg)`` on the idle connection ``pg`` (the caller holds it alone) in one
     REPEATABLE READ, READ ONLY transaction (one snapshot): ``door``'s door decided first
     (``_decide``: its stamp and the people exclusion read in this snapshot), its settings,
@@ -1944,7 +2088,7 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
             # plx_ops: the text[] @> / && a guarded view's filter may run before its guard
             # (migration 0051; an absent schema is passed over, the filters then slower)
             values = [*(settings[n] for n in names), where + ", plx_ops, pg_catalog",
-                      str(int(seconds * 1000)), "2000", *([role] if as_role else [])]
+                      str(int(seconds * 1000)), str(int(lock_ms)), *([role] if as_role else [])]
             pg.execute("SELECT " + ", ".join("set_config(%s, %s, true)" for _ in local),
                        [x for pair in zip(local, values) for x in pair])
             got = work(pg)
@@ -1962,7 +2106,8 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
                 pg.execute("SET LOCAL ROLE NONE")
             return got, after(pg, got)
     except psycopg.errors.QueryCanceled:
-        raise ToolError("timeout", f"the query ran past {seconds:.0f} s",
+        raise ToolError("timeout", f"the query ran past {seconds:.0f} s" if seconds else
+                        "the query was cancelled",
                         "narrow it (where on a date or a key), or aggregate") \
             from None
     except psycopg.errors.InsufficientPrivilege:
@@ -1970,8 +2115,13 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
                         "the business views", "plx.sql {\"describe\": true} "
                         "lists what is readable") from None
     except psycopg.errors.UndefinedTable as exc:
+        leaf = (_MISSING_RELATION.findall(_first_line(exc)) or [""])[0].rsplit(".", 1)[-1]
+        if leaf.lower() in COMMS_DERIVED_ABOUT:   # made by the first reading run: typed
+            raise ToolError("not_ready", f"{leaf} is not built yet: the message readings it is "
+                            "made from have not been read in", "ask again later") from None
         raise ToolError("unknown_view", _first_line(exc),
-                        "plx.sql {\"describe\": true} lists the views") from None
+                        "plx.sql {\"describe\": true} lists the views").uncovered(
+                            "view", leaf or _first_line(exc)) from None
     except (psycopg.errors.SyntaxError, psycopg.errors.UndefinedColumn,
             psycopg.errors.UndefinedFunction, psycopg.errors.DatatypeMismatch,
             psycopg.errors.GroupingError, psycopg.errors.AmbiguousColumn,
@@ -1990,6 +2140,11 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
             raise Busy("the business tables were being swapped") from None
         raise ToolError("query_failed", f"the store refused the query "
                         f"({type(exc).__name__}: {_first_line(exc)})") from None
+    except psycopg.errors.SerializationFailure:
+        # a read-only snapshot never fails to serialize: this is a standby replaying the
+        # primary's changes under the statement ("conflict with recovery"), which ends
+        # by itself, so ``SqlTool._scoped`` asks again
+        raise Busy("the standby was applying the primary's changes") from None
     except psycopg.Error as exc:
         raise ToolError("query_failed", f"the store refused the query "
                         f"({type(exc).__name__}: {_first_line(exc)})") from None
@@ -2000,6 +2155,9 @@ def scoped_read(pg: Any, door: Door | None, work: Any, seconds: float, *,
 
 # what a statement meets when a table it planned on was dropped by a swap since
 _SWAPPED = re.compile(r"could not open relation with OID|cache lookup failed for relation")
+
+
+_MISSING_RELATION = re.compile(r'relation "([^"]+)" does not exist')
 
 
 def _first_line(exc: Exception) -> str:
@@ -2024,11 +2182,10 @@ COMMS_SETTINGS = frozenset({"plx.reader_audience", "plx.reader_marks", "plx.read
 
 
 # Column types read as they are (bounded in size); every other column comes back as text
-# cut past MAX_CELL (an array: its first 51 elements, each cut) by the statement itself, and
-# rows stream from a server-side cursor that stops past FETCH_BYTES: a padded or doubled
-# string never reaches this process whole.
+# text, whole (owner 11-23: no cell is cut; a long cell is paged for display, see
+# ``ontology_tools_sql_rows.CELL_PAGE``), and rows stream from a server-side cursor in
+# batches into the result store.
 _BOUNDED_CATEGORIES = frozenset("NBDT")
-FETCH_BYTES = 4 * MAX_BYTES
 FETCH_BATCH = 50
 
 
@@ -2051,12 +2208,18 @@ def _type_categories(pg: Any, oids: set[int]) -> dict[int, str]:
     return kinds
 
 
-def _fetch(pg: Any, sql: str) -> tuple[list[str], list[tuple], bool]:
-    """``sql``'s columns and at most MAX_ROWS + 1 rows, and whether the byte cap stopped
-    the stream (the caller marks the result truncated)."""
-    described = pg.execute(f"SELECT * FROM (\n{sql}\n) AS plx_q LIMIT 0").description
+def _fetch(pg: Any, sql: str) -> tuple[list[str], RowStore, bool, dict[str, Any]]:
+    """``sql``'s columns and EVERY row of its result, run once in this snapshot and kept in a
+    ``RowStore`` (memory up to ``HELD_ROWS``, then disk): nothing is cut by a row count or a
+    byte count. Returns the columns, the store, False (nothing stopped the read: the name
+    kept for the caller) and the host's profile of the whole result (``result_profile``:
+    exact counts, NULLs, distinct values, sums per currency; from the rows when they are few,
+    else one aggregate statement over the same query)."""
+    head = pg.execute(f"SELECT * FROM (\n{sql}\n) AS plx_q LIMIT 0")
+    described = head.description
     cols = [d.name for d in described]
     kinds = _type_categories(pg, {int(d.type_code) for d in described})
+    found = result_profile.origins(pg, head)
     names = [f"plx_c{i}" for i in range(len(cols))]
     shown = []
     for name, d in zip(names, described):
@@ -2064,42 +2227,59 @@ def _fetch(pg: Any, sql: str) -> tuple[list[str], list[tuple], bool]:
         if kind in _BOUNDED_CATEGORIES:
             shown.append(name)
         elif kind == "A":
-            shown.append(f"CASE WHEN {name} IS NULL THEN NULL ELSE ARRAY(SELECT left(e::text, "
-                         f"{MAX_CELL + 1}) FROM unnest({name}) e LIMIT 51) END AS {name}")
+            shown.append(f"CASE WHEN {name} IS NULL THEN NULL ELSE ARRAY(SELECT e::text "
+                         f"FROM unnest({name}) e) END AS {name}")
         else:
-            shown.append(f"left({name}::text, {MAX_CELL + 1}) AS {name}")
-    capped = (f"SELECT {', '.join(shown) or '*'} FROM (\n{sql}\n) AS plx_q"
-              f"{'(' + ', '.join(names) + ')' if names else ''} LIMIT {MAX_ROWS + 1}")
-    rows: list[tuple] = []
-    size, stopped = 0, False
-    with pg.cursor(name=f"plx_sql_{threading.get_ident()}") as cur:
-        cur.execute(capped)
-        while not stopped and len(rows) <= MAX_ROWS:
-            batch = cur.fetchmany(FETCH_BATCH)
-            if not batch:
-                break
-            for row in batch:
-                size += sum(len(str(x)) for x in row) + 8
-                if size > FETCH_BYTES:
-                    stopped = True
+            shown.append(f"{name}::text AS {name}")
+    every = (f"SELECT {', '.join(shown) or '*'} FROM (\n{sql}\n) AS plx_q"
+             f"{'(' + ', '.join(names) + ')' if names else ''}")
+    store = RowStore()
+    try:
+        with pg.cursor(name=f"plx_sql_{threading.get_ident()}") as cur:
+            cur.execute(every)
+            while True:
+                batch = cur.fetchmany(FETCH_BATCH)
+                if not batch:
                     break
-                rows.append(row)
-    return cols, rows, stopped
+                store.extend(batch)
+        cats = [{"N": result_profile.NUMBER, "D": result_profile.DATE}.get(
+            kinds.get(int(d.type_code), "X"), result_profile.OTHER) for d in described]
+        # the profile reads the rows when all are in memory, else one aggregate statement
+        profile = _profiled(pg, sql, cols, store.held(), store.spilled(), cats, found, HELD_ROWS)
+    except DiskRefused as why:
+        store.close()
+        raise ToolError("disk_full", str(why), "narrow the statement, or ask again later") from None
+    except BaseException:
+        store.close()
+        raise
+    return cols, store, False, {**profile, **result_profile.statement_facts(sql, profile)}
 
 
-def _visible(pg: Any, views: list[str], cols: list[str], rows: list[Any]
+VISIBLE_HANDLES = 5000   # handles asked of a view per statement (every handle is asked)
+
+
+def _visible(pg: Any, views: list[str], cols: list[str], rows: Any
              ) -> dict[str, list[str]]:
     """Per view read, the result's handles that view shows this reader (same scoped
-    transaction): a literal handle of a row the reader cannot read has no sources."""
+    transaction): a literal handle of a row the reader cannot read has no sources. EVERY row
+    of the result is checked, in statements of ``VISIBLE_HANDLES`` handles."""
     if "handle" not in cols or not views:
         return {}
     at = cols.index("handle")
     handles = sorted({r[at] for r in rows if isinstance(r[at], str)})
     if not handles:
         return {}
-    return {v: [h for (h,) in pg.execute(
-        f"SELECT DISTINCT handle FROM {v} WHERE handle = ANY(%s::text[]) ORDER BY 1",
-        (handles,)).fetchall()] for v in views if v in bv.VIEWS}
+    out: dict[str, list[str]] = {}
+    for v in views:
+        if v not in bv.VIEWS:
+            continue
+        seen: set[str] = set()
+        for i in range(0, len(handles), VISIBLE_HANDLES):
+            seen.update(h for (h,) in pg.execute(
+                f"SELECT DISTINCT handle FROM {v} WHERE handle = ANY(%s::text[])",
+                (handles[i:i + VISIBLE_HANDLES],)).fetchall())
+        out[v] = sorted(seen)
+    return out
 
 
 def _sources(pg: Any, seen: Mapping[str, list[str]]) -> list[dict[str, Any]]:

@@ -44,6 +44,12 @@ from operating.pg import sql_views
 PROBE_MS = 120_000
 RETRY_WAIT_S = 90
 DROP_SHARE = 0.02
+# A message or document row whose text was not read when it was built is ``ai_ok`` NULL:
+# withheld from the AI until a later pass decides it. A baseline of shares cannot see it (the
+# share starts low and stays there), so it alarms on its own absolute count (11-23 audit:
+# 21,815 documents, 13,831 of them PDFs, withheld with no alarm).
+UNDECIDED_ALARM_ROWS = 1000
+UNDECIDED_ALARM_SHARE = 0.005
 STATUS_DIR = "source-coverage"
 STATUS_SCHEMA = "plx-source-coverage/v1"
 
@@ -140,6 +146,20 @@ def _owner_counts(pg: Any, s: str, held: Sequence[int]) -> dict[str, Any]:
     return out
 
 
+def undecided_counts(pg: Any, s: str) -> dict[str, dict[str, int]]:
+    """Per built communications table: rows and rows withheld from the AI as undecided
+    (``ai_ok`` NULL)."""
+    from operating.pg import business_comms as bc
+    out: dict[str, dict[str, int]] = {}
+    for view in sorted(bc.SPECS):
+        if pg.execute("SELECT to_regclass(%s)", (f"{s}.{view}",)).fetchone()[0] is None:
+            continue
+        rows, null = pg.execute(f"SELECT count(*), count(*) FILTER (WHERE ai_ok IS NULL) "
+                                f"FROM {s}.{view}").fetchone()
+        out[view] = {"rows": int(rows), "undecided": int(null)}
+    return out
+
+
 def check(dsn: str, biz: str | None = None, *, now: dt.datetime | None = None
           ) -> dict[str, Any]:
     """The coverage table: per type and per system, with the findings."""
@@ -152,6 +172,7 @@ def check(dsn: str, biz: str | None = None, *, now: dt.datetime | None = None
                              f"{s}.record_types WHERE rows > 0 ORDER BY type").fetchall()
         settings, held = full_scope(pg, s)
         owner = _owner_counts(pg, s, held)
+        undecided = undecided_counts(pg, s)
         views = ["records", *sorted(n for n, o in owner.items() if o["rows"] is not None)]
         door_got = _door_counts(pg, s, settings, views)
         for _ in range(2):
@@ -197,6 +218,7 @@ def check(dsn: str, biz: str | None = None, *, now: dt.datetime | None = None
                 got["unreachable_types"].append(row["type"])
     return {"schema": STATUS_SCHEMA, "checked_at": now.isoformat(), "types": types,
             "systems": [systems[k] for k in sorted(systems)], "findings": findings,
+            "undecided": undecided,
             "summary": {"systems": len(systems), "types": len(types),
                         "reachable_types": sum(r["reachable"] > 0 for r in types),
                         "served": sum(r["served"] for r in types),
@@ -219,6 +241,12 @@ def alarming(report: Mapping[str, Any], baseline: Mapping[str, Any] | None
     known = (set(base.get("known_unreachable") or ()) if baseline is not None else
              {r["type"] for r in report["types"] if r["reachable"] == 0})
     out = [f for f in report["findings"] if f["kind"] == "door_mismatch"]
+    for view, c in sorted((report.get("undecided") or {}).items()):
+        # absolute, never against a baseline: the rows the AI cannot see until decided
+        if c["undecided"] > UNDECIDED_ALARM_ROWS or (
+                c["rows"] and c["undecided"] / c["rows"] > UNDECIDED_ALARM_SHARE):
+            out.append({"kind": "undecided_text", "view": view, "rows": c["rows"],
+                        "undecided": c["undecided"]})
     for row in report["types"]:
         was = shares.get(row["type"])
         if isinstance(was, (int, float)) and _share(row) < was - DROP_SHARE and \

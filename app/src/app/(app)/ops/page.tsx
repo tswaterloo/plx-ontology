@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { eastern, opsLabel, opsLine, SectionTabs } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
@@ -132,6 +133,8 @@ export default function OpsPage() {
   const { data: alarms, error, retry } = useRead<OpsAlarms>("ops", (signal) => getOpsAlarms(signal));
   const checks = alarms?.checks ?? [];
   const count = (s: OpsCheck["state"]) => checks.filter((c) => c.state === s).length;
+  // the plain words come first; the checks, units and history are IT's and open on request
+  const [detail, setDetail] = useState(false);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Reliability" />
@@ -152,6 +155,33 @@ export default function OpsPage() {
                 <span className="ml-1 text-muted">What it stops is listed under Paused on purpose; past that time it opens again and pages.</span>
               </p>
             )}
+            <section className="border-b border-border pb-3" data-testid="ops-plain">
+              <h2 className="text-[15px] font-semibold">
+                {alarms.open.length === 0 ? "Nothing needs attention." : `${alarms.open.length} ${alarms.open.length === 1 ? "thing needs" : "things need"} attention.`}
+              </h2>
+              <p className="mt-1 text-[13px] text-muted">
+                {alarms.running
+                  ? `Checked ${alarms.checked_at ? eastern(alarms.checked_at) : "just now"}, and again every ${alarms.every_minutes ?? 5} minutes.`
+                  : "The checks have stopped, so a new problem would not show here."}
+              </p>
+              {alarms.open.length > 0 && (
+                <ul className="mt-2 space-y-1 text-[13px]" data-testid="ops-plain-list">
+                  {alarms.open.slice(0, 6).map((i: OpsIncident) => (
+                    <li key={i.key}>
+                      <span className="text-muted">{areaOf(i.key)}: </span>
+                      {problemParts(opsLine(i.key, i.line)).head}
+                      <span className="text-muted"> (open {span(i.opened_at)})</span>
+                    </li>
+                  ))}
+                  {alarms.open.length > 6 && <li className="text-muted">The other {alarms.open.length - 6} are listed in the technical detail.</li>}
+                </ul>
+              )}
+              <button type="button" onClick={() => setDetail((v) => !v)} aria-expanded={detail} data-testid="ops-detail-toggle" className="mt-3 text-[12px] font-medium text-fg underline-offset-2 hover:underline cursor-pointer">
+                {detail ? "Hide the technical detail" : "Show the technical detail"}
+              </button>
+            </section>
+            {detail && (
+              <>
             <div className="border-b border-border pb-3">
               <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px] sm:grid-cols-4" data-testid="ops-summary">
                 <div>
@@ -331,6 +361,8 @@ export default function OpsPage() {
                 })}
               </div>
             </section>
+              </>
+            )}
           </>
         )}
       </div>

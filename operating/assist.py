@@ -7,7 +7,7 @@ edited and copied by the person; sending goes through the gated write path elsew
 * **Read the line** (``parse``): the channel (mail; Teams when the line says chat/Teams),
   the verb (tell, ask, remind, update...), who it is for (names, "the team", a role, a
   supplier or customer by name) and the records it names (the Ask's identifier grammar,
-  ``fast_answer._tokens``). Empty, over-long or wordless input is refused.
+  ``record_reads.record_tokens``). Empty, over-long or wordless input is refused.
 * **Recipients** (``resolve``): a colleague by name through the tenant directory
   (address -> person; the address's own name parts; people inside the company first),
   cleared by the people exclusion (unavailable: refused whole, ``AssistRefused``); several
@@ -155,7 +155,7 @@ def parse(text: Any, limit: int = MAX_RECORDS) -> Intent:
     topic = re.sub(r"\b(?:on|via|in)\s+teams\b", "", rest, flags=re.I)
     topic = re.sub(r"^\s*(?::|,|;|-)?\s*(?:know\s+)?(?:that\s+)?", "", topic, flags=re.I)
     topic = " ".join(topic.split())
-    from .fast_answer import _tokens
+    from .record_reads import record_tokens as _tokens
     return Intent(text=line, channel=channel, verb=verb, mentions=mentions[:MAX_TO],
                   team=team, side=side, topic=topic, whole=whole,
                   records=[t for t in _tokens(line) if not _YEAR.fullmatch(t)
@@ -753,63 +753,25 @@ def resolve_reply(*, sender: Any, to: Sequence[Any] = (), cc: Sequence[Any] = ()
 # --------------------------------------------------------------------------- facts
 
 def questions(intent: Intent) -> list[str]:
-    """The Ask questions whose gated answers give the draft its facts: the line's topic
-    when the fast path takes it whole, or when it is a question of a known shape the agent
-    answers (``fast_answer.routed``: on hand, balance due, shipped, a PO's status), so the
-    agent is asked for the fact the line names, not a record's status; else one status
-    question per record named."""
-    from . import fast_answer
-    if intent.topic and len(intent.records) == 1 and not intent.read_as \
-            and (fast_answer.serves(intent.topic) or fast_answer.routed(intent.topic)):
-        return [intent.topic]
+    """The Ask questions whose gated answers give the draft its facts: one status
+    question per record the line names."""
     return [f"status of {token}" for token in intent.records]
 
 
-def answers_for(intent: Intent, fast: Callable[[str], tuple[str, Optional[str]]],
-                agent: Optional[Callable[[str], Optional[str]]] = None
+def answers_for(intent: Intent, agent: Optional[Callable[[str], Optional[str]]] = None
                 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The answers ``draft`` takes, one per question (``questions``), and how each was
-    settled (fast | agent | none). ``fast(question)``: (the fast path's gated prose, ""
-    when it stated no gated value; ``found``: none | several | None, ``found_of``).
-    ``agent(question)``: the Ask's agent's gated prose ("" settled nothing; None: not
-    run, e.g. out of budget). The agent runs whenever the fast path states nothing for a
-    question: a record the request needs is never left to the fast path alone."""
+    settled (agent | none). ``agent(question)``: the Ask's agent's gated prose (""
+    settled nothing; None: not run, e.g. out of budget)."""
     answers, settled = [], []
     for q in questions(intent):
-        text, found = fast(q)
-        how = "fast" if text else "none"
-        if not text and agent is not None:
-            said = agent(q)
-            if said:
-                text, how = said, "agent"
-        settled.append(how)
+        text = agent(q) if agent is not None else None
+        settled.append("agent" if text else "none")
         answers.append({"question": q, "outcome": "answered" if text else "none",
                         "facts": [{"text": x.strip(), "sources": ["gated"]}
                                   for x in re.split(r"(?<=[.?!])\s+", text or "") if x.strip()],
-                        "found": None if text else found})
+                        "found": None})
     return answers, settled
-
-
-def found_of(ran: Any, why: Sequence[str]) -> Optional[str]:
-    """What a fast answer that stated nothing says of the record it was asked: ``none``
-    when no record the reader may read holds the identifier (``not_resolved``, a
-    purchase order ``named_record_not_found``), ``several`` when it names several and
-    none was picked (a choice), else None (found, nothing settled)."""
-    if ran is not None and (getattr(ran, "found", None) or {}).get("ambiguous"):
-        return "several"
-    if "not_resolved" in why:
-        return "none"
-    block = re.search(r"```json\s*(\{.*\})\s*```", str(getattr(ran, "agent_text", "") or ""),
-                      re.S)
-    try:
-        said = json.loads(block.group(1)) if block else {}
-    except ValueError:
-        said = {}
-    gaps = (said.get("gaps") or ()) if isinstance(said, Mapping) else ()
-    if any(isinstance(g, Mapping) and g.get("reason") == "named_record_not_found"
-           for g in gaps):
-        return "none"
-    return None
 
 
 SHORT_DIGITS = 5          # digits a short form keeps of the number it stands for, at least
@@ -1183,10 +1145,10 @@ PARTY_PROPS = ("email", "email_2", "email_3", "bc_email", "rep_email", "csr_emai
 
 def party_addresses(reads: Any, name: str, side: Optional[str]) -> set[str]:
     """The addresses (and ``@domains``) the supplier or customer records named ``name``
-    state, read as the reader (``fast_answer.Reads``: ``plx.find`` then ``plx.object``);
+    state, read as the reader (``record_reads.Reads``: ``plx.find`` then ``plx.object``);
     a record the reader may not read gives nothing. Only for matching: never shown."""
     from .customer_profit import normal_name
-    from .fast_answer import Unanswerable, _candidates, plain
+    from .record_reads import Unanswerable, candidates as _candidates, plain
     want = normal_name(name)
     if len(want) < 3:
         return set()

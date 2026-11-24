@@ -45,7 +45,7 @@ export function InsightNewsList({ most = 5 }: { most?: number }) {
               <span className="ml-2 text-[12px] text-muted">{formatDateTime(n.ran_at)}</span>
             </p>
             {n.ask && (
-              <Link href={`/ask?q=${encodeURIComponent(n.ask)}`} className="h-7 shrink-0 rounded-md px-2 text-[12px] font-medium leading-7 hover:bg-hover" data-testid="insight-news-ask">
+              <Link prefetch={false} href={`/ask?q=${encodeURIComponent(n.ask)}`} className="h-7 shrink-0 rounded-md px-2 text-[12px] font-medium leading-7 hover:bg-hover" data-testid="insight-news-ask">
                 {/^why\b/i.test(n.ask) ? "Ask why" : "Ask about it"}
               </Link>
             )}

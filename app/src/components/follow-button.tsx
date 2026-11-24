@@ -3,6 +3,7 @@
 import { Bell, BellRing } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getWatchlist, setFollowing } from "@/lib/api";
+import { afterReady } from "@/lib/ready";
 import { ApiError, plainError } from "@/lib/errors";
 import { cn } from "@/lib/cn";
 import { ToolbarButton } from "./ui/toolbar";
@@ -16,10 +17,16 @@ export function FollowButton({ objectId }: { objectId: string }) {
 
   useEffect(() => {
     const ctl = new AbortController();
-    getWatchlist(ctl.signal)
-      .then((w) => setOn(w.configured ? w.follows.some((f) => f.object_id === objectId) : null))
-      .catch(() => setOn(null));
-    return () => ctl.abort();
+    // the button is not the page's content: read when the page is ready and the browser idle, as a read-ahead
+    const cancel = afterReady(() => {
+      getWatchlist(ctl.signal, true)
+        .then((w) => setOn(w.configured ? w.follows.some((f) => f.object_id === objectId) : null))
+        .catch(() => setOn(null));
+    });
+    return () => {
+      cancel();
+      ctl.abort();
+    };
   }, [objectId]);
 
   if (on === null) return null; // no watchlists on this server, or not read yet

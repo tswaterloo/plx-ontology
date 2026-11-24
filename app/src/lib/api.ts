@@ -3,12 +3,12 @@
 // Microsoft access token (Authorization: Bearer, via MSAL) in Entra mode, or
 // the HttpOnly session cookie that /api/auth/dev-login sets in dev/mock mode.
 
-import { ApiError, apiErrorFrom } from "./errors";
+import { ApiError, apiErrorFrom, incidentOf } from "./errors";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
-  InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
+import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, RecordViews, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+  FilterEdit, StatementRead, InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
   ActionPreview,
@@ -113,6 +113,26 @@ export function setTokenProvider(p: TokenProvider | null) {
   tokenProvider = p;
 }
 
+// The page's reads may start before the sign-in check has chosen cookie or Microsoft token
+// (W1: nothing waits for /api/me). In Microsoft mode such a read goes without the token and is
+// refused (401); it is then sent once more when the check has installed the provider. In
+// cookie mode a 401 is the answer, as before.
+let authPending = false;
+let authSettledP: Promise<void> | null = null;
+let authSettle: (() => void) | null = null;
+/** The auth layer starts its sign-in check: a 401 before `settleAuth` may be a read sent too early. */
+export function beginAuthCheck(): void {
+  if (authPending) return;
+  authPending = true;
+  authSettledP = new Promise<void>((r) => (authSettle = r));
+}
+/** The auth layer has chosen cookie or token (the provider is set or deliberately absent). */
+export function settleAuth(): void {
+  authPending = false;
+  authSettle?.();
+  authSettle = null;
+}
+
 async function headers(extra: Record<string, string>): Promise<Record<string, string>> {
   const h: Record<string, string> = { ...extra };
   if (tokenProvider) {
@@ -130,20 +150,42 @@ function viewAsHeader(path: string, method: string): Record<string, string> {
   return { [VIEW_AS_HEADER]: v.key };
 }
 
-/** The longest a page read (a GET) waits for the server's answer: past its own 60 s read limit
- * and a slow network, a server that never answers (frozen, restarting) shows a timeout with a
- * retry instead of a page that spins for ever. Writes and the Ask's stream are not cut here. */
-export const GET_TIMEOUT_MS = 90_000;
+/** The only bound on a request (owner 11-23: no limit on total time): a hung socket. A request
+ * aborts only when NO bytes have arrived for this long, counted from the request, then from each
+ * chunk of the answer; it fails as ApiError 504 "connection_stalled" (a plain notice with Retry),
+ * never as an empty answer. */
+export const IDLE_STALL_MS = 120_000;
 
-/** The caller's signal, plus a timeout for a read; a read past it fails as ApiError 504 "read_timeout". */
-function readSignal(method: string, signal?: AbortSignal | null): { signal?: AbortSignal; timeout?: AbortSignal } {
-  if ((method !== "GET" && method !== "HEAD") || typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
-    return { signal: signal ?? undefined };
+/** `res` with its body watched: each chunk restarts the idle clock; a stall (the request was
+ * aborted by the clock) errors the body as "connection_stalled". */
+function watchBody(res: Response, restart: () => void, stop: () => void, wasStalled: () => boolean): Response {
+  if (!res.body) {
+    stop();
+    return res;
   }
-  const timeout = AbortSignal.timeout(GET_TIMEOUT_MS);
-  if (!signal) return { signal: timeout, timeout };
-  if (typeof AbortSignal.any !== "function") return { signal };
-  return { signal: AbortSignal.any([signal, timeout]), timeout };
+  const reader = res.body.getReader();
+  const watched = new ReadableStream<Uint8Array>({
+    async pull(c) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          stop();
+          c.close();
+          return;
+        }
+        restart();
+        c.enqueue(value);
+      } catch (e) {
+        stop();
+        c.error(wasStalled() ? new ApiError(504, "connection_stalled") : e);
+      }
+    },
+    cancel(r) {
+      stop();
+      return reader.cancel(r);
+    },
+  });
+  return new Response(watched, { status: res.status, statusText: res.statusText, headers: res.headers });
 }
 
 // Requests in flight (each `call` until its answer's headers): a read the page does not wait
@@ -151,8 +193,24 @@ function readSignal(method: string, signal?: AbortSignal | null): { signal?: Abo
 // queues beside the page's own reads on the server (measured on the private API: a page's
 // read alone 0.50 s median, with the sidebar's Home and late reads beside it 0.94 s).
 let callsOpen = 0;
+// the same, without read-aheads (W5/W6: a page is complete when its own reads are answered)
+let pageCallsOpen = 0;
+const callListeners = new Set<() => void>();
+/** Reads in flight that the page itself asked for (not read-aheads). */
+export function pageReadsOpen(): number {
+  return pageCallsOpen;
+}
+/** Calls `f` when the count of the page's own reads in flight changes; returns the unsubscribe. */
+export function onPageReadsChange(f: () => void): () => void {
+  callListeners.add(f);
+  return () => void callListeners.delete(f);
+}
 const quietWaiters = new Set<() => void>();
-function callEnded() {
+function callEnded(ahead: boolean) {
+  if (!ahead) {
+    pageCallsOpen = Math.max(0, pageCallsOpen - 1);
+    for (const f of [...callListeners]) f();
+  }
   callsOpen = Math.max(0, callsOpen - 1);
   if (callsOpen === 0) for (const f of [...quietWaiters]) f();
 }
@@ -175,8 +233,8 @@ export function afterPageReads(most = 2500): Promise<void> {
   });
 }
 
-async function call(path: string, init: RequestInit & { json?: unknown } = {}): Promise<Response> {
-  const { json, ...rest } = init;
+async function call(path: string, init: RequestInit & { json?: unknown; ahead?: boolean } = {}): Promise<Response> {
+  const { json, ahead, ...rest } = init;
   const method = (rest.method ?? "GET").toUpperCase();
   if (method !== "GET") {
     autopilotLast = null;
@@ -186,30 +244,61 @@ async function call(path: string, init: RequestInit & { json?: unknown } = {}): 
     recordAhead.clear();
   }
   const as = viewAsHeader(path, method);
-  const limited = readSignal(method, rest.signal);
+  // the caller's cancel, plus our own abort when nothing has arrived for IDLE_STALL_MS
+  const ctl = new AbortController();
+  const onCallerAbort = () => ctl.abort(rest.signal?.reason);
+  if (rest.signal?.aborted) ctl.abort(rest.signal.reason);
+  else rest.signal?.addEventListener("abort", onCallerAbort, { once: true });
+  let stalled = false;
+  let clock: ReturnType<typeof setTimeout> | undefined;
+  // (the caller's abort stays linked after the answer: it still ends a body being read)
+  const stop = () => clearTimeout(clock);
+  const restart = () => {
+    clearTimeout(clock);
+    clock = setTimeout(() => {
+      stalled = true;
+      ctl.abort(new ApiError(504, "connection_stalled"));
+    }, IDLE_STALL_MS);
+  };
+  restart();
   let res: Response;
   callsOpen += 1;
+  if (!ahead) {
+    pageCallsOpen += 1;
+    for (const f of [...callListeners]) f();
+  }
   try {
-    res = await fetch(path, {
-      credentials: "same-origin",
-      ...rest,
-      signal: limited.signal,
-      headers: await headers({
-        Accept: "application/json",
-        ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
-        ...as,
-      }),
-      body: json !== undefined ? JSON.stringify(json) : rest.body,
-    });
+    const send = async () =>
+      fetch(path, {
+        credentials: "same-origin",
+        ...rest,
+        signal: ctl.signal,
+        headers: await headers({
+          Accept: "application/json",
+          ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...as,
+          ...(ahead ? { "X-PLX-Ahead": "1" } : {}),
+        }),
+        body: json !== undefined ? JSON.stringify(json) : rest.body,
+      });
+    const tokenBefore = tokenProvider !== null;
+    res = await send();
+    if (res.status === 401 && method === "GET" && !tokenBefore && authPending && authSettledP) {
+      await authSettledP;
+      if (tokenProvider) res = await send();   // sent too early for Microsoft mode: once more, with the token
+    }
   } catch (e) {
-    // our own timeout, not the caller's cancel: an honest "took too long", never a hang
-    if (limited.timeout?.aborted && !rest.signal?.aborted) throw new ApiError(504, "read_timeout");
+    stop();
+    // nothing arrived for IDLE_STALL_MS (not the caller's cancel): said plainly, never a hang
+    if (stalled && !rest.signal?.aborted) throw new ApiError(504, "connection_stalled");
     throw e;
   } finally {
-    callEnded();
+    callEnded(!!ahead);
   }
-  if (!res.ok) throw await apiErrorFrom(res);
-  return res;
+  restart();
+  const watched = watchBody(res, restart, stop, () => stalled && !rest.signal?.aborted);
+  if (!res.ok) throw await apiErrorFrom(watched);
+  return watched;
 }
 
 /** A read the shell and a page both ask for on a first visit (/api/me, /api/ops/status):
@@ -252,15 +341,26 @@ function getPaneRead<T>(path: string, signal?: AbortSignal): Promise<T> {
   return read;
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await call(path, { signal });
-  try {
-    return (await res.json()) as T;
-  } catch (e) {
-    // the read timed out while its body was still arriving
-    if (e instanceof DOMException && e.name === "TimeoutError" && !signal?.aborted) throw new ApiError(504, "read_timeout");
-    throw e;
+async function getJson<T>(path: string, signal?: AbortSignal, ahead = false): Promise<T> {
+  // the head script read it with the cookie alone (cookie mode, the reader's own view): its
+  // answer stands in once; a refused or failed early read is read again through `call`
+  if (!ahead && !tokenProvider && !viewingAs()) {
+    const early = takeEarly(`r:${path}`, signal);
+    if (early) {
+      pageCallsOpen += 1;
+      for (const f of [...callListeners]) f();
+      let got: EarlyAnswer | null = null;
+      try {
+        got = await early;
+      } finally {
+        pageCallsOpen = Math.max(0, pageCallsOpen - 1);
+        for (const f of [...callListeners]) f();
+      }
+      if (got?.ok && got.body !== undefined) return got.body as T;
+    }
   }
+  const res = await call(path, { signal, ahead });
+  return (await res.json()) as T;
 }
 
 /** How often a Today list still being read for the first time is asked for again, and for how long at most. */
@@ -268,9 +368,13 @@ export const READING_POLL_MS = 1500;
 export const READING_MOST_MS = 300_000;
 
 /** The wait before asking again: short at first (a cold page often fills in a second or two),
- * growing to READING_POLL_MS, and to twice that once the read has gone on for a while. */
+ * growing to READING_POLL_MS, to twice that once the read has gone on for a while, and to four
+ * times that once it has gone on for half a minute: a read that long is slow on the server, and
+ * asking every few seconds only kept the screen's requests going (11-22: Home's record pane
+ * re-asked every ~2.5 s for a read that did not finish, so Home never finished loading). */
 export function readingDelay(attempt: number, waited: number): number {
-  const cap = waited > READING_POLL_MS * 10 ? READING_POLL_MS * 2 : READING_POLL_MS;
+  const cap = waited > READING_POLL_MS * 20 ? READING_POLL_MS * 4
+    : waited > READING_POLL_MS * 10 ? READING_POLL_MS * 2 : READING_POLL_MS;
   return Math.min(cap, Math.round(400 * 1.6 ** attempt));
 }
 
@@ -376,15 +480,19 @@ function readKey(path: string): string {
  * at once with `reading: true` (nothing in it) while its first read for you goes on; ask again until
  * the page is there, so the screens that are ready show while the rest fill in. Still reading after
  * READING_MOST_MS: the calm "busy" notice, never the empty placeholder. */
-export function getRead<T extends { reading?: boolean | null }>(path: string, signal?: AbortSignal): Promise<T> {
-  return shared(readKey(path), (s) => pollRead<T>(path, s), signal);
+export function getRead<T extends { reading?: boolean | null }>(path: string, signal?: AbortSignal, ahead = false): Promise<T> {
+  return shared(readKey(path), (s) => pollRead<T>(path, s, ahead), signal);
 }
 
-async function pollRead<T extends { reading?: boolean | null }>(path: string, signal: AbortSignal): Promise<T> {
+async function pollRead<T extends { reading?: boolean | null }>(path: string, signal: AbortSignal, ahead = false): Promise<T> {
   const start = Date.now();
   const until = start + READING_MOST_MS;
   for (let attempt = 0; ; attempt++) {
-    const got = await getJson<T>(path, signal);
+    // Home's first reads come in one answer (startHomeBundle); a part that is still being
+    // read, or no bundle, goes on to the part's own request below
+    const bundled = attempt === 0 ? await bundlePart<T>(path, signal) : null;
+    if (bundled && !bundled.reading) return bundled;
+    const got = await getJson<T>(path, signal, ahead);
     if (!got.reading) return got;
     const now = Date.now();
     if (now >= until) throw new ApiError(503, "busy");
@@ -392,11 +500,221 @@ async function pollRead<T extends { reading?: boolean | null }>(path: string, si
   }
 }
 
-export function getAuthConfig(signal?: AbortSignal): Promise<AuthConfig> {
+// ---- Home's one-round-trip bundle (/api/home/bundle) ------------------------------------
+// Home asks for seven reads at once; the server composes them from the same kept pages, each
+// with its own status. The Home page starts the bundle once (`startHomeBundle`); the reads it
+// lists are then answered from it instead of seven requests. The last bundle is kept in this
+// tab (sessionStorage, dropped on sign-out and per view-as) and shown at once; when the fresh
+// bundle arrives each read is answered again from it (`onHomeBundleFresh`).
+
+const BUNDLE_PARTS: Record<string, string> = {
+  "/api/home": "home",
+  "/api/sidebar": "sidebar",
+  "/api/briefing?pages=true": "briefing",
+  "/api/late?offset=0&limit=100": "late",
+  "/api/suggestions": "suggestions",
+  "/api/replies": "replies",
+  "/api/approvals": "approvals",
+};
+interface BundlePart {
+  status: number;
+  body: unknown;
+}
+type Bundle = Record<string, BundlePart>;
+const BUNDLE_KEY = "plx.home-bundle";
+/** How long a kept bundle may be shown before the fresh one arrives. */
+export const BUNDLE_KEPT_MS = 30 * 60 * 1000;
+const BUNDLE_KEPT_MOST_CHARS = 1_500_000;
+
+let bundleFresh: Promise<Bundle | null> | null = null;
+let bundleKept: Bundle | null = null;
+// per part: whether the kept or the fresh answer was last handed out ("fresh": later asks read as usual)
+const bundleGiven = new Map<string, "kept" | "fresh">();
+const bundleListeners = new Set<() => void>();
+onSessionReset(() => {
+  bundleFresh = null;
+  bundleKept = null;
+  bundleGiven.clear();
+  if (typeof window !== "undefined") clearKeptBundles();
+});
+
+function bundleStorageKey(): string {
+  return `${BUNDLE_KEY} ${viewingAs()?.key ?? ""}`;
+}
+
+// Whose bundle is kept: the signed-in principal (`me.principal`, set by the auth layer once it is
+// known). A kept bundle names the principal and the view-as target it was read for and is never
+// shown, nor written, for any other; with no principal known nothing is shown or kept.
+let bundlePrincipal: string | null = null;
+function clearKeptBundles(except?: { principal: string }): void {
+  try {
+    for (let i = window.sessionStorage.length - 1; i >= 0; i--) {
+      const k = window.sessionStorage.key(i);
+      if (!k?.startsWith(BUNDLE_KEY)) continue;
+      let keep = false;
+      if (except) {
+        try {
+          keep = (JSON.parse(window.sessionStorage.getItem(k) ?? "null") as { principal?: unknown } | null)?.principal === except.principal;
+        } catch {
+          keep = false;
+        }
+      }
+      if (!keep) window.sessionStorage.removeItem(k);
+    }
+  } catch {
+    // no storage: nothing was kept
+  }
+}
+/** The auth layer says who is signed in (null: nobody / unknown). Anything kept for another
+ * person, or for nobody, is dropped at once. */
+export function setBundlePrincipal(principal: string | null): void {
+  const was = bundlePrincipal;
+  bundlePrincipal = principal;
+  // first known principal (null -> P): the bundle asked before it was known was the session's own
+  // and stays; every other change drops it
+  if (was !== principal && !(was === null && principal !== null)) {
+    bundleFresh = null;
+    bundleKept = null;
+    bundleGiven.clear();
+  }
+  if (typeof window !== "undefined") clearKeptBundles(principal ? { principal } : undefined);
+}
+
+function readKeptBundle(now = Date.now()): Bundle | null {
+  try {
+    if (!bundlePrincipal) return null;
+    const kept = JSON.parse(window.sessionStorage.getItem(bundleStorageKey()) ?? "null") as { at?: unknown; principal?: unknown; as?: unknown; parts?: Bundle } | null;
+    if (!kept || kept.principal !== bundlePrincipal || kept.as !== (viewingAs()?.key ?? "") || typeof kept.at !== "number" || now - kept.at > BUNDLE_KEPT_MS || !kept.parts || typeof kept.parts !== "object") return null;
+    return kept.parts;
+  } catch {
+    return null;
+  }
+}
+
+function keepBundle(parts: Bundle): void {
+  // only what was read: an error or a part still being read is never shown from a kept bundle
+  const ok: Bundle = {};
+  for (const [name, part] of Object.entries(parts)) {
+    if (part?.status === 200 && !(part.body as { reading?: boolean | null } | null)?.reading) ok[name] = part;
+  }
+  if (!bundlePrincipal) return;
+  try {
+    const text = JSON.stringify({ at: Date.now(), principal: bundlePrincipal, as: viewingAs()?.key ?? "", parts: ok });
+    if (text.length <= BUNDLE_KEPT_MOST_CHARS) window.sessionStorage.setItem(bundleStorageKey(), text);
+    else window.sessionStorage.removeItem(bundleStorageKey());
+  } catch {
+    // no storage (a private window, a full quota): the bundle is just not kept
+  }
+}
+
+/** Read Home's seven first reads in one request (once per page load; a second call does
+ * nothing). Call before the reads are asked for. A failed bundle changes nothing: each read
+ * is then made on its own. */
+export function startHomeBundle(): void {
+  if (bundleFresh || typeof window === "undefined") return;
+  bundleKept = readKeptBundle();
+  bundleGiven.clear();
+  // who and as whom this request was made: its answer is stored or shown only while that is still so
+  const askedBy = bundlePrincipal;
+  const askedAs = viewingAs()?.key ?? "";
+  bundleFresh = getJson<{ parts?: Bundle }>("/api/home/bundle").then(
+    (got) => {
+      const parts = got?.parts && typeof got.parts === "object" ? got.parts : null;
+      if ((askedBy !== null && askedBy !== bundlePrincipal) || askedAs !== (viewingAs()?.key ?? "")) return null;
+      if (parts) {
+        keepBundle(parts);
+        // reads answered from the kept bundle are answered again from this one
+        if ([...bundleGiven.values()].includes("kept")) for (const f of [...bundleListeners]) f();
+      }
+      return parts;
+    },
+    () => null,
+  );
+}
+
+/** Calls `f` once the fresh bundle arrives after a read was answered from the kept one;
+ * returns the unsubscribe. */
+export function onHomeBundleFresh(f: () => void): () => void {
+  bundleListeners.add(f);
+  return () => void bundleListeners.delete(f);
+}
+
+/** The bundle's part for `path` as that read's own answer (a refused part throws what its own
+ * request would: same status and code), or null when the read is made on its own. */
+async function bundlePart<T>(path: string, signal: AbortSignal): Promise<T | null> {
+  const name = BUNDLE_PARTS[path];
+  const fresh = bundleFresh;
+  if (!name || !fresh) return null;
+  const given = bundleGiven.get(name);
+  if (given === "fresh") return null;
+  let part: BundlePart | undefined;
+  if (!given && bundleKept?.[name]) {
+    part = bundleKept[name];
+    bundleGiven.set(name, "kept");
+  } else {
+    const parts = await new Promise<Bundle | null>((resolve, reject) => {
+      if (signal.aborted) return reject(new DOMException("Aborted", "AbortError"));
+      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      fresh.then(resolve, reject);
+    });
+    if (bundleFresh !== fresh) return null;
+    part = parts?.[name];
+    if (!part) return null;
+    bundleGiven.set(name, "fresh");
+  }
+  if (part.status === 200) return part.body as T;
+  const err = (part.body as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+  const message = typeof err?.message === "string" ? err.message : undefined;
+  throw new ApiError(part.status, typeof err?.code === "string" ? err.code : `http_${part.status}`, incidentOf(message), message?.slice(0, 600));
+}
+
+/** An answer the page's head script read before the app loaded (EARLY_READS_SCRIPT). */
+interface EarlyAnswer {
+  ok: boolean;
+  status: number;
+  body?: unknown;
+}
+
+/** How long after the head script read it an early answer may stand in for a read. */
+export const EARLY_MOST_MS = 10_000;
+
+/** The head script's read of `name`, once (a second ask reads again), while it is young; null
+ * when there is none. A failed or refused early read is never the answer: the caller reads
+ * again through `call` (its own errors, timeout and sign-in handling). */
+function takeEarly(name: string, signal?: AbortSignal): Promise<EarlyAnswer> | null {
+  if (typeof window === "undefined") return null;
+  const early = (window as unknown as { __plxEarly?: { at?: number } & Record<string, Promise<EarlyAnswer> | number | undefined> }).__plxEarly;
+  const read = early?.[name] as Promise<EarlyAnswer> | undefined;
+  if (!early || !read || typeof read.then !== "function") return null;
+  delete early[name];
+  if (typeof early.at !== "number" || Date.now() - early.at > EARLY_MOST_MS) return null;
+  if (!signal) return read;
+  // the caller's cancel ends its wait (the read itself is already sent)
+  return new Promise<EarlyAnswer>((resolve, reject) => {
+    const abort = () => reject(new DOMException("Aborted", "AbortError"));
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    read.then((a) => {
+      signal.removeEventListener("abort", abort);
+      resolve(a);
+    }, reject);
+  });
+}
+onSessionReset(() => {
+  if (typeof window !== "undefined") delete (window as unknown as { __plxEarly?: unknown }).__plxEarly;
+});
+
+export async function getAuthConfig(signal?: AbortSignal): Promise<AuthConfig> {
+  const early = await takeEarly("config", signal);
+  if (early?.ok && early.body && typeof early.body === "object") return early.body as AuthConfig;
   return getJson<AuthConfig>("/api/auth/config", signal);
 }
 
-export function getMe(signal?: AbortSignal): Promise<Me> {
+export async function getMe(signal?: AbortSignal): Promise<Me> {
+  // the head script read it with the session cookie alone: the answer only while no
+  // Microsoft token is sent (Entra mode reads it again with the token)
+  const early = tokenProvider ? (takeEarly("me"), null) : await takeEarly("me", signal);
+  if (early?.ok && early.body && typeof early.body === "object") return early.body as Me;
   return getShared<Me>("/api/me", signal);
 }
 
@@ -505,8 +823,19 @@ export interface OpsQueue {
 }
 
 /** The reliability alarms' last pass: the owner and the Team readers (403 for every other reader). */
-export function getOpsAlarms(signal?: AbortSignal): Promise<OpsAlarms> {
-  return getShared<OpsAlarms>("/api/ops/status", signal);
+export function getOpsAlarms(signal?: AbortSignal, ahead = false): Promise<OpsAlarms> {
+  return shared(`json ${readKey("/api/ops/status")}`, (s) => getJson<OpsAlarms>("/api/ops/status", s, ahead), signal);
+}
+
+/** Whether a reliability problem is open, from the small read (`?summary=1`: `{configured, open: n}`
+ * from the same source as the full list); the full list's `open` array answers the same. Any
+ * other shape is an error, never "no problem". Sent as a read-ahead (the nav dot, not content). */
+export async function getOpsProblemOpen(signal?: AbortSignal): Promise<boolean> {
+  const a = await shared(`json ${readKey("/api/ops/status?summary=1")}`, (s) => getJson<{ configured?: boolean; open?: unknown }>("/api/ops/status?summary=1", s, true), signal);
+  const open = a?.open;
+  if (typeof open === "number") return !!a.configured && open > 0;
+  if (Array.isArray(open)) return !!a.configured && open.length > 0;
+  throw new ApiError(502, "ops_summary_shape");
 }
 
 export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
@@ -567,8 +896,8 @@ export async function setWatcherItemState(
 }
 
 /** Your follows, alert rules and alerts, as your grant shows them now. */
-export function getWatchlist(signal?: AbortSignal): Promise<Watchlist> {
-  return getJson<Watchlist>("/api/watch", signal);
+export function getWatchlist(signal?: AbortSignal, ahead = false): Promise<Watchlist> {
+  return getJson<Watchlist>("/api/watch", signal, ahead);
 }
 
 /** Follow a record you can open (its page's object id), or stop following it. */
@@ -609,9 +938,21 @@ export function getDataHealthPage(check: string, offset: number, signal?: AbortS
   return getJson<DataHealth>(`/api/data-health?check=${encodeURIComponent(check)}&offset=${Math.max(0, Math.floor(offset))}&limit=${limit}`, signal);
 }
 
-/** A Records list (production batches) with its filters, a page at a time. */
-export function getRecordList(view: string, f: { status?: string; hold?: string; q?: string; offset?: number }, signal?: AbortSignal): Promise<RecordList> {
-  const q = new URLSearchParams({ view, status: f.status ?? "", hold: f.hold ?? "", q: f.q ?? "", offset: String(Math.max(0, Math.floor(f.offset ?? 0))) });
+/** Every list Records offers (one per business view the reader's door serves). */
+export function getRecordViews(signal?: AbortSignal): Promise<RecordViews> {
+  return getJson<RecordViews>("/api/records/views", signal);
+}
+
+/** One Records list: its filters, text, sort and page. `facets` asks for the filters' choices (the first read of a list). */
+export function getRecordList(
+  view: string,
+  f: { filters?: Record<string, string>; q?: string; sort?: string; direction?: string; offset?: number; facets?: boolean },
+  signal?: AbortSignal,
+): Promise<RecordList> {
+  const q = new URLSearchParams({ view, q: f.q ?? "", offset: String(Math.max(0, Math.floor(f.offset ?? 0))), facets: String(f.facets ?? true) });
+  if (f.sort) q.set("sort", f.sort);
+  if (f.direction) q.set("direction", f.direction);
+  for (const [k, v] of Object.entries(f.filters ?? {})) if (v) q.append("f", `${k}:${v}`);
   return getJson<RecordList>(`/api/records/list?${q.toString()}`, signal);
 }
 
@@ -631,8 +972,8 @@ export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promi
 }
 
 /** What needs you and what to do: ranked suggestions, each with how we know, a draft and the actions it offers. */
-export function getSuggestions(signal?: AbortSignal): Promise<Suggestions> {
-  return getRead<Suggestions>("/api/suggestions", signal);
+export function getSuggestions(signal?: AbortSignal, ahead = false): Promise<Suggestions> {
+  return getRead<Suggestions>("/api/suggestions", signal, ahead);
 }
 
 /** One card action as it would be done: the exact payload and request, its checks; nothing is done. */
@@ -667,7 +1008,9 @@ export async function executeWrite(intentId: string, req: WriteExecute): Promise
 
 /** Each of your cards' latest action by you. */
 export function getActionStates(signal?: AbortSignal): Promise<ActionStates> {
-  return getJson<ActionStates>("/api/actions/state", signal);
+  // the card states Home, its late list and its suggestion cards all ask for: one read, kept
+  // PANE_REUSE_MS (any write drops it), never one request per component
+  return getPaneRead<ActionStates>("/api/actions/state", signal);
 }
 
 /** One alert's ready-to-use next steps (drafts, links, the change to make in the source system). */
@@ -754,6 +1097,8 @@ export type PreparedItem = {
   /** On an alert: where it is decided or answered (never from the card), and its records. */
   note?: string; links?: { label: string; href: string }[];
   handed_to?: string; handed_from?: string;
+  /** On an Assist matter: open or unverified (its source could not be re-checked), when it was last re-checked, and the draft's state (deferred: draft on request; failed: ask again). */
+  state?: "open" | "unverified" | null; verified_at?: string | null; plan_status?: string | null; plan_reason?: string | null;
   /** On an item nobody is named for: the role whose list it is on until one of them takes it. */
   pooled?: string;
   auto_would?: string;
@@ -791,7 +1136,7 @@ export async function prepareAutopilotJob(itemId: string, index: number): Promis
 export type TeamsConnection = { connected: boolean; scopes?: string[]; connected_at?: string | null; used_at?: string | null; missing?: string[] };
 
 export function getTeamsConnection(signal?: AbortSignal): Promise<TeamsConnection> {
-  return getJson<TeamsConnection>("/api/teams/connection", signal);
+  return getPaneRead<TeamsConnection>("/api/teams/connection", signal);   // shared with the page's early read; a write drops it
 }
 
 /** Start your one-time Teams sign-in: the Microsoft address to open. */
@@ -803,9 +1148,17 @@ export async function forgetTeams(): Promise<TeamsConnection> {
   return (await (await call("/api/teams/connection", { method: "DELETE" })).json()) as TeamsConnection;
 }
 
-/** Your open prepared replies, newest first (the one list Home reads too). */
-export async function getAutopilotDrafts(signal?: AbortSignal): Promise<{ items: PreparedItem[]; never_senders?: string[] }> {
-  return getJson<{ items: PreparedItem[]; never_senders?: string[] }>("/api/autopilot/drafts", signal);
+/** The list: what is shown, how many more are older than its 14 days, and whether it is off or stale (said, never hidden). */
+export type DraftList = { items: PreparedItem[]; never_senders?: string[]; older?: number; status?: string | null; reason?: string; stale_since?: string | null };
+
+/** Your open work, newest first (the one list Home reads too); the last 14 days unless ``allAges``. */
+export async function getAutopilotDrafts(signal?: AbortSignal, allAges = false): Promise<DraftList> {
+  return getJson<DraftList>(allAges ? "/api/autopilot/drafts?all_ages=true" : "/api/autopilot/drafts", signal);
+}
+
+/** Ask for this item's draft now; it is prepared and the list shows it when ready. */
+export async function requestDraft(itemId: string): Promise<{ status: "working" }> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/draft`, { method: "POST" })).json()) as { status: "working" };
 }
 
 /** Never (or again) prepare anything for you from one sender; your list comes back. */
@@ -1020,10 +1373,11 @@ export function suggest(q: string, signal?: AbortSignal, limit = 8): Promise<Sug
 /** A business record page (customer, chain, supplier account; PO or customer order). */
 export function bizPage(kind: BizKind, key: { h?: string; chain?: string; record?: string }, signal?: AbortSignal, reuse = false): Promise<BizPage> {
   const q = new URLSearchParams({ kind });
-  if (key.h) q.set("h", key.h.slice(0, 600));
-  if (key.chain) q.set("chain", key.chain.slice(0, 200));
+  // identifiers whole: a cut handle is another handle (the server refuses one past its bound)
+  if (key.h) q.set("h", key.h);
+  if (key.chain) q.set("chain", key.chain);
   // a record id: the page of the row it was read into (404 when the door has none)
-  if (key.record && !key.h) q.set("record", key.record.slice(0, 700));
+  if (key.record && !key.h) q.set("record", key.record);
   const path = `/api/biz/page?${q.toString()}`;
   return reuse ? getPaneRead<BizPage>(path, signal) : getJson<BizPage>(path, signal);
 }
@@ -1098,6 +1452,8 @@ export function getExplore(type: string, id: string, signal?: AbortSignal): Prom
 export function getHistory(type: string, id: string, cursor?: string | null, signal?: AbortSignal): Promise<RecordHistory> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
   const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  // a purchase order's tab is read from the served store (one stored read; same shape)
+  if (type === "PurchaseOrder") return getJson<RecordHistory>(`/api/page/history/${encodeURIComponent(id)}${qs}`, signal);
   return getJson<RecordHistory>(`/api/history/${type}/${encodeURIComponent(id)}${qs}`, signal);
 }
 
@@ -1231,6 +1587,32 @@ async function readOrStall<T>(reader: ReadableStreamDefaultReader<T>, ms: number
   }
 }
 
+/** POST /api/ask/files: the file as the request body (streamed by the browser to the server's
+ * disk; any size). Answers the id the question names it by. */
+export async function uploadAskFile(file: Blob, name: string, signal?: AbortSignal): Promise<{ id: string; name: string; size: number; digest: string }> {
+  viewAsHeader("/api/ask/files", "POST");
+  const res = await fetch(`/api/ask/files?name=${encodeURIComponent(name)}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: await headers({ "Content-Type": "application/octet-stream" }),
+    body: file,
+    signal,
+  });
+  if (!res.ok) throw await apiErrorFrom(res);
+  return (await res.json()) as { id: string; name: string; size: number; digest: string };
+}
+
+/** DELETE /api/ask/files/<id>: take an uploaded file off. */
+export async function removeAskFile(id: string): Promise<void> {
+  viewAsHeader("/api/ask/files", "DELETE");
+  const res = await fetch(`/api/ask/files/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: await headers({}),
+  });
+  if (!res.ok && res.status !== 404) throw await apiErrorFrom(res);
+}
+
 /**
  * POST /api/ask and yield typed events as they arrive. Unknown event names
  * are dropped; malformed data or a stream that ends without an answer
@@ -1357,7 +1739,8 @@ export async function logSaved(body: WorkLogSave): Promise<void> {
 
 /** Your standing instructions, preferences, commitments and facts, newest first. */
 export function getMemory(signal?: AbortSignal): Promise<MemoryItems> {
-  return getJson<MemoryItems>("/api/memory", signal);
+  // Home's commitments and the record page's memory both ask: one read, kept PANE_REUSE_MS (a write drops it)
+  return getPaneRead<MemoryItems>("/api/memory", signal);
 }
 
 /** The people you work with most and your conversations going, from your own mailbox. */
@@ -1395,7 +1778,7 @@ export function getInsights(signal?: AbortSignal): Promise<InsightList> {
  * chart with nothing kept for you, which reads itself once it nears the view). */
 export type InsightsLine =
   | { list: InsightList }
-  | { id: string; result?: InsightResult; error?: { code: string; message?: string; status: number }; later?: boolean };
+  | { id: string; result?: InsightResult; error?: { code: string; message?: string; status: number }; later?: boolean; waiting?: boolean };
 
 /** What the dashboard showed last (per person and view-as): the next visit draws it at once,
  * then reads again and replaces it. Dropped on sign-out, any write and a view-as change. */
@@ -1410,9 +1793,26 @@ export function keepInsights(list: InsightList, tiles: Record<string, InsightRes
 }
 
 /** The whole dashboard in ONE request: `on` gets each line as it arrives (the list, then every
- * chart as it was read). Each chart was checked for your access on its own, server side. */
-export async function streamInsights(on: (line: InsightsLine) => void, signal?: AbortSignal): Promise<void> {
-  const res = await call("/api/insights/all/stream", { signal });
+ * chart as it was read). Each chart was checked for your access on its own, server side.
+ * The request belongs to the dashboard, not to the page showing it: leaving the page (or the
+ * page reading again) only stops listening, the stream is never cancelled; a page opened while
+ * it runs gets the lines already read, then the rest. It stops only when the session ends. */
+interface InsightsRun {
+  as: string;
+  lines: InsightsLine[];
+  listeners: Set<(line: InsightsLine) => void>;
+  result: Promise<void>;
+  ctl: AbortController;
+  over: boolean;
+}
+let insightsRun: InsightsRun | null = null;
+onSessionReset(() => {
+  insightsRun?.ctl.abort();
+  insightsRun = null;
+});
+
+async function readInsightsStream(run: InsightsRun): Promise<void> {
+  const res = await call("/api/insights/all/stream", { signal: run.ctl.signal });
   if (!res.body) throw new ApiError(502, "invalid_response");
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -1423,7 +1823,75 @@ export async function streamInsights(on: (line: InsightsLine) => void, signal?: 
     while ((nl = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
-      if (line) on(JSON.parse(line) as InsightsLine);
+      if (!line) continue;
+      const got = JSON.parse(line) as InsightsLine;
+      run.lines.push(got);
+      for (const f of [...run.listeners]) f(got);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    feed(dec.decode(value, { stream: true }));
+  }
+  feed(dec.decode() + "\n");
+}
+
+export function streamInsights(on: (line: InsightsLine) => void, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+  let run = insightsRun;
+  if (!run || run.over || run.as !== (viewingAs()?.key ?? "")) {
+    const made: InsightsRun = { as: viewingAs()?.key ?? "", lines: [], listeners: new Set(), result: Promise.resolve(), ctl: new AbortController(), over: false };
+    made.result = readInsightsStream(made).finally(() => {
+      made.over = true;
+      if (insightsRun === made) insightsRun = null;
+    });
+    made.result.catch(() => undefined);
+    insightsRun = made;
+    run = made;
+  }
+  const r = run;
+  for (const line of [...r.lines]) on(line);
+  r.listeners.add(on);
+  return new Promise<void>((resolve, reject) => {
+    const stop = () => {
+      r.listeners.delete(on);
+      reject(signal?.reason ?? new DOMException("aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+    r.result.then(
+      () => {
+        signal?.removeEventListener("abort", stop);
+        r.listeners.delete(on);
+        resolve();
+      },
+      (e) => {
+        signal?.removeEventListener("abort", stop);
+        r.listeners.delete(on);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** One step of "why did this change": what was read, its rows, and the best answer so far (stopping
+ * after any step leaves a true answer). A step that could not be read has `error` and ends it. */
+export type WhyStep = { step: number; of: number; says: string; period?: string; columns?: string[]; rows?: (string | null)[][]; answer: string; error?: { code: string; message?: string; status: number } };
+
+/** Stream the steps of a measure tile's "why did this change"; abort `signal` to stop early (Answer now). */
+export async function streamWhy(id: string, on: (step: WhyStep) => void, signal?: AbortSignal): Promise<void> {
+  const res = await call(`/api/insights/${encodeURIComponent(id)}/why`, { signal });
+  if (!res.body) throw new ApiError(502, "invalid_response");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const feed = (text: string) => {
+    buf += text;
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) on(JSON.parse(line) as WhyStep);
     }
   };
   for (;;) {
@@ -1436,8 +1904,52 @@ export async function streamInsights(on: (line: InsightsLine) => void, signal?: 
 
 /** One insight as you read it (kept from your read of the last few minutes; `again`: read
  * now): its statement, rows, chart and the people they name. */
-export function getInsight(id: string, signal?: AbortSignal, again = false): Promise<InsightResult> {
-  return getJson<InsightResult>(`/api/insights/${encodeURIComponent(id)}${again ? "?again=true" : ""}`, signal);
+export async function getInsight(id: string, signal?: AbortSignal, again = false, onStored?: (old: InsightResult) => void): Promise<InsightResult> {
+  // the server never reads a tile in this request: a stored value comes back at once with its
+  // read time; one with nothing stored yet says so (425, `insight_filling`) while its read runs
+  // in the background, and is asked for again until it is stored (no deadline: it is not cut).
+  // A Refresh gets the stored value at once (`onStored`, so it stays drawn) and is asked for
+  // again until a newer one is stored. Polling waits while the page is hidden.
+  let refreshing = again;
+  let old: string | undefined;
+  for (;;) {
+    try {
+      const got = await getJson<InsightResult>(`/api/insights/${encodeURIComponent(id)}${refreshing ? "?again=true" : ""}`, signal);
+      if (!again || (old !== undefined && got.read_at !== old)) return got;
+      if (old === undefined) { old = got.read_at; onStored?.(got); }
+      refreshing = false;
+    } catch (e) {
+      if (!(e instanceof ApiError && e.code === "insight_filling") || signal?.aborted) throw e;
+    }
+    await insightPause(signal);
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+  }
+}
+
+/** Wait one poll interval, and while the page is hidden until it is shown again. */
+function insightPause(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = () => { clearTimeout(timer); document.removeEventListener("visibilitychange", wake); signal?.removeEventListener("abort", done); resolve(); };
+    const wake = () => { if (!document.hidden) timer = setTimeout(done, INSIGHT_FILL_POLL_MS); else clearTimeout(timer); };
+    signal?.addEventListener("abort", done);
+    document.addEventListener("visibilitychange", wake);
+    if (document.hidden) return;   // resumes on visibilitychange
+    timer = setTimeout(done, INSIGHT_FILL_POLL_MS);
+  });
+}
+const INSIGHT_FILL_POLL_MS = 3000;
+
+/** One insight read now with filters you changed or took out (its own conditions only); nothing kept. */
+export async function readInsightFiltered(id: string, edits: FilterEdit[]): Promise<InsightResult> {
+  const res = await call(`/api/insights/${encodeURIComponent(id)}/filtered`, { method: "POST", json: { edits } });
+  return (await res.json()) as InsightResult;
+}
+
+/** An answer's query read now, as you, with filters you changed or took out; nothing saved. */
+export async function readStatement(sql: string, edits: FilterEdit[]): Promise<StatementRead> {
+  const res = await call("/api/statement/read", { method: "POST", json: { sql, edits } });
+  return (await res.json()) as StatementRead;
 }
 
 /** Pin a chart (or save a statement) to your dashboard; it reads again when opened. */
@@ -1483,7 +1995,7 @@ export function getTemplates(signal?: AbortSignal, docType?: TemplateDocType): P
 /** The questionnaire answers we gave that any customer may get, ranked against `question`;
  * answered `reading` while your first read of it goes on, asked again until it is there. */
 export function getAnswerBank(question?: string, signal?: AbortSignal): Promise<DocList> {
-  const q = (question ?? "").trim().slice(0, 700);
+  const q = (question ?? "").trim();   // whole: the server takes a question up to QUESTION_MAX
   return getRead<DocList>(`/api/templates/answer-bank${q ? `?question=${encodeURIComponent(q)}` : ""}`, signal);
 }
 
@@ -1521,7 +2033,7 @@ export function suggestTemplates(docType: TemplateDocType, signal?: AbortSignal)
 
 /** Your recurring instructions ("every Monday ..."); only yours. */
 export function getRecurring(signal?: AbortSignal): Promise<RecurringInstructions> {
-  return getJson<RecurringInstructions>("/api/instructions/recurring", signal);
+  return getPaneRead<RecurringInstructions>("/api/instructions/recurring", signal);   // shared with the page's early read; a write drops it
 }
 
 /** Keep a recurring instruction: when it runs is read from the line on the server. */

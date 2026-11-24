@@ -155,19 +155,6 @@ class ModelPromptsAreMasked(unittest.TestCase):
         masked_call(lambda prompt: seen.append(prompt))(FORM)
         self.assertFalse(leaked(seen[0]))
 
-    def test_front_door_turn(self):
-        from operating.front_door import _Session
-        written = io.StringIO()
-        proc = mock.Mock()
-        proc.poll.return_value = None
-        proc.stdin = written
-        session = object.__new__(_Session)
-        session.proc, session.turns, session.owed = proc, 0, 0
-        session.lines = queue.Queue()
-        session.turn(FORM, 0.01)
-        self.assertIn("1111", written.getvalue())
-        self.assertFalse(leaked(written.getvalue()))
-
     def test_an_ask_session_gets_its_task_and_first_reads_masked(self):
         from operator_api.agent_ask import AgentAsk
         calls: list = []
@@ -491,6 +478,42 @@ class HumanizeRewriteIsMasked(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertFalse(leaked(sent[0]))
         self.assertIn("Cardholder Name: Pat Doe", sent[0])
+
+
+class RememberedMasking(unittest.TestCase):
+    """``mask_served`` answers a string it has masked before from a table (speed plan 9.3):
+    the answer is always the scan's, for a card, a credential, plain text and a string past
+    the table's size; and the table stays bounded."""
+
+    def setUp(self):
+        from operating import card_text as ct
+        self.ct = ct
+
+    def scan(self, text):
+        return self.ct._secrets(self.ct.mask_card_numbers(text))
+
+    def test_every_answer_is_the_scan_first_time_and_again(self):
+        samples = [FORM, VISA, "plain words about an order", "", "x" * 12,
+                   "password: hunter2hunter2 for the portal",
+                   'api_key="sk-live-0123456789abcdef0123"', "PO 4500123456 shipped",
+                   "n" * (self.ct.REMEMBER_LONGEST + 5) + " " + VISA]
+        for text in samples * 2:
+            with self.subTest(text=text[:20]):
+                self.assertEqual(mask_served(text), self.scan(text))
+        self.assertFalse(leaked(mask_served(FORM)))
+        self.assertFalse(leaked(mask_served(FORM)))   # the remembered answer is masked too
+
+    def test_a_string_past_the_size_is_scanned_each_time_and_not_kept(self):
+        long_text = "w " * self.ct.REMEMBER_LONGEST + VISA
+        before = len(self.ct._REMEMBERED)
+        self.assertFalse(leaked(mask_served(long_text)))
+        self.assertEqual(len(self.ct._REMEMBERED), before)
+
+    def test_the_table_is_bounded(self):
+        with mock.patch.object(self.ct, "REMEMBER_MOST", 50):
+            for n in range(500):
+                mask_served(f"order note number {n}")
+            self.assertLessEqual(len(self.ct._REMEMBERED), 50)
 
 
 if __name__ == "__main__":

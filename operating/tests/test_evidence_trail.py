@@ -324,7 +324,27 @@ class PoTrailTests(unittest.TestCase):
                             "PurchaseOrder:portal.app_purchase_order:nope")
         self.assertEqual((trail["state"], trail["steps"], trail["next_action"]),
                          (None, [], None))
-        self.assertEqual(trail["gaps"][0]["reason"], "lateness_unavailable")
+        # the call failed: said apart from "answered and states no lateness entry"
+        self.assertEqual(trail["gaps"][0]["reason"], "call_failed")
+        self.assertIn("object_not_found", trail["gaps"][0]["where"])
+        self.assertIn("call_failed", et.FAILED_GAPS)
+
+    def test_a_successful_call_with_no_lateness_entry_is_a_data_gap_not_a_failed_read(self):
+        trail = et.po_trail(lambda name, args: {"lateness": [], "stages": []},
+                            "PurchaseOrder:portal.app_purchase_order:nope")
+        self.assertEqual([g["reason"] for g in trail["gaps"]], ["no_lateness_entry"])
+        self.assertIn("no_lateness_entry", et.DATA_GAPS)
+        self.assertFalse(set(et.DATA_GAPS) & set(et.FAILED_GAPS))
+
+    def test_a_tool_that_errors_inside_the_trail_is_a_stated_gap_never_a_shorter_trail(self):
+        s = tp.Store()
+        po = late_po(s)
+        base = reader(s)
+
+        def call(name, args):
+            return {"error": {"code": "unavailable"}} if name == "plx.timeline" else base(name, args)
+        trail = et.po_trail(call, po)
+        self.assertIn("tool_error", [g["reason"] for g in trail["gaps"]])
 
     def test_one_ten_and_sixty_follow_ups_keep_the_newest_with_no_duplicate(self):
         for n in (1, 10, 60):
@@ -363,8 +383,26 @@ class ManyLinesTests(unittest.TestCase):
                                         ("revision", "2099-01-28", "2099-01-12")], n)
             self.assertEqual((trail["eta"]["state"], trail["eta"]["date"]),
                              ("confirmed", "2099-01-28"), n)
-            self.assertNotIn("dates_cut", [g["reason"] for g in trail["gaps"]])
+            self.assertFalse({"read_failed", "chain_incomplete"} & {g["reason"] for g in trail["gaps"]})
             self.assertNotEqual(trail["next_action"]["rule"], "no_confirmation")
+
+    def test_more_than_twenty_confirmations_are_all_read_and_the_promise_history_is_whole(self):
+        s = tp.Store()
+        po = pl.bc_po(s, expected=None)
+        pl.line(s, po, "l0", "10", "0", binding="bc.purchase_order_lines", due="2099-01-02")
+        days = [f"2099-01-{10 + i:02d}" for i in range(25)]
+        for i, day in enumerate(days):
+            pl.confirm(s, po, f"c{i:02d}", day, f"2099-01-{1 + i:02d}")
+        seen = []
+        base = reader(s)
+
+        def counting(name, args):
+            if name == "plx.object" and str(args.get("object_id")).startswith("SupplierConf"):
+                seen.append(args["object_id"])
+            return base(name, args)
+        trail = et.po_trail(counting, po)
+        self.assertEqual(len(set(seen)), 25)          # none left unread past the twentieth
+        self.assertFalse({"read_failed", "chain_incomplete"} & {g["reason"] for g in trail["gaps"]})
 
     def test_a_promise_history_not_read_whole_is_not_decided_and_says_so(self):
         s = tp.Store()
@@ -383,8 +421,33 @@ class ManyLinesTests(unittest.TestCase):
         trail = et.po_trail(blind, po)
         self.assertEqual(trail["eta"]["state"], "not_determined")
         self.assertIn("more dates than were read", trail["eta"]["text"])
-        self.assertIn("dates_cut", [g["reason"] for g in trail["gaps"]])
+        # the reads of the confirmations FAILED: another try can read them
+        self.assertIn("read_failed", [g["reason"] for g in trail["gaps"]])
+        self.assertNotIn("chain_incomplete", [g["reason"] for g in trail["gaps"]])
         self.assertIsNone(trail["next_action"])
+
+    def test_dates_the_records_state_that_do_not_form_a_chain_are_a_data_gap_not_a_failed_read(self):
+        s = tp.Store()
+        po = pl.bc_po(s, expected=None)
+        for i in range(12):
+            pl.line(s, po, f"l{i}", "10", "0", binding="bc.purchase_order_lines",
+                    due=f"2099-01-{1 + i:02d}")
+        pl.confirm(s, po, "a", "2099-01-20", "2099-01-05")
+        pl.confirm(s, po, "b", "2099-01-28", "2099-01-12")
+        call = reader(s)
+
+        def skewed(name, args):   # every read succeeds; the entry's first date matches no document
+            got = call(name, args)
+            if name == "plx.process":
+                got = json.loads(json.dumps(got))
+                for e in got.get("lateness") or ():
+                    e["promised_date"] = "2099-01-03"
+                    e.get("gaps", []).append({"reason": "values_truncated"})
+            return got
+        trail = et.po_trail(skewed, po)
+        reasons = [g["reason"] for g in trail["gaps"]]
+        self.assertIn("chain_incomplete", reasons)
+        self.assertFalse(set(et.FAILED_GAPS) & set(reasons))
 
 
 class DisagreeTests(unittest.TestCase):
@@ -400,7 +463,7 @@ class DisagreeTests(unittest.TestCase):
         self.assertNotIn("revision", [x["kind"] for x in trail["steps"]])
         reasons = [g["reason"] for g in trail["gaps"]]
         self.assertIn("dates_disagree", reasons)
-        self.assertNotIn("dates_cut", reasons)
+        self.assertFalse({"read_failed", "chain_incomplete"} & set(reasons))
         self.assertEqual(trail["eta"]["state"], "promises_disagree")
         self.assertEqual(trail["next_action"]["rule"], "promises_disagree")
 

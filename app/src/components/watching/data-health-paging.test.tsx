@@ -6,7 +6,7 @@ const asked = vi.hoisted(() => ({ pages: [] as Array<[string, number]>, fail: fa
 const item = (n: number) => ({ id: `g${n}`, object_id: `Customer:x:${n}`, object_type: "Customer", summary: `finding ${n}`, open_url: `/object/Customer/Customer%3Ax%3A${n}` });
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
-  getDataHealth: () => { asked.first += 1; return Promise.resolve({ status: "read", partial: false, checks: [{ type: "dup", label: "Customers entered twice", on: true, read: false, open: 5, count: 0, hidden: 0, more: 0, items: [] }] }); },
+  getDataHealth: () => { asked.first += 1; return Promise.resolve({ status: "read", partial: false, checks: [{ type: "dup", label: "Customers entered twice", on: true, read: false, open: 1411, count: 0, hidden: 0, more: 0, items: [] }] }); },
   getDataHealthPage: (check: string, offset: number) => {
     asked.pages.push([check, offset]);
     if (asked.fail) return Promise.reject(new Error("down"));
@@ -21,7 +21,7 @@ describe("Data health findings", () => {
     render(<DataHealthSection titled={false} />);
     const check = await screen.findByTestId("data-health-dup");
     // the first read only counts: nothing of the findings is read until the check is opened
-    expect(screen.getByTestId("data-health-count-dup")).toHaveTextContent("5");
+    expect(screen.getByTestId("data-health-count-dup")).toHaveTextContent("1,411"); // digits grouped
     expect(asked.pages).toEqual([]);
     await userEvent.click(check.querySelector("summary") as HTMLElement);
     await waitFor(() => expect(check.querySelectorAll("li").length).toBe(3));

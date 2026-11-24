@@ -10,6 +10,11 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/account",
 }));
+// signed in, so the toolbar's Pin shows whenever the page offers it
+vi.mock("@/components/auth", async (orig) => ({
+  ...(await orig<object>()),
+  useAuth: () => ({ state: { status: "signed-in", me: { display_name: "Ana", principals: ["staff:ana"] } } }),
+}));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), bizPage: api.bizPage }));
 
 import { BizArticle, BizRecordPage } from "./biz-page";
@@ -74,8 +79,23 @@ describe("BizRecordPage", () => {
   it("refuses a kind this page does not show, without reading", async () => {
     nav.params = new URLSearchParams("kind=purchase_order&h=x");
     show();
-    expect(await screen.findByText(/doesn.t name a record/)).toBeTruthy();
+    expect(await screen.findByText("This page shows one account, and this address names none.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Records" })).toHaveAttribute("href", "/records");
+    expect(screen.getByRole("button", { name: "Search" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Pin / })).toBeNull();
     expect(api.bizPage).not.toHaveBeenCalled();
+  });
+
+  it("offers no Pin while the record could not be read, and offers it once it is", async () => {
+    api.bizPage.mockRejectedValueOnce(new ApiError(404, "not_found"));
+    const view = show();
+    await screen.findByRole("alert").catch(() => undefined);
+    await vi.waitFor(() => expect(api.bizPage).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /^Pin / })).toBeNull();
+    view.unmount();
+    api.bizPage.mockResolvedValue(CHAIN);
+    show();
+    expect(await screen.findByRole("button", { name: "Pin TAKE 5 to Home" })).toBeTruthy();
   });
 });
 

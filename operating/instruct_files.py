@@ -55,10 +55,12 @@ MAX_DOC_CHARTS = 8
 _CHART_AT = re.compile(r"^\s*\[chart\s+([1-9][0-9]?)\]\s*$", re.I)
 MAX_CONTENT = 60_000
 MAX_ROWS, MAX_COLS = 2000, 40
-# a table read from a statement (``make`` ``tables``): its rows per file kind, past which
-# the file is refused (a deck holds a short table only; Excel and CSV hold the long ones)
+# a table read from a statement (``make`` ``tables``): the rows a file KIND itself can hold
+# (Excel's own sheet limit; None: the kind has none, a long table runs over continued slides
+# or pages). No limit of the Workbench's own (owner 11-23).
 SLIDE_TABLE_ROWS = 15   # rows of a table on one slide (more go on continued slides)
-MAX_TABLE_ROWS = {"xlsx": 50_000, "csv": 50_000, "docx": 5_000, "pdf": 5_000, "pptx": 30}
+MAX_TABLE_ROWS: dict[str, "int | None"] = {"xlsx": 1_048_575, "csv": None, "docx": None,
+                                           "pdf": None, "pptx": None}
 _TABLE_AT = re.compile(r"^\s*\[table\s+([1-9][0-9]?)\]\s*$", re.I)
 _HEADING_LINE = re.compile(r"^\s*#{1,3}\s+\S")
 # SharePoint grant roles that let a person add a file to a folder
@@ -265,7 +267,8 @@ def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
         raise FileRefused("charts_not_held")   # a CSV is rows only: never a dropped chart
     if kind in ("xlsx", "csv") and data_rows(content) > MAX_ROWS:
         raise FileRefused("content_size")
-    if any(int(t.get("count") or 0) > MAX_TABLE_ROWS[kind] for t in tables):
+    held = MAX_TABLE_ROWS[kind]
+    if held is not None and any(int(t.get("count") or 0) > held for t in tables):
         raise FileRefused("table_size")
     content, cap = _with_tables(kind, content, tables)
     content = mask_served(content)   # an exported file never holds a card or a secret

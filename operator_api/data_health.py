@@ -40,6 +40,7 @@ def summary(view: Any) -> m.DataHealth:
     if status != "read":
         return m.DataHealth(status="unread")
     counts = found.get("counts") or {}
+    checked = found.get("checked") or {}
     checks = []
     for t in types:
         kind = str(t["type"])
@@ -47,8 +48,13 @@ def summary(view: Any) -> m.DataHealth:
         if t.get("default") != "on":
             checks.append(m.DataHealthCheck(type=kind, label=label, on=False))
         else:
-            checks.append(m.DataHealthCheck(type=kind, label=label, on=True, read=False,
-                                            open=max(0, int(counts.get(kind) or 0))))
+            # a rule that never ran has no count: "not checked", never 0
+            known = "checked" in found           # a host that says when each rule ran
+            at = checked.get(kind)
+            checks.append(m.DataHealthCheck(
+                type=kind, label=label, on=True, read=False,
+                open=max(0, int(counts.get(kind) or 0)) if at or not known else None,
+                checked_at=at))
     return m.DataHealth(status="read", checks=checks, as_of=found.get("as_of"))
 
 

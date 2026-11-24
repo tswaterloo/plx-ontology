@@ -9,6 +9,7 @@ import { currencyCode, fieldKey, fieldLabel, fieldValue, formatDate, formatDateT
 import type { Source, SourceSystem } from "@/lib/types";
 import { SystemCode } from "./ui/glyphs";
 import { Sheet } from "./ui/sheet";
+import { ShowAll } from "./show-all";
 
 /** The full source reader loads when a drawer first opens; until then the preview shows. */
 const SourceLoader = lazy(() => import("./source-view").then((m) => ({ default: m.SourceLoader })));
@@ -87,7 +88,7 @@ export function curatedFields(fields: Source["fields"], cited: string[] = []): C
 /** Record fields as label/value text for a preview: the curated lead, else the first others. */
 export function fieldEntries(fields: Source["fields"], cited: string[] = []): [string, string][] {
   const { lead, more } = curatedFields(fields, cited);
-  return [...lead, ...more].slice(0, 12);
+  return [...lead, ...more];
 }
 
 /**
@@ -133,6 +134,9 @@ export function sourceName(source: Source, record?: string | null): string {
   return kind ? `${sys} · ${kind}` : system ? SYSTEM_LABEL[system] : source.label;
 }
 
+/** Fields a preview shows before "Show all". */
+const PREVIEW_FIELDS = 12;
+
 export function SourcePreview({ source }: { source: Source }) {
   const sys = known(source.system) ? SYSTEM_LABEL[source.system] : "Source";
   const fields = fieldEntries(source.fields, Object.keys(source.fields ?? {}));
@@ -154,12 +158,14 @@ export function SourcePreview({ source }: { source: Source }) {
         </blockquote>
       ) : fields.length > 0 ? (
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[12px] leading-[18px]">
-          {fields.map(([k, v]) => (
-            <div key={k} className="contents">
-              <dt className="text-muted">{k}</dt>
-              <dd className="min-w-0 break-words font-medium tabular-nums text-fg">{v}</dd>
-            </div>
-          ))}
+          <ShowAll items={fields} first={PREVIEW_FIELDS} noun="fields">
+            {([k, v]) => (
+              <div className="contents">
+                <dt className="text-muted">{k}</dt>
+                <dd className="min-w-0 break-words font-medium tabular-nums text-fg">{v}</dd>
+              </div>
+            )}
+          </ShowAll>
         </dl>
       ) : (
         <p className="text-[12px] text-muted">No passage quoted.</p>

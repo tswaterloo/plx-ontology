@@ -8,7 +8,9 @@ const getInsight = vi.fn();
 const deleteInsight = vi.fn();
 const saveInsight = vi.fn();
 const setInsightSchedule = vi.fn();
+const readInsightFiltered = vi.fn();
 vi.mock("@/lib/api", () => ({
+  readInsightFiltered: (...a: unknown[]) => readInsightFiltered(...a),
   setInsightSchedule: (...a: unknown[]) => setInsightSchedule(...a),
   getInsight: (...a: unknown[]) => getInsight(...a),
   deleteInsight: (...a: unknown[]) => deleteInsight(...a),
@@ -59,7 +61,70 @@ describe("insights dashboard in one request", () => {
     expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy();
     expect(getInsight).not.toHaveBeenCalled();
     fireEvent.click(screen.getAllByText("Refresh")[0]);
-    await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true));
+    await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true, expect.anything()));
+  });
+});
+
+describe("a measure's tile", () => {
+  it("states the agreed definition its figures are, with owner, version and the day it was set, without opening Details", async () => {
+    const measure = { id: "revenue", name: "Revenue invoiced", definition: "Net line revenue on posted sales invoices.", owner: "Finance", version: "v78103d58", defined_on: "2026-11-23" };
+    const tile = { ...base, id: "measure_revenue", title: "Revenue invoiced", group: "Measures: Finance", chart: null, measure };
+    const one: InsightList = { ...list, items: [tile] };
+    getInsight.mockImplementation(() => Promise.resolve({ ...result("team_output"), ...tile, drawn: null }));
+    render(<InsightsDashboard list={one} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId("measure-definition-measure_revenue")).toBeTruthy());
+    expect(screen.getByTestId("measure-definition-measure_revenue")).toHaveTextContent(
+      "Revenue invoiced (agreed definition): Net line revenue on posted sales invoices. Owner Finance, definition v78103d58, set 23 Nov 2026.");
+  });
+});
+
+describe("a tile shows its work", () => {
+  it("lists the views and filters its statement reads; a filter taken out reads the tile again as the reader, and Reset reads it as it is", async () => {
+    const work = { views: ["emails", "staff"], more_filters: 2, filters: [{ index: 0, text: "sent_at >= now() - interval '28 days'" }, { index: 1, text: "NOT is_bulk" }] };
+    getInsight.mockImplementation((id: string) => Promise.resolve({ ...result(id), work }));
+    readInsightFiltered.mockReset().mockResolvedValue({ ...result("team_output"), rows: [["B. Person", "40"]], drawn: null, work: { ...work, filters: [] } });
+    render(<InsightsDashboard list={{ ...list, items: [list.items[0]] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
+    fireEvent.click(screen.getByText("Details"));
+    const shown = screen.getByTestId("insight-work-team_output");
+    expect(shown).toHaveTextContent("Reads emails, staff");
+    expect(shown).toHaveTextContent("2 further filters are in the whole query (Show query)");
+    expect(screen.queryByText("SELECT person, mail_sent FROM x")).toBeNull();   // words first; the statement when asked
+    fireEvent.click(screen.getByText("Show query"));
+    expect(screen.getByText("SELECT person, mail_sent FROM x")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "NOT is_bulk" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take out" }));
+    await waitFor(() => expect(screen.getByTestId("filtered-team_output")).toBeTruthy());
+    expect(readInsightFiltered).toHaveBeenCalledWith("team_output", [{ index: 1, text: null }]);
+    expect(screen.getAllByText("B. Person").length).toBeGreaterThan(0);
+    // the chips stay the tile's own statement's, not the changed read's
+    expect(screen.getByRole("button", { name: "NOT is_bulk" })).toBeTruthy();
+    getInsight.mockClear();
+    fireEvent.click(screen.getByText("Reset filters"));
+    await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true, expect.anything()));
+    await waitFor(() => expect(screen.queryByTestId("filtered-team_output")).toBeNull());
+  });
+});
+
+describe("insights tiles that are cut or cannot be measured", () => {
+  it("says first N of M for a cut list, and not measurable instead of an empty chart", async () => {
+    const cut = { ...result("s7"), truncated: true, row_count: 118, total_rows: 233, rows: [["A. Person", "12"]] };
+    const unknown = { ...result("team_output"), rows: [], row_count: 0, drawn: null, not_measurable: "Not measurable yet: emails.owner_role is not filled in for any message." };
+    render(<InsightsDashboard list={list} onChanged={vi.fn()} feed={{ s7: { result: cut }, team_output: { result: unknown } }} streaming={false} />);
+    await waitFor(() => expect(screen.getAllByText(/First 118 of 233 rows/).length).toBeGreaterThan(0));
+    expect(screen.getByTestId("unmeasurable-team_output").textContent).toMatch(/Not measurable yet/);
+    expect(screen.queryByRole("img", { name: "Work sent per person" })).toBeNull();
+  });
+});
+
+describe("a measure tile's stated exclusions", () => {
+  it("prints how many records the definition leaves out, in its own words, and says one not counted", async () => {
+    const late = { ...result("s7"), excluded: [
+      { parameter: "bc_only", says: "held only in Business Central", n: 1, value: "1", why: null },
+      { parameter: "other", says: "in another system", n: null, value: null, why: "too slow" }] };
+    render(<InsightsDashboard list={list} onChanged={vi.fn()} feed={{ s7: { result: late } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByTestId("excluded-s7-bc_only").textContent).toBe("1 more held only in Business Central"));
+    expect(screen.getByTestId("excluded-s7-other").textContent).toMatch(/Not counted: what is in another system \(too slow\)/);
   });
 });
 
@@ -84,7 +149,7 @@ describe("insights dashboard in one request, a tile left for later", () => {
       watched[0].cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
       await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
       expect(getInsight).toHaveBeenCalledTimes(1);
-      expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), false);
+      expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), false, expect.anything());
     } finally {
       vi.unstubAllGlobals();
     }
@@ -106,14 +171,14 @@ describe("insights dashboard", () => {
     try {
       render(<InsightsDashboard list={list} onChanged={vi.fn()} />);
       // the tile opened from Home reads at once; the other waits for the view, not drawn as busy
-      await waitFor(() => expect(getInsight).toHaveBeenCalledWith("s7", expect.anything(), false));
-      expect(getInsight).not.toHaveBeenCalledWith("team_output", expect.anything(), false);
+      await waitFor(() => expect(getInsight).toHaveBeenCalledWith("s7", expect.anything(), false, expect.anything()));
+      expect(getInsight).not.toHaveBeenCalledWith("team_output", expect.anything(), false, expect.anything());
       expect(screen.getByTestId("unread-team_output")).toBeTruthy();
       const far = watched.find((w) => w.el.id === "insight-team_output")!;
       expect(far.margin).toBeTruthy();
       // not yet in view: still unread
       far.cb([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver);
-      expect(getInsight).not.toHaveBeenCalledWith("team_output", expect.anything(), false);
+      expect(getInsight).not.toHaveBeenCalledWith("team_output", expect.anything(), false, expect.anything());
       far.cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
       await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
       expect(getInsight.mock.calls.filter((c) => c[0] === "team_output")).toHaveLength(1);
@@ -132,10 +197,10 @@ describe("insights dashboard", () => {
     render(<InsightsDashboard list={list} onChanged={changed} />);
     expect(screen.getByText("The team views show your own row only.")).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
-    expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), false);
+    expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), false, expect.anything());
     // Refresh reads it again now, not the answer kept from a few minutes ago
     fireEvent.click(screen.getAllByText("Refresh")[0]);
-    await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true));
+    await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true, expect.anything()));
     fireEvent.click(screen.getAllByText("Details")[0]);
     expect(screen.getByText("Per person: mail sent.")).toBeTruthy();
     // the reader sees what it counts in words, never the database statement
@@ -245,9 +310,10 @@ describe("insights dashboard", () => {
     expect(monitorLine({ ...watched, notify: "new_rows", watch: null })).toBe("Every morning, tells you when a new row appears");
   });
 
-  it("with no monitor the list says how to make one", () => {
-    render(<InsightsDashboard list={list} onChanged={vi.fn()} />);
-    expect(screen.getByTestId("monitors")).toHaveTextContent("None yet");
+  it("with no monitor there is no empty Monitors section, and the page says how to make one", () => {
+    render(<InsightsDashboard list={{ ...list, saving: true, items: [list.items[0]] }} onChanged={vi.fn()} />);
+    expect(screen.queryByTestId("monitors")).toBeNull();
+    expect(screen.getByText(/listed under Monitors/)).toBeTruthy();
   });
 
   it("a number is watched against a line once the line is complete", async () => {

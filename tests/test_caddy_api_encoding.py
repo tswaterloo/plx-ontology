@@ -33,6 +33,21 @@ class Api(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/api/gzstream":   # the API's own compressed stream (stream_encoding)
+            from operator_api.stream_encoding import gzip_chunks
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Content-Encoding", "gzip")
+            self.end_headers()
+            chunks = gzip_chunks(iter([b'{"list":[]}\n', b'{"id":"t1"}\n']))
+            self.wfile.write(next(chunks))
+            self.wfile.flush()
+            RELEASE.wait(10)
+            for chunk in chunks:
+                self.wfile.write(chunk)
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if self.path == "/api/stream":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -61,6 +76,7 @@ class ApiEncodingTests(unittest.TestCase):
         cls.api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Api)
         threading.Thread(target=cls.api.serve_forever, daemon=True).start()
         cls.port = free_port()
+        cls.app_port = free_port()   # the web app: nothing listens until a test starts it
         caddyfile = cls.tmp / "Caddyfile"
         caddyfile.write_text(
             "{\n\tadmin unix/%s/admin.sock\n\tauto_https off\n}\n\n%s\n\nhttp://127.0.0.1:%d {\n"
@@ -69,7 +85,7 @@ class ApiEncodingTests(unittest.TestCase):
                "XDG_CONFIG_HOME": str(cls.tmp / "xdg"),
                "PLX_API_UPSTREAM": f"127.0.0.1:{cls.api.server_address[1]}",
                "PLX_API_STANDBY": f"unix/{cls.tmp}/none.sock",
-               "PLX_APP_UPSTREAM": f"127.0.0.1:{free_port()}"}
+               "PLX_APP_UPSTREAM": f"127.0.0.1:{cls.app_port}"}
         cls.caddy = subprocess.Popen([CADDY, "run", "--config", str(caddyfile), "--adapter",
                                       "caddyfile"], env=env, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
@@ -115,6 +131,59 @@ class ApiEncodingTests(unittest.TestCase):
         finally:
             RELEASE.set()
             conn.close()
+
+    def test_a_stream_the_api_compressed_passes_through_and_its_first_line_arrives_at_once(self):
+        import zlib
+        RELEASE.clear()
+        conn, got = self.get("/api/gzstream", "gzip, zstd")
+        self.addCleanup(conn.close)
+        try:
+            self.assertEqual(got.getheader("Content-Encoding"), "gzip")   # not encoded twice
+            d = zlib.decompressobj(31)
+            self.assertEqual(d.decompress(got.read1(65536)), b'{"list":[]}\n')   # before the end
+            RELEASE.set()
+            self.assertEqual(d.decompress(got.read()), b'{"id":"t1"}\n')
+            self.assertTrue(d.eof)
+        finally:
+            RELEASE.set()
+            conn.close()
+
+    def test_a_page_asked_while_the_web_app_restarts_waits_for_it_and_never_fails(self):
+        # a deploy restarts the web app (plx-app: next start) when its tree changed; for its
+        # boot (seconds) nothing listens on its port. A reader's page or script asked then
+        # waits for it instead of getting the "restarting" error page
+        class App(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = b"<html>the app</html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        started = []
+
+        def boot():
+            time.sleep(1.5)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", self.app_port), App)
+            started.append(server)
+            server.serve_forever()
+        threading.Thread(target=boot, daemon=True).start()
+        try:
+            t0 = time.monotonic()
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+            self.addCleanup(conn.close)
+            conn.request("GET", "/records")
+            got = conn.getresponse()
+            self.assertEqual(got.status, 200)
+            self.assertEqual(got.read(), b"<html>the app</html>")
+            self.assertGreater(time.monotonic() - t0, 1.0)   # it was asked before the app was up
+        finally:
+            for server in started:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

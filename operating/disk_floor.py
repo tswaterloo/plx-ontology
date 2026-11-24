@@ -1,4 +1,5 @@
-"""One disk floor per file system (stdlib only, imports nothing of the repo).
+"""One disk floor per file system (stdlib only; of the repo it imports only the stdlib-only
+``operating.disk_budget``, whose floor is /data's).
 
 Job admission (``operating.jobq``), the test cluster guard (``tools/testslot.py``) and
 ``operating.ops_health`` (which re-exports these names) read this table; it is a leaf so a
@@ -16,7 +17,11 @@ from typing import Mapping
 # /usr/local/lib/plx: a test keeps them equal) and the test cluster guard (tools/testslot.py)
 # all read this one table; the ``disk_free_gb`` alarm warns well above it. A mount not
 # listed has the root disk's floor.
-DISK_FLOOR_GB: dict[str, float] = {"/": 10.0, "/data": 40.0}
+# /data's floor is the one disk budget's (operating.disk_budget.FLOOR_GB, the standby / WAL
+# line, speed specs P3): one number for every job that writes there.
+from operating.disk_budget import FLOOR_GB as _DATA_FLOOR_GB  # noqa: E402 (stdlib-only leaf)
+
+DISK_FLOOR_GB: dict[str, float] = {"/": 10.0, "/data": _DATA_FLOOR_GB}
 
 
 def mount_of(path: "str | Path") -> str:

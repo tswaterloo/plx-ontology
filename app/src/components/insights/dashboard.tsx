@@ -3,11 +3,14 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { AnswerCharts } from "@/components/answer-chart";
+import { DefinitionLines } from "@/components/definition-lines";
+import { QueryToggle, ShowWork } from "@/components/query-work";
 import { LoadProblem } from "@/components/ui/notice";
+import { WhyDidItChange } from "@/components/insights/why";
 import { Pending } from "@/components/ui/skeleton";
-import { deleteInsight, getInsight, setInsightSchedule } from "@/lib/api";
+import { deleteInsight, getInsight, readInsightFiltered, setInsightSchedule } from "@/lib/api";
 import { ApiError, noticeKind, plainError, tileError } from "@/lib/errors";
-import { formatDate, formatDateTime } from "@/lib/format";
+import { ago, formatDate, formatDateTime } from "@/lib/format";
 import { full, human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
@@ -84,7 +87,7 @@ function Rows({ data }: { data: InsightResult }) {
           ))}
         </tbody>
       </table>
-      {data.truncated && <p className="pt-1 text-[12px] text-muted">Only the first rows are shown.</p>}
+      {data.truncated && <p className="pt-1 text-[12px] text-muted">{data.total_rows ? `First ${data.row_count} of ${data.total_rows} rows.` : `Only the first ${data.row_count} rows are shown.`}</p>}
     </div>
   );
 }
@@ -200,7 +203,7 @@ function TellMeWhen({ item }: { item: InsightInfo }) {
           onKeyDown={(e) => { if (e.key === "Enter" && ready) go.current?.click(); }} />
       </label>
       {ready
-        ? <Link ref={go} href={tellMeWhenHref(item, words)} className={`${quiet} inline-flex items-center`}>Set up</Link>
+        ? <Link ref={go} prefetch={false} href={tellMeWhenHref(item, words)} className={`${quiet} inline-flex items-center`}>Set up</Link>
         : <span className={`${quiet} inline-flex items-center opacity-50`} aria-disabled="true">Set up</span>}
     </span>
   );
@@ -227,8 +230,15 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
   const [error, setError] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
   const [round, setRound] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const [all, setAll] = useState(false);
   const retry = useCallback(() => setRound((n) => n + 1), []);
+  // the filters shown are the tile's own statement's, kept while a changed read is shown
+  const [filtered, setFiltered] = useState(false);
+  const [work, setWork] = useState<InsightResult["work"]>(null);
+  useEffect(() => {
+    if (data?.work && !filtered) setWork(data.work);
+  }, [data, filtered]);
   const here = useRef<HTMLElement>(null);
   const fed = streaming !== undefined && round === 0 && !entry?.later;   // the dashboard's one request supplies it
   useEffect(() => {
@@ -254,7 +264,8 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
     if (fed || !near) return;
     const ctl = new AbortController();
     setError(null);
-    getInsight(item.id, ctl.signal, round > 0).then(setData, (e) => !ctl.signal.aborted && setError(e));
+    setRefreshing(round > 0);
+    getInsight(item.id, ctl.signal, round > 0, setData).then((d) => { setData(d); setRefreshing(false); }, (e) => { if (!ctl.signal.aborted) { setError(e); setRefreshing(false); } });
     return () => ctl.abort();
   }, [item.id, round, near, fed]);
   // opened from Home ("/insights#insight-s12"): brought into view once it is drawn
@@ -270,10 +281,11 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
     }
   };
   return (
-    <section id={`insight-${item.id}`} ref={here} className="space-y-2 border-t border-border pt-3" data-testid={`insight-${item.id}`} aria-labelledby={`insight-${item.id}-title`}>
+    <section id={`insight-${item.id}`} ref={here} className="cv-auto cv-tile space-y-2 border-t border-border pt-3" data-testid={`insight-${item.id}`} aria-labelledby={`insight-${item.id}-title`}>
       <div className="flex items-baseline gap-2">
         <h3 id={`insight-${item.id}-title`} className="flex-1 text-[14px] font-semibold">{item.title}</h3>
-        <Link href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`} className={`${quiet} inline-flex items-center`}>Ask about this</Link>
+        {/* no prefetch: every tile has one, each a different question to the same Ask page (12+ server renders a visit) */}
+        <Link prefetch={false} href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`} className={`${quiet} inline-flex items-center`}>Ask about this</Link>
         <button type="button" className={quiet} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           {open ? "Hide details" : "Details"}
         </button>
@@ -288,22 +300,53 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
         <Pending label="Reading" />
       ) : (
         <>
-          {data.drawn ? <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} /> : <Rows data={data} />}
+          {data.not_measurable && <p className="text-[13px] text-muted" data-testid={`unmeasurable-${item.id}`}>{data.not_measurable}</p>}
+          {data.not_measurable ? null : data.drawn ? <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} /> : <Rows data={data} />}
+          {(data.excluded ?? []).map((x) => (
+            <p key={x.parameter} className="text-[13px] text-muted" data-testid={`excluded-${item.id}-${x.parameter}`}>
+              {x.n === null || x.n === undefined ? `Not counted: what is ${x.says} (${x.why ?? "not read"})` : `${x.n.toLocaleString()} more ${x.says}`}
+            </p>
+          ))}
+          {(data as InsightResult & { checked?: { status: string; says: string } | null }).checked && (
+            <p className={`text-[13px] ${(data as InsightResult & { checked?: { status: string } | null }).checked?.status === "differs" ? "text-red-700" : "text-muted"}`} data-testid={`checked-${item.id}`}>
+              Checked: {(data as InsightResult & { checked?: { says: string } | null }).checked?.says}
+            </p>
+          )}
           <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
             {item.fixed_dates && <span data-testid={`fixed-${item.id}`}>Dates fixed when pinned: {item.fixed_dates}</span>}
+            {filtered && <span data-testid={`filtered-${item.id}`}>Your filters (not saved)</span>}
             <span>
-              {data.drawn && !all && topOf(data.drawn) !== data.drawn ? `Top ${TOP} of ${data.drawn.labels.length}` : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`}
+              {data.drawn && !all && topOf(data.drawn) !== data.drawn ? `Top ${TOP} of ${data.drawn.labels.length}` : data.truncated ? (data.total_rows ? `First ${data.row_count} of ${data.total_rows} rows` : `First ${data.row_count} rows (more not counted)`) : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`}
               {data.drawn?.as_of ? "" : data.as_of ? `, data as of ${formatDate(data.as_of)}` : `, read ${formatDateTime(data.read_at)}`}
+              {data.read_at ? `, value read ${ago(data.read_at)}` : ""}{refreshing ? ", refreshing" : round > 0 ? ", refreshed" : ""}
             </span>
             {data.drawn && topOf(data.drawn) !== data.drawn && (
               <button type="button" className={quiet} onClick={() => setAll((a) => !a)}>{all ? `Show top ${TOP}` : `Show all ${data.drawn.labels.length}`}</button>
             )}
-            <button type="button" className={quiet} onClick={retry}>Refresh</button>
+            <button type="button" className={quiet} onClick={() => { setFiltered(false); retry(); }}>Refresh</button>
           </p>
+          {item.measure && <DefinitionLines definitions={[item.measure]} testId={`measure-definition-${item.id}`} />}
+          {item.measure && item.id.startsWith("measure_") && data.columns.includes("month") && <WhyDidItChange id={item.id} testId={`why-${item.id}`} />}
           {open && (
             <div className="space-y-2" data-testid="insight-definition">
               {data.about && <p className="text-[13px] leading-5">{data.about}</p>}
+              {work && (
+                <ShowWork
+                  key={round}
+                  work={work}
+                  testId={`insight-work-${item.id}`}
+                  read={async (edits) => {
+                    setData(await readInsightFiltered(item.id, edits));
+                    setFiltered(true);
+                  }}
+                  onReset={() => {
+                    setFiltered(false);
+                    retry();
+                  }}
+                />
+              )}
               {data.drawn && <Rows data={data} />}
+              <QueryToggle sql={data.sql} testId={`insight-query-${item.id}`} />
             </div>
           )}
         </>
@@ -326,21 +369,19 @@ export function monitorLine(item: InsightInfo): string {
 /** The monitors you run (your charts that run by themselves), listed first, each linking to its chart. */
 function Monitors({ items }: { items: InsightInfo[] }) {
   const on = items.filter((i) => i.saved && i.schedule);
+  // nothing running by itself: no empty section (the page's closing line says how to start one)
+  if (on.length === 0) return null;
   return (
     <section aria-label="Monitors" className="space-y-1.5" data-testid="monitors">
       <h2 className="text-[15px] font-semibold">Monitors</h2>
-      {on.length === 0 ? (
-        <p className="text-[13px] text-muted">None yet. Pin a chart from an Ask answer, then set it to check by itself and tell you on Home.</p>
-      ) : (
-        <ul className="divide-y divide-border border-y border-border">
-          {on.map((i) => (
-            <li key={i.id} className="flex flex-wrap items-baseline justify-between gap-x-4 py-1.5 text-[13px]">
-              <a href={`#insight-${i.id}`} className="font-medium hover:underline">{i.title}</a>
-              <span className="text-[12px] text-muted">{monitorLine(i)}{i.last_run ? ` · ${i.last_run}` : ""}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="divide-y divide-border border-y border-border">
+        {on.map((i) => (
+          <li key={i.id} className="flex flex-wrap items-baseline justify-between gap-x-4 py-1.5 text-[13px]">
+            <a href={`#insight-${i.id}`} className="font-medium hover:underline">{i.title}</a>
+            <span className="text-[12px] text-muted">{monitorLine(i)}{i.last_run ? ` · ${i.last_run}` : ""}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -374,7 +415,7 @@ export function Measures({ measures }: { measures: Measure[] }) {
                 Split by {m.dimensions.join(", ")}. Reads {m.period}.
               </p>
               {m.ask && (
-                <Link href={`/ask?q=${encodeURIComponent(m.ask)}`} className="text-[12px] text-accent hover:underline">
+                <Link prefetch={false} href={`/ask?q=${encodeURIComponent(m.ask)}`} className="text-[12px] text-accent hover:underline">
                   {m.ask}
                 </Link>
               )}
@@ -393,8 +434,18 @@ export function InsightsDashboard({ list, onChanged, feed, streaming }: { list: 
         <p className="text-[13px] text-muted">The team views show your own row only.</p>
       )}
       {list.saving && <Monitors items={list.items} />}
+      {/* many charts: a line of the groups to jump to, each with how many it holds */}
+      {grouped(list.items).length > 2 && (
+        <nav aria-label="Groups" className="flex flex-wrap gap-x-4 gap-y-1 text-[13px]" data-testid="insight-groups">
+          {grouped(list.items).map(([group, items]) => (
+            <a key={group} href={`#insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="text-muted hover:text-fg hover:underline">
+              {group} <span className="num text-faint">{items.length}</span>
+            </a>
+          ))}
+        </nav>
+      )}
       {grouped(list.items).map(([group, items]) => (
-        <section key={group} className="space-y-4" aria-label={group}>
+        <section key={group} id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="scroll-mt-16 space-y-4" aria-label={group}>
           <h2 className="text-[15px] font-semibold">{group}</h2>
           <div className="grid gap-6 xl:grid-cols-2">
             {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} entry={feed?.[it.id]} streaming={feed ? !!streaming : undefined} />)}
@@ -402,7 +453,7 @@ export function InsightsDashboard({ list, onChanged, feed, streaming }: { list: 
         </section>
       ))}
       {list.saving && !list.items.some((i) => i.saved) && (
-        <p className="text-[13px] text-muted">Ask for a chart and pin it from the answer: it shows here and stays live.</p>
+        <p className="text-[13px] text-muted">Ask for a chart and pin it from the answer: it shows here and stays live. Set it to check by itself and it is listed under Monitors.</p>
       )}
       <Measures measures={list.measures ?? []} />
     </div>

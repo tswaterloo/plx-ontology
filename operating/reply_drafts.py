@@ -339,7 +339,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-ASSISTANT = "assistant"   # the registry entry whose prepare step gives a message's material
+ASSISTANT = "assistant"
+HUNG_SECONDS = 1800.0     # a material read that has not returned in this long is a hung process
+# What a message's prepare step needs of its autopilot (the general assistant: the job handler's
+# material, the model deciding): code, not a registry trigger, so the drafts path outlives the
+# triggers (ASSIST specs 5; open-assist3-l1-draft-executor, option 2)
+ASSISTANT_PREPARE = {"id": ASSISTANT, "handler": "job", "draft": "agent",
+                     "label": "Prepared for you", "due_minutes": 480, "done_when": "owner_replied"}
 
 
 def screen_model(environ: Mapping[str, str]) -> Optional[str]:
@@ -357,7 +363,7 @@ def keep_jobs(queue: Any, registry: Mapping[str, Any], spec: Mapping[str, Any],
     ``also_jobs``): each change is prepared through the prepared-writes desk and runs only
     on that person's confirm, under every guard of the write path. ``todos`` (a system with
     no write path, an invitation to answer: things to do by hand) ride on the same item.
-    The item id or None: no queue, the kill switch, nothing kept, or the hourly cap spent."""
+    The item id or None: no queue, the kill switch, or nothing kept (no hourly cap: owner 11-23)."""
     from . import autopilot as apm
     from .autopilot_jobs import kept
     from .autopilot_records import _digest, _iso
@@ -365,15 +371,12 @@ def keep_jobs(queue: Any, registry: Mapping[str, Any], spec: Mapping[str, Any],
     todos = [dict(t) for t in todos if isinstance(t, Mapping) and str(t.get("what") or "").strip()]
     if queue is None or not (jobs or todos) or apm.killed(queue, os.environ):
         return None
-    cap = int((registry.get("limits") or {}).get("per_owner_per_hour") or 30)
     item_id = "ap_" + _digest(str(spec["id"]) + ":job", event["event_id"], owner)[:24]
     label = str(spec.get("label") or spec["id"])
     due = now + timedelta(minutes=int(spec.get("due_minutes") or 480))
     with queue.conn:
         if queue.item(item_id) is not None:
             return item_id
-        if not queue.rate_take(f"job:{owner}", now.strftime("%Y-%m-%dT%H"), cap):
-            return None
         queue.add_item({
             "item_id": item_id, "event_id": event["event_id"], "autopilot": spec["id"],
             "owner": owner, "title": f"{label}: " + summary[:apm.SUMMARY_CHARS],
@@ -401,7 +404,7 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
                assistant: Any, owner: str, oid: str, *,
                now: Optional[datetime] = None, state_dir: Optional[Path] = None,
                held: Optional[dict[str, Any]] = None, queue: Any = None,
-               history: Any = None) -> list[dict[str, Any]]:
+               history: Any = None, extra: str = "", as_of: str = "") -> list[dict[str, Any]]:
     """One open line's draft by the Assistant (``operating.autopilot_agent``), the same
     session Autopilot runs: the line's message event, the screens a draft keeps (participants
     cleared, nothing about pay or HR), the prepare step for its material, the session reading
@@ -431,9 +434,7 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
         return [{"why": "pay_or_hr"}]
     if str(event.get("sender") or "").strip().lower() in never_senders(state_dir, owner):
         return [{"why": "never_sender"}]
-    spec = next((x for x in registry.get("autopilots") or () if x.get("id") == ASSISTANT), None)
-    if spec is None:
-        return [{"why": "no_assistant"}]
+    spec = ASSISTANT_PREPARE
     if assistant is None:
         return [{"why": "draft_model_off"}]
     # the line is on their replies to write: a reply is due (``autopilot_agent_io.reply_due``)
@@ -445,7 +446,7 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
         except (sqlite3.Error, AttributeError, TypeError, ValueError):
             pass        # no history read: the message alone, as before
     day = (now or _now()).date()
-    seconds = float((registry.get("limits") or {}).get("handler_seconds") or 60)
+    seconds = HUNG_SECONDS      # no deadline on reading the material: only a hung read ends it
     prepared = eng._prepare(st, spec, event, day, domains, seconds)
     if prepared.get("skip") or prepared.get("error"):
         return [{"why": str(prepared.get("skip") or prepared.get("error"))}]
@@ -456,10 +457,12 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     person = next((a for a in mine if a in sent_to), mine[0] if mine else owner)
     described, _inside = io.agent_input(event, text, material, addresses_of)
     described += "\n" + OWED.format(person=person)
+    if extra:      # the prepared session's matter, nearest precedents and ground rules (``assist_prepared``)
+        described += "\n" + extra
     # the person's memory and past corrections (``autopilot.person_memory``)
     described += apm.person_memory(state_dir, held if held is not None else {}, owner, mine,
                                    event, prepared.get("work") or {})
-    got, why = assistant.run(event, owner, described, str(person), people, reads=True)
+    got, why = assistant.run(event, owner, described, str(person), people, reads=True, as_of=as_of)
     if got is None:
         got = io.invitation_only(event, material, why)
     if got is None:

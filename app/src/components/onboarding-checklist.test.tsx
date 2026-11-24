@@ -27,7 +27,9 @@ describe("the onboarding checklist", () => {
     expect(screen.getByTestId("onboarding-count")).toHaveTextContent("3 of 6 done");
     fireEvent.click(screen.getByLabelText("Send one feedback note"));
     expect(screen.getByTestId("onboarding-count")).toHaveTextContent("2 of 6 done");
-    expect(screen.getByLabelText("Sign in with Microsoft")).toBeDisabled();
+    expect(screen.getByLabelText("Sign in")).toBeDisabled();
+    // ticked because the reader is signed in, whatever the way: never names a way this server may not offer
+    expect(document.body.innerHTML).not.toMatch(/Microsoft/);
   });
 });
 

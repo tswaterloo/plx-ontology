@@ -106,7 +106,27 @@ CATALOG_DDL = """CREATE TABLE IF NOT EXISTS {s}.record_types (
     fields jsonb NOT NULL, links_out jsonb NOT NULL, links_in jsonb NOT NULL,
     built_at text NOT NULL);
 ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS tables text[] NOT NULL DEFAULT '{{}}';
-ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS kinds jsonb NOT NULL DEFAULT '{{}}'"""
+ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS kinds jsonb NOT NULL DEFAULT '{{}}';
+ALTER TABLE {s}.record_types ADD COLUMN IF NOT EXISTS dates jsonb NOT NULL DEFAULT '[]'"""
+
+# The declared day of a record the build wrote before the declarations existed
+# (``date_declare apply``): a side table, never an UPDATE of the 17 GB ``records`` heap (every
+# such update is non-HOT over 8 indexes: 25-40 GB of WAL). The guarded ``records`` view reads
+# ``COALESCE(record_dates.day, records.record_date)``; a row only counts for the version it
+# was read from (``ver``), so a record changed since reads its own, newly built date or none.
+DATES_TABLE = "record_dates"
+DATES_DDL = """CREATE TABLE IF NOT EXISTS {s}.record_dates (
+    type text NOT NULL, rid bigint NOT NULL, ver bigint NOT NULL, day text NOT NULL,
+    field text NOT NULL, PRIMARY KEY (type, rid))"""
+# the label search reads it as the API / eval roles (migration 0077 grants the same)
+DATES_GRANT = """DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'plx_api') THEN
+        EXECUTE 'GRANT SELECT ON {s}.record_dates TO plx_api'; END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'plx_eval') THEN
+        EXECUTE 'GRANT SELECT ON {s}.record_dates TO plx_eval'; END IF;
+END $$"""
+DATES_JOIN = ("LEFT JOIN {s}.record_dates d ON d.type = t.type AND d.rid = t.rid AND "
+              "d.ver = t.ver")
 
 
 # Kinds: the values a type's category-like text fields take (``kinds_of``).
@@ -155,12 +175,10 @@ def _name_words(pg: Any, s: str) -> set[str]:
 
 def nameable(value: Any, people: set[str]) -> bool:
     """Whether a field value may sit in the catalog beside the row: short plain text that is
-    no address, no person's name (a staff name, whole), and that no word of names
-    Freightcom (``listed_sql``'s rule)."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
+    no address and no person's name (a staff name, whole)."""
     v = str(value or "").strip()
     return bool(v) and len(v) <= KIND_MAX_LEN and "@" not in v and "\n" not in v \
-        and v.lower() not in people and not FREIGHTCOM.search(v) \
+        and v.lower() not in people \
         and not re.fullmatch(r"[\d\W_]+", v) \
         and not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", v, re.I)
 
@@ -235,6 +253,8 @@ def catalog_rows(schema: Any, counts: Mapping[str, tuple[int, str | None, Sequen
     links: Mapping[str, Mapping[str, Any]] = schema.link_types
     identity = schema.identity_link_types() if hasattr(schema, "identity_link_types") else \
         frozenset()
+    from operating.pg import date_declare
+    declared = date_declare.load()["types"]
     out = []
     for tid in sorted(counts):
         held, newest, bindings = counts[tid]
@@ -243,13 +263,20 @@ def catalog_rows(schema: Any, counts: Mapping[str, tuple[int, str | None, Sequen
         fields = [{"name": p["name"], "kind": p.get("value_type") or "text",
                    **({"description": p["description"]} if p.get("description") else {})}
                   for p in props if isinstance(p, Mapping) and p.get("name")]
+        # the declared dates (operating/pg/date_declarations.json, from a profile of the
+        # type's own values) lead the schema's: the first is the date of record
+        dec = declared.get(tid) or {}
+        dates = date_declare.means(dec)
+        date_fields = date_declare.fields_of(dec) + [
+            f["name"] for f in fields if f["kind"] in DATE_KINDS
+            and f["name"] not in date_declare.fields_of(dec)]
         out.append({
             "type": tid, "name": plain_name(tid),
             "description": (spec.get("description") or None),
             "systems": sorted({system_of(b) for b in bindings}),
             "sources": sorted(set(bindings)), "rows": int(held), "newest": newest,
             "declared": bool(spec), "label_fields": list(spec.get("display") or ()),
-            "date_fields": [f["name"] for f in fields if f["kind"] in DATE_KINDS],
+            "date_fields": date_fields, "dates": dates,
             "identity_links": sorted(lid for lid in identity
                                      if links[lid].get("from") == tid),
             "fields": fields,
@@ -328,7 +355,7 @@ def build_catalog(dsn: str, schema: Any, biz: str | None = None,
                 write.execute(
                     f"INSERT INTO {s}.record_types ({', '.join(cols)}) VALUES "
                     f"({', '.join(['%s'] * len(cols))})",
-                    [Jsonb(row[c]) if c in ("fields", "links_out", "links_in", "kinds") else row[c]
+                    [Jsonb(row[c]) if c in ("fields", "links_out", "links_in", "kinds", "dates") else row[c]
                      for c in cols])
             write.execute(f"CREATE TABLE IF NOT EXISTS {s}.state (view text PRIMARY KEY, "
                           "built_at text NOT NULL, digest text, rows bigint NOT NULL, "
@@ -344,12 +371,9 @@ def build_catalog(dsn: str, schema: Any, biz: str | None = None,
 # --------------------------------------------------------------------------- views
 
 def listed_sql(t: str = "t") -> str:
-    """Whether a catalog row (``record_types`` as ``t``) may be named to anyone: no word of
-    its type, description or sources names Freightcom. The guarded view and the prompt's
-    catalog lines (``ontology_tools_sql.catalog_lines``) both filter by this."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    return (f"NOT (concat_ws(' ', {t}.type, {t}.description, {t}.sources::text) ~* "
-            f"{_lit(FREIGHTCOM.pattern)})")
+    """Whether a catalog row (``record_types`` as ``t``) may be named to anyone: every row
+    (Freightcom is read like any other data, 11-23; kept as the one filter point)."""
+    return "true"
 
 
 # The people exclusion decides versions only up to its ``covered_ver`` (``people_excluded``):
@@ -367,12 +391,12 @@ BOUND_COLS = ("ver", "biz")
 def record_types_ddl(biz: str | None = None, dst: str | None = None) -> str:
     """The catalog as any reader reads it: its types, fields and links, never how many
     records a type holds or when the newest came (counted through ``records``, which the
-    door scopes); a type whose own words name Freightcom is not listed (``listed_sql``)."""
+    door scopes)(``listed_sql``)."""
     src, dst = biz or bv.SCHEMA, dst or sql_views.guarded_schema(biz)
     return (f"CREATE VIEW {dst}.record_types WITH (security_barrier) AS SELECT t.type, "
             "t.name, t.description, t.systems, t.sources, t.declared, t.label_fields, "
             "t.date_fields, t.identity_links, t.fields, t.links_out, t.links_in, t.tables, "
-            "t.kinds, t.built_at "
+            "t.kinds, t.dates, t.built_at "
             f"FROM {src}.record_types t WHERE {listed_sql('t')}")
 
 
@@ -380,27 +404,48 @@ class _Generic:
     """What ``door.view_ddl`` reads of a view (its name and columns)."""
 
     def __init__(self, name: str, cols: Sequence[str],
-                 fallback: Mapping[str, str] | None = None) -> None:
+                 fallback: Mapping[str, str] | None = None, pages_only: bool = False,
+                 also: Sequence[str] = (), extra: Sequence[tuple[str, str]] = (),
+                 hidden_group: Sequence[str] = (), join: str = "",
+                 exprs: Mapping[str, str] | None = None) -> None:
         self.name = name
+        self.hidden_group = tuple(hidden_group)   # a count-only ``<name>_hidden`` view, grouped by these
+        self.pages_only = pages_only   # the person pages' schema only, never the AI's
+        self.also = list(also)         # this table's own conditions over ``t``, beside UNDECIDED
+        self.extra = list(extra)       # (name, SQL over ``t``) columns computed at read time
+        self.join = join               # a LEFT JOIN (alias d) the view reads besides the table
+        self.exprs = dict(exprs or {})  # column -> SQL over t and d shown in place of t."col"
         self.cols = [bv.Col(c, "text", "") for c in cols]
         self.fallback = dict(fallback or {})
 
 
 def generic_views() -> list[_Generic]:
     from operating.pg import generic_records as gr
-    return [_Generic("records", gr.RECORD_COLS, gr.FALLBACK),
-            _Generic("record_links", gr.LINK_COLS)]
+    from operating.pg import page_items as pi
+    from operating.pg import plan_sections as ps
+    return [_Generic("records", gr.RECORD_COLS, gr.FALLBACK, join=DATES_JOIN,
+                     exprs={"record_date": 'COALESCE(d."day", t."record_date")'}),
+            _Generic("record_links", gr.LINK_COLS),
+            _Generic(pi.TABLE, pi.VIEW_COLS, pages_only=True,
+                     hidden_group=("page_kind", "page_key", "section")),
+            _Generic(ps.TABLE, ps.COLS, pages_only=True, also=[ps.needs_ddl(), ps.marked_ddl()],
+                     extra=[("current", ps.deps_ddl())])]
 
 
 def make_views(write: Any, biz: str | None = None, *,
-               step: Callable[[Callable[[Any], Any], str], Any] | None = None) -> list[str]:
+               step: Callable[[Callable[[Any], Any], str], Any] | None = None,
+               follow: bool = True) -> list[str]:
     """(Re)make the generic guarded views: ``record_types`` (the catalog) and, once
     ``generic_records`` built their tables, ``records`` and ``record_links`` as DOOR v2
     views (``door.view_ddl``: the reader's held classes, ``ai_ok`` for the AI's schema),
     in the AI's schema and the person pages' schema, granted to each schema's role.
     ``step(f, what)`` runs each part (``f(write)``): ``sql_views.install`` gives each its
     own short transaction (``sql_views.short``); none: all in the caller's transaction. A
-    view whose DDL and tables are unchanged is not touched (``sql_views.put``)."""
+    view whose DDL and tables are unchanged is not touched (``sql_views.put``).
+    ``follow=False``: the exclusion follow-up is left to the caller (a swap that already decided
+    its new table's rows against the set before taking its locks: the follow-up scans every
+    table's lineage, minutes under load, and must not run while a swap holds a table's lock,
+    where every reader of the table waits)."""
     from operating.pg import access_classes, door
     run = step or (lambda f, what: f(write))
     s = biz or bv.SCHEMA
@@ -412,12 +457,16 @@ def make_views(write: Any, biz: str | None = None, *,
         have = {r[0] for r in w.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = %s "
             "AND table_name = 'record_types'", (s,))}
-        if "tables" not in have:
+        if "tables" not in have or "dates" not in have:
             w.execute(CATALOG_DDL.format(s=s))
+        # the records view reads it: it exists before any view that joins it is made
+        if w.execute("SELECT to_regclass(%s)", (f"{s}.{DATES_TABLE}",)).fetchone()[0] is None:
+            w.execute(DATES_DDL.format(s=s))
+            w.execute(DATES_GRANT.format(s=s))   # only when made: GRANT locks the table
     run(catalog, f"{s}.record_types")
     # the exclusion follow-up first (rows only, no view lock): a view made below reads
     # rows already decided against the set
-    for v in generic_views():
+    for v in generic_views() if follow else ():
         if write.execute("SELECT to_regclass(%s)", (f"{s}.{v.name}",)).fetchone()[0]:
             run(lambda w, v=v: door.follow(w, s, v.name), f"{s}.{v.name} follow")
     made = []
@@ -436,13 +485,23 @@ def make_views(write: Any, biz: str | None = None, *,
         for v in generic_views():
             def one(w: Any, v: _Generic = v, dst: str = dst, role: str = role,
                     ai: bool = ai) -> bool:
+                if v.pages_only and ai:
+                    w.execute(f"DROP VIEW IF EXISTS {dst}.{v.name}_hidden, {dst}.{v.name}")
+                    return False   # the precomputed pages are a person's: the AI reads none
                 if w.execute("SELECT to_regclass(%s)", (f"{s}.{v.name}",)).fetchone()[0] \
                         is None or not door.is_v2(w, s, v.name) or not _bounded(w, s, v.name):
-                    w.execute(f"DROP VIEW IF EXISTS {dst}.{v.name}")
+                    w.execute(f"DROP VIEW IF EXISTS {dst}.{v.name}_hidden, {dst}.{v.name}")
                     return False   # not built (or an old shape): no view, fail closed
                 sql_views.put(w, f"{dst}.{v.name}",
-                              door.view_ddl(w, v, s, dst, ai_only=ai, also=[UNDECIDED]))
+                              door.view_ddl(w, v, s, dst, ai_only=ai, also=[UNDECIDED, *(a.replace("{s}", s) for a in v.also)],
+                              join=v.join.replace("{s}", s),
+                              extra=[(n, e.replace("{s}", s)) for n, e in v.extra]))
                 _grant(w, role, f"{dst}.{v.name}")
+                if v.hidden_group:   # the count-only view beside it (a person's pages only)
+                    sql_views.put(w, f"{dst}.{v.name}_hidden", door.hidden_count_ddl(
+                        v.name, s, dst, group=v.hidden_group, ai_only=ai,
+                        also=[UNDECIDED, *(a.replace("{s}", s) for a in v.also)]))
+                    _grant(w, role, f"{dst}.{v.name}_hidden")
                 return True
             if run(one, f"{dst}.{v.name}"):
                 made.append(f"{dst}.{v.name}")

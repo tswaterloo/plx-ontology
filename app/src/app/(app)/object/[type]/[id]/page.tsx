@@ -21,9 +21,10 @@ function safeDecode(s: string): string {
  * (about 100 ms) beside it, for the lines, invoices and what is owed, each number linking
  * to its record; a record without one, or one it cannot read, shows its own page alone.
  */
-/** An item's or a batch's page over the business tables (stock, batches, QC readings). */
-const ITEM_KINDS: Readonly<Record<string, "product" | "batch">> = { Product: "product", Batch: "batch" };
-function itemKey(type: string, record: string): { kind: "product" | "batch"; record: string } | null {
+/** An item's, a batch's or a supplier invoice's page over the business tables (stock, batches, QC readings, what is owed). */
+type ItemKind = "product" | "batch" | "supplier_invoice";
+const ITEM_KINDS: Readonly<Record<string, ItemKind>> = { Product: "product", Batch: "batch", RelSageApOpenDocument: "supplier_invoice" };
+function itemKey(type: string, record: string): { kind: ItemKind; record: string } | null {
   const kind = ITEM_KINDS[type];
   return kind && record.startsWith(`${type}:`) && record.length <= 700 ? { kind, record } : null;
 }

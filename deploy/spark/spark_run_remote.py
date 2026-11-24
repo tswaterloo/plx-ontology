@@ -11,7 +11,7 @@ environment), checks out the sha, then execs ``bwrap`` with:
   box's reverse tunnels), so ``postgresql:///plx`` reaches the box's Postgres. The box end
   maps every login to ``plx_eval`` (read-only);
   with ``pg: standby`` (spark_run.sh ``--pg standby``) and standby_guard.py's check passed
-  (in recovery, its slot on the box kept, replay within 10 min), ~/plx-ai/standby-run
+  (in recovery, its slot on the box kept, replay within 10 min), the Spark's standby socket folder (~/plx-ai/standby.json, default ~/plx-ai/standby-run)
   instead: the Spark's own hot standby of the box (read-only by being one), the box's
   socket then at ``/run/plx-primary`` (``PLX_PG_KEYSET_DSN``: a reader asks the box to keep
   a long key list's shared set there, migration 0050); a failed check reads the box, said
@@ -65,6 +65,38 @@ SUDO_SHIM = """#!/bin/sh
 # command already runs as the only user there is.
 while [ $# -gt 0 ]; do case "$1" in -n|-E|-H) shift ;; -u|-g) shift 2 ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done
 exec "$@"
+"""
+# no-sandbox mode (a Spark where bwrap cannot start): the sudo stand-in also hands the
+# path map to the process it starts. The box's evals start Claude as `sudo -n -u X env -i
+# HOME=... claude`; `env -i` clears LD_PRELOAD, so without this Claude would look for
+# /var/lib/plx-workbench (which only exists on the box) instead of the Spark's copy.
+SUDO_SHIM_PRELOAD = """#!/usr/bin/python3
+import os, re, sys
+a = sys.argv[1:]
+while a:
+    if a[0] in ("-n", "-E", "-H"): a = a[1:]
+    elif a[0] in ("-u", "-g"): a = a[2:]
+    elif a[0] == "--": a = a[1:]; break
+    elif a[0].startswith("-"): a = a[1:]
+    else: break
+if not a: sys.exit(2)
+maps = sorted((m.split("=")[:2] for m in os.environ.get("PLX_PATHMAP", "").split(":") if m.count("=") == 2),
+              key=lambda m: -len(m[0]))
+def real(v):
+    # a program the map cannot reach (Claude's own file access) gets the Spark's paths in its
+    # arguments and in KEY=VALUE words
+    k, eq, val = v.partition("=") if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", v) else ("", "", v)
+    for dst, src in maps:
+        if val == dst or val.startswith(dst + "/"):
+            val = src + val[len(dst):]
+            break
+    return f"{k}={val}" if eq else val
+a = [a[0]] + [real(x) for x in a[1:]]
+if os.path.basename(a[0]) == "env" and "-i" in a[1:3]:
+    keep = [f"{k}={os.environ[k]}" for k in ("LD_PRELOAD", "PLX_PATHMAP") if k in os.environ]
+    i = a.index("-i") + 1
+    a = a[:i] + keep + a[i:]
+os.execvp(a[0], a)
 """
 
 
@@ -135,9 +167,9 @@ def database(spec: dict, pick: Callable[[], tuple[bool, str]] | None = None
     balancer unless the run asks for the standby (``pg: standby``) and its guard passes."""
     if spec.get("pg", "box") != "standby":
         return AI / "run", {}
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import standby_guard
     if pick is None:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import standby_guard
         pick = standby_guard.pick
     try:
         use, why = pick()
@@ -146,13 +178,50 @@ def database(spec: dict, pick: Callable[[], tuple[bool, str]] | None = None
     print(f"spark_run: postgres = {'the standby' if use else 'the box'}: {why}", file=sys.stderr)
     if not use:
         return AI / "run", {}
-    return AI / "standby-run", {
+    try:
+        socket = standby_guard.host_standby()[0]
+    except standby_guard.StandbySettingsError as exc:  # a broken settings file reads the box, said
+        print(f"spark_run: postgres = the box: {standby_guard.MARKER} {exc}", file=sys.stderr)
+        return AI / "run", {}
+    return Path(socket), {
         "PLX_PG_KEYSET_DSN": f"host={PRIMARY_IN_SANDBOX} dbname=plx user=plx_eval"}
 
 
-def mounts(spec: dict, wt: Path, pg: Path | None = None) -> list[tuple[str, str, bool]]:
+USERNS_REFUSED = re.compile(r"namespace|uid map|gid map|Operation not permitted|Permission denied|apparmor",
+                            re.I)
+
+
+def sandbox_available(run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> bool:
+    """True when bwrap starts here; False only when it REFUSES (the kernel or AppArmor says no to
+    user namespaces, e.g. sb4ec): then the run uses the path-map mode. A timeout (a loaded
+    Spark) is tried once more and then fails loudly, and so does any other failure (no bwrap,
+    an unknown error): none of them may quietly drop a run's sandbox."""
+    last = ""
+    for _ in range(2):
+        try:
+            got = run(["bwrap", "--ro-bind", "/", "/", "true"], capture_output=True, text=True,
+                      timeout=60)
+        except subprocess.TimeoutExpired:
+            last = "bwrap did not answer within 60 s"
+            continue
+        except OSError as exc:
+            _fail(f"cannot run bwrap: {exc}")
+        if got.returncode == 0:
+            return True
+        if USERNS_REFUSED.search(got.stderr or ""):
+            return False
+        _fail(f"bwrap failed for a reason other than user namespaces being refused: "
+              f"{(got.stderr or '').strip()[-200:]}")
+    _fail(f"{last} (twice); not choosing a mode for the run")
+    return False
+
+
+def mounts(spec: dict, wt: Path, pg: Path | None = None, sandbox: bool = True
+           ) -> list[tuple[str, str, bool]]:
     """(source on the Spark, path in the sandbox, read-only) for every bind of the run;
-    ``pg``: the socket folder read as /run/postgresql (the box's balancer by default)."""
+    ``pg``: the socket folder read as /run/postgresql (the box's balancer by default);
+    ``sandbox`` False: the same list drives the path map, and /tmp is not remapped (the run's
+    own tmp goes through TMPDIR, so a path handed to a process outside the map still holds)."""
     out: list[tuple[str, str, bool]] = []
     venv = TESTS / "venv"
     out.append((str(venv), "/data/venv", True))
@@ -178,7 +247,8 @@ def mounts(spec: dict, wt: Path, pg: Path | None = None) -> list[tuple[str, str,
         if not src.exists():
             _fail(f"shipped path missing on the Spark: {p}")
         out.append((str(src), p, p not in outs))
-    out.append((run_tmp(spec), "/tmp", False))
+    if sandbox:
+        out.append((run_tmp(spec), "/tmp", False))
     pg = pg or AI / "run"
     out.append((str(pg), "/run/postgresql", True))
     if pg != AI / "run":
@@ -193,7 +263,7 @@ def mounts(spec: dict, wt: Path, pg: Path | None = None) -> list[tuple[str, str,
         out.append((str(home), target, False))
     shim = AI / "shim"
     shim.mkdir(parents=True, exist_ok=True)
-    (shim / "sudo").write_text(SUDO_SHIM)
+    (shim / "sudo").write_text(SUDO_SHIM if sandbox else SUDO_SHIM_PRELOAD)
     os.chmod(shim / "sudo", 0o755)
     # The shim also stands in for the Spark's own sudo, so a job that sets its own PATH (a
     # bench's `env PATH=...` wrapper calling `sudo -n -u plx-workbench ... claude`) reaches it
@@ -206,6 +276,42 @@ def mounts(spec: dict, wt: Path, pg: Path | None = None) -> list[tuple[str, str,
         if not SAFE_PATH.match(dst) or ".." in dst.split("/"):
             _fail(f"refused sandbox path {dst!r}")
     return out
+
+
+def pathmap(binds: list[tuple[str, str, bool]]) -> str:
+    """PLX_PATHMAP for deploy/spark/pathmap.c: ``<in job>=<on the Spark>=<ro|rw>`` per bind."""
+    return ":".join(f"{dst}={src}={'ro' if ro else 'rw'}" for src, dst, ro in binds)
+
+
+def skeleton(binds: list[tuple[str, str, bool]], base: Path) -> list[tuple[str, str, bool]]:
+    """Read-only binds for the folders on the way to a bind target that do not exist on this Spark
+    (/data, /data/plx-plan ...): under bwrap they exist because the sandbox rebuilds them
+    (``bwrap_args``), here the map points each at an empty real folder, so a job's
+    ``os.makedirs('/data/plx-plan/out', exist_ok=True)`` finds its parents instead of trying to
+    create /data. Folders that exist on the Spark (/usr/local/bin, /var/lib, /run) are left alone."""
+    seen: dict[str, str] = {}
+    for _src, dst, _ro in binds:
+        for parent in Path(dst).parents:
+            d = str(parent)
+            if d != "/" and not parent.exists() and d not in seen and all(d != b[1] for b in binds):
+                seen[d] = str(base / d.lstrip("/"))
+                Path(seen[d]).mkdir(parents=True, exist_ok=True)
+    return [(src, dst, True) for dst, src in seen.items()]
+
+
+def build_preload() -> Path:
+    """Compile pathmap.c once per content (the Spark has gcc); the .so is keyed by its hash."""
+    src = Path(__file__).resolve().parent / "pathmap.c"
+    digest = __import__("hashlib").sha256(src.read_bytes()).hexdigest()[:12]
+    so = RUN / f"pathmap-{digest}.so"
+    if not so.exists():
+        tmp = RUN / f".pathmap-{os.getpid()}.so"
+        got = subprocess.run(["gcc", "-O2", "-fPIC", "-shared", "-o", str(tmp), str(src), "-ldl"],
+                             capture_output=True, text=True)
+        if got.returncode:
+            _fail(f"cannot build pathmap.so: {got.stderr.strip()[-300:]}")
+        os.replace(tmp, so)
+    return so
 
 
 def bwrap_args(binds: list[tuple[str, str, bool]], root: str = "/") -> list[str]:
@@ -249,6 +355,22 @@ def bwrap_args(binds: list[tuple[str, str, bool]], root: str = "/") -> list[str]
     return ["--proc", "/proc", "--dev-bind", "/dev", "/dev", *args, "--die-with-parent"]
 
 
+def _which(name: str, path: str, binds: list[tuple[str, str, bool]]) -> str:
+    if "/" in name:
+        return next((src + name[len(dst):] for src, dst, _ in sorted(
+            binds, key=lambda b: -len(b[1])) if name == dst or name.startswith(dst + "/")), name)
+    """The command's real path on the Spark (a PATH entry like /data/venv/bin maps through the
+    binds); this process is not under pathmap.so, the command it starts is."""
+    for d in path.split(":"):
+        cand = f"{d}/{name}"
+        real = next((src + cand[len(dst):] for src, dst, _ in sorted(
+            binds, key=lambda b: -len(b[1])) if cand.startswith(dst + "/")), cand)
+        if os.access(real, os.X_OK):
+            return real
+    _fail(f"command not found: {name}")
+    return name
+
+
 def main() -> int:
     line = sys.stdin.readline()
     try:
@@ -259,8 +381,15 @@ def main() -> int:
     if not cmd or not all(isinstance(c, str) for c in cmd):
         _fail("no command")
     wt = checkout(spec.get("sha", ""))
+    sandboxed = sandbox_available() and spec.get("sandbox") != "never"
+    if not sandboxed and spec.get("sandbox") == "always":
+        _fail("the sandbox is required (--sandbox) but bwrap cannot start on this Spark")
+    if not sandboxed and spec.get("pg", "box") == "box":
+        # a Spark that cannot sandbox reads its own hot standby of the box (plx_eval, read-only by
+        # being a standby); the box's balancer stays the fallback when the standby guard fails
+        spec = {**spec, "pg": "standby"}
     pg, pg_env = database(spec)
-    binds = mounts(spec, wt, pg)
+    binds = mounts(spec, wt, pg, sandbox=sandboxed)
     env = {k: v for k, v in os.environ.items()
            if k in ("HOME", "USER", "LOGNAME", "LANG", "TERM", "SHELL", "XDG_RUNTIME_DIR",
                     "DBUS_SESSION_BUS_ADDRESS")}
@@ -275,6 +404,22 @@ def main() -> int:
     env["PLX_SPARK_RUN"] = spec.get("name") or "1"
     env.setdefault("TZ", "America/New_York")
     cwd = spec.get("cwd") or "/data/OntologyProject"
+    if not sandboxed:
+        print("spark_run: NO SANDBOX on this Spark (bwrap cannot start): paths remapped by "
+              "pathmap.so, writes refused under read-only binds, Postgres = plx_eval on the "
+              "Spark's standby", file=sys.stderr)
+        tmp = run_tmp(spec)
+        env.update({"LD_PRELOAD": str(build_preload()),
+                    "PLX_PATHMAP": pathmap(binds + skeleton(binds, Path(tmp) / ".skel")),
+                    "TMPDIR": tmp, "PLX_SPARK_NO_SANDBOX": "1"})
+        env["PGHOST"] = str(pg)                      # the real folder: libpq needs no map
+        real_cwd = next((src + cwd[len(dst):] for src, dst, _ in sorted(
+            binds, key=lambda b: -len(b[1])) if cwd == dst or cwd.startswith(dst + "/")), cwd)
+        if not Path(real_cwd).is_dir():
+            _fail(f"working directory {cwd} is not mapped on this Spark")
+        os.chdir(real_cwd)
+        sys.stdout.flush()
+        os.execvpe(_which(cmd[0], env["PATH"], binds), cmd, env)
     argv = ["bwrap", *bwrap_args(binds), "--chdir", cwd, "--", *cmd]
     sys.stdout.flush()
     os.execvpe("bwrap", argv, env)

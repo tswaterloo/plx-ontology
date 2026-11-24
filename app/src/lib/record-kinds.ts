@@ -6,7 +6,8 @@
 // so in plain words; nothing is guessed or filled in.
 
 import kinds from "./record-kinds.json";
-import { formatDateTime, objectHref, plural, readable, recordLabel, typeLabel } from "./format";
+import { blockedWords } from "./record";
+import { formatDateTime, objectHref, readable, recordLabel, typeLabel } from "./format";
 import { factMap, factValue, groupRelated, moneyText, type RecordFact } from "./record";
 import type { ObjectPage, ObjectRef } from "./types";
 
@@ -81,7 +82,7 @@ function relatedRows(refs: ObjectRef[], keep: (r: ObjectRef) => boolean): KindRo
   const rows: KindRow[] = [];
   for (const g of groupRelated(refs.filter(keep))) {
     for (const it of g.items) rows.push({ label: g.label, value: recordLabel(it.type, readable(it.label)), href: it.open_url || objectHref(it.type, it.object_id), count: it.times > 1 ? it.times : undefined });
-    if (g.unnamed > 0) rows.push({ label: g.label, value: plural(g.unnamed, "unnamed record") });
+    if (g.unnamed > 0) rows.push({ label: g.label, value: `${g.unnamed} more, with no name on record` });
   }
   return rows;
 }
@@ -117,7 +118,7 @@ export function kindSections(obj: ObjectPage): KindSection[] | null {
         return fact && fact.value !== "" ? [{ name, fact, role: p.role }] : [];
       });
   const plain = (...roles: PropRole[]): KindRow[] =>
-    byRole(...roles).map(({ fact, role }) => ({ label: fact.label, value: role === "money" ? (moneyText(fact.value, currency) ?? fact.value) : role === "when" || role === "aging" ? timeText(fact.value) : readable(fact.value) }));
+    byRole(...roles).map(({ fact, role }) => ({ label: fact.label, value: role === "money" ? (moneyText(fact.value, currency) ?? fact.value) : role === "when" || role === "aging" ? timeText(fact.value) : blockedWords(fact.label, readable(fact.value)) }));
   const people = (): KindRow[] => {
     const rows = byRole("person").flatMap(({ fact }) => personRows(fact.label, peopleIn(fact.value), refs));
     const seen = new Set(rows.map((r) => r.value.toLowerCase()));
@@ -159,7 +160,7 @@ export function kindSections(obj: ObjectPage): KindSection[] | null {
     case "finance": {
       const money = plain("money");
       out.push({ id: "amounts", title: "Amounts", rows: money, empty: FINANCE_HIDDEN });
-      out.push({ id: "account", title: "Account", rows: [...plain("account"), ...relatedRows(refs, (x) => x.type === "GlAccount")], empty: "No account is on record for this entry." });
+      out.push({ id: "account", title: "Account", rows: [...plain("account"), ...relatedRows(refs, (x) => x.type === "GlAccount")], empty: "No ledger account is linked to this entry." });
       out.push({
         id: "counterparty",
         title: "Counterparty",

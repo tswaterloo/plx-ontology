@@ -44,6 +44,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from . import autopilot as ap
 from . import autopilot_queue
@@ -52,6 +53,7 @@ from . import autopilot_records
 from . import autopilot_replay as rp
 
 SCHEMA = "plx-day-coverage/v1"
+DAY_TZ = ZoneInfo("America/New_York")     # a work day is the business's (US Eastern)
 CHUNK = 5000
 
 # minutes one action takes the person (the replay's, plus each system's entry work)
@@ -64,15 +66,15 @@ MINUTES = {**rp.MINUTES, "planner_created": 3, "planner_completed": 5,
 
 # Sage tables a person keys entries into: type -> (kind, date property, workflow)
 SAGE_ENTRIES = {"RelSageGlJeHeader": ("sage_gl_journal", "dateentry", "finance_journal"),
-                "RelSageArIbh": ("sage_ar_invoice", "audtdate", "ar_invoice_send"),
-                "RelSageArTcr": ("sage_ar_receipt", "audtdate", "cash_remittance"),
+                "RelSageArIbh": ("sage_ar_invoice", "audtdate", "ar_invoice_entry"),
+                "RelSageArTcr": ("sage_ar_receipt", "audtdate", "cash_application"),
                 "RelSageApIbh": ("sage_ap_invoice", "audtdate", "ap_invoice_entry")}
 GL_HEADER = "RelSageGlJeHeader"
 # a GL header's (source ledger, source type) -> (kind, workflow); the rest (an AR or AP
 # invoice or receipt) is the subledger entry its own table counts
 GL_SOURCES = {("GL", "JE"): ("sage_gl_journal", "finance_journal"),
               ("BK", "EN"): ("sage_bank_entry", "finance_journal"),
-              ("OE", "SH"): ("sage_oe_shipment", "shipping_freight"),
+              ("OE", "SH"): ("sage_oe_shipment", "shipment_posting"),
               ("AP", "PY"): ("sage_ap_payment", "ap_payment"),
               ("IC", "AS"): ("sage_ic_adjustment", "inventory_adjustment"),
               ("IC", "TF"): ("sage_ic_adjustment", "inventory_adjustment"),
@@ -314,6 +316,88 @@ def system_actions(st: Any, people: Any, who: set[str], since: str, until: str, 
     return out, lost
 
 
+def entry_records(st: Any, actions: Sequence[Mapping[str, Any]]) -> Counter:
+    """The business records a keyed Sage invoice entry is about, added to its action's
+    ``records`` (the invoice, its order, its shipment), so an item that prepared that entry
+    (``autopilot_receivables``) is credited when the person keyed it. The invoice number
+    names the store's invoice and the invoice its order (measured 10-21: 56 of 60 entries
+    resolved); the entry's shipment number names the shipment. An entry that does not
+    resolve stays uncredited, never guessed. Returns the count per outcome."""
+    import time
+    from datetime import date
+    from . import autopilot_handlers as handlers
+    ctx = handlers.Ctx(st, date.today(), time.monotonic() + 3000, ())
+    out: Counter = Counter()
+    for a in actions:
+        if a.get("kind") != "sage_ar_invoice":
+            continue
+        oid = (a.get("records") or [None])[0]
+        row = autopilot_records._read(st, [oid], ("idinvc", "idshipnbr")).get(oid) if oid else None
+        number = autopilot_records._v(row, "idinvc").strip() if row else ""
+        try:
+            invoice = ctx.find("SalesInvoice", "invoice_number", number) if number else []
+        except handlers.FindUnavailable:
+            out["unresolved"] += 1
+            continue
+        if len(invoice) != 1:
+            out["unresolved"] += 1
+            continue
+        found = [*invoice, *[o for o in ctx.linked(invoice[0], ("SalesInvoice.bills",))
+                             if o.startswith("SalesOrder:")]]
+        ship = autopilot_records._v(row, "idshipnbr").strip()
+        try:
+            found += ctx.find("Shipment", "sage_shipment_number", ship) if ship else []
+        except handlers.FindUnavailable:
+            pass
+        a["records"] = [*a["records"], *found]
+        out["resolved"] += 1
+    return out
+
+
+def credit_entries(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, Any]],
+                   actions: Sequence[Mapping[str, Any]], anticipated: set[int], *,
+                   horizon: Any) -> Counter:
+    """Items of the record-scored workflows (``workflows.scored_by_records``: an invoice or
+    a shipment posting or a cash application prepared for a person) are judged on content by
+    ``receivables_score``, so ``autopilot_replay.score`` never matches them to actions. Here
+    an action of the same person and workflow that names the item's record (shipment or
+    order), after its trigger and within the horizon, is credited as covered: the person
+    keyed what was prepared. Counted per workflow: ``credited`` actions, ``items`` seen."""
+    from . import workflows as wf
+    flows = set(wf.load().get("scored_by_records") or ())
+    by_person: dict[str, list] = defaultdict(list)
+    for a in actions:
+        at = ap._instant(a.get("at"))
+        if at is not None and a.get("system") == "sage":
+            by_person[a["person"]].append((at, a))
+    out: Counter = Counter()
+    for item in items:
+        event = events.get(item["event_id"]) or {}
+        flow = wf.of_item(item["autopilot"], event)
+        if flow not in flows:
+            continue
+        out[f"{flow}:items"] += 1
+        at = rp.trigger_at(item, event)
+        if at is None:
+            continue
+        keys = rp.item_keys(item, event)["records"]
+        close = rp.answer_end(at, horizon)
+        for when, a in by_person.get(item["owner"], ()):
+            if a.get("workflow") == flow and at < when <= close and keys & set(a.get("records") or ()):
+                if id(a) not in anticipated:
+                    out[f"{flow}:credited"] += 1
+                anticipated.add(id(a))
+    return out
+
+
+def action_key(action: Mapping[str, Any]) -> str:
+    """An action's stable key: its record's id, else its kind, person and time (the one
+    definition: the re-score's pairs and the scoreboard's de-duplication both use it)."""
+    if action.get("object_id"):
+        return str(action["object_id"])
+    return "|".join(str(action.get(k) or "") for k in ("kind", "person", "at", "conversation"))
+
+
 def _minutes(a: Mapping[str, Any]) -> int:
     return int(a.get("minutes") or MINUTES.get(a.get("kind") or "", 5))
 
@@ -361,7 +445,25 @@ def coverage(actions: Sequence[Mapping[str, Any]], anticipated: set[int], *,
             total.update(c)
     ranked = sorted(types, key=lambda t: (-Decimal(types[t]["hours_week"]) +
                                           Decimal(types[t]["covered_hours_week"]), t))
+    # every counted work action once, by person (ids and kinds only): what the scoreboard
+    # de-duplicates across roles (one person is a member of several roles)
+    mine: dict[str, list[list[Any]]] = defaultdict(list)
+    for a in actions:
+        at = ap._instant(a.get("at"))
+        if _in(at, since, until) and _type_of(a).split(":", 1)[0] not in NOT_WORK:
+            mine[str(a["person"])].append([action_key(a), _type_of(a), int(id(a) in anticipated)])
+    by_day: dict[str, Counter] = defaultdict(Counter)
+    for a in actions:
+        at = ap._instant(a.get("at"))
+        if _in(at, since, until) and _type_of(a).split(":", 1)[0] not in NOT_WORK:
+            day = at.astimezone(DAY_TZ).date().isoformat()
+            by_day[day]["actions"] += 1
+            by_day[day]["covered"] += id(a) in anticipated
     return {"weeks": str(weeks.quantize(Decimal("0.01"))), "types": {t: types[t] for t in ranked},
+            # hours are counts times a fixed estimate per kind (``MINUTES``), never measured
+            "time_basis": "estimated_minutes_per_kind",
+            "by_day": {d: dict(c) for d, c in sorted(by_day.items())},
+            "people_actions": dict(sorted(mine.items())),
             "work": {"actions": total["actions"], "covered": total["covered"],
                      "count_share": share(total["covered"], total["actions"]),
                      "hours_week": hours(total["minutes"]),
@@ -426,8 +528,11 @@ def _provided(provider: Any, st: Any, people: Any, who: set[str], since: str, un
 
 def measure(st: Any, people: Any, *, role: str, replay_dir: Path, since: datetime,
             until: datetime, roles: Mapping[str, list[str]],
-            config: Mapping[str, Any], cache: Path | None = None) -> dict[str, Any]:
-    """One role's (or person's) day coverage over [since, until), from its replay's queue."""
+            config: Mapping[str, Any], cache: Path | None = None,
+            agrees: Any = None, candidates: list | None = None) -> dict[str, Any]:
+    """One role's (or person's) day coverage over [since, until), from its replay's queue.
+    ``agrees`` / ``candidates``: as ``autopilot_replay.score`` (an action is covered only
+    when it does the prepared work, judged on its content; the candidates for a judge)."""
     if people is None or getattr(people, "unavailable", None):
         return {"schema": SCHEMA, "role": role, "status": "blocked",
                 "reason": "people_exclusion_unavailable"}
@@ -481,14 +586,26 @@ def measure(st: Any, people: Any, *, role: str, replay_dir: Path, since: datetim
     actions = [a for a in actions if id(a) not in dropped]
     anticipated: set[int] = set()
     rp.score(items, events, actions, horizon=config["horizon"], data_end=last, since=since,
-             until=until, anticipated=anticipated, pools=pools)
+             until=until, anticipated=anticipated, pools=pools, candidates=candidates,
+             agrees=agrees)
+    resolved = entry_records(st, actions)
+    credited = credit_entries(items, events, actions, anticipated, horizon=config["horizon"])
     by_system: Counter = Counter()
     for a in actions:
         if _in(ap._instant(a.get("at")), since, until):
             by_system[a["system"]] += 1
     return {"schema": SCHEMA, "role": role, "status": "complete", "members": len(who),
             "window": [ap._iso(since), ap._iso(until)], "items": len(items),
+            "items_by_person": dict(sorted(Counter(i["owner"] for i in items
+                                                   if i["owner"] in who).items())),
+            "member_ids": sorted(who),
+            # how an action came to be covered: "agreed" (its content was judged to do the
+            # prepared work) or "same_thread_or_record" (the person did something there
+            # later: an upper bound, a "thanks" counts)
+            "matching": "agreed" if agrees is not None else "same_thread_or_record",
             "attributed_by_system": dict(sorted(by_system.items())),
+            # Sage entries credited by the record they name (``credit_entries``)
+            "entry_credit": {**dict(sorted(credited.items())), **dict(resolved)},
             "excluded_not_human": dict(sorted(excluded.items())),
             "unattributed": [{"system": s, "kind": k, "reason": r, "count": n}
                              for (s, k, r), n in sorted(lost.items())],

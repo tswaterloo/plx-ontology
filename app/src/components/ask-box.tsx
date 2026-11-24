@@ -4,9 +4,8 @@ import { ArrowUp, Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, 
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { suggest as fetchSuggest } from "@/lib/api";
-import { ACCEPT, addFiles, sizeWords, type Attachment } from "@/lib/attachments";
+import { ACCEPT, addFiles, dropFile, sizeWords, type Attachment } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
-import { MAX_QUESTION } from "@/lib/thread";
 import { plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { SystemCode } from "./ui/glyphs";
@@ -432,6 +431,7 @@ export function AskBox({
                   type="button"
                   aria-label={`Remove ${f.name}`}
                   onClick={() => {
+                    dropFile(f);
                     filesRef.current = filesRef.current.filter((x) => x.id !== f.id);
                     setFiles((cur) => cur.filter((x) => x.id !== f.id));
                   }}
@@ -472,7 +472,6 @@ export function AskBox({
             rows={1}
             autoFocus={autoFocus}
             disabled={disabled}
-            maxLength={MAX_QUESTION}
             placeholder={placeholder}
             aria-label={label}
             role="combobox"
@@ -623,11 +622,6 @@ export function AskBox({
       {reading > 0 && (
         <p className="px-2 pt-1 text-[12px] text-muted" role="status" data-testid="attach-reading">
           Reading {reading === 1 ? "your file" : "your files"}; you can ask when {reading === 1 ? "it is" : "they are"} attached.
-        </p>
-      )}
-      {value.length >= MAX_QUESTION - 100 && (
-        <p className={cn("px-2 pt-1 text-[12px]", value.length >= MAX_QUESTION ? "text-late" : "text-muted")} role="status" data-testid="question-count">
-          {value.length} of {MAX_QUESTION} characters{value.length >= MAX_QUESTION ? ": the limit. Shorten it; nothing past it is sent." : ""}
         </p>
       )}
       {fileNote && (

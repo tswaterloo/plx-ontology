@@ -30,6 +30,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+import time
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -50,7 +51,13 @@ def _tables(cur: Any, schema: str) -> list[str]:
     cur.execute("SELECT table_name FROM information_schema.columns WHERE table_schema = %s "
                 "AND column_name IN ('access_class', 'handle') GROUP BY 1 "
                 "HAVING count(*) = 2 ORDER BY 1", (schema,))
-    return [r[0] for r in cur.fetchall()]
+    # a refresh's build and swap tables (<view>_next, _new, _ship, _old) serve no reader and
+    # come and go while a refresh runs: scanning one that was just swapped away failed the
+    # whole scan (UndefinedTable) on most runs of 11-23
+    return [r[0] for r in cur.fetchall() if not r[0].endswith(STAGING_SUFFIXES)]
+
+
+STAGING_SUFFIXES = ("_next", "_new", "_ship", "_old")
 
 
 def business_unmarked(cur: Any) -> int:
@@ -144,16 +151,29 @@ def scan(state: Path, dsn: str, environ: Mapping[str, str], *,
             "served_total": sum(served.values())}
 
 
+SWAP_RETRIES = 1                 # one rerun when a refresh swaps a view mid-scan
+SWAP_WAIT_S = 45.0
+TRANSIENT = ("UndefinedTable", "UndefinedColumn")
+
+
 def run(state: Path, dsn: str, environ: Mapping[str, str] = os.environ, *,
-        now: Optional[datetime] = None, scanner: Callable[..., dict[str, Any]] = scan
-        ) -> dict[str, Any]:
+        now: Optional[datetime] = None, scanner: Callable[..., dict[str, Any]] = scan,
+        sleep: Callable[[float], Any] = time.sleep) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     home = state / HOME
     home.mkdir(mode=0o700, exist_ok=True)
-    try:
-        found = scanner(state, dsn, environ)
-    except Exception as exc:  # noqa: BLE001 - a scan that cannot run is the finding
-        found = {"ok": False, "error": f"scan failed ({type(exc).__name__})"}
+    found: dict[str, Any] = {}
+    for attempt in range(1 + SWAP_RETRIES):
+        try:
+            found = scanner(state, dsn, environ)
+            break
+        except Exception as exc:  # noqa: BLE001 - a scan that cannot run is the finding
+            found = {"ok": False, "error": f"scan failed ({type(exc).__name__})"}
+            # a business view swapped away mid-scan (UndefinedTable / a table or column gone):
+            # transient by construction; one rerun after the swap, a real fault fails again
+            if type(exc).__name__ not in TRANSIENT or attempt >= SWAP_RETRIES:
+                break
+            sleep(SWAP_WAIT_S)
     status = {"schema": SCHEMA, "checked_at": now.isoformat().replace("+00:00", "Z"),
               **found}
     tmp = home / (STATUS + ".tmp")

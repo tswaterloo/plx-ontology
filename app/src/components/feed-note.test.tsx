@@ -17,6 +17,12 @@ describe("a feed note", () => {
     expect(note.textContent).toMatch(/not "nothing to do"/);
   });
 
+  it("says when a stopped feed last ran", async () => {
+    feeds.get.mockResolvedValue({ checked_at: "x", feeds: [{ key: "autopilot", label: "Autopilot entries", state: "not_running", why: "The autopilot's feed has stopped.", since: "2026-11-21T06:26:00Z" }] });
+    render(<FeedNote feed="autopilot" />);
+    expect((await screen.findByTestId("feed-note-autopilot")).textContent).toMatch(/^The autopilot's feed has stopped\. Last ran about .*Nov.*1:26 AM/);
+  });
+
   it("says unchecked when the health checks have not run, and nothing when the job runs", async () => {
     feeds.get.mockResolvedValue({ checked_at: null, feeds: [{ key: "late_pos", label: "Late purchase orders and alerts", state: "unknown", why: "" }, { key: "autopilot", label: "Autopilot entries", state: "running", why: "" }] });
     const { unmount } = render(<FeedNote feed="late_pos" />);

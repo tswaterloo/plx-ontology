@@ -109,7 +109,6 @@ MAX_TEXT = 8000
 ANSWER_CHARS = 3000
 MAX_CITATIONS = 60         # a summary carries its turns' citations
 ANSWER_CITATIONS = 12
-MAX_RECORDS = 20
 MAX_TOOL_CALLS = 40
 
 CORE_CHARS = 6000          # ~1.5k tokens of core memory in every turn
@@ -816,7 +815,7 @@ class Memory:
         if cleared is None:
             return None
         text, _subject, people, cites = cleared
-        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))[:MAX_RECORDS]
+        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))
         with self.connect() as conn:
             row = conn.execute(
                 "INSERT INTO memory.log (reader, conversation, at, kind, source_ref, text, "
@@ -851,7 +850,7 @@ class Memory:
         if cleared is None:
             return None
         text, subject, people, cites = cleared
-        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))[:MAX_RECORDS]
+        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))
         when = at or self.clock()
         ids = sorted({int(i) for i in log_ids})
         with self.connect() as conn:

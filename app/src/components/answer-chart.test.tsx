@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { AnswerCharts, withoutChartBlocks, type AskChart } from "./answer-chart";
+import { describe, expect, it, vi } from "vitest";
+import { AnswerCharts, ANSWER_BARS, firstBars, withoutChartBlocks, type AskChart } from "./answer-chart";
 import { chartNotes } from "./charts/chart-view";
 import { PALETTE, axisLabels, conversion, dateLabel, extent, human, ramp, short, ticks, waterfall } from "./charts/scale";
 import { panelGrid, wrap } from "./charts/export";
@@ -26,6 +26,17 @@ describe("answer charts", () => {
     const svg = drawn({ ...bars, title: "One person", labels: ["Diane"], series: [{ name: "hours", values: [48] }] });
     const [bar] = marks(svg, "rect");
     expect(Number(bar.getAttribute("width"))).toBeLessThanOrEqual(56);
+  });
+  it("draws a chart at the width of a phone screen, so its labels are not shrunk to a third", () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 370, height: 300, x: 0, y: 0, top: 0, left: 0, right: 370, bottom: 300, toJSON: () => ({}) });
+    try {
+      const svg = drawn({ ...bars, title: "On a phone" });
+      expect(svg.getAttribute("viewBox")?.split(" ")[2]).toBe("370");
+    } finally { rect.mockRestore(); }
+  });
+  it("keeps the full drawing width where there is room", () => {
+    const svg = drawn({ ...bars, title: "On a desktop" });
+    expect(svg.getAttribute("viewBox")?.split(" ")[2]).toBe("640");
   });
   it("names a series by its amount as an amount", () => {
     expect(human("214417.98")).toBe("214,417.98");
@@ -267,5 +278,18 @@ describe("chart scales", () => {
   it("one palette for light and dark, the ramp running low to high", () => {
     expect(PALETTE.light).toHaveLength(PALETTE.dark.length);
     expect(ramp(0, 0, 10, "light")).not.toBe(ramp(10, 0, 10, "light"));
+  });
+});
+
+describe("an answer's bar chart of many names", () => {
+  it("shows the first 60 and every one on Show all; a line keeps every point", () => {
+    for (const n of [1, 60, 500]) {
+      const labels = Array.from({ length: n }, (_, i) => `C${i}`);
+      const bars = { kind: "bar", title: "t", labels, series: [{ name: "v", values: labels.map((_, i) => i) }] } as unknown as AskChart;
+      const cut = firstBars(bars);
+      expect(cut.labels).toHaveLength(Math.min(n, ANSWER_BARS));
+      expect(cut.series[0].values).toHaveLength(Math.min(n, ANSWER_BARS));
+      expect(firstBars({ ...bars, kind: "line" } as AskChart).labels).toHaveLength(n);
+    }
   });
 });

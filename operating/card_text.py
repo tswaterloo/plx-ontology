@@ -27,6 +27,8 @@ from __future__ import annotations
 import bisect
 import json
 import re
+import threading
+from collections import OrderedDict
 from typing import Any
 
 from operating.chunking.normalise import _CARD, _CARD_AFTER, _SEP, _issued, _luhn
@@ -163,7 +165,38 @@ def mask_served(text: str) -> str:
     of a JSON document is done on its parsed strings (``_secrets``), never across its
     quotes and escapes. (``secret_text`` itself is unchanged: the search index's chunk
     code reads it.)"""
-    return _secrets(mask_card_numbers(text))
+    return _mask_remembered(text)
+
+
+# ``mask_served`` is a pure function of its text (fixed patterns, no settings), and every
+# JSON body the API sends passes every string of it through here: a kept page's strings are
+# the same on each request, so a string already masked is answered from this table instead
+# of being scanned again (speed plan 9.3: on Home's bundle this was ~35 of ~40 ms warm).
+# The table only skips repeated work: it holds no string longer than REMEMBER_LONGEST (a
+# document body is scanned each time, as before) and drops the least recently used past
+# REMEMBER_MOST; nothing is left unmasked, and the answer for a string never differs from
+# the scan's.
+REMEMBER_LONGEST = 4096
+REMEMBER_MOST = 40000
+_REMEMBERED: "OrderedDict[str, str]" = OrderedDict()
+_REMEMBERED_LOCK = threading.Lock()
+
+
+def _mask_remembered(text: str) -> str:
+    if not isinstance(text, str) or len(text) > REMEMBER_LONGEST:
+        return _secrets(mask_card_numbers(text))
+    with _REMEMBERED_LOCK:
+        got = _REMEMBERED.get(text)
+        if got is not None:
+            _REMEMBERED.move_to_end(text)
+            return got
+    got = _secrets(mask_card_numbers(text))
+    if isinstance(got, str):
+        with _REMEMBERED_LOCK:
+            _REMEMBERED[text] = got
+            while len(_REMEMBERED) > REMEMBER_MOST:
+                _REMEMBERED.popitem(last=False)
+    return got
 
 
 def _secrets(text: Any) -> Any:

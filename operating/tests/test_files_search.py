@@ -43,7 +43,7 @@ class TheRule(unittest.TestCase):
     def test_only_a_search_statement_reads_files(self):
         sql = _ddl()
         self.assertIn("current_setting('plx.reader_files', true) IN ('search', 'full')", sql)
-        self.assertIn("(t.ai_ok OR (t.ai_ok IS NULL AND t.cells_ok))", sql)
+        self.assertIn("t.ai_ok IS NOT FALSE", sql)
         for held in ("t.unit = ANY(", "t.excluded IS FALSE", "plx.reader_hidden"):
             self.assertIn(held, sql)
         # mail keeps its text-only Freightcom rule

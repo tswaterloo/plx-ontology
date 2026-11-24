@@ -19,7 +19,8 @@ from operating.ontology_tools_policy import (_AUDIENCE_SOURCE, _bc_company_dropp
                                              _format_time, _HEX64, _ITEM_ACL_AUDIENCES,
                                              _ITEM_ACL_SCHEMES, _known_at, _markings,
                                              _parse_time, _Scope, _to_ms, _type_keys,
-                                             capture_failures, reader_grants, run_memo_for)
+                                             capture_failures, note_opened, reader_grants,
+                                             run_memo_for)
 from operating.freshness_cadence import aged
 from operating.ontology_tools_results import _source_freshness_gaps
 
@@ -66,22 +67,30 @@ class ScopeSteps:
         except Exception:  # noqa: BLE001 - a read-ahead never decides; the gate reads alone
             pass
 
-    def _item_allowed(self, actor: Actor, handle: str) -> bool:
+    def _item_decision(self, actor: Actor, handle: str) -> bool | None:
+        """The item gate's answer for ``handle``: True or False, or None when the gate itself
+        failed (an error; ``_item_allowed`` denies it, a caller that must say so asks here)."""
         scheme = handle.split("://", 1)[0] if isinstance(handle, str) else ""
         if scheme not in _ITEM_ACL_SCHEMES:
             return True
+        # the one door of plx.read, plx.object and plx.find: a stored plan run depends on every item
+        # it asked about (``snapshot_reads``), decided or served from the memo below
+        note_opened([handle])
         if self.item_gate is None:
             return False
         kept = run_memo_for(("item_allowed", id(self), actor))
         if kept is not None and handle in kept:
             return kept[handle]
         try:
-            allowed = self.item_gate(actor, handle) is True
-        except Exception:  # noqa: BLE001 - a failing re-check denies
-            allowed = False
-        if kept is not None:
+            allowed: bool | None = self.item_gate(actor, handle) is True
+        except Exception:  # noqa: BLE001 - a failing re-check denies; the caller that asks says so
+            allowed = None
+        if kept is not None and allowed is not None:
             kept[handle] = allowed
         return allowed
+
+    def _item_allowed(self, actor: Actor, handle: str) -> bool:
+        return self._item_decision(actor, handle) is True
 
     def _store_meta(self) -> dict[str, str]:
         try:
@@ -533,6 +542,7 @@ class ScopeSteps:
         audience, version and latest-version markings and time are decided in SQL,
         then the item ACL is re-checked through the version's L1 handle."""
         ids = sorted(set(object_ids))
+        note_opened(ids)   # a record asked about is a read even when no version of it is visible
         out: dict[str, sqlite3.Row] = {}
         for start in range(0, len(ids), 500):
             out.update(self._gated_versions(

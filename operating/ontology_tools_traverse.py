@@ -2592,9 +2592,8 @@ class TraverseTools:
     def _mentions_ambiguous(self, scope: _Scope, rows: Sequence[Mapping[str, Any]]
                             ) -> dict[tuple[str, str], bool]:
         """``_mention_ambiguous`` of every mention link of ``rows`` at once, by
-        (mentioning object, mention group): one store read per mentioning object for all
-        of its groups, instead of one read per link (each of which reads every mention
-        link of that object again). The same visibility rules, so the same answers."""
+        (mentioning object, mention group): one store read for the page, not one per link.
+        The same visibility rules."""
         kept = self._ambiguity_memo(scope)
         wanted: dict[str, set[str]] = {}
         out: dict[tuple[str, str], bool] = {}
@@ -2607,27 +2606,31 @@ class TraverseTools:
                 out[key] = kept[key]
             else:
                 wanted.setdefault(row["from_object"], set()).add(group)
-        for from_object, groups in wanted.items():
-            seen = {grp: 0 for grp in groups}
-            for grp, count in self.store.conn.execute(
-                    f"""SELECT g.value, COUNT(DISTINCT l.to_object) FROM links l
-                        JOIN objects x ON x.object_id = l.to_object
-                        JOIN json_each(:groups) g
-                          ON EXISTS (SELECT 1 FROM json_each(l.reason) f
-                                     WHERE json_extract(f.value, '$.mention_group') = g.value)
-                        WHERE l.from_object = :from_object AND l.binding_kind = 'mention'
+        if wanted:
+            # every mentioning object's groups in one statement (was one read each: 94, 11.8 s)
+            seen = {(f, grp): 0 for f, groups in wanted.items() for grp in groups}
+            # (the groups matched per link through its reason; other pairs dropped below)
+            for from_object, grp, count in self.store.conn.execute(
+                    f"""SELECT l.from_object, json_extract(f.value, '$.mention_group'), COUNT(DISTINCT l.to_object)
+                        FROM links l JOIN objects x ON x.object_id = l.to_object,
+                             json_each(l.reason) f
+                        WHERE l.from_object IN (SELECT value FROM json_each(:froms))
+                        AND json_extract(f.value, '$.mention_group') IN (SELECT value FROM json_each(:groups))
+                        AND l.binding_kind = 'mention'
                         AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                         AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
                                         WHERE NOT {_item_gate_sql(scope.gate, 'h.value')})
                         AND {_visible_object('x', scope.gate)}
-                        GROUP BY g.value""",
-                    scope.params(from_object=from_object,
-                                 groups=json.dumps(sorted(groups)))).fetchall():
-                seen[grp] = count
-            for grp, count in seen.items():
-                out[(from_object, grp)] = count >= 2
+                        GROUP BY 1, 2""",
+                    scope.params(froms=json.dumps(sorted(wanted)), groups=json.dumps(
+                        sorted({g for groups in wanted.values() for g in groups})))
+                    ).fetchall():
+                if (from_object, grp) in seen:
+                    seen[(from_object, grp)] = count
+            for key, count in seen.items():
+                out[key] = count >= 2
                 if kept is not None:
-                    kept[(from_object, grp)] = count >= 2
+                    kept[key] = count >= 2
         return out
 
     def _mention_ambiguous(self, scope: _Scope, row: Mapping[str, Any],

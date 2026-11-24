@@ -3,10 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApprovalsQueue, Me, WriteIntentView } from "@/lib/types";
 import type { OpsAlarms } from "@/lib/api";
 
-const api = vi.hoisted(() => ({ owner: true as boolean | null, failWrites: false }));
+const api = vi.hoisted(() => ({ owner: true as boolean | null, failWrites: false, meReads: 0 }));
+vi.mock("@/components/auth", () => ({ useAuth: () => ({ state: api.owner === null ? { status: "loading" } : { status: "signed-in", me: { display_name: "Pat Owner", email: "pat@plx.example", principal: "p", owner: api.owner } } }) }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
-  getMe: () => (api.owner === null ? Promise.reject(new Error("503")) : Promise.resolve({ ...me, owner: api.owner })),
+  getMe: () => { api.meReads += 1; return Promise.resolve(me); },
   getWrites: () => (api.failWrites ? Promise.reject(new Error("503")) : Promise.resolve({ items: writes })),
   getApprovals: () => Promise.resolve(approvals),
   getOpsAlarms: () => Promise.resolve(alarms),
@@ -92,8 +93,10 @@ describe("Needs you (owner)", () => {
       unmount();
     }
     api.owner = true;
+    api.meReads = 0;
     render(<NeedsMe />);
     expect(await screen.findByTestId("needs-me")).toHaveTextContent("Release Harbor's credit hold");
+    expect(api.meReads).toBe(0);   // who is signed in is not read again
   });
 
   it("never lists a reliability alarm, even for an owner who can read them", async () => {

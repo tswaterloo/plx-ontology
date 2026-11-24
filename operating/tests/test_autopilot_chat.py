@@ -68,7 +68,7 @@ EVENT = {"channel": "teams", "conversation_id": CHAT, "at": "2026-11-17T12:00:00
 
 class ChatThread(unittest.TestCase):
 
-    def test_only_the_chats_earlier_messages_last_twelve_in_order_never_the_reply(self):
+    def test_only_the_chats_earlier_messages_the_last_ones_in_order_never_the_reply_and_the_cut_said(self):
         for n in (1, 10, 60):
             s = Store()
             for i in range(n):
@@ -77,6 +77,10 @@ class ChatThread(unittest.TestCase):
             s.add(OTHER, _at(0), JO, "another chat's secret")
             got = chat.chat_thread(s.state, EVENT, ME, "Vince")
             want = list(range(n))[-chat.THREAD:]
+            notes = [x for x in got if x.startswith("[") and x.endswith("not shown]")]
+            self.assertEqual(notes, [f"[{n - chat.THREAD} earlier messages not shown]"] if n > chat.THREAD else [])
+            got = [x for x in got if x not in notes]
+
             self.assertEqual([int(x.rsplit(" ", 1)[1]) for x in got], want, n)
             self.assertEqual(len(set(got)), len(got))
             joined = "\n".join(got)

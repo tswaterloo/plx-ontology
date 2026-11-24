@@ -13,6 +13,7 @@ import type { EntryField, EntryHold as Hold, EntryOption, InstructWrite, Suggest
 import { confirmEntryValue, suggest } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
 import { Button } from "./ui/button";
+import { ShowAll } from "@/components/show-all";
 
 const RECORD_TYPE: Partial<Record<EntryField["field"], string>> = { customer: "Customer", supplier: "Supplier", item: "Product" };
 const INPUT = "min-w-0 rounded-[3px] border border-border bg-bg px-2 py-1 text-[13px]";
@@ -48,7 +49,7 @@ function Settle({ entryId, f, onDone }: { entryId: string; f: EntryField; onDone
     if (!type || q.trim().length < 2) return setFound([]);
     try {
       const got = await suggest(q.trim(), undefined, 20);
-      setFound(got.suggestions.filter((s) => s.type === type).slice(0, 6));
+      setFound(got.suggestions.filter((s) => s.type === type));
     } catch (err) {
       setError(problem(err));
     }
@@ -99,14 +100,14 @@ function Settle({ entryId, f, onDone }: { entryId: string; f: EntryField; onDone
           <input id={`${id}-search`} className={`${INPUT} w-64`} value={query} onChange={(e) => void search(e.target.value)} placeholder={`Search ${type === "Product" ? "items" : `${type.toLowerCase()}s`}`} />
           {found.length > 0 && (
             <ul className="text-[13px] leading-5" data-testid="entry-found">
-              {found.map((s) => (
+              <ShowAll items={found} first={6} as="li">{(s) => (
                 <li key={s.object_id}>
                   <button type="button" className="text-accent hover:underline" onClick={() => setPicked({ record: s.object_id, label: s.label })}>
                     {s.label}
                   </button>
                   {s.sublabel && <span className="text-muted"> {s.sublabel}</span>}
                 </li>
-              ))}
+              )}</ShowAll>
             </ul>
           )}
           {picked && <p className="text-[13px] leading-5">Picked: {picked.label}</p>}

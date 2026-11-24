@@ -398,21 +398,14 @@ CHAT_LISTING = "id,chatType,lastUpdatedDateTime"
 # live 2026-11-16), and pages it exactly as the plain listing (same ids, same pages).
 CHAT_LISTING_EXPAND = "lastMessagePreview"
 # A chat listing asks Graph for its documented most chats a page (50; Graph's default is
-# smaller, ~16 a page live 2026-11-16, so 50 pages ended at ~800 chats). Live 2026-11-17 one
-# mailbox listed 2,608 chats over 66 pages of 17 to 50 even at $top=50, past the 50 pages
-# one guarded ``get_pages`` read follows (the guard's bound, unchanged; it drops the nextLink
-# at its cap). So a chat listing is read in segments of ``CHAT_LISTING_SEGMENT_PAGES``
-# through the guard's resumable ``get_page``: every page is a guarded GET, every nextLink
-# passes the guard's same-collection check against the listing's first request (as in
-# ``get_pages``), a link seen before is a pagination loop, and a segment that ends with a
-# nextLink left continues from it, up to ``CHAT_LISTING_MAX_PAGES`` pages and
-# ``CHAT_LISTING_MAX_ITEMS`` chats in all. A listing still cut there is never silent: it
-# adds ``cap:chat_listing_<why>`` (not the per-conversation ``cap:page_cap`` of a resumed
-# read) and is counted in ``chat_listings_capped`` of discovery and of the census: the
-# chats past the cut are not discovered.
+# smaller, ~16 a page live 2026-11-16). Live 2026-11-17 one mailbox listed 2,608 chats over
+# 66 pages. The listing is read through the guard's resumable ``get_page`` until Graph sends
+# no nextLink (owner 11-23: no page or chat bound): every page is a guarded GET, every
+# nextLink passes the guard's same-collection check against the listing's first request, and
+# a link seen before is a pagination loop (``SourceUnavailable``, loud). Nothing cuts a
+# listing now; ``CHAT_LISTING_CAPPED`` stays only so a ``cap:chat_listing_*`` reason an
+# older run stored is still read by the alarms and the census.
 CHAT_LISTING_TOP = "50"
-CHAT_LISTING_SEGMENT_PAGES = 50
-CHAT_LISTING_MAX_PAGES, CHAT_LISTING_MAX_ITEMS = 200, 10_000
 CHAT_LISTING_CAPPED = "cap:chat_listing_"
 # A preview is honoured until the chat's last settled read is this much past it: a read
 # that raced Graph's own indexing of the message is repeated, and a preview whose message
@@ -1406,7 +1399,7 @@ class TeamsCapture:
     def _chats(self, user: str, reasons: set[str], *, expand: bool
                ) -> tuple[list[Mapping[str, Any]], bool]:
         """One member's chat listing, 50 a page (``CHAT_LISTING_TOP``), read in guarded
-        segments, and whether the overall cap cut it (``CHAT_LISTING_CAPPED``)."""
+        pages until Graph sends no nextLink; the second value (a cut listing) is always False."""
         query = {"$select": CHAT_LISTING, "$top": CHAT_LISTING_TOP}
         if expand:
             query["$expand"] = CHAT_LISTING_EXPAND
@@ -1414,35 +1407,17 @@ class TeamsCapture:
         items: list[Mapping[str, Any]] = []
         seen: set[str] = set()
         url: str | None = first
-        pages, why = 0, None
         while url is not None:
-            if pages >= CHAT_LISTING_MAX_PAGES:
-                why = "page_cap"
-                break
-            for _page in range(CHAT_LISTING_SEGMENT_PAGES):   # one guarded segment
-                if url is None or pages >= CHAT_LISTING_MAX_PAGES:
-                    break
-                if len(items) >= CHAT_LISTING_MAX_ITEMS:
-                    why = "item_cap"
-                    break
-                if url in seen:
-                    raise SourceUnavailable("graph chat listing pagination loop")
-                seen.add(url)
-                listed, following = self.api.get_page(url)
-                pages += 1
-                items.extend(listed)
-                if (following is not None
-                        and self.api.continuation_url(first, following) != following):
-                    raise nextlink_refused("graph nextLink left the chat listing")
-                url = following
-            if why is not None:
-                break
-        if len(items) > CHAT_LISTING_MAX_ITEMS:
-            del items[CHAT_LISTING_MAX_ITEMS:]
-            why = "item_cap"
-        if why is not None:
-            reasons.add(CHAT_LISTING_CAPPED + why)
-        return items, why is not None
+            if url in seen:
+                raise SourceUnavailable("graph chat listing pagination loop")
+            seen.add(url)
+            listed, following = self.api.get_page(url)
+            items.extend(listed)
+            if (following is not None
+                    and self.api.continuation_url(first, following) != following):
+                raise nextlink_refused("graph nextLink left the chat listing")
+            url = following
+        return items, False
 
     def _chat_listing(self, user: str, reasons: set[str], fallbacks: list[str]
                       ) -> tuple[list[Mapping[str, Any]], bool]:

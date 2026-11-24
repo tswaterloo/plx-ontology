@@ -62,3 +62,26 @@ describe("a raw source table's fields", () => {
     expect(screen.queryByTestId("source-fields")).toBeNull();
   });
 });
+
+describe("a supplier invoice's record page", () => {
+  const sage = { object_id: "RelSageApOpenDocument:x", type: "RelSageApOpenDocument", label: "Rel sage ap open document, rel sage ap oblj 1144-2026", summary: "", status: { state: "read", text: "Read", sources: [] }, freshness: {}, complete: true };
+  const invoice = {
+    kind: "supplier_invoice", title: "Invoice 1144-2026", subtitle: "Supplier invoice", sources: "Sources: Sage", sections: [],
+    facts: [
+      { label: "Supplier", value: { text: "Polyrheo Inc.", href: "/account?kind=supplier&h=s1" } },
+      { label: "Amount", value: { money: { amount: "1234567.5", currency: "CAD" } } },
+      { label: "Still owed", value: { money: { amount: "0", currency: "CAD" } } },
+    ],
+  } as unknown as BizPage;
+
+  it("is titled by the invoice and shows its supplier link and amounts under the same record page", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json(sage))));
+    render(<ObjectView type="RelSageApOpenDocument" id="RelSageApOpenDocument:x" door={invoice} />);
+    expect(await screen.findByTestId("object-title")).toHaveTextContent("Invoice 1144-2026");
+    expect(screen.queryByText(/Rel sage ap open document/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Polyrheo Inc." })).toHaveAttribute("href", "/account?kind=supplier&h=s1");
+    expect(screen.getByText("$1,234,567.50 CAD")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Save/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "History" })).toBeInTheDocument();
+  });
+});

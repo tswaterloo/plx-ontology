@@ -8,12 +8,9 @@ rows]``, ``[page N]``, ``[slide N]``) so a part can be found and cited, ``kind``
 (sheets, pages or slides), and ``unread``: what was not read, in words (a part past a
 bound, an OCR failure), never silent. An encrypted or damaged file raises ``Unread``.
 
-Where the Ask's per-question readers cut (``operating.ask_attachments``: a file's first
-60,000 characters, 2,000 rows, 50 pages, no OCR) and a capture's text bound cut a big
-workbook at capture (``integrations.xlsx_extract``: rows past the workbook text bound),
-this reads the original to its own much larger bounds (``MAX_TEXT``, ``MAX_ROWS``,
-``MAX_PAGES``, ``MAX_OCR_PAGES``, ``MAX_UNZIPPED``: a zip bomb or a huge file stays
-bounded) so the reader pages through it (``window``) or searches it (``find``).
+A capture's text bound cuts a big workbook at capture (``integrations.xlsx_extract``); this reads
+the original whole (only ``MAX_UNZIPPED`` bounds it: a zip bomb) and
+ the reader pages through it (``window``) or searches it (``find``).
 
 Workbook cells: shared and inline strings, numbers, booleans and errors; a formula cell is
 its cached value (never evaluated); a number in a date format (``styles.xml``: built-in
@@ -28,16 +25,14 @@ from dataclasses import dataclass, field
 import datetime as dt
 import io
 import re
+import sys
 from typing import Any, Iterator, Mapping, Optional
 import zipfile
 from xml.etree import ElementTree
 
-MAX_TEXT = 4_000_000          # characters of text a document is read to
-MAX_ROWS = 200_000            # workbook rows, all sheets together
-MAX_SHEETS = 60
-MAX_PAGES = 400               # PDF pages read
-REQUEST_OCR_PAGES = 10        # scanned pages OCRed inside one Ask request (the rest: background)
-MAX_OCR_PAGES = 40            # PDF pages read when some need OCR (the OCR reader's own bound)
+# A document is read whole (owner 11-23: no cap on characters, rows, sheets, pages or OCR
+# pages); what a call shows is a window of it, and ``offset`` pages on to the end.
+REQUEST_OCR_PAGES = 10        # scanned pages OCRed inside one Ask request (the rest: background, said)
 MAX_UNZIPPED = 400 * 1024 * 1024
 MAX_FIND = 60                 # lines a find answers
 WINDOW = 30_000               # characters a window holds unless asked for fewer
@@ -233,11 +228,6 @@ def _xlsx(data: bytes, unzipped: int = MAX_UNZIPPED) -> Reading:
     sheets = list(book.iter(f"{_S}sheet")) if book is not None else []
     out: list[str] = []
     unread: list[str] = []
-    rows_left = MAX_ROWS
-    size = 0
-    if len(sheets) > MAX_SHEETS:
-        unread.append(f"sheets after the first {MAX_SHEETS} of {len(sheets)}")
-        sheets = sheets[:MAX_SHEETS]
     for sheet in sheets:
         name = re.sub(r"[\x00-\x1f]+", " ", str(sheet.get("name") or "sheet"))
         hidden = str(sheet.get("state") or "") in ("hidden", "veryHidden")
@@ -249,14 +239,7 @@ def _xlsx(data: bytes, unzipped: int = MAX_UNZIPPED) -> Reading:
         lines: list[str] = []
         try:
             for number, cells in _rows(raw, shared, styles, date1904):
-                if rows_left <= 0 or size > MAX_TEXT:
-                    unread.append(f"sheet {name} from row {number} on (past the "
-                                  f"{MAX_ROWS:,}-row / {MAX_TEXT:,}-character bound)")
-                    break
-                line = f"r{number} | " + " | ".join(_flat(c) for c in cells)
-                lines.append(line)
-                size += len(line) + 1
-                rows_left -= 1
+                lines.append(f"r{number} | " + " | ".join(_flat(c) for c in cells))
         except ElementTree.ParseError:
             unread.append(f"sheet {name} (damaged)")
         head = f"[sheet {name}: {len(lines)} rows" + (", hidden" if hidden else "") + "]"
@@ -431,8 +414,7 @@ def _pptx(data: bytes, unzipped: int = MAX_UNZIPPED) -> Reading:
 def _pdf(data: bytes, ocr: bool, cap: Optional[int] = None,
          known: Optional[Mapping[int, str]] = None) -> Reading:
     from integrations import document_understanding as du
-    reading = du.read_pages(data, "pdf", max_pages=MAX_PAGES, max_text=None,
-                            first_pages=True)
+    reading = du.read_pages(data, "pdf", max_pages=None, max_text=None)
     if reading.failure == "encrypted":
         raise Unread("It is password-protected.")
     if reading.status == "unsupported":
@@ -441,8 +423,8 @@ def _pdf(data: bytes, ocr: bool, cap: Optional[int] = None,
     if not pages and reading.text.strip():
         pages = {1: reading.text.strip()}
     unread = []
-    if reading.skipped_pages:
-        unread.append(f"pages after {MAX_PAGES}")
+    if reading.skipped_pages:   # the PDF reader's own bound, said
+        unread.append(f"pages from {reading.skipped_pages[0]} on (the PDF reader stopped)")
     blank = [n for n, t in sorted(pages.items()) if not re.search(r"\w", t)]
     if not pages:
         blank = []
@@ -475,7 +457,7 @@ def ocr_rest(data: bytes) -> dict[int, str]:
     """Every scanned page of a PDF read by OCR with no request cap (the background read of
     what ``read`` left as ``ocr_pending``): text by page number; {} when none could be."""
     from integrations import document_understanding as du
-    reading = du.read_pages(data, "pdf", max_pages=MAX_PAGES, max_text=None, first_pages=True)
+    reading = du.read_pages(data, "pdf", max_pages=None, max_text=None)
     pages = {p.number: p.text.strip() for p in reading.pages} if reading.pages else {}
     blank = [n for n, t in sorted(pages.items()) if not re.search(r"\w", t)]
     if not blank and pages:
@@ -508,11 +490,9 @@ def _ocr_pdf(data: bytes, blank: list[int], cap: Optional[int] = None
     try:
         if cap:
             with du.ocr_limits(cap, 300):
-                reading = du.read_pages(data, "pdf", ocr=True, max_pages=MAX_OCR_PAGES,
-                                        max_text=None, first_pages=True)
+                reading = du.read_pages(data, "pdf", ocr=True, max_pages=None, max_text=None)
         else:
-            reading = du.read_pages(data, "pdf", ocr=True, max_pages=MAX_OCR_PAGES,
-                                    max_text=None, first_pages=True)
+            reading = du.read_pages(data, "pdf", ocr=True, max_pages=None, max_text=None)
     except Exception:  # noqa: BLE001 - OCR failed: said, never guessed
         return {}, 0, ["scanned pages (OCR failed)"], []
     wanted = set(blank) if blank else None
@@ -522,15 +502,12 @@ def _ocr_pdf(data: bytes, blank: list[int], cap: Optional[int] = None
     skipped = reading.skipped_pages
     if skipped and cap and du.skipped_cap(skipped[0])[0] == du.OCR_PAGE_CAP:
         # the request's cap: the blank pages from the first skipped one on are read later
-        last = min(skipped[1], MAX_OCR_PAGES)
+        last = skipped[1]
         pending = [n for n in (blank or range(skipped[0], last + 1))
                    if skipped[0] <= n <= last and n not in got]
-        if skipped[1] > MAX_OCR_PAGES:
-            failed.append(f"scanned pages after {MAX_OCR_PAGES} (not OCRed)")
     elif skipped:
-        failed.append(f"scanned pages after {MAX_OCR_PAGES} (not OCRed)")
-    missing = [n for n in (blank or ()) if n not in got and n <= MAX_OCR_PAGES
-               and n not in pending]
+        failed.append(f"scanned pages from {skipped[0]} on were not OCRed (the OCR reader stopped)")
+    missing = [n for n in (blank or ()) if n not in got and n not in pending]
     if missing:
         failed.append(f"pages {', '.join(map(str, missing[:20]))} (OCR found no text)")
     return got, len(got), failed, pending
@@ -581,20 +558,18 @@ def _plain(data: bytes) -> Reading:
         if text.count("\n") >= 1:
             rows = [r for r in csv.reader(io.StringIO(text), dialect)]
             lines = [f"r{n} | " + " | ".join(_flat(c) for c in r)
-                     for n, r in enumerate(rows[:MAX_ROWS], 1) if r]
-            more = [f"rows after {MAX_ROWS:,}"] if len(rows) > MAX_ROWS else []
+                     for n, r in enumerate(rows, 1) if r]
             return Reading("spreadsheet", f"[rows: {len(lines)}]\n" + "\n".join(lines),
-                           parts=1, unread=more)
+                           parts=1, unread=[])
     except csv.Error:
         pass
-    return Reading("text", text[:MAX_TEXT], parts=1,
-                   unread=[f"characters after {MAX_TEXT:,}"] if len(text) > MAX_TEXT else [])
+    return Reading("text", text, parts=1, unread=[])
 
 
 def _legacy(data: bytes) -> Reading:
     from integrations import legacy_office as lo
-    for kind, extract in (("spreadsheet", lambda d: lo.extract_xls_text(d, max_text=MAX_TEXT)),
-                          ("text", lambda d: lo.extract_doc_text(d, max_text=MAX_TEXT))):
+    for kind, extract in (("spreadsheet", lambda d: lo.extract_xls_text(d, max_text=sys.maxsize)),
+                          ("text", lambda d: lo.extract_doc_text(d, max_text=None))):
         try:
             got = extract(data)
         except Exception:  # noqa: BLE001 - not this format: the next one
@@ -661,9 +636,6 @@ def read(name: str, data: bytes, *, ocr: bool = True, unzipped: int = MAX_UNZIPP
     except (zipfile.BadZipFile, ElementTree.ParseError, KeyError, ValueError, OSError,
             EOFError, IndexError, RuntimeError):
         raise Unread("It could not be read: it is damaged.") from None
-    if len(got.text) > MAX_TEXT:
-        got.text = got.text[:MAX_TEXT]
-        got.unread.append(f"text after {MAX_TEXT:,} characters")
     return got
 
 

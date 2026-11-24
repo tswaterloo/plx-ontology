@@ -65,6 +65,7 @@ from typing import Any, Mapping, Sequence
 from operating.pg import access_classes as ac
 from operating.chunking import headers
 from operating.pg import business_views as bv
+from operating.pg import comms_indexes
 from operating.pg import generic_views as gv
 
 ONT = "ontology"
@@ -73,7 +74,6 @@ BATCH = 50_000           # store rows (objects.row_no / link_rows.row_no) per st
 # 22 GB free, 11-18 7:20 PM ET); each batch first waits for the floor plus every worker's
 # share free (``room``), and gives up, failing the build (the served tables kept), when it
 # does not come back. The capture must never run short.
-MIN_FREE_GB_DEFAULT = 35.0
 BATCH_GB = 3.0           # one worker's temp tables at BATCH rows, with headroom
 ROOM_WAIT_SECONDS = 600.0
 # The comms tables own these (operating.pg.business_comms and its successors), and the
@@ -152,9 +152,7 @@ def _now() -> str:
 def _stage(pg: Any, where: str, excluded_ready: bool) -> None:
     """``pg_temp.gr_b``: the records of ``where`` (over ``o``) that belong in ``records``,
     each with its newest current version, its class pattern and flags; ``gr_c``: per record
-    and property the first-ranked cell (and every cell's Freightcom test)."""
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    pat = _lit(FREIGHTCOM.pattern)
+    and property the first-ranked cell."""
     business = _arr(bv.BUSINESS_SCHEMES)
     # no exclusion set for the store: records of non-business systems stay out (fail closed)
     item_ok = "true" if excluded_ready else "false"
@@ -173,7 +171,7 @@ def _stage(pg: Any, where: str, excluded_ready: bool) -> None:
         f"ARRAY(SELECT DISTINCT w.markings FROM {ONT}.object_versions w WHERE w.object_id = "
         "o.object_id AND w.superseded_at IS NULL ORDER BY 1) AS marks, "
         f"NOT (COALESCE(v.lineage, '') = ANY({_arr(bv.NEVER_AUTHORITY_LINEAGES)})) AS link_ok, "
-        f"NOT (concat_ws(' ', v.l1_handle, o.binding_id, o.native_key) ~* {pat}) AS ai_ok "
+        "true AS ai_ok "
         f"FROM {ONT}.objects o CROSS JOIN LATERAL (SELECT * FROM {ONT}.object_versions v "
         "WHERE v.object_id = o.object_id AND v.superseded_at IS NULL ORDER BY v.ver DESC "
         f"LIMIT 1) v WHERE ({where}) AND NOT (o.object_type = ANY({_arr(LEFT_OUT)})) "
@@ -185,15 +183,14 @@ def _stage(pg: Any, where: str, excluded_ready: bool) -> None:
         "CREATE TEMP TABLE gr_c AS SELECT DISTINCT ON (b.rid, f.property) b.rid, f.property, "
         "c.value, c.value_num, c.currency, k.unit, k.value_type, k.markings, "
         # a cell marked as the record itself is no more than the record's class
-        f"(k.markings = {_lit(UNMARKED)} OR k.markings = ANY(b.marks)) AS free, "
-        f"bool_or(c.value ~* {pat}) OVER (PARTITION BY b.rid) AS fc "
+        f"(k.markings = {_lit(UNMARKED)} OR k.markings = ANY(b.marks)) AS free "
         f"FROM gr_b b JOIN {ONT}.value_sources s ON s.ver = b.ver AND s.superseded_at IS NULL "
         f"JOIN {ONT}.value_cells c ON c.src = s.src JOIN {ONT}.value_fields f ON "
         f"f.field = c.field JOIN {ONT}.value_kinds k ON k.kind = c.kind "
         "ORDER BY b.rid, f.property, k.authority_rank NULLS LAST, c.field, c.value")
     nums = _arr(gv.NUMERIC_KINDS)
     pg.execute(
-        "CREATE TEMP TABLE gr_f AS SELECT rid, bool_or(fc) AS fc, "
+        "CREATE TEMP TABLE gr_f AS SELECT rid, "
         "jsonb_object_agg(property, CASE WHEN value_type = ANY(" + nums + ") AND value_num "
         "IS NOT NULL THEN to_jsonb(value_num) ELSE to_jsonb(value) END) "
         "|| COALESCE(jsonb_object_agg(property || '_currency', currency) FILTER (WHERE "
@@ -293,7 +290,7 @@ def _insert(pg: Any, schema: str, table: str) -> int:
         "fields, fields_open, ver, biz) SELECT b.rid, b.object_id, b.object_type, "
         f"{gv.system_sql('b.binding_id')}, b.binding_id, b.l1_handle, {label}, "
         f"{record_date}, b.first_recorded_at, b.recorded_at, k.id, cc.id, "
-        "b.ai_ok AND NOT COALESCE(f.fc, false), b.link_ok, COALESCE(f.fields, '{}'), "
+        "b.ai_ok, b.link_ok, COALESCE(f.fields, '{}'), "
         "COALESCE(f.fields_open, '{}'), b.ver, b.biz "
         f"FROM gr_b b JOIN gr_k gk ON gk.rid = b.rid JOIN {schema}.access_classes k ON "
         "k.audience_keys = gk.keys AND k.rec_marks = gk.marks AND k.doc_marks = '{}' AND "
@@ -483,17 +480,9 @@ def _marks(pg: Any) -> dict[str, int]:
 
 
 def min_free_bytes() -> int:
-    """``PLX_RECORDS_MIN_FREE_GB`` (else ``MIN_FREE_GB_DEFAULT``) in bytes; a value that
-    is not a number of GB is refused, never read as no floor."""
-    import os
-    raw = os.environ.get("PLX_RECORDS_MIN_FREE_GB", "").strip()
-    try:
-        gb = float(raw) if raw else MIN_FREE_GB_DEFAULT
-    except ValueError:
-        gb = -1.0
-    if not gb >= 0:
-        raise RuntimeError(f"PLX_RECORDS_MIN_FREE_GB must be a number of GB, not {raw!r}")
-    return int(gb * 1024 ** 3)
+    """The one disk floor (``operating.disk_budget``) in bytes, never a second number."""
+    from operating import disk_budget
+    return int(disk_budget.floor_gb() * 1024 ** 3)
 
 
 def room(pg: Any, workers: int, *, wait: float = ROOM_WAIT_SECONDS,
@@ -525,7 +514,7 @@ def room(pg: Any, workers: int, *, wait: float = ROOM_WAIT_SECONDS,
         if _time.monotonic() >= deadline:
             gb = 1024 ** 3
             raise RuntimeError(f"records: {have / gb:.1f} GB free on {path}, below the "
-                               f"{need / gb:.0f} GB a batch needs (PLX_RECORDS_MIN_FREE_GB "
+                               f"{need / gb:.0f} GB a batch needs (the disk budget's "
                                f"floor + {max(1, workers)} batches); stopped")
         sleep(15)
 
@@ -759,7 +748,11 @@ INDEXES = (("records", "btree", "type, access_class) INCLUDE (ai_ok, record_id")
            ("record_links", "btree", "to_rid, link_type"),
            ("record_links", "btree", "link_type"),
            ("record_links", "btree", "from_id, link_type"),
-           ("record_links", "btree", "to_id, link_type"))
+           ("record_links", "btree", "to_id, link_type"),
+           # a record's links by the handle of either end (``to_handle = ...``: 60 s, and by
+           # handle, 40 s, in the 11-23 Ask run: the table has an index on ids only)
+           ("record_links", "btree", "to_handle"),
+           ("record_links", "btree", "from_handle"))
 
 
 def _trgm(pg: Any) -> bool:
@@ -801,7 +794,7 @@ def ensure_indexes(dsn: str, schema: str | None = None, *, free: Any = None,
         # could not finish is left invalid and made again on the next run
         pg.execute(f"SET lock_timeout = '{int(LOCK_TIMEOUT_S)}s'")
         trgm = _trgm(pg)
-        for table, method, key in INDEXES:
+        for table, method, key in (*INDEXES, *comms_indexes.INDEXES):
             if "gin_trgm_ops" in key and not trgm:
                 continue
             if pg.execute("SELECT to_regclass(%s)", (f"{s}.{table}",)).fetchone()[0] is None:

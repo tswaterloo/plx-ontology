@@ -16,8 +16,8 @@ NARROW: its business columns, ``handle`` and three permission columns decided at
   ``marks`` (``{column: marking set}`` of the cell) and ``needs`` (``{column:
   {audience_keys, rec_marks, doc_marks, blocked}}`` a reader must also hold to read that
   column: a value read from another record than the row's, e.g. a mailed promise date);
-* ``ai_ok boolean``: false when any text cell names Freightcom (the owner's no-AI rule,
-  ``integrations.freightcom_rule``): decided here, never by a regex at query time.
+* ``ai_ok boolean``: true for every row (Freightcom data is read like any other, the owner's
+  decision 11-23); the column stays so every view keeps one layout.
 
 Rows made from any object of ``ontology.people_excluded_objects`` are the owner's alone
 (never removed: ``exclude`` moves a row whose lineage names a
@@ -224,7 +224,6 @@ def convert(write: Any, schema: str, name: str, *, v: bv.View | None = None) -> 
     """The v1 business table ``<schema>.<name>`` (``business_views.COMMON`` permission and
     lineage columns) replaced by its v2 table in one transaction of ``write``; its guarded
     view re-created. Classes are added, never renumbered."""
-    from integrations.freightcom_rule import sql_match
     from operating.pg import sql_views
     from operating.pg.people_excluded import TABLE as EXCLUDED
     v = v or bv.VIEWS[name]
@@ -237,19 +236,10 @@ def convert(write: Any, schema: str, name: str, *, v: bv.View | None = None) -> 
         ensure(write, schema)
         readable = _document_marks(write)
         doc_types = sorted(DOCUMENT_TYPES)
-        text_cols = [c.name for c in v.cols if c.kind == "text"] + ["handle"]
-        named = "concat_ws(' ', " + ", ".join(f't."{c}"::text' for c in text_cols) + ")"
         unknown = ("" if readable else
                    f"|| CASE WHEN EXISTS (SELECT 1 FROM unnest(t.object_ids) o WHERE "
                    f"split_part(o, ':', 1) = ANY(%(doc_types)s)) THEN ARRAY[%(unreadable)s] "
                    "ELSE '{}'::text[] END")
-        fc_params: dict[str, str] = {}
-
-        def fc_bind(value: str) -> str:
-            key = f"fc{len(fc_params)}"
-            fc_params[key] = value
-            return f"%({key})s"
-        fc_match = sql_match(named, fc_bind)
         write.execute("DROP TABLE IF EXISTS _door_rows")
         write.execute(f"""
             CREATE TEMP TABLE _door_rows ON COMMIT DROP AS SELECT t.ctid AS rid,
@@ -266,11 +256,11 @@ def convert(write: Any, schema: str, name: str, *, v: bv.View | None = None) -> 
                OR EXISTS (SELECT 1 FROM unnest(t.object_ids) o JOIN _door_own w
                           ON w.object_id = o)) AS blocked,
               COALESCE(t.col_marks, '{{}}'::jsonb) AS cms,
-              NOT COALESCE({fc_match}, false) AS ai_ok,
+              true AS ai_ok,
               EXISTS (SELECT 1 FROM unnest(t.object_ids) x JOIN {EXCLUDED} p
                       ON p.object_id = x) AS excluded
             FROM {schema}.{name} t""",
-            {"doc_types": doc_types, "unreadable": UNREADABLE, **fc_params})
+            {"doc_types": doc_types, "unreadable": UNREADABLE})
         # ids append-only, allocated as the builder allocates them (one at a time)
         write.execute(f"LOCK TABLE {schema}.{CLASSES}, {schema}.{COL_CLASSES} IN SHARE ROW "
                       "EXCLUSIVE MODE")
@@ -560,12 +550,17 @@ def _in(expr: str, held: str, listed: str) -> str:
 
 
 def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True,
-             also: Sequence[str] = ()) -> str:
+             also: Sequence[str] = (), extra: Sequence[tuple[str, str]] = (),
+             join: str = "") -> str:
     """The guarded v2 view; records the columns it masks in ``door_views``. ``ai_only``
     (the AI's views, ``plx.sql``'s): only ``ai_ok`` rows (no Freightcom). A person's pages
     (``ai_only=False``, ``sql_views.page_schema``) keep them; every other part of the door is
     the same. ``also``: conditions over ``t`` every row must meet as well (a table's own
-    rule, ``generic_views.UNDECIDED``)."""
+    rule, ``generic_views.UNDECIDED``). ``extra``: (name, SQL over ``t``) columns the view
+    computes at read time besides the table's own (a row's freshness, which a reader is told of
+    rather than refused by). ``join``: a LEFT JOIN of at most one row per row of ``t`` (alias
+    ``d``) the view reads besides the table; a view's column shows ``v.exprs[column]`` (SQL
+    over ``t`` and ``d``) in place of ``t."column"``, behind the same mask."""
     ensure(write, src)
     known = {c.name for c in v.cols}
     masked = masked_columns(write, src, v.name)
@@ -587,10 +582,13 @@ def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True
             "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND "
             "table_name = %s", (src, v.name)).fetchall()}
         fallback = {c: f for c, f in fallback.items() if f in have and _SAFE.match(f)}
+    exprs = dict(getattr(v, "exprs", None) or {})
     shown = [f'CASE WHEN {hides(c.name)} THEN '
              f'{("t." + chr(34) + fallback[c.name] + chr(34)) if c.name in fallback else "NULL"} '
-             f'ELSE t."{c.name}" END AS "{c.name}"'
-             if c.name in masked else f't."{c.name}"' for c in v.cols]
+             f'ELSE {exprs.get(c.name) or "t." + chr(34) + c.name + chr(34)} END AS "{c.name}"'
+             if c.name in masked else
+             (f'{exprs[c.name]} AS "{c.name}"' if c.name in exprs else f't."{c.name}"')
+             for c in v.cols]
     withheld = ("array_remove(ARRAY[" + ", ".join(
         f"CASE WHEN {hides(c)} THEN '{c}' END" for c in masked) + "]::text[], NULL)"
                 if masked else "'{}'::text[]")
@@ -598,13 +596,40 @@ def view_ddl(write: Any, v: bv.View, src: str, dst: str, *, ai_only: bool = True
     # handles (unset, or '' once a rolled-back transaction set it: no dclass row, fail
     # closed) as one hashed anti-join; an unset or '' class list holds nothing
     return (f"CREATE VIEW {dst}.{v.name} WITH (security_barrier) AS SELECT "
-            + ", ".join(shown) + f", t.handle, {withheld} AS withheld "
-            f"FROM {src}.{v.name} t WHERE {'t.ai_ok AND ' if ai_only else ''}("
-            f"{_in('t.access_class', HELD, 'plx.classes')} OR ("
+            + ", ".join(shown) + f", t.handle, {withheld} AS withheld"
+            + "".join(f", ({expr}) AS \"{name}\"" for name, expr in extra) + " "
+            f"FROM {src}.{v.name} t{(' ' + join) if join else ''} WHERE "
+            f"{'t.ai_ok AND ' if ai_only else ''}("
+            f"{held_class_sql()})" + "".join(f" AND ({c})" for c in also))
+
+
+def held_class_sql() -> str:
+    """The row condition of every guarded v2 view over ``t``: its class held, or (a document-
+    resolved class) held and its handle not among the reader's hidden documents. One definition:
+    ``view_ddl`` and ``hidden_count_ddl`` both read it."""
+    return (f"{_in('t.access_class', HELD, 'plx.classes')} OR ("
             f"{_in('t.access_class', DHELD, 'plx.dclasses')} AND "
             "NULLIF(current_setting('plx.d_hidden', true), '') IS NOT NULL AND t.handle IS NOT "
             "NULL AND NOT (t.handle IN (SELECT unnest(NULLIF(current_setting('plx.d_hidden', "
-            "true), '')::text[])))))" + "".join(f" AND ({c})" for c in also))
+            "true), '')::text[]))))")
+
+
+def hidden_count_ddl(table: str, src: str, dst: str, *, group: Sequence[str],
+                     ai_only: bool = False, also: Sequence[str] = ()) -> str:
+    """A COUNT-ONLY view ``dst.<table>_hidden`` (``group`` columns, ``n``): how many rows of ``src.
+    <table>`` the reader's door does not hold, per ``group``. It is the negation of the guarded
+    view's class condition (``held_class_sql``) over the rows that pass every other condition of the
+    view (``ai_only``, ``also``: decided against the people exclusion), and it never counts a row no
+    reader may read (``blocked``) or one only the owner may read (a class whose audience keys hold
+    ``OWNER_KEY``: a person excluded, a partner's): a staff reader's count reveals neither. It
+    returns a number and nothing else."""
+    from operating.pg.access_classes import OWNER_KEY
+    cols = ", ".join(f"t.{c}" for c in group)
+    return (f"CREATE VIEW {dst}.{table}_hidden WITH (security_barrier) AS SELECT {cols}, "
+            f"count(*)::bigint AS n FROM {src}.{table} t JOIN {src}.{CLASSES} k ON k.id = "
+            f"t.access_class WHERE {'t.ai_ok AND ' if ai_only else ''}NOT k.blocked AND NOT "
+            f"('{OWNER_KEY}' = ANY(k.audience_keys)) AND NOT ({held_class_sql()})"
+            + "".join(f" AND ({c})" for c in also) + f" GROUP BY {cols}")
 
 
 # ---------------------------------------------------------------------- the reader's side

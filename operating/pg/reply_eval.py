@@ -30,7 +30,7 @@ _TS = "coalesce(e.sent_at, e.received_at)"
 
 
 def _test(sql: str) -> str:
-    return sql.format(p={"max_to": str(alerts.MAX_TO)})
+    return sql.format(p={})
 
 
 def _sql(schema: str) -> str:

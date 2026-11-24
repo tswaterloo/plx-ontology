@@ -55,11 +55,11 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comms-findings plx-business-comms-recheck plx-source-coverage plx-qbank-refresh plx-link-marks"
-SYS_PATHS="plx-autopilot-follow"                       # also started by a .path unit
-RETIRED_SYS_UNITS="plx-autopilot-fast"                 # no longer shipped: stopped and removed
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comm-text plx-assist-readings plx-assist-worker plx-assist-precedents plx-assist-plan plx-source-coverage plx-qbank-refresh plx-link-marks"
+SYS_PATHS="plx-autopilot-follow plx-assist-readings-fresh"                 # also started by a .path unit
+RETIRED_SYS_UNITS="plx-autopilot-fast plx-comms-findings"               # no longer shipped: stopped and removed
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously
-SYS_AFTER=""                                           # started only by another unit (OnSuccess=)
+SYS_AFTER="plx-comms-indexes plx-daily-changes"                                           # started only by another unit (OnSuccess=)
 
 python3 "$render" --out "$tmp/sys" >/dev/null
 # systemd-analyze verify: a non-zero exit is a failure unless every line it printed is a
@@ -131,6 +131,10 @@ for u in $SYS_PATHS; do sudo -n systemctl enable --now "$u.path"; done
 # a changed daemon runs its new release at once (a restart waits for its cycle to end)
 for u in $SYS_DAEMONS; do sudo -n systemctl enable "$u.service"
   if [ $schanged = 1 ]; then sudo -n systemctl restart "$u.service"; else sudo -n systemctl start "$u.service"; fi; done
+
+# the first run makes the readings' tables and the guarded findings view (its ExecStartPre,
+# operating.assist_readings install), so a landing never leaves biz_sql.comms_findings missing
+sudo -n systemctl start --no-block plx-assist-readings.service || true
 
 ln -sfn "$PLX_REPO/deploy/release/plx-release" "$HOME/.local/bin/plx-release"
 

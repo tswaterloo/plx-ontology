@@ -1,6 +1,6 @@
 """plx.search and plx.open (``operating.ontology_tools_search``): the host's own
-plx.documents / plx.read for the session's reader, cut to what the Ask needs; anything
-naming Freightcom never reaches the model; unknown arguments fail closed."""
+plx.documents / plx.read for the session's reader, cut to what the Ask needs;
+unknown arguments fail closed."""
 
 from __future__ import annotations
 
@@ -20,93 +20,10 @@ class OpenTest(unittest.TestCase):
             return {"status": "resolved", "text": {"untrusted_text": "Order 4411 ships Friday"}}
         got = s.open_one(read, {"citation": "original://m/1", "text_offset": 4000})
         self.assertEqual(got["status"], "resolved")
-        # the window asked for, then the item's text from its start (the Freightcom check)
+        # the window asked for (one plx.read page; a longer window is read on in pages
+        # once the gates pass)
         self.assertEqual(calls, [{"citation": "original://m/1", "text_offset": 4000,
-                                  "max_chars": s.OPEN_MAX_CHARS},
-                                 {"citation": "original://m/1",
-                                  "max_chars": s.CHECK_PAGE_CHARS}])
-
-    def test_freightcom_past_the_window_shown_is_found_in_the_whole_text(self):
-        def reader(text, fail_after=None):
-            def read(arguments):
-                start = arguments.get("text_offset", 0)
-                if fail_after is not None and start >= fail_after:
-                    return {"error": {"code": "timeout", "message": "x"}}
-                most = arguments["max_chars"]
-                window = text[start:start + most]
-                more = start + most < len(text)
-                return {"status": "resolved",
-                        "content": {"untrusted_text": window, **({"truncated": True}
-                                                                if more else {})},
-                        "text_window": {"offset": start,
-                                        **({"next_offset": start + most} if more else {})}}
-            return read
-        named = "assay " * 4000 + "carrier: Freight" + "com Inc."   # past char 20,000
-        self.assertGreater(named.lower().index("freight"), s.OPEN_MAX_CHARS)
-        for args in ({"citation": "original://m/4"},
-                     {"citation": "original://m/4", "text_offset": 0}):
-            got = s.open_one(reader(named), args)
-            self.assertEqual(got["error"]["code"], "egress_withheld", args)
-            self.assertNotIn("assay", str(got))
-        clean = "assay " * 4000 + "carrier: Purolator"
-        self.assertEqual(s.open_one(reader(clean), {"citation": "original://m/5"})["status"],
-                         "resolved")
-        # a later window that cannot be read: not known, not shown
-        got = s.open_one(reader(clean, fail_after=s.OPEN_MAX_CHARS),
-                         {"citation": "original://m/6"})
-        self.assertEqual(got["error"]["code"], "egress_unchecked")
-        # a field cut at its read limit cannot be checked past the cut: not shown
-        cut = {"status": "resolved", "fields": {"row.body": {
-            "untrusted_text": "x" * 100, "truncated": True}}}
-        self.assertEqual(s.open_one(lambda a: cut, {"citation": "calendar-event://b/e@g-1"})
-                         ["error"]["code"], "egress_unchecked")
-
-    def test_a_cut_field_is_paged_whole_before_its_head_is_shown(self):
-        def reader(text, fail_after=None, path="row.content_text"):
-            def read(arguments):
-                if "field_path" not in arguments:   # the whole read: the field cut
-                    return {"status": "resolved", "fields": {path: {
-                        "untrusted_text": text[:s.OPEN_MAX_CHARS], "truncated": True}}}
-                self.assertEqual(arguments["field_path"], path)
-                start = arguments["text_offset"]
-                if fail_after is not None and start >= fail_after:
-                    return {"error": {"code": "timeout", "message": "x"}}
-                end = min(len(text), start + arguments["max_chars"])
-                return {"status": "resolved",
-                        "fields": {path: {"untrusted_text": text[start:end],
-                                          **({"truncated": True} if end < len(text) else {})}},
-                        "text_window": {"offset": start,
-                                        "next_offset": end if end < len(text) else None}}
-            return read
-        handle = {"citation": "meeting-transcript://o/m/t@1"}
-        clean = "spoken line " * 4000
-        got = s.open_one(reader(clean), handle)
-        self.assertEqual(got["status"], "resolved")
-        self.assertTrue(got["fields"]["row.content_text"]["truncated"])
-        # the name split across two field windows (around char 20,000) is found
-        split = "x" * (s.CHECK_PAGE_CHARS - 5) + "Freightcom" + "y" * 30000
-        self.assertEqual(s.open_one(reader(split), handle)["error"]["code"],
-                         "egress_withheld")
-        # a later window of the field that cannot be read: not known, not shown
-        self.assertEqual(s.open_one(reader(clean, fail_after=s.CHECK_PAGE_CHARS), handle)
-                         ["error"]["code"], "egress_unchecked")
-        # a field longer than the check reads (past CHECK_MAX_CHARS): not known, not shown
-        self.assertEqual(s.open_one(reader("z" * (s.CHECK_MAX_CHARS + 10)), handle)
-                         ["error"]["code"], "egress_unchecked")
-        # a field answered with no window: not known, not shown
-        no_window = {"status": "resolved", "fields": {"row.cues": {
-            "untrusted_text": "x" * 100, "truncated": True}}}
-        self.assertEqual(s.open_one(lambda a: no_window, handle)["error"]["code"],
-                         "egress_unchecked")
-        # a cut text no field read can page (inside a list, a nested key): not shown
-        for odd in ({"status": "resolved", "attachments": [{"name": {
-                        "untrusted_text": "x", "truncated": True}}]},
-                    {"status": "resolved", "fields": {"row.a": {"b": {
-                        "untrusted_text": "x", "truncated": True}}}},
-                    {"status": "resolved", "fields": {"not a path!": {
-                        "untrusted_text": "x", "truncated": True}}}):
-            self.assertEqual(s.open_one(lambda a, odd=odd: odd, handle)["error"]["code"],
-                             "egress_unchecked", odd)
+                                  "max_chars": min(s.OPEN_MAX_CHARS, s.CHECK_PAGE_CHARS)}])
 
     def test_a_long_mail_from_the_guarded_views_is_shown_in_windows(self):
         # the comms door decided Freightcom on the whole text at build (ai_ok): a mail past
@@ -123,28 +40,6 @@ class OpenTest(unittest.TestCase):
                      {"citation": "graph-mail://u/m1", "text_offset": s.OPEN_MAX_CHARS}):
             got = s.open_one(read, args, comms)
             self.assertEqual(got["text"]["untrusted_text"], "assay " * 10, args)
-        # a window naming Freightcom is still withheld
-        named = s.open_one(read, {"citation": "graph-mail://u/m2"}, lambda a: {
-            "citation": "graph-mail://u/m2", "text": {"untrusted_text": "Freightcom rates",
-                                                      "truncated": True}})
-        self.assertEqual(named["error"]["code"], "egress_withheld")
-        # not a comms item (or the comms path not served): the old path and its whole-text
-        # check, as before
-        cut = {"status": "resolved", "fields": {"row.body": {
-            "untrusted_text": "x" * 100, "truncated": True}}}
-        for leg in ({"not_comms": True}, {"error": {"code": "not_served", "message": "x"}}):
-            self.assertEqual(s.open_one(lambda a: cut, {"citation": "original://m/7"},
-                                        lambda a, leg=leg: leg)["error"]["code"],
-                             "egress_unchecked", leg)
-
-    def test_freightcom_is_never_shown(self):
-        for body in ({"text": {"untrusted_text": "rates from FREIGHTCOM"}},
-                     {"title": "Freightcom invoice", "text": "x"},
-                     {"pages": [{"text": "see freightcom.com"}]}):
-            got = s.open_one(lambda a: {"status": "resolved", **body},
-                             {"citation": "original://m/2"})
-            self.assertEqual(got["error"]["code"], "egress_withheld", body)
-            self.assertNotIn("text", got)
 
     def test_unexpected_input_fails_closed_without_a_read(self):
         def read(arguments):
@@ -166,8 +61,6 @@ class OpenTest(unittest.TestCase):
             c = arguments["citation"]
             if c.startswith("original://"):
                 return {"not_comms": True}
-            if c.endswith("/fc"):
-                return {"citation": c, "text": {"untrusted_text": "Freightcom quote"}}
             return {"citation": c, "kind": "email",
                     "text": {"untrusted_text": f"ships 2026-12-0{len(comms_calls)}"}}
 
@@ -186,37 +79,213 @@ class OpenTest(unittest.TestCase):
                           "graph-mail://u/fc", "graph-mail://r.bbbbbbbbbb"])
         self.assertIn("ships", items[0]["text"]["untrusted_text"])
         self.assertEqual(items[2]["status"], "resolved")                 # the old path
-        self.assertEqual(items[3]["error"]["code"], "egress_withheld")   # per item
-        self.assertNotIn("text", items[3])
+        self.assertIn("text", items[3])                                  # Freightcom reads like any
         self.assertEqual(items[4]["error"]["code"], "not_found")         # ref not shown
         self.assertEqual({tuple(c.get("near") or ()) for c in comms_calls},
                          {("ship", "date", "promised")})
-        self.assertTrue(all(c["max_chars"] == s.MANY_CHARS for c in comms_calls + read_calls))
+        self.assertEqual(got["window_chars"], min(s.MANY_CHARS, s.MANY_TEXT // len(many)))
+        self.assertTrue(all(c["max_chars"] == got["window_chars"]
+                            for c in comms_calls + read_calls))
         self.assertNotIn("graph-mail://r.bbbbbbbbbb", [c["citation"] for c in comms_calls])
 
-    def test_several_citations_cardinality_and_time(self):
+    def test_several_citations_cardinality_and_no_time_cut(self):
         def comms(arguments):
             return {"citation": arguments["citation"], "text": {"untrusted_text": "ok"}}
         for n in (1, 10, s.MANY_MAX):
             asked = [f"graph-mail://u/m{i}" for i in range(n)]
             got = s.open_one(None, {"citations": asked}, comms)["opened"]
             self.assertEqual([g["citation"] for g in got], asked, n)   # none lost or doubled
-        # past the call's opening time the rest say so, unopened
-        ticks = iter([0.0, 0.0, s.MANY_SECONDS + 1, s.MANY_SECONDS + 2])
+        # no time cut: a slow item is still waited for and every item is opened
+        ticks = iter(range(0, 10_000, 100))
         opened = []
         got = s.open_one(None, {"citations": ["graph-mail://u/a", "graph-mail://u/b",
                                               "graph-mail://u/c"]},
                          lambda a: opened.append(a) or comms(a), clock=lambda: next(ticks))
-        self.assertEqual([g.get("error", {}).get("code") for g in got["opened"]],
-                         [None, "not_opened", "not_opened"])
-        self.assertEqual(len(opened), 1)
+        self.assertEqual([g.get("error") for g in got["opened"]], [None, None, None])
+        self.assertEqual(len(opened), 3)
+
+    def test_several_citations_fit_one_response(self):
+        # 11-22: 8 mails at 2,500 characters each failed the whole call for its size; the
+        # windows now share one text budget and what still does not fit comes back not
+        # opened, by the citation sent, never lost or doubled
+        sent = []
+
+        def comms(arguments):
+            sent.append(arguments["max_chars"])
+            c = arguments["citation"]
+            return {"citation": c, "kind": "email", "title": {"untrusted_text": "t" * 400},
+                    "text": {"untrusted_text": "\u00e9" * arguments["max_chars"]},
+                    "fields_served": [{"field": "row.body_text", "version": "v",
+                                       "offset": 0, "chars": arguments["max_chars"],
+                                       "total_chars": 99999, "at": 0}]}
+        for n in (1, 6, 8, s.MANY_MAX):
+            sent.clear()
+            asked = [f"graph-mail://u/m{i}" for i in range(n)]
+            got = s.open_one(None, {"citations": asked}, comms)
+            items = got["opened"]
+            # a page, then the rest handed back whole: nothing lost, nothing opened twice
+            self.assertEqual([i["citation"] for i in items] + got.get("next_citations", []),
+                             asked, n)
+            if n == 1:
+                self.assertNotIn("next_citations", got, n)
+            self.assertLessEqual(sum(sent), s.MANY_TEXT, n)
+            self.assertTrue(all(m == got["window_chars"] for m in sent), n)
+            self.assertLessEqual(s._encoded(got), s.MANY_BYTES + 2000, n)
+            self.assertIn("text", items[0])
+            for item in items:
+                self.assertIn("text", item)   # every item of a page is opened
+        # mail text full of line breaks and quotes (escaped twice in the host's text): the
+        # result as the host sends it fits its cap
+        from operating import mcp_server_evidence as me
+        from operating.mcp_server_results import _envelope_size
+
+        def crlf(a):
+            got = comms(a)
+            got["text"] = {"untrusted_text": ('"x"\r\n' * a["max_chars"])[:a["max_chars"]]}
+            return got
+        for n in (8, s.MANY_MAX):
+            value = s.open_one(None, {"citations": [f"graph-mail://u/q{i}" for i in range(n)]},
+                               crlf)
+            envelope = {"content": [{"type": "text", "text": json.dumps(
+                value, ensure_ascii=False, separators=(",", ":"))}],
+                "_meta": {"freshness": "x" * 4000}}
+            self.assertLessEqual(_envelope_size(envelope), me.ASK_RESULT_BYTES, n)
+            # shown whole by the client: its JSON text within CLIENT_SHOWN_CHARS
+            self.assertLessEqual(len(envelope["content"][0]["text"]), me.CLIENT_SHOWN_CHARS, n)
+        # a result that still does not fit (a long envelope): the rest are handed back to send
+        big = lambda a: {**comms(a), "title": {"untrusted_text": "x" * int(s.MANY_BYTES * 0.6)}}  # noqa: E731
+        got = s.open_one(None, {"citations": ["graph-mail://u/a", "graph-mail://u/b",
+                                              "graph-mail://u/c"]}, big)
+        self.assertEqual(len(got["opened"]), 1)
+        self.assertIn("text", got["opened"][0])
+        self.assertEqual(got["next_citations"], ["graph-mail://u/b", "graph-mail://u/c"])
+
+    def test_a_long_text_opens_as_one_window_read_in_pages_within_the_read_bound(self):
+        """A text longer than one plx.read holds opens as one window of up to OPEN_MAX_CHARS
+        (owner 11-22: Ask reads whole texts), every read within plx.read's own bound, the
+        whole text checked first; past the window it says where to read on."""
+        body = "".join(f"line {i:06d} " for i in range(s.OPEN_MAX_CHARS // 6))
+        calls = []
+
+        def read(arguments):
+            calls.append(arguments)
+            self.assertLessEqual(arguments["max_chars"], s.CHECK_PAGE_CHARS)
+            start = arguments.get("text_offset", 0)
+            window = body[start:start + arguments["max_chars"]]
+            more = start + arguments["max_chars"] < len(body)
+            return {"status": "resolved",
+                    "content": {"untrusted_text": window, **({"truncated": True} if more else {})},
+                    "text_window": {"offset": start,
+                                    **({"next_offset": start + len(window)} if more else {})}}
+        got = s.open_one(read, {"citation": "original://m/9"})
+        self.assertEqual(got["content"]["untrusted_text"], body[:s.OPEN_MAX_CHARS])
+        self.assertTrue(got["content"]["truncated"])
+        self.assertEqual(got["text_window"]["next_offset"], s.OPEN_MAX_CHARS)
+        # the window as the client is sent it is shown whole (CLIENT_SHOWN_CHARS), even a
+        # text of quotes and line breaks (escaped as JSON at 1.67 characters a character)
+        from operating import mcp_server_evidence as me
+        for text in (body, '"x"\r\n' * s.OPEN_MAX_CHARS):
+            body = text
+            got = s.open_one(read, {"citation": "original://m/11"})
+            self.assertLessEqual(len(json.dumps(got, ensure_ascii=False, separators=(",", ":"))),
+                                 me.CLIENT_SHOWN_CHARS)
+        # a short text is one read, unchanged
+        body = "Order 4411 ships Friday"
+        got = s.open_one(read, {"citation": "original://m/10"})
+        self.assertEqual(got["content"]["untrusted_text"], body)
+        self.assertNotIn("truncated", got["content"])
+
+    def test_an_opened_text_says_how_much_of_it_is_shown(self):
+        """A1a: each opened text carries coverage {chars, shown: [start, end]} taken from
+        the result's own window; a result with no text window gets none."""
+        body = "".join(f"line {i:06d} " for i in range(s.OPEN_MAX_CHARS // 6))
+
+        def read(arguments):
+            start = arguments.get("text_offset", 0)
+            most = arguments["max_chars"]
+            window = body[start:start + most]
+            more = start + len(window) < len(body)
+            return {"status": "resolved", "content": {"untrusted_text": window},
+                    "text_window": {"offset": start, "chars": len(window),
+                                    "total_chars": len(body),
+                                    **({"next_offset": start + len(window)} if more else {})}}
+        got = s.open_one(read, {"citation": "original://m/1"})
+        self.assertEqual(got["coverage"], {"chars": len(body), "shown": [0, s.OPEN_MAX_CHARS]})
+        got = s.open_one(read, {"citation": "original://m/1", "text_offset": 20})
+        self.assertEqual(got["coverage"]["shown"][0], 20)
+        short = "Order 4411 ships Friday"
+        got = s.open_one(lambda a: {
+            "status": "resolved", "content": {"untrusted_text": short},
+            "text_window": {"offset": 0, "chars": len(short), "total_chars": len(short)}},
+            {"citation": "original://m/2"})
+        self.assertEqual(got["coverage"], {"chars": len(short), "shown": [0, len(short)]})
+        # a mail or Teams item through the comms open: its own length and window
+        mail = {"citation": "graph-mail://u/m1", "text": {"untrusted_text": "x" * 100},
+                "text_offset": 0, "text_chars": 250, "next_offset": 100}
+        got = s.open_one(read, {"citation": "graph-mail://u/m1"}, lambda a: dict(mail))
+        self.assertEqual(got["coverage"], {"chars": 250, "shown": [0, 100]})
+        # no text window (a record, or a host that does not say): no coverage, not a guess
+        got = s.open_one(lambda a: {"status": "resolved", "fields": {"n": 1}},
+                         {"citation": "original://m/3"})
+        self.assertNotIn("coverage", got)
+        # an error carries none; several citations each carry their own
+        refused = {"error": {"code": "not_found", "message": "x"}}
+        self.assertEqual(s.open_one(lambda a: refused, {"citation": "original://m/4"}), refused)
+        many = [f"original://m/{i}" for i in range(s.MANY_MAX)]
+        got = s.open_one(read, {"citations": many})
+        self.assertEqual(len(got["opened"]) + len(got.get("next_citations", [])), s.MANY_MAX)
+        self.assertTrue(all(o["coverage"]["chars"] == len(body) for o in got["opened"]
+                            if "error" not in o))
+
+    def test_more_citations_than_one_response_holds_are_all_read_a_page_per_call(self):
+        """No cap on citations (owner 11-23): 41, 200 and 1,000 are all read, a page per call,
+        each once and in order: what a response cannot hold comes back whole in
+        ``next_citations`` (not read yet), and sending it again continues."""
+        def comms(arguments):
+            return {"citation": arguments["citation"], "kind": "email",
+                    "text": {"untrusted_text": "x" * arguments["max_chars"]}}
+        for n in (41, 200, 1000):
+            pending = [f"graph-mail://u/m{i}" for i in range(n)]
+            read, rounds = [], 0
+            while pending:
+                reads = []
+                got = s.open_one(None, {"citations": pending},
+                                 lambda a: reads.append(a) or comms(a))
+                page = [g["citation"] for g in got["opened"]]
+                self.assertEqual(page, pending[:len(page)], n)
+                self.assertEqual(len(reads), len(page), n)     # every item of a page is read
+                self.assertTrue(all("text" in g for g in got["opened"]), n)
+                read += page
+                pending = got.get("next_citations", [])
+                self.assertEqual(len(page) + len(pending), len(page) + len(pending))
+                rounds += 1
+                self.assertLess(rounds, n + 2)
+            self.assertEqual(read, [f"graph-mail://u/m{i}" for i in range(n)], n)
+
+    def test_every_cut_leg_of_a_search_names_its_own_cursor(self):
+        """A search whose mail leg and records leg are both cut states both cursors with
+        the sources each continues (before, only the first leg's cursor was given and the
+        other leg's remainder could not be reached by paging)."""
+        def leg(source, cursor, n):
+            return {"documents": [{"date": f"2026-11-{n:02d}"}],
+                    "searched": {"sources": [source]},
+                    "completeness": {"complete": False, "truncated": True, "returned": 1,
+                                     "next_cursor": cursor, "reason": "page_cap"}}
+        got = s._merged([leg("graph_mail", "c1:abc", 3), leg("records", "r1:def", 2)])
+        done = got["completeness"]
+        self.assertEqual(done["next_cursor"], "c1:abc")
+        self.assertEqual(done["continue"], [{"sources": ["graph_mail"], "cursor": "c1:abc"},
+                                            {"sources": ["records"], "cursor": "r1:def"}])
+        one = s._merged([leg("graph_mail", "c1:abc", 3), {
+            **leg("records", None, 2), "completeness": {"complete": True, "truncated": False,
+                                                        "returned": 1}}])
+        self.assertNotIn("continue", one["completeness"])
 
     def test_several_citations_bad_input_fails_closed_without_a_read(self):
         def read(arguments):
             raise AssertionError("no read for a bad call")
         for bad in ({"citations": []}, {"citations": "graph-mail://u/m1"},
                     {"citations": ["a://x"] * 2}, {"citations": [5]},
-                    {"citations": [f"a://{i}" for i in range(s.MANY_MAX + 1)]},
                     {"citations": ["a://x"], "citation": "a://x"},
                     {"citations": ["a://x"], "text_offset": 10},
                     {"citations": ["a://x"], "near": ""}, {"citations": ["a://x"], "near": 3},
@@ -231,108 +300,67 @@ class OpenTest(unittest.TestCase):
                          refused)
 
 
+class OpenNearTest(unittest.TestCase):
+    """A ``near`` window that opens past a mail's top serves the top first (11-22: Ask
+    opened a supplier's reply at "complaint", inside the quoted history, and never saw the
+    answer above it)."""
+
+    @staticmethod
+    def rows(*texts):
+        import zlib
+        return [("emails", "graph-mail://u/m1", "RE: PO 5461", "care@vendor.example", None,
+                 None, None, i, 0, zlib.compress(t.encode("utf-8")), "unknown",
+                 f"row.f{i}", f"d{i}") for i, t in enumerate(texts)]
+
+    def served(self, got, texts):
+        from operating import mcp_server_evidence as me
+        spans = me._opened_texts(got)
+        self.assertEqual(len(spans), len(got["fields_served"]))   # every span checks out
+        window = got["text"]["untrusted_text"]
+        for entry in got["fields_served"]:
+            source = texts[int(entry["field"][5:])]
+            self.assertEqual(window[entry["at"]:entry["at"] + entry["chars"]],
+                             source[entry["offset"]:entry["offset"] + entry["chars"]])
+        return spans
+
+    def test_the_top_is_served_with_a_window_past_it(self):
+        from operating.pg import comms_search as cs
+        reply = ("You don't often get email from care@vendor.example. Learn why this is "
+                 "important<https://safe.example/?u=" + "a" * 900 + ">\n\nHello Ross,\n"
+                 "Very happy to hear that!\n\n" + "Notice. " * 150 + "\nFrom: Paula\n"
+                 "Sent: 10 Nov\nSubject: RE: PO 5461 Complaint\n\nCan you confirm?\n"
+                 + "older " * 900)
+        for most in (s.MANY_CHARS, 1250, s.OPEN_MAX_CHARS):
+            got = cs.opened(self.rows(reply), offset=0, most=most, near=("complaint",))
+            window = got["text"]["untrusted_text"]
+            self.assertIn("Very happy to hear that!", window, most)
+            self.assertIn("Complaint", window, most)
+            self.assertLessEqual(len(window), most)
+            self.served(got, [reply])
+        # a place inside the top: one window from the start, no head
+        got = cs.opened(self.rows(reply), offset=0, most=2500, near=("happy",))
+        self.assertEqual(got["text_offset"], 0)
+        self.assertNotIn("head_chars", got)
+        # a window too small for a head as well: the window alone, as before
+        got = cs.opened(self.rows(reply), offset=0, most=8, near=("complaint",))
+        self.assertNotIn("head_chars", got)
+        self.assertEqual(len(got["text"]["untrusted_text"]), 8)
+        # an explicit offset reads on from there (paging is never redirected)
+        got = cs.opened(self.rows(reply), offset=3000, most=2500, near=("complaint",))
+        self.assertEqual(got["text_offset"], 3000)
+        self.assertNotIn("head_chars", got)
+
+    def test_spans_across_fields(self):
+        from operating.pg import comms_search as cs
+        texts = ["Top line answer. " * 10, "filler " * 600 + " the promised date is 3 Dec"]
+        got = cs.opened(self.rows(*texts), offset=0, most=2500, near=("promised",))
+        window = got["text"]["untrusted_text"]
+        self.assertIn("Top line answer.", window)
+        self.assertIn("promised date is 3 Dec", window)
+        self.served(got, texts)
+
+
 class SearchTest(unittest.TestCase):
-    def test_freightcom_hits_left_out_and_counted(self):
-        got = s.compact({"documents": [
-            {"citation": "original://a", "title": "PO 1", "snippet": "fine"},
-            {"citation": "original://b", "title": "x", "snippet": "Freightcom quote"},
-            {"citation": "original://c", "title": "y", "snippet": "ok", "mentions": ["z"]}]})
-        self.assertEqual([h["citation"] for h in got["documents"]],
-                         ["original://a", "original://c"])
-        self.assertEqual(got["egress_withheld"], 1)
-        self.assertNotIn("mentions", got["documents"][1])
-
-    def test_a_hit_is_shown_only_when_no_text_of_it_names_freightcom(self):
-        # a field not shown (mentions), or the full text behind a plain snippet, naming
-        # Freightcom leaves the hit out; an unreadable full text leaves it out too
-        docs = {"documents": [
-            {"citation": "original://a", "title": "PO 1", "snippet": "fine"},
-            {"citation": "original://b", "title": "x", "snippet": "ok",
-             "mentions": ["FREIGHTCOM INC"]},
-            {"citation": "original://c", "title": "y", "snippet": "invoice attached"},
-            {"citation": "original://d", "title": "z", "snippet": "see below"},
-            {"citation": "original://e", "title": "w", "snippet": "plain"}],
-            "searched": {"sources": ["original"]}, "gaps": [], "completeness": {}}
-        texts = {"original://a": {"text": "all fine"},
-                 "original://c": {"text": "Quote from Freightcom, rate 1,200"},
-                 "original://d": {"error": {"code": "not_readable"}}}
-        reads = []
-
-        def read(wanted):
-            reads.append(wanted)
-            if wanted["citation"] == "original://e":
-                raise RuntimeError("store down")
-            return texts[wanted["citation"]]
-
-        got = s.run(lambda a: docs, {"query": "invoice"}, read)
-        self.assertEqual([h["citation"] for h in got["documents"]], ["original://a"])
-        self.assertEqual(got["egress_withheld"], 2)
-        self.assertEqual(got["unchecked"], 2)
-        self.assertNotIn("original://b", [w["citation"] for w in reads])   # never read
-        self.assertTrue(all(w["max_chars"] == s.CHECK_PAGE_CHARS for w in reads))
-        # out of time: the rest are left out unread
-        from operating import call_limits
-        from unittest import mock
-        with mock.patch.object(call_limits, "seconds_left", lambda: 1.0):
-            got = s.run(lambda a: docs, {"query": "invoice"}, read)
-        self.assertEqual(got["documents"], [])
-        self.assertEqual(got["unchecked"], 4)
-
-    def test_full_texts_are_read_as_the_hosts_plx_read_takes_them(self):
-        # Live 11-18: the check asked plx.read for 200,000 chars in one read; the host
-        # refuses past its contract's maximum (invalid_input), so every hit was left out
-        # unchecked and no search showed a document. Here the read refuses exactly as the
-        # host does and pages as it does (text_window.next_offset).
-        import json
-        from pathlib import Path
-        from ontology.json_contract import validate
-        contract = json.loads((Path(s.__file__).with_name("ontology_tool_contracts.json"))
-                              .read_text(encoding="utf-8"))
-        schema = contract["tools"][s.READ]["input"]
-        clean = "pallet shortage on line 2. " * 4000              # ~108k chars, 6 windows
-        split = "." * (7000 - 4) + "Freightcom rates" + "y" * 100   # "Frei" | "ghtcom": an edge
-        huge = "z " * s.CHECK_MAX_CHARS + "Freightcom"   # past the bound
-        texts = {"original://clean": clean, "original://split": split,
-                 "original://short": "PO 1 short note", "original://huge": huge}
-        reads = []
-
-        def read(wanted):
-            reads.append(wanted)
-            problems = validate(wanted, schema, root=contract)
-            if problems:
-                return {"error": {"code": "invalid_input", "message": "; ".join(problems)}}
-            text = texts[wanted["citation"]]
-            start = wanted.get("text_offset", 0)
-            end = min(len(text), start + min(wanted.get("max_chars", 4000), 7000))  # < asked
-            return {"status": "resolved", "content": {"untrusted_text": text[start:end]},
-                    "text_window": {"offset": start, "chars": end - start,
-                                    "total_chars": len(text),
-                                    "next_offset": end if end < len(text) else None}}
-        docs = {"documents": [{"citation": c, "title": "t", "snippet": "s"} for c in texts],
-                "searched": {"sources": ["original"]}, "gaps": [], "completeness": {}}
-        got = s.run(lambda a: docs, {"query": "pallet"}, read)
-        self.assertEqual([h["citation"] for h in got["documents"]],
-                         ["original://clean", "original://short", "original://huge"])
-        self.assertEqual(got["egress_withheld"], 1)
-        self.assertNotIn("unchecked", got)
-        self.assertTrue(all(validate(w, schema, root=contract) == [] for w in reads))
-        clean_reads = [w.get("text_offset", 0) for w in reads
-                       if w["citation"] == "original://clean"]
-        self.assertEqual(clean_reads, list(range(0, len(clean), 7000)))   # every window once
-        self.assertLess(max(w.get("text_offset", 0) for w in reads
-                            if w["citation"] == "original://huge"), s.CHECK_MAX_CHARS)
-        # a later window refused or failing: not known, never shown
-        for broken in ({"error": {"code": "not_readable"}}, None, RuntimeError("down")):
-            def flaky(wanted, broken=broken):
-                if wanted.get("text_offset"):
-                    if isinstance(broken, Exception):
-                        raise broken
-                    return broken
-                return read(wanted)
-            got = s.run(lambda a: {**docs, "documents": docs["documents"][:1]},
-                        {"query": "pallet"}, flaky)
-            self.assertEqual((got["documents"], got["unchecked"]), ([], 1), broken)
-
     def test_unknown_arguments_fail_closed(self):
         got = s.run(lambda a: self.fail("no search"), {"query": "x", "object_id": "y"})
         self.assertEqual(got["error"]["code"], "invalid_input")
@@ -341,6 +369,44 @@ class SearchTest(unittest.TestCase):
         for name in (s.TOOL_NAME, s.OPEN_NAME):
             self.assertIn(name, catalog.AGENDA_TOOLS)
             self.assertIn(name, catalog.SELF_ENVELOPING_TOOLS)
+
+
+class CoverageTest(unittest.TestCase):
+    """A1a: every plx.search result says what it covered: how many matched (exact when the
+    search read every match), how many are shown, the sources and dates, its depth."""
+
+    def result(self, n, more=False, withheld=0):
+        out = {"documents": [{"citation": f"graph-mail://m/{i}", "kind": "email",
+                              "title": None, "date": None, "snippet": None} for i in range(n)],
+               "searched": {"sources": ["graph_mail", "teams"], "since": "2026-11-01",
+                            "depth": "attachments read in the newest 200 mails"},
+               "gaps": [], "completeness": {"complete": not more, "truncated": more,
+                                            "returned": n,
+                                            "next_cursor": "c1:x" if more else None}}
+        if withheld:
+            out["egress_withheld"] = withheld
+        return out
+
+    def test_matched_and_shown_for_1_10_60_hits_and_a_cut_page(self):
+        for n in (1, 10, 60):
+            got = s.with_coverage(self.result(n), {"query": "x"})["coverage"]
+            self.assertEqual((got["matched"], got["shown"], got["matched_basis"]),
+                             (n, n, "every match read"), n)
+            self.assertEqual((got["sources"], got["since"], got["until"]),
+                             (["graph_mail", "teams"], "2026-11-01", None))
+            self.assertIn("newest 200", got["depth"])
+        # hits kept from the model are matches too (counted, never shown)
+        self.assertEqual(s.with_coverage(self.result(3, withheld=2), {})["coverage"]["matched"], 5)
+        # a next page continues the list: not counted, and it says so
+        cut = s.with_coverage(self.result(50, more=True), {})["coverage"]
+        self.assertEqual((cut["matched"], cut["shown"]), (None, 50))
+        self.assertIn("cursor", cut["matched_basis"])
+        # a list too large for one response is returned as it is (``paged`` reads a smaller
+        # page of it, with its legs' cursors): no hit is cut away here
+        whole = self.result(51)
+        self.assertIs(s.fitted(whole, lambda r: len(r["documents"]) <= 50), whole)
+        # an error is never given coverage
+        self.assertEqual(s.with_coverage({"error": {"code": "x"}}, {}), {"error": {"code": "x"}})
 
 
 if __name__ == "__main__":
@@ -377,6 +443,54 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(seen["comms"][0]["sources"], ["graph_mail", "sharepoint", "teams"])
         self.assertEqual(seen["docs"][0]["sources"], ["sharepoint", "original"])
 
+    def test_a_slow_leg_is_waited_for_and_returns_all_its_hits(self):
+        """No deadline cut. A leg that takes long still finishes and its
+        hits are in the answer; nothing is named unfinished."""
+        import time as _t
+
+        def slow_comms(arguments):
+            _t.sleep(0.4)
+            return {"documents": [{"citation": "email:v1", "kind": "email",
+                                   "date": "2026-10-02"}],
+                    "searched": {"sources": ["graph_mail"]},
+                    "completeness": {"complete": True, "truncated": False}}
+
+        def records(arguments):
+            return {"documents": [{"citation": "api://r/1", "kind": "record",
+                                   "date": "2026-10-04"}],
+                    "searched": {"sources": ["records"]},
+                    "completeness": {"complete": True, "truncated": False}}
+        got = s.run(lambda a: {"documents": [], "completeness": {"complete": True,
+                                                                   "truncated": False}},
+                    {"query": "croda", "sources": ["graph_mail", "records"]},
+                    call_comms=slow_comms, call_records=records)
+        self.assertEqual([d["citation"] for d in got["documents"]], ["api://r/1", "email:v1"])
+        self.assertEqual(got["searched"]["sources"], ["graph_mail", "records"])
+        self.assertFalse(got.get("gaps"))
+        self.assertFalse(hasattr(s, "SEARCH_DEADLINE"))
+
+    def test_legs_that_finish_in_time_are_unchanged_and_run_together(self):
+        import threading
+        both = threading.Barrier(2, timeout=5)
+
+        def comms(arguments):
+            both.wait()    # only passes when the records leg runs at the same time
+            return {"documents": [{"citation": "email:v1", "kind": "email",
+                                   "date": "2026-10-02"}],
+                    "searched": {"sources": ["graph_mail"]},
+                    "completeness": {"complete": True, "truncated": False}}
+
+        def records(arguments):
+            both.wait()
+            return {"documents": [], "searched": {"sources": ["records"]},
+                    "completeness": {"complete": True, "truncated": False}}
+        got = s.run(lambda a: {"documents": []}, {"query": "croda",
+                                                  "sources": ["graph_mail", "records"]},
+                    call_comms=comms, call_records=records)
+        self.assertEqual([d["citation"] for d in got["documents"]], ["email:v1"])
+        self.assertEqual(got["searched"]["sources"], ["graph_mail", "records"])
+        self.assertNotIn("gaps", {k: v for k, v in got.items() if v})
+
     def test_each_legs_time_is_on_the_calls_record_and_never_in_its_result(self):
         from operating import call_phases
         seen, comms, docs = self.calls()
@@ -404,61 +518,66 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(events[0]["elapsed_ms"], 9000)
         self.assertNotIn("phases", events[1])
 
-    def test_a_search_too_large_for_one_response_keeps_the_hits_that_fit_and_says_so(self):
-        """Live: an all-sources search of 20 hits a leg was refused whole as too large
-        after 18 s. As many hits as fit one response come back, in order, the rest
-        counted in a gap and never continued by a cursor (it would start past them); a
-        result that fits is untouched (1 or 10 hits a leg); 60 a leg is cut to the
-        contract's 50, 20 long ones a leg to what fits. Checked on the contract."""
+    def test_a_search_too_large_for_one_response_is_a_smaller_page_with_cursors(self):
+        """Live: an all-sources search of 50 hits a leg was refused whole as too large after
+        27 s (result_too_large). A result that fits is untouched (1 or 10 hits a leg); one
+        that does not has its snippets cut shorter (every hit kept), else it is read again
+        as a smaller page of at most the contract's 50 hits whose legs' cursors continue
+        it. Checked on the contract; the host's plx.search answers so."""
         import json
         from pathlib import Path
         from ontology.json_contract import validate
-        from operating.mcp_server_calls import search_fits as fits
-        sized = 0
+        from operating.mcp_server_calls import CallsMixin, search_fits as fits
         contract = json.loads((Path(s.__file__).with_name("ontology_tool_contracts.json"))
                               .read_text(encoding="utf-8"))
-        for n, words in ((1, 16), (10, 16), (60, 16), (20, 250)):
-            def leg(kind, n=n, words=words):
+        paged_n = 0
+        for n, words in ((1, 16), (10, 16), (60, 1300), (20, 1300), (15, 1300)):
+            def leg(kind, n=n, words=words, prefix="c1"):
                 def answer(arguments):
+                    start = int(arguments["cursor"].split(":")[1]) if arguments.get(
+                        "cursor") else 0
+                    stop = min(n, start + int(arguments.get("limit", 20)))
+                    more = stop < n
                     return {"documents": [
                         {"citation": f"graph-mail://{kind}/{i}", "kind": "email",
                          "title": {"untrusted_text": "t " * 40,
                                    "origin": {"citation": f"graph-mail://{kind}/{i}"}},
                          "snippet": {"untrusted_text": "purchase order " * words,
                                      "origin": {"citation": f"graph-mail://{kind}/{i}"}},
-                         "date": f"2026-10-{1 + i % 28:02d}"}
-                        for i in range(n)],
+                         "date": f"2026-10-{1 + i % 28:02d}"} for i in range(start, stop)],
                         "searched": {"sources": ["graph_mail"]}, "gaps": [],
-                        "completeness": {"complete": False, "truncated": True, "returned": n,
-                                         "reason": "page_cap", "next_cursor": f"c1:{kind}"}}
+                        "completeness": {"complete": not more, "truncated": more,
+                                         "returned": stop - start, "reason":
+                                         "page_cap" if more else None,
+                                         "next_cursor": f"{prefix}:{stop}" if more else None}}
                 return answer
-            whole = s.run(leg("docs"), {"query": "purchase order", "limit": 50},
-                          call_comms=leg("mail"), call_records=leg("records"))
-            got = s.fitted(whole, fits)
+            legs = {s.COMMS_SEARCH: leg("mail"), s.RECORDS_SEARCH: leg("records", prefix="r1"),
+                    s.DOCUMENTS: lambda wanted: {"documents": [], "completeness": {}}}
+
+            class Host(CallsMixin):
+                def _generic_call(self, name, wanted):
+                    return legs[name](wanted)
+
+                def _refs(self):
+                    class Refs:
+                        search = staticmethod(lambda result: result)
+                    return Refs()
+            got = Host()._call(s.TOOL_NAME, {"query": "purchase order", "limit": 50})
             with self.subTest(n=n, words=words):
+                self.assertNotIn("error", got)
                 self.assertTrue(fits(got))
                 self.assertEqual(validate(got, contract["tools"][s.TOOL_NAME]["output"],
                                           root=contract), [])
-                kept = got["documents"]
-                self.assertEqual(kept, whole["documents"][:len(kept)])   # a prefix, in order
-                if fits(whole):
-                    self.assertIs(got, whole)
-                    self.assertLess(n, 60)
-                    continue
-                self.assertGreater(len(kept), 0)
-                self.assertLess(len(kept), len(whole["documents"]))
+                self.assertLessEqual(len(got["documents"]), s.MAX_HITS)
                 done = got["completeness"]
-                self.assertEqual((done["truncated"], done["complete"], done["next_cursor"],
-                                  done["reason"], done["returned"]),
-                                 (True, False, None, "result_budget", len(kept)))
-                self.assertIn(f"{len(whole['documents']) - len(kept)} more hits",
-                              got["gaps"][-1]["detail"])
-                # at most the contract's hits, and one more hit would not have fit
-                more = {**got, "documents": whole["documents"][:len(kept) + 1]}
-                self.assertLessEqual(len(kept), s.MAX_HITS)
-                self.assertTrue(len(kept) == s.MAX_HITS or not fits(more), len(kept))
-                sized += len(kept) < s.MAX_HITS
-        self.assertTrue(sized, "no result was cut by its size")
+                if done["complete"]:      # every hit kept (snippets cut shorter to fit)
+                    self.assertEqual(len(got["documents"]), 2 * n)
+                    continue
+                paged_n += 1
+                self.assertTrue(done["truncated"] and not done["complete"], done)
+                self.assertTrue(done["next_cursor"] or done.get("continue"), done)
+                self.assertNotIn("result_budget", json.dumps(got))
+        self.assertTrue(paged_n, "no result needed a smaller page")
         # an error answer is never touched
         self.assertEqual(s.fitted({"error": {"code": "x"}}, lambda r: False),
                          {"error": {"code": "x"}})
@@ -466,17 +585,6 @@ class RoutingTest(unittest.TestCase):
         bare = {"documents": [], "gaps": [{"state": "unknown", "detail": "x" * 10}],
                 "completeness": {"complete": True, "returned": 0}}
         self.assertIs(s.fitted(bare, lambda r: False), bare)
-        # the host's plx.search answers so (60 hits each from mail and records)
-        from operating.mcp_server_calls import CallsMixin
-        legs = {s.COMMS_SEARCH: leg("mail", 60), s.RECORDS_SEARCH: leg("records", 60),
-                s.DOCUMENTS: lambda wanted: {"documents": [], "completeness": {}}}
-
-        class Host(CallsMixin):
-            def _generic_call(self, name, wanted):
-                return legs[name](wanted)
-        got = Host()._call(s.TOOL_NAME, {"query": "purchase order", "limit": 50})
-        self.assertTrue(fits(got))
-        self.assertEqual(got["completeness"]["reason"], "result_budget")
 
     def test_participant_and_comms_cursor_search_mail_only(self):
         for args in ({"participant": "a@b.example"},
@@ -551,22 +659,6 @@ class RoutingTest(unittest.TestCase):
         got = s.run(docs, {"query": "acme", "sources": ["graph_mail"]}, call_comms=comms)
         self.assertEqual(got["error"]["code"], "timeout")
 
-    def test_file_hits_are_full_text_checked_and_comms_hits_decided_by_the_views(self):
-        seen, comms, docs = self.calls()
-        reads = []
-
-        def read(arguments):
-            reads.append(arguments["citation"])
-            return {"text": {"untrusted_text": "booked with Freightcom"}}
-        got = s.run(docs, {"query": "pallets"}, call_read=read, call_comms=comms)
-        self.assertEqual(reads, ["sharepoint://s/a.pdf"])   # never a comms hit: the view's ai_ok
-        self.assertEqual([d["citation"] for d in got["documents"]], ["email:v1"])
-        self.assertEqual(got["egress_withheld"], 1)
-        seen, comms, docs = self.calls()
-        got = s.run(docs, {"query": "pallets"}, call_read=lambda a: None, call_comms=comms)
-        self.assertEqual([d["citation"] for d in got["documents"]], ["email:v1"])
-        self.assertEqual(got["unchecked"], 1)   # an unread file text is never shown
-
     def test_records_leg_with_query_words_only_its_cursor_alone_and_skips_as_a_gap(self):
         asked = []
 
@@ -584,8 +676,8 @@ class RoutingTest(unittest.TestCase):
         seen, comms, docs = self.calls()
         got = s.run(docs, {"query": "acme"}, call_comms=comms, call_records=records(rec))
         self.assertEqual([d["citation"] for d in got["documents"]],
-                         ["sharepoint://s/a.pdf", "email:v1", "api://c/1"])
-        self.assertEqual(got["egress_withheld"], 1)          # the record naming Freightcom
+                         ["api://c/2", "sharepoint://s/a.pdf", "email:v1", "api://c/1"])
+        self.assertNotIn("egress_withheld", got)   # a record naming Freightcom is read like any
         self.assertEqual(asked[-1], {"query": "acme", "limit": 20})   # never a source list
         self.assertEqual(seen["docs"][0]["sources"], ["sharepoint", "original"])
         for args in ({"participant": "a@b.example"},
@@ -646,9 +738,6 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(s.open_one(read, {"citation": "email:v2"}, lambda a: refused),
                          refused)
         self.assertEqual(reads, [], "a comms item kept from the AI is never re-read")
-        self.assertEqual(s.open_one(read, {"citation": "email:v3"}, lambda a: {
-            **opened, "text": {"untrusted_text": "Freightcom booked"}})["error"]["code"],
-            "egress_withheld")
 
 
 class ReplayCeilingTest(unittest.TestCase):

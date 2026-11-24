@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getFeeds } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import type { FeedState } from "@/lib/types";
 
 // one read per minute for every screen that asks: Home and the late list share it
@@ -38,6 +39,6 @@ export function useFeed(key: string): FeedState | null {
 /** What a screen says when the job behind its list is not running: a stopped job is not "nothing to do". */
 export function feedLine(f: FeedState | null): string | null {
   if (!f || f.state === "running") return null;
-  if (f.state === "not_running") return `${f.why || `${f.label} are not being made right now.`} An empty list here is not "nothing to do".`;
+  if (f.state === "not_running") return `${f.why || `${f.label} are not being made right now.`}${f.since ? ` Last ran about ${formatDateTime(f.since)}.` : ""} An empty list here is not "nothing to do".`;
   return `Not checked: whether ${f.label.toLowerCase()} are being made. An empty list here is not "nothing to do".`;
 }

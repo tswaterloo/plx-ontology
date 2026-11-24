@@ -9,7 +9,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
-import { TeamDashboard } from "@/components/team/dashboard";
+import { readPlannerAhead, TeamDashboard } from "@/components/team/dashboard";
 import { WorkloadSection } from "@/components/team/workload";
 import { getLabour, getTeam } from "@/lib/api";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
@@ -40,6 +40,10 @@ export default function TeamPage() {
   const { state } = useAuth();
   const me = state.status === "signed-in" ? state.me : null;
   const team = hasTeamGrant(me);
+  // the dashboard's planner counts, asked for beside the people (not once they answered)
+  useEffect(() => {
+    if (me) readPlannerAhead();
+  }, [!!me]); // eslint-disable-line react-hooks/exhaustive-deps
   const people = useLoad<TeamView>(getTeam, !!me);
   const labour = useLoad<LabourPage>(getLabour, !!me);
   const labourOn = !!labour.data && labour.data.state !== "not_granted";

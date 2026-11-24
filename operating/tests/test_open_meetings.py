@@ -197,14 +197,5 @@ class OpenLongTranscripts(unittest.TestCase):
         self.assertTrue(shown["truncated"])
         self.assertIn("Line 0: the batch PO100235", shown["untrusted_text"])
 
-    def test_freightcom_past_the_field_cut_is_withheld(self) -> None:
-        got, chars = self.opened(_long_vtt(300, "rates booked through Freight" "com today",
-                                           at=280))
-        self.assertGreater(chars, 40_000)
-        self.assertEqual(got, {"error": {"code": "egress_withheld",
-                                         "message": "this item is never shown to the "
-                                                    "assistant"}})
-
-
 if __name__ == "__main__":
     unittest.main()

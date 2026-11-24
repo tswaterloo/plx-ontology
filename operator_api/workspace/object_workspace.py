@@ -174,11 +174,13 @@ from the tool answers.
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+import contextvars
 import copy
 from datetime import date
 import functools
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import sqlite3
@@ -188,11 +190,15 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.types import Actor, ValidationError
+from operating import limits
 from operating import po_status
+from operating.order_confirmation import order_confirmation
 from operating.kept_policy import KeptPolicies
 from operating.explanations import explain
 
 from ..errors import RecordNotFound
+
+_LOG = logging.getLogger(__name__)
 
 MAX_HANDLE = 4096
 MAX_QUERY = 200
@@ -738,9 +744,12 @@ class ObjectWorkspace:
         with self._request():
             return explain(self._find(query, object_type=object_type, cursor=cursor))
 
-    def workspace(self, object_id: str) -> dict[str, Any]:
+    def workspace(self, object_id: str, *, documents: bool = True) -> dict[str, Any]:
+        """The record's workspace. ``documents`` False: the mail and documents around it are not
+        read (``plx.documents``; its answer carries no value conflict: the History builder's
+        conflicts need only the other calls)."""
         with self._request():
-            return explain(self._workspace(object_id))
+            return explain(self._workspace(object_id, documents))
 
     def card(self, object_id: str) -> dict[str, Any]:
         """The record's card alone, as ``workspace`` reads it first (a page's core read):
@@ -823,7 +832,9 @@ class ObjectWorkspace:
             counts = pe.open_counts(pe.inbox_path(path), path, kinds=list(kinds))
         if counts is None:
             return {**base, "status": "unavailable", "counts": {}}
-        return {**base, "status": "read", "counts": counts}
+        return {**base, "status": "read", "counts": counts,
+                "checked": pe.last_checked(pe.inbox_path(path), kinds=list(kinds),
+                                           store=path)}
 
     def unjudged(self, rule: str, reason: str | None = None, *, offset: int = 0,
                  limit: int = 50) -> dict[str, Any]:
@@ -1581,17 +1592,14 @@ class ObjectWorkspace:
                 raise ValueError("object_id_invalid")
         return base, card
 
-    def _workspace(self, object_id: str) -> dict[str, Any]:
+    def _workspace(self, object_id: str, documents: bool = True) -> dict[str, Any]:
         """Card, relationship map, timeline, process, gaps, conflicts and intents."""
         base, card = self._card(object_id)
         if card.get("error"):
             return {**base, "object_id": object_id, "card": card, "status": "error"}
-        around = self._around(object_id, card)
-        timeline = self._timeline(object_id, around)
-        process = self._process(object_id)
-        documents = self._documents(object_id)
+        around, timeline, process, docs = self._walk(object_id, card, documents)
         gaps, conflicts = self._gaps_and_conflicts(card, around, timeline, process,
-                                                   documents)
+                                                   docs)
         records = _records_of(card)
         return {**base, "status": "read", "object_id": object_id,
                 "card": card, "around": around, "reviews": self._reviews(object_id, around),
@@ -1599,10 +1607,25 @@ class ObjectWorkspace:
                 "timeline": timeline, "process": process,
                 "gaps": gaps, "conflicts": conflicts,
                 "originals": self._originals(card, around, timeline, process, conflicts),
-                "documents": documents,
+                "documents": docs,
                 "intents": self._intents(records), "cases": self._cases(records),
                 "ask": {"served": self._ask_served()},
-                "answers": self._openable(object_answers(card, around, process))}
+                "answers": self._openable(object_answers(
+                    card, around, process,
+                    confirmations=lambda: self._confirmation_state(object_id)))}
+
+    def _confirmation_state(self, object_id: str) -> str | None:
+        """The order's confirmation state by the one rule (``operating.order_confirmation``)
+        as this reader reads it; None when a copy or link is hidden or unread (then nothing
+        changes what the process said). Logged, never raised: the page's other answers stand."""
+        try:
+            got = order_confirmation(self._call, object_id)
+        except Exception:   # noqa: BLE001 - a read error leaves the process's own verdict
+            _LOG.warning("confirmation state not read for %s", limits.cut(str(object_id), 200, say="log line").text, exc_info=True)
+            return None
+        if got["blind"] and got["state"] == po_status.NONE_FOUND:
+            return None   # a hidden copy may hold one: "none" is never said
+        return got["state"]
 
     def _cases(self, records: Sequence[str]) -> dict[str, Any]:
         """The cases the reader may read that cite one of the object's ``records``, each
@@ -1648,21 +1671,81 @@ class ObjectWorkspace:
                 "max_cases": MAX_OBJECT_CASES,
                 "cases_listing_full": len(listed) >= MAX_OBJECT_CASES}
 
+    def _walk(self, object_id: str, card: Mapping[str, Any], documents: bool = True
+              ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """The record's walk, timeline, process and documents, read as independent tasks
+        (a hop with its timeline: the hop's set is held by the runtime that made it; the
+        record's own timeline; its process; its documents): side by side on the pool's idle
+        workers when spread (``WORKSPACE_SPREAD``, each task on one worker's runtime as this
+        same reader), else one after another here; put together in the serial order."""
+        listed = self._listed(card)
+        hops = listed[:MAX_HOP_QUERIES]
+        may_count = self.access.read is None or self.sources is None
+        served = documents and DOCUMENTS_TOOL in self.tools
+        tasks: list[Callable[[Callable[[str, dict], Any]], Any]] = []
+        if served:
+            tasks.append(lambda call: _documents_pages(call, object_id, may_count))
+        tasks.append(lambda call: _process_of(call, object_id) if "plx.process" in self.tools
+                     else {"status": "not_configured"})
+        for item in hops:
+            tasks.append(functools.partial(_hop_with_timeline, object_id, item))
+        tasks.append(lambda call: call("plx.timeline", {"from": object_id, "limit": 50}))
+        spread = WORKSPACE_SPREAD.get()
+        results = (spread(self._call, tasks, lambda: False) if spread is not None
+                   and len(tasks) > 1 else [task(self._call) for task in tasks])
+        if len(results) != len(tasks):   # a spread cut short: never a page in part
+            raise TimeoutError("workspace_read_cut")
+        documents = self._documents_marked(results.pop(0)) if served \
+            else self._documents_unserved()
+        process = results.pop(0)
+        own_timeline = results.pop()
+        hop_out = []
+        roots: list[tuple[str, Any]] = [("object", own_timeline)]
+        for item, (result, timeline) in zip(hops, results):
+            hop_out.append({"link_type": item["link_type"], "direction": item["direction"],
+                            "listed_count": item.get("count"), "result": result})
+            if timeline is not None:
+                roots.append((f"{item['link_type']} {item['direction']}", timeline))
+        around = {"hops": hop_out, "link_types_listed": len(listed),
+                  "truncated": len(listed) > MAX_HOP_QUERIES, "tier_floor": TIER_FLOOR}
+        return around, _timeline_of(roots[:MAX_TIMELINE_ROOTS]), process, documents
+
+    @staticmethod
+    def _listed(card: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """The link types the card lists with something on them (its own link types)."""
+        return [item for item in card.get("linked_counts") or []
+                if item.get("count") != 0 or item.get("tiers")]
+
     def _around(self, object_id: str, card: Mapping[str, Any]) -> dict[str, Any]:
         """One ``plx.around`` hop per link type the card lists (its own link types)."""
-        hops = []
-        listed = [item for item in card.get("linked_counts") or []
-                  if item.get("count") != 0 or item.get("tiers")]
-        for item in listed[:MAX_HOP_QUERIES]:
-            result = self._call("plx.around", {
-                "from": object_id, "tier_floor": TIER_FLOOR, "limit": 50,
-                "response_format": "detailed",
-                "path": [{"link_type": item["link_type"], "direction": item["direction"]}]})
-            hops.append({"link_type": item["link_type"], "direction": item["direction"],
-                         "listed_count": item.get("count"), "result": result})
+        listed = self._listed(card)
+        hops = [{"link_type": item["link_type"], "direction": item["direction"],
+                 "listed_count": item.get("count"),
+                 "result": _hop(self._call, object_id, item)}
+                for item in listed[:MAX_HOP_QUERIES]]
         return {"hops": hops, "link_types_listed": len(listed),
                 "truncated": len(listed) > MAX_HOP_QUERIES,
                 "tier_floor": TIER_FLOOR}
+
+    def _documents_unserved(self) -> dict[str, Any]:
+        return {"status": "not_configured",
+                "withheld_sources": [label for source, label in grantable_sources()
+                                     if source in ("graph_mail", "sharepoint")],
+                "reason": NO_HOST_GRANT}
+
+    def _documents_marked(self, pages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """The pages ``_documents_pages`` read (last item: whether pages were left unread),
+        each document marked ``openable`` for this reader here (``_mark_documents``)."""
+        *read, left = pages
+        result = dict(read[0])
+        if result.get("error"):
+            return {"status": "error", "error": result["error"]}
+        counts = {"not_permitted": 0, "not_available": 0, "complete": True}
+        self._mark_documents(result, counts)
+        for more in read[1:]:
+            self._mark_documents(dict(more), counts)
+        counts["complete"] = not left["left"]
+        return {"status": "read", "result": result, "withheld": counts}
 
     def _timeline(self, object_id: str, around: Mapping[str, Any]) -> dict[str, Any]:
         """Events of the object and of each neighbour set, merged by event id."""
@@ -1671,34 +1754,13 @@ class ObjectWorkspace:
             handle = (hop["result"] or {}).get("set")
             if handle and (hop["result"].get("objects") or []):
                 roots.append((f"{hop['link_type']} {hop['direction']}", handle))
-        events: dict[str, dict[str, Any]] = {}
-        calls = []
-        for label, root in roots[:MAX_TIMELINE_ROOTS]:
-            result = self._call("plx.timeline", {"from": root, "limit": 50})
-            calls.append({"root": label, "result": {
-                key: result.get(key) for key in ("gaps", "conflicts", "withheld",
-                                                 "completeness", "error", "meta")
-                if result.get(key) is not None}})
-            for event in result.get("events") or []:
-                kept = events.setdefault(event["event_id"], {**event, "found_from": []})
-                kept["found_from"].append(label)
-        ordered = sorted(events.values(), key=_sort_time)
-        return {"events": ordered[:MAX_EVENTS], "total": len(ordered),
-                "truncated": len(ordered) > MAX_EVENTS
-                or any((call["result"].get("completeness") or {}).get("truncated")
-                       for call in calls), "calls": calls}
+        return _timeline_of([(label, self._call("plx.timeline", {"from": root, "limit": 50}))
+                             for label, root in roots[:MAX_TIMELINE_ROOTS]])
 
     def _process(self, object_id: str) -> dict[str, Any]:
         if "plx.process" not in self.tools:
             return {"status": "not_configured"}
-        result = self._call("plx.process", {"from": object_id})
-        error = result.get("error")
-        if error and error.get("code") == "no_process":
-            return {"status": "not_applicable", "detail": error.get("message"),
-                    "hint": error.get("hint")}
-        if error:
-            return {"status": "error", "error": error}
-        return {"status": "read", "result": result}
+        return _process_of(self._call, object_id)
 
     def _documents(self, object_id: str) -> dict[str, Any]:
         """``plx.documents`` around the object for the reader, when the host serves it.
@@ -1706,47 +1768,9 @@ class ObjectWorkspace:
         Each document keeps its citation; it opens here only when the access decides the
         reader may open it now, otherwise it says why not."""
         if DOCUMENTS_TOOL not in self.tools:
-            return {"status": "not_configured",
-                    "withheld_sources": [label for source, label in grantable_sources()
-                                         if source in ("graph_mail", "sharepoint")],
-                    "reason": NO_HOST_GRANT}
-        result = self._call(DOCUMENTS_TOOL, {"object_id": object_id,
-                                             "limit": MAX_DOCUMENTS})
-        if result.get("error"):
-            return {"status": "error", "error": result["error"]}
-        counts = {"not_permitted": 0, "not_available": 0, "complete": True}
-        self._mark_documents(result, counts)
-        # The record page counts every linked document it does not list, not only this
-        # first page: the further pages are read for their markers alone (bounded), and
-        # only when one of them could count (``_may_count``).
-        cursor = (result.get("completeness") or {}).get("next_cursor")
-        if not self._may_count(result):
-            cursor = None
-        for _ in range(MAX_DOCUMENT_COUNT_PAGES):
-            if not isinstance(cursor, str) or not cursor:
-                break
-            more = self._call(DOCUMENTS_TOOL, {"object_id": object_id,
-                                               "limit": DOCUMENT_COUNT_PAGE,
-                                               "cursor": cursor})
-            if more.get("error"):
-                break
-            self._mark_documents(more, counts)
-            cursor = (more.get("completeness") or {}).get("next_cursor")
-        counts["complete"] = not (isinstance(cursor, str) and cursor)
-        return {"status": "read", "result": result, "withheld": counts}
-
-    def _may_count(self, result: Mapping[str, Any]) -> bool:
-        """Whether a further page of ``plx.documents`` could hold a document the record
-        page counts: the first page holds a business record (``COUNTABLE_SCHEMES``), or an
-        item-gated source has no reader here (a permitted one then counts as not available
-        yet). Otherwise none can: the tool's families are people sources (mail, SharePoint,
-        originals, Teams; ``ontology_tools_evidence.DOCUMENT_FAMILIES``), never counted when
-        refused, so the paging would be pure cost."""
-        if self.access.read is None or self.sources is None:
-            return True
-        return any(isinstance(d, Mapping) and isinstance(d.get("citation"), str)
-                   and d["citation"].startswith(COUNTABLE_SCHEMES)
-                   for d in result.get("documents") or ())
+            return self._documents_unserved()
+        return self._documents_marked(_documents_pages(
+            self._call, object_id, self.access.read is None or self.sources is None))
 
     def _mark_documents(self, result: dict[str, Any], counts: dict[str, Any]) -> None:
         """Each document of one ``plx.documents`` page marked ``openable`` for this reader
@@ -2694,6 +2718,8 @@ class HostAccess:
     def decide(self, handles: Iterable[str]) -> dict[str, dict[str, str] | None]:
         gated, policy, memo = self._state()
         handles = list(dict.fromkeys(handles))
+        from operating.ontology_tools_policy import note_opened
+        note_opened(handles)   # a stored plan run depends on every handle it asked the door about
         todo = [handle for handle in handles if handle not in memo]
         if todo:
             with self.host.per_call():
@@ -3219,16 +3245,30 @@ def _stage_words(stage: Mapping[str, Any]) -> str:
 
 def object_answers(card: Mapping[str, Any], around: Mapping[str, Any],
                    process: Mapping[str, Any], *, schema: Any = None,
-                   graphs: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                   graphs: Mapping[str, Mapping[str, Any]] | None = None,
+                   confirmations: Callable[[], str | None] | None = None) -> dict[str, Any]:
     """The question box's answers from one opened object: ``missing`` (the steps of its
     process with no record, the ones hidden from this reader counted apart) and
     ``supplier`` (who the order is from, by its linked supplier, and whether it is
-    confirmed). Each a ``verdict`` line, its facts and follow-ups."""
+    confirmed). Each a ``verdict`` line, its facts and follow-ups.
+
+    ``confirmations``: the order's confirmation state by the one rule
+    (``operating.order_confirmation``: confirmed, found unverified, needs check, none, or
+    None when not all readable), asked only when the process finds its confirmation stage
+    without a record. The process counts settled links only; a confirmation linked to
+    the order as a lead, or on any copy of it, is never said to be missing."""
     from operating.explanations import TIER_MEANING, field_words
 
     subject = _subject(card.get("object"))
     stages = [s for s in ((process.get("result") or {}).get("stages") or [])
               if isinstance(s, Mapping)] if process.get("status") == "read" else []
+    schema = _default_schema() if schema is None else schema
+    graphs = _default_graphs() if graphs is None else graphs
+    root_type = (card.get("object") or {}).get("object_type")
+    confirming = _confirmation_stages(graphs, (process.get("result") or {}).get("process"),
+                                      root_type) if stages else set()
+    # the confirmation stage's state by the one rule, when the process found it absent
+    told: str | None = None
 
     def handle_of(stage: Mapping[str, Any]) -> str | None:
         found: set[str] = set()
@@ -3262,6 +3302,14 @@ def object_answers(card: Mapping[str, Any], around: Mapping[str, Any],
         # "purchase order" step) is not missing: it is there, not yet issued.
         unreached = [s for s in gaps if (s.get("reading") or {}).get("kind") == "not_reached"]
         absent = [s for s in gaps if s not in undecided and s not in unreached]
+        unsettled: list[Mapping[str, Any]] = []
+        if confirmations is not None and any(s.get("stage") in confirming for s in absent):
+            told = confirmations()
+            if told in (po_status.CONFIRMED, po_status.FOUND_UNVERIFIED,
+                        po_status.NEEDS_CHECK):
+                unsettled = [s for s in absent if s.get("stage") in confirming
+                             and told != po_status.CONFIRMED]
+                absent = [s for s in absent if s.get("stage") not in confirming]
         hidden = [s for s in stages if s.get("missing")
                   and s["missing"].get("state") in _STAGE_HIDDEN]
         names = [field_words(s.get("stage")) for s in absent]
@@ -3270,32 +3318,29 @@ def object_answers(card: Mapping[str, Any], around: Mapping[str, Any],
                 if hidden else "")
         held = ", ".join(field_words(s.get("stage")) for s in unreached)
         held_words = f"held, its status not reached yet: {held}" if held else ""
-        missing = ({"state": "missing", "text": f"Missing: {', '.join(names)}"
-                    + (f"; {held_words}" if held else "")
-                    + (f"; not established: {unsure}" if unsure else "") + tail} if absent
-                   else {"state": "not_established",
-                         "text": (f"{held_words[:1].upper()}{held_words[1:]}; "
-                                  f"not established: {unsure}{tail}" if held
-                                  else f"Not established: {unsure}{tail}")}
-                   if undecided
-                   else {"state": "not_established",
-                         "text": f"{held_words[:1].upper()}{held_words[1:]}{tail}"}
-                   if unreached
-                   else {"state": "not_established" if hidden else "complete",
-                         "text": f"Nothing missing that you can see{tail}" if hidden
-                         else "Nothing missing: every step has a record"})
+        # a lead or a reused number: the confirmation is neither on record nor missing
+        lead_words = (("found but unverified: " if told == po_status.FOUND_UNVERIFIED
+                       else "needs a check: ")
+                      + ", ".join(field_words(s.get("stage")) for s in unsettled)
+                      if unsettled else "")
+        parts = [part for part in (f"Missing: {', '.join(names)}" if absent else "",
+                                   held_words, f"not established: {unsure}" if unsure else "",
+                                   lead_words) if part]
+        if parts:
+            text = "; ".join(parts) + tail
+            missing = {"state": "missing" if absent else "not_established",
+                       "text": text[:1].upper() + text[1:]}
+        else:
+            missing = {"state": "not_established" if hidden else "complete",
+                       "text": f"Nothing missing that you can see{tail}" if hidden
+                       else "Nothing missing: every step has a record"}
         missing["facts"] = _bounded([{"text": _stage_words(s), "citation": handle_of(s)}
                                      for s in stages][:MAX_VERDICT_FACTS + 4], len(stages))
         missing["follow_ups"] = [f for s in absent if (f := follow_up(s))][:MAX_VERDICT_FOLLOW_UPS]
-    schema = _default_schema() if schema is None else schema
-    graphs = _default_graphs() if graphs is None else graphs
-    root_type = (card.get("object") or {}).get("object_type")
     supplier_links = _supplier_links(schema, root_type)
     hop = next((h for h in around.get("hops") or [] if isinstance(h, Mapping)
                 and h.get("link_type") in supplier_links
                 and h.get("direction") == "forward"), None)
-    confirming = _confirmation_stages(graphs, (process.get("result") or {}).get("process"),
-                                      root_type) if stages else set()
     confirmation = next((s for s in stages if s.get("stage") in confirming), None)
     if hop is None:
         supplier = _not_established(["this record is not an order linked to a supplier"])
@@ -3309,8 +3354,14 @@ def object_answers(card: Mapping[str, Any], around: Mapping[str, Any],
                  if isinstance(e, Mapping)}
         names = [_text_of(o.get("display")) or "a supplier (its name is not readable here)"
                  for o in found]
-        confirmed = confirmation is not None and not confirmation.get("missing")
-        said = ("confirmed" if confirmed else "no supplier confirmation found yet"
+        confirmed = confirmation is not None and (not confirmation.get("missing")
+                                                  or told == po_status.CONFIRMED)
+        said = ("confirmed" if confirmed
+                else "supplier confirmation found, unverified"
+                if told == po_status.FOUND_UNVERIFIED
+                else "a supplier confirmation needs a check"
+                if told == po_status.NEEDS_CHECK
+                else "no supplier confirmation found yet"
                 if confirmation is not None else "confirmation not checked")
         if len(found) == 1:
             tier = tiers.get(found[0].get("object_id"))
@@ -3659,3 +3710,91 @@ __all__ = ["ACTION_STEPS", "APPROVAL_STAGES", "ApiOnlyAccess", "CaseIntents", "F
            "StoreStatus", "approval_of", "audience_unit", "host_access", "mirror_path",
            "object_answers", "page_answers_for", "plans_for", "project_mirror",
            "record_of", "version_of"]
+
+
+# ---- a record's walk, as tasks (``ObjectWorkspace._walk``) ---------------------------
+
+# Set by the API for a record page's read (``WorkspaceBackend._spread``): ``spread(call,
+# tasks, late)`` runs each ``task(call)`` on the pool's idle workers, each on its own
+# runtime as the same reader (``serving.fan_out``), results in order. None: in turn.
+WORKSPACE_SPREAD: "contextvars.ContextVar[Callable[..., list] | None]" = \
+    contextvars.ContextVar("plx_workspace_spread", default=None)
+
+
+def _hop(call: Callable[[str, dict], Any], object_id: str,
+         item: Mapping[str, Any]) -> Any:
+    return call("plx.around", {
+        "from": object_id, "tier_floor": TIER_FLOOR, "limit": 50,
+        "response_format": "detailed",
+        "path": [{"link_type": item["link_type"], "direction": item["direction"]}]})
+
+
+def _hop_with_timeline(object_id: str, item: Mapping[str, Any],
+                       call: Callable[[str, dict], Any]) -> tuple[Any, Any]:
+    """One hop and, when it reached records, the timeline of its set: read on the same
+    runtime, which holds the set."""
+    result = _hop(call, object_id, item)
+    handle = (result or {}).get("set")
+    timeline = call("plx.timeline", {"from": handle, "limit": 50}) \
+        if handle and (result.get("objects") or []) else None
+    return result, timeline
+
+
+def _timeline_of(roots: Sequence[tuple[str, Mapping[str, Any]]]) -> dict[str, Any]:
+    """Events of each root's ``plx.timeline`` answer, merged by event id."""
+    events: dict[str, dict[str, Any]] = {}
+    calls = []
+    for label, result in roots:
+        calls.append({"root": label, "result": {
+            key: result.get(key) for key in ("gaps", "conflicts", "withheld",
+                                             "completeness", "error", "meta")
+            if result.get(key) is not None}})
+        for event in result.get("events") or []:
+            kept = events.setdefault(event["event_id"], {**event, "found_from": []})
+            kept["found_from"].append(label)
+    ordered = sorted(events.values(), key=_sort_time)
+    return {"events": ordered[:MAX_EVENTS], "total": len(ordered),
+            "truncated": len(ordered) > MAX_EVENTS
+            or any((call["result"].get("completeness") or {}).get("truncated")
+                   for call in calls), "calls": calls}
+
+
+def _process_of(call: Callable[[str, dict], Any], object_id: str) -> dict[str, Any]:
+    result = call("plx.process", {"from": object_id})
+    error = result.get("error")
+    if error and error.get("code") == "no_process":
+        return {"status": "not_applicable", "detail": error.get("message"),
+                "hint": error.get("hint")}
+    if error:
+        return {"status": "error", "error": error}
+    return {"status": "read", "result": result}
+
+
+def _documents_pages(call: Callable[[str, dict], Any], object_id: str,
+                     ungated: bool) -> list[dict[str, Any]]:
+    """``plx.documents`` around the object: its first page, then (when one could hold a
+    document the record page counts) the further pages read for their markers alone
+    (bounded), and last ``{"left": bool}``: whether pages were left unread. ``ungated``:
+    an item-gated source has no reader here, so any further page may count. Otherwise a
+    further page could count only when the first holds a business record
+    (``COUNTABLE_SCHEMES``): the other families are people sources, never counted when
+    refused, so the paging would be pure cost."""
+    first = call(DOCUMENTS_TOOL, {"object_id": object_id, "limit": MAX_DOCUMENTS})
+    if first.get("error"):
+        return [first, {"left": False}]
+    pages = [first]
+    cursor = (first.get("completeness") or {}).get("next_cursor")
+    if not (ungated or any(isinstance(d, Mapping) and isinstance(d.get("citation"), str)
+                           and d["citation"].startswith(COUNTABLE_SCHEMES)
+                           for d in first.get("documents") or ())):
+        cursor = None
+    for _ in range(MAX_DOCUMENT_COUNT_PAGES):
+        if not isinstance(cursor, str) or not cursor:
+            break
+        more = call(DOCUMENTS_TOOL, {"object_id": object_id, "limit": DOCUMENT_COUNT_PAGE,
+                                     "cursor": cursor})
+        if more.get("error"):
+            break
+        pages.append(more)
+        cursor = (more.get("completeness") or {}).get("next_cursor")
+    return pages + [{"left": isinstance(cursor, str) and bool(cursor)}]

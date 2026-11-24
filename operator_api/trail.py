@@ -35,6 +35,8 @@ MATERIALS_QUESTION = re.compile(
     r"what(?:'s| is) (?:late|holding)|late)\b", re.I)
 SHOWN_PERSON = ("external", "person")
 
+LOG = logging.getLogger("operator_api.trail")
+
 
 def _ref(oid: str, label: Optional[str], url: Callable[[str, str], str]) -> m.ObjectRef:
     kind = oid.split(":", 1)[0] or "Object"
@@ -66,13 +68,15 @@ class People:
                 runtime = getattr(self.view, "sources", None)
                 self._dir = PeopleDirectory.from_runtime(runtime) if runtime is not None \
                     else None
-            except Exception:  # noqa: BLE001 - no directory: no names
+            except Exception as exc:  # noqa: BLE001 - no directory: no names, said in the log
+                LOG.warning("trail: no people directory (%s): no person is named", type(exc).__name__)
                 self._dir = None
         if self._dir is None:
             return False
         try:
             return self._dir.address(address).state in SHOWN_PERSON
-        except Exception:  # noqa: BLE001 - undecided: not shown
+        except Exception as exc:  # noqa: BLE001 - undecided: not shown, said in the log
+            LOG.warning("trail: a person could not be decided (%s): not shown", type(exc).__name__)
             return False
 
 
@@ -261,7 +265,9 @@ def reads_every_item(view: Any) -> bool:
         return entitlement is not None and all(
             entitlement.full_read_covers(scope) for scope in FULL_READ_ITEM_SCOPES) \
             and entitlement.full_read.grant.mail_scope == "all"
-    except Exception:  # noqa: BLE001 - no grant read: the caveat stays
+    except Exception as exc:  # noqa: BLE001 - no grant read: the caveat stays, said in the log
+        LOG.warning("trail: the reader's grant could not be read (%s): the caveat stays",
+                    type(exc).__name__)
         return False
 
 
@@ -293,14 +299,52 @@ def late_list_step(mapper: Mapper, po: Any, run_at: Optional[str]) -> Optional[m
                        check="computed_from_cited_records")
 
 
+def stored_trail(view: Any, oid: str, label: Optional[str]) -> Optional[dict[str, Any]]:
+    """The precomputed raw trail of a purchase order for this reader (``plan_section_door``:
+    only on the day it was computed, while nothing it rests on has changed, and only to a
+    reader who may open everything it names), else None: the tools then read it live."""
+    try:
+        from . import plan_section_door
+        got = plan_section_door.precomputed(view, oid.split(":", 1)[0], oid, "po_trail")
+    except Exception as exc:  # noqa: BLE001 - speed only: any doubt reads the trail live, said
+        LOG.warning("trail: the stored trail could not be read (%s): read live", type(exc).__name__)
+        try:
+            plan_section_door._fallback("read_failed", "PurchaseOrder", oid, "po_trail", exc)
+        except NameError:
+            pass   # the import itself failed: the log line above says so
+        return None
+    if got is None:
+        return None
+    if "no_answer" in got:     # the runner ran it and it gave none (said by the section)
+        return {"no_answer": got["no_answer"]}
+    raw = {**got["trail"], "label": label}
+    # the tools say "this reader's grants may hide part of what it read" for every reader that
+    # is not a full reader (measured: every L2/L3 live trail, 45 of 45); the stored trail was read
+    # as the full reader, so the caveat is the reader's own, never dropped
+    raw["may_hide"] = bool(raw.get("may_hide")) or not reads_every_item(view)
+    return raw
+
+
 def po_trails(mapper: Mapper, view: Any, oids: Sequence[str],
               labels: Mapping[str, str] | None = None, seconds: float = PO_SECONDS,
-              late: Mapping[str, tuple[Any, Optional[str]]] | None = None
-              ) -> Optional[m.EvidenceTrail]:
+              late: Mapping[str, tuple[Any, Optional[str]]] | None = None,
+              page: bool = False) -> Optional[m.EvidenceTrail]:
+    """``page``: the record page's read: a purchase order with no stored trail for this reader is
+    answered ``not_run`` and asked of the runner, never read live here (a trail takes seconds)."""
     call = lambda name, args: view._call(name, dict(args))  # noqa: E731
     trails = []
     for oid in list(dict.fromkeys(oids))[:MAX_PO_SUBJECTS]:
-        raw = et.po_trail(call, oid, seconds=seconds, label=(labels or {}).get(oid))
+        raw = stored_trail(view, oid, (labels or {}).get(oid))
+        if raw is not None and "no_answer" in raw:
+            if page:
+                continue          # said by the section (typed), not run again here
+            raw = None            # an answer to a question reads it live as before
+        if raw is None:
+            from . import plan_section_door as door
+            if page and door.on() and door.last_miss() not in (None, *door.READER_OWN):
+                door.answer_not_run(oid, "po_trail", door.last_miss())
+                continue
+            raw = et.po_trail(call, oid, seconds=seconds, label=(labels or {}).get(oid))
         if raw.get("state") is None and not raw.get("steps"):
             continue
         trail = mapper.po(raw)
@@ -527,7 +571,7 @@ def for_page(backend: Any, view: Any, oid: str, label: str, *,
             return materials_trail(mapper, view, [(oid, kind, label)],
                                    seconds=max(seconds, MATERIALS_SECONDS))
         return po_trails(mapper, view, [oid], {oid: label}, seconds=seconds,
-                         late={po.object_id: (po, run_at) for po, run_at in late})
+                         late={po.object_id: (po, run_at) for po, run_at in late}, page=True)
     except Exception as error:  # noqa: BLE001 - the page stands without it
         logging.getLogger("operator_api.trail").warning("page trail not built: %s",
                                                         type(error).__name__)

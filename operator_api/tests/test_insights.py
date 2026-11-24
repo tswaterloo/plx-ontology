@@ -73,6 +73,27 @@ class Builtins(unittest.TestCase):
                 ins.builtin.cache_clear()
 
 
+class ViewsRead(unittest.TestCase):
+    """Which views a tile's statement reads (the findings gate, the fast copies): a view's
+    name standing as a whole word in any case, never inside a longer name."""
+
+    def test_whole_words_any_case(self) -> None:
+        from operator_api import insights_fast as fast
+        from operating.pg import business_views as bv
+        some = sorted(bv.VIEWS)[0]
+        self.assertEqual(fast.views_read(f"SELECT * FROM {some.upper()} x"), [some])
+        self.assertEqual(fast.views_read(f'SELECT * FROM "{some}"'), [some])
+        self.assertEqual(fast.views_read(f"SELECT * FROM {some}_more, x{some}"), [])
+        self.assertIn("comms_findings", fast.views_read("select * from comms_findings f"))
+        # the same statement answers the same each time (its words are read once)
+        self.assertEqual(fast.views_read(f"SELECT 1 FROM {some}"), [some])
+
+    def test_findings_tiles_are_the_ones_reading_the_findings_view(self) -> None:
+        for spec in ins.declared():
+            self.assertEqual(ins.reads_findings(spec),
+                             bool(re.search(r"\bcomms_findings\b", spec.sql, re.I)), spec.id)
+
+
 class SenderNames(unittest.TestCase):
     """The decision and complaint tiles name a sender by its name; a Teams sender with no
     display name by its kind and id (never its raw JSON), and one malformed sender fails
@@ -461,6 +482,48 @@ class Backend(ins.InsightsMixin):
         return self.scope
 
 
+class EveryRowTest(unittest.TestCase):
+    """plx.sql shows one page of a result and holds the rest under its id: a tile's read
+    pages on to the last row (no cut), and a failing later page fails the read."""
+
+    def worker(self, total, page, fail_at=None):
+        rows = [{"cite": f"sql://x#row={n}", "cells": [str(n)]} for n in range(total)]
+        calls = []
+
+        def call(tool, args):
+            calls.append(dict(args))
+            start = args.get("offset", 0)
+            if fail_at is not None and start == fail_at:
+                return {"error": {"code": "not_found", "message": "gone"}}
+            got = rows[start:start + page]
+            more = start + len(got) < total
+            out = {"result": "sql://x", "columns": ["n"], "rows": got, "row_count": len(got),
+                   "truncated": more, "profile": {"rows": total}}
+            if more:
+                out["profile"]["page"] = "read on"
+            return out
+        w = FakeWorker(None)
+        w.run = lambda reader, job, timeout=0, priority=0, long=False: job(
+            type("V", (), {"_call": staticmethod(call)})())
+        return w, calls
+
+    def test_every_row_of_a_paged_result_is_read(self):
+        for total in (1, 10, 60, 450):
+            b = Backend(None, everyone=True)
+            b.reads, calls = self.worker(total, 200)
+            got = ins.read_sql(b, reader("owner"), "SELECT n FROM t")
+            self.assertEqual([r["cells"][0] for r in got["rows"]],
+                             [str(n) for n in range(total)])
+            self.assertFalse(got["truncated"])
+            self.assertEqual(len(calls), 1 + (total - 1) // 200)
+
+    def test_a_failing_later_page_is_an_error_not_a_whole_result(self):
+        b = Backend(None, everyone=True)
+        b.reads, _ = self.worker(450, 200, fail_at=200)
+        with self.assertRaises(UserFacing):
+            ins.read_sql(b, reader("owner"), "SELECT n FROM t")
+
+
 class ReadQueueTest(unittest.TestCase):
     """Insight reads run on the page read workers, never the access workers (those decide
     every request's door: a dashboard's tiles held both and every page waited); a read
@@ -484,6 +547,123 @@ def sql_out(rows, cols=("person", "mail_sent", "person_id")):
 
 
 OUTPUT = ("person", "mail_sent", "teams_sent", "person_id")
+
+
+class NotMeasurableTest(unittest.TestCase):
+    """A tile whose base column is unknown everywhere says so instead of an empty chart."""
+
+    def setUp(self):
+        ins._KNOWN.clear()
+
+    def _backend(self, filled: bool):
+        empty = sql_out([], ("person", "mail_sent", "person_id"))
+        b = Backend(empty, everyone=True)
+
+        def run(reader_, job, timeout=0, priority=0, long=False):
+            view = type("V", (), {})()
+            def call(tool, args):
+                b.reads.sql.append(args["sql"])
+                if "IS NOT NULL LIMIT 1" in args["sql"]:
+                    return sql_out([["1"]] if filled else [], ("?column?",))
+                return empty
+            view._call = call
+            return job(view)
+        b.reads.run = run
+        return b
+
+    def test_every_declared_need_names_a_real_view_column(self):
+        raw = json.loads(ins.BUILTIN_FILE.read_text(encoding="utf-8"))
+        declared = {e["id"]: e["needs"] for e in raw["insights"] if e.get("needs")}
+        self.assertTrue(declared)
+        kept = {s.id: s.needs for s in ins.builtin() if s.needs}
+        self.assertEqual(kept, {k: tuple(v) for k, v in declared.items()})
+
+    def test_an_empty_tile_over_a_column_nobody_filled_is_not_measurable(self):
+        b = self._backend(filled=False)
+        spec = ins.Spec(id="x", title="t", about="a", sql="SELECT 1", needs=("emails.owner_role",))
+        got = ins.result(b, reader("owner"), spec, b.scope)
+        self.assertIn("Not measurable", got.not_measurable)
+        self.assertIn("emails.owner_role", got.not_measurable)
+
+    def test_an_empty_tile_over_a_filled_column_is_really_empty(self):
+        b = self._backend(filled=True)
+        spec = ins.Spec(id="x", title="t", about="a", sql="SELECT 1", needs=("emails.owner_role",))
+        self.assertIsNone(ins.result(b, reader("owner"), spec, b.scope).not_measurable)
+
+    def test_a_tile_with_rows_makes_no_check(self):
+        b = Backend(sql_out([["P", "1", "p1"]]), everyone=True)
+        spec = ins.Spec(id="x", title="t", about="a", sql="SELECT 1", needs=("emails.owner_role",))
+        got = ins.result(b, reader("owner"), spec, b.scope)
+        self.assertIsNone(got.not_measurable)
+        self.assertEqual(b.reads.sql, ["SELECT 1"])
+
+
+class CutListTest(unittest.TestCase):
+    """A list the 200-row / 20 KB cap cut says how many rows the statement has in all."""
+
+    def _backend(self, n_total, cut=True):
+        rows = [[f"P{i}", "1", f"p{i}"] for i in range(5)]
+        shown = dict(sql_out(rows), truncated=cut)
+        count = {"columns": ["n"], "rows": [{"cells": [str(n_total)]}], "truncated": False}
+        b = Backend(shown, everyone=True)
+
+        def run(reader_, job, timeout=0, priority=0, long=False):
+            view = type("V", (), {})()
+            def call(tool, args):
+                b.reads.sql.append(args["sql"])
+                return count if "plx_all" in args["sql"] else shown
+            view._call = call
+            return job(view)
+        b.reads.run = run
+        return b
+
+    def test_a_cut_result_carries_the_statements_real_row_count(self):
+        b = self._backend(233)
+        spec = ins.Spec(id="x", title="t", about="a", sql="SELECT 1",
+                        chart={"kind": "bar", "x": "person", "y": ["mail_sent"]})
+        got = ins.result(b, reader("owner"), spec, b.scope)
+        self.assertEqual((got.row_count, got.truncated, got.total_rows), (5, True, 233))
+        if got.drawn:
+            self.assertEqual(got.drawn.rows_total, 233)
+        self.assertTrue(any("plx_all" in q for q in b.reads.sql))
+
+    def test_a_statement_the_team_rule_can_drop_rows_of_has_no_total_not_a_wrong_one(self):
+        b = self._backend(233)
+        spec = ins.Spec(id="x", title="t", about="a", sql="SELECT 1", person="person_id")
+        got = ins.result(b, reader("owner"), spec, b.scope)
+        self.assertTrue(got.truncated)
+        self.assertIsNone(got.total_rows)
+
+    def test_the_unmeasurable_check_is_kept_per_reader(self):
+        ins._KNOWN.clear()
+        spec = ins.Spec(id="x", title="t", about="a", sql="SELECT 1", needs=("emails.owner_role",))
+        nb = NotMeasurableTest._backend(self, filled=False)
+        yes = NotMeasurableTest._backend(self, filled=True)
+        self.assertIsNotNone(ins.result(nb, reader("ana"), spec, nb.scope).not_measurable)
+        # another reader (who may read a filled column) is not told it is unmeasurable
+        self.assertIsNone(ins.result(yes, reader("owner"), spec, yes.scope).not_measurable)
+
+    def test_a_whole_result_makes_no_second_read(self):
+        b = self._backend(5, cut=False)
+        got = b.insight_result(reader("owner"), "team_output")
+        self.assertEqual((got.truncated, got.total_rows), (False, None))
+        self.assertFalse(any("plx_all" in q for q in b.reads.sql))
+
+    def test_a_count_that_fails_says_unknown_not_the_cut_count(self):
+        b = self._backend(0)
+        orig = b.reads.run
+        def run(reader_, job, timeout=0, priority=0, long=False):
+            view = type("V", (), {})()
+            def call(tool, args):
+                if "plx_all" in args["sql"]:
+                    return {"error": {"code": "too_costly", "message": "x"}}
+                return sql_out([["P", "1", "p"]], ("person", "mail_sent", "person_id")) | {"truncated": True}
+            view._call = call
+            return job(view)
+        b.reads.run = run
+        got = b.insight_result(reader("owner"), "team_output")
+        self.assertTrue(got.truncated)
+        self.assertIsNone(got.total_rows)
 
 
 class Mixin(unittest.TestCase):
@@ -638,6 +818,27 @@ def person(principal, *, access=None, expires=None):
                              "expired": lambda self: expires is not None and _t.time() >= expires})()
     return type("R", (), {"key": principal, "session": session, "display_name": principal,
                           "email": None})()
+
+
+class Later:
+    """A keeper's pool whose submitted reads run only at ``run()`` (in order, on this thread)."""
+
+    def __init__(self) -> None:
+        self.queued: list = []
+
+    def submit(self, fn, *args, **kwargs):
+        from concurrent.futures import Future
+        done: Future = Future()
+        self.queued.append((done, fn, args, kwargs))
+        return done
+
+    def run(self) -> None:
+        while self.queued:
+            done, fn, args, kwargs = self.queued.pop(0)
+            try:
+                done.set_result(fn(*args, **kwargs))
+            except BaseException as exc:  # noqa: BLE001 - kept on the future, as a pool does
+                done.set_exception(exc)
 
 
 class KeptAnswers(unittest.TestCase):
@@ -849,7 +1050,11 @@ class KeptAnswers(unittest.TestCase):
         good answer is served with the time it was read; another reader, a refusal about
         access, and an answer older than ``LAST_GOOD_SECONDS`` still get the error."""
         b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
-        b._insight_keep = self.ic.Keeper(self.kept(), lambda r, sql: ins.read_now(b, r, sql))
+        # the keeper's background re-reads run when the test says (``Later``), not whenever
+        # a thread gets to them: which answer a call sees must not depend on that timing
+        later = Later()
+        b._insight_keep = self.ic.Keeper(self.kept(), lambda r, sql: ins.read_now(b, r, sql),
+                                         pool=later)
         owner, other = person("employee:owner"), person("employee:other")
         first = b.insight_result(owner, "team_output")
         self.assertEqual([r[0] for r in first.rows], ["Me", "Other"])
@@ -892,6 +1097,7 @@ class KeptAnswers(unittest.TestCase):
         b.reads.run = refuse("timeout")
         self.assertEqual(b.insight_result(owner, "team_output").rows, first.rows)   # same again
         b.reads.run = refuse("not_readable")                    # access refused: no old tile
+        later.run()      # the re-read the last call started meets the refusal: the old one goes
         with self.assertRaises(UserFacing) as e:
             b.insight_result(owner, "team_output")
         self.assertEqual(e.exception.code, "insight_withheld")
@@ -942,11 +1148,24 @@ class StreamedDashboard(unittest.TestCase):
     tile), each tile through the same door as its own request."""
 
     def lines(self, b, who):
+        """The stream as a person sees it once the background reads have stored the tiles: the
+        first stream computes nothing (every tile is waiting), the reads it started finish,
+        the next stream draws the stored values."""
+        from operator_api import insights_cache as ic
+        if b._insight_keep is None:      # a door stamp that holds (without one nothing is stored)
+            b._insight_keep = ic.Keeper(
+                ic.Kept(lambda: 7, fresh=300.0),
+                lambda r, sql: b._insight_read(r, sql, ic.AHEAD_SECONDS, ahead=True))
+        first = list(b.insights_stream(who))
+        self.assertTrue(all(t.keys() & {"result", "waiting", "error"} for t in first[1:]))
+        keeper = b._insight_keeper()
+        keeper.pool().shutdown(wait=True)
+        keeper._pool = None
         return list(b.insights_stream(who))
 
     def test_the_list_comes_first_then_one_line_per_tile_equal_to_its_own_read(self):
         b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=True)
-        owner = reader("owner")
+        owner = person("employee:owner")
         got = self.lines(b, owner)
         self.assertIn("list", got[0])
         ids = [i["id"] for i in got[0]["list"]["items"]]
@@ -964,7 +1183,7 @@ class StreamedDashboard(unittest.TestCase):
 
     def test_a_staff_reader_is_streamed_only_their_own_tiles_and_their_own_rows(self):
         b = Backend(sql_out(Mixin.rows, OUTPUT), everyone=False, me=frozenset({ME}))
-        got = self.lines(b, reader("ana"))
+        got = self.lines(b, person("employee:ana"))
         shown = {i["id"] for i in got[0]["list"]["items"]}
         withheld = {s.id for s in ins.builtin() if s.scope == "full" or ins.reads_findings(s)}
         self.assertTrue(withheld)
@@ -988,7 +1207,7 @@ class StreamedDashboard(unittest.TestCase):
             view._call = call
             return job(view)
         b.reads.run = run
-        got = self.lines(b, reader("owner"))
+        got = self.lines(b, person("employee:owner"))
         failed = [t for t in got[1:] if "error" in t]
         self.assertTrue(failed)
         self.assertTrue(all(t["error"]["code"] == "insight_not_ready" and t["error"]["status"] == 503
@@ -1003,11 +1222,10 @@ class StreamedDashboard(unittest.TestCase):
             raise RuntimeError("secret /path detail")
         b.reads.run = boom
         with self.assertLogs("operator_api.insights", level="ERROR"):
-            got = self.lines(b, reader("owner"))
-        errs = [t["error"] for t in got[1:] if "later" not in t]
-        # a measure tile with nothing kept is left to the page (``later``), never read here
-        self.assertTrue(all(t["id"].startswith(ins.MEASURE_TILE) for t in got[1:] if "later" in t))
-        self.assertEqual(len(errs), len([t for t in got[1:] if "later" not in t]))
+            got = self.lines(b, person("employee:owner"))
+        errs = [t["error"] for t in got[1:] if "error" in t]
+        # a background read that failed is said (typed), never "waiting" for ever
+        self.assertEqual(len(errs), len(got[1:]))
         self.assertTrue(errs)
         self.assertTrue(all(e["status"] in (500, 503) for e in errs))
         self.assertNotIn("secret", json.dumps(got))
@@ -1198,6 +1416,47 @@ class AskChartKeepsItsStatement(unittest.TestCase):
         self.assertEqual(got["sql"], "SELECT 1")
         self.assertIsNone(got.get("measure"))
 
+class TilesUseTheMeasure(unittest.TestCase):
+    def test_the_mail_sent_tiles_count_by_the_measures_own_definition(self):
+        from operating import measures
+        where = measures.where_sql("mail_sent")
+        tiles = {t.id: t.sql for t in ins.builtin()}
+        for tile in ("team_output", "team_mail_weekly"):
+            self.assertIn(where, tiles[tile], tile)
+            self.assertNotIn("{where:", tiles[tile])
+
+    def test_a_tile_over_mail_with_its_own_count_says_so_and_names_the_measure_it_is_not(self):
+        """customer_mail counts mail in both directions that the customer links name: not
+        the mail_received measure. Its words say that, so two mail totals are never read as one."""
+        from operating import measures
+        tile = {t.id: t for t in ins.builtin()}["customer_mail"]
+        self.assertNotIn(measures.where_sql("mail_received"), tile.sql)
+        self.assertIn("not the mail_received measure", tile.about)
+        self.assertIn("mail_received", measures.measures())
+
+    def test_every_measure_tile_is_the_catalogues_own_statement(self):
+        """A tile named for a measure shows that measure: its statement is the catalogue's
+        (value expression and where clause both), never a rewrite, so its total is the one
+        Ask, Genie and ``tools/page_truth.py`` give."""
+        from operating import measures
+        specs = {s.id: s for s in ins.measure_specs()}
+        self.assertTrue(specs)
+        for name, entry in measures.measures().items():
+            tile = specs.get(f"{ins.MEASURE_TILE}{name}")
+            if tile is None:
+                continue                       # one the checker refuses is left out, never altered
+            with self.subTest(name):
+                want, _ = measures.statement(name, by="month" if entry.get("date") else None)
+                self.assertEqual(tile.sql, want)
+                if entry.get("where"):
+                    self.assertIn(measures.where_sql(name), tile.sql)
+        # a declared tile never stands in for a measure's tile id with another statement
+        for t in ins.builtin():
+            if t.id.startswith(ins.MEASURE_TILE):
+                self.assertNotIn(t.id.removeprefix(ins.MEASURE_TILE), measures.measures(), t.id)
+
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1321,10 +1580,17 @@ class FastCopies(unittest.TestCase):
                        (mid, sender, mailbox, days, handle and f"{handle}:{mid}:{mailbox}",
                         [obj or f"o:{mid}"], ver, excluded, ai_ok))
 
-    def maker(self, specs, clock=None):
+    def maker(self, specs, clock=None, role=None):
         from operator_api import insights_fast as f
-        return f.Fast(lambda: psycopg.connect(self.dsn), lambda: specs,
-                      **({"clock": clock} if clock else {}), fresh=300.0)
+
+        def connect():
+            conn = psycopg.connect(self.dsn)
+            if role:
+                conn.execute(f"SET ROLE {role}")
+                conn.commit()
+            return conn
+        return f.Fast(connect, lambda: specs, **({"clock": clock} if clock else {}),
+                      fresh=300.0)
 
     def counts(self, maker, spec):
         got = maker.get(spec)["got"]
@@ -1433,15 +1699,18 @@ class FastCopies(unittest.TestCase):
                 got = f.compute(pg, [fast_spec()], int(stamp[3]))
                 self.assertEqual(len(got["fx"]["got"]["rows"]), 1)
 
-    def test_findings_are_counted_only_with_a_copy_of_their_message_the_door_gives_any_reader(self):
-        from operator_api import insights_fast as f
+    def findings_fixture(self):
+        """Readings with findings over the comms tables (the door cases); the spec counting
+        them by kind."""
         s = self.schema
         with psycopg.connect(self.dsn) as pg:
             pg.execute(f"ALTER TABLE {s}.emails ADD COLUMN subject text, ADD COLUMN thread "
                        "text, ADD COLUMN customers text[], ADD COLUMN suppliers text[]")
-            pg.execute(f"CREATE TABLE {s}.comms_findings (kind text, topic text, summary "
-                       "text, who text, from_side text, said_at timestamptz, source_view "
-                       "text, handles text[])")
+            from operating import assist_readings as ar
+            from operating.pg import comms_findings as cf
+            for stmt in ar.ddl() + cf.feed_ddl():
+                pg.execute(stmt)
+            pg.execute("TRUNCATE assist.readings")
             pg.execute(f"CREATE TABLE {s}.teams_messages (created_at timestamptz, sender "
                        "text, chat text, subject text, customers text[], suppliers text[], "
                        "handle text, object_ids text[], ver bigint, excluded boolean, ai_ok "
@@ -1453,18 +1722,27 @@ class FastCopies(unittest.TestCase):
         self.mail("m4", a, obj="o:gone")        # excluded since the build
         with psycopg.connect(self.dsn) as pg:
             pg.execute("INSERT INTO ontology.people_excluded_objects VALUES ('o:gone')")
-            for mid, kind, days, handles in (
-                    ("m1", "complaint", 3, ["h:m1:mb"]), ("m2", "complaint", 3, ["h:m2:mb"]),
-                    ("m3", "complaint", 3, ["h:m3:mb"]), ("m4", "complaint", 3, ["h:m4:mb"]),
-                    ("m1", "praise", 3, ["h:none:mb"]),       # no copy at all
-                    ("m1", "complaint", 3, []),               # no copy named
-                    ("m1", "complaint", 150, ["h:m1:mb"])):   # outside the copied window
-                pg.execute(f"INSERT INTO {s}.comms_findings VALUES (%s, 'delivery', 'x', '', "
-                           "'customer', now() - make_interval(days => %s), 'emails', %s)",
-                           (kind, days, handles))
+            # one reading per message (assist.readings), its findings as items
+            for n, (kind, days, handles) in enumerate((
+                    ("complaint", 3, ["h:m1:mb"]), ("complaint", 3, ["h:m2:mb"]),
+                    ("complaint", 3, ["h:m3:mb"]), ("complaint", 3, ["h:m4:mb"]),
+                    ("praise", 3, ["h:none:mb"]),         # no copy at all
+                    ("complaint", 150, ["h:m1:mb"]))):    # outside the copied window
+                pg.execute("INSERT INTO assist.readings (source, message_key, handles, said_at, "
+                           "read_ver, status, from_side, findings) VALUES ('emails', %s, %s, "
+                           "now() - make_interval(days => %s), 1, 'ok', 'customer', "
+                           "jsonb_build_array(jsonb_build_object('kind', %s::text, 'topic', "
+                           "'delivery', 'summary', 'x', 'who', '')))",
+                           (f"k{n}", handles, days, kind))
         spec = fast_spec(person="", scope="full", sid="fb", sql=(
             "SELECT kind, count(*) AS n FROM comms_findings WHERE said_at >= now() - "
             "interval '90 days' GROUP BY kind"))
+        return spec
+
+    def test_findings_are_counted_only_with_a_copy_of_their_message_the_door_gives_any_reader(self):
+        from operator_api import insights_fast as f
+        s = self.schema
+        spec = self.findings_fixture()
         self.assertTrue(f.eligible(ins.Spec(**{**spec.__dict__, "fast": True})))
         # a table it reads is missing (no Teams messages table): never answered here
         with psycopg.connect(self.dsn) as pg:

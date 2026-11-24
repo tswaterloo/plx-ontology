@@ -600,15 +600,15 @@ class ObjectViewFailedOpenTest(unittest.TestCase):
             conn.execute("UPDATE object_versions SET l1_handle = ? WHERE object_id = ?",
                          (gate_handle, gated))
         conn.close()
-        process, card = objects.ObjectWorkspace._process, ot.OntologyTools._object
+        process, card = objects._process_of, ot.OntologyTools._object
         runtime_gate = ontology_host.item_gate_from_case_runtime
 
-        def raising_process(self, object_id):
+        def raising_process(call, object_id):
             if object_id == broken:
                 raise KeyError("object_not_found")
             if object_id == undecided:
                 raise ValueError("panel_failed")
-            return process(self, object_id)
+            return process(call, object_id)
 
         def card_or_outage(self, arguments, actor):
             # the decision call (no detailed card) on ``undecided`` gets no answer
@@ -625,7 +625,7 @@ class ObjectViewFailedOpenTest(unittest.TestCase):
                 return fallback(actor, handle)
             return gate
 
-        with mock.patch.object(objects.ObjectWorkspace, "_process", raising_process), \
+        with mock.patch.object(objects, "_process_of", raising_process), \
                 mock.patch.object(ot.OntologyTools, "_object", card_or_outage), \
                 mock.patch.object(ontology_host, "item_gate_from_case_runtime", raising_gate):
             cls.report = probe.check_views(projection.served_host(store), sample=40,

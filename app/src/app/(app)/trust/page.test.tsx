@@ -27,7 +27,8 @@ const page = (over: Partial<TrustPage> = {}): TrustPage => ({
   alert_rule: "A type is on by default only when measured.",
   alerts: [
     { type: "po_late", kind: "late_po", label: "Late purchase order", on: true, home: true, judged: 15, correct: 15, percent: 100, measured_on: "2026-11-08", note: null },
-    { type: "customer_order_late", kind: "customer_order_late", label: "Customer order late", on: false, home: false, judged: 59, correct: null, percent: 21, measured_on: "2026-11-08", note: null },
+    { type: "customer_order_late", kind: "customer_order_late", label: "Customer order past its required date", on: false, home: false, judged: null, correct: null, percent: null, measured_on: null, note: "not measurable yet" },
+    { type: "customer_order_slower_than_usual", kind: "customer_order_slower", label: "Customer order later than this customer's orders usually are", on: false, home: false, judged: 59, correct: null, percent: 21, measured_on: "2026-11-08", note: null },
     { type: "po_due", kind: "late_po", label: "Due today, not confirmed", on: false, home: false, judged: null, correct: null, percent: null, measured_on: null, note: "not measurable yet" },
   ],
   autopilot: [row(), row({ workflow: "mc_question", countdown: null, dev: { judged: 22, matched: 18, percent: 81.8 } })],
@@ -69,14 +70,14 @@ describe("Trust page", () => {
     expect(teams).toHaveTextContent("Checked 12 of the 15 items it needs; 91.7% right so far, 90% needed");
     expect(within(auto).getByText(/question/i).closest("tr")).toHaveTextContent("not scored yet");
     // a rate with no whole count shows no invented count
-    const rough = within(screen.getByTestId("trust-alerts")).getByText("Customer order late").closest("tr")!;
+    const rough = within(screen.getByTestId("trust-alerts")).getByText("Customer order later than this customer's orders usually are").closest("tr")!;
     expect(rough).toHaveTextContent("59");
     expect(rough).toHaveTextContent("21.0%");
     expect(rough).toHaveTextContent("—");
-    expect(screen.getByText("1 types not measured yet (off until hand-checked)")).toBeInTheDocument();
+    expect(screen.getByText("2 types not measured yet (off until hand-checked)")).toBeInTheDocument();
     const sw = screen.getByTestId("trust-switches");
     expect(within(sw).getByText("Business Central").closest("tr")).toHaveTextContent("Off");
-    expect(within(sw).getByText("Mission Control").closest("tr")).toHaveTextContent("None");
+    expect(within(sw).getByText("Mission Control").closest("tr")).toHaveTextContent("Read only");
     expect(screen.getByTestId("trust-lines")).toHaveTextContent("Gated");
   });
 
@@ -94,7 +95,7 @@ describe("Trust page", () => {
     expect(lines).toEqual([
       "The app is behind on Teams; the other 3 systems are up to date, though the last read of Files failed (see below).",
       "Answer accuracy on questions never used for tuning has not been measured on this server yet.",
-      "1 of the 3 alert types is switched on; the rest stay off (1 was checked by hand but has not passed yet, 1 has not been checked yet).",
+      "1 of the 4 alert types is switched on; the rest stay off (1 was checked by hand but has not passed yet, 2 have not been checked yet).",
       "The autopilot prepares drafts for a person to confirm in 2 kinds of work; nothing goes out without that person's click.",
     ]);
     // no "6" beside "3 behind" that reads as "63 behind", no "0 of 0"

@@ -53,8 +53,10 @@ class FeedStateTest(unittest.TestCase):
         got = self.feeds(status(OK_CHECKS + [stopped]))
         self.assertEqual(got["reply_drafts"]["state"], "not_running")
         # fixed plain words, never the alarm's own text or a unit name
-        self.assertEqual(got["reply_drafts"]["why"], "Reply drafts are switched off.")
+        self.assertEqual(got["reply_drafts"]["why"], "Reply drafts have stopped.")
         self.assertNotIn("plx-", json.dumps(got))
+        # no hours measured: no time is invented
+        self.assertEqual(got["reply_drafts"]["since"], "")
         user = dict(stopped, name="unit:user:plx-reply-drafts.timer")
         self.assertEqual(self.feeds(status(OK_CHECKS + [user]))["reply_drafts"]["state"],
                          "not_running")
@@ -85,3 +87,12 @@ class FeedStateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoppedSinceTest(unittest.TestCase):
+    def test_a_stopped_unit_says_when_it_last_ran_from_the_hours_measured(self):
+        stopped = {"name": "unit:plx-autopilot-fast.timer", "state": "breach", "line": "x",
+                   "detail": "stopped: no next run", "unit": "h", "value": 44.9}
+        got = feed_state._stopped_since([stopped], "2026-11-23T03:21:10.938803Z")
+        self.assertEqual(got, "2026-11-21T06:27:00Z")
+        self.assertEqual(feed_state._stopped_since([stopped], "not a time"), "")

@@ -34,10 +34,9 @@ or any person it names is excluded (or undecided inside the company's domains) i
 written, and a row is re-checked against the guard on every read. Text is cleaned as the
 feedback store cleans it (no secret-looking string, no excluded person's id or address).
 
-**Memory.** ``recall`` reads one person's log for a window, a record or words; Ask answers
-a question about the person's own work ("what did I send yesterday", "where was I on PO
-90412") from it (``asks_about_my_work``), without a model and without any record the log
-does not already name.
+**Memory.** ``recall`` reads one person's log for a window, a record or words: the Ask's
+``plx.my_work`` tool (``assistant_tools``), whose arguments the model fills from the
+question; no text here decides what a question is about.
 
 Stored at ``<state>/work-log/work-log.sqlite`` (``PLX_WORK_LOG_DIR`` overrides; memory
 without a state directory), 0600 in a 0700 folder.
@@ -654,95 +653,21 @@ def resume(thread: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {"href": href, "turns": turns}
 
 
-# ---- memory: Ask about my own work ---------------------------------------------------------
+# ---- memory: the Ask's plx.my_work ---------------------------------------------------------
 
-_ACTS = (r"(?:do|ask|send|approve|dismiss|save|reply|repl(?:y|ied) to|work on|look at|follow|"
-         r"forward|snooze|accept|reject|edit|note)")
-_MINE = re.compile(
-    r"\b(?:what|which|who|when)\s+(?:did|have)\s+i\s+" + _ACTS + r"\b"
-    r"|\bdid i\s+" + _ACTS + r"\b"
-    r"|\bwhat i\s+(?:did|sent|asked|approved|dismissed|saved)\b"
-    r"|\bwhere (?:was|am) i\b"
-    r"|\bmy (?:work ?log|activity in the workbench)\b"
-    r"|\b(?:still )?waiting (?:on|for) (?:a )?repl(?:y|ies)\b"
-    r"|\bwho (?:hasn't|has not|didn't|did not) (?:replied|reply|answered|got back)\b",
-    re.IGNORECASE)
-_RECORDISH = re.compile(r"\b[A-Za-z]{0,6}[-#]?\d{3,}[A-Za-z0-9-]*\b")
-
-
-def asks_about_my_work(question: str) -> bool:
-    """Whether a question is about the asker's own work in the Workbench (answered from
-    their log); a question about the business records is not."""
-    return bool(_MINE.search(question or ""))
-
-
-_MAILED = re.compile(r"\b(?:send|sent|e-?mail(?:ed)?|mail(?:ed)?|repl(?:y|ied)|forward(?:ed)?)\b",
-                     re.IGNORECASE)
-
-
-def asks_about_my_mail(question: str) -> bool:
-    """Whether a question about the asker's own work asks what they mailed: with nothing in
-    their log, their sent mail answers it (the Ask path), not an empty log."""
-    return asks_about_my_work(question) and bool(_MAILED.search(question or ""))
-
-
-# what a person also does outside the Workbench: approvals given in Mission Control or
-# Business Central (a save, a note, a dismissed card or an accepted item is the log's alone)
-_APPROVED = re.compile(r"\b(?:approv(?:e|ed|al|als)|sign(?:ed)? off)\b", re.IGNORECASE)
-
-
-def asks_about_work_done_elsewhere(question: str) -> bool:
-    """Whether a question about the asker's own work may be about something they did
-    outside the Workbench (mail they sent, an approval they gave): with nothing in their
-    log the Ask path answers it from the business systems, never an empty log."""
-    return asks_about_my_mail(question) or (
-        asks_about_my_work(question) and bool(_APPROVED.search(question or "")))
-
-
-def _window(question: str, now: datetime) -> tuple[Optional[datetime], Optional[datetime], str]:
-    try:
-        from zoneinfo import ZoneInfo
-        local = now.astimezone(ZoneInfo("America/Toronto"))
-    except Exception:  # noqa: BLE001
-        local = now
-    day = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    text = question.lower()
-    if "yesterday" in text:
-        return day - timedelta(days=1), day, "yesterday"
-    if "today" in text or "this morning" in text:
-        return day, None, "today"
-    if "last week" in text:
-        start = day - timedelta(days=day.weekday() + 7)
-        return start, start + timedelta(days=7), "last week"
-    if "this week" in text:
-        return day - timedelta(days=day.weekday()), None, "this week"
-    if _RECORDISH.search(question):
-        return None, None, "so far"
-    return day - timedelta(days=7), None, "in the last 7 days"
-
-
-def recall(store: WorkLog, reader_key: str, question: str, *, limit: int = 12
-           ) -> dict[str, Any]:
-    """The reader's own events a question about their work names: a window ("yesterday",
-    "this week"; default the last 7 days), a record or number it names, a kind it names."""
-    now = store.clock()
-    start, end, said = _window(question, now)
-    text = question.lower()
-    sends = bool(re.search(r"\b(send|sent|repl(y|ied)|email)", text))
-    kind = ("ask" if re.search(r"\bask(ed)?\b", text) else
-            None if sends else
-            "autopilot" if "autopilot" in text else
-            "alert" if re.search(r"\b(alert|dismiss)", text) else None)
-    words = [w for w in _RECORDISH.findall(question)][:2]
-    loops = bool(re.search(r"\bwaiting\b|\breply\b.*\b(yet|back)\b", text))
-    events, total = store.events(reader=reader_key, q=" ".join(words) or None,
-                                 kind=None if words or loops else kind,
-                                 sends=sends and not words and not loops
-                                 and kind is None,
-                                 since=_iso(start) if start else None,
-                                 until=_iso(end) if end else None,
-                                 open_loops=loops, limit=limit)
-    return {"said": said, "events": events, "total": total, "words": words}
+def recall(store: WorkLog, reader_key: str, *, since: Optional[str] = None,
+           until: Optional[str] = None, words: Optional[str] = None,
+           kind: Optional[str] = None, sends: bool = False, open_loops: bool = False,
+           limit: int = 12) -> dict[str, Any]:
+    """The reader's own events, newest first, as the Ask's ``plx.my_work`` asks for them
+    (the model reads the question and fills these; nothing here parses it): ``since`` /
+    ``until`` ISO times, ``words`` a record number or words the entries name, ``kind`` one
+    of ``KINDS``, ``sends`` only messages that went out, ``open_loops`` only those still
+    waiting for a reply. ``total`` None: the exclusion cannot decide (nothing shown)."""
+    events, total = store.events(reader=reader_key, q=(words or "").strip() or None,
+                                 kind=kind or None, sends=sends, since=since or None,
+                                 until=until or None, open_loops=open_loops, limit=limit)
+    return {"events": events, "total": total}
 
 
 _SAY = {"asked": "Asked", "seen": "Read", "dismissed": "Dismissed", "snoozed": "Snoozed",
@@ -776,21 +701,6 @@ def say(event: Mapping[str, Any]) -> str:
         line += (f" (mail from them arrived {str(loop['possible_reply_at'])[:16]} outside "
                  "the thread: check whether it answers)")
     return line
-
-
-def recall_answer(found: Mapping[str, Any]) -> str:
-    events, total = found["events"], found["total"]
-    if total is None:
-        return ("Your work log can't be read right now: the list of people kept out of the "
-                "Workbench isn't loaded, so nothing is shown.")
-    about = f" on {' '.join(found['words'])}" if found["words"] else ""
-    if not events:
-        return f"Your work log has nothing{about} {found['said']}."
-    lines = [f"- {e['at'][:16].replace('T', ' ')}: {say(e)}" for e in events]
-    more = f"\n\n{total - len(events)} more are in your work log." if total > len(events) \
-        else ""
-    return (f"Your work log{about} {found['said']} ({total} "
-            f"{'entry' if total == 1 else 'entries'}):\n" + "\n".join(lines) + more)
 
 
 # ---- the paths that write it ----------------------------------------------------------------

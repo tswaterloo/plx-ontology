@@ -1023,8 +1023,7 @@ def item_supplier_price(world: World) -> list[Candidate]:
 
 # --------------------------------------------------------------------------- quality
 
-# One rule for every batch key, the product's (``operating.fast_answer.batch_hold_count``
-# and ``batch_status``): a physical batch is its batch code, held by FileMaker
+# One rule for every batch key: a physical batch is its batch code, held by FileMaker
 # (public.batch namebatch_c) and by the Portal's ETL copy (app_batch_record batch_name).
 # FileMaker is the system of record for its QC status (schema Batch.quality_status
 # precedence): a batch's status is FileMaker's; where the two disagree the key follows

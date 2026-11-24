@@ -224,7 +224,7 @@ def enumerate_mailboxes(api: Any, scope: DirectoryScope,
     people.require()                      # no I/O: refuse before anything is requested
     people.bind(api)                      # the listing that names nobody
     url = grammar.url("graph.users", {"$select": LISTING_SELECT, "$top": "999"})
-    users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
+    users, completeness = api.get_all_pages(url)
     kept: set[str] = set()
     withheld: set[str] = set()
     departments: dict[str, Any] = {}

@@ -55,30 +55,51 @@ def plan(names: Sequence[str], seconds: Mapping[str, Any], workers: int) -> list
 
 
 def _group(dsn: str, names: list[str], schema: Any, as_of: dt.date | None,
-           digest: str | None) -> tuple[list[dict[str, Any]], str | None]:
-    """One process's views (``business_views.build``); a failure is returned, not raised,
-    so every group's outcome is reported."""
+           digest: str | None) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """One process's views, each on its own (``_each``)."""
     from operating.pg import business_views as bv
     bv._stop_on_term()
-    try:
-        return bv.build(dsn, names, schema=schema, as_of=as_of, digest=digest), None
-    except Exception as exc:  # noqa: BLE001 - reported with the other groups' outcomes
-        return [], f"{type(exc).__name__}: {str(exc)[:600]}"
+    return _each(dsn, names, schema, as_of, digest)
+
+
+def _each(dsn: str, names: Sequence[str], schema: Any, as_of: dt.date | None,
+          digest: str | None) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """``business_views.build`` of each view of ``names`` on its own, in order: what was
+    built, and each failed view's ``"<Type>: <message>"`` (its old table kept). One view's
+    failure never drops the views after it. (Each call reads its own memos: views that
+    shared a reader in one call now each read theirs; the price of knowing each failure.)
+    ``build``'s message for one view is ``BUILD_FAILED`` + ``"<view>: <Type>: <message>"``;
+    any other error is the view's as it is."""
+    from operating.pg import business_views as bv
+    built: list[dict[str, Any]] = []
+    failed: dict[str, str] = {}
+    for n in names:
+        try:
+            built += bv.build(dsn, [n], schema=schema, as_of=as_of, digest=digest)
+        except Exception as exc:  # noqa: BLE001 - reported per view to the caller
+            text = f"{type(exc).__name__}: {str(exc)[:800]}"
+            own = f"RuntimeError: {BUILD_FAILED}{n}: "
+            failed[n] = text[len(own):] if text.startswith(own) else text
+    return built, failed
+
+
+BUILD_FAILED = "views not built (old tables kept): "   # business_views.build's message
 
 
 def build(dsn: str, names: Sequence[str], *, schema: Any = None,
           as_of: dt.date | None = None, digest: str | None = None,
           seconds: Mapping[str, Any] | None = None,
-          workers: int | None = None) -> list[dict[str, Any]]:
+          workers: int | None = None) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """``business_views.build`` of ``names``, the business views side by side (module
-    doc), then the communications tables here. Raises when any view was not built (its
-    old table kept), after every other view was."""
+    doc), then the communications tables here, each view on its own: (what was built, each
+    failed view's ``"<Type>: <message>"``). Never raises for a view's failure; a worker
+    process that died fails each of its views with that reason."""
     from operating.pg import business_views as bv
     workers = view_workers() if workers is None else workers
     plain = [n for n in names if getattr(bv.VIEWS[n], "fill", None) is None]
     comms = [n for n in names if n not in plain]
     if workers < 2 or len(plain) < 2:
-        return bv.build(dsn, list(names), schema=schema, as_of=as_of, digest=digest)
+        return _each(dsn, list(names), schema, as_of, digest)
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
     if bv.SCHEMA != bv.SERVED_SCHEMA:
@@ -89,7 +110,7 @@ def build(dsn: str, names: Sequence[str], *, schema: Any = None,
             bv.ensure_scratch_schema(write)
     groups = plan(plain, seconds or {}, workers)
     out: list[dict[str, Any]] = []
-    failed: list[str] = []
+    failed: dict[str, str] = {}
     # spawn: a child never inherits this process's open connections (the refresh lock's)
     from ontology import parent_watch
     # each worker ends with this process (a killed refresh leaves no build running on)
@@ -98,17 +119,14 @@ def build(dsn: str, names: Sequence[str], *, schema: Any = None,
         futures = [pool.submit(_group, dsn, g, schema, as_of, digest) for g in groups]
         for group, future in zip(groups, futures):
             try:
-                got, error = future.result()
+                got, errors = future.result()
             except Exception as exc:  # noqa: BLE001 - a process that died: its views failed
-                got, error = [], f"{type(exc).__name__}: {str(exc)[:300]}"
+                reason = f"{type(exc).__name__}: {str(exc)[:300]}"
+                got, errors = [], {n: reason for n in group}
             out.extend(got)
-            if error:
-                failed.append(f"{', '.join(group)}: {error}")
+            failed.update(errors)
     if comms:
-        try:
-            out.extend(bv.build(dsn, comms, schema=schema, as_of=as_of, digest=digest))
-        except Exception as exc:  # noqa: BLE001 - reported below with the others
-            failed.append(f"{type(exc).__name__}: {str(exc)[:600]}")
-    if failed:
-        raise RuntimeError("views not built (old tables kept): " + "; ".join(failed))
-    return out
+        got, errors = _each(dsn, comms, schema, as_of, digest)
+        out.extend(got)
+        failed.update(errors)
+    return out, failed

@@ -278,7 +278,10 @@ class TrustAndDraft(unittest.TestCase):
                 self.assertLessEqual(a["correct"], a["judged"])
                 self.assertAlmostEqual(a["correct"] * 100 / a["judged"], a["percent"], delta=0.6)
         # 21% of 59 is no whole count: the rate is shown, no invented count of items
-        rough = next(a for a in page["alerts"] if a["type"] == "customer_order_late")
+        # the 21% was measured on the usual-slack rule, now its own type; "late" is the measure
+        rough = next(a for a in page["alerts"] if a["type"] == "customer_order_slower_than_usual")
+        late = next(a for a in page["alerts"] if a["type"] == "customer_order_late")
+        self.assertIsNone(late["judged"])
         self.assertEqual((rough["judged"], rough["correct"], rough["percent"]), (59, None, 21.0))
         for a in page["alerts"]:
             self.assertFalse(a["on"] and (a["judged"] or 0) < 15, a)

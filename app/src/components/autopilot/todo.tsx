@@ -8,7 +8,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ItemActions } from "@/components/autopilot/item-actions";
 import { useProblemSlot } from "@/components/ui/notice";
-import { decideAutopilotItem, type PreparedItem, type TodoStep } from "@/lib/api";
+import { decideAutopilotItem, requestDraft, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { countedWords, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -51,6 +51,21 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
   const [busy, setBusy] = useState(false);
   const card = useProblemSlot();
   const setError = card.set;
+  const [asked, setAsked] = useState(false);
+  // an Assist matter with no draft yet: "Draft it" asks for one (the list shows it when ready)
+  const canDraft = item.plan_status === "deferred" || item.plan_status === "failed";
+  const draft = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestDraft(item.item_id);
+      setAsked(true);
+    } catch (e) {
+      setError(plainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const decide = async (decision: "accept") => {
     setBusy(true);
     setError(null);
@@ -72,15 +87,24 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
       </div>
       {item.summary && <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary)}</p>}
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
+      {item.note && <p className="max-w-[46rem] text-[12px] text-muted" data-testid="prepared-note">{item.note}</p>}
       <TodoSteps todos={item.todos ?? []} />
       {card.provide(<ItemActions
         item={item}
         onGone={onGone}
         busy={busy}
         primary={
-          <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
-            Done
-          </Button>
+          <>
+            <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
+              Done
+            </Button>
+            {canDraft && !asked && (
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => void draft()}>
+                {item.plan_status === "failed" ? "Ask again" : "Draft it"}
+              </Button>
+            )}
+            {asked && <span className="text-[12px] text-muted" data-testid="draft-asked">Drafting. It shows here when it is ready.</span>}
+          </>
         }
       />)}
       {card.banner}

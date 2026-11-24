@@ -19,6 +19,9 @@ import { MeetingSheet } from "./meeting-sheet";
  * (flows, money, supplier trends) sit beside them as context. An unknown key is discussed. */
 const CONTEXT = new Set(["alert_flow", "cash", "margin", "suppliers", "top_alerts"]);
 
+/** A review still being built is asked for again this often until it is filled in. */
+const READING_AGAIN_MS = 10_000;
+
 /** A figure where a rise is bad news (late, missed, held, opened alerts). */
 function worseWhenUp(label: string): boolean {
   return /late|missed|hold|opened|over \d+ days|ap due/i.test(label);
@@ -38,12 +41,23 @@ export function WeeklyReview() {
   const monday = mondayBefore(new Date(), weeks);
   useEffect(() => {
     const ctl = new AbortController();
+    let again: ReturnType<typeof setTimeout> | undefined;
     setError(null);
     setBrief(null);
-    getWeeklyReview(monday, ctl.signal).then(setBrief, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
+    getWeeklyReview(monday, ctl.signal).then(
+      (b) => {
+        setBrief(b);
+        // still being built (nothing of it shown yet): ask again until it is filled in
+        if (b.reading && !ctl.signal.aborted) again = setTimeout(() => setRound((n) => n + 1), READING_AGAIN_MS);
+      },
+      (e) => {
+        if (!ctl.signal.aborted) setError(e);
+      },
+    );
+    return () => {
+      ctl.abort();
+      if (again) clearTimeout(again);
+    };
   }, [monday, round]);
   useEffect(() => {
     const ctl = new AbortController();
@@ -86,6 +100,11 @@ export function WeeklyReview() {
         <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
       ) : !brief ? (
         <Pending label="Reading the week's meetings" />
+      ) : brief.reading ? (
+        <div data-testid="weekly-building">
+          <Pending label={brief.ready_about ? `Building the week's review for you, ready about ${clock(new Date(brief.ready_about))}` : "Building the week's review for you"} />
+          <p className="mt-2 text-[12px] text-muted">{brief.basis}</p>
+        </div>
       ) : (
         <>
           {figures && <FigureStrip section={figures} />}

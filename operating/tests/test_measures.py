@@ -100,8 +100,10 @@ class Catalogue(unittest.TestCase):
         for name, opts in _variants():
             m = measures.measures().get(name)
             if m in piloted:
-                self.assertRegex(measures.statement(name, **opts)[0], r"\bNOT pilot\b",
+                # a stated parameter (S2, R1), applied at its default (off)
+                self.assertRegex(measures.statement(name, **opts)[0], r"\bNOT \(pilot\)",
                                  (name, opts))
+                self.assertIn("bc_pilot", [p["id"] for p in measures.parameters_of(m)])
             if m in of_record:
                 self.assertRegex(measures.statement(name, **opts)[0],
                                  r"(?<!NOT )\bof_record\b(?! *=)", (name, opts))
@@ -134,7 +136,6 @@ class Catalogue(unittest.TestCase):
                (dated, {"period": "2026-09'; DROP TABLE x; --"}),
                (dated, {"period": "2026-09", "days": 30}), (dated, {"against": "2026-08"}),
                (dated, {"period": "2026-09", "against": "2026-09-15..2026-10-15"}),
-               (dated, {"period": "2026-09", "by": "month", "compare": True}),
                (snapshot, {"period": "2026-09"}), (report, {"period": "2026-09"}),
                # a filter: only the measure's own dimensions and plain text values
                (dated, {"filter": {"handle": "x"}}), (dated, {"filter": {"month": "x"}}),
@@ -151,6 +152,14 @@ class Catalogue(unittest.TestCase):
                (measures.SCAN, {"unusual": True, "by": DIM}),
                (measures.SCAN, {"unusual": True, "filter": {DIM: "x"}}),
                (dated, {"by": "*"}), (dated, {"by": "*", "unusual": True}),
+               # month by month against an earlier period names its period; a pair of
+               # breakdowns is two different ones, never with compare
+               (dated, {"by": "month", "compare": True}),
+               (dated, {"by": [DIM, DIM]}), (dated, {"by": [DIM]}),
+               (dated, {"by": [DIM, "month"], "compare": True}),
+               (dated, {"by": ["week", "month"]}),
+               (dated, {"period": "since:nonsense"}), (dated, {"period": "FY2026-Q5"}),
+               (dated, {"period": "last_0_months"}),
                (snapshot, {"by": "*", "compare": True})]
         for name, opts in bad:
             with self.assertRaises(ToolError, msg=(name, opts)) as caught:
@@ -246,7 +255,7 @@ class Catalogue(unittest.TestCase):
 class MovingPeriods(unittest.TestCase):
     def test_an_unknown_or_untyped_moving_period_is_refused_never_guessed(self):
         from unittest import mock
-        for bad in ("this_decade", "last_13_months", "next_month", "thismonth"):
+        for bad in ("this_decade", "last_0_months", "last_13_weeks", "next_month", "thismonth"):
             with self.assertRaises(ToolError, msg=bad):
                 measures._period(bad, "period")
         self.assertEqual(measures._period("This Month", "period")[:4],
@@ -300,6 +309,35 @@ class MeasureDoor(unittest.TestCase):
         first = dt.date.fromisoformat(str(self.rows(out)[0][0])[:10])
         return max(1, (dt.date.today() - first).days // 2 - 1)
 
+    def test_a_stated_exclusion_is_read_beside_the_figure_and_adds_up(self):
+        """S2 through the door: a parameter left off makes the read carry ``excluded`` (its
+        own result, the measure's value over the rows it leaves out); counted in, the
+        figure equals the figure plus the excluded value and nothing is excluded. Fixture
+        registry (MODEL's R1 not landed): a count measure with a parameter on its view."""
+        from unittest import mock
+        real = dict(measures.measures())
+        m = next(x for x in real.values() if x["value"].startswith("count") and not x["date"])
+        col = "source_systems"
+        fixture = {**m, "parameters": [{"id": "one_system", "default": False,
+                                         "excludes_where": f"{col} NOT LIKE '%,%'",
+                                         "says": "held in one system only"}]}
+        with mock.patch.object(measures, "measures", return_value={**real, m["id"]: fixture}):
+            off = self.call({"measure": m["id"]}, FULL)
+            on = self.call({"measure": m["id"], "parameters": {"one_system": True}}, FULL)
+            bad = self.call({"measure": m["id"], "parameters": {"nope": True}}, FULL)
+        if off.get("error", {}).get("code") in ("unknown_view", "not_ready"):
+            self.skipTest(f"{m['view']} not in the fixture")
+        self.assertIn("error", bad)
+        (ex,) = off["excluded"]
+        self.assertEqual((ex["parameter"], ex["says"]), ("one_system", "held in one system only"))
+        value = lambda out: Decimal(str(tsql._cell(out["rows"][0]["cells"][out["columns"].index("value")]) or 0))
+        self.assertEqual(value(on), value(off) + Decimal(str(tsql._cell(ex["value"]) or 0)))
+        # n = how many records the parameter leaves out: the rows counted in add exactly n
+        rows = lambda out: int(str(tsql._cell(out["rows"][0]["cells"][out["columns"].index("row_count")])))
+        self.assertIsInstance(ex["n"], int)
+        self.assertEqual(rows(on), rows(off) + ex["n"])
+        self.assertEqual(on["excluded"], [])
+
     def test_a_moving_period_reads_what_today_s_dates_read_and_names_no_date(self):
         """this_month, year_to_date ... are statements on now(), never today's dates (a
         pinned chart of them moves with the date), and through the door they read exactly
@@ -316,7 +354,7 @@ class MeasureDoor(unittest.TestCase):
                 self.assertIsNone(re.search(r"'\d{4}-\d{2}-\d{2}", sql), (text, m["id"]))
                 self.assertIn("moves with the date", cited["period"])
                 a = self.call({"measure": m["id"], "period": text}, FULL)
-                if a.get("error", {}).get("code") == "unknown_view":
+                if a.get("error", {}).get("code") in ("unknown_view", "not_ready"):
                     continue
                 b = self.call({"measure": m["id"], "period": fixed}, FULL)
                 self.assertEqual(self.rows(a), self.rows(b), (text, m["id"]))
@@ -370,7 +408,7 @@ class MeasureDoor(unittest.TestCase):
             if not m["date"]:
                 continue
             out = self.call({"measure": m["id"], "compare": True, "days": 3650}, FULL)
-            if out.get("error", {}).get("code") == "unknown_view":
+            if out.get("error", {}).get("code") in ("unknown_view", "not_ready"):
                 continue    # a view the fixture does not build
             for r in self.rows(out):
                 row = dict(zip(out["columns"], r))
@@ -555,9 +593,9 @@ class MeasureDoor(unittest.TestCase):
 
     def test_a_measure_counts_only_the_rows_its_rule_keeps(self):
         """Computed from the raw rows: invoices_issued counts the invoices that are not BC
-        pilot ones, open_orders the open orders Sage holds (of_record) that are not quotes;
-        the fixture holds a pilot invoice and an order held only outside Sage, so a measure
-        counting them would be larger."""
+        pilot ones, open_orders the open orders that are not quotes, whichever system holds them (11-23:
+        the orders only FileMaker, the Portal or BC hold count too); the fixture holds a
+        pilot invoice, so a measure counting it would be larger."""
         def raw(sql):
             out = self.call({"sql": sql}, FULL)
             return [dict(zip(out["columns"], r)) for r in self.rows(out)]
@@ -575,10 +613,10 @@ class MeasureDoor(unittest.TestCase):
                 and dt.date.fromisoformat(str(r["invoice_date"])[:10]) > since}
         self.assertTrue(any(_true(r["pilot"]) for r in invoices))
         self.assertEqual(value("invoices_issued", days=3650), len(kept))
-        orders = raw("SELECT order_number, status, order_type, of_record FROM sales_orders "
+        orders = raw("SELECT order_number, status, order_type, of_record, open_state FROM sales_orders "
                      "WHERE of_record OR NOT of_record")
         open_kept = {r["order_number"] for r in orders if r["status"] == "open"
-                     and r["order_type"] != "quote" and _true(r["of_record"])}
+                     and r["order_type"] != "quote" and r["open_state"] != "copy_of_record"}
         self.assertTrue(any(r["status"] == "open" and not _true(r["of_record"])
                             for r in orders))
         self.assertEqual(value("open_orders"), len(open_kept))
@@ -605,28 +643,23 @@ class MeasureDoor(unittest.TestCase):
         if sum(changes):
             self.assertAlmostEqual(float(sum(shares)), 100.0, delta=0.1 * len(shares))
 
-    def test_the_parts_of_a_change_add_up_to_the_whole_change_past_the_top(self):
-        """Past the largest changes the rest is one "All others (n)" row per currency, so a
-        waterfall of the parts ends on the whole change; break the remainder and this fails."""
+    def test_every_part_of_a_change_is_returned_and_adds_up_to_the_whole_change(self):
+        """No part is folded or cut (guardrail 1): the rows of a breakdown by customer are
+        every customer's, their changes add up to the whole change, the shares to 100."""
         days = self.covered_days("invoices_issued", FULL)
         whole = self.call({"measure": "invoices_issued", "compare": True, "days": days}, FULL)
         total = sum(Decimal(str(dict(zip(whole["columns"], r))["change"]))
                     for r in self.rows(whole))
-        old = measures.TOP
-        try:
-            measures.TOP = 1
-            out = self.call({"measure": "invoices_issued", "by": "customer", "compare": True,
-                             "days": days}, FULL)
-        finally:
-            measures.TOP = old
+        out = self.call({"measure": "invoices_issued", "by": "customer", "compare": True,
+                         "days": days}, FULL)
         rows = [dict(zip(out["columns"], r)) for r in self.rows(out)]
         self.assertGreater(len(rows), 1)
-        self.assertEqual(sum(1 for r in rows if not str(r["customer"]).startswith("All others (")),
-                         1)
+        self.assertFalse(any(str(r["customer"]).startswith("All others (") for r in rows))
         self.assertEqual(sum(Decimal(str(r["change"])) for r in rows), total)
-        if total:   # the remainder carries its share too: the shares still add up to 100
+        if total:
             self.assertAlmostEqual(float(sum(Decimal(str(r["share_of_change_pct"]))
                                              for r in rows)), 100.0, delta=0.1 * len(rows))
+        self.assertNotIn("LIMIT", measures.statement("invoices_issued", "customer")[0])
 
     def test_a_report_for_full_readers_runs_only_for_a_full_reader(self):
         """A report Insights lists only for the readers who see everyone (scope "full") is
@@ -654,7 +687,9 @@ class MeasureDoor(unittest.TestCase):
     def test_a_comparison_never_reads_a_withheld_cell_as_zero(self):
         """A money cell the reader may not read is NULL: a period with rows but no readable
         value has no change (never "0 before, so all of it is new"), and a part with any
-        unread cell is marked incomplete."""
+        unread cell is marked incomplete, in every currency when the unread rows' currency
+        is blank too (live 11-22: a customer's one unpriced order this quarter read as "0,
+        a drop of USD 43,700"; the fixture's Beta Inc revenue is such a part)."""
         unread = 0
         for m in measures.measures().values():
             if not m["date"] or m["value"].startswith("count("):
@@ -665,8 +700,13 @@ class MeasureDoor(unittest.TestCase):
                 for days in (3650, self.covered_days(m["id"], actor)):
                     out = self.call({"measure": m["id"], "by": m["dimensions"][0],
                                      "compare": True, "days": days}, actor)
-                    for r in self.rows(out):
-                        row = dict(zip(out["columns"], r))
+                    rows = [dict(zip(out["columns"], r)) for r in self.rows(out)]
+                    by, per = m["dimensions"][0], m["per"]
+                    # a part whose rows with no readable value also have no currency or
+                    # unit: those rows may be any of the part's, so all its rows are incomplete
+                    blank = {row[by] for row in rows if per and row.get(per) is None
+                             and int(row["unread_cells"]) > 0}
+                    for row in rows:
                         blind = ((row["current"] is None and int(row["current_rows"]) > 0)
                                  or (row["previous"] is None
                                      and int(row["previous_rows"]) > 0))
@@ -675,7 +715,8 @@ class MeasureDoor(unittest.TestCase):
                             self.assertIsNone(row["share_of_change_pct"], (m["id"], row))
                         self.assertEqual(_true(row["incomplete"]),
                                          int(row["unread_cells"]) > 0
-                                         or not _true(row["covered"]), (m["id"], days, row))
+                                         or not _true(row["covered"])
+                                         or row[by] in blank, (m["id"], days, row))
                         unread += int(row["unread_cells"])
         self.assertGreater(unread, 0)   # the fixture's finance marks reach a comparison
 
@@ -718,10 +759,10 @@ class MeasureDoor(unittest.TestCase):
         """The share of open orders that are late and of receivables overdue (per currency),
         computed again here from the raw rows: never summed across currencies, the
         numerator and denominator beside the rate."""
-        orders = self.raw("SELECT order_number, status, order_type, of_record, days_late "
-                          "FROM sales_orders")
+        orders = self.raw("SELECT order_number, status, order_type, open_state, days_late "
+                          "FROM sales_orders WHERE of_record IS NOT NULL")
         kept = {o["order_number"] for o in orders if o["status"] == "open"
-                and o["order_type"] != "quote" and _true(o["of_record"])}
+                and o["order_type"] != "quote" and o["open_state"] == "live"}
         late = {o["order_number"] for o in orders if o["order_number"] in kept
                 and o["days_late"] is not None and int(o["days_late"]) > 0}
         self.assertTrue(kept)
@@ -757,12 +798,12 @@ class MeasureDoor(unittest.TestCase):
         measure gives the same figures for this one."""
         import statistics
         days = 400
-        ages = self.raw("SELECT invoice_number, extract(epoch FROM now() - invoice_date) AS s "
+        ages = self.raw("SELECT handle, extract(epoch FROM now() - invoice_date) AS s "
                         "FROM sales_invoices WHERE NOT pilot AND invoice_date <= now() AND "
                         f"invoice_date > now() - interval '{days * 13} days'")
         buckets: dict = {}
         for a in ages:
-            buckets.setdefault(int(float(a["s"]) // (days * 86400)), set()).add(a["invoice_number"])
+            buckets.setdefault(int(float(a["s"]) // (days * 86400)), set()).add(a["handle"])
         self.assertTrue(buckets)
         reach = max(buckets)
         values = [len(buckets.get(i, ())) for i in range(reach + 1)]
@@ -844,3 +885,273 @@ class MeasureDoor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatedExclusions(unittest.TestCase):
+    """S2 (Ask plan; the frozen registry shape, tested on a fixture until MODEL's R1 lands
+    in measures.json): a parameter's rows are left out unless switched on, its excluded
+    rows are read by the same statement, and every reader of the definition (where_sql)
+    sees the same rows; a parameter the entry does not hold is refused."""
+
+    def setUp(self):
+        from unittest import mock
+        from operating import measures
+        real = dict(measures.measures())
+        late = dict(real["late_purchase_orders"])
+        late["where"] = "verdict = 'late'"
+        late["parameters"] = [{"id": "bc_only", "default": False,
+                               "excludes_where": "coalesce(source_systems, '') = 'bc'",
+                               "says": "held only in Business Central"}]
+        real["late_purchase_orders"] = late
+        patcher = mock.patch.object(measures, "measures", return_value=real)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.late = late
+
+    def test_off_on_and_excluded(self):
+        from operating import measures
+        off, entry = measures.statement("late_purchase_orders")
+        self.assertIn("NOT (coalesce(source_systems, '') = 'bc')", off)
+        on, _ = measures.statement("late_purchase_orders", parameters={"bc_only": True})
+        self.assertNotIn("source_systems", on)
+        only, _ = measures.statement("late_purchase_orders", excluded="bc_only")
+        self.assertIn("(coalesce(source_systems, '') = 'bc')", only)
+        self.assertNotIn("NOT (coalesce", only)
+        self.assertEqual(measures.where_sql("late_purchase_orders"),
+                         "((verdict = 'late') AND NOT (coalesce(source_systems, '') = 'bc'))")
+        # the version is the entry's, whatever a read switches on
+        self.assertEqual(entry["version"], measures.version(self.late))
+        for bad in ({"nope": True}, {"bc_only": "yes"}, ["bc_only"]):
+            with self.assertRaises(Exception):
+                measures.statement("late_purchase_orders", parameters=bad)
+
+    def test_a_measure_without_parameters_reads_as_before(self):
+        from operating import measures
+        for mid, m in measures.measures().items():
+            if m.get("parameters"):
+                continue
+            self.assertEqual(measures.effective_where(m), f"({m['where']})" if m["where"] else "")
+
+
+
+class PeriodLanguage(MeasureDoor):
+    """Period phrasings read as dates through the door give what the same days written out
+    as fixed dates, in hand-written form, give (ASK-GENIE 17.4 G1, 20 #6)."""
+
+    def dated(self):
+        return [m for m in measures.measures().values() if m["date"] and not measures.is_rate(m)
+                and m["dimensions"]][:3]
+
+    def read(self, name, **args):
+        out = self.call({"measure": name, **args}, FULL)
+        if out.get("error", {}).get("code") in ("unknown_view", "not_ready"):
+            self.skipTest(f"{name} not in the fixture")
+        return out["columns"], self.rows(out)
+
+    @staticmethod
+    def rng(first, after):
+        return f"{first.isoformat()}..{(after - dt.timedelta(days=1)).isoformat()}"
+
+    def test_phrasings_equal_the_same_days_written_as_dates(self):
+        today = measures.business_today()
+        y = today.year
+        q_first = dt.date(y, 3 * ((today.month - 1) // 3) + 1, 1)
+        lq_first = measures._months_on(q_first, -3)
+        m_first = dt.date(today.year, today.month, 1)
+        cases = {
+            "last_quarter": self.rng(lq_first, q_first),
+            f"since:{y}-06": self.rng(dt.date(y, 6, 1), today + dt.timedelta(days=1)),
+            "last_3_months": self.rng(measures._months_on(m_first, -3), m_first),
+            "last_2_years": self.rng(dt.date(y - 2, 1, 1), dt.date(y, 1, 1)),
+            f"FY{y}-Q3": f"{y}-Q3", f"FY{y}": f"{y}",
+            "year_to_date": self.rng(dt.date(y, 1, 1), today + dt.timedelta(days=1)),
+            f"since:{y}-06-15": self.rng(dt.date(y, 6, 15), today + dt.timedelta(days=1)),
+        }
+        seen = 0
+        for m in self.dated():
+            for phrase, fixed in cases.items():
+                for by in (None, m["dimensions"][0], "month"):
+                    args = {"by": by} if by else {}
+                    a = self.read(m["id"], period=phrase, **args)
+                    b = self.read(m["id"], period=fixed, **args)
+                    self.assertEqual(a[1], b[1], (m["id"], phrase, by))
+                    seen += len(a[1])
+        self.assertGreater(seen, 0)          # the fixture holds rows in these windows
+
+    def test_a_running_period_is_set_against_the_same_days_of_the_earlier_one(self):
+        """This year (not over) against last year: last year is cut to the same days, the
+        whole of last year is beside it as previous_full, and the cut figures equal the
+        measure over those exact days written out."""
+        today = measures.business_today()
+        gone = (today - dt.date(today.year, 1, 1)).days + 1
+        last = dt.date(today.year - 1, 1, 1)
+        for m in self.dated():
+            sql, cited = measures.statement(m["id"], compare=True, period="this_year",
+                                            against=measures.SAME_LAST_YEAR)
+            self.assertIn("previous_full", sql)
+            self.assertIn("cut to the same", cited["period"])
+            cols, rows = self.read(m["id"], compare=True, period="this_year",
+                                   against=measures.SAME_LAST_YEAR)
+            hand_cols, hand = self.read(
+                m["id"], compare=True, period=f"{today.year}-01-01..{today.isoformat()}",
+                against=self.rng(last, last + dt.timedelta(days=gone)))
+            self.assertIn("previous_full", cols)
+            at, hat = ({c: i for i, c in enumerate(x)} for x in (cols, hand_cols))
+            self.assertEqual(len(rows), len(hand))
+            for r, h in zip(rows, hand):
+                for c in ("current", "previous", "current_rows", "previous_rows"):
+                    self.assertEqual(r[at[c]], h[hat[c]], (m["id"], c))
+            # previous_full is the measure over the whole earlier year, read plainly
+            if not m["per"] and rows:
+                pcols, plain = self.read(m["id"], period=str(today.year - 1))
+                self.assertEqual(Decimal(str(rows[0][at["previous_full"]] or 0)),
+                                 Decimal(str(plain[0][pcols.index("value")] or 0)), m["id"])
+
+    def test_month_by_month_against_the_earlier_year_is_each_months_own_pair(self):
+        """by month with compare: one row per month, the current month beside the same month
+        a year earlier, each value equal to a plain read of that month written out."""
+        today = measures.business_today()
+        for m in self.dated():
+            if m["per"]:
+                continue            # one currency per read: the pairs are checked unit-free
+            cols, rows = self.read(m["id"], by="month", compare=True, period=str(today.year - 1),
+                                   against=str(today.year - 2))
+            c = {n: i for i, n in enumerate(cols)}
+            self.assertEqual(cols[:2], ["month", "previous_month"])
+            for r in rows:
+                cur_month, prev_month = r[c["month"]], r[c["previous_month"]]
+                self.assertEqual(int(prev_month[:4]) + 1, int(cur_month[:4]))
+                self.assertEqual(prev_month[5:], cur_month[5:])
+                for label, col in ((cur_month, "current"), (prev_month, "previous")):
+                    pcols, plain = self.read(m["id"], period=label)
+                    want = Decimal(str(plain[0][pcols.index("value")] or 0)) if plain else None
+                    got = r[c[col]]
+                    if got is not None and want is not None:
+                        self.assertEqual(Decimal(str(got)), want, (m["id"], label))
+
+    def test_two_breakdowns_at_once_are_the_cells_of_the_one_breakdown(self):
+        """by [dimension, month]: each cell is that dimension's part in that month; summed
+        over months the cells equal the one-dimension read, and no cell is doubled."""
+        for m in self.dated():
+            if m["per"]:
+                continue
+            dim = m["dimensions"][0]
+            cols, rows = self.read(m["id"], by=[dim, "month"], days=400)
+            self.assertEqual(cols[:2], [dim, "month"])
+            self.assertEqual(len({(r[0], r[1]) for r in rows}), len(rows))
+            vi = cols.index("value")
+            one_cols, one = self.read(m["id"], by=dim, days=400)
+            want = {r[0]: Decimal(str(r[one_cols.index("value")] or 0)) for r in one}
+            got: dict = {}
+            for r in rows:
+                got[r[0]] = got.get(r[0], Decimal(0)) + Decimal(str(r[vi] or 0))
+            self.assertEqual(got, want, m["id"])
+
+
+    def test_why_ranks_the_dimensions_from_the_comparisons_own_numbers(self):
+        """why: per dimension, its parts, the fewest that make up half its movement, its
+        largest part and that part's share of the whole change: each figure equals what the
+        measure's own one-dimension comparison gives (the same rows read two ways)."""
+        seen = 0
+        for m in measures.measures().values():
+            if not m["date"] or m["per"] or measures.is_rate(m) or not m["dimensions"]:
+                continue
+            try:
+                d = self.covered_days(m["id"], FULL)
+                cols, rows = self.read(m["id"], why=True, days=d)
+            except (ValueError, AssertionError, unittest.SkipTest):
+                continue                # a view this fixture holds no dated rows of
+            at = {c: i for i, c in enumerate(cols)}
+            for r in rows:
+                dim = r[at["dimension"]]
+                pcols, parts = self.read(m["id"], by=dim, compare=True, days=d)
+                pi = {c: i for i, c in enumerate(pcols)}
+                changes = [(abs(Decimal(str(p[pi["change"]]))), Decimal(str(p[pi["change"]])), p[0])
+                           for p in parts if p[pi["change"]] is not None]
+                self.assertEqual(int(r[at["parts"]]), len(parts), (m["id"], dim))
+                whole = sum(c for _, c, _ in changes)
+                self.assertEqual(Decimal(str(r[at["whole_change"]] or 0)), whole, (m["id"], dim))
+                if changes:
+                    moved = sum(a for a, _, _ in changes)
+                    run, need = Decimal(0), 0
+                    for a, _, _ in sorted(changes, key=lambda x: (-x[0], str(x[2]))):
+                        run += a
+                        need += 1
+                        if run * 2 >= moved:
+                            break
+                    self.assertEqual(int(r[at["parts_for_half"]]), need, (m["id"], dim))
+                    self.assertEqual(Decimal(str(r[at["top_change"]])),
+                                     max(changes, key=lambda x: x[0])[1], (m["id"], dim))
+                seen += 1
+            ranks = [Decimal(str(r[at["concentration_pct"]])) for r in rows
+                     if r[at["concentration_pct"]] is not None]
+            self.assertEqual(ranks, sorted(ranks))      # the most concentrated dimension first
+        self.assertGreater(seen, 0)
+        for bad in ({"why": True, "by": "customer"}, {"why": "yes"}, {"why": True, "unusual": True}):
+            with self.assertRaises(ToolError):
+                measures.statement("revenue", **bad)
+
+
+for _name in dir(MeasureDoor):          # only this class's own tests run here
+    if _name.startswith("test_") and _name not in PeriodLanguage.__dict__:
+        setattr(PeriodLanguage, _name, None)
+
+
+class GapList(unittest.TestCase):
+    """What nothing covers is answered (never refused), said, and kept on the gap list."""
+
+    def test_an_uncovered_measure_or_view_is_said_and_counted_each_time_asked(self):
+        import os
+        import tempfile
+        from operating import gap_list
+        with tempfile.TemporaryDirectory() as d:
+            os.environ[gap_list.ENV] = os.path.join(d, "deep", "gaps.jsonl")
+            try:
+                for n in (1, 2, 3):
+                    try:
+                        measures.statement("supplier_lead_time_days")
+                    except ToolError as exc:
+                        self.assertEqual(exc.gap, ("measure", "supplier_lead_time_days"))
+                        error = {"gap": gap_list.said(*exc.gap, gap_list.record(*exc.gap))}
+                    self.assertIn(f"asked {n} time", error["gap"])
+                gap_list.record("view", "receipts")
+                top = gap_list.counts()
+                self.assertEqual([(g["kind"], g["name"], g["asked"]) for g in top],
+                                 [("measure", "supplier_lead_time_days", 3), ("view", "receipts", 1)])
+                # a list that cannot be written is said in the error, not dropped
+                os.environ[gap_list.ENV] = "/proc/nope/gaps.jsonl"
+                self.assertIn("could not be put on the gap list",
+                              gap_list.said("view", "x", gap_list.record("view", "x")))
+                # a measure the catalogue holds is no gap
+                try:
+                    measures.statement("revenue")
+                except ToolError as exc:
+                    self.fail(exc)
+            finally:
+                os.environ.pop(gap_list.ENV, None)
+
+
+class GapListAtTheDoor(MeasureDoor):
+    def test_through_plx_sql_the_error_carries_the_gap_line_and_the_read_is_answered(self):
+        import os
+        import tempfile
+        from operating import gap_list
+        with tempfile.TemporaryDirectory() as d:
+            os.environ[gap_list.ENV] = os.path.join(d, "gaps.jsonl")
+            try:
+                for args, kind in (({"measure": "ledger_spend"}, "measure"),
+                                   ({"sql": "SELECT 1 FROM receipts"}, "view"),
+                                   ({"describe": "nothing_here"}, "view")):
+                    out = self.call(args, FULL)
+                    self.assertIn("gap", out["error"], args)
+                    self.assertIn("gap list", out["error"]["gap"])
+                self.assertEqual(sum(g["asked"] for g in gap_list.counts()), 3)
+                ok = self.call({"measure": "revenue"}, FULL)
+                self.assertNotIn("gap", ok.get("error", {}))
+            finally:
+                os.environ.pop(gap_list.ENV, None)
+
+
+for _name in dir(MeasureDoor):          # only this class's own tests run here
+    if _name.startswith("test_") and _name not in GapListAtTheDoor.__dict__:
+        setattr(GapListAtTheDoor, _name, None)

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AutopilotView } from "@/components/autopilot/area";
 import { AssistQueue } from "@/components/home/assist-queue";
 import { mailtoOf, scoreOf, tomorrowMorning } from "@/components/autopilot/prepared";
+import { forgetFeeds } from "@/lib/feeds";
 import { optInScore } from "@/lib/autopilot";
 import type { PreparedItem } from "@/lib/api";
 import type { AutopilotArea } from "@/lib/types";
@@ -189,16 +190,27 @@ describe("the queue on Home and its Switches tab", () => {
     ];
     render(<AutopilotView area={area({ my_drafts: drafts, checked_at: "2026-11-18T23:14:34Z" })} />);
     const states = (await screen.findAllByTestId("draft-choice-state")).map((e) => e.textContent);
-    expect(states[0]).toBe("On, set by the owner");
-    expect(states[1]).toMatch(/^On since /);
-    expect(states[2]).toBe("Off");
-    expect(states[3]).toBe("Partly on, set by the owner");
+    expect(states[0]).toBe("On, set by the owner. Prepared for you; waits for your confirm.");
+    expect(states[1]).toMatch(/^On since .*\. Prepared for you; waits for your confirm\.$/);
+    expect(states[2]).toBe("Off. Nothing is prepared for you.");
+    expect(states[3]).toBe("Partly on, set by the owner. Prepared for you; waits for your confirm.");
     expect(screen.getByRole("switch", { name: "Approvals: on" }).textContent).toBe("Turn off");
     expect(screen.getByRole("switch", { name: "Replies to customers: on" }).textContent).toBe("Turn off");
     expect(screen.queryByTestId("prepared-empty")).toBeNull(); // the items are on Home, not here
     cleanup();
     render(<AssistQueue />);
     expect((await screen.findByTestId("prepared-empty")).textContent).toBe("Nothing is waiting for you. What gets prepared is set on Switches.");
+  });
+
+  it("an empty queue while the feed behind it is stopped does not read as nothing to do", async () => {
+    forgetFeeds();
+    fetchMock({
+      "/api/autopilot/drafts": () => ({ items: [] }),
+      "/api/feeds": () => ({ checked_at: "x", feeds: [{ key: "autopilot", label: "Autopilot entries", state: "not_running", why: "The autopilot's feed has stopped.", since: "2026-11-21T06:26:00Z" }] }),
+    });
+    render(<AssistQueue />);
+    expect((await screen.findByTestId("prepared-empty")).textContent).toMatch(/^Nothing is waiting for you, but nothing new is being prepared either/);
+    forgetFeeds();
   });
 
   it("a switched-on choice picks confirm or auto, auto only once its replay score earned it", async () => {
@@ -209,7 +221,7 @@ describe("the queue on Home and its Switches tab", () => {
     render(<AutopilotView area={all} />);
     const groups = await screen.findAllByTestId("draft-choice-mode");
     expect(groups).toHaveLength(2); // an off choice has no mode to pick
-    const autos = screen.getAllByRole("radio", { name: "Auto" }) as HTMLInputElement[];
+    const autos = screen.getAllByRole("radio", { name: /^Auto/ }) as HTMLInputElement[];
     expect(autos.map((r) => r.disabled)).toEqual([false, true]);
     expect(screen.getByTestId("draft-choice-score").textContent).toMatch(/38 of 40/);
     // a person whose own score passes but the category's does not sees the team score

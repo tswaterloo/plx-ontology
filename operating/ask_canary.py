@@ -13,13 +13,10 @@ default (``deploy/ops/ask-canary.json``) there when the host has none:
 
     {"question": "...", "expect": ["...", ...], "max_seconds": 90}
 
-The default asks where one long-closed Mission Control task is (a stable record: merged in
+The default asks about one long-closed Mission Control task (a stable record: merged in
 October, its stage never changed since; owned by the owner, no excluded person): a
-retrieval, answered by the fast path (``operating.fast_answer`` ``task_status``: no model
-step; 4.5 s median, 14.9 s p90 in the 11-15 router eval, against 110 s median for a live
-agent Ask), so ``max_seconds`` 90 passes a healthy fast path and catches a fast path that
-fell through to the agent. Cost per run: one fast answer (no model call while the fast path
-answers), 72 a day.
+retrieval the Ask answers with its model (110 s median for a live agent Ask in the 11-15
+router eval; the phrase-rule fast path that once answered it was retired 11-23).
 
 The answer passes when every ``expect`` text appears (case and spacing ignored) in its
 direct answer or its cited facts, the answer arrives within ``max_seconds`` and its
@@ -105,14 +102,49 @@ def load_config(path: Path) -> Optional[dict[str, Any]]:
             or not data["question"].strip():
         return None
     expect = data.get("expect")
-    if not isinstance(expect, list) or not expect \
+    truth = data.get("truth")
+    if truth is not None:
+        # the expected values are READ from the record at run time (one read-only SELECT of
+        # one row), so a value changed in the source is a stale canary said so, never a
+        # wrong-answer alarm on the Ask, and none is typed into this file
+        if not isinstance(truth, str) or not truth.lstrip().lower().startswith("select"):
+            return None
+        expect = []
+    elif not isinstance(expect, list) or not expect \
             or not all(isinstance(e, str) and e.strip() for e in expect):
         return None
+    if any(_norm(e) in _norm(data["question"]) for e in expect):
+        return None   # an expected text the question itself says proves nothing
     seconds = data.get("max_seconds", DEFAULT_MAX_SECONDS)
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0:
         return None
     return {"question": data["question"].strip(), "expect": [e.strip() for e in expect],
-            "max_seconds": float(seconds)}
+            "truth": truth, "max_seconds": float(seconds)}
+
+
+def read_truth(sql: str, *, dsn: Optional[str] = None) -> list[str]:
+    """The expected texts: the columns of the ONE row ``sql`` reads (read-only, 20 s). No row,
+    more than one, an empty value or any error raises ``TruthUnreadable``: a canary that cannot
+    read what is true is never a pass."""
+    try:
+        import psycopg
+        from operating.pg import config as pgconfig
+        with psycopg.connect(dsn or pgconfig.dsn(), connect_timeout=10, autocommit=True,
+                             options="-c default_transaction_read_only=on "
+                                     "-c statement_timeout=20000") as pg:
+            rows = pg.execute(sql).fetchmany(2)
+    except Exception as exc:  # noqa: BLE001
+        raise TruthUnreadable(type(exc).__name__) from None
+    if len(rows) != 1:
+        raise TruthUnreadable(f"{len(rows)} rows")
+    values = [str(v).strip() for v in rows[0] if v is not None]
+    if not values or not all(values):
+        raise TruthUnreadable("empty value")
+    return values
+
+
+class TruthUnreadable(Exception):
+    pass
 
 
 def sse_events(lines: Iterable[bytes]) -> Iterable[tuple[str, Any]]:
@@ -148,6 +180,12 @@ def answer_text(answer: Mapping[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _has(words: str, expected: str) -> bool:
+    """The whole expected text, as whole words (case and spacing ignored): "12" is not in
+    "112"."""
+    return re.search(r"(?<![\w.])" + re.escape(_norm(expected)) + r"(?![\w])", words) is not None
+
+
 def judge(answer: Optional[Mapping[str, Any]], error: Optional[str], seconds: float,
           cfg: Mapping[str, Any]) -> tuple[bool, str]:
     """(passed, verdict): ``ok``, ``missing`` (no answer, an empty one or a refusal),
@@ -159,7 +197,7 @@ def judge(answer: Optional[Mapping[str, Any]], error: Optional[str], seconds: fl
             or str(answer.get("outcome") or "") in REFUSED:
         return False, "missing"
     words = _norm(answer_text(answer))
-    if not all(_norm(e) in words for e in cfg["expect"]):
+    if not all(_has(words, e) for e in cfg["expect"]):
         return False, "wrong"
     if seconds > cfg["max_seconds"]:
         return False, "slow"
@@ -169,7 +207,9 @@ def judge(answer: Optional[Mapping[str, Any]], error: Optional[str], seconds: fl
 class Canary:
     def __init__(self, state: Path, *, transport: Callable[..., Any] = canary_request,
                  mint: Callable[[], Optional[str]] = mint_ticket,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 truth: Callable[[str], list[str]] = read_truth) -> None:
+        self.truth = truth
         self.home = state / HOME
         self.transport, self.mint, self.clock = transport, mint, clock
 
@@ -214,6 +254,15 @@ class Canary:
         finding."""
         started = self.clock()
         answer, error, steps = None, None, []
+        if cfg.get("truth"):
+            try:
+                values = self.truth(cfg["truth"])
+                if any(_norm(v) in _norm(cfg["question"]) for v in values):
+                    raise TruthUnreadable("the question says the answer")
+                cfg = {**cfg, "expect": values}
+            except TruthUnreadable as exc:
+                return {"ok": False, "verdict": f"truth_unreadable:{exc}"[:60], "seconds": 0.0,
+                        "outcome": None, "steps": [], "model": False, "answer_ms": None}
         try:
             cookie = self._signed_in()
             if cookie is None:

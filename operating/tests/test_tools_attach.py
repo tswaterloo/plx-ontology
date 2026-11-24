@@ -256,12 +256,17 @@ CLAUDE_STUB = textwrap.dedent("""\
     import json, os, sys, time
     log = sys.argv[sys.argv.index("--stub-log") + 1]
     with open(log, "a") as out:
-        out.write(json.dumps({{"start": os.getpid(), "argv": sys.argv[1:]}}) + "\\n")
+        filed = (open(sys.argv[sys.argv.index("--system-prompt-file") + 1]).read()
+                 if "--system-prompt-file" in sys.argv else None)
+        out.write(json.dumps({{"start": os.getpid(), "argv": sys.argv[1:],
+                              "system_prompt": filed}}) + "\\n")
     n = 0
     for line in sys.stdin:
         message = json.loads(line)
         n += 1
         content = message["message"]["content"]
+        if isinstance(content, str):   # a plain task message, as Claude Code takes it
+            content = [{{"type": "text", "text": content}}]
         text = [b for b in content if b["type"] == "text"][0]["text"]
         shown = [[b["source"]["media_type"], b["source"]["data"]] for b in content
                  if b["type"] == "image"]
@@ -379,6 +384,30 @@ class WarmSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.agent().run("Read it", _Host(self.work, "answer"),
                              images=[{"media_type": "text/html", "data": png}])
+
+    def test_a_task_past_one_argument_s_limit_is_read_whole_on_stdin(self):
+        """Linux caps one argv string at 128 KiB: a one-run session's task (a pasted mail
+        thread, a long conversation, attached files) goes in on stdin, so a 300,000
+        character task starts its session and reaches the model whole (it failed with
+        E2BIG as an argument)."""
+        task = "Which of these orders are late?\n" + "PO line, 12 drums, due 11-02. " * 10_000
+        self.assertGreater(len(task.encode("utf-8")), 2 * 128 * 1024)
+        # the system prompt too goes as a file, never one argument (the Ask's is ~89 KB)
+        system = "You answer from the records. " * 6_000
+        self.assertGreater(len(system.encode("utf-8")), 128 * 1024)
+        agent = runner.ClaudeCodeAgent(
+            binary=str(self.binary), timeout=30, budget_seconds=20, max_steps=5,
+            extra_args=["--stub-log", str(self.log), "--system-prompt", system])
+        ran = agent.run(task, _Host(self.work, "answer"))
+        self.assertEqual(ran.final_text, "answer 1")
+        (start,) = [e for e in self.entries() if "start" in e]
+        self.assertNotIn("--system-prompt", start["argv"])
+        self.assertEqual(start["system_prompt"], system)
+        self.assertEqual(start["argv"][start["argv"].index("--input-format") + 1],
+                         "stream-json")
+        self.assertFalse(any("PO line" in arg for arg in start["argv"]))
+        (turn,) = [e for e in self.entries() if "turn" in e]
+        self.assertEqual(turn["text"], task)
 
     def test_a_prestarted_session_is_up_before_its_question_and_its_clock_starts_then(self):
         host = _Host(self.work, "answer")

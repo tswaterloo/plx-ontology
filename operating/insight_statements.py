@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from operating.ontology_tools_identity import ToolError
-from operating.pg import business_views as bv
+from operating import measures
 
 INSIGHT = "insight:"
 FILE = Path(__file__).resolve().parents[1] / "operator_api" / "insights_builtin.json"
@@ -50,4 +50,4 @@ def described(what: str) -> dict[str, Any]:
                         "insights: " + ", ".join(sorted(got)))
     return {"insight": tile["id"], "title": str(tile.get("title") or ""),
             "about": str(tile.get("about") or ""),
-            "sql": str(tile["sql"]).replace("{business_tz}", bv.BUSINESS_TZ)}
+            "sql": measures.fill(str(tile["sql"]))}

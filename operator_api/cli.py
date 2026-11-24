@@ -43,9 +43,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--ask-seconds", type=int, default=180,
                        help="hard cap of one agent Ask's session (seconds); each question "
                             "gets deep_investigation.question_budget under it")
-    group.add_argument("--ask-lookup-model", default=None,
-                       help="the model an Ask about one named record runs on "
-                            "(agent_ask.LOOKUP_MODEL; empty: the session's model)")
     group.add_argument("--ask-workers", type=int, default=ASK_WORKERS,
                        help="Asks answered at once (each its own runtime and thread), at "
                             f"most {ASK_WORKERS_MOST}; past one, only as many as the memory "

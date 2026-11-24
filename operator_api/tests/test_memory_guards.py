@@ -407,6 +407,9 @@ class ListedNames(unittest.TestCase):
         def __init__(self, users):
             self.users = users
 
+        def get_all_pages(self, url, **kw):
+            return self.get_pages(url, **kw)
+
         def get_pages(self, url, **_):
             return self.users, {"complete": True}
 

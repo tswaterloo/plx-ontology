@@ -1,0 +1,36 @@
+# PLX Assist worker: serves "Draft it" requests (assist.matter_log 'requested' rows): the one
+# Assistant session on the matter's message, as the person, drafts only (nothing is sent or
+# written to a business system). Starts on the timer; a run with nothing requested is one query.
+# No deadline ends a draft; only a process that hangs is stopped (TimeoutStartSec).
+[Unit]
+Description=PLX Assist worker (drafts asked for, kept on the matter; nothing sent)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/workbench-session.env
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PLX_CHAT_ASK_MODEL=haiku
+Environment=PLX_AUTOPILOT_DRAFT_MODEL=opus
+Environment=PLX_AUTOPILOT_READERS_FILE=@PLX_HOME@/.config/plx/autopilot-readers.json
+Environment=PLX_AUTOPILOT_HOST_CONFIG=@PLX_HOME@/.config/plx/workbench-host-vince/host.json
+Environment=PLX_AUTOPILOT_HOST_STATE=/data/plx-state
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PLX_AUTOPILOT_ENV_FILE=@PLX_HOME@/.config/plx/plx.env
+Environment=PLX_AUTOPILOT_MEMORY_DSN=postgresql:///plx
+ExecStart=/data/venv/bin/python3 -m operating.assist_worker run --store /data/plx-state/projection/ontology.sqlite --state-dir /data/plx-state
+Nice=5
+CPUWeight=100
+MemoryHigh=4G
+MemoryMax=6G
+MemorySwapMax=512M
+TimeoutStartSec=2h
+UMask=0077

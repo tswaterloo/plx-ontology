@@ -6,6 +6,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { getInsight, getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
+import { onSessionReset } from "@/lib/session-cache";
 import { eastern } from "@/lib/format";
 import type { InsightResult, TeamItem, TeamPerson, TeamPersonDetail, TeamTrackerWeek, TeamView } from "@/lib/types";
 
@@ -170,15 +171,54 @@ export function plannerByKey(result: InsightResult | null): Map<string, { open: 
   return out;
 }
 
+// The planner read the Team page started beside its people read (`readPlannerAhead`), so the
+// dashboard does not wait for the people before asking for it (measured 11-22: it was sent
+// only once /api/team answered, 100-280 ms later). Used once, while young; dropped on sign-out.
+const PLANNER_AHEAD_MS = 10_000;
+let plannerAhead: { at: number; read: Promise<InsightResult> } | null = null;
+onSessionReset(() => (plannerAhead = null));
+
+/** Start the planner read now (the Team page, beside its people read); a failure is dropped. */
+export function readPlannerAhead(): void {
+  const read = getInsight(PLANNER_INSIGHT);
+  read.catch(() => undefined);
+  plannerAhead = { at: Date.now(), read };
+}
+
+function plannerRead(signal: AbortSignal): Promise<InsightResult> {
+  const ahead = plannerAhead;
+  plannerAhead = null;
+  if (ahead && Date.now() - ahead.at < PLANNER_AHEAD_MS) return ahead.read.catch(() => getInsight(PLANNER_INSIGHT, signal));
+  return getInsight(PLANNER_INSIGHT, signal);
+}
+
+// A person's panel is read once the pointer rests on their row: the server keeps the answer, so the
+// click that follows opens it from memory. Once per person per page load; a failure is the click's.
+const readAheadKeys = new Set<string>();
+let readAheadTimer: ReturnType<typeof setTimeout> | undefined;
+function readAhead(key: string) {
+  clearTimeout(readAheadTimer);
+  if (readAheadKeys.has(key)) return;
+  // only a row the pointer rests on, not every row it passes
+  readAheadTimer = setTimeout(() => {
+    readAheadKeys.add(key);
+    getTeamPerson(key).catch(() => readAheadKeys.delete(key));
+  }, 250);
+}
+const readAheadStop = () => clearTimeout(readAheadTimer);
+
 export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: string }) {
   const [planner, setPlanner] = useState<Map<string, { open: number; overdue: number }> | null>(null);
   useEffect(() => {
     const ctl = new AbortController();
-    getInsight(PLANNER_INSIGHT, ctl.signal).then((r) => setPlanner(plannerByKey(r)), () => !ctl.signal.aborted && setPlanner(null));
+    plannerRead(ctl.signal).then((r) => !ctl.signal.aborted && setPlanner(plannerByKey(r)), () => !ctl.signal.aborted && setPlanner(null));
     return () => ctl.abort();
   }, []);
   const tasksOf = (p: TeamPerson) => planner?.get(p.key)?.open ?? 0;
-  const people = useMemo(() => data.people ?? [], [data.people]);
+  // shared mailboxes and accounts with no one on record behind them are listed apart: not people, so
+  // out of the people count, the rankings and the totals above
+  const people = useMemo(() => (data.people ?? []).filter((p) => !p.shared), [data.people]);
+  const accounts = useMemo(() => (data.people ?? []).filter((p) => p.shared).sort((a, b) => a.name.localeCompare(b.name)), [data.people]);
   const [period, setPeriod] = useState<Period>(7);
   const [team, setTeam] = useState("");
   const [role, setRole] = useState("");
@@ -270,7 +310,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
   if (data.state !== "ready") {
     return (
       <p className="text-[13px] text-muted" data-testid="team-not-ready">
-        {data.state === "blocked" ? "Activity is not counted while the people exclusion cannot be read." : "Activity has not been counted yet. It is counted every night."}
+        {data.state === "blocked" ? "Activity can't be counted right now. Try again in a few minutes." : "Activity has not been counted yet. It is counted every night."}
       </p>
     );
   }
@@ -278,7 +318,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
   return (
     <div className="space-y-3" data-testid="team-dashboard">
       <p className="max-w-[80ch] text-[13px] leading-5 text-muted" data-testid="team-intro">
-        Who is busy and what is waiting on whom: what each person sent and did over the period, and the replies and tasks still open with them. Open a name to see their week.
+        What each person sent and did over the period, and the replies and tasks still open with them. Open a name to see their week.
       </p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div role="radiogroup" aria-label="Period" className="flex h-7 overflow-hidden rounded-md border border-control text-[12px] max-sm:h-10">
@@ -351,7 +391,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
             {rows.map((p) => {
               const c = counts(p, period);
               return (
-                <tr key={p.key} data-testid="team-row" onClick={() => setOpen(p.key)}
+                <tr key={p.key} data-testid="team-row" onClick={() => setOpen(p.key)} onPointerEnter={() => readAhead(p.key)} onPointerLeave={readAheadStop} onFocus={() => readAhead(p.key)}
                   className="cursor-pointer border-b border-border hover:bg-hover">
                   <td className="px-2 py-1.5">
                     <button type="button" data-tap="inline" className="text-left font-medium hover:underline" onClick={(e) => { e.stopPropagation(); setOpen(p.key); }}>
@@ -385,6 +425,37 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         </table>
         {rows.length === 0 && <p className="py-4 text-[13px] text-muted">{people.length === 0 ? "No one has activity counted yet." : "Nobody matches these filters."}</p>}
       </div>
+      {data.scope === "everyone" && accounts.length > 0 && (
+        <section className="space-y-1.5 pt-4" aria-label="Shared mailboxes and accounts" data-testid="team-accounts">
+          <h2 className="text-[13px] font-semibold">Shared mailboxes and accounts <span className="num font-normal text-muted">{accounts.length}</span></h2>
+          <p className="max-w-[80ch] text-[12px] text-muted">Named only by their address, with no manager, department or title on record: not counted as people, not ranked.</p>
+          <table className="w-full max-w-3xl border-collapse text-[12.5px]">
+            <thead className="text-left text-[11.5px] text-muted">
+              <tr className="border-b border-border">
+                <th scope="col" className="px-2 py-1 font-normal">Account</th>
+                <th scope="col" className="px-2 py-1 text-right font-normal">All</th>
+                <th scope="col" className="px-2 py-1 text-right font-normal">Mail sent</th>
+                <th scope="col" className="px-2 py-1 text-right font-normal">Mail received</th>
+                <th scope="col" className="px-2 py-1 text-right font-normal">Teams</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((a) => {
+                const c = counts(a, period);
+                return (
+                  <tr key={a.key} className="cursor-pointer border-b border-border hover:bg-hover" data-testid="team-account-row" onClick={() => setOpen(a.key)}>
+                    <td className="px-2 py-1.5 font-medium">{a.name}</td>
+                    <td className="px-2 py-1.5 text-right"><Figure n={total(a, period)} strong /></td>
+                    <td className="px-2 py-1.5 text-right"><Figure n={c.mail_sent} /></td>
+                    <td className="px-2 py-1.5 text-right"><Figure n={c.mail_received} /></td>
+                    <td className="px-2 py-1.5 text-right"><Figure n={c.teams} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </section>
+      )}
       {open && <PersonSheet key={open} personKey={open} onClose={() => setOpen(null)} onOpen={setOpen} />}
     </div>
   );
@@ -454,6 +525,7 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
             <div className="text-[12px] text-muted">{[p.team, ...(p.roles ?? []).filter((r) => r !== p.team)].filter(Boolean).join(" · ") || "No team or role on record"}</div>
           </div>
 
+          <h3 className="-mb-3 text-[12px] font-medium text-muted" data-testid="team-window">Counts for the last 28 days</h3>
           <dl className="grid grid-cols-3 gap-x-4 gap-y-2 text-[12px] sm:grid-cols-6">
             {CHANNELS.filter((c) => (p.d28?.[c.key] ?? 0) > 0).map((c) => (
               <div key={c.key} title={c.title}><dt className="truncate text-muted">{c.title.split(" ").slice(0, 2).join(" ")}</dt><dd className="num text-[15px]">{p.d28?.[c.key]}</dd></div>
@@ -462,13 +534,13 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
           </dl>
 
           {(p.weeks ?? []).length > 0 && (
-            <section className="space-y-2">
+            <section className="cv-auto cv-tile space-y-2">
               <h3 className="text-[12px] font-medium text-muted">Week by week</h3>
               <WeekTracker weeks={p.weeks ?? []} waiting={p.awaiting_reply + p.tasks + p.alerts} />
             </section>
           )}
 
-          <section className="space-y-2">
+          <section className="cv-auto cv-tile space-y-2">
             <h3 className="text-[12px] font-medium text-muted">Each day, last 28 days</h3>
             <Timeline days={data.timeline ?? []} />
           </section>
@@ -497,6 +569,7 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
               </section>
             );
           })}
+          {data.items_unread && <p className="text-[12px] text-risk" data-testid="team-items-unread">Their open items could not be read just now. The counts above stand; open the person again in a moment.</p>}
           {data.withheld > 0 && <p className="text-[12px] text-muted" data-testid="team-withheld">{data.withheld} more not shown: marked, or not open to you.</p>}
 
           <div className="grid gap-6 sm:grid-cols-2">

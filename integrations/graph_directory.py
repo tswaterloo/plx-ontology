@@ -94,8 +94,6 @@ USER_PERMISSION_MISSING = "graph_permission_missing:User.Read.All"
 # Same token as operating.employee_permissions.GROUP_READ_BLOCKER.
 GROUP_PERMISSION_MISSING = "graph_permission_missing:GroupMember.Read.All"
 PAGE_SIZE = 999
-MAX_PAGES = 5
-MAX_GROUPS = 4995
 REASONS = frozenset({USER_PERMISSION_MISSING, GROUP_PERMISSION_MISSING, "user_not_found",
                      "user_mismatch", "account_disabled", "membership_truncated",
                      "membership_item_invalid", "unreadable"})
@@ -165,15 +163,11 @@ class _Incomplete(Exception):
 class GraphDirectoryReader:
     """Directory reads for per-employee permissions; GET-only through the guard."""
 
-    def __init__(self, api: SourceApi, *, clock: Callable[[], datetime] = _utc_now,
-                 max_pages: int = MAX_PAGES) -> None:
+    def __init__(self, api: SourceApi, *, clock: Callable[[], datetime] = _utc_now) -> None:
         if not isinstance(api, SourceApi):
             raise TypeError("SourceApi required")
-        if not isinstance(max_pages, int) or not 1 <= max_pages <= MAX_PAGES:
-            raise ValueError(f"max_pages must be 1..{MAX_PAGES}")
         self._api = api
         self._clock = clock
-        self.max_pages = max_pages
 
     def __repr__(self) -> str:
         return "GraphDirectoryReader()"
@@ -262,10 +256,8 @@ class GraphDirectoryReader:
 
     def _ids(self, url: str, kind: str) -> frozenset[str]:
         """Every id of one paged listing, each a distinct GUID of ``kind``, or ``_Incomplete``."""
-        items, completeness = self._api.get_pages(url, max_pages=self.max_pages,
-                                                  max_items=MAX_GROUPS)
-        if not completeness.get("complete"):
-            raise _Incomplete("membership_truncated")
+        # Every page Graph sends (no page or item bound); a repeated nextLink raises.
+        items, _completeness = self._api.get_all_pages(url)
         ids: set[str] = set()
         for item in items:
             found = _guid(item.get("id")) if isinstance(item, Mapping) else None
@@ -297,9 +289,7 @@ def count_job_titles(api: SourceApi, keywords: Sequence[str], exclusion: Any
     from operating.employee_permissions import job_title_matches
     exclusion.require()
     url = grammar.url("graph.users", {"$select": "id,accountEnabled,jobTitle", "$top": "999"})
-    users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
-    if not completeness.get("complete"):
-        raise SourceUnavailable("directory user listing incomplete")
+    users, _completeness = api.get_all_pages(url)
     enabled = [u for u in users if isinstance(u, Mapping) and u.get("accountEnabled") is True
                and _guid(u.get("id"))]
     matched = [u for u in enabled if job_title_matches(u.get("jobTitle"), keywords)]

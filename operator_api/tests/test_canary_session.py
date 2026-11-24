@@ -32,26 +32,22 @@ def asked_lately(client):
 
 
 def served_backend(be, m):
-    """A ``WorkspaceBackend`` whose ``ask`` runs as served down to a stand-in answer: no
-    model reading, no attachment, no general part, the console box answering."""
+    """A ``WorkspaceBackend`` whose ``ask`` runs as served (the one Ask path,
+    ``simple_ask``) down to a stand-in answer: no model, no attachment; ``ask_stub`` is
+    the stand-in for ``simple_ask.ask`` (patch it in while the backend answers)."""
     import queue
     import threading
+    from types import SimpleNamespace
     backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
     backend._lock, backend._recent, backend._answers = threading.RLock(), {}, {}
     backend.ask_served, backend.ask_jobs = True, queue.Queue()
-    backend.agent_ask = backend.agent_missing = None
+    backend.agent_ask = SimpleNamespace(serves=lambda session: True)
+    backend.agent_missing = None
     backend.clock = lambda: be.datetime.now(be.timezone.utc)
-    for name, value in (("_prewarm_agent", None), ("_front_read", None),
-                        ("_record_read", None), ("_attached", None)):
-        setattr(backend, name, lambda *a, _v=value, **k: _v)
-    backend._ready_first = lambda *a, **k: True
-    backend._general_served = lambda: False
+    backend._attached = lambda *a, **k: None
+    backend.journal_full_read = lambda *a, **k: None
 
-    def nothing(*a, **k):
-        return None
-        yield   # a generator answering nothing: the next path answers
-
-    def box(reader, request, conversation, ms):
+    def box(backend_, reader, request, conversation, ms, files=None):
         return m.AnswerPayload(
             answer_id="a" * 24, question=request.question, outcome="answered",
             direct_answer="TASK-1 is open.", hidden=m.Hidden(count=0),
@@ -62,8 +58,7 @@ def served_backend(be, m):
             freshness=m.Freshness(), conversation_id=conversation, latency_ms=ms())
         yield
 
-    backend._fast_ask = nothing
-    backend._box_ask = box
+    backend.ask_stub = box
     return backend
 
 
@@ -160,7 +155,8 @@ class CanarySessionTest(ServedFixture):
                                             ticket=self.ticket(), secret=SECRET),
                         "dev", "Ana", EMAIL_A)
         self.assertEqual(canary.key, person.key)   # the same reader's claims
-        with mock.patch("operator_api.feedback.served_markings", return_value=[]):
+        with mock.patch("operator_api.feedback.served_markings", return_value=[]), \
+                mock.patch("operator_api.simple_ask.ask", backend.ask_stub):
             got = dict(backend.ask(canary, m.AskRequest(question="Where is TASK-1 at?")))
             self.assertEqual(got["answer"].direct_answer, "TASK-1 is open.")
             self.assertEqual((backend._recent, backend._answers,
@@ -241,25 +237,57 @@ class MeasureSessionTest(ServedFixture):
     def test_the_measure_is_served_the_screens_reads_and_nothing_else(self):
         client, app = self.client()
         self.sign_in(client, self.measure_ticket())
-        for path in ("/api/me", "/api/home", "/api/sidebar", "/api/briefing"):
+        for path in ("/api/me", "/api/home", "/api/home/bundle", "/api/sidebar", "/api/briefing"):
             self.assertEqual(client.get(path).status_code, 200, path)
         # record search is a read: served to the measure, never to the Ask canary
         self.assertEqual(client.get("/api/suggest", params={"q": "croda"}).status_code, 200)
-        refused = [("POST", "/api/ask", {"question": "Where is TASK-1 at?"}),
-                   ("POST", "/api/briefing/seen", {}),
-                   ("POST", "/api/memory", {"kind": "fact", "text": "x"}),
-                   ("GET", "/api/work-log", None), ("GET", "/api/memory", None),
-                   ("GET", "/api/memory/people", None), ("GET", "/api/ask/chats", None),
-                   ("GET", "/api/time-saved", None), ("GET", "/api/view-as/people", None),
-                   ("GET", "/api/source", None), ("GET", "/api/teams/connection", None),
+        refused = [("POST", "/api/memory", {"kind": "fact", "text": "x"}),
+                   ("POST", "/api/feedback", {"rating": "up"}),
+                   ("POST", "/api/autopilot/audit/k1/undo", {}),
+                   ("POST", "/api/work-log/saved", {}),
+                   ("POST", "/api/work-log/threads/ask:x", {}),
+                   ("POST", "/api/ask/chats/x", {"pinned": True}),
+                   ("GET", "/api/view-as/people", None),
                    ("GET", "/api/entries/e1", None),
                    ("GET", "/api/object/%2e%2e/%2e%2e/work-log", None),
                    ("POST", "/api/actions/confirm", {}), ("POST", "/api/watch/follow", {})]
+        # every screen's own reads (11-23: the measure's 18 screens are all valid): served
+        # as GET, never as a write
+        for path in ("/api/source", "/api/source/records", "/api/time-saved", "/api/work-log", "/api/memory", "/api/memory/people", "/api/ask/chats",
+                     "/api/teams/connection", "/api/feeds", "/api/instructions/recurring",
+                     "/api/actions/log", "/api/templates/answer-bank",
+                     # owner 11-23: every page the owner reads, past chats included
+                     "/api/feedback", "/api/autopilot/audit", "/api/work-log/autopilot-days",
+                     "/api/work-log/threads/ask:none"):
+            got = client.get(path, headers=PROXIED)
+            self.assertNotEqual((got.status_code, (got.json().get("error") or {}).get("code")
+                                 if got.headers.get("content-type", "").startswith("application/json")
+                                 else None), (403, "canary_route_refused"), path)
         for method, path, body in refused:
             got = client.request(method, path, json=body, headers=PROXIED)
             self.assertEqual(got.status_code, 403, (method, path, got.text))
             self.assertEqual(got.json()["error"]["code"], "canary_route_refused",
                              (method, path))
+        # an Ask, answered as the owner and kept for nobody: not among the owner's own
+        # asked questions (no work log, memory or chat written for it)
+        asked = client.post("/api/ask", json={"question": "Where is TASK-1 at?"},
+                            headers=PROXIED)
+        self.assertEqual(asked.status_code, 200, asked.text)
+        # a line asking for something done is still only answered: never the instruction
+        # engine (no draft, card or write prepared for anyone)
+        from operator_api.instruct_api import InstructMixin
+        with mock.patch.object(InstructMixin, "instruct_ask",
+                               side_effect=AssertionError("instruction engine")) as engine:
+            told = client.post("/api/ask", json={"question": "Email Ana that TASK-1 is "
+                                                 "done", "mode": "do"}, headers=PROXIED)
+        self.assertEqual(told.status_code, 200, told.text)
+        engine.assert_not_called()
+        # the briefing's seen mark is answered and marks nothing
+        seen = client.post("/api/briefing/seen", json={}, headers=PROXIED)
+        self.assertEqual((seen.status_code, seen.json()["ok"]), (200, False))
+        person = TestClient(app, base_url="http://testserver")
+        self.sign_in(person, self.ticket())
+        self.assertEqual(asked_lately(person), [])
         # a path no route takes is never served either (no route: not found)
         for path in ("/api/home/%2e%2e/work-log", "/api/unknown"):
             self.assertEqual(client.get(path).status_code, 404, path)

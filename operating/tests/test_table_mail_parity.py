@@ -212,15 +212,13 @@ class TableMailParity(unittest.TestCase):
             with self.subTest(actor=sorted(actor.principals)):
                 gate = self.gated(runtime, actor)
                 out, table = self.listed(tool, actor)
-                freightcom = {o for o in gate if "Freightcom" in str(self.subjects({o}))}
-                self.assertEqual(len(freightcom), 1, self.subjects(gate))
-                self.assertEqual(table, gate - freightcom,
-                                 (self.subjects(table), self.subjects(gate)))
-                self.assertEqual(self.subjects(table), expected_visible[actor])
-                # the Freightcom message is withheld (counted, never shown), so partial
-                self.assertEqual(out["withheld"]["objects"], 1, out)
-                self.assertTrue(out["partial"])
-                self.assertNotIn("Freightcom pickup", json.dumps(out))
+                self.assertEqual(table, gate, (self.subjects(table), self.subjects(gate)))
+                # the Freightcom message is read like any other (owner 11-23): the table
+                # holds whatever the gate serves, nothing withheld
+                self.assertEqual(self.subjects(table), expected_visible[actor] | (
+                    self.subjects(gate) & {"Freightcom pickup quote"}))
+                self.assertEqual(out["withheld"]["objects"], 0, out)
+                self.assertFalse(out["partial"])
                 counted = tool.call("plx.table", {"from": "Email",
                                                   "measures": [{"fn": "count"}]}, actor)
                 self.assertEqual(counted["groups"][0]["measures"][0]["value"],
@@ -249,7 +247,7 @@ class TableMailParity(unittest.TestCase):
         self.assertLess(table, gate)
         # the sent copies (not looked up for a Bcc) and the accented copy (not decided)
         self.assertEqual({"Sent with bcc to a colleague", "Internal note", "Accented copy"},
-                         self.subjects(gate - table) - {"Freightcom pickup quote"})
+                         self.subjects(gate - table))
         self.assertTrue(out["partial"])
         self.assertGreaterEqual(out["withheld"]["objects"], 3, out)
         self.assertEqual({g["reason"] for g in out["gaps"]} >= {"item_rules_capped",
@@ -276,15 +274,14 @@ class TableMailParity(unittest.TestCase):
         self.assertNotIn("Sent with bcc to excluded", json.dumps(out))
         # unbounded, every one is looked up: the table is the gate's set
         out, table = self.listed(self.tool(runtime), OWNER)
-        freightcom = {o for o in gate if "Freightcom" in str(self.subjects({o}))}
-        self.assertEqual(table, gate - freightcom)
+        self.assertEqual(table, gate)
 
     def test_hidden_messages_leave_no_trace_in_any_shape(self):
         runtime = self.runtime()
         tool = self.tool(runtime)
         hidden = ("Undecided copy", "Excluded copy", "List copy", "Sent with bcc to excluded",
                   "No sender address", "Shared address copy", "Finance note",
-                  "pat.unlisted", LIST, UPN_B, "Freightcom pickup")
+                  "pat.unlisted", LIST, UPN_B)
         for args in ({"from": "Email", "group_by": ["subject"], "limit": 200},
                      {"from": "Email", "group_by": ["sender"], "limit": 200},
                      {"from": "Email", "group_by": ["to_addresses"], "limit": 200},

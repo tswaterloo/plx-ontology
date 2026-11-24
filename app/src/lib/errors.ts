@@ -18,6 +18,7 @@ export class ApiError extends Error {
 
 const BY_CODE: Record<string, string> = {
   // operator_api codes (operator_api/app.py MESSAGES)
+  search_busy: "The search is taking too long. Try again in a moment.",
   sign_in_required: "Your session has ended. Sign in again to continue.",
   view_as_refused: "You are viewing as someone else, which is read only and covers Home, alerts and drafts. Stop viewing to do this.",
   unauthenticated: "Your session has ended. Sign in again to continue.",
@@ -40,6 +41,7 @@ const BY_CODE: Record<string, string> = {
   rate_limited: "Too many questions at once. Try again in a few seconds.",
   timeout: "Timed out. Try a narrower question, or try again in a moment.",
   read_timeout: "The Workbench took too long to answer. Try again in a moment.",
+  connection_stalled: "The connection stalled: nothing arrived for 2 minutes. Retry.",
   upstream_unavailable: "One of the business systems isn't answering right now. Try again in a few minutes.",
   stream_interrupted: "The answer was cut off. Ask again to get the full answer.",
   network: "Can't reach the Workbench. Check your connection and try again.",
@@ -53,7 +55,7 @@ const BY_CODE: Record<string, string> = {
 export const INSIGHT_CODES: ReadonlySet<string> = new Set([
   "insight_not_built", "insight_gone", "insight_not_ready", "insight_too_slow", "insight_withheld",
   "insight_unreadable", "insight_invalid_sql", "insight_chart", "insight_too_many", "insight_not_saved",
-  "insight_watch",
+  "insight_watch", "filter_unworkable", "view_as_statement",
 ]);
 
 /** Errors a second try cannot change (the record is missing, or the reader may not see it). */

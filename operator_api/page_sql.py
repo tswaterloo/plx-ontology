@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import nullcontext
 from urllib.parse import quote
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Collection, Mapping, Optional, Sequence
 
@@ -37,7 +37,7 @@ class PageDoorUnavailable(RuntimeError):
 
 
 PAGE_KINDS = ("customer", "chain", "supplier", "purchase_order", "sales_order", "product",
-              "batch")
+              "batch", "supplier_invoice")
 
 
 def on(kind: Optional[str] = None) -> bool:
@@ -55,14 +55,8 @@ def on(kind: Optional[str] = None) -> bool:
 def read(backend: Any, reader: Any, reads: Sequence[Mapping[str, Any]], *, ids: bool = False
          ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, str]]]:
     """(each read's rows as dicts by column, the record each returned handle opens)."""
-    from .page_core import CORE_PRIORITY
-    worker = getattr(backend, "access_worker", None) or backend.reads
     args = {"reads": [dict(r) for r in reads], "ids": ids}
-    try:
-        out = worker.run(reader, lambda view: view._call(TOOL, args),
-                         timeout=_timeout(worker, reader), priority=CORE_PRIORITY)
-    except TimeoutError:
-        raise PageDoorUnavailable("timeout") from None
+    out = _call(backend, reader, args)
     if not isinstance(out, Mapping) or "error" in out or not isinstance(out.get("reads"),
                                                                        Mapping):
         err = (out or {}).get("error") if isinstance(out, Mapping) else None
@@ -79,10 +73,39 @@ DOOR_KINDS = {"PurchaseOrder": "purchase_order", "SalesOrder": "sales_order",
               "Batch": "batch"}
 _VIEW_OF = {"purchase_order": "purchase_orders", "sales_order": "sales_orders",
             "customer": "customers", "supplier": "suppliers", "product": "products",
-            "batch": "batches"}
+            "batch": "batches", "supplier_invoice": "supplier_invoices"}
 # only the parties' and orders' kinds have a page of their own address (/account, /order);
-# an item's and a batch's open as the record page, which reads their door page beside it
-_KIND_OF_VIEW = {v: k for k, v in _VIEW_OF.items() if k not in ("product", "batch")}
+# an item's, a batch's and an invoice's open as the record page, which reads their door page
+# beside it
+_KIND_OF_VIEW = {v: k for k, v in _VIEW_OF.items()
+                 if k not in ("product", "batch", "supplier_invoice")}
+
+
+def _call(backend: Any, reader: Any, args: Mapping[str, Any]) -> Any:
+    """``plx.page``'s answer to ``args`` for ``reader``. A backend that keeps doors
+    (``operator_api.doors``: every served API) reads with the reader's door decided ahead, on
+    this thread, through the page pool: no worker, no workspace, no decision in the request
+    (speed specs 9.3 V1, 1.2.2). A reader with no door ahead is decided now on this thread
+    (``Doors.get`` logs ``door_not_ahead``, alarmed); one that cannot be decided is refused
+    (``not_ready``), never read with another door. A backend without doors (tools, tests of
+    the old host) asks the host's ``plx.page`` on its worker, as before."""
+    doors = getattr(backend, "doors", None)
+    if doors is not None:
+        held = doors.get(reader) or doors.decide_now(reader)
+        if held is None:
+            raise PageDoorUnavailable("not_ready", "this reader's door is not decided")
+        from operating.ontology_tools_sql import Door
+        from operating.page_reads import PageReads
+        # a fresh Door over the held grant: ``_decide`` re-checks its stamp and the people
+        # exclusion in the read's own snapshot (scoped_read), as every page read does
+        return PageReads(None).call(args, None, door=Door(held[0].grant), dsn=held[1])
+    from .page_core import CORE_PRIORITY
+    worker = getattr(backend, "access_worker", None) or backend.reads
+    try:
+        return worker.run(reader, lambda view: view._call(TOOL, args),
+                          timeout=_timeout(worker, reader), priority=CORE_PRIORITY)
+    except TimeoutError:
+        raise PageDoorUnavailable("timeout") from None
 
 
 def resolve(backend: Any, reader: Any, kind: str, object_id: str) -> str:
@@ -91,14 +114,7 @@ def resolve(backend: Any, reader: Any, kind: str, object_id: str) -> str:
     view = _VIEW_OF.get(kind)
     if view is None or not object_id or len(object_id) > 700:
         raise NotFound(kind)
-    worker = getattr(backend, "access_worker", None) or backend.reads
-    from .page_core import CORE_PRIORITY
-    try:
-        out = worker.run(reader, lambda v: v._call(TOOL, {"resolve": {
-            "view": view, "object_id": object_id}}), timeout=_timeout(worker, reader),
-            priority=CORE_PRIORITY)
-    except TimeoutError:
-        raise PageDoorUnavailable("timeout") from None
+    out = _call(backend, reader, {"resolve": {"view": view, "object_id": object_id}})
     if not isinstance(out, Mapping) or "error" in out:
         err = (out or {}).get("error") if isinstance(out, Mapping) else None
         raise PageDoorUnavailable(str((err or {}).get("code") or "unreadable"))
@@ -408,21 +424,11 @@ def runs_state(rows: Sequence[Mapping[str, Any]], now: Optional[datetime] = None
 
 
 RUNS_SECONDS = 30   # how long the alert rules' freshness is held before it is read again
+RUNS_AHEAD_SECONDS = 15   # past this age the next read is started off the request (a request never waits at the 30 s edge)
 _RUNS_LOCK = threading.Lock()
 
 
-def runs_fresh(backend: Any) -> Any:
-    """Which alert rules are current now (``alerts.STALE_MINUTES``), as one value for a kept
-    screen's inputs: when the rules stop running it changes, so a Home, briefing or sidebar
-    kept from before is read again (and says unavailable) instead of being served as current.
-    Read from the alert runs on the backend's Postgres pool, held ``RUNS_SECONDS``; a pool
-    or table that cannot be read gives one constant ("unread"): the screens then stand on
-    the read's own stale check (``alerts_stale``) as before."""
-    now = time.monotonic()
-    with _RUNS_LOCK:
-        held = backend.__dict__.get("_runs_fresh")
-        if held is not None and now - held[0] < RUNS_SECONDS:
-            return held[1]
+def _read_runs(backend: Any) -> Any:
     got: Any = "unread"
     try:
         from operating.pg import business_views as bv
@@ -435,6 +441,39 @@ def runs_fresh(backend: Any) -> Any:
             got = tuple(sorted((name, fresh) for name, (fresh, _ok) in state.items()))
     except Exception:  # noqa: BLE001 - unread: the constant
         got = "unread"
+    return got
+
+
+def _refresh_runs(backend: Any) -> None:
+    """The read of the alert runs, kept for the next ``runs_fresh`` (off any request)."""
+    try:
+        got = _read_runs(backend)
+        with _RUNS_LOCK:
+            backend.__dict__["_runs_fresh"] = (time.monotonic(), got)
+    finally:
+        with _RUNS_LOCK:
+            backend.__dict__["_runs_ahead"] = False
+
+
+def runs_fresh(backend: Any) -> Any:
+    """Which alert rules are current now (``alerts.STALE_MINUTES``), as one value for a kept
+    screen's inputs: when the rules stop running it changes, so a Home, briefing or sidebar
+    kept from before is read again (and says unavailable) instead of being served as current.
+    Read from the alert runs on the backend's Postgres pool, held ``RUNS_SECONDS``, and read
+    again off the request once the held one is ``RUNS_AHEAD_SECONDS`` old (the answer is
+    never older than ``RUNS_SECONDS``: a request that finds it that old reads it itself);
+    a pool or table that cannot be read gives one constant ("unread"): the screens then
+    stand on the read's own stale check (``alerts_stale``) as before."""
+    now = time.monotonic()
+    with _RUNS_LOCK:
+        held = backend.__dict__.get("_runs_fresh")
+        if held is not None and now - held[0] < RUNS_SECONDS:
+            if now - held[0] >= RUNS_AHEAD_SECONDS and not backend.__dict__.get("_runs_ahead"):
+                backend.__dict__["_runs_ahead"] = True
+                threading.Thread(target=_refresh_runs, args=(backend,), daemon=True,
+                                 name="alert-runs-ahead").start()
+            return held[1]
+    got = _read_runs(backend)
     with _RUNS_LOCK:
         backend.__dict__["_runs_fresh"] = (now, got)
     return got
@@ -446,6 +485,19 @@ def alerts_stale(label: str, since: Optional[datetime]) -> Any:
     return UserFacing("alerts_stale", f"{label} are unavailable" + (
         f" since {when}" if when else "") + ": their check has not run on the current data. "
         "They show again after its next run.", 404)
+
+
+def open_po_ids(backend: Any, reader: Any, limit: int) -> list[str]:
+    """The record ids of the open purchase orders this reader may see, late first then newest
+    (``open_po_list``), at most ``limit``: the warm-up's pages."""
+    rows, ids = read(backend, reader, [{"name": "open_po_list", "params": {"limit": limit}}],
+                     ids=True)
+    out = []
+    for r in rows["open_po_list"]:
+        rec = ids.get(r.get("handle"))
+        if rec and rec.get("object_type") == "PurchaseOrder" and rec.get("object_id"):
+            out.append(str(rec["object_id"]))
+    return list(dict.fromkeys(out))
 
 
 def alert_late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 25
@@ -466,12 +518,14 @@ def alert_late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 2
 
 def alert_home(backend: Any, reader: Any, *, limit: int = 25
                ) -> tuple[int, list[m.LatePo], Optional[str], list[m.AtRisk],
-                          dict[str, Optional[datetime]]]:
+                          dict[str, Optional[datetime]], int]:
     """Home's late POs (``alert_late_pos``) and its at-risk list (the open alerts of the
     home types other than late POs routed to the reader) in ONE
     read through the door (one transaction) after the reader's scope: two door reads
     queued one after the other on the access workers cost Home 0.3-0.8 s each warm (11-18
-    walk). (late total, the first ``limit`` late, as of, at risk, the stale home types).
+    walk). (late total, the first ``limit`` late, as of, at risk, the stale home types, how many
+    open alerts of the at-risk types the reader may read in all: the list is its first
+    ``limit``).
     The late POs' rule not current: ``alerts_stale`` (raised), never the old list."""
     scope = reader_scope(backend, reader)
     types = [t for t in alert_types(scope.enabled, home=True)
@@ -501,7 +555,8 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
     # "Refreshing" on for good and the app polled /api/home every few seconds)
     stale = {t: runs.get(t, (False, None))[1] for t in types
              if _paged(t) and not runs.get(t, (False, None))[0]}
-    return total, late, _iso(ok), risk, stale
+    risk_total = sum(int(r["open"]) for r in rows.get("alerts_count", ()))
+    return total, late, _iso(ok), risk, stale, max(risk_total, len(risk))
 
 
 def late_suppliers(backend: Any, reader: Any, *, limit: int = 10
@@ -817,16 +872,30 @@ def _row_url(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]) -> Op
     return None
 
 
-def codes_text(codes: Any) -> Optional[str]:
-    """'sage:ACME, portal:ACME' as 'Portal ACME, Sage ACME' (each system's own code)."""
+def codes_text(codes: Any, primary: Any = None) -> Optional[str]:
+    """One code up front, the rest behind: 'sage:ACME, portal:ACME, bc:C01' with primary ACME
+    is 'ACME. Same code in Portal, Sage. Other systems: BC C01'. Without a primary code the
+    systems' own codes are listed ('Portal ACME, Sage ACME')."""
     if not isinstance(codes, str) or not codes.strip():
         return None
-    out = []
+    pairs = []
     for part in codes.split(","):
         system, _, code = part.strip().partition(":")
         if code:
-            out.append(f"{_SYSTEMS.get(system.lower(), system.title())} {code}")
-    return ", ".join(sorted(dict.fromkeys(out))) or None
+            pairs.append((_SYSTEMS.get(system.lower(), system.title()), code))
+    pairs = sorted(dict.fromkeys(pairs))
+    if not pairs:
+        return None
+    if not isinstance(primary, str) or not primary.strip():
+        return ", ".join(f"{s} {c}" for s, c in pairs)
+    same = [s for s, c in pairs if c == primary]
+    other = [f"{s} {c}" for s, c in pairs if c != primary]
+    text = primary
+    if same:
+        text += f". Same code in {', '.join(same)}"
+    if other:
+        text += f". Other systems: {', '.join(other)}"
+    return text
 
 
 def search(backend: Any, reader: Any, q: str, limit: int) -> list[m.Suggestion]:
@@ -839,6 +908,15 @@ def search(backend: Any, reader: Any, q: str, limit: int) -> list[m.Suggestion]:
     rows, ids = read(backend, reader, [{"name": "find", "params": {
         "q": text, "limit": min(50, limit + 10)}}], ids=True)
     hits = rows["find"]
+    if not hits and len(text) >= 4:
+        # nothing by name or number: a close spelling, one more read (never merged into a find
+        # that found something)
+        try:
+            got, more = read(backend, reader, [{"name": "find_near", "params": {
+                "q": text, "limit": min(10, limit)}}], ids=True)
+            hits, ids = got["find_near"], {**ids, **more}
+        except PageDoorUnavailable:
+            pass   # no close spelling could be read: the exact search stands, said as no match
     chains = {str(r["title"]).lower() for r in hits if r["kind"] == "chain" and r["title"]}
     out: list[m.Suggestion] = []
     for r in hits:
@@ -1066,7 +1144,7 @@ def account(backend: Any, reader: Any, kind: str, *, handle: str = "", chain: st
             facts.append(m.BizFact(label="Chain", value=m.BizCell(
                 text=f"{head['chain']} ({n_chain} accounts)",
                 href=account_url("chain", chain=str(head["chain"])))))
-        codes = codes_text(head.get("codes"))
+        codes = codes_text(head.get("codes"), head.get("customer_code"))
         facts.append(m.BizFact(label="Codes", value=m.BizCell(
             text=codes or head.get("customer_code"), hidden=not codes and _hidden(head, "codes"))))
         for label, col in (("Currency", "currency"), ("Rep", "salesperson"),
@@ -1144,7 +1222,7 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
         raise NotFound("supplier")
     head = rows["supplier_account"][0]
     facts = []
-    codes = codes_text(head.get("codes"))
+    codes = codes_text(head.get("codes"), head.get("supplier_code"))
     facts.append(m.BizFact(label="Codes", value=m.BizCell(
         text=codes or head.get("supplier_code"), hidden=not codes and _hidden(head, "codes"))))
     for label, col in (("Currency", "currency"), ("Status", "status"),
@@ -1190,18 +1268,176 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
                      took_ms=int((time.perf_counter() - started) * 1000))
 
 
-def order(backend: Any, reader: Any, kind: str, handle: str) -> m.BizPage:
-    """A purchase order or a customer order: its header, then its lines."""
+RECORD_SWITCH = "PLX_RECORD_DOOR"
+
+
+def record_door_on() -> bool:
+    """``PLX_RECORD_DOOR=1``: a purchase order's page reads its header, cells and lines from
+    the precomputed page (``operating.pg.record_pages``) in one read; off (the default), from
+    the business views as before. Exactly ``1``: anything else (a space, ``true``) is off."""
+    return os.environ.get(RECORD_SWITCH, "") == "1"
+
+
+def _payload(item: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """An item's payload with its numbers as Decimals of the stored scale (the text read:
+    1993.30 stays 1993.30, as the business view's numeric gives it), None when it is NULL."""
+    import json
+    text = item.get("payload_text")
+    if not isinstance(text, str):
+        return None
+    got = json.loads(text, parse_float=Decimal)
+    return got if isinstance(got, dict) else None
+
+
+def _from_record_page(items: Sequence[Mapping[str, Any]]
+                      ) -> Optional[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """A purchase order's header row and line rows as the business views give them, rebuilt
+    from the record page's items (``operating.pg.record_pages``): the header's payload plus each
+    cell item's one column, a cell whose payload the reader may not read (NULL, its column named
+    by its handle's last part) listed in ``withheld``. None when the page cannot say it whole
+    (no header, a header read as a whole refused): the caller reads the views."""
+    items = [{**i, "payload": _payload(i)} for i in items]
+    header = [i for i in items if i["section"] == "header"]
+    if len(header) != 1 or not isinstance(header[0].get("payload"), dict):
+        return None
+    h: dict[str, Any] = dict(header[0]["payload"])
+    h["handle"] = header[0]["src_handle"]
+    hidden: list[str] = list(header[0].get("withheld") or ())
+    for i in items:
+        if i["section"] != "cell":
+            continue
+        col = str(i["handle"]).rsplit("#", 1)[-1]
+        if isinstance(i.get("payload"), dict) and col in i["payload"]:
+            h[col] = i["payload"][col]
+        else:
+            h.setdefault(col, None)
+            hidden.append(col)
+    h["withheld"] = hidden
+    by_line: dict[str, dict[str, Any]] = {}
+    order_: list[str] = []
+    for i in items:
+        if i["section"] == "lines":
+            if not isinstance(i.get("payload"), dict):
+                return None
+            row = dict(i["payload"])
+            row["handle"] = i["src_handle"]
+            row["withheld"] = list(i.get("withheld") or ())
+            by_line[i["src_handle"]] = row
+            order_.append(i["src_handle"])
+    for i in items:
+        if i["section"] != "line_cell":
+            continue
+        row = by_line.get(i["src_handle"])
+        if row is None:
+            continue                  # a cell of a line the reader may not read
+        col = str(i["handle"]).rsplit("#", 1)[-1]
+        if isinstance(i.get("payload"), dict) and col in i["payload"]:
+            row[col] = i["payload"][col]
+        else:
+            row.setdefault(col, None)
+            row["withheld"].append(col)
+    return h, [by_line[k] for k in order_]
+
+
+RECORD_PAGE_LIMIT = 2000
+_DOOR_COUNTS = {"served": 0, "fell_back": 0}
+_DOOR_LOG_EVERY = 3600.0   # seconds between the log lines of how often the door served
+_DOOR_LAST = [time.monotonic()]
+
+
+def count_door(served: bool) -> None:
+    """Count one purchase order page read through the record door (served from the items, or
+    fell back to the views) and log the counts about once an hour, then start again: how often
+    the precomputed page helps."""
+    import logging
+    _DOOR_COUNTS["served" if served else "fell_back"] += 1
+    now = time.monotonic()
+    if now - _DOOR_LAST[0] >= _DOOR_LOG_EVERY:
+        logging.getLogger("operator_api.page_sql").info(
+            "record door: %d served, %d fell back in the last %.0f s",
+            _DOOR_COUNTS["served"], _DOOR_COUNTS["fell_back"], now - _DOOR_LAST[0])
+        _DOOR_COUNTS.update(served=0, fell_back=0)
+        _DOOR_LAST[0] = now
+
+
+def order_from_record(backend: Any, reader: Any, record_id: str) -> Optional[m.BizPage]:
+    """A purchase order's page from the record page of ``record_id`` (one indexed read, the
+    reader's door), or None when it cannot be built whole from it (no page items for the record,
+    a refused header, a page cut at the read's limit, more lines than the page shows): the
+    caller then reads the business views."""
+    if not record_id or len(record_id) > 700:
+        return None
+    rows, _ = read(backend, reader, [
+        {"name": "record_page", "params": {"record_id": record_id,
+                                           "limit": RECORD_PAGE_LIMIT}},
+        {"name": "views_as_of"}])
+    items = rows["record_page"]
+    if not items or len(items) >= RECORD_PAGE_LIMIT:
+        return None
+    built = items_built(rows["views_as_of"])
+    if built is None:
+        return None          # the items are older than a view they rest on (or say nothing)
+    got = _from_record_page(items)
+    if got is None or len(got[1]) > MAX_LINES:
+        return None
+    # the page's as-of is the items' own, never the views' (they may be newer)
+    return order(backend, reader, "purchase_order", got[0].get("handle") or "",
+                 loaded=(got[0], got[1], [{"view": "purchase_orders", "built_at": built},
+                                          {"view": "purchase_order_lines", "built_at": built}]))
+
+
+# the views the page's header, cells and lines are built from: their build stamps (``view_state``).
+# The same freshness test as ``record_pages.stale`` (the order views' stamps plus the links'
+# count and newest version, which the door cannot see: and this page shows no link). Never the
+# ``records`` stamp: the generic refresh rewrites it every cycle (generic_records.py), which
+# ``stale`` ignores, so it would send most reads back to the views.
+ITEM_SOURCES = ("purchase_orders", "purchase_order_lines")
+
+
+def items_built(states: Sequence[Mapping[str, Any]]) -> Optional[datetime]:
+    """When the record page's items were built, or None when they cannot be trusted: no stamp
+    of their own, or either order view they are built from (``ITEM_SOURCES``)
+    built AFTER them (the follow-up build failed or has not run: their rows are old, never
+    served under a fresh as-of). An unreadable stamp is not trusted either."""
+    def when(value: Any) -> Optional[datetime]:
+        try:
+            got = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        return got if got.tzinfo else got.replace(tzinfo=timezone.utc)
+    stamps = {r.get("view"): r.get("built_at") for r in states}
+    from operating.pg.page_items import state_view
+    mine = when(stamps.get(state_view("record"))) if state_view("record") in stamps else None
+    if mine is None:
+        return None
+    for view in ITEM_SOURCES:
+        if view not in stamps:
+            continue
+        theirs = when(stamps[view])
+        if theirs is None or theirs > mine:
+            return None
+    return mine
+
+
+def order(backend: Any, reader: Any, kind: str, handle: str,
+          loaded: Optional[tuple[dict[str, Any], list[dict[str, Any]], list[Any]]] = None
+          ) -> m.BizPage:
+    """A purchase order or a customer order: its header, then its lines. ``loaded``: the
+    header, lines and views' times already read (the record page's: ``order_from_record``)."""
     started = time.perf_counter()
     if kind not in ("purchase_order", "sales_order") or not handle:
         raise NotFound(kind)
-    rows, _ = read(backend, reader, [
-        {"name": kind, "params": {"handle": handle}},
-        {"name": f"{kind}_lines", "params": {"handle": handle, "limit": MAX_LINES}},
-        {"name": "views_as_of"}])
-    if not rows[kind]:
-        raise NotFound(kind)
-    h, lines = rows[kind][0], rows[f"{kind}_lines"]
+    if loaded is not None:
+        h, lines, as_of = loaded
+        rows = {"views_as_of": as_of}
+    else:
+        rows, _ = read(backend, reader, [
+            {"name": kind, "params": {"handle": handle}},
+            {"name": f"{kind}_lines", "params": {"handle": handle, "limit": MAX_LINES}},
+            {"name": "views_as_of"}])
+        if not rows[kind]:
+            raise NotFound(kind)
+        h, lines = rows[kind][0], rows[f"{kind}_lines"]
     facts: list[m.BizFact] = []
     if kind == "purchase_order":
         title = _numbered("PO", h.get("po_number"))
@@ -1238,12 +1474,33 @@ def order(backend: Any, reader: Any, kind: str, handle: str) -> m.BizPage:
                  _n(r, "outstanding_quantity"), _t(r, "uom"), _m(r, "unit_price"),
                  _m(r, "line_amount")] for r in lines]
         if h.get("status") == "open" and (h.get("days_late") or 0) > 0:
-            facts.append(m.BizFact(label="Days late", value=_n(h, "days_late")))
+            # only a live order is late: one with nothing left to ship, or that nobody has
+            # worked for longer than closed orders take, is open on the books and said so
+            not_live = {"nothing_outstanding": "Every line states nothing left to ship",
+                        "stale": "Nobody has ordered or invoiced it for longer than closed "
+                                 "orders take"}.get(h.get("open_state") or "")
+            facts.append(m.BizFact(label="Past its required date, not counted late",
+                                   value=m.BizCell(text=not_live)) if not_live
+                         else m.BizFact(label="Days late", value=_n(h, "days_late")))
     for label, col, cell in spec:
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
     note = None if lines else "No lines on record."
-    if money == "total" and h.get("total_basis") == "lines":
+    if kind == "purchase_order" and h.get("status") == "open" and all(
+            h.get(c) is None and not _hidden(h, c) for c in ("requested_date", "promised_date")):
+        # a PO nobody dated can never be late: say so beside the other facts, never leave it
+        # out (live 11-23: 102 of 111 open POs carry no needed-by or promised date)
+        facts.append(m.BizFact(label="Needed by", value=m.BizCell(
+            text="No date on record: no needed-by or promised date from the PO, its lines or "
+                 "the supplier")))
+    zero = h.get("total")
+    if money == "total" and zero is not None and Decimal(str(zero)) == 0 and (
+            h.get("lines_total") is None or Decimal(str(h["lines_total"])) == 0) \
+            and h.get("total_basis") != "lines":
+        # the source states 0.00 and no line is priced: no amount is known, never "$0.00"
+        facts.append(m.BizFact(label="Total", value=m.BizCell(
+            text="Not on record (the source states 0.00 and no line is priced)")))
+    elif money == "total" and h.get("total_basis") == "lines":
         # no copy states a total above 0: the order is worth its priced lines, said so
         facts.append(m.BizFact(label="Total (sum of lines)", value=_m(h, "total")))
     else:
@@ -1274,46 +1531,93 @@ def order(backend: Any, reader: Any, kind: str, handle: str) -> m.BizPage:
 
 MAX_LINES = 500
 
-LIST_VIEWS = ("production",)
+def record_views() -> list[m.RecordView]:
+    """Every list Records offers: one per business view the page door serves, from the
+    views' own metadata (``operating.record_lists``)."""
+    from operating import record_lists
+    return [m.RecordView(view=s.view, title=s.title) for s in record_lists.specs().values()]
 
 
-def record_list(backend: Any, reader: Any, view: str, *, status: str = "", hold: str = "",
-                q: str = "", offset: int = 0, limit: int = 25) -> m.RecordList:
-    """A Records list from the business tables through the reader's door (a row the reader
-    may not read is not here): ``production`` is the batches, with a status filter, a QC
-    hold filter and a text match on batch, lot and product. Unknown views and filter
-    values are refused (``NotFound``), never ignored."""
+def _cell(spec_col: Any, row: Mapping[str, Any], href: Optional[str]) -> m.BizCell:
+    """One list cell, as its column's kind reads it (money with its currency, a day, a
+    number, yes/no, text); the row's link goes on the column named for it."""
+    name = spec_col.name
+    if spec_col.kind == "money":
+        return _m(row, name, spec_col.currency)
+    if spec_col.kind == "date":
+        return _d(row, name)
+    if spec_col.kind == "number":
+        return _n(row, name)
+    if spec_col.kind == "boolean":
+        v = row.get(name)
+        return m.BizCell(text=None if v is None else ("Yes" if v else "No"),
+                         hidden=v is None and _hidden(row, name))
+    return _t(row, name, href)
+
+
+def record_list(backend: Any, reader: Any, view: str, *, filters: Optional[Mapping[str, str]] = None,
+                q: str = "", sort: str = "", direction: str = "", offset: int = 0,
+                limit: int = 25, with_filters: bool = True) -> m.RecordList:
+    """A Records list of one business view through the reader's door (a row the reader may
+    not read is not here; a cell they may not read is hidden): its columns, filters and sort
+    come from the view's metadata (``operating.record_lists``). An unknown view, sort column
+    or direction, filter or filter value is refused (``NotFound``), never ignored."""
+    from operating import record_lists as rl
     started = time.perf_counter()
-    if view not in LIST_VIEWS:
+    spec = rl.specs().get(view)
+    if spec is None or len(q) > rl.MAX_SEARCH:
         raise NotFound(view)
-    if hold not in ("", "yes", "no") or len(status) > 80 or len(q) > 80:
+    sort, direction = sort or spec.sort, direction or spec.direction
+    if spec.column(sort) is None or direction not in ("asc", "desc"):
         raise NotFound(view)
-    rows, ids = read(backend, reader, [
-        {"name": "list_batches", "params": {"status": status, "hold": hold, "q": q.strip(),
-                                            "limit": limit, "offset": offset}},
-        {"name": "list_batches_count", "params": {"status": status, "hold": hold,
-                                                    "q": q.strip()}},
-        {"name": "list_batch_statuses"}, {"name": "views_as_of"}], ids=True)
-    total = int(rows["list_batches_count"][0]["n"])
-    body = [[_t(b, "batch_code", _row_url(b, ids)), _t(b, "product"), _t(b, "lot_number"),
-             _t(b, "status"), _t(b, "quality_status"), _d(b, "scheduled_date"),
-             _n(b, "produced_quantity")] for b in rows["list_batches"]]
-    statuses = [m.RecordFilterOption(value=str(r["status"]), label=str(r["status"]),
-                                     count=int(r["n"])) for r in rows["list_batch_statuses"]]
-    built = _built(rows["views_as_of"]).get("batches")
+    bound: dict[str, Any] = {}
+    for name, value in (filters or {}).items():
+        f = spec.filter(name)
+        if f is None or len(value) > rl.MAX_FILTER_VALUE or (
+                f.kind == "boolean" and value not in ("", "yes", "no")):
+            raise NotFound(view)
+        bound[rl.param(name)] = value
+    for f in spec.filters:
+        bound.setdefault(rl.param(f.name), "")
+    if spec.search:
+        bound["q"] = q.strip()
+    reads: list[dict[str, Any]] = [
+        {"name": rl.list_name(view, sort, direction),
+         "params": {**bound, "limit": limit, "offset": offset}},
+        {"name": f"list__{view}__count", "params": bound}, {"name": "views_as_of"}]
+    choices = with_filters and any(f.kind == "choice" for f in spec.filters)
+    if choices:
+        reads.append({"name": f"list__{view}__choices"})
+    rows, ids = read(backend, reader, reads, ids=True)
+    total = int(rows[f"list__{view}__count"][0]["n"])
+    first = spec.columns[0].name
+    body = []
+    for r in rows[rl.list_name(view, sort, direction)]:
+        href = _row_url(r, ids)
+        body.append([_cell(c, r, href if c.name == first else None) for c in spec.columns])
+    offered: list[m.RecordFilter] = []
+    if with_filters:
+        by_col: dict[str, list[m.RecordFilterOption]] = {}
+        for r in rows.get(f"list__{view}__choices", []):
+            by_col.setdefault(str(r["col"]), []).append(m.RecordFilterOption(
+                value=str(r["value"]), label=str(r["value"]), count=int(r["n"])))
+        for f in spec.filters:
+            options = ([m.RecordFilterOption(value="", label="All")] + by_col.get(f.name, [])
+                       if f.kind == "choice" else [
+                m.RecordFilterOption(value="", label="All"),
+                m.RecordFilterOption(value="yes", label="Yes"),
+                m.RecordFilterOption(value="no", label="No")])
+            offered.append(m.RecordFilter(key=f.name, label=f.label, options=options))
+    built = _built(rows["views_as_of"]).get(view)
     after = offset + len(body)
     return m.RecordList(
-        view="production", title="Production batches",
-        table=m.BizTable(key="batches", title="Batches", columns=[
-            "Batch", "Product", "Lot", "Status", "QC", "Scheduled", "Produced"], rows=body,
-            total=total, note=None if body else "No batch matches these filters."),
-        filters=[m.RecordFilter(key="status", label="Status", options=[
-                     m.RecordFilterOption(value="", label="All")] + statuses),
-                 m.RecordFilter(key="hold", label="QC hold", options=[
-                     m.RecordFilterOption(value="", label="All"),
-                     m.RecordFilterOption(value="yes", label="On hold"),
-                     m.RecordFilterOption(value="no", label="Not on hold")])],
-        total=total, offset=offset, more=after < total, next_offset=after, as_of=_iso(built))
+        view=view, title=spec.title,
+        table=m.BizTable(key=view, title=spec.title, columns=[c.label for c in spec.columns],
+                         rows=body, total=total,
+                         note=None if body else "Nothing on record matches these filters."),
+        column_keys=[c.name for c in spec.columns], sort=sort, direction=direction,
+        searchable=bool(spec.search), filters=offered, total=total, offset=offset,
+        more=after < total, next_offset=after, as_of=_iso(built))
 
 
 def _qty(row: Mapping[str, Any], col: str, unit: Optional[str] = None) -> m.BizCell:
@@ -1391,7 +1695,12 @@ def batch(backend: Any, reader: Any, handle: str) -> m.BizPage:
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
     if h.get("on_hold") is True:
-        facts.insert(0, m.BizFact(label="Hold", value=m.BizCell(text="QC holds this batch")))
+        # a cancelled batch is on no hold (the lists and the measures leave it out); its QC
+        # status line still says what was recorded
+        cancelled = str(h.get("status") or "").lower() == "cancelled"
+        facts.insert(0, m.BizFact(label="Hold", value=m.BizCell(
+            text="Cancelled; QC status still reads on hold" if cancelled
+            else "QC holds this batch")))
     qc = [(label, col) for label, col in (
         ("pH after 24 h", "qc_ph_24h"), ("Viscosity after 24 h", "qc_viscosity_24h"),
         ("Plate count / yeast and mould", "qc_tpc_yeast")) if h.get(col) is not None
@@ -1406,10 +1715,134 @@ def batch(backend: Any, reader: Any, handle: str) -> m.BizPage:
         took_ms=int((time.perf_counter() - started) * 1000))
 
 
+def supplier_invoice(backend: Any, reader: Any, handle: str) -> m.BizPage:
+    """A supplier invoice's page (a Sage payables document or a BC purchase invoice): who
+    billed it, its number, type and dates, what it was for and what is still owed."""
+    started = time.perf_counter()
+    if not handle:
+        raise NotFound("supplier_invoice")
+    rows, _ = read(backend, reader, [{"name": "supplier_invoice", "params": {"handle": handle}},
+                                     {"name": "views_as_of"}])
+    if not rows["supplier_invoice"]:
+        raise NotFound("supplier_invoice")
+    h = rows["supplier_invoice"][0]
+    party = _t(h, "supplier", account_url("supplier", h["supplier_handle"])
+               if h.get("supplier_handle") else None)
+    facts: list[m.BizFact] = [m.BizFact(label="Supplier", value=party)]
+    for label, col, cell in (
+            ("Supplier code", "supplier_code", _t), ("Document", "document_number", _t),
+            ("Type", "document_type", _t), ("Dated", "document_date", _d),
+            ("Due", "due_date", _d), ("Amount", "original_amount", _m),
+            ("Still owed", "amount_due", _m),
+            ("Purchase order", "po_number", lambda r, c: _t(r, c, find_url(r.get(c)))),
+            ("For", "description", _t), ("Supplier group", "vendor_group", _t),
+            ("Kind of payee", "payee_class", _t)):
+        if h.get(col) is not None or _hidden(h, col):
+            facts.append(m.BizFact(label=label, value=cell(h, col)))
+    if h.get("paid") is not None:
+        facts.append(m.BizFact(label="Paid", value=m.BizCell(text="Yes" if h["paid"] else "No")))
+    if h.get("pilot") is True:
+        facts.append(m.BizFact(label="Source", value=m.BizCell(
+            text="A Business Central pilot record, not the system of record")))
+    built = _built(rows["views_as_of"])
+    return m.BizPage(
+        kind="supplier_invoice", title=_numbered("Invoice", h.get("document_number")),
+        subtitle="Supplier invoice", facts=facts, sections=[],
+        sources=_sources([], built, ("supplier_invoices",)), as_of=None,
+        took_ms=int((time.perf_counter() - started) * 1000))
+
+
 def _numbered(word: str, number: Any) -> str:
     """'PO 106093'; a number that already says it ('PO-1') is said once."""
     text = str(number or "").strip()
     return text if text.upper().startswith(word) else f"{word} {text}".strip()
 
 __all__ = ["SWITCH", "NotFound", "PageDoorUnavailable", "account", "account_url", "batch",
-           "codes_text", "item", "late_po", "late_pos", "record_list", "on", "order", "read", "search"]
+           "codes_text", "item", "late_po", "late_pos", "record_list", "record_views", "on", "order", "read", "search",
+           "supplier_invoice"]
+
+
+# ---- a number several records hold: the record page's choices ------------------------
+# A bare PO or order number is no one record (numbers repeat across systems and
+# counterparties: two suppliers' orders share a PO100xxx): the page lists the business
+# records it names, one per business row (copies of one order are one row), by number and
+# counterparty, each read through the reader's door (a row they may not read is left out,
+# never counted). At most CHOICES_MOST records are looked at.
+CHOICES_MOST = 12
+_SYSTEM_WORDS = {"bc": "BC", "portal": "Portal", "filemaker": "FileMaker", "sage": "Sage"}
+# a business row's number and counterparty columns, by page kind (the door's own reads)
+_CHOICE_COLS = {"purchase_order": ("po_number", "supplier"),
+                "sales_order": ("order_number", "customer")}
+
+
+def _choice_label(row: Mapping[str, Any], number: str, party: str) -> str:
+    bits = [str(row[c]) for c in (number, party) if row.get(c) is not None]
+    systems = ", ".join(_SYSTEM_WORDS.get(s, s) for s in
+                        str(row.get("source_systems") or "").split(",") if s)
+    tail = ", ".join(x for x in (systems, str(row.get("status") or "")) if x)
+    return " · ".join(bits) + (f" ({tail})" if tail else "")
+
+
+def choices(backend: Any, reader: Any, object_ids: Sequence[str]) -> list[m.ObjectRef]:
+    """The records ``object_ids`` name that ``reader`` may open, one per business row."""
+    out: list[m.ObjectRef] = []
+    seen: set[str] = set()
+    plain_ids: list[str] = []
+    for oid in sorted(object_ids)[:CHOICES_MOST]:
+        otype = oid.split(":", 1)[0]
+        kind = DOOR_KINDS.get(otype)
+        if kind not in _CHOICE_COLS or not on(kind):
+            plain_ids.append(oid)
+            continue
+        try:
+            handle = resolve(backend, reader, kind, oid)
+        except NotFound:
+            plain_ids.append(oid)   # no business row: the record's own page
+            continue
+        if handle in seen:
+            continue   # another copy of the same order
+        seen.add(handle)
+        rows, _ = read(backend, reader, [{"name": kind, "params": {"handle": handle}}])
+        if not rows.get(kind):
+            continue   # a row this reader may not read: left out, never counted
+        out.append(m.ObjectRef(object_id=oid, type=otype,
+                               label=_choice_label(rows[kind][0], *_CHOICE_COLS[kind])[:200],
+                               open_url=account_url(kind, handle)))
+    if plain_ids:
+        worker = getattr(backend, "access_worker", None) or backend.reads
+        from .page_core import CORE_PRIORITY
+        from .serving import plain
+        try:
+            words = worker.run(reader, lambda v: v.access.object_words(plain_ids),
+                               timeout=_timeout(worker, reader), priority=CORE_PRIORITY)
+        except TimeoutError:
+            raise PageDoorUnavailable("timeout") from None
+        for oid in plain_ids:
+            got = (words or {}).get(oid)
+            if got is None:
+                continue   # not one this reader may read
+            otype = oid.split(":", 1)[0]
+            out.append(m.ObjectRef(object_id=oid, type=otype,
+                                   label=str(plain(got.get("display")) or otype)[:200],
+                                   open_url=object_url(otype, oid)))
+    return out
+
+
+def choices_page(backend: Any, reader: Any, object_type: str, ref: str,
+                 object_ids: Sequence[str]) -> m.ObjectPage:
+    """The record page of a reference several records hold: its choices (``choices``);
+    ``RecordNotFound`` when this reader may open none of them."""
+    from .errors import RecordNotFound
+    try:
+        found = choices(backend, reader, object_ids)
+    except PageDoorUnavailable:
+        raise TimeoutError("workbench_busy") from None   # as a read worker's: try again
+    if not found:
+        raise RecordNotFound()
+    what, n = found[0].type, len(found)
+    text = (f"{n} records have the number {ref}: numbers repeat across systems and "
+            "counterparties. Pick the one you mean." if n > 1 else "")
+    return m.ObjectPage(object_id=ref, type=what, label=ref, summary=text,
+                        status=m.ObjectStatus(state="choose", text=text), choices=found,
+                        freshness=m.Freshness(),
+                        complete=True)

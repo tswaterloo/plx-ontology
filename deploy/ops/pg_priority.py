@@ -41,7 +41,7 @@ from typing import Callable, Iterable, Optional
 # (its PGAPPNAME=%N); instance units (``name@x``) count as their template.
 BACKGROUND_UNITS = frozenset({
     "plx-delta", "plx-delta-compact", "plx-ontology-pg-follow", "plx-link-marks",
-    "plx-business-views", "plx-business-comms-recheck", "plx-comms-findings",
+    "plx-business-views", "plx-comm-text", "plx-assist-readings", "plx-comms-indexes", "plx-daily-changes",
     "plx-proactive", "plx-proactive-inc", "plx-proactive-whole", "plx-proactive-nightly",
     "plx-search-follow", "plx-search-generation", "plx-search-dedup", "plx-rag-backfill",
     "plx-answer-bank", "plx-people-excluded", "plx-own-issued", "plx-bare-mentions",

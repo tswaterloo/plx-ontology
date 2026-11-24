@@ -26,7 +26,7 @@ from .autopilot_events import (
     _teams_events,
     approvals_cleared,
 )
-from .autopilot_handlers import Ctx, HANDLERS, OverlayCtx, _held, identified
+from .autopilot_handlers import CLOSED, Ctx, HANDLERS, OverlayCtx, _held, identified
 
 
 def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: Any, *,
@@ -87,7 +87,8 @@ EVQ_TOPIC = "autopilot"
 # other records; events about one entity keep their order whatever their priority.
 EVENT_PRIORITY = {"approval.requested": 10, "message.received": 20, "task.assigned": 20,
                   "question.asked": 20, "qc.result": 30, "meeting.ended": 30,
-                  "record.due": 40, "record.changed": 40, "assistant.look": 50}
+                  "record.due": 40, "record.changed": 40, "message.waiting": 45,
+                  "assistant.look": 50}
 CUSTOMER_MESSAGE_PRIORITY = 10
 DEFERRED_RETRY_S = 300.0
 
@@ -915,6 +916,17 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                     r = _read(st, [oid], ("quality_status",)).get(oid)
                     if r and _v(r, "quality_status") == "Released":
                         reason = "batch_released"
+                    else:
+                        # every order it says it holds up has since closed (11-23 audit:
+                        # an item still named an order closed a year before): no one
+                        # decides anything for it; one unreadable order keeps it open
+                        ids = [a.get("object_id") for a in prepared.get("affected") or ()
+                               if a.get("object_id")]
+                        got = _read(st, ids, ("status",)) if ids else {}
+                        if ids and not prepared.get("requests_not_followed") \
+                                and all(i in got and CLOSED.search(_v(got[i], "status"))
+                                       for i in ids):
+                            reason = "orders_closed"
         except (sqlite3.Error, ValueError) as exc:
             # the item stays open; the failure is counted, never silent
             errors[f"{rule}:{happened.get('channel') or '-'}"] += 1

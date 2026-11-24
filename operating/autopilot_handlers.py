@@ -1105,9 +1105,14 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     orders: list[str] = []
     for no in re.findall(r"[A-Z]{0,4}-?\d{3,12}", f.get("order_list", "")):
         orders += ctx.find("SalesOrder", "order_number", no)
-    for ao in ctx.linked(oid, ("Batch.requested_by",))[:5]:
+    requests = ctx.linked(oid, ("Batch.requested_by",))
+    for ao in requests[:5]:
         orders += [o for o in ctx.linked(ao) if o.startswith("SalesOrder:")]
-    orders = list(dict.fromkeys(orders))[:10]
+    # every order the lot holds up is kept (no cut); the one cut left (only the first 5
+    # requesting records are followed) is counted in ``cut`` and an item with a cut is
+    # never closed by "every order closed" (it did not see all of them)
+    cut = max(0, len(requests) - 5)
+    orders = list(dict.fromkeys(orders))
     product = next(iter(ctx.linked(oid, ("Batch.makes_bulk",))), None)
     prow = ctx.read([product], ("code", "name")).get(product) if product else None
     affected, drafts = [], []
@@ -1155,7 +1160,8 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             # (``autopilot_queue.subject_of``), whichever batch record or run raised it
             **({"subject": lot_subject(lot)} if lot_subject(lot) else {}),
             "results": {k: v for k, v in f.items() if k.startswith("qc_")},
-            "affected": affected, "customer_notices": drafts[:5], "gaps": []}
+            "affected": affected, "customer_notices": drafts[:5], "gaps": [],
+            **({"requests_not_followed": cut} if cut else {})}
 
 
 def _attendee_customer(ctx: Ctx, event: Mapping[str, Any], address: str) -> str:
@@ -1238,6 +1244,14 @@ def _work(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
     return run
 
 
+def _waits(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
+    def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+        from . import autopilot_waits as aw
+        return getattr(aw, name)(ctx, event)
+    run.__name__ = name
+    return run
+
+
 def _message_work(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
     def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         from . import autopilot_message_work as mw
@@ -1250,6 +1264,14 @@ def _receivables(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]
     def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         from . import autopilot_receivables as ar
         return getattr(ar, name)(ctx, event)
+    run.__name__ = name
+    return run
+
+
+def _qc_entry(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
+    def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+        from . import autopilot_qc_entry as qc
+        return getattr(qc, name)(ctx, event)
     run.__name__ = name
     return run
 
@@ -1285,6 +1307,7 @@ HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "rd_status_update": _work("h_rd_status_update"),
     "invoice_entry": _receivables("h_invoice_entry"),
     "shipment_posting": _receivables("h_shipment_posting"),
+    "qc_entry": _qc_entry("h_qc_entry"),
     "cash_application": _receivables("h_cash_application"),
     "ap_invoice_entry": _payables("h_ap_invoice_entry"),
     "collection_draft": _collections("h_collection_draft"),
@@ -1293,7 +1316,7 @@ HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "task_prepare": h_task, "ledger_answer": h_ledger, "qc_impact": h_qc,
     "question_prepare": h_question,
     "meeting_followup": h_meeting, "job": h_job,
-    "message_work": _message_work("h_message_work")}
+    "message_work": _message_work("h_message_work"), "chase": _waits("h_chase")}
 
 
 def meeting_cleared(event: Mapping[str, Any], people: Any) -> Optional[str]:

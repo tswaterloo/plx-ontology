@@ -19,6 +19,8 @@ from operating.pg.business_views import (
     aging_bucket, binding_rank, cents, fill, fill_category, handle_col, money, money_of, name_linked,
     party_codes, party_handle, pick, pilot_binding, to_currency, to_date, to_decimal,
     unique_things, view)
+from operating.pg import business_views as _bv
+from operating.pg import party_keys, payee_class
 
 
 # --------------------------------------------------------------------------- products
@@ -28,10 +30,61 @@ PRODUCT_PROPS = ("code", "erp_code", "name", "product_type", "bc_item_type", "it
                  "bc_unit_price", "quantity_on_hand")
 
 
+def product_clusters(rd: Reader, recs: Mapping[str, Rec]) -> list[Thing]:
+    """The products as real things: identity-linked copies are one (``Reader.clusters``),
+    and so are copies a LEAD-tier identity link joins when both state the same item code
+    AND the same name (11-23 live: 4,898 item codes stood on 10,438 rows; 5,391 of the 6,031
+    same-code, same-name pairs are lead-linked). Two system-of-record (Sage) items are never
+    joined, a never-authority lineage never joins."""
+    things = rd.clusters("Product", recs)
+    which = {r.object_id: i for i, t in enumerate(things) for r in t.members}
+    parent = list(range(len(things)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    sage = [any(_bv.system_of(r.binding) == _bv.PARTY_MERGE["Customer"].record_system
+                for r in t.members) for t in things]
+    marks: dict[int, set[str]] = defaultdict(set)
+    never = set(_bv.NEVER_AUTHORITY_LINEAGES)
+    name = {oid: _bv._norm_name(r.cell("name").value if r.cell("name") else None)
+            for oid, r in recs.items()}
+    code = {oid: _bv._first_text(r, ("code", "erp_code")) for oid, r in recs.items()}
+    for a, b, mk, _x, _tier in sorted(rd.link_rows(rd.identity_types("Product"),
+                                                   (_bv.LEAD_TIER,))):
+        if a not in recs or b not in recs or recs[a].lineages & never or recs[b].lineages & never:
+            continue
+        if not code[a] or code[a] != code[b] or not name[a] or name[a] != name[b]:
+            continue
+        ra, rb = find(which[a]), find(which[b])
+        if ra == rb or (sage[ra] and sage[rb]):
+            continue
+        parent[ra] = rb
+        sage[rb] = sage[rb] or sage[ra]
+        marks[rb] |= marks.pop(ra, set()) | {mk}
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in range(len(things)):
+        groups[find(i)].append(i)
+    out = []
+    for root, idx in groups.items():
+        if len(idx) == 1:
+            out.append(things[idx[0]])
+            continue
+        members = sorted((r for i in idx for r in things[i].members),
+                         key=lambda r: (binding_rank(r.binding), r.object_id))
+        out.append(Thing(members, set().union(*(things[i].link_marks for i in idx)) | marks[root],
+                         set().union(*(things[i].merged_by for i in idx))
+                         | {"same_code_and_name"}))
+    out.sort(key=lambda t: t.rep.object_id)
+    return out
+
+
 def product_things(rd: Reader) -> tuple[dict[str, Rec], dict[str, Thing]]:
     def make() -> tuple[dict[str, Rec], dict[str, Thing]]:
         recs = rd.records("Product", PRODUCT_PROPS)
-        return recs, {r.object_id: t for t in rd.clusters("Product", recs) for r in t.members}
+        return recs, {r.object_id: t for t in product_clusters(rd, recs) for r in t.members}
     return rd.memo("products", make)
 
 
@@ -75,8 +128,8 @@ def _on_hand(row: Row, thing: Thing) -> bool:
        ("on_hand_unit", "text", "unit of on_hand")],
       reads=("Product",), memos=("products",))
 def _products(rd: Reader, as_of: dt.date) -> Iterator[Row]:
-    recs, _things = product_things(rd)
-    for thing in rd.clusters("Product", recs):
+    _recs, things = product_things(rd)
+    for thing in unique_things(things):
         row = _product_row(thing)
         if fill(row, thing, "uom", "uom") is None:
             fill(row, thing, "uom", "bc_base_uom")
@@ -176,8 +229,8 @@ def _batches(rd: Reader, as_of: dt.date) -> Iterator[Row]:
        ("as_of", "date", "the day the view was built")],
       reads=("Product",), memos=("products",))
 def _stock(rd: Reader, as_of: dt.date) -> Iterator[Row]:
-    recs, _things = product_things(rd)
-    for thing in rd.clusters("Product", recs):
+    _recs, things = product_things(rd)
+    for thing in unique_things(things):
         row = _product_row(thing)
         if not _on_hand(row, thing):
             continue
@@ -283,9 +336,16 @@ SUPPLIER_PROPS = ("name", "code", "currency", "status", "bc_blocked", "incoterms
        ("supplier_type", "text", "supplier type"), ("incoterms", "text", "stated incoterms"),
        ("lead_time_days", "integer", "stated lead time in days"),
        ("email", "text", "rep email, else the BC email"),
-       ("phone", "text", "BC phone number"), ("website", "text", "stated website")],
+       ("phone", "text", "BC phone number"), ("website", "text", "stated website"),
+       ("party_handles", "list", party_keys.HANDLES_DOC.format(kind="supplier"))],
       reads=("Supplier",), memos=("suppliers",))
 def _suppliers(rd: Reader, as_of: dt.date) -> Iterator[Row]:
+    rows = list(_supplier_rows(rd))
+    party_keys.fill(rows)
+    yield from rows
+
+
+def _supplier_rows(rd: Reader) -> Iterator[Row]:
     _recs, things = supplier_things(rd)
     for thing in unique_things(things):
         row = Row(thing)
@@ -451,6 +511,30 @@ def _purchase_model(rd: Reader, as_of: dt.date) -> dict[str, Any]:
     return {"orders": out}
 
 
+def _stated_order_date(row: Row, thing: Thing) -> None:
+    """``order_date``: the EARLIEST day any copy states (a plausible day: a blank-date sentinel
+    is none). A copy made by an import or a posting is never earlier than the order it copies
+    (the Portal's migration day on a FileMaker order, a BC posting a few days after the Portal
+    order), so the earliest is the order's own day; no share or threshold is read from the
+    data. The cell it is read from is the row's citation for the column (its handle and
+    system in the row's lineage)."""
+    from operating.source_defaults import placeholder_day
+    best = None
+    for rec in thing.members:
+        cell = rec.cell("order_date")
+        if cell is None or cell.value in (None, ""):
+            continue
+        day = to_date(cell.value)
+        if day is None or placeholder_day(day):
+            continue
+        if best is None or day < best[0]:
+            best = (day, cell, rec)
+    if best is None:
+        row.read(None, "order_date", None, rec=None)
+    else:
+        row.read(best[1], "order_date", best[0], rec=best[2])
+
+
 RECEIPT_FIELDS = ("receipt_state", "received_quantity")
 
 
@@ -558,7 +642,15 @@ def receipt_note(found: Sequence[Any]) -> tuple[str | None, "Sources"]:
       "the supplier's promised date never replaces the requested-by date, it only makes an "
       "order at_risk; an order with no requested-by date is listed apart (verdict unknown, "
       "verdict_reason no_requested_date), never counted late.",
-      [("po_number", "text", "PO number"),
+      [("po_number", "text", "PO number, NOT unique: the Portal's and BC's number series "
+        "overlap, so one number can be 2 suppliers' different orders (a BC order and a "
+        "Portal/FileMaker order of another supplier; hundreds do). One order is its "
+        "number with its supplier: a lookup by number reads supplier too, and a copy or row "
+        "under another supplier is another order, never this one's copy"),
+       ("supplier_po_number", "text", "the number on the PO the supplier received and quotes "
+        "back: FileMaker's PO number (PO5597, which supplier mail writes PO#5597 or 5597) "
+        "when the order has one, else Sage's; po_number is another copy's (a Portal or BC "
+        "number) for many orders. Find a supplier's order mail by it, with the supplier"),
        ("supplier", "text", "supplier name (the linked supplier)"),
        ("vendor_number", "text", "vendor number on the PO"),
        ("order_date", "date", "order date"),
@@ -683,13 +775,16 @@ def _po_row(po: Purchase, things: Mapping[str, Thing], ordered_from: Mapping[str
     for prop in ("po_number", "sage_po_number", "fm_po_number"):
         if fill(row, thing, "po_number", prop) is not None:
             break
+    for prop in ("fm_po_number", "sage_po_number"):
+        if fill(row, thing, "supplier_po_number", prop) is not None:
+            break
     party_handle(row, "supplier", name_linked(
         row, [e for r in thing.members for e in ordered_from.get(r.object_id, ())],
         things, "supplier"))
     if row.values.get("supplier") is None:
         fill(row, thing, "supplier", "vendor_name")
     fill(row, thing, "vendor_number", "vendor_number")
-    fill(row, thing, "order_date", "order_date", to_date)
+    _stated_order_date(row, thing)
     read = po.read
     need = read.need
     row.values["requested_date"] = (need.hi or need.lo) if need is not None else None
@@ -741,7 +836,8 @@ def _po_row(po: Purchase, things: Mapping[str, Thing], ordered_from: Mapping[str
 
 @view("purchase_order_lines", "The lines of every purchase order once (the lines of the one "
       "copy that holds them), with the PO's number, supplier, status and verdict.",
-      [("po_number", "text", "PO number"), ("supplier", "text", "supplier name"),
+      [("po_number", "text", "PO number, not unique across suppliers (purchase_orders."
+        "po_number): one PO's lines are its po_handle's"), ("supplier", "text", "supplier name"),
        ("po_status", "text", "the PO's status (purchase_orders.status)"),
        ("verdict", "text", "the PO's verdict (purchase_orders.verdict)"),
        ("item_code", "text", "item code"), ("description", "text", "line description"),
@@ -794,6 +890,7 @@ def _purchase_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
 
 
 AP_OPEN = "RelSageApOpenDocument"
+GL_CHART = ("RelSageGlAccount", "RelSageGlAcgrp")   # the payee class's records
 VENDOR_SUPPLIER_LINKS = ("RelSageApVendor.portal_supplier_by_sage_id",
                          "RelSageApVendor.portal_supplier", "RelSageApVendor.bc_vendor")
 # Sage AP's due date is ``dateinvcdu`` (APOBL; AR's ARODOC field is ``datedue``, which AP
@@ -803,15 +900,36 @@ AP_PROPS = ("idinvc", "idvend", "txttrxtype", "dateinvc", "dateinvcdu", "datedue
 SAGE_AP_DOC = {"1": "invoice", "2": "debit note", "3": "credit note", "4": "interest",
                "5": "unapplied cash", "10": "prepayment", "11": "payment"}
 AP_DOC_TYPE_DOC = doc_type_doc(SAGE_AP_DOC, "payments, prepayments, unapplied cash and "
-                               "credit notes") + "; a BC pilot purchase invoice is an invoice"
+                               "credit notes") + "; a Business Central purchase invoice is an invoice"
 PURCHASE_INVOICE_PROPS = ("bc_number", "vendor_invoice_number", "order_number",
                           "vendor_number", "invoice_date", "due_date", "status", "currency",
                           "subtotal", "total_amount", "remaining_amount")
 
 
 def _ap_vendors(rd: Reader) -> dict[str, Thing]:
-    recs = rd.records("RelSageApVendor", ("vendname", "vendorid", "shortname", "idgrp"))
+    recs = rd.records("RelSageApVendor", ("vendname", "vendorid", "shortname", "idgrp",
+                                          "glaccnt"))
     return {oid: Thing([rec]) for oid, rec in recs.items()}
+
+
+def _gl_chart(rd: Reader) -> dict[str, tuple]:
+    return rd.memo("gl_chart", lambda: payee_class.chart(
+        rd.records("RelSageGlAccount", payee_class.ACCOUNT_PROPS),
+        rd.records("RelSageGlAcgrp", payee_class.GROUP_PROPS)))
+
+
+def _payee(rd: Reader, row: Row, vendor: Thing | None) -> None:
+    """``payee_class`` (``payee_class.classify``): the vendor's default account and its
+    group are read into that column."""
+    if vendor is None:
+        row.values["payee_class"] = "unknown"
+        return
+    cls, account, group = payee_class.classify(vendor.rep, _gl_chart(rd))
+    row.values["payee_class"] = cls
+    row.used(vendor.rep, vendor.rep.cell("glaccnt"))
+    for rec in (account, group):
+        if rec is not None:
+            row.read_record(rec.object_id, "*", column="payee_class")
 
 
 def _ap_row(rd: Reader, rec: Rec, vendors: Mapping[str, Thing],
@@ -837,6 +955,7 @@ def _ap_row(rd: Reader, rec: Rec, vendors: Mapping[str, Thing],
     vendor = name_linked(row, owner.get(rec.object_id) or [], vendors, "supplier", "vendname")
     if vendor is not None:
         fill(row, vendor, "vendor_group", "idgrp")
+    _payee(rd, row, vendor)
     suppliers, things, of_vendor = vendor_suppliers(rd)
     party_handle(row, "supplier", one_party(
         row, of_vendor.get(vendor.rep.object_id, []) if vendor is not None else [], things))
@@ -876,14 +995,13 @@ VENDOR_GROUP_DOC = ("the Sage AP vendor group of the document's vendor (idgrp: D
                     "CONTU). It is how Sage books and pays the vendor, NOT a trade flag: trade "
                     "suppliers and non-trade payees (card issuers, tax bodies, utilities, "
                     "individuals' expenses) share DEF and USD, PAYACH pays by ACH, PAY is "
-                    "payroll. Sage states no trade / non-trade split: separate them by supplier "
-                    "name, never by group alone")
+                    "payroll. The trade / non-trade split is payee_class")
 
 
 @view("supplier_invoices", "Every supplier document once: Sage AP documents of every kind "
       "(invoices, debit and credit notes, interest, prepayments, payments; paid or not: "
       "document_type tells them apart, an invoice count is document_type = 'invoice') and "
-      "BC's pilot purchase invoices (pilot = true, left out unless asked for). Amounts in "
+      "Business Central's purchase invoices (pilot = true). Amounts in "
       "the document's own currency.",
       [("supplier", "text", "supplier name"), ("supplier_code", "text", "vendor code"),
        ("document_number", "text", "the supplier's document number"),
@@ -895,13 +1013,14 @@ VENDOR_GROUP_DOC = ("the Sage AP vendor group of the document's vendor (idgrp: D
        ("po_number", "text", "the PO it bills, when stated"),
        ("description", "text", "Sage document description (descinvc)"),
        ("vendor_group", "text", VENDOR_GROUP_DOC),
+       ("payee_class", "text", payee_class.DOC + "; a Business Central invoice: unknown"),
        ("pilot", "boolean", PILOT_DOC),
        handle_col("supplier", "a Sage document's vendor (its RelSageApOpenDocument.vendor link) "
                   "and that vendor's settled link to a Portal or BC supplier "
                   f"({', '.join(VENDOR_SUPPLIER_LINKS)}); a BC invoice's "
                   "PurchaseInvoice.billed_by link")],
-      reads=(AP_OPEN, "RelSageApVendor", "PurchaseInvoice", "Supplier"),
-      memos=("suppliers", "vendor_suppliers"))
+      reads=(AP_OPEN, "RelSageApVendor", "PurchaseInvoice", "Supplier", *GL_CHART),
+      memos=("suppliers", "vendor_suppliers", "gl_chart"))
 def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     docs = rd.records(AP_OPEN, AP_PROPS)
     vendors = _ap_vendors(rd)
@@ -935,12 +1054,14 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         fill(row, thing, "po_number", "order_number")
         row.values["description"] = None
         row.values["pilot"] = all(pilot_binding(r.binding) for r in thing.members)
+        row.values["payee_class"] = "unknown"
         yield row
 
 
 @view("supplier_balances", "What PLX owes suppliers now: every open (unpaid) Sage AP "
       "document with its remaining balance, aged by due date, in its own currency "
-      "(prepayments and credit notes negative). BC aged payables are pilot data, not used.",
+      "(prepayments and credit notes negative). Business Central's aged payables are not "
+      "in this view.",
       [("supplier", "text", "supplier name"), ("supplier_code", "text", "vendor code"),
        ("document_number", "text", "the supplier's document number"),
        ("document_type", "text", AP_DOC_TYPE_DOC),
@@ -957,13 +1078,14 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
        ("po_number", "text", "the PO it bills, when stated"),
        ("description", "text", "Sage document description (descinvc)"),
        ("vendor_group", "text", VENDOR_GROUP_DOC),
+       ("payee_class", "text", payee_class.DOC),
        ("as_of", "date", "the day the aging was computed"),
        handle_col("supplier", "a Sage document's vendor (its RelSageApOpenDocument.vendor link) "
                   "and that vendor's settled link to a Portal or BC supplier "
                   f"({', '.join(VENDOR_SUPPLIER_LINKS)}); a BC invoice's "
                   "PurchaseInvoice.billed_by link")],
-      reads=(AP_OPEN, "RelSageApVendor", "Supplier"),
-      memos=("suppliers", "vendor_suppliers"), covers=False)   # the open documents only
+      reads=(AP_OPEN, "RelSageApVendor", "Supplier", *GL_CHART),
+      memos=("suppliers", "vendor_suppliers", "gl_chart"), covers=False)   # the open documents only
 def _supplier_balances(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     docs = rd.records(AP_OPEN, AP_PROPS)
     vendors = _ap_vendors(rd)

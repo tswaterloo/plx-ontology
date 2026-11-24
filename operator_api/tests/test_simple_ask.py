@@ -1,18 +1,19 @@
-"""The simple Ask (``operator_api.simple_ask``): its figure gate binds a stated figure only
-to what a returned plx.sql/plx.search result holds (or a sum, difference, share or column
-total of such values), marks the rest "(unverified)" in place and never blanks the reply;
-its session runs on the two-tool agent with the dictionary in its system prompt and the
-conversation in its task."""
+"""The simple Ask (``operator_api.simple_ask``): the host prints the figures the answer takes
+by reference (``ask_refs``), sends an answer whose references do not resolve or whose typed
+figures no result holds back once, says what is still untraced in one line and never blanks
+the reply; its session runs on the two-tool agent with the views' index in its system prompt
+and the conversation in its task."""
 
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
 
-from operator_api import ask_gate as ag
+from operator_api import ask_refs
 from operator_api import simple_ask as sa
 from operating.agent_session import AgentRun
 
@@ -29,6 +30,29 @@ OCT = sql([["CAD", "703058.44", "120"], ["USD", "701688.25", "98"]])
 SEARCH = {"type": "tool_call", "name": "plx.search", "is_error": False, "result": {
     "hits": [{"citation": "original://m/1", "snippet": {
         "untrusted_text": "PO 4500123 for 1,250.00 CAD"}}]}}
+
+
+class AnswerFormTest(unittest.TestCase):
+    """The answer bullet of the system prompt carries the form rules every answer must follow
+    (ASK-FORM 11-23, Ask spec 14.1 P4); the prompt is the one place they are said."""
+
+    def test_form_rules_are_in_the_prompt_once(self):
+        answer = [line for line in sa.system_prompt().splitlines() if line.startswith("- The answer:")]
+        self.assertEqual(1, len(answer))
+        line = " ".join(answer[0].split())
+        for rule in ("limit on the whole reply",            # a length or point count the person sets
+                     "whole set's count first",             # whole set before the part
+                     "one ranking or table per currency",
+                     "ranked over that currency's whole set",
+                     "One recommendation where the records give a precedent",
+                     "do not repeat its content in the chat",   # an attached file
+                     "never an opening about the reply itself",
+                     # the headline is as strong as the records give it (Fable 16.4 F-R4)
+                     "in the strength the records give it"):
+            self.assertIn(rule, line)
+        self.assertNotIn("150 words", line)
+        self.assertEqual(1, sa.system_prompt().count("- The answer:"))
+        self.assertLess(len(sa.system_prompt()), 31000)   # the prompt's budget (spec 7)
 
 
 class ChartTest(unittest.TestCase):
@@ -73,450 +97,13 @@ class ChartTest(unittest.TestCase):
                                    '"sql://0123456789abcdef0123", "x": "currency", '
                                    '"y": ["total"]}\n```', [failed])[1], [])
 
-    def test_points_are_capped_and_text_cells_are_no_number(self):
-        rows = [[f"c{i}", str(i), "x"] for i in range(sa.MAX_CHART_POINTS + 10)]
+    def test_every_point_is_drawn_and_text_cells_are_no_number(self):
+        rows = [[f"c{i}", str(i), "x"] for i in range(1210)]
         _, drawn = sa.charts('```chart\n{"type": "line", "result": '
                              '"sql://0123456789abcdef0123", "x": "currency", '
                              '"y": ["total", "n"]}\n```', [sql(rows)])
-        self.assertEqual(len(drawn[0]["labels"]), sa.MAX_CHART_POINTS)
+        self.assertEqual(len(drawn[0]["labels"]), 1210)
         self.assertEqual(set(drawn[0]["series"][1]["values"]), {None})
-
-
-class GateTest(unittest.TestCase):
-    def test_returned_and_computed_figures_bind(self):
-        text = ("In October 2026 non-pilot invoices were 703,058.44 CAD and $701,688.25 "
-                "USD (about 1.4M together, 218 invoices); CAD is 50.0% of the total. "
-                "PO 4500123 was 1,250.00 CAD. As of Nov 17, 2026 at 6:45 pm (Oct 1-31).")
-        out, marked = ag.gate(text, [OCT, SEARCH], ["What did we invoice in October 2026?"])
-        self.assertEqual(marked, [])
-        self.assertEqual(out, text)
-
-    def test_unbound_figures_are_marked_never_removed(self):
-        text = "Invoices came to 812,000.00 CAD, 12% up; INV-77777 is the largest."
-        out, marked = ag.gate(text, [OCT], [])
-        self.assertEqual(marked, ["812,000.00", "12%", "77777"])
-        self.assertEqual(out, "Invoices came to 812,000.00 CAD (unverified), 12% "
-                              "(unverified) up; INV-77777 (unverified) is the largest.")
-        self.assertEqual(out.replace(ag.UNVERIFIED, ""), text)
-
-    def test_identifier_digits_bind_codes_never_amounts(self):
-        # 40 invoices (identifiers as codes in text and as bare numbers in an identifier
-        # column); a total off by exactly one identifier's digits is marked
-        rows = [[f"INV-{20400 + i}", str(106000 + i), "CAD", f"{1000 + i * 137.5:.2f}"]
-                for i in range(40)]
-        result = sql(rows, columns=("invoice", "po_number", "total_currency", "total"))
-        true = sum(float(r[3]) for r in rows)
-        for wrong in (true + 20417, true + 106017, true - 20417):
-            text = f"Invoices total {wrong:,.2f} CAD (INV-20417 and PO 106017 included)."
-            _out, marked = ag.gate(text, [result], [])
-            self.assertEqual(marked, [f"{wrong:,.2f}"], text)
-        text = f"Invoices total {true:,.2f} CAD (INV-20417 and PO 106017 included)."
-        self.assertEqual(ag.gate(text, [result], [])[1], [])
-        # the same in a search hit's text: the code binds, its digits are no amount
-        hit = {**SEARCH, "result": {"documents": [{"citation": "original://m/2", "snippet": {
-            "untrusted_text": "Re: SO-1083 and INV-20417 total 2,500.00"}}]}}
-        self.assertEqual(ag.gate("SO-1083 came to 2,500.00.", [hit], [])[1], [])
-        self.assertEqual(ag.gate("It came to 1,083.00.", [hit], [])[1], ["1,083.00"])
-        self.assertEqual(ag.gate("It came to 22,917.00.", [hit], [])[1], ["22,917.00"])
-
-    def test_framing_and_lettered_codes_are_no_figures(self):
-        # a code ending in a letter binds only by the same token a result holds (never as
-        # a scale: "26127B" is no 26,127 billion); a day list of one month is a date; a
-        # quoted clause number is the text's own numbering
-        lots = sql([["26127B", "DPI-005"], ["26130A", "DPI-006"]], columns=("lot", "item"))
-        self.assertEqual(ag.gate("DPI-006 was listed with lot 26127B.", [lots], [])[1], [])
-        self.assertEqual(ag.gate("DPI-006 was listed with lot 26128B.", [lots], [])[1],
-                         ["26128B"])
-        self.assertEqual(ag.gate("It came to 26127B dollars.", [OCT], [])[1], ["26127B"])
-        self.assertEqual(ag.gate("Chased Nov 13, 17, 18 and 20.", [OCT], [])[1], [])
-        self.assertEqual(ag.gate("Chased Nov 13, 17 and 20 by mail.", [OCT], [])[1], [])
-        # never a quantity after the day list, nor a number past 31
-        self.assertEqual(ag.gate("Shipped Nov 3, 12 and 95 cases.", [OCT], [])[1], ["12", "95"])
-        self.assertEqual(ag.gate("Shipped Nov 3, 12 and 25 cases.", [OCT], [])[1],
-                         ["12", "25"])
-        self.assertEqual(ag.gate("Shipped Nov 3 and 45.", [OCT], [])[1], ["45"])
-        self.assertEqual(ag.gate("On Nov 13, 2026 we sold 17 units.", [OCT], [])[1],
-                         ["17"])
-        self.assertEqual(ag.gate('Before: "3. Payment terms. Net 30."', [OCT], ["Net 30"])[1],
-                         [])
-        self.assertEqual(ag.gate("We hold 7. Then more.", [OCT], [])[1], ["7"])
-
-    def test_figures_of_a_sheet_a_rate_a_month_or_the_persons_file_are_bound(self):
-        # HARD20 on main: a sheet cell's value, a rate's number and a year-month were
-        # marked, and a reply quoting clause 2 of the attached contract marked its "2"
-        sheet = {"type": "tool_call", "name": "plx.open", "is_error": False, "result": {
-            "text": {"untrusted_text": "A17=45846 | D17=104250 | E17=90 | J17=PASS. "
-                                       "Agrees to honour $6.25/unit for the 60ml size."}}}
-        self.assertEqual(ag.gate("One lot of 104,250 cartons, 90 sampled; we keep the "
-                                 "6.25/unit price ($6.25 per unit).", [sheet], [])[1], [])
-        # a year and month is held only when a result or the person's file states it
-        label = {"type": "tool_call", "name": "plx.search", "is_error": False, "result": {
-            "hits": [{"snippet": {"untrusted_text": "lot 2611-0457 best before 2028-05-31"}}]}}
-        self.assertEqual(ag.gate("The label says best before 2028-05.", [label], [])[1], [])
-        self.assertEqual(ag.gate("The label says best before 2028-05.", [OCT], [],
-                                 files=["Best before: 2028-05"])[1], [])
-        self.assertEqual(ag.gate("The label says best before 2031-07.", [label], [])[1],
-                         ["2031"])
-        contract = "SUPPLY AGREEMENT\n1. Parties.\n2. Payment terms. Net 30 from invoice."
-        self.assertEqual(ag.gate("- **Before:** 2. Payment terms. Net 30.\n- **After:** "
-                                 "2. Payment terms. Net 45.", [OCT],
-                                 ["make it net 45", contract], files=[contract])[1], [])
-        # the person's dates, an earlier answer's and the question's numbers hold no count:
-        # only a file's line-start clause numbers are theirs
-        po = sql([["PO100155", "2026-07-30"]], columns=("po_number", "order_date"))
-        earlier = "PO100155 (2026-07-30) is open."
-        self.assertEqual(ag.gate("We are short 30 cartons.", [po], [earlier])[1], ["30"])
-        self.assertEqual(ag.gate("We took 23 orders.", [OCT], ["how many since Oct 23?"])[1],
-                         ["23"])
-        note = "Delivery note dated 2026-10-15\n1. Cartons as ordered."
-        self.assertEqual(ag.gate("We are short 15 cartons.", [OCT], [note], files=[note])[1],
-                         ["15"])
-        # a file's clause number holds only a clause written as one, never a count
-        terms = "AGREEMENT\n12. Payment terms. Net 30."
-        self.assertEqual(ag.gate("- **Before:** 12. Payment terms.", [OCT], [terms],
-                                 files=[terms])[1], [])
-        # a number inside a file's line is no clause number ("... within 14. Late fees")
-        fees = "AGREEMENT\nPayment within 14. Late fees apply."
-        self.assertEqual(ag.gate("- **Before:** 14. Late fees apply.", [OCT], [],
-                                 files=[fees])[1], ["14"])
-        self.assertEqual(ag.gate("Clause 12 now reads Net 45.", [OCT], ["net 45", terms],
-                                 files=[terms])[1], [])   # the live h20 reply
-        for count in ("Clause 13 says Net 30.", "We hold 12 cartons."):
-            self.assertEqual(ag.gate(count, [OCT], [terms], files=[terms])[1],
-                             [count.split()[1] if "Clause" in count else "12"])
-        # a rate written with its unit is an amount: "$1,171.4" in a price list holds the
-        # reply's "1,171.40/kg" (live h17: marked as a code whose digits differ)
-        prices = {"type": "tool_call", "name": "plx.open", "is_error": False,
-                  "result": {"text": "MAJESTEM\r\n$1,171.4\r\nCAD\r\nPack Size"}}
-        self.assertEqual(ag.gate("Croda quoted CAD 1,171.40/kg.", [prices], [])[1], [])
-        self.assertEqual(ag.gate("Croda quoted CAD 1,175.40/kg.", [prices], [])[1],
-                         ["1,175.40"])
-        # a currency-lettered price ("CN$11.32/kg") and a lettered thousand ("3K units")
-        # in a mail are the amounts a reply restates
-        mail = {"type": "tool_call", "name": "plx.open", "is_error": False, "result": {
-            "text": "Pricing :\r\nCN$11.32/kg for 1-7 drums. We'd like the 3K units."}}
-        self.assertEqual(ag.gate("CAD 11.32/kg; bulk for 3,000 units.", [mail], [])[1], [])
-        self.assertEqual(ag.gate("CAD 11.42/kg; bulk for 4,000 units.", [mail], [])[1],
-                         ["11.42", "4,000"])
-        # still marked: a number a cell only names, a rate no result holds, a code's digits
-        self.assertEqual(ag.gate("We hold 17 lots and 7.50/unit.", [sheet], [])[1],
-                         ["17", "7.50"])
-        self.assertEqual(ag.gate("- **Total:** 23. Then more.", [OCT], ["q"])[1], ["23"])
-        # the gap of two percentages the reply holds, in points; another gap is marked
-        shares = "CAD margin 38.2% and USD 31.2%.\n- USD is about {} points below CAD."
-        margins = sql([["CAD", "38.2", "1"], ["USD", "31.2", "1"]])
-        margins["result"]["rows"] += [{"cells": ["other", str(1000 * i + 1000), "1"]}
-                                      for i in range(500)]   # past the pair pool
-        self.assertEqual(ag.gate(shares.format(7), [margins], [])[1], [])
-        self.assertEqual(ag.gate(shares.format(9), [margins], [])[1], ["9"])
-        # two held figures that are no percentages give no points ("7 points" of 38.2, 31.2)
-        plain = "CAD sold 38.2 tonnes and USD 31.2 tonnes.\n- USD is about 7 points below."
-        self.assertEqual(ag.gate(plain, [margins], [])[1], ["7"])
-
-    def test_a_figure_stated_for_the_wrong_period_is_marked_with_the_rows_value(self):
-        # the live walk: the table said October 5 orders, the sentence "23 orders in
-        # October" (November's count): marked, and one line says October's own orders
-        months = sql([["2026-10-01", "5", "222570.00"], ["2026-11-01", "23", "213214.34"]],
-                     columns=("month", "orders", "value"))
-        wrong = "Soapbox placed 23 orders worth 222,570.00 CAD in October."
-        self.assertEqual(ag.gate(wrong, [months], []), (
-            "Soapbox placed 23 (unverified) orders worth 222,570.00 CAD in October.\n\n"
-            "The records show 5 orders for October 2026.", ["23"]))
-        # the walk's own sentence names both months: judged clause by clause
-        both = ("Soapbox Soaps placed 23 orders worth 222,570.00 CAD in October and 23 "
-                "orders worth 213,214.34 CAD so far in November (1\u201321 Nov).")
-        self.assertEqual(ag.gate(both, [months], [])[1], ["23"])
-        # the review's cases: never a figure rewritten, the note only for the named measure
-        wide = sql([["2026-09-01", "40", "100", "7"], ["2026-10-01", "5", "222570", "9"],
-                    ["2026-11-01", "23", "213214", "30"]],
-                   columns=("month", "orders", "value", "customers"))
-        for said, note in (("October had 5 orders and 23 customers.",
-                            "The records show 9 customers for October 2026."),
-                           ("Up 23 orders in October.", "The records show 5 orders for October 2026."),
-                           ("We saw 30 visits in October.", None)):
-            out, marked = ag.gate(said, [wide], [])
-            self.assertTrue(out.startswith(said.replace(marked[0], marked[0] + " (unverified)", 1)), out)
-            self.assertEqual(out.split("\n\n")[1] if note else out.count("\n"), note or 0)
-        for fine in ("Soapbox placed 5 orders worth 222,570.00 CAD in October.",
-                     "October had 5 orders; November had 23.",
-                     "Orders went from 5 in October to 23 in November.",   # both named
-                     "Since Oct 23, 2026 we placed 5 orders.",            # a date, no period
-                     "| October | 23 | 213,214.34 |",                     # a table row
-                     "23 orders came in November.",
-                     # a bullet's own label and its comparison: two periods, not judged
-                     "October: 23 orders, up from 18 in September.",
-                     "- **October**: 23 orders (up from 18 in September)",
-                     "Orders ran 5\u201323 a month in October.",          # a range
-                     "Beta has gone 23 days, so they may be between orders.",  # the verb
-                     "23 orders have come in since mid-October.",         # a bound
-                     "Orders rose in October\u2013November to 23."):      # a span
-            self.assertEqual(ag.gate(fine, [months], [])[1], [], fine)
-        for wrong in ("In October 2026 Soapbox placed 23 orders.", "October had 23 orders.",
-                      "- **October**: 23 orders."):
-            self.assertEqual(ag.gate(wrong, [months], [])[1], ["23"], wrong)
-        # "may" the verb never names May; "in May" does
-        may = sql([["2026-05", "93", "1.00"], ["2026-06", "40", "2.00"]],
-                  columns=("month", "days", "value"))
-        self.assertEqual(ag.gate("They have gone 40 days, so they may be between orders.",
-                                 [may], [])[1], [])
-        self.assertEqual(ag.gate("They placed 40 orders in May.", [may], [])[1], ["40"])
-        # a result whose dates are first and last orders is no period table: never judged
-        spans = sql([["Acme", "2026-09-14", "2026-11-02", "16"],
-                     ["Beta", "2026-07-01", "2026-10-30", "190"]],
-                    columns=("customer", "first_order", "last_order", "open"))
-        self.assertEqual(ag.gate("Acme's 190 open orders in September.", [spans], [])[1], [])
-        # a figure another result also holds is stated from there, not the wrong period
-        other = sql([["Soapbox", "23"]], columns=("customer", "orders"))
-        self.assertEqual(ag.gate(wrong, [months, other], [])[1], [])
-
-    def test_ask_dates_read_in_the_apps_style_and_leave_counts_and_codes_alone(self):
-        from operator_api.ask_dates import dated
-        for said, shown in (("As of 2026-11-21, overdue", "As of 21 Nov 2026, overdue"),
-                            ("Last week (Mon Nov 9 \u2013 Sun Nov 15)", "Last week (Mon 9 Nov \u2013 Sun 15 Nov)"),
-                            ("Nov 16\u201320 for context", "16\u201320 Nov for context"),
-                            ("| 2026-10 | 5 |", "| Oct 2026 | 5 |"),
-                            ("Nov 9, 2026 was busy", "9 Nov 2026 was busy"),
-                            ("2026-11-01T02:00:00Z", "31 Oct 2026 22:00"),
-                            ("2026-11-01T00:00:00+00:00", "1 Nov 2026")):
-            self.assertEqual(dated(said), shown)
-        for kept in ("May 5 orders arrived", "Jan 12 % of sales", "INV-2026-11-21",
-                     "https://x/2026-11-21/a", "bad 2026-02-30", "at 9:30 AM", "Nov 2026 total",
-                     "may 5"):
-            self.assertEqual(dated(kept), kept)
-
-    def test_the_tag_follows_the_whole_figure_and_reply_arithmetic_is_held(self):
-        # the live walk: "9,355.66 (unverified) CAD" split the figure from its currency,
-        # and the change of two figures the reply states (each a result's subtotal) was
-        # marked though right
-        rows = [["2026-10-01", "open", "4", "210600.00"], ["2026-10-01", "closed", "1", "11970.00"],
-                ["2026-11-01", "open", "21", "200000.00"], ["2026-11-01", "closed", "2", "13214.34"]]
-        rows += [["2026-09-01", f"s{i}", str(i), str(1000 + i * 37)] for i in range(70)]
-        split = sql(rows, columns=("month", "status", "orders", "value"))
-        text = ("October came to 222,570.00 CAD and November to 213,214.34 CAD.\n"
-                "The value went down by 9,355.66 CAD.\n| Change | \u22129,355.66 |")
-        self.assertEqual(ag.gate(text, [split], []), (text, []))
-        wrong = "The value went down by 9,355.67 CAD, about 4%."
-        self.assertEqual(ag.gate(wrong, [split], [])[0],
-                         "The value went down by 9,355.67 CAD (unverified), about 4%.")
-        # an average the reply works out from two figures it states (amount over count)
-        avg = ("| Oct | 5 | 222,570.00 |\n| Nov | 23 | 213,214.34 |\n"
-               "Average order value fell: about 44,514 CAD in October, 9,270.19 in November.")
-        self.assertEqual(ag.gate(avg, [split], [])[1], [])
-        self.assertEqual(ag.gate(avg.replace("44,514", "44,914"), [split], [])[1], ["44,914"])
-        # an imprecise figure is never held by the reply's own sums ("5,900" of two others)
-        self.assertEqual(ag.gate("October came to 222,570.00 CAD, November 228,470 CAD.",
-                                 [split], [])[1], ["228,470"])
-        # two shares the reply holds add up: "almost 62%" of 37.4% and 24.4%
-        shares = sql([["A1", "347296.98", "37.4"], ["Amazon", "227061.16", "24.4"],
-                      ["Others", "354672.68", "38.2"]], columns=("customer", "overdue", "pct"))
-        other = sql([[f"c{i}", str(1000 + 7 * i)] for i in range(80)],
-                    columns=("customer", "n"))
-        said = ("| A1 | 37.4% |\n| Amazon | 24.4% |\n"
-                "A1 and Amazon make up almost 62% of what is overdue.")
-        self.assertEqual(ag.gate(said, [other, shares], [])[1], [])
-        self.assertEqual(ag.gate(said.replace("62%", "71%"), [other, shares], [])[1], ["71%"])
-
-    def test_nothing_returned_binds_nothing(self):
-        # a refused call, an error result and another tool's result bind no figure
-        failed = {**OCT, "is_error": True}
-        erred = {"type": "tool_call", "name": "plx.sql", "is_error": False,
-                 "result": {"error": "too_costly", "detail": "cost 703058.44"}}
-        other = {"type": "tool_call", "name": "plx.table", "is_error": False,
-                 "result": {"x": "703058.44"}}
-        out, marked = ag.gate("Total 703,058.44 CAD.", [failed, erred, other], [])
-        self.assertEqual(marked, ["703,058.44"])
-        self.assertIn("(unverified)", out)
-
-    def test_the_persons_own_numbers_and_framing_need_no_binding(self):
-        out, marked = ag.gate(
-            "Of the 5 largest customers since 2025-01-01, none is over 10,000 CAD.\n"
-            "1. Acme\n2. Beta", [], ["Which of the 5 largest are over 10,000 CAD?"])
-        self.assertEqual(marked, [])
-
-    def test_an_earlier_unverified_figure_stays_unverified_in_a_follow_up(self):
-        history = [SimpleNamespace(role="user", text="Boxes and sales?"),
-                   SimpleNamespace(role="assistant",
-                                   text="Sales were 703,058.44 CAD and 77 (unverified) boxes.")]
-        out, marked = ag.gate("Still 77 boxes; sales 703,058.44 CAD.", [],
-                              sa.asked_words("And now?", history))
-        self.assertEqual(out, "Still 77 (unverified) boxes; sales 703,058.44 CAD.")
-        self.assertEqual(marked, ["77"])
-
-    def test_the_replys_own_criteria_dates_and_list_counts_need_no_binding(self):
-        framing = ("Customers who ordered in at least 3 different months, the top 10 by "
-                   "value, in the past 30 days; week Mon 9 – Sun 15 Nov and 9-15 Nov.\n"
-                   "These 2 customers are late:\n- Acme\n- Beta\n")
-        text, marked = ag.gate(framing, [OCT])
-        self.assertEqual((text, marked), (framing, []))
-        table = "| customer | orders |\n|---|---|\n| Acme | 1 |\n| Beta | 2 |\n\n2 customers."
-        self.assertEqual(ag.gate(table, [])[1], ["1", "2"])   # cells are data; "2 orders" is not
-        # data stays data: an amount, a count with no qualifier, a list count that is wrong,
-        # and a qualified amount all still need a returned source
-        for reply, want in (("at least 3,000.00 CAD is overdue", ["3,000.00"]),
-                            ("7 orders are open.", ["7"]),
-                            ("These 3 customers are late:\n- Acme\n- Beta\n", ["3"]),
-                            ("Open:\n- SO-1\n", ["1"]),   # a code is data
-                            ("over 12% of sales", ["12%"])):
-            self.assertEqual(ag.gate(reply, [OCT])[1], want, reply)
-
-    def test_stated_precision(self):
-        # rounded to what it says: 703k and 0.70M bind 703,058.44; 704k does not
-        self.assertEqual(ag.gate("About 703k CAD, 0.70M.", [OCT], [])[1], [])
-        self.assertEqual(ag.gate("About 705k CAD.", [OCT], [])[1], ["705k"])
-
-    def test_a_reply_totals_and_compares_the_rows_it_read(self):
-        # rows by currency, period and type: a reply's "CAD before November" is the sum of
-        # the rows sharing those labels, "open now" the currency's sum; one digit off is
-        # marked
-        balances = sql([["CAD", "Nov", "invoice", "122", "342534.94"],
-                        ["CAD", "Nov", "prepayment", "5", "-2779.08"],
-                        ["CAD", "Nov", "receipt", "1", "-49.06"],
-                        ["CAD", "Before", "credit note", "6", "-16939.98"],
-                        ["CAD", "Before", "invoice", "265", "464800.94"],
-                        ["CAD", "Before", "prepayment", "8", "-12170.56"],
-                        ["CAD", "Before", "receipt", "69", "-135881.61"],
-                        ["USD", "Before", "invoice", "40", "977080.69"]],
-                       columns=("currency", "period", "document_type", "docs", "amount_due"))
-        ok = "CAD before November: 299,808.79; November 339,706.80; open now 639,515.59 CAD."
-        self.assertEqual(ag.gate(ok, [balances])[1], [])
-        for wrong in ("299,808.97", "639,515.95", "339,760.80"):
-            self.assertEqual(ag.gate(f"CAD before November: {wrong} CAD.", [balances])[1],
-                             [wrong])
-        # months in their order: January to June is a run of rows; a percent change two
-        # values on its own table row state binds, a wrong one does not
-        months = sql([["2026", str(m), "CAD", f"{100000 + m * 1111.11:.2f}"]
-                      for m in range(1, 11)], columns=("yr", "mo", "currency", "subtotal"))
-        half = sum(100000 + m * 1111.11 for m in range(1, 7))
-        self.assertEqual(ag.gate(f"Jan-Jun 2026: {half:,.0f} CAD.", [months])[1], [])
-        self.assertEqual(ag.gate(f"Jan-Jun 2026: {half + 90:,.0f} CAD.", [months])[1],
-                         [f"{half + 90:,.0f}"])
-        row = "| Jan | 411,106.19 | 522,285.50 | {} |"
-        values = sql([["Jan", "411106.19", "522285.50"]], columns=("mo", "y2025", "y2026"))
-        self.assertEqual(ag.gate(row.format("+27.0%"), [values])[1], [])
-        self.assertEqual(ag.gate(row.format("+29.0%"), [values])[1], ["29.0%"])
-        price = "| PO100411 | 24,192 | 11,781.50 | {} |"
-        self.assertEqual(ag.gate(price.format("0.487"), [])[1], ["24,192", "11,781.50"])
-        self.assertEqual(ag.gate(price.format("0.497"), [])[1],
-                         ["24,192", "11,781.50", "0.497"])
-        # two years' subtotals per currency compare (2025 against 2026); a year's change
-        # no two values make is marked
-        years = sql([[y, "CAD", str(m), f"{v:.2f}"] for y, base in (("2025", 600000),
-                                                                    ("2026", 582600))
-                     for m, v in ((1, base), (2, base / 2))],
-                    columns=("year", "currency", "mo", "subtotal"))
-        self.assertEqual(ag.gate("CAD is down 2.9% on last year.", [years])[1], [])
-        self.assertEqual(ag.gate("CAD is down 4.9% on last year.", [years])[1], ["4.9%"])
-
-    def test_a_percentage_binds_only_to_a_comparison_its_line_names(self):
-        # a 40-row result of customers x years x 3 measures compares thousands of values:
-        # an invented percentage on a line that names nothing of it is marked; a row's
-        # share, its margin and its change on the year bind on a line naming the row, the
-        # group or one of the values compared
-        import random
-        rnd = random.Random(7)
-        rows = [[f"Cust{i // 2:02d} Ltd", ("2025", "2026")[i % 2], ("CAD", "USD")[i // 2 % 2],
-                 *(f"{rnd.lognormvariate(10, 1.5):.2f}" for _ in range(3))]
-                for i in range(40)]
-        big = sql(rows, columns=("customer", "year", "currency", "revenue", "cost", "margin"))
-        bound = sum(ag.gate(f"Revenue rose {p}% on the year.", [big])[1] == []
-                    for p in range(1, 100))
-        self.assertLessEqual(bound, 5)   # was 80+ of 99 when every comparison was pooled
-        self.assertEqual(ag.gate("Multiples: 3.7x more.", [big])[1], ["3.7"])
-        a, b = rows[4], rows[5]   # one customer's two years
-        share = Decimal(b[3]) / sum(Decimal(r[3]) for r in rows) * 100
-        margin = Decimal(b[5]) / Decimal(b[3]) * 100
-        change = (Decimal(b[3]) / Decimal(a[3]) - 1) * 100
-        for line in (f"{b[0]} was {share:.1f}% of revenue.",
-                     f"| {b[0]} | {b[3]} | {b[5]} | {margin:.1f}% |",
-                     f"{b[0]} revenue moved {abs(change):.1f}% on the year before."):
-            self.assertEqual(ag.gate(line, [big])[1], [], line)
-        # the same share on a line naming another customer, or no one, is marked
-        other = rows[11][0]
-        self.assertEqual(ag.gate(f"{other} was {share:.1f}% of revenue.", [big])[1],
-                         [f"{share:.1f}%"])
-        # a column of whole dates measures a row: rows differing in their last invoice
-        # date still align on the period (CAD MTD against CAD last year)
-        periods = sql([["2025-11 (1-18)", "CAD", "434844.06", "2025-11-18"],
-                       ["2026-11 (1-18)", "CAD", "368798.19", "2026-11-17"],
-                       ["2025-11 (1-18)", "USD", "218404.79", "2025-11-14"],
-                       ["2026-11 (1-18)", "USD", "164001.36", "2026-11-16"]],
-                      columns=("period", "currency", "sales", "last_invoice"))
-        self.assertEqual(ag.gate("CAD sales are down 15.2% on last year.", [periods])[1], [])
-
-    def test_a_product_of_two_figures_its_line_states_binds(self):
-        # the quantity and the price are returned; the line's amount is their product, and
-        # a percent of it on the same table row binds the same way
-        lines = sql([["R-0098", "500", "456.89"], ["Base", "12", "210.00"]],
-                    columns=("item", "open_qty", "unit_price"))
-        row = "| R-0098 | 500 kg | 456.89 CAD/kg | 228,445.00 CAD | 8% | 18,275.60 CAD |"
-        for text, asked in ((row, ["what is 8% of the open value?"]),
-                            ("Base: 12 x 20L @ 210.00 CAD = 2,520.00 CAD.", [])):
-            self.assertEqual(ag.gate(text, [lines], asked)[1], [], text)
-        # a rate no result or the person states is no factor: the amount it makes stays
-        # marked (the rate itself passes as the share of its line's two amounts, as before)
-        self.assertIn("18,275.60", ag.gate(row, [lines], [])[1])
-        # an amount that is no product of the line's figures stays marked, and so does a
-        # factor no result holds (the product never vouches for its factors)
-        self.assertEqual(ag.gate("| R-0098 | 500 kg | 456.89 CAD/kg | 228,454.00 CAD |",
-                                 [lines], [])[1], ["228,454.00"])
-        self.assertIn("2,730.00", ag.gate("Base: 13 x 20L @ 210.00 CAD = 2,730.00 CAD.",
-                                          [lines], [])[1])
-        # a line of many figures multiplies to nearly anything: no product binds there
-        many = "| " + " | ".join(["500", "456.89", "12", "210.00", "3", "7", "9"]) + \
-            " | 2,520.00 |"
-        more = sql([["a", "3", "7"], ["b", "9", "11"]], columns=("k", "x", "y"))
-        self.assertIn("2,520.00", ag.gate(many, [lines, more], [])[1])
-
-    def test_framing_and_codes_are_no_amounts(self):
-        hit = {**SEARCH, "result": {"documents": [{"citation": "original://m/3", "snippet": {
-            "untrusted_text": "invoices IN1000180783 and IN1000180784, batch BC-26322B"}}]}}
-        text = ("Orders from mid-2020; the #5 customer; invoices IN1000180783\u2013784; "
-                "batch BC-26322B.\n\n| # | Customer |\n|---|---|\n| 1 | A |\n| 2 | B |")
-        self.assertEqual(ag.gate(text, [hit])[1], [])
-        self.assertEqual(ag.gate("invoices IN1000180783\u2013789", [hit])[1], ["789"])
-        for sep in ("/", " ~ ", "-"):
-            self.assertEqual(ag.gate(f"invoices IN1000180783{sep}784", [hit])[1], [], sep)
-        self.assertEqual(ag.gate("| # | Customer |\n|---|---|\n| 3 | A |", [hit])[1],
-                         ["3"])   # a first cell that is not the row's own number
-
-    def test_a_rounded_figure_binds_to_its_rounding_only(self):
-        lots = sql([["CAD", "2637", "1"]])
-        self.assertEqual(ag.gate("about 2,600 bottles", [lots])[1], [])
-        self.assertEqual(ag.gate("about 3,600 bottles", [lots])[1], ["3,600"])
-        self.assertEqual(ag.gate("2,600 bottles", [lots])[1], ["2,600"])
-        # a whole thousand reads as rounded to the thousand (the person may have asked for
-        # it), with a currency code between "about" and the figure; never looser than 5%
-        week = sql([["USD", "152480.00", "10"]])
-        for said in ("about USD 152,000", "~USD 152,000", "USD 152,000", "USD 152k"):
-            self.assertEqual(ag.gate(f"We billed {said} last week.", [week])[1], [], said)
-        self.assertEqual(ag.gate("We billed USD 153,000.", [week])[1], ["153,000"])
-        self.assertEqual(ag.gate("about 1,000 units", [sql([["CAD", "1070", "1"]])])[1],
-                         ["1,000"])
-        self.assertEqual(ag.gate("All dated 9 to 13 Nov.", [])[1], [])
-
-    def test_the_sessions_own_threshold_is_its_criterion(self):
-        stmt = sql([["CAD", "120.00", "4"]],
-                   arguments={"sql": "SELECT ... WHERE total < 50000 GROUP BY 1"})
-        self.assertEqual(ag.gate("the rest are under 50,000 CAD each", [stmt])[1], [])
-        self.assertEqual(ag.gate("the rest are under 50,000 CAD each", [OCT])[1],
-                         ["50,000"])
-
-    def test_cut_result_still_binds_from_its_text(self):
-        cut = {"type": "tool_call", "name": "plx.sql", "is_error": False,
-               "result": {"truncated_text": '{"rows": [{"cells": ["CAD", "4410.50"', 
-                          "original_chars": 99999}}
-        self.assertEqual(ag.gate("4,410.50 CAD", [cut], [])[1], [])
-
-    def test_cardinality(self):
-        # N = 1, 10, 60 results of 200 rows: every row's value binds, within budget
-        for n in (1, 10, 60):
-            events = [sql([["CAD", f"{k}{i}.25", "1"] for i in range(200)])
-                      for k in range(n)]
-            began = time.monotonic()
-            text = " ".join(f"{k}{i}.25 CAD" for k in range(n) for i in (0, 199)) + " 9.99%"
-            out, marked = ag.gate(text, events, [])
-            self.assertEqual(marked, ["9.99%"], n)
-            self.assertLess(time.monotonic() - began, 5.0, n)
 
 
 class SessionTest(unittest.TestCase):
@@ -538,12 +125,26 @@ class SessionTest(unittest.TestCase):
         self.assertIn("Person: Invoices last month?", seen["prompt"])
         self.assertIn("You: Which currency?", seen["prompt"])
         self.assertTrue(seen["prompt"].rstrip().endswith("Question: CAD please"))
-        self.assertEqual(ran.text, "It was 703,058.44 CAD and 9 USD (unverified).")
+        # a figure no result holds is in the payload's untraced (shown under the answer),
+        # never tagged in it nor written into the answer's text
+        self.assertEqual(ran.text, "It was 703,058.44 CAD and 9 USD.")
+        self.assertEqual(ran.unverified, ["9"])
         self.assertEqual(ran.as_of, "2026-11-17T22:00:00+00:00")
         self.assertEqual(closed, [1])
         payload = sa.answer_payload(ran, "CAD please", "c1", 10, "a" * 24)
         self.assertEqual(payload.outcome, "partial")
         self.assertEqual(payload.direct_answer, ran.text)
+        # A2c / A3b-4: the untraced figures and the parts are payload fields, always present
+        self.assertEqual((payload.untraced, payload.coverage), (["9"], []))
+        legs = sa.SimpleRun(text="x", agent_text="x", unverified=[], events=[], seconds=1,
+                            stopped=False, failure=None, coverage=[
+                                {"part": "late POs", "sources": ["purchase_orders"],
+                                 "period": "now", "reads": 1, "found": 2},
+                                {"part": "Teams", "sources": ["teams"], "period": "",
+                                 "reads": 0, "found": 0}])
+        got = sa.answer_payload(legs, "q", "c", 1, "c" * 24)
+        self.assertEqual([(p.part, p.reads, p.found) for p in got.coverage],
+                         [("late POs", 1, 2), ("Teams", 0, 0)])
 
     def test_an_empty_reply_is_never_a_blank_answer(self):
         for stopped, failure in ((True, None), (False, "usage_limit")):
@@ -562,6 +163,57 @@ class SessionTest(unittest.TestCase):
         self.assertNotIn("Ask again shortly", words("usage_limit"))
         self.assertIn("signed in again", words("sign_in"))
         self.assertIn("Ask again shortly", words("error"))
+
+    def test_the_whole_conversation_is_carried_and_the_window_says_what_it_left_out(self):
+        """No count or length limit on a question or its history (owner 11-23): 300 turns of
+        2,000 characters are accepted whole; the session is told as many as fit its window,
+        newest first, with the number left out stated."""
+        from operator_api import models as m
+        turns = [m.HistoryTurn(role="user" if i % 2 == 0 else "assistant", text=f"t{i} " + "x" * 2000)
+                 for i in range(300)]
+        req = m.AskRequest(question="y" * 120_000, history=turns)
+        self.assertEqual((len(req.question), len(req.history)), (120_000, 300))
+        prompt = sa.task(req.question, req.history)
+        self.assertIn("t299 ", prompt)
+        left = 300 - prompt.count("\nPerson: t") - prompt.count("\nYou: t")
+        self.assertGreater(left, 0)
+        self.assertIn(f"({left} earlier turns not shown", prompt)
+        small = sa.task("q", turns[:10])
+        self.assertIn("t0 ", small)
+        self.assertNotIn("earlier turns not shown", small)
+
+    def test_the_newest_history_turn_is_never_cut_silently(self):
+        from types import SimpleNamespace
+        half = sa.HISTORY_CHARS * 2   # past the history's share, within the window
+        turns = [SimpleNamespace(role="user", text="start " + "a" * half)]
+        prompt = sa.task("and now?", turns)
+        self.assertIn("a" * half, prompt)
+        huge = [SimpleNamespace(role="user", text="b" * (sa._WINDOW + 5000))]
+        said = sa.task("and now?", huge)
+        self.assertIn(f"{sa._WINDOW + 5000:,} characters, more than the window holds", said)
+
+    def test_a_full_context_says_what_was_done_and_what_is_left(self):
+        """The window is the only bound: when a session ends because its conversation no
+        longer fits, the answer says the reads it made and what remains, never the CLI's
+        'Prompt is too long' and never a blank or an ordinary failure."""
+        from operator_api.agent_ask import session_failure
+        cli = "Prompt is too long"
+        calls = [{"type": "tool_call", "name": "plx.sql", "arguments": {"sql": "SELECT 1"},
+                  "result": {"rows": []}, "is_error": False} for _ in range(3)] + [
+            {"type": "tool_call", "name": "plx.search", "arguments": {"query": "croda"},
+             "result": {"documents": []}, "is_error": False}]
+        self.assertEqual(session_failure(cli, {"is_error": True, "subtype": "success"},
+                                         calls, None), "context_full")
+        # an ordinary error stays an error, and a session that answered is no failure
+        self.assertEqual(session_failure("boom", {"is_error": True}, calls, None), "error")
+        ran = sa.SimpleRun(text=cli, agent_text=cli, unverified=[], events=calls,
+                           seconds=1.0, stopped=False, failure="context_full")
+        got = sa.answer_payload(ran, "q", "c", 1, "h" * 24)
+        self.assertNotIn("too long", got.direct_answer)
+        self.assertIn("3 plx.sql", got.direct_answer)
+        self.assertIn("1 plx.search", got.direct_answer)
+        self.assertIn("What is left", got.direct_answer)
+        self.assertEqual((got.outcome, got.assistant_unavailable), ("not_found", "context_full"))
 
     def test_the_cli_limit_line_is_never_an_answer(self):
         line = "You've hit your weekly limit · resets Nov 23, 10am (America/Toronto)"
@@ -593,21 +245,32 @@ class SessionTest(unittest.TestCase):
                            events=[timeout, OCT], seconds=1.0, stopped=False, failure=None)
         self.assertEqual(sa.answer_payload(ran, "q", "c", 1, "e" * 24).outcome, "answered")
 
-    def test_the_prompt_says_every_column_once(self):
-        """The dictionary in the prompt is compact (a column every view shares is said
-        once, a currency column named beside its amount) and still names every column of
-        every view with its meaning, each money column with its currency column."""
+    def test_the_prompt_is_an_index_of_the_views_within_its_size(self):
+        """A5 (the prompt was 99,930 characters, ~42,000 tokens every turn): the prompt
+        names every view with its purpose and its columns (a column most views share once,
+        with its meaning); a column's meaning, samples and common values come with
+        describe. The whole prompt stays within PROMPT_MOST."""
         from operating import ontology_tools_sql as sql
         with mock.patch.object(sql, "served_views", return_value=None):
             system = sa.system_prompt()
         for view, entry in sql._dictionary().items():
-            self.assertIn(f"- {view}: {entry['about']}", system)
-            for column, doc in entry["columns"].items():
+            line = next(x for x in system.splitlines() if x.startswith(f"- {view}: "))
+            self.assertIn(entry["about"], line)
+            for column in entry["columns"]:
                 if column.endswith("_currency") and column[:-9] in entry["columns"]:
-                    self.assertIn(f"[its currency: {column}]", system, (view, column))
-                else:
-                    self.assertIn(f"    {column}: {doc}", system, (view, column))
+                    continue   # beside its amount, by the rules' one line
+                self.assertIn(column, system, (view, column))
         self.assertEqual(system.count("    handle: "), 1)
+        self.assertNotIn("    customer_code: ", system)   # column meanings: describe
+        self.assertLessEqual(len(system), sa.PROMPT_MOST)
+        self.assertLessEqual(sa.PROMPT_MOST, 31_000)
+        # A5b: no verdict on which system is of record or a pilot, nothing 'official'
+        # (the view docs the model reads come through DOC_UNTIL_TRAIN until train B)
+        for word in ("system of record", "pilot data", "is still a pilot", "not used",
+                     "official"):
+            self.assertNotIn(word, system)
+        for m_id in __import__("operating.measures", fromlist=["x"]).measures():
+            self.assertEqual(system.count(f"- {m_id} ("), 1, m_id)
 
     def test_the_prompt_lists_only_the_views_the_served_schema_holds(self):
         """A view not served now (the mail and Teams tables, records before their build)
@@ -622,18 +285,16 @@ class SessionTest(unittest.TestCase):
             system = sa.system_prompt()
         for view in views:
             self.assertEqual(f"- {view}: " in system, view in some, view)
-        self.assertNotIn("EVERY other captured record", system)
+        self.assertNotIn(sa.GENERIC_POINTER, system)
         self.assertNotIn("- bc: X (y)", system)
         self.assertIn(sql.RULES_BASE + sql.RULES_TAIL, system)
         self.assertNotIn(sa.TARGET_RULE, system)   # it reads records: not served here
         with mock.patch.object(sql, "served_views", return_value=some | {"records"}), \
                 mock.patch.object(sql, "catalog_lines", return_value=["- bc: X (y)"]):
             system = sa.system_prompt()
-        self.assertIn(sql.RULES, system)
+        self.assertIn(sql.RULES_BASE + " " + sa.GENERIC_POINTER, system)
         self.assertIn(sa.WRITE_RULE + " " + sa.TARGET_RULE, system)
-        # 11-18 owner walk: "the croda PO" listed 5 recent POs and missed the late one
-        self.assertIn("lead with the late or at-risk one", system)
-        self.assertIn("- bc: X (y)", system)
+        self.assertNotIn("- bc: X (y)", system)   # the record types: describe records
         self.assertIn("- records: ", system)
         with mock.patch.object(sql, "served_views", return_value=None):
             system = sa.system_prompt()
@@ -666,10 +327,10 @@ class SessionTest(unittest.TestCase):
                          [("Croda memo.docx", "pdf", "bbb"), ("Croda memo.docx", "docx", "ccc"),
                           ("Other.docx", "docx", "ddd")])
 
-    def test_the_prompt_names_every_measure_and_only_reports_every_reader_may_run(self):
-        """The one prompt every reader gets lists the agreed measures and the company-wide
-        reports every reader may run; a report for full readers only is never named in it
-        (plx.sql {"measure": true} lists it to a full reader)."""
+    def test_the_prompt_names_every_measure_and_no_report(self):
+        """The one prompt every reader gets lists the agreed measures with their
+        definitions; the saved reports (some for full readers only) are listed by plx.sql
+        {"measure": true}, to the reader who may run them, never in the shared prompt."""
         import re
         from operating import measures
         system = sa.system_prompt()
@@ -678,8 +339,9 @@ class SessionTest(unittest.TestCase):
         everyone = {r for r, e in measures.reports().items() if e.get("scope") == "everyone"}
         full_only = set(measures.reports()) - everyone
         self.assertTrue(full_only, "no full-reader report to keep out")
-        self.assertTrue(everyone <= named)
-        self.assertFalse(full_only & named, full_only & named)
+        self.assertFalse((everyone | full_only) & named)
+        for m in measures.measures().values():
+            self.assertIn(m["definition"], system)
         self.assertNotIn("readers who see everyone", system)
         self.assertTrue(full_only <= {line.split(" ")[1] for line in measures.lines(full=True)})
         self.assertIn('plx.sql {"measure": "<id>"}', system)
@@ -714,9 +376,13 @@ class SessionTest(unittest.TestCase):
         # same for every reader: nothing of the person's is in it
         self.assertNotIn("--append-system-prompt", argv)
         system = argv[argv.index("--system-prompt") + 1]
-        for word in ("sales_invoices", "customer_balances", "Sage is the system of record",
-                     "plx.search", "currency", "in digits (2, not two)", "in one turn",
-                     "what you covered and what you left out", "emails.received_at"):
+        # what each view holds, never a verdict on which system is of record or a pilot
+        # (MODEL-TEXT audit 2-3: answers called BC rows 'pilot, not the system of record')
+        for word in ("system of record", "is still a pilot", "pilot data"):
+            self.assertNotIn(word, system)
+        for word in ("sales_invoices", "customer_balances", "Columns most views have",
+                     "plx.search", "currency", "digits for counts", "in one turn",
+                     "what you did not read", "emails.received_at", "plx.legs"):
             self.assertIn(word, system)
         self.assertEqual(system, sa.system_prompt())
         # no minutes of extended thinking by default: low effort (adaptive thinking stays)
@@ -727,11 +393,11 @@ class SessionTest(unittest.TestCase):
         self.assertIn("Prefers CAD totals.", told)
         self.assertLess(told.index("Prefers CAD totals."), told.index("Question: Invoices?"))
         self.assertNotIn("remember", sa.task("Invoices?"))
-        # the session ends inside the API's wait for it, its research budget before that
+        # no step, turn or research budget; only a hung-process guard, inside the API's wait
         from operator_api import serving
-        self.assertLess(agent.timeout, serving.ASK_TIMEOUT_SECONDS)
-        self.assertLess(sa.BUDGET_SECONDS, agent.timeout)
-        self.assertGreaterEqual(sa.MAX_STEPS, 25)
+        self.assertLessEqual(agent.timeout, serving.ASK_TIMEOUT_SECONDS)
+        self.assertEqual((agent.max_steps, agent.max_turns, agent.budget_seconds),
+                         (None, None, None))
 
     def test_model_and_effort_are_one_setting_read_as_the_session_starts(self):
         for env, want in (({}, ("claude-sonnet-5-5", "low")),
@@ -786,9 +452,8 @@ class SessionTest(unittest.TestCase):
                 agent = sa.agent_for(SimpleNamespace(claude_bin="claude"), deep=True)
                 argv = agent.argv("t", "/x")
                 self.assertEqual(argv[argv.index("--effort") + 1], want)
-                self.assertEqual(agent.max_steps, sa.DEEP_STEPS)
-        self.assertEqual(sa.agent_for(SimpleNamespace(claude_bin="claude")).max_steps,
-                         sa.MAX_STEPS)
+                self.assertIsNone(agent.max_steps)
+        self.assertIsNone(sa.agent_for(SimpleNamespace(claude_bin="claude")).max_steps)
         from operator_api import models as m
         self.assertFalse(m.AskRequest(question="q").deep)
 
@@ -835,13 +500,14 @@ class SessionTest(unittest.TestCase):
         self.assertIn('"scan.pdf"; it was not read here (It is password protected.)', prompt)
         self.assertIn('plx.open {"citation": "mail:abc"}', prompt)
         self.assertIn('the record "SalesOrder:SO-1" (a SalesOrder)', prompt)
-        # the third file is cut to what one argv string holds, and says so
+        # the third file is cut to the task's room for files, and says so
         self.assertIn("(cut here: the file goes on)", prompt)
-        self.assertLess(len(prompt.encode("utf-8")), 128 * 1024)
+        self.assertLess(len(prompt.encode("utf-8")), sa.TASK_FILE_BYTES + 16 * 1024)
         self.assertTrue(prompt.rstrip().endswith("Question: Does this quote match the order?"))
-        # a figure the person's file states is theirs; one nobody returned is still marked
+        # a figure the person's file states is theirs; one nobody returned is still said
         self.assertEqual(ran.text, "The quote totals 1,234.50 CAD; October was 703,058.44 CAD; "
-                                   "77 (unverified) boxes.")
+                                   "77 boxes.")
+        self.assertEqual(ran.unverified, ["77"])
         # an image goes to the model with the one run's task too (warm sessions off, the
         # deeper look): the task says it is shown, and the run is given it
         image = Attached(name="p.png", kind="image", size=4, digest="d4", image="aGk=",
@@ -907,10 +573,10 @@ class SessionTest(unittest.TestCase):
         self.assertIn("Reading your attachment", [s.message for k, s in steps
                                                    if k == "status"])
 
-    def test_off_unless_asked(self):
-        self.assertFalse(sa.enabled({}))
-        self.assertFalse(sa.enabled({"PLX_ASK_SIMPLE": "0"}))
-        self.assertTrue(sa.enabled({"PLX_ASK_SIMPLE": "1"}))
+    def test_the_one_ask_path_whatever_the_old_switch_says(self):
+        # owner 11-22: no rollback path; PLX_ASK_SIMPLE is no longer read
+        for environ in ({}, {"PLX_ASK_SIMPLE": "0"}, {"PLX_ASK_SIMPLE": "1"}):
+            self.assertTrue(sa.enabled(environ), environ)
 
 
 def _delta(text):
@@ -965,6 +631,8 @@ class WarmTest(unittest.TestCase):
         class Agent:
             def run(self, prompt, host):
                 test.runs.append(prompt)
+                if test.answers:
+                    return test.answers.pop(0)
                 return AgentRun(events=[OCT], final_text="ok", usage={"subtype": "success"})
 
             def open_session(self, host, prestart=False):
@@ -1021,6 +689,179 @@ class WarmTest(unittest.TestCase):
         ran = self.ask("ann", "And as a chart again?", conversation="c2")
         self.assertEqual(len(self.opened[-1].prompts), 1)
         self.assertEqual(len(ran.charts), 1)
+
+    def test_an_answer_with_an_untraced_figure_goes_back_once_and_is_never_tagged(self):
+        """A2: a figure typed outside a reference that no result holds (here 9 USD; the
+        HARD20 '108 open POs' by eye) or a reference that does not resolve sends the whole
+        answer back to the same session once; its reply replaces the answer, references
+        printed. A figure still untraced after that is said in one line under the answer;
+        an answer with nothing to repair takes one turn."""
+        rid = OCT["result"]["result"]
+        self.answers = [
+            AgentRun(events=[OCT], final_text="October is in. It was 703,058.44 CAD and 9 USD; "
+                     "{{%s#row=7.total}}. Nothing else moved." % rid,
+                     usage={"subtype": "success"}),
+            AgentRun(events=[], final_text="1. It was {{%s#row=0.total}} CAD and "
+                     "{{%s#row=1.total}} USD." % (rid, rid), usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales?")
+        session = self.opened[-1]
+        self.assertEqual(len(session.prompts), 2)
+        self.assertIn("9", session.prompts[1])
+        self.assertIn("#row=7.total}} does not resolve", session.prompts[1])
+        # one sentence is sent back and swapped; the rest of the answer is the first's own
+        self.assertNotIn("Write the whole answer again", session.prompts[1])
+        self.assertEqual(ran.text, "October is in. It was 703,058.44 CAD and 701,688.25 USD. "
+                         "Nothing else moved.")
+        self.assertEqual(ran.usage["sentence_patch"]["replaced"], 1)
+        self.assertEqual(ran.unverified, [])
+        self.assertNotIn("unverified", ran.text)
+        # still untraced after the one repair: said under the answer, no third turn
+        self.answers = [AgentRun(events=[OCT], final_text="It was 9 USD.",
+                                 usage={"subtype": "success"}),
+                        AgentRun(events=[], final_text="It was 9 USD.",
+                                 usage={"subtype": "success"})]
+        ran = self.ask("ann", "And USD?", conversation="c2")
+        self.assertEqual(len(self.opened[-1].prompts), 2)
+        self.assertEqual((ran.text, ran.unverified), ("It was 9 USD.", ["9"]))
+        # nothing to repair: one turn
+        self.answers = [AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.",
+                                 usage={"subtype": "success"})]
+        self.ask("ann", "CAD only?", conversation="c3")
+        self.assertEqual(len(self.opened[-1].prompts), 1)
+
+    def test_the_shadow_check_never_changes_the_answer_and_is_only_logged_by_counts(self):
+        """11-23 decision: the check runs in the background after the answer; no repair
+        turn, no status in the payload, no event; the log line holds counts, not words."""
+        import json as _json
+        from operator_api import ask_check
+        rid = OCT["result"]["result"]
+        seen = []
+        found = _json.dumps({"claims": [
+            {"claim": "no USD sales", "verdict": "contradicted", "cells": "701,688.25 USD",
+             "read": 1, "would_settle": "x"}]})
+        self.asker._check_call = lambda prompt, seconds=None: seen.append(prompt) or found
+        self.answers = [AgentRun(events=[OCT], final_text="It was {{%s#row=0.total}} CAD; no "
+                                 "USD sales." % rid, usage={"subtype": "success"})]
+        self.assertTrue(ask_check.SHADOW)
+        # unset: no check at all, no call (it costs ~$0.23 an answer)
+        self.answers = [AgentRun(events=[OCT], final_text="It was 703,058.44 CAD.",
+                                 usage={"subtype": "success"})]
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os as _os
+            _os.environ.pop(ask_check.ENABLE_ENV, None)
+            self.ask("ann", "October sales, unchecked?", conversation="c0")
+        self.assertEqual(seen, [])
+        self.answers = [AgentRun(events=[OCT], final_text="It was {{%s#row=0.total}} CAD; no "
+                                 "USD sales." % rid, usage={"subtype": "success"})]
+        with mock.patch.dict("os.environ", {ask_check.ENABLE_ENV: "shadow"}), \
+                self.assertLogs("operator_api.ask", "INFO") as logs:
+            ran = self.ask("ann", "October sales?")
+            for t in threading.enumerate():
+                if t.name == "ask-check-shadow":
+                    t.join(10)
+        self.assertEqual(len(self.opened[-1].prompts), 1)          # no repair turn
+        self.assertIsNone(ran.check)
+        self.assertEqual(ran.text, "It was 703,058.44 CAD; no USD sales.")
+        self.assertEqual(len(seen), 1)
+        line = next(x for x in logs.output if "ask_check_shadow" in x)
+        self.assertIn('"verdicts": {"contradicted": 1}', line)
+        self.assertNotIn("USD sales", line)
+        # a turn that read nothing: nothing runs, nothing is said
+        self.answers = [AgentRun(events=[], final_text="Hello.", usage={"subtype": "success"})]
+        ran = self.ask("ann", "hi", conversation="c9")
+        self.assertIsNone(ran.check)
+        self.assertEqual(len(seen), 1)
+
+    def test_the_check_sends_its_claims_back_once_and_shows_nothing_under_the_answer(self):
+        """A4 rev 2: after the answer (and its one reference repair), one call with no tools
+        reads it against what the session read; the claims it lists go back to the same
+        session once (no second check, no line under the answer while the pass line is not
+        met). A turn that read nothing is not checked."""
+        import json as _json
+        from unittest import mock
+        from operator_api import ask_check
+        for patch in (mock.patch.object(ask_check, "SHADOW", False),
+                      mock.patch.dict("os.environ", {ask_check.ENABLE_ENV: "on"})):
+            patch.start()
+            self.addCleanup(patch.stop)
+        rid = OCT["result"]["result"]
+        prompts = []
+        found = _json.dumps({"claims": [
+            {"claim": "no USD sales", "verdict": "contradicted",
+             "cells": "701,688.25 USD in October", "read": 1,
+             "would_settle": "sum by currency"}]})
+
+        def check_call(reply):
+            def call(prompt, seconds=None):
+                prompts.append(prompt)
+                return reply
+            return call
+        self.asker._check_call = check_call(found)
+        first = "It was {{%s#row=0.total}} CAD; no USD sales." % rid
+        self.answers = [
+            AgentRun(events=[OCT], final_text=first, usage={"subtype": "success"}),
+            AgentRun(events=[], final_text="It was {{%s#row=0.total}} CAD and "
+                     "{{%s#row=1.total}} USD." % (rid, rid), usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales?")
+        session = self.opened[-1]
+        self.assertEqual(len(session.prompts), 2)
+        self.assertTrue(session.prompts[1].startswith("A check of your answer against your "
+                                                      "own reads found these."))
+        self.assertIn('"no USD sales" | contradicted | the reads hold: 701,688.25 USD in '
+                      'October', session.prompts[1])
+        self.assertEqual(len(prompts), 1)                      # one check, never a second
+        self.assertIn("ANSWER:\nIt was 703,058.44 CAD; no USD sales.", prompts[0])
+        self.assertIn("READ 1: plx.sql", prompts[0])           # the whole result is passed
+        self.assertEqual(ran.text, "It was 703,058.44 CAD and 701,688.25 USD.")
+        self.assertEqual((ran.check["status"], ran.check["claims"]), ("repaired", 1))
+        self.assertEqual(ran.usage["check_repair"], 1)
+        # the claim still written after the one repair: no line under the answer
+        self.answers = [AgentRun(events=[OCT], final_text=first, usage={"subtype": "success"}),
+                        AgentRun(events=[], final_text=first, usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales again?", conversation="c2")
+        self.assertEqual(len(self.opened[-1].prompts), 2)
+        self.assertEqual(ran.text, "It was 703,058.44 CAD; no USD sales.")
+        self.assertEqual((ran.check["status"], ran.check["disagrees"]), ("repaired", []))
+        self.assertEqual(ran.usage["check_repair"], 1)
+        # nothing listed: checked, one turn
+        self.asker._check_call = check_call(_json.dumps({"claims": []}))
+        self.answers = [AgentRun(events=[OCT], final_text=first, usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales, clean?", conversation="c4")
+        self.assertEqual((len(self.opened[-1].prompts), ran.check["status"]), (1, "checked"))
+        # a one-run session (no conversation) has no turn to send the claims back on: they
+        # are listed, the answer is shown as written and the status says so, never "repaired"
+        self.asker._check_call = check_call(found)
+        self.answers = [AgentRun(events=[OCT], final_text=first, usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales, one run?", conversation=None)
+        self.assertEqual((ran.check["status"], ran.check["claims"]), ("flagged", 1))
+        self.assertNotIn("check_repair", ran.usage)
+        self.assertEqual(ran.text, "It was 703,058.44 CAD; no USD sales.")
+        # nothing read: not checked, one turn, no call
+        prompts.clear()
+        self.answers = [AgentRun(events=[], final_text="Hello.", usage={"subtype": "success"})]
+        ran = self.ask("ann", "hi", conversation="c3")
+        self.assertEqual((ran.check["status"], ran.check["why"]),
+                         ("not_checked", "nothing was read to check"))
+        self.assertEqual((len(self.opened[-1].prompts), prompts), (1, []))
+
+    def test_a_declared_part_nothing_read_goes_back_once_then_is_said(self):
+        """A3 (HARD20 h02: Teams never searched in either run): a part the session listed
+        with plx.legs that no read touched sends the answer back once; still unread, it is
+        said under the answer."""
+        import json as _json
+        legs = {"type": "tool_call", "name": "plx.legs", "arguments": {"legs": [
+            {"part": "October sales", "sources": ["sales_invoices"]},
+            {"part": "Teams talk", "sources": ["teams"]}]}, "result": _json.dumps({"legs": 2})}
+        read = dict(OCT, result={**OCT["result"], "views": ["sales_invoices"]})
+        self.answers = [AgentRun(events=[legs, read], final_text="It was 703,058.44 CAD.",
+                                 usage={"subtype": "success"}),
+                        AgentRun(events=[], final_text="It was 703,058.44 CAD.",
+                                 usage={"subtype": "success"})]
+        ran = self.ask("ann", "October sales and what Teams says?")
+        self.assertIn("Teams talk (teams)", self.opened[-1].prompts[1])
+        # still unread: said in the payload's coverage (the app's "What was read"), not text
+        self.assertEqual(ran.text, "It was 703,058.44 CAD.")
+        self.assertIn(("Teams talk", 0), [(p["part"], p["reads"]) for p in ran.coverage])
 
     def test_the_ask_log_line_tells_a_chart_never_asked_from_one_dropped(self):
         """The one log line per Ask counts the chart blocks the answer wrote, the charts
@@ -1190,6 +1031,29 @@ class WarmTest(unittest.TestCase):
         self.assertNotIn("remember about this person", self.opened[0].prompts[-1])
 
 
+class StartDigestPromptTest(unittest.TestCase):
+    """Spec 13.2 T6: a ready session is made under one prompt; a changed prompt is another
+    start, so the ready sessions made under the old one are ended and made again."""
+
+    def test_the_prompt_is_part_of_what_a_ready_session_was_started_as(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "host.json"
+            config.write_text("{}")
+            asker = SimpleNamespace(host_config=str(config))
+            prompt = ["views: a, b"]
+            with mock.patch("operator_api.agent_ask.ticket_claims", lambda s: {"sub": "ann"}), \
+                    mock.patch("operating.ontology_tools_sql.served_views",
+                               lambda names: frozenset(names)), \
+                    mock.patch.object(sa, "system_prompt", lambda: prompt[0]):
+                first = sa.start_digest(asker, object())
+                self.assertEqual(first, sa.start_digest(asker, object()))
+                prompt[0] = "views: a, b. A view's doc changed."
+                self.assertNotEqual(first, sa.start_digest(asker, object()))
+
+
 class ScopeDigestTest(unittest.TestCase):
     """The real ``scope_digest`` over a fake database: a views refresh (the door's stamp)
     and newly decided rows (the exclusion's covered_ver) keep a conversation's session; a
@@ -1270,97 +1134,23 @@ class ScopeDigestTest(unittest.TestCase):
 
 
 class FreightcomTest(unittest.TestCase):
-    """Nothing naming Freightcom reaches the model from any piece the Ask puts together
-    itself: the conversation fed back, the question as a server path composed it, the page
-    asked on, attached files and the person's memory, on a new session and a follow-up."""
+    """The owner dropped the Freightcom no-AI rule (11-23): every piece the Ask puts together
+    keeps what it says about Freightcom."""
 
-    spares = "0"
-    setUp, after = WarmTest.setUp, staticmethod(WarmTest.after)
-
-    def assertClean(self, prompt):
-        from integrations.image_ocr_gpu import FREIGHTCOM
-        self.assertIsNone(FREIGHTCOM.search(prompt), prompt)
-
-    def test_each_source_is_left_out_or_redacted(self):
+    def test_nothing_is_left_out_or_rewritten(self):
         from operating.ask_attachments import Attached
         history = [SimpleNamespace(role="user", text="What did Freight Com charge us?"),
-                   SimpleNamespace(role="assistant", text="Freightcom billed 4,321.00 CAD."),
-                   SimpleNamespace(role="user", text="Invoices last month?"),
-                   SimpleNamespace(role="assistant", text="Which currency?")]
+                   SimpleNamespace(role="assistant", text="Freightcom billed 4,321.00 CAD.")]
         files = [Attached(name="rates.csv", kind="spreadsheet", size=9, digest="d1",
-                          text="carrier,total\nFREIGHTCOM,99.00"),
-                 Attached(name="freightcom-quote.txt", kind="text", size=9, digest="d2",
-                          unread="It is empty."),
-                 Attached(name="order.csv", kind="spreadsheet", size=9, digest="d3",
-                          text="item,total\nbars,12.00")]
-        context = ["The person asked this on the page of the record \"Supplier:Freightcom\".",
-                   "The person asked this on the app page {\"kind\": \"page\"}."]
-        memory = "Prefers CAD totals.\nShips most orders through freightcom.ca."
+                          text="carrier,total\nFREIGHTCOM,99.00")]
         prompt = sa.task("CAD please, and compare with Freightcom", history, files=files,
-                         context=context, memory=memory)
-        self.assertClean(prompt)
-        self.assertIn("Person: Invoices last month?", prompt)          # the rest stays
-        self.assertIn("(2 earlier turns not shown", prompt)
-        self.assertIn("Prefers CAD totals.", prompt)
-        self.assertIn('"rates.csv"; its text was not given to you', prompt)
-        self.assertNotIn("99.00", prompt)
-        self.assertIn("bars,12.00", prompt)
-        self.assertIn('"[name withheld]-quote.txt"', prompt)
-        self.assertIn('{"kind": "page"}', prompt)
-        self.assertTrue(prompt.endswith("Question: CAD please, and compare with "
-                                        "[name withheld]"))
-        # a figure only a withheld piece held is not the person's own: it is still marked
-        self.assertEqual(ag.gate("It was 4,321.00 CAD.", [], sa.asked_words(
-            "CAD please", history, files))[0], "It was 4,321.00 CAD (unverified).")
-
-    def test_a_question_naming_nothing_is_not_rewritten(self):
-        question = "Area in m\u00b2 of the \ufb01le, \uff26ull width?"
-        self.assertIn("Question: " + question, sa.task(question, []))
-
-    def test_the_apps_ask_new_and_follow_up(self):
-        import threading
-        from operator_api import models as m
-        from operator_api.backend_ask import AskMixin
-        from operating.ask_attachments import Attached
-        memory = {"text": "Prefers CAD totals."}
-        backend = SimpleNamespace(
-            agent_ask=self.asker, _sessions=threading.Semaphore(1),
-            _memory_turn=lambda *a: (memory["text"], None),
-            # a server path composes the question (the question an answer asked back)
-            _clarified=lambda reader, req: req.model_copy(update={
-                "question": "Freightcom invoices last month in CAD?", "clarified": None}))
-        backend._drain = lambda *a: AskMixin._drain(backend, *a)
-
-        def ask(request, files=()):
-            batch = SimpleNamespace(files=list(files), read=list(files))
-            gen = sa.ask(backend, SimpleNamespace(session=SimpleNamespace(who="ann")),
-                         request, "c1", lambda: 1, files=batch if files else None)
-            try:
-                while True:
-                    next(gen)
-            except StopIteration as stop:
-                return stop.value
-        ask(m.AskRequest(question="CAD", object_id="Supplier:FREIGHT-COM",
-                         clarified={"answer_id": "a" * 24, "text": "CAD"}))
-        memory["text"] = "Wants USD totals.\nFreightcom is our usual carrier."
-        note = Attached(name="n.txt", kind="text", size=3, digest="d",
-                        text="Freightcom quote 88.00")
-        backend._clarified = lambda reader, req: req
-        ask(m.AskRequest(question="Remember that I want USD.", history=[
-            {"role": "user", "text": "Freightcom invoices last month in CAD?"},
-            {"role": "assistant", "text": "It was 703,058.44 CAD."}]))
-        ask(m.AskRequest(question="And Freightcom?", history=[
-            {"role": "user", "text": "Freightcom invoices last month in CAD?"},
-            {"role": "assistant", "text": "It was 703,058.44 CAD."},
-            {"role": "user", "text": "Remember that I want USD."},
-            {"role": "assistant", "text": "It was 703,058.44 CAD."}]), files=[note])
-        self.assertEqual(len(self.opened), 1)   # one session throughout
-        self.assertEqual(len(self.opened[0].prompts), 3)
-        for prompt in self.opened[0].prompts:
-            self.assertClean(prompt)
-        self.assertIn("[name withheld] invoices last month in CAD?", self.opened[0].prompts[0])
-        self.assertIn("remember about this person now", self.opened[0].prompts[2])
-        self.assertNotIn("88.00", self.opened[0].prompts[2])
+                         context=["On the page of \"Supplier:Freightcom\"."],
+                         memory="Ships most orders through freightcom.ca.")
+        for kept in ("Freightcom billed 4,321.00 CAD.", "FREIGHTCOM,99.00", "Supplier:Freightcom",
+                     "freightcom.ca"):
+            self.assertIn(kept, prompt)
+        self.assertTrue(prompt.endswith("Question: CAD please, and compare with Freightcom"))
+        self.assertNotIn("not shown", prompt)
 
 
 class ReadyTest(unittest.TestCase):
@@ -1637,13 +1427,13 @@ class ReadyHygieneTest(unittest.TestCase):
 
 
 class StreamTest(unittest.TestCase):
-    """The reply streams as written, but only as the gate passes it."""
+    """The reply streams as written, its references printed by the host as it goes."""
 
     def _lines(self, *messages):
         import json
         return [(json.dumps(m), m) for m in messages]
 
-    def test_streamed_words_are_gated_and_a_new_message_starts_again(self):
+    def test_streamed_words_print_their_references_and_a_new_message_starts_again(self):
         import json
         shown = []
         stream = sa.Streamed(lambda kind, data: shown.append((kind, data["text"])), [])
@@ -1653,18 +1443,21 @@ class StreamTest(unittest.TestCase):
             {"type": "tool_result", "tool_use_id": "t1",
              "content": json.dumps(OCT["result"])}]}}
         start = {"type": "stream_event", "event": {"type": "message_start"}}
-        for line, message in self._lines(start, _delta("Let me check 5 views."), call, back,
-                                          start, _delta("It was 703,058.44 CAD "),
-                                          _delta("and 9 USD.\n")):
-            stream.line(line, message)
+        rid = OCT["result"]["result"]
+        with mock.patch.object(sa, "FLUSH_SECONDS", 0.0):   # every delta flushes on time
+            for line, message in self._lines(
+                    start, _delta("Let me check 5 views."), call, back, start,
+                    _delta("It was {{%s#row=0.total}} CAD " % rid), _delta("and {{%s#ro" % rid),
+                    _delta("w=1.total}} USD.\n")):
+                stream.line(line, message)
         texts = [t for k, t in shown if k == "text"]
         # narration is replaced (empty) once the next message starts
         self.assertIn("", texts)
-        self.assertEqual(texts[-1].strip(), "It was 703,058.44 CAD and 9 USD (unverified).")
-        # the raw unbound figure is never shown unmarked
+        self.assertEqual(texts[-1].strip(), "It was 703,058.44 CAD and 701,688.25 USD.")
+        # a reference is never shown raw or half-written
         for text in texts:
-            self.assertNotRegex(text, r"\b9 USD(?! \(unverified\))")
-            self.assertNotRegex(text, r"\b5 views(?! \(unverified\))")
+            self.assertNotIn("{{", text)
+            self.assertNotIn("sql://", text)
 
     def test_the_words_before_a_tool_call_stay_as_a_progress_note(self):
         # the walk: first words came 15-31 s in, as narration between reads was replaced;
@@ -1818,12 +1611,96 @@ class CitedTest(unittest.TestCase):
                                                failure=None), "q", "c", 1, "h" * 24)
         self.assertEqual(empty.cited, [])          # the simple layout, no sources
 
+    def test_each_source_shows_its_query_and_the_answer_its_measure_definitions(self):
+        """Show the work: each plx.sql result's statement (a measure's: the statement the
+        catalogue made), and the measures the answer rests on, once each, with owner and
+        version; a search, or a measure entry missing any of those, shows none."""
+        from operating import measures
+        m = measures.measures()["revenue"]
+        entry = {"id": "revenue", "name": m["name"], "kind": "measure",
+                 "definition": m["definition"], "owner": m["owner"],
+                 "version": measures.version(m), "sql": "SELECT sum(revenue) FROM x"}
+        ran_sql = {**sql([["CAD", "1", "1"]]), "arguments": {"sql": "SELECT 1 AS a"}}
+        by_measure = {**sql([["CAD", "2", "1"]]), "arguments": {"measure": "revenue"}}
+        by_measure["result"] = {**by_measure["result"], "measure": entry}
+        again = {**sql([["USD", "3", "1"]]), "arguments": {"measure": "revenue"}}
+        again["result"] = {**again["result"], "measure": entry}
+        unowned = {**sql([["CAD", "4", "1"]]), "arguments": {"measure": "revenue"}}
+        unowned["result"] = {**unowned["result"], "measure": {**entry, "owner": ""}}
+        for i, event in enumerate((ran_sql, by_measure, again, unowned)):
+            event["result"] = {**event["result"], "result": f"sql://{i:020d}"}
+        docs = {"type": "tool_call", "name": "plx.search", "is_error": False,
+                "result": {"documents": [{"citation": "original://m/1", "title": "t"}]}}
+        tables = sa.cited([ran_sql, by_measure, again, unowned, docs])
+        self.assertEqual([(t["query"], (t["measure"] or {}).get("id")) for t in tables],
+                         [("SELECT 1 AS a", None), ("SELECT sum(revenue) FROM x", "revenue"),
+                          ("SELECT sum(revenue) FROM x", "revenue"),
+                          ("SELECT sum(revenue) FROM x", None), (None, None)])
+        self.assertTrue(measures.version(m).startswith("v"))
+        self.assertNotEqual(measures.version(m), measures.version({**m, "where": "TRUE"}))
+        ran = sa.SimpleRun(text="x", agent_text="x", unverified=[],
+                           events=[ran_sql, by_measure, again, unowned, docs],
+                           seconds=1.0, stopped=False, failure=None)
+        payload = sa.answer_payload(ran, "q", "c", 1, "g" * 24)
+        self.assertEqual([(d.id, d.owner, d.version) for d in payload.definitions],
+                         [("revenue", m["owner"], measures.version(m))])
+        self.assertIsNone(payload.definitions[0].defined_on)   # the entry stated no day
+        dated = {**by_measure, "result": {**by_measure["result"],
+                                          "measure": {**entry, "defined_on": "2026-11-23"}}}
+        self.assertEqual(sa.definitions([dated])[0]["defined_on"], "2026-11-23")
+        self.assertEqual(payload.cited[1].query, "SELECT sum(revenue) FROM x")
+
+    def test_every_result_and_every_row_read_is_listed(self):
+        for n in (1, 10, 60, 200):
+            events = []
+            for i in range(n):
+                event = sql([["CAD", str(i), "1"]])
+                event["result"] = {**event["result"], "result": f"sql://{i:020d}"}
+                events.append(event)
+            ran = sa.SimpleRun(text="x", agent_text="x", unverified=[], events=events,
+                               seconds=1.0, stopped=False, failure=None)
+            payload = sa.answer_payload(ran, "q", "c", 1, "k" * 24)
+            self.assertEqual((len(payload.cited), payload.cited_more), (n, 0))
+
     def test_cardinality(self):
-        for n in (1, 10, 60):
+        for n in (1, 10, 60, 500):
             event = sql([["CAD", str(i), "1"] for i in range(n)])
             tables = sa.cited([event])
             self.assertEqual(tables[0]["records"], n)
-            self.assertEqual(len(tables[0]["rows"]), min(n, sa.MAX_CITED_ROWS))
+            self.assertEqual(len(tables[0]["rows"]), n)
+
+    def test_the_pages_of_one_result_are_one_table_each_row_once_each_cell_whole(self):
+        long = "y" * 5000
+        first = sql([["CAD", "0", long], ["CAD", "1", "1"]])
+        first["result"] = {**first["result"], "result": "sql://" + "a" * 20,
+                           "rows": [{"cite": f"sql://{'a' * 20}#row={i}", "cells": c["cells"]}
+                                    for i, c in enumerate(first["result"]["rows"])]}
+        second = {**first, "result": {**first["result"], "rows": [
+            first["result"]["rows"][1],
+            {"cite": f"sql://{'a' * 20}#row=2", "cells": ["CAD", "2", "1"]}]}}
+        tables = sa.cited([first, second])
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([r[1] for r in tables[0]["rows"]], ["0", "1", "2"])
+        self.assertEqual(len(tables[0]["rows"][0][2]), 5000)
+
+
+class HistoryBudgetTest(unittest.TestCase):
+    def test_a_long_conversation_keeps_its_newest_turns_and_says_the_rest(self):
+        """The app now sends up to 40 turns of 12,000 characters (was 12 of 4,000); the
+        task tells the newest that fit ``HISTORY_CHARS`` and says how
+        many earlier ones it left out, never silently."""
+        from types import SimpleNamespace
+        for n in (1, 10, 40):
+            history = [SimpleNamespace(role="user" if i % 2 == 0 else "assistant",
+                                       text=f"turn {i} " + "x" * 3000) for i in range(n)]
+            prompt = sa.task("and now?", history)
+            told = [i for i in range(n) if f"turn {i} " in prompt]
+            self.assertEqual(told, list(range(n - len(told), n)), n)   # the newest, in order
+            self.assertLessEqual(len(told) * 3000, sa.HISTORY_CHARS + 3000)
+            if len(told) < n:
+                self.assertIn(f"({n - len(told)} earlier turns not shown", prompt)
+            else:
+                self.assertNotIn("earlier turns not shown", prompt)
 
 
 if __name__ == "__main__":

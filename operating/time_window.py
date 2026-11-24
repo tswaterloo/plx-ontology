@@ -1,8 +1,7 @@
 """The time window a question names: "in the last 90 days", "this quarter", "last month",
 "since March 3", "year to date", read into exact business days.
 
-One grammar for every windowed answer (``operating.fast_answer``'s receipt counts and
-invoiced totals): a window is ``Window(start, end, said)``, both days inclusive in the
+One grammar for every windowed answer (briefs, aggregates, claim checks): a window is ``Window(start, end, said)``, both days inclusive in the
 business day (``BUSINESS_TZ``), never past today; ``said`` is the window as the answer
 states it, with its exact days ("from Aug 5 through Nov 3", "this quarter (Oct 1 through
 Nov 3)"), so a reader always sees which days were counted.

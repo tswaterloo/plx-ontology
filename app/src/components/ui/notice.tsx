@@ -68,8 +68,16 @@ export function LoadProblem({ message, busy, onRetry, after = 20_000, className 
 }
 
 /** The page's age, when the server answered from its last good read: "As of 9:08 PM ET · refreshing". */
-export function StaleNote({ since, readAt, className }: { since?: string | null; readAt?: string | null; className?: string }) {
-  const line = staleLine(since, readAt);
+export function StaleNote({ since, readAt, className, onReturn = false }: { since?: string | null; readAt?: string | null; className?: string; onReturn?: boolean }) {
+  // the page asks again for about 22 s (lib/stale-refresh); after that it says it stopped asking
+  const [gaveUp, setGaveUp] = React.useState(false);
+  React.useEffect(() => {
+    setGaveUp(false);
+    if (!since) return;
+    const t = setTimeout(() => setGaveUp(true), 25_000);
+    return () => clearTimeout(t);
+  }, [since]);
+  const line = staleLine(since, readAt, Date.now(), gaveUp, onReturn);
   if (!line) return null;
   return (
     <p className={cn("text-meta text-muted", className)} data-testid="stale-page" role="status">

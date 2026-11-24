@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Assist worker: look for drafts asked for 15 seconds after the last run ended
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

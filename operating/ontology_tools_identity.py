@@ -710,6 +710,12 @@ class ToolError(Exception):
     def __init__(self, code: str, message: str, hint: str | None = None) -> None:
         super().__init__(message)
         self.code, self.message, self.hint = code, message, hint
+        # (kind, name) of a view or measure nothing covers: the call puts it on the gap list
+        self.gap: tuple[str, str] | None = None
+
+    def uncovered(self, kind: str, name: str) -> "ToolError":
+        self.gap = (kind, name)
+        return self
 
 
 class _MatchedId(NamedTuple):

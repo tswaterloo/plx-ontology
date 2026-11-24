@@ -115,6 +115,16 @@ class ViewAsApi(unittest.TestCase):
         home = self.owner.get("/api/home", headers=as_vince)
         self.assertEqual(home.status_code, 200)
         self.assertEqual(home.json()["greeting_name"], "Vince")
+        # Home's bundle as him: the parts view-as may read, each his; the sidebar (his own
+        # recent questions) refused as its route is; a person who may not view gets nothing
+        bundle = self.owner.get("/api/home/bundle", headers=as_vince)
+        self.assertEqual(bundle.status_code, 200, bundle.text)
+        parts = bundle.json()["parts"]
+        self.assertEqual(parts["home"]["body"]["greeting_name"], "Vince")
+        self.assertEqual(parts["sidebar"]["status"], 403)
+        self.assertEqual(self.owner.get("/api/sidebar", headers=as_vince).status_code, 403)
+        self.assertTrue(all(parts[n]["status"] == 200 for n in
+                            ("home", "briefing", "late", "suggestions", "replies", "approvals")))
         served = self.backend.readers[-1]
         self.assertTrue(served.session.view_as)
         self.assertEqual(served.session.principals, {f"employee:{VINCE}"})
@@ -142,9 +152,11 @@ class ViewAsApi(unittest.TestCase):
             self.assertEqual(self.owner.get(path, headers=as_vince).status_code, 403, path)
         # every view and every refusal is audited, the file the owner's alone
         rows = self.audit()
-        self.assertEqual(len(rows), 2 + 6 + 3)
+        self.assertEqual(len(rows), 2 + 6 + 3 + 2)   # + the bundle and the refused sidebar
         self.assertEqual({r["viewed"] for r in rows}, {vince})
         self.assertEqual({r["viewer"] for r in rows}, {viewer_for("staff:owner")})
+        # a person who may not view anyone gets nothing from the bundle either
+        self.assertEqual(self.ana.get("/api/home/bundle", headers=as_vince).status_code, 403)
         self.assertEqual([r["status"] for r in rows[:2]], [200, 200])
         self.assertEqual(rows[0]["route"], "/api/home")
         self.assertEqual(stat.S_IMODE(os.stat(self.state / "view-as" / "audit.jsonl")

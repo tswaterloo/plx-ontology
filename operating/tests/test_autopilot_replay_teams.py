@@ -469,12 +469,11 @@ class TeamsChats(World):
                 else:
                     self.assertEqual((kept, cached), (len(sent), 0))
 
-    def test_excluded_freightcom_and_pay_messages_never_reach_the_model(self):
-        """The people exclusion bars a chat, Freightcom content never goes to a model, and
+    def test_excluded_and_pay_messages_never_reach_the_model(self):
+        """The people exclusion bars a chat, and
         pay or HR matter is never read: none of them is in any batch the model is sent."""
         from operating import chat_ask_model as cam
-        extra = ("can you check the freightcom quote for the drums",
-                 "can you check the gross pay, net pay and YTD on my pay stub")
+        extra = ("can you check the gross pay, net pay and YTD on my pay stub")
         _texts, guard = self.asks_world(2, extra=extra,
                                         barred=("need the signed form from you today",))
         model = StubAsks(yes=self.ASKS)
@@ -483,7 +482,6 @@ class TeamsChats(World):
         self.assertTrue(sent)
         for text in (*extra, "need the signed form from you today"):
             self.assertNotIn(text, sent)
-        self.assertFalse(any("freight" in t.lower() for t in sent))
 
     def test_a_cached_verdict_is_read_once_per_message(self):
         """The model reads a message once: the same message judged again (a later cycle,

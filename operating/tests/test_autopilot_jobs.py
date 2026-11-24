@@ -117,7 +117,6 @@ class ProposalsAreShapedLikeTheWritePath(unittest.TestCase):
             "FileMaker": {**PO_DATE, "system": "filemaker"},
             "Sage": {**PO_DATE, "system": "sage"},
             "an unknown system": {**PO_DATE, "system": "erp9"},
-            "Freightcom": {**PO_DATE, "reason": "Freightcom moved the pickup"},
             "an unknown field": {**PO_DATE, "extra": 1},
             "no reason": {**PO_DATE, "reason": ""},
             "not an object": ["portal"],
@@ -193,8 +192,6 @@ class ProposalsAreShapedLikeTheWritePath(unittest.TestCase):
                 **self.MESSAGE["change"], "bcc": ["x@plx.example"]}},
             "Teams with no one": {**teams, "change": {"body": "hi"}},
             "no reason": {**self.MESSAGE, "reason": ""},
-            "Freightcom": {**self.MESSAGE, "change": {**self.MESSAGE["change"],
-                                                      "to": ["ops@freightcom.com"]}},
             "maybe": {**self.RESPOND, "change": {"response": "maybe"}},
             "an answer that edits": {**self.RESPOND, "change": {"response": "accept",
                                                                "subject": "Mine now"}},
@@ -339,14 +336,13 @@ class JobberBoundary(unittest.TestCase):
                                    "text"))
         self.assertEqual(out["kind"], "job")
 
-    def test_excluded_people_pay_and_freightcom_never_reach_the_model(self):
+    def test_excluded_people_and_pay_never_reach_the_model(self):
         session = Session(calls=[("plx.prepare_write", TASK)])
         j = jobber(session)
         cases = {
             "not_cleared": (GATE, People(barred={"dev@plx.example"})),
             "not_cleared ": ({**MAIL, "cleared": False}, People()),
             "pay_or_hr": ({**GATE, "text": PAYSTUB}, People()),
-            "freightcom": ({**GATE, "fields": {"title": "Freightcom pickup booking"}}, People()),
         }
         for why, (event, people) in cases.items():
             with self.subTest(why):
@@ -354,12 +350,12 @@ class JobberBoundary(unittest.TestCase):
                                   "me@plx.example", people)
                 self.assertEqual((got, said), (None, why.strip()))
         self.assertEqual(session.runs, [])
-        # what the tools read is screened too: a hit drops the whole job
+        # Freightcom is read like any other carrier (owner 11-23): no screen on it
         session = Session(calls=[("plx.prepare_write", PO_DATE)],
                           looked=["carrier: Freightcom, pickup 20 Nov"])
         got, why = jobber(session).run(MAIL, "me", aj.described(MAIL, ""), "me@plx.example",
                                        People())
-        self.assertEqual((got, why), (None, "freightcom"))
+        self.assertEqual(why, "")
 
     def test_tool_answers_quoting_a_colleagues_address_pass_and_an_excluded_one_never(self):
         """Fresh grade 11-18: 3 of 5 approvals the model prepared were withheld because the
@@ -501,7 +497,7 @@ COLLEAGUE = ("sam@plx.example", "55555555-5555-4555-8555-555555555555")
 
 def job_item(item_id: str, owner: str, jobs: list) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {"item_id": item_id, "event_id": "e-" + item_id, "autopilot": "job_meeting",
+    return {"item_id": item_id, "event_id": "e-" + item_id, "autopilot": "invoice_entry",
             "owner": owner, "title": "System work from a meeting: Weekly ops",
             "body": {"happened": {"event_type": "meeting.ended", "object_id": "Meeting:1",
                                   "subject": "Weekly ops"},
@@ -530,7 +526,7 @@ class ApprovalJobSettles(unittest.TestCase):
                     for n, st in enumerate(("approved", "rejected", "pending", "pending", "")):
                         item = job_item(f"ap_{n}", OWNER[1], [])
                         oid = f"MCApproval:mission_control.approvals:{{\"id\":\"apg_{n}\"}}"
-                        item["autopilot"] = "job_approval"
+                        item["autopilot"] = "invoice_entry"
                         item["body"]["happened"] = {"event_type": "approval.requested",
                                                     "object_id": oid}
                         q.add_item(item)
@@ -612,7 +608,7 @@ class JobReview(unittest.TestCase):
         r = owner.post("/api/autopilot/items/ap_job/jobs/0/prepare")
         self.assertEqual(r.status_code, 200, r.text)
         card = r.json()
-        self.assertEqual((card["state"], card["origin"]), ("prepared", "job_meeting"))
+        self.assertEqual((card["state"], card["origin"]), ("prepared", "invoice_entry"))
         self.assertEqual(self.fake.calls, [])             # reviewing writes nothing
         again = owner.post("/api/autopilot/items/ap_job/jobs/0/prepare").json()
         self.assertEqual(again["prepared_id"], card["prepared_id"])
@@ -631,7 +627,7 @@ class JobReview(unittest.TestCase):
 
     def test_an_approval_job_card_carries_its_recommendation_reasons_and_mc_link(self):
         item = job_item("ap_gate", OWNER[1], [{"tool": "plx.prepare_write", "arguments": TASK}])
-        item["autopilot"] = "job_approval"
+        item["autopilot"] = "invoice_entry"
         item["body"]["prepared"].update({
             "recommendation": "approve", "reasons": ["an earlier approval was granted"],
             "mc": {"link": "https://mc.plxcustomer.io/tasks/TASK-3"},

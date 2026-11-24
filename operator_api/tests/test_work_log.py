@@ -11,6 +11,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -250,8 +251,8 @@ class WorkLogApi(unittest.TestCase):
         ask(self.ana, "which orders are late")          # not written
         page = self.log(self.ana)
         self.assertEqual((page["total"], page["events"]), (None, []))
-        answer = ask(self.ana, "what did I ask today")
-        self.assertEqual(answer["outcome"], "refused")
+        mine = self.backend._my_work_call(SimpleNamespace(key="plx:staff:ana"), {})
+        self.assertEqual(set(mine), {"error"})
         self.guard = Guard()
         self.assertEqual(self.log(self.ana)["total"], 1)
         # an excluded person's own work is never written
@@ -305,29 +306,30 @@ class WorkLogApi(unittest.TestCase):
         self.assertEqual(len(events), 2, events)
         self.assertIn('{\\"id\\":\\"po-1\\"}', json.dumps(events))
 
-    def test_ask_about_my_own_work_answers_from_my_log_only(self):
+    def test_the_asks_work_log_tool_reads_my_own_log_only(self):
+        """``plx.my_work``: the model fills its arguments (no text rule reads the
+        question); the asker's own entries only, a record's words narrow them, an unknown
+        kind fails closed, and a session that is not the person's own has no such tool."""
         ask(self.ana, "where is PO 90412, is it late")
         ask(self.ben, "is the supplier for SO 5512 late")
-        answer = ask(self.ana, "what did I ask today")
-        self.assertEqual(answer["outcome"], "answered")
-        self.assertIn("where is PO 90412", answer["direct_answer"])
-        self.assertNotIn("5512", answer["direct_answer"])
-        record = ask(self.ana, "where was I on 90412")
-        self.assertIn("where is PO 90412", record["direct_answer"])
-        # a business question is not routed to the log
-        business = ask(self.ana, "what did I order from the supplier last month")
-        self.assertFalse(business["direct_answer"].startswith("Your work log"))
-        # nothing mailed from the Workbench: what the person mailed is asked of their mail
-        mailed = ask(self.ben, "what did I send yesterday")
-        self.assertFalse(mailed["direct_answer"].startswith("Your work log"))
-        self.assertTrue(ask(self.ben, "what did I ask yesterday")["direct_answer"]
-                        .startswith("Your work log has nothing"))
-        # AP-11: an approval given outside the Workbench (Mission Control, Business
-        # Central) is asked of the business systems too; a save is the log's alone
-        approved = ask(self.ben, "what did I approve yesterday")
-        self.assertFalse(approved["direct_answer"].startswith("Your work log"), approved)
-        self.assertTrue(ask(self.ben, "what did I save yesterday")["direct_answer"]
-                        .startswith("Your work log has nothing"))
+        ana = SimpleNamespace(key=",".join(sorted(fixture_identity("plx", ["staff:ana"])()
+                                                  .principals)))
+        mine = self.backend._my_work_call(ana, {})
+        self.assertEqual(mine["total"], 1, mine)
+        self.assertIn("where is PO 90412", mine["entries"][0]["what"])
+        self.assertNotIn("5512", json.dumps(mine))
+        self.assertEqual(self.backend._my_work_call(ana, {"words": "90412"})["total"], 1)
+        self.assertEqual(self.backend._my_work_call(ana, {"words": "5512"})["total"], 0)
+        self.assertEqual(self.backend._my_work_call(ana, {"kind": "ask"})["total"], 1)
+        self.assertEqual(set(self.backend._my_work_call(ana, {"kind": "mail"})), {"error"})
+        self.assertEqual(self.backend._my_work_call(ana, {"since": "2999-01-01"})["total"], 0)
+        def names(session):
+            return {t.spec["name"] for t in self.backend.assistant_tools(
+                SimpleNamespace(key=ana.key, session=session))}
+        self.assertIn("plx.my_work", names(SimpleNamespace(view_as=False, canary=False)))
+        for other in (SimpleNamespace(view_as=True, canary=False),
+                      SimpleNamespace(view_as=False, canary=True)):
+            self.assertNotIn("plx.my_work", names(other))
 
     def test_a_confirm_logs_its_own_row_without_reading_the_journal_again(self):
         """AP-11: the confirm's log entry comes from the row the desk just wrote (its
@@ -656,8 +658,8 @@ class TimeSaved(unittest.TestCase):
         verb, line, loop = said["PO 90414 date"]
         self.assertEqual((verb, line[:6]), ("sent", "Sent: "))
         self.assertIsNotNone(loop)
-        answer = wl.recall_answer(wl.recall(self.store, "plx:staff:ana",
-                                            "what did I send today"))
+        answer = "\n".join(wl.say(e) for e in wl.recall(self.store, "plx:staff:ana",
+                                                         sends=True)["events"])
         self.assertEqual(answer.count("Prepared (not sent): "), 4, answer)
         self.assertEqual(answer.count("Sent: "), 1, answer)
         # an unknown action status is not logged as anything that happened
@@ -693,12 +695,12 @@ class TimeSaved(unittest.TestCase):
         self.store.record(self.reader("ben"), kind="autopilot", verb="sent",
                           title="ben's send", thread="autopilot:b", source="x",
                           source_id="b")
-        found = wl.recall(self.store, "plx:staff:ana", "what did I send today")
+        found = wl.recall(self.store, "plx:staff:ana", sends=True)
         self.assertEqual(sorted(e["title"] for e in found["events"]),
                          ["autopilot reply to Acme", "card email", "card reply",
                           "dry run email", "legacy loop email", "teams message"])
         self.assertEqual(found["total"], 6)
-        answer = wl.recall_answer(found)
+        answer = "\n".join(wl.say(e) for e in found["events"])
         self.assertIn("Prepared (not sent): dry run email", answer)
         self.assertNotIn("ben's send", answer)
 

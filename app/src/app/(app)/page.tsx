@@ -5,13 +5,12 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import Link from "next/link";
 import { PageIntro } from "@/components/ui/page-intro";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { HiddenNotice } from "@/components/answer-parts";
 import { ALERTS_HREF, LATE_HREF, loadHome, loadLateRead, MobileAccount, MobileSearch, publishNeedsCount, SectionTabs } from "@/components/shell";
-import { AlertsView } from "@/components/home/alerts-view";
-import { LateView } from "@/components/home/late-view";
 import { ReplyCard, ReplyList } from "@/components/reply-list";
-import { TodayDetail, type QueueRow } from "@/components/today-detail";
+import type { QueueRow } from "@/components/today-detail";
+import dynamic from "next/dynamic";
 import { LIMIT_MS, Pending, SlowNote, TimedOut, useSlow } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { FeedNote } from "@/components/feed-note";
@@ -24,14 +23,33 @@ import { InsightNewsList } from "@/components/insights/news";
 import { YourTurn } from "@/components/memory-people";
 import { SignedInFirstWeek } from "@/components/first-week";
 import { isPutAway } from "@/lib/actions";
-import { useStaleRefresh } from "@/lib/stale-refresh";
-import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
+import { useStaleRefreshOnReturn } from "@/lib/stale-refresh";
+import { getActionStates, getReplies, onHomeBundleFresh, startHomeBundle, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { replyLine, withoutCarried } from "@/components/briefing";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { headline, keyOwner, refreshingLine } from "@/lib/home";
 import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
+
+// Parts Home does not draw at first paint load as their own chunks: the detail pane (drawn once
+// the briefing is read, so its code is fetched on mount, beside those reads) and the Alerts and
+// Late POs tabs (fetched when the browser is idle). Home's first JavaScript is that much less.
+const loadDetail = () => import("@/components/today-detail");
+const loadAlerts = () => import("@/components/home/alerts-view");
+const loadLate = () => import("@/components/home/late-view");
+const TodayDetail = dynamic(() => loadDetail().then((m) => m.TodayDetail), { loading: () => <Pending label="Opening" /> });
+const AlertsView = dynamic(() => loadAlerts().then((m) => m.AlertsView), { loading: () => <Pending label="Reading the alerts" /> });
+const LateView = dynamic(() => loadLate().then((m) => m.LateView), { loading: () => <Pending label="Reading the late POs" /> });
+function usePreloadHomeParts() {
+  useEffect(() => {
+    void loadDetail();
+    const idle = () => void Promise.all([loadAlerts(), loadLate()]).catch(() => undefined);
+    const ric = (window as Window & { requestIdleCallback?: (f: () => void) => number }).requestIdleCallback;
+    if (ric) ric(idle);
+    else setTimeout(idle, 1500);
+  }, []);
+}
 
 const SEEN_AFTER_MS = 6000; // the visit is marked seen after this at the latest, cards settled or not
 const TZ = "America/Toronto";
@@ -145,7 +163,7 @@ function useDesktop() {
 function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: boolean; onPick: () => void; actionState?: ActionResult; testId?: string }) {
   const away = isPutAway(actionState);
   return (
-    <li data-testid={testId}>
+    <li className="cv-auto cv-row" data-testid={testId}>
       <a
         href={row.href}
         onClick={(e) => {
@@ -236,11 +254,21 @@ function Today() {
   // the Reply chip's list: your own mail and chats waiting on your answer (inbox triage)
   const [replies, setReplies] = useState<ReplyTriage | null>(null);
   const [repliesError, setRepliesError] = useState<unknown>(null);
+  // Home's first reads come in ONE answer (/api/home/bundle), the last one kept in this tab shown
+  // at once: this effect comes before every read below. When the fresh bundle arrives after
+  // the kept one was shown, each read is made again (answered from the fresh bundle).
+  const [bundleRound, setBundleRound] = useState(0);
+  // a layout effect: it runs before any child's read effect (needs-me's approvals read was
+  // sent on its own, ahead of the bundle that carries it)
+  useLayoutEffect(() => {
+    startHomeBundle();
+    return onHomeBundleFresh(() => setBundleRound((n) => n + 1));
+  }, []);
   useEffect(() => {
     const c = new AbortController();
     getReplies(c.signal).then(setReplies, (e) => !c.signal.aborted && setRepliesError(e));
     return () => c.abort();
-  }, []);
+  }, [bundleRound]);
   // how many items the queue holds (AssistQueue reports it once read; null until then or on a failed read)
   const [queued, setQueued] = useState<PreparedCount | null>(null);
   const [picked, setPicked] = useState<string | null>(params.get("sel"));
@@ -259,10 +287,10 @@ function Today() {
       });
     return () => c.abort();
   }, []);
-  useEffect(() => load(), [load]);
+  useEffect(() => load(bundleRound > 0), [load, bundleRound]);
   // a stale answer is asked for again from the server, not from the read already held
   const reloadHome = useCallback(() => void load(true), [load]);
-  useStaleRefresh(home?.stale_since, reloadHome);
+  useStaleRefreshOnReturn(home?.stale_since, reloadHome);
 
   // The visit is marked seen once the briefing is read AND the suggestion cards have settled
   // (or SEEN_AFTER_MS passed): the mark makes the kept briefing and suggestions stale, so a
@@ -313,11 +341,11 @@ function Today() {
       .catch((e) => !c.signal.aborted && setBriefingError(didntLoad("the briefing", e)));
     return () => c.abort();
   }, [markSeen]);
-  useEffect(() => loadBriefing(), [loadBriefing]);
+  useEffect(() => loadBriefing(), [loadBriefing, bundleRound]);
 
   useEffect(() => {
     const c = new AbortController();
-    loadLateRead().then(
+    loadLateRead(bundleRound > 0).then(
       (l) => {
         if (c.signal.aborted) return;
         setLate(l.items);
@@ -335,7 +363,7 @@ function Today() {
       });
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
-  }, [markSeen]);
+  }, [markSeen, bundleRound]);
 
   const more = useCallback((eventType: string) => {
     const cur = pages[eventType];
@@ -479,10 +507,12 @@ function Today() {
   // nothing to open beside the list: it takes the whole width
   const wide = desktop && !loading && !shownRow && !replyShown;
 
+  const verbChips = VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "confirm" ? (supplier ? 0 : prepared) : v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) + (v.verb === "decide" && !supplier ? preparedAlerts : 0) })).filter((v) => v.count > 0);
+  // one kind of thing waiting: "All 8" beside "Decide 8" is the same list twice, so no chips then
   const tabs =
-    bySupplier.length > 1 || (replies?.total ?? 0) > 0 || prepared + preparedAlerts > 0 ? (
+    verbChips.length > 1 || (verbChips.length > 0 && filter !== "all") ? (
       <div className="flex h-full min-w-0 gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
-        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "confirm" ? (supplier ? 0 : prepared) : v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) + (v.verb === "decide" && !supplier ? preparedAlerts : 0) })).filter((v) => v.count > 0)].map((g) => (
+        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...verbChips].map((g) => (
           <button
             key={g.type}
             type="button"
@@ -542,7 +572,7 @@ function Today() {
       )}
 
       {!supplier && <HomeAsk className="shrink-0 px-5 pt-3" />}
-      <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="shrink-0 px-5 py-1.5" />
+      <StaleNote since={home?.stale_since ?? briefing?.stale_since} onReturn={!!home?.stale_since} className="shrink-0 px-5 py-1.5" />
       <FeedNote feed="reply_drafts" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
       <FeedNote feed="autopilot" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
       <FeedNote feed="late_pos" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
@@ -752,6 +782,7 @@ function Today() {
 /** Home is one page with three tabs (the owner, 11-18: simpler tabs): what needs you, the
  * alerts (?show=alerts, was /watching) and the late POs (?show=late, was /late). */
 function HomeTab() {
+  usePreloadHomeParts();
   const show = useSearchParams()?.get("show");
   if (show === "alerts") return <AlertsView />;
   if (show === "late") return <LateView />;

@@ -225,7 +225,7 @@ def _resolved_rows(rows: Sequence[Any], v: Any, name: str, reader: Any, write: A
         if v.fill is None:   # a curated view's systems: its copies' (never a comms table's)
             row.values.setdefault(_bv().SYSTEMS_COL, ",".join(row.systems) or None)
         out.append(((*[row.values.get(c.name) for c in v.cols], row.handle), _key(pattern),
-                    cols, not _bv().freightcom(row, v),
+                    cols, True,
                     (name, row.handle, row.objects, sorted(set(row.reads) - set(row.objects)),
                      json.dumps(col_objects, sort_keys=True),
                      json.dumps(row.cites, sort_keys=True), row.systems, row.copies)))

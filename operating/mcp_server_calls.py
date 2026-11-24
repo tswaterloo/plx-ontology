@@ -22,7 +22,8 @@ from .mcp_server_catalog import (
 )
 from .mcp_server_evidence import (
     _UNKEPT_NOTE_BYTES, _drop_changed, _evidence_items, _evidence_scope, _ItemPermissions,
-    _merged, _served_texts, _text_key, _unkept_reason, MAX_RESULT_BYTES, MAX_SERVED_SPANS,
+    _merged, _served_texts, _text_key, _unkept_reason, ASK_RESULT_BYTES, CLIENT_SHOWN_CHARS,
+    MAX_SERVED_SPANS,
     MAX_SERVED_TEXTS, MAX_TEXT_HANDLES, PERMISSIONS_UNREADABLE, UNRESTRICTED_SCOPE
 )
 from .mcp_server_results import _FRESHNESS_UNIT_FIELDS, InputError
@@ -52,14 +53,15 @@ def search_fits(result: dict[str, Any]) -> bool:
     """Whether a ``plx.search`` result fits one response as ``MCPServer.handle`` sends it
     at its last size tier: its JSON text alone (``tool_results.TEXT_ONLY_STUB``), as the
     client sees it (``_firewall``), with room for the freshness summary, the agent stamp
-    (``META_RESERVE_BYTES``) and an unkept evidence note."""
+    (``META_RESERVE_BYTES``) and an unkept evidence note, and shown whole by the client
+    (``CLIENT_SHOWN_CHARS``)."""
     from .mcp_server_results import _envelope_size, _firewall, META_RESERVE_BYTES
     text = json.dumps(_firewall(_with_refs(result), ontology_tools_search.TOOL_NAME),
                       ensure_ascii=False, separators=(",", ":"))
     payload = {"content": [{"type": "text", "text": text}], "isError": False,
                "_meta": {tool_results.TEXT_ONLY_KEY: tool_results.TEXT_ONLY_STUB}}
     return (_envelope_size(payload) + META_RESERVE_BYTES + _UNKEPT_NOTE_BYTES
-            <= MAX_RESULT_BYTES)
+            <= ASK_RESULT_BYTES and len(text) <= CLIENT_SHOWN_CHARS)
 
 
 class CallsMixin:
@@ -354,14 +356,23 @@ class CallsMixin:
         if name == ontology_tools_search.TOOL_NAME:
             # plx.documents itself, as this session's reader, its hits cut short; as many
             # as fit one response (``search_fits``); a long citation gets its short ref
-            return self._refs().search(ontology_tools_search.fitted(ontology_tools_search.run(
-                lambda wanted: self._generic_call(ontology_tools_search.DOCUMENTS, wanted),
-                arguments,
-                call_read=lambda wanted: self._generic_call(ontology_tools_search.READ, wanted),
-                call_comms=lambda wanted: self._generic_call(ontology_tools_search.COMMS_SEARCH,
-                                                             wanted),
-                call_records=lambda wanted: self._generic_call(
-                    ontology_tools_search.RECORDS_SEARCH, wanted)), search_fits))
+            def fits(result: dict[str, Any]) -> bool:
+                return search_fits(ontology_tools_search.with_coverage(result, arguments))
+
+            def once(wanted: dict[str, Any]) -> Any:
+                return ontology_tools_search.with_coverage(ontology_tools_search.fitted(
+                    ontology_tools_search.run(
+                        lambda w: self._generic_call(ontology_tools_search.DOCUMENTS, w),
+                        wanted,
+                        call_read=lambda w: self._generic_call(ontology_tools_search.READ, w),
+                        call_comms=lambda w: self._generic_call(
+                            ontology_tools_search.COMMS_SEARCH, w),
+                        call_records=lambda w: self._generic_call(
+                            ontology_tools_search.RECORDS_SEARCH, w)),
+                    fits), wanted)
+            # a result too large for one reply is paged (a smaller page and the cursors that
+            # continue it), never refused
+            return self._refs().search(ontology_tools_search.paged(once, arguments, fits))
         if name == ontology_tools_search.OPEN_NAME:
             # plx.read itself, as this session's reader; Freightcom never shown. A ref
             # (``open_refs``) opens the full handle this session's results showed for it,
@@ -536,6 +547,8 @@ class CallsMixin:
 
         def decide(handles: Any) -> dict[str, Any]:
             handles = list(dict.fromkeys(handles))
+            from operating.ontology_tools_policy import note_opened
+            note_opened(handles)       # a stored plan run depends on every handle it asked about
             todo = [handle for handle in handles if handle not in decided]
             if todo:
                 with host.per_call():

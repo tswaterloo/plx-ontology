@@ -12,14 +12,14 @@ const area = { my_drafts: [{ choice: "customer_replies", label: "Replies to cust
 describe("Switches as the owner reads them", () => {
   it("never tells the owner what the owner set for them", () => {
     render(<DraftsPanel area={area} onArea={() => undefined} />);
-    expect(screen.getByTestId("draft-choice-state").textContent).toBe("On");
+    expect(screen.getByTestId("draft-choice-state").textContent).toBe("On. Prepared for you; waits for your confirm.");
     expect(screen.queryByText(/what the owner turned on for you/)).toBeNull();
   });
 
   it("tells anyone else who turned it on", () => {
     who.owner = false;
     render(<DraftsPanel area={area} onArea={() => undefined} />);
-    expect(screen.getAllByTestId("draft-choice-state").at(-1)!.textContent).toBe("On, set by the owner");
+    expect(screen.getAllByTestId("draft-choice-state").at(-1)!.textContent).toBe("On, set by the owner. Prepared for you; waits for your confirm.");
     expect(screen.getByText(/what the owner turned on for you/)).toBeTruthy();
   });
 });

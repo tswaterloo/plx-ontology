@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest import mock
 
 from operating import ontology_tools_sql as ts
-from operating.pg import comms_findings
+from operating import assist_readings
 from operating.pg import teams_file_links as tfl
 from operating.tests import pg_testdb
 
@@ -214,10 +214,35 @@ class Table(unittest.TestCase):
         self.assertEqual(self.pg.execute("SELECT count(*) FROM biz.teams_file_links"
                                          ).fetchone()[0], 2)
 
-    def test_the_findings_run_survives_a_failed_link_pass(self):
+    def test_a_scoped_run_never_waits_for_the_standby_and_does_nothing_with_nothing_new(self):
+        from operating.pg import comm_links
+        self.pg.execute(self.migration)
+        self.seed(2)
+        slept = []
+        nap = lambda s: slept.append(s)  # noqa: E731
+        with mock.patch.object(comm_links, "lag_gb", lambda conn: 99.0):
+            # nothing new: no stage is made, no table is scanned, no wait
+            self.assertEqual(tfl.write_links(self.pg, {}, keep=True, min_free_gb=0, sleep=nap), 0)
+            self.assertIsNone(self.pg.execute(
+                "SELECT to_regclass('biz.teams_file_links_stage')").fetchone()[0])
+            # a few new links are written at once although the standby lags 99 GB
+            self.assertEqual(tfl.write_links(self.pg, self.links([("TM1", fid("F0"))]),
+                                             keep=True, min_free_gb=0, sleep=nap), 1)
+        self.assertEqual(slept, [])
+        # a full pass is bulk work: it still waits for the standby, and says so (the lag clears
+        # after two sleeps here)
+        lags = iter([99.0, 99.0, 99.0, 0.0, 0.0, 0.0])
+        said = []
+        with mock.patch.object(comm_links, "lag_gb", lambda conn: next(lags, 0.0)), \
+                mock.patch("builtins.print", lambda *a, **k: said.append(a[0])):
+            tfl.write_links(self.pg, self.links([("TM1", fid("F0"))]), min_free_gb=0, sleep=nap)
+        self.assertTrue(slept)
+        self.assertTrue(any("standby lag, waiting" in str(m) for m in said), said)
+
+    def test_the_reading_run_survives_a_failed_link_pass(self):
         with mock.patch.object(tfl, "run", side_effect=RuntimeError("biz.teams_file_links "
                                                                     "is missing")):
-            comms_findings._link_new_files("dsn")   # logs, never raises
+            assist_readings._link_new_files("dsn")   # logs, never raises
 
     def test_an_opened_teams_message_lists_the_files_its_reader_may_read(self):
         self.pg.execute(self.migration)

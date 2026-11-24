@@ -36,6 +36,8 @@ if [ -x "$O/bin/tesseract.real" ] && [ ! -x "$T/venv/bin/tesseract" ]; then
     "exec $T/venv/ocr-env/bin/tesseract.real \"\$@\"" > "$T/venv/bin/.tesseract.$$" \
     && chmod 755 "$T/venv/bin/.tesseract.$$" && mv -f "$T/venv/bin/.tesseract.$$" "$T/venv/bin/tesseract"
 fi
+# the business-views disk floor is the served host's, not a test run's (tests of the guard set it themselves)
+export PLX_BIZ_MIN_FREE_GB=0
 export PATH="$T/venv/bin:$PG:$PATH" PGHOST="$T/run" PGPORT=5433 PYTHONDONTWRITEBYTECODE=1 TZ=${TZ:-America/New_York}
 cd "$wt" || exit 97
 mods=$T/out/$sha.$$.modules.txt   # per run: two runs of one commit on a host never share a list

@@ -9,7 +9,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getApprovals, getMe, getWrites } from "@/lib/api";
+import { useAuth } from "@/components/auth";
+import { getApprovals, getWrites } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, objectHref, plural } from "@/lib/format";
 import type { ApprovalsQueue, Me, WriteIntentView } from "@/lib/types";
@@ -146,16 +147,21 @@ export function NeedsMe() {
   // the approvals queue is read on its own: the list shows without waiting for it (its
   // first read can take a minute on a cold server) and gains its rows when it lands
   const [approvals, setApprovals] = useState<ApprovalsQueue | null | undefined>(undefined);
+  // who is signed in is already known (the sign-in's own read): not asked again beside the page's reads
+  const auth = useAuth().state;
+  const me = auth.status === "signed-in" ? auth.me : null;
+  const owner = !!me?.owner;
   useEffect(() => {
+    if (!owner) return;   // the list is the owner's: no reads for anyone else
     const ctl = new AbortController();
     const soft = <T,>(p: Promise<T>) => p.then((v) => v, () => null);
-    Promise.all([soft(getMe(ctl.signal)), soft(getWrites(ctl.signal).then((l) => l.items))]).then(([me, writes]) => {
-      if (!ctl.signal.aborted) setSources({ me, writes });
+    soft(getWrites(ctl.signal).then((l) => l.items)).then((writes) => {
+      if (!ctl.signal.aborted) setSources({ me: null, writes });
     });
     soft(getApprovals(ctl.signal)).then((a) => !ctl.signal.aborted && setApprovals(a));
     return () => ctl.abort();
-  }, []);
+  }, [owner]);
   // the owner is the server's word (/api/me); unknown is not the owner
-  if (!sources?.me?.owner) return null;
-  return <NeedsMeList sources={{ ...sources, approvals }} />;
+  if (!me?.owner || !sources) return null;
+  return <NeedsMeList sources={{ ...sources, me, approvals }} />;
 }

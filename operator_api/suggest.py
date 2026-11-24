@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from operating.po_pilot import is_bc_pilot_object
 
 from . import models as m
-from .errors import RecordNotFound
+from .errors import RecordAmbiguous, RecordNotFound
 from .serving import (object_url, plain)
 from .answers import (normalize, words_of)
 
@@ -310,13 +310,14 @@ def resolve_object(view: Any, object_type: str, object_id: str) -> str:
         # a whole object id names its own type ("item" links once opened Product ids)
         return object_id
     # a bare business code (``/customer/AQUIS12``): the identifier table first; one record
-    # of the type the reader may read is the page, several are no page (never merged); a
+    # of the type the reader may read is the page; several (a number two suppliers' orders
+    # share) are never merged: the page lists them to choose from (``RecordAmbiguous``); a
     # code it cannot decide (or none of whose records the reader reads) is the find's
     lookup = getattr(getattr(view, "access", None), "identifier_records", None)
     named = lookup(object_id, object_type) if callable(lookup) else None
     if named:
         if len(named) != 1:
-            raise RecordNotFound()
+            raise RecordAmbiguous(named)
         return next(iter(named))
     result = view._call("plx.find", {"query": object_id[:200], "object_type": object_type,
                                      "limit": 3})

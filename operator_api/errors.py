@@ -10,6 +10,7 @@ class UserFacing(Exception):
 
 
 ASK_OFF = UserFacing("ask_not_served", "Ask isn't switched on on this server.", 503)
+ASK_NO_AGENT = UserFacing("ask_no_agent", "Ask needs its model and tools, which this server does not run for you.", 503)
 ASK_BUSY = UserFacing("busy", "The Workbench is answering several questions right now. "
                               "Try again in a minute.", 503)
 ASK_TIMEOUT = UserFacing("timeout", "That question took too long to answer. Try a narrower "
@@ -32,6 +33,21 @@ class RecordNotFound(KeyError):
 
     def __init__(self, what: str = "object_not_found") -> None:
         super().__init__(what)
+
+
+class RecordAmbiguous(RecordNotFound):
+    """A business reference (a bare PO or order number) that names several records of the
+    type: numbers repeat across systems and counterparties (two suppliers' PO100xxx), so it
+    is never one record. The record page lists them to choose from (``page_sql.choices``);
+    every other record route answers it as not found (it is a ``RecordNotFound``).
+    ``ids``: the records it names, before any door read (never shown as they are)."""
+
+    def __init__(self, ids: "tuple[str, ...] | list[str] | frozenset[str]" = ()) -> None:
+        super().__init__("object_ambiguous")
+        self.ids = tuple(sorted(str(i) for i in ids))
+
+    def __reduce__(self) -> tuple:
+        return (RecordAmbiguous, (self.ids,))   # across the read processes, ids kept
 
 
 # What ``plx.object`` answers for a record that is not one the reader may read (it answers

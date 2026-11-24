@@ -135,8 +135,6 @@ class PreparedRoutes(unittest.TestCase):
         made = ana["plx.make_document"].call({"name": "Late POs", "kind": "docx",
                                               "content": "Late POs\nPO 1 is 9 days late."})
         self.assertEqual(made["name"], "Late POs.docx")
-        self.assertIn("refused", ana["plx.make_document"].call(
-            {"name": "Carrier", "kind": "docx", "content": "Book it with Freightcom."}))
         # the Markdown the Ask writes becomes Word's own table, never pipes on the page
         import io
         import zipfile
@@ -268,8 +266,6 @@ class PreparedRoutes(unittest.TestCase):
         self.assertIn("refused", make.call({"name": "C", "kind": "csv", "content": "a | b",
                                             "charts": [{"sql": "SELECT 1", "type": "bar",
                                                         "y": ["x"]}]}))
-        self.assertIn("refused", make.call({"name": "C", "kind": "csv",
-                                            "content": "Carrier | Freightcom"}))
         self.assertEqual(len(b._uploads()._rows()), 1)   # nothing made for a refusal
 
     def test_staff_may_only_what_their_own_grants_allow(self):
@@ -387,14 +383,10 @@ class PreparedRoutes(unittest.TestCase):
         return out.getvalue()
 
     def test_document_edit_reads_through_the_same_filters_as_every_read(self):
-        """Freightcom anywhere in the decoded document, or an excluded person in it: the
+        """An excluded person anywhere in the decoded document: the
         edit is refused and no part of the text reaches the model (review probe)."""
         cite = "sharepoint://b!d1/01ITEM@v3"
         docs = {
-            "freightcom line": ("notes.txt", b"Ship to Unit 4\nBook the pallet with "
-                                b"Freightcom, quote FC-1234\nThanks\n", "FC-1234"),
-            "freightcom in a docx header": ("plan.docx", self.docx(
-                ["Ship to Unit 4", "Thanks"], header="Freightcom account 77"), "account 77"),
             "excluded person": ("notes.txt", b"Ship to Unit 4\ncc " + HIDDEN[0].encode()
                                 + b"\nThanks\n", HIDDEN[0]),
             "excluded id": ("notes.txt", b"Ship to Unit 4 for " + HIDDEN[1].encode()
@@ -412,7 +404,7 @@ class PreparedRoutes(unittest.TestCase):
                              {"find": "Unit 4", "replace": "Dock 9"}):
                     got = json.dumps(edit.call({"citation": cite, "reason": "r", **args}))
                     self.assertIn("refused", got)
-                    for word in ("Freightcom", secret, "Ship to"):
+                    for word in (secret, "Ship to"):
                         self.assertNotIn(word, got)
         self.assertEqual(self.client(OWNER).get("/api/prepared").json()["items"], [])
         # an unavailable exclusion list refuses every document edit
@@ -420,8 +412,10 @@ class PreparedRoutes(unittest.TestCase):
         self.backend.prepared_doc_read = lambda r, c: ("notes.txt", b"Ship to Unit 4\n", '"e"')
         edit = {t.spec["name"]: t for t in self.backend.prepared_tools(reader)}[
             "plx.edit_document"]
-        self.assertIn("not loaded", " ".join(edit.call(
-            {"citation": cite, "find": "Unit 4", "replace": "Dock 9", "reason": "r"})["refused"]))
+        said = " ".join(edit.call(
+            {"citation": cite, "find": "Unit 4", "replace": "Dock 9", "reason": "r"})["refused"])
+        self.assertIn("nothing was changed", said)
+        self.assertNotRegex(said, r"(?i)people|stays out|exclu")   # the list is never named
 
     def test_a_word_edit_gives_the_edited_copy_now_and_writes_back_only_on_confirm(self):
         """The prepared edit of a .docx also keeps the edited file for the reader: the
@@ -543,7 +537,6 @@ class PreparedRoutes(unittest.TestCase):
                         "3. Delivery. FOB origin.")
         deck = pptx("Orders placed: 31", "On-time delivery: 97%")
         named = docx("Ask " + HIDDEN[0] + " about Net 30.")
-        freight = docx("Freightcom quote: Net 30.")
 
         def request(*files):
             return m.AskRequest(question="change it", attachments=[
@@ -559,18 +552,15 @@ class PreparedRoutes(unittest.TestCase):
         calls = len(self.fake.calls)
         batch = b._attached(request(("Supply agreement.docx", contract),
                                     ("review.pptx", deck), ("notes.txt", b"Net 30 here"),
-                                    ("names.docx", named), ("fc.docx", freight)), ana)
+                                    ("names.docx", named)), ana)
         kept = [f.kept for f in batch.files]
         self.assertTrue(all(f.data is None for f in batch.files), "bytes outlived the read")
         self.assertTrue(kept[0] and kept[0].startswith("file:f_"))
         self.assertTrue(kept[1] and kept[1].startswith("file:f_"))
-        # text is not an edited kind; an excluded person's or Freightcom's file is not kept
-        self.assertEqual(kept[2:], [None, None, None])
-        self.assertEqual(batch.files[4].unread, ask_attachments.WITHHELD)
-        self.assertEqual(batch.files[4].text, "")
+        # text is not an edited kind; an excluded person's file is not kept
+        self.assertEqual(kept[2:], [None, None])
         lines = "\n".join(simple_ask.attached(batch.files)[0])
         self.assertIn(json.dumps(kept[0]), lines)
-        self.assertNotIn("Freightcom", lines)
         # the meta the saved Ask keeps holds no handle to the file
         self.assertNotIn("f_", json.dumps([f.meta for f in batch.files]))
 
@@ -715,16 +705,11 @@ class PreparedRoutes(unittest.TestCase):
             "field": "paragraph",
             "before": "A Firm must declare it, which would constitute Stacking.",
             "after": "A Firm must declare it, which would count as Stacking."}])
-        # the renamed header is read by the filters too: Freightcom there refuses it all
-        refused = json.dumps(edit(package(["which would constitute it"],
-                                          header="Freightcom account 77")))
-        self.assertIn("refused", refused)
-        self.assertNotIn("account 77", refused)
         # no main document part named: refused, never read as an empty document
         self.assertIn("could not be found", " ".join(
             edit(package(["which would constitute it"], main=False))["refused"]))
 
-    def test_a_redline_never_shows_a_version_naming_freightcom_or_an_excluded_person(self):
+    def test_a_redline_never_shows_a_version_naming_an_excluded_person(self):
         """compare_with reads both versions through the reader's door and filters each
         whole text (``_pw_withheld``) before any of it can reach the model: a version
         naming Freightcom or an excluded person's address gives no diff and no copy."""
@@ -742,9 +727,8 @@ class PreparedRoutes(unittest.TestCase):
         old, new = "sharepoint://b!d1/01OLD@v1", "sharepoint://b!d1/01NEW@v2"
         reader = Reader(session=session(OWNER), mode="mock", display_name="a", email=OWNER[0])
         base = docx("Freight billed at cost.", "Net 30.")
-        for name, newer in (("freightcom", docx("Freight by Freightcom at cost.", "Net 30.")),
-                            ("excluded", docx("Freight billed at cost.",
-                                              f"Net 30, ask {HIDDEN[0]}."))):
+        for name, newer in (("excluded", docx("Freight billed at cost.",
+                                              f"Net 30, ask {HIDDEN[0]}.")),):
             with self.subTest(name):
                 self.backend.prepared_doc_read = lambda r, c, newer=newer: (
                     "terms.docx", base if c == old else newer, '"e,1"')
@@ -816,34 +800,37 @@ class PreparedRoutes(unittest.TestCase):
                       lambda line: None, None, tools=[tool])
         self.assertEqual(list(got.get("tools") or ()), [tool])
 
-    def test_a_line_asking_for_something_done_goes_to_the_ask_with_every_tool(self):
-        """The simple Ask takes a do-line unless it is one of the instruction engine's own
-        flows; its tools are the reader's write, memory, template and document tools."""
-        from unittest import mock
-        from operator_api import models as m
+    def test_the_ask_holds_every_tool_and_hands_the_desks_drafts_over_itself(self):
+        """Every typed line is the Ask's (no text router): its tools are the reader's
+        write, memory, template, document and work-log tools and ``plx.hand_off``, the
+        model's own way to give a line to the drafting desk; a hand-off call marks the
+        answer for the desk (a route part), a failed one does not."""
+        from operator_api import assistant_tools as at
+        from operator_api import work_log as wl
         b = self.backend
-        b.agent_ask = type("A", (), {"serves": lambda self, s: True})()
         reader = Reader(session=session(OWNER), mode="mock", display_name=OWNER[0],
                         email=OWNER[0])
-        self.assertEqual(sorted(t.spec["name"] for t in simple_ask.write_tools(b, reader)),
-                         ["plx.edit_document", "plx.make_document", "plx.prepare_write",
-                          "plx.read_document", "plx.remember", "plx.template"])
-        ask = lambda q, **kw: b.ask_does(reader, m.AskRequest(question=q, **kw))  # noqa: E731
-        with mock.patch.dict("os.environ", {"PLX_ASK_SIMPLE": "1"}):
-            self.assertTrue(ask("Write a memo of our late POs and email it to Sam"))
-            self.assertTrue(ask("Save a template for supplier ship-date chasers",
-                                context={"kind": "record", "object_id": "PurchaseOrder:1"}))
-            for engine in (dict(context={"kind": "email", "handle": "graph://m/1"}),
-                           dict(source="graph://m/1")):
-                self.assertFalse(ask("Reply that it ships Friday", **engine))
-            self.assertTrue(ask("Use my quote template for SO 5512"))
-            for line in ("Create an order from this PO", "Every Monday, chase the late POs",
-                         "Reply to Kim's email that PO 4411 ships Friday"):
-                self.assertFalse(ask(line), line)
-            with mock.patch.dict("os.environ", {"PLX_ASK_SIMPLE_DO": "0"}):
-                self.assertFalse(ask("Write a memo of our late POs"))
-        with mock.patch.dict("os.environ", {"PLX_ASK_SIMPLE": "0"}):
-            self.assertFalse(ask("Write a memo of our late POs"))
+        tools = {t.spec["name"]: t for t in simple_ask.write_tools(b, reader)}
+        self.assertEqual(sorted(tools),
+                         ["plx.edit_document", "plx.hand_off", "plx.make_document",
+                          "plx.prepare_write", "plx.read_document", "plx.remember",
+                          "plx.template"])
+        # the app gives the backend its work log (``create_app``): then plx.my_work too
+        b.work_log = wl.WorkLog(None, guard=lambda: None)
+        self.assertIn("plx.my_work", {t.spec["name"] for t in simple_ask.write_tools(b, reader)})
+        self.assertEqual(tools["plx.hand_off"].call({})["handed_off"], True)
+        call = {"type": "tool_call", "name": "mcp__plx__plx_hand_off", "result": "{}"}
+        self.assertTrue(at.handed_off([call]))
+        self.assertFalse(at.handed_off([{**call, "is_error": True}]))
+        self.assertFalse(at.handed_off([{**call, "name": "plx.sql"}]))
+        ran = simple_ask.SimpleRun(text="Handing it over.", agent_text="Handing it over.",
+                                   unverified=[], events=[call], seconds=1.0, stopped=False,
+                                   failure=None)
+        got = simple_ask.answer_payload(ran, "reply to this", "c1", 5, "a1")
+        self.assertEqual((got.instruction.status, got.instruction.text),
+                         ("route", "reply to this"))
+        ran.events = []
+        self.assertIsNone(simple_ask.answer_payload(ran, "x", "c1", 5, "a1").instruction)
 
     def test_agent_binds_the_readers_tools(self):
         class Agent:

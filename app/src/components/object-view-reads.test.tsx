@@ -2,11 +2,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObjectView } from "./object-view";
 
+const nav = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock("next/navigation", () => ({
   useParams: () => ({}),
   useSearchParams: () => null,
   usePathname: () => "/",
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), replace: nav.replace }),
 }));
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -51,6 +52,26 @@ describe("record page reads", () => {
     await waitFor(() => expect(screen.getByTestId("object-title")).toHaveTextContent("Northwind Ltd"));
     expect(screen.queryByTestId("walk-loading-timeline")).toBeNull();
     expect(screen.getByText("Ana Diaz")).toBeInTheDocument();   // merged again into the quick read
+  });
+
+  it("a PO number two suppliers' orders share lists both to choose from; one alone opens at once", async () => {
+    const choices = [
+      { object_id: "PurchaseOrder:bc:1", type: "PurchaseOrder", label: "PO7770001 · Supplier One (BC, open)", open_url: "/order?kind=purchase_order&h=a" },
+      { object_id: "PurchaseOrder:portal:2", type: "PurchaseOrder", label: "PO7770001 · Supplier Two (FileMaker, Portal, closed)", open_url: "/order?kind=purchase_order&h=b" },
+    ];
+    const choose = (list: typeof choices) => ({ ...page("x"), object_id: "PO7770001", label: "PO7770001", summary: "2 records have the number PO7770001.", status: { state: "choose", text: "", sources: [] }, choices: list });
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(isCore(url) ? json({ error: { code: "not_found" } }, 404) : json(choose(choices)))));
+    const { unmount } = render(<ObjectView type="PurchaseOrder" id="PO7770001" />);
+    const list = await screen.findByTestId("record-choices");
+    expect(list).toHaveTextContent("Supplier One (BC, open)");
+    expect(list).toHaveTextContent("Supplier Two");
+    expect(screen.getByRole("link", { name: /Supplier Two/ })).toHaveAttribute("href", "/order?kind=purchase_order&h=b");
+    expect(screen.queryByTestId("object-title")).toBeNull();
+    expect(nav.replace).not.toHaveBeenCalled();
+    unmount();
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(isCore(url) ? json({ error: { code: "not_found" } }, 404) : json(choose(choices.slice(1))))));
+    render(<ObjectView type="PurchaseOrder" id="PO7770001" />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/order?kind=purchase_order&h=b"));
   });
 
   it("a core read that lands after the quick read never replaces it", async () => {
@@ -99,7 +120,7 @@ describe("record page reads", () => {
     calls = {};
   });
 
-  it("a page served stale is read again by itself and replaced when the fresh page lands (WEB-032)", async () => {
+  it("a page served stale sends no read on a timer; it is read again when the window is returned to and replaced when the fresh page lands (WEB-032)", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let n = 0;
     const f = vi.fn(async (url: string) => isCore(url) ? json({ error: { code: "core_unread" } }, 503) : json(++n === 1 ? page("A", { stale_since: "2026-11-12T10:00:00Z", label: "PO A (old)" }) : page("A", { label: "PO A (fresh)" })));
@@ -108,7 +129,10 @@ describe("record page reads", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByTestId("stale-page")).toBeInTheDocument();
     expect(screen.getByTestId("object-title")).toHaveTextContent("old");
-    await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+    expect(screen.getByTestId("stale-page")).toHaveTextContent("come back to this window");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(objectReads(f)).toBe(1);   // no timed re-read
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(0); });
     expect(objectReads(f)).toBe(2);
     expect(screen.getByTestId("object-title")).toHaveTextContent("fresh");
     expect(screen.queryByTestId("stale-page")).toBeNull();
@@ -187,7 +211,7 @@ describe("record page reads", () => {
     vi.stubGlobal("fetch", vi.fn(async () => (++n === 1 ? json(page("A", { stale_since: "2026-11-12T10:00:00Z" })) : json({ error: { code: "internal" } }, 500))));
     render(<ObjectView type="PurchaseOrder" id="A" />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+    await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(6100); });
     expect(screen.getByTestId("object-title")).toHaveTextContent("PO A");
     expect(screen.getByTestId("stale-page")).toBeInTheDocument();
   });

@@ -102,6 +102,12 @@ export function groupDigits(value: string): string {
   return `${neg ? "-" : ""}${whole}${frac !== undefined ? `.${frac}` : ""}`;
 }
 
+/** A figure with its unit after it ("1234567.5 kg" -> "1,234,567.5 kg"): the number grouped, the rest as given. */
+export function formatNumber(value: string): string {
+  const m = /^(\s*-?\d+(?:\.\d+)?)(\D.*)?$/.exec(value);
+  return m ? `${groupDigits(m[1].trim())}${m[2] ?? ""}` : value;
+}
+
 /** Each figure carrying a float's noise written as the figure it is (floatResidue). */
 export function withoutFloatNoise(text: string): string {
   return text.replace(/(?<![\w.])(-?\d+\.\d{7,})(?![\w.])/g, (m) => floatResidue(m) ?? m);
@@ -382,7 +388,9 @@ export function plainDates(text: string): string {
   return text.replace(ISO_STAMP, (whole, day: string) => {
     const timed = whole.length > day.length && /[zZ]|[+-]\d{2}:?\d{2}$/.test(whole);
     const shown = formatDate(timed ? whole : day);
-    return shown && shown !== day && shown !== whole ? shown : whole;
+    if (!shown || shown === day || shown === whole) return whole;
+    // a local time with no zone ("2026-11-23 12:48 PM ET") keeps its time: only the day is said
+    return timed ? shown : shown + whole.slice(day.length).replace(/^T/, " ");
   });
 }
 

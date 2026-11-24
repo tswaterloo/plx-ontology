@@ -70,7 +70,7 @@ SCREENS_AHEAD_WORKERS = 1   # the API's own; the warm-up process runs WARM_READ_
 
 SCREENS_AHEAD = ("_home_served", ("late_list", {"offset": 0, "limit": 100}),
                  ("briefing", {"since_visit": False}), "_briefing_pages_ahead", "_home_pages_ahead", "_sidebar_served", "_late_trails_ahead",
-                 "autopilot_area", "autopilot_prepared_list",
+                 "my_work", "autopilot_area", "autopilot_prepared_list",
                  "suggestions", "approvals_queue", "reply_triage", "upcoming_meetings",
                  ("answer_bank", None), "_insights_ahead", ("my_action_items", None),
                  ("weekly_review", None), "workload", "team_view")

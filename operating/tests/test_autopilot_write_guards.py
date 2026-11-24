@@ -22,7 +22,10 @@ from operating import autopilot_engine
 from operating import autopilot_write as aw
 from operating import card_actions
 from operating.tests.test_autopilot_write import (
-    HIDDEN, HIDDEN_OID, NOW, OWNER, OWNER_OID, Base, admit_judged, mc_item, po_item)
+    HIDDEN, HIDDEN_OID, NOW, OWNER, OWNER_OID, Base, Transport, _Sender, admit_judged,
+    mc_item, po_item)
+from operating import autopilot_write_adapters as wa
+from operating import autopilot_commitments as ac
 
 OTHER = "other@plx.example"
 OTHER_OID = "55555555-5555-4555-8555-555555555555"
@@ -192,8 +195,12 @@ class Money(Guards):
     def test_money_never_goes_live_on_the_gate_or_an_unacknowledged_approval(self):
         self.pass_for(OWNER)
         self.switch(OWNER, "customer_order_intake")
-        self.assertEqual(self.run_for(po_item(draft=False))["status"], "done")  # control
-        self.bc.calls.clear()
+        # an order entry carries quantities and a date: on the gate alone it is only a
+        # dry run (owner: an autopilot never commits money, a quantity or a date)
+        r = self.run_for(po_item(draft=False))
+        self.assertEqual(r["status"], "dry_run")
+        self.assertIn("commits:figure_field:quantity", r["reasons"])
+        self.assertEqual(self.bc.calls, [])
         priced = {**po_item(price=True, draft=False), "item_id": "it_po_priced"}
         r = self.run_for(priced)
         self.assertEqual(r["status"], "not_routine")
@@ -203,6 +210,109 @@ class Money(Guards):
         r = self.executor({aw.MASTER_ENV: "1"}, g=people_guard()).run(priced, NOW, approval)[0]
         self.assertEqual((r["status"], r.get("needs_acknowledgement")), ("not_routine", True))
         self.assertEqual(self.bc.calls, [])
+
+
+class Commitments(Guards):
+    """Write-readiness probes for an unattended mail or Teams message (owner: only purely
+    informational ones leave by themselves): a figure, date or day in any form, or what a
+    model reads as money, a quantity, a date or a judgment in any words, keeps it a dry run;
+    an unreadable model answer keeps it a dry run too; a person's confirmed accept of the
+    exact item is not held back by it."""
+
+    PROBES = ("cost of the shipment", "250 fee", "bill them for the freight",
+              "total is 1,250", "we owe them", "raise a purchase order for 500 units",
+              "budget approved", "1250 dollars", "quantity 500 at 4.20 each",
+              "we can ship it next Tuesday", "ETA 11/16", "five hundred cases")
+
+    def mail_item(self, n: int, body: str, kind: str = "email") -> dict:
+        item = po_item()
+        item["item_id"] = f"it_commit_{n}"
+        item["body"]["prepared"]["write"] = None
+        item["body"]["prepared"]["draft"].update(channel=kind, body=body)
+        return item
+
+    def test_messages_with_figures_or_money_words_stay_dry_runs(self):
+        self.pass_for(OWNER)
+        self.switch(OWNER, "customer_order_intake")
+        env = {aw.MASTER_ENV: "1"}
+        self.flag(*sorted(set(aw.FLAG_SYSTEM.values())))
+        read: list[str] = []
+
+        def model(text: str) -> list[str]:
+            # stands in for the model: it reads money in words the figure rule cannot
+            read.append(text)
+            words = ("cost", "bill", "owe", "budget")
+            return ["commits:money"] if any(w in text for w in words) else []
+        mail = Transport()
+        for n, body in enumerate(self.PROBES):
+            ex = aw.Executor(self.state, environ=env, guard=people_guard(), commits=model,
+                             adapters={"send_mail": wa.MailAdapter(_Sender(mail), environ=env)})
+            r = ex.run(self.mail_item(n, f"Hi, {body}."), NOW)[0]
+            with self.subTest(body=body):
+                self.assertEqual(r["status"], "dry_run")
+                self.assertTrue(any(x.startswith("commits:") for x in r["reasons"]), r["reasons"])
+        self.assertEqual(mail.calls, [])
+        # an unreadable reading holds it back; a purely informational one goes
+        unread = aw.Executor(self.state, environ=env, guard=people_guard(),
+                             commits=lambda text: ac.model_commitments(text, call=lambda *a, **k: None),
+                             adapters={"send_mail": wa.MailAdapter(_Sender(mail), environ=env)})
+        r = unread.run(self.mail_item(90, "Hi, the CoA is with our QA team."), NOW)[0]
+        self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["commits:unchecked"]))
+        ok = aw.Executor(self.state, environ=env, guard=people_guard(), commits=lambda t: [],
+                         adapters={"send_mail": wa.MailAdapter(_Sender(mail), environ=env)})
+        # a reader outside the company makes the message class B (ASSIST specs 1.3): it waits
+        # for a person whatever it says
+        r = ok.run(self.mail_item(91, "Hi, the CoA is with our QA team."), NOW)[0]
+        self.assertEqual((r["status"], r["reasons"]), ("dry_run", ["class_B_needs_a_person"]))
+        self.assertEqual(mail.calls, [])
+        # an informational message to colleagues only goes by itself
+        inside = aw.Executor(self.state, environ=env, guard=people_guard(), commits=lambda t: [],
+                             internal_domains=["plx.example"],
+                             adapters={"send_mail": wa.MailAdapter(_Sender(mail), environ=env)})
+        item = self.mail_item(93, "Hi, the CoA is with our QA team.")
+        item["body"]["prepared"]["draft"].update(to=[{"address": OTHER}], subject="Re: documents")
+        r = inside.run(item, NOW)[0]
+        self.assertEqual(r["status"], "done")
+        self.assertEqual(len(mail.calls), 1)
+
+    def test_a_confirmed_accept_is_the_persons_own_commitment(self):
+        env = {aw.MASTER_ENV: "1", aw.APPROVED_ENV: "send_mail"}
+        mail = Transport()
+        ex = aw.Executor(self.state, environ=env, guard=people_guard(),
+                         commits=lambda t: ["commits:money"],
+                         adapters={"send_mail": wa.MailAdapter(_Sender(mail), environ=env)})
+        approve = aw.Approval(by=(OWNER,), confirmed_live=True)
+        r = ex.run(self.mail_item(92, "Hi, total is 1,250 for the 500 units."), NOW, approve)[0]
+        self.assertEqual(r["status"], "done")
+        self.assertEqual(len(mail.calls), 1)
+
+    def test_figures_are_read_structurally(self):
+        known = "Re: PO10005674 lot BC-26257D TASK-3485 Nov15"
+        self.assertEqual(ac.figures("PO10005674, lot BC-26257D, TASK-3485, a@b.example, "
+                                    "https://x.example/1", known), [])
+        # a reference the item never named, and numbers inside words, are figures
+        for text in ("4.20", "$1,250", "11/16", "2026-10-21", "Tuesday", "next week",
+                     "500units", "five hundred", "qty500", "Nov15", "EUR500",
+                     "Qty 500@$2.50", "PO10005675"):
+            with self.subTest(text=text):
+                self.assertTrue(ac.figures(text, known))
+        self.assertTrue(ac.figures("PO10005674"))          # nothing named it: held
+        self.assertEqual(ac.commitments({"kind": "bc_write", "payload": {
+            "documentId": "6f1c", "lines": [{"quantity": 4, "itemId": "x"}]}}),
+            ["commits:figure_field:quantity"])
+        self.assertEqual(ac.commitments({"kind": "mc_approval", "payload": {"x": 5}}), [])
+        # every kind that says something gets the model's reading; too long to read whole: held
+        read: list = []
+        note = {"kind": "mc_task", "operation": "task_note", "payload": {"notes": "Docs filed."}}
+        self.assertEqual(ac.unattended(note, lambda t: read.append(t) or ["commits:judgment"], True),
+                         ["commits:judgment"])
+        self.assertEqual(read, ["Docs filed."])
+        self.assertEqual(ac.unattended(note, lambda t: [], False), [])
+        self.assertEqual(ac.model_commitments("x" * (ac.READ_MOST + 1), call=lambda *a, **k: 1 / 0),
+                         ["commits:unchecked"])
+        self.assertEqual(ac.model_commitments("x", call=lambda *a, **k: type(
+            "D", (), {"stdout": '{"result": "{\\"commits\\": [\\"tax\\"]}"}'})()),
+            ["commits:unchecked"])
 
 
 class Concurrency(Guards):

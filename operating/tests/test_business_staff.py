@@ -390,19 +390,21 @@ class MeetingsThroughTheDoor(unittest.TestCase):
         self.assertEqual(self.sql(guest, "SELECT subject FROM meetings",
                                   me={"full": False, "ids": []}), [])
 
-    def test_freightcom_and_the_excluded_never_reach_the_ai(self):
+    def test_the_excluded_never_reach_the_ai_and_freightcom_is_read_like_any(self):
         rows = self.sql(self.owner, "SELECT subject, organizer, attendees FROM meetings")
         flat = json.dumps(rows)
-        self.assertNotIn("Freightcom", flat)
+        self.assertIn("Freightcom", flat)
         self.assertNotIn(self.tcm.X, flat)
         self.assertIn("Carrier sync", flat)
         subjects = [r[0] for r in self.sql(self.owner, "SELECT subject FROM "
                                                        "meeting_transcripts")]
-        self.assertEqual(subjects, ["Weekly PO review"])   # Five names Freightcom
+        self.assertEqual(sorted(subjects), ["Carrier sync", "Weekly PO review"])   # Five names Freightcom: read like any
 
     def test_transcripts_by_participant_or_full_reader_never_the_unit_alone(self):
         q = "SELECT subject FROM meeting_transcripts"
-        self.assertEqual([r[0] for r in self.sql(self.ann, q)], ["Weekly PO review"])
+        # ann organised both (Five names Freightcom: read like any other since 11-23)
+        self.assertEqual(sorted(r[0] for r in self.sql(self.ann, q)),
+                         ["Carrier sync", "Weekly PO review"])
         self.assertEqual(self.sql(self.delegate, q), [])     # the unit, no participant
         self.assertEqual(self.sql(self.bob, q), [])          # a participant, not the unit
         for me in ({"full": False, "ids": []}, {"ids": "x"}, {}):

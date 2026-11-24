@@ -99,7 +99,14 @@
 	# Everything else is the web app.
 	handle {
 		encode zstd gzip
-		reverse_proxy {$PLX_APP_UPSTREAM:127.0.0.1:3000}
+		# A deploy restarts the web app when its tree changed (deploy/release/plx-release);
+		# for its boot nothing listens on 3000. A request that cannot connect is tried again
+		# every 100 ms for up to 20 s (nothing was sent yet, so any request may go again):
+		# the reader waits the boot instead of getting the error page below.
+		reverse_proxy {$PLX_APP_UPSTREAM:127.0.0.1:3000} {
+			lb_try_duration 20s
+			lb_try_interval 100ms
+		}
 	}
 
 	handle_errors {
@@ -108,6 +115,10 @@
 }
 
 {$PLX_APP_HOST:localhost} {
+	# The certificate from files when plx-tls-files has written them (deploy/ops/host/
+	# tls_files.py: `tls <cert> <key>`); none there, Caddy asks tailscaled for it during
+	# every full handshake (11-22: ~5 ms of tailscaled CPU each, 8-36 ms per handshake).
+	import /etc/plx/caddy-tls.d/*.caddy
 	import plx_workbench
 }
 

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/errors";
 import type { AutopilotAuditRow, MemoryItem, Template, WorkLogEvent } from "@/lib/types";
-import { forgetRelatedReads, itemDocTypes, itemRecords, Related } from "./related";
+import { forgetRelatedReads, itemDocTypes, itemRecords, Related, repeatsTogether } from "./related";
 
 const api = vi.hoisted(() => ({ getMemory: vi.fn(), getTemplates: vi.fn(), getWorkLog: vi.fn(), getAutopilotAudit: vi.fn(), fillTemplate: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...(await original<object>()), ...api }));
@@ -76,6 +76,15 @@ describe("Related panel", () => {
     expect(screen.getByRole("link", { name: "Work log" }).getAttribute("href")).toBe(`/work-log?record=${encodeURIComponent(PO)}`);
     // a reader other than the owner never asks for the audit log
     expect(api.getAutopilotAudit).not.toHaveBeenCalled();
+  });
+
+  it("reads every record, however many: 60 records are 60 work-log reads and the 60th record's memory shows", async () => {
+    const recs = Array.from({ length: 60 }, (_, i) => `Item:${i}`);
+    api.getMemory.mockResolvedValue({ available: true, items: [mem(1, "Only on the sixtieth", ["Item:59"])] });
+    render(<Related records={recs} />);
+    expect(await screen.findByTestId("related-memory")).toHaveTextContent("Only on the sixtieth");
+    expect(api.getWorkLog).toHaveBeenCalledTimes(60);
+    expect(screen.queryByTestId("related-records-cut")).toBeNull();
   });
 
   it("a long work-log line wraps on a phone: its link is never inside a clipped, unwrapped line", async () => {
@@ -177,5 +186,18 @@ describe("Related panel", () => {
     expect(itemRecords(undefined)).toEqual([]);
     expect(itemDocTypes("mail", { side: "supplier" })).toEqual(["supplier_email", "phrasing"]);
     expect(itemDocTypes("fiix", {})).toEqual([]);
+  });
+});
+
+describe("repeatsTogether", () => {
+  it("folds the same entry done again in a row into one line with its count, keeping the rest apart and the total", () => {
+    const asked = (seq: number, at: string): WorkLogEvent => ({ ...ev(seq, "Show purchase order 106001 with its lines", at), kind: "ask", verb: "asked", thread: "ask:c1" });
+    for (const n of [1, 10, 60]) {
+      const rows = [...Array.from({ length: n }, (_, i) => asked(1000 - i, `2026-11-23T1${i % 10}:00:00Z`)), ev(5, "Email to Acme", "2026-11-22T10:00:00Z"), asked(4, "2026-11-21T10:00:00Z")];
+      const groups = repeatsTogether(rows);
+      expect(groups.map((g) => g.times)).toEqual([n, 1, 1]);
+      expect(groups[0].e.seq).toBe(1000); // the newest of the run
+      expect(groups.reduce((a, g) => a + g.times, 0)).toBe(rows.length);
+    }
   });
 });

@@ -88,6 +88,7 @@ from .autopilot_reading import (
 from . import autopilot_agent_io, autopilot_engine, autopilot_handlers
 from .autopilot_triage import (_ask_wanted, _judge_asks, earlier_for,  # noqa: F401
                                recheck_open_replies)
+from .autopilot_waits import cycle as _waits
 from .autopilot_teams_names import (  # noqa: F401  (re-exported)
     OLD_LABELS, RETITLE_BATCH, TEAMS_NAME_BATCH, name_teams_items, retitle_old_labels)
 from .autopilot_memory import (  # noqa: F401  (re-exported)
@@ -424,7 +425,7 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
     decided approvals in the event's MC project in the 30 days before it (``deciders``):
     they get an approval; none: every approver."""
     if rule == "recipient":
-        if event.get("event_type") != "message.received":
+        if event.get("event_type") not in ("message.received", "message.waiting"):
             return [], "owner_rule_mismatch"
         owner = str(event.get("mailbox") or "")
         if not owner or not (addresses_of.get(owner) or event.get("channel") == "teams"):
@@ -495,7 +496,12 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
         hint = str(event.get("owner_hint") or "")
         return ([hint], None) if hint and hint in addresses_of else ([], "owner_unknown")
     if rule.startswith("role:"):
-        found = roles.get(rule[len("role:"):]) or _approvers(directory)
+        name = rule[len("role:"):]
+        if roles.get(name):
+            # one item the role holds, never a copy per member (11-23 audit: each QC-hold
+            # item existed twice, one per quality member)
+            return [POOL_PREFIX + name], None
+        found = _approvers(directory)
         return (found, None) if found else ([], "role_unassigned")
     return [], "owner_rule_unknown"
 
@@ -656,10 +662,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             if queue.meta("rd_due_day") != as_of.isoformat():
                 events += aw.rd_due_events(st, registry, as_of, people)
                 rd_day = as_of.isoformat()
-            from . import autopilot_receivables as ar
-            events += ar.due_events(st, registry, as_of, people)
-            from . import autopilot_payables as pay
-            events += pay.due_events(st, registry, as_of, people)
+            from . import autopilot_due_sources as dues
+            events += dues.events(st, registry, as_of, people, summary["skipped"])
             # a person's recurring work no other autopilot prepares (``recurring_work``):
             # live only, for the people the prepare gate passes its workflow for
             spec = next((a for a in registry["autopilots"] if a["id"] == "job_recurring"
@@ -699,6 +703,7 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                 collections_day = as_of.isoformat()
         except sqlite3.Error:
             summary["skipped"]["due_events_unreadable"] += 1
+    events += _waits(queue, registry, outbound, people, addresses_of, domains, now, only_owners)
     with queue.conn:
         for e in events:
             summary["events_seen"] += 1
@@ -985,9 +990,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 summary["skipped"][f"{ap['id']}:workflow_not_passed"] += 1
                 continue
         if ap.get("fallback"):
-            if deferred or pending:
-                # another autopilot still prepares it (rate-limited, a draft running): the
-                # event comes back, and its item is that one's
+            if deferred or pending:     # another still prepares it: it comes back, theirs
                 summary["skipped"][f"{ap['id']}:another_preparing"] += 1
                 continue
             # only for an owner no other autopilot prepared this event for

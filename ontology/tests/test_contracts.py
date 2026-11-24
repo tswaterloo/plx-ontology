@@ -626,9 +626,13 @@ class ToolContractsReject(unittest.TestCase):
             # plx.aggregate item_po_prices: the caller's own input codes (items[].code, at most
             # 60 characters) handed back unmatched or ambiguous, never text read from a source
             "codes_not_found", "codes_ambiguous",
+            "says",  # plx.sql measure excluded: the registry's own phrase for a parameter (S2)
             # plx.search widened hits: the Workbench's own words for how a hit matched
             # ('1 of 2 words', 'close in meaning') and why the list was widened
             "match", "widened",
+            # plx.search depth: the Workbench's words for how deep it read, naming only the
+            # caller's own query words it did not search, never text read from a source
+            "depth",
         }
         found: set[str] = set()
 

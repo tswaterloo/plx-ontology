@@ -116,10 +116,6 @@ class WriterBoundary(unittest.TestCase):
                          (None, "figure_not_in_material"))
         self.assertEqual(w.from_line(material(), "  ", EVENT, People(), "v@plx.example"),
                          (None, "empty_line"))
-        # the line goes through the same screen as the message (Freightcom never reaches it)
-        w = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=Model("x"))
-        self.assertEqual(w.from_line(material(), "book it with Freightcom", EVENT, People(),
-                                     "v@plx.example"), (None, "freightcom"))
 
     def test_kept_material_round_trips_and_an_unknown_key_is_refused(self):
         m = material(style=["signs Vince"])
@@ -156,15 +152,11 @@ class WriterBoundary(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(self.write(Model(text)), (None, "nothing_useful"))
 
-    def test_barred_people_pay_and_freightcom_never_reach_the_model(self):
+    def test_barred_people_and_pay_never_reach_the_model(self):
         cases = [
             ({**EVENT, "cleared": False}, None, material(), "not_cleared"),
             (EVENT, People({OUTSIDE}), material(), "not_cleared"),
             (EVENT, People({"vince@plx.example"}), material(), "not_cleared"),
-            ({**EVENT, "text": "Freightcom quote for the load"}, None, material(), "freightcom"),
-            # in the account notes or the memory only: the whole prompt is checked
-            (EVENT, None, material(account=["Open order SO-7001 via Freightcom."]), "freightcom"),
-            (EVENT, None, material(style=["Freightcom bookings go through Ana."]), "freightcom"),
         ]
         for event, people, m, why in cases:
             with self.subTest(why=why, event=event.get("text")):
@@ -251,6 +243,43 @@ class WriterBoundary(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout='{"result": "sure!"}', stderr="")
         w = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=garbage)
         self.assertEqual(w.write(material(), EVENT, People(), "v"), (None, "draft_failed"))
+
+    def test_a_crashed_call_is_tried_once_more_then_fails_typed(self):
+        calls = []
+
+        def flaky(argv, **_kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("connection reset")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=json.dumps({"result": json.dumps(
+                    {"kind": "reply", "reply": "Not yet, today."})}), stderr="")
+        w = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=flaky)
+        got, why = w.write(material(), EVENT, People(), "v")
+        self.assertEqual((got.kind, why, len(calls), w.retried), ("reply", "", 2, 1))
+        dead = []
+
+        def always(argv, **_kw):
+            dead.append(1)
+            raise OSError("down")
+        w = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=always)
+        self.assertEqual(w.write(material(), EVENT, People(), "v"), (None, "draft_failed"))
+        self.assertEqual((len(dead), w.retried), (2, 1))     # one retry, not a loop
+
+    def test_a_crashed_tool_session_is_tried_once_more(self):
+        said = {"kind": "reply", "reply": "Not yet, today."}
+
+        class Crash(Lookup):
+            def run(self, owner, prompt):
+                self.runs.append(prompt)
+                if len(self.runs) == 1:
+                    raise ConnectionError("server closed the connection")
+                return json.dumps(said), []
+        look = Crash(said)
+        model = Model(answer=said)
+        w = ad.Writer("opus", binary=BIN, home=HOME, seconds=5, per_cycle=4, call=model, lookup=look)
+        got, why = w.write(material(channel="teams"), EVENT, People(), "o", tools=True)
+        self.assertEqual((got.kind, len(look.runs), model.prompts), ("reply", 2, []))
 
     def test_no_model_named_means_no_call_and_an_operator_home_is_refused(self):
         for value in ("", "off", "none", "0"):
@@ -495,8 +524,7 @@ class DraftsLookUpAndOffer(unittest.TestCase):
         said = {"kind": "reply", "reply": "It went out this morning."}
         for looked, why in (([PAYSTUB], "pay_or_hr"),
                             (["From: barred@synth-tenant.example re the order"],
-                             "excluded_in_thread"),
-                            (["Booked with Freightcom, pickup at 3"], "freightcom")):
+                             "excluded_in_thread")):
             with self.subTest(why=why):
                 w, _ = self.writer(Lookup(said, looked))
                 got, got_why = w.write(m, EVENT, People(barred={"barred@synth-tenant.example"}),

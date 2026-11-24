@@ -41,14 +41,13 @@ class Earlier(unittest.TestCase):
 
     def test_a_screened_earlier_part_is_never_shown(self):
         """The earlier part passes the drafts' screen first: an excluded person's quoted
-        message, pay or HR matter, or Freightcom in it shows nothing of it."""
+        message, pay or HR matter in it shows nothing of it."""
         barred = QUOTE.replace("Maria Hooper <maria@synth-tenant.example>",
                                "Boss <boss@synth-tenant.example>")
         self.assertEqual(mail_earlier(barred, People(barred={"boss@synth-tenant.example"})), [])
         from operating.tests.test_payroll_marking import PAYSTUB
         self.assertEqual(mail_earlier(QUOTE.replace("How many gallons came in for PO 20304?",
                                                     PAYSTUB)), [])
-        self.assertEqual(mail_earlier(QUOTE.replace("PO 20304", "the Freightcom pickup")), [])
         with mock.patch("operating.autopilot_work.body_text", side_effect=RuntimeError):
             self.assertEqual(at.earlier_of(None, None, {"channel": "mail"}, READER, [], {},
                                            People(), lambda: None), [])
@@ -61,6 +60,10 @@ class Earlier(unittest.TestCase):
             got = at.earlier_of(None, s.state, tc.EVENT, tc.ME, ["vince"], {}, People(),
                                 lambda: None)
             want = list(range(n))[-at.EARLIER:]
+            notes = [x for x in got if x.startswith("[") and x.endswith("not shown]")]
+            self.assertEqual(notes, [f"[{n - at.EARLIER} earlier messages not shown]"] if n > at.EARLIER else [])
+            got = [x for x in got if x not in notes]
+
             self.assertEqual([int(x.rsplit(" ", 1)[1]) for x in got], want, n)
         self.assertEqual(at.earlier_of(None, None, tc.EVENT, tc.ME, [], {}, People(),
                                        lambda: None), [])

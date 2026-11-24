@@ -26,6 +26,33 @@ class MeasureTiles(unittest.TestCase):
             self.assertIn(str(entry.get("owner")), tile.group)
             self.assertEqual(tile.scope, "everyone")   # the reader's door decides the rows
 
+    def test_each_measure_states_its_definition_owner_version_and_the_day_it_was_set(self):
+        """The definition line a measure's tile and answer show: the catalogue records each
+        measure's version beside the day it was set, and the version is what it counts
+        now; an edit that does not restate both shows no day (never an older one's), and
+        a saved or declared tile names no measure."""
+        catalogue = ms.measures()
+        listed = {e.id: e for e in ins.measure_list()}
+        self.assertEqual(sorted(listed), sorted(catalogue))
+        for name, entry in catalogue.items():
+            self.assertEqual(entry.get("version"), ms.version(entry), name)
+            self.assertRegex(str(entry.get("defined_on")), r"^\d{4}-\d{2}-\d{2}$", name)
+            got = ins.info(next(s for s in ins.declared()
+                                if s.id == f"{ins.MEASURE_TILE}{name}")).measure
+            self.assertEqual((got.id, got.definition, got.owner, got.version, got.defined_on),
+                             (name, entry["definition"], entry["owner"], entry["version"],
+                              entry["defined_on"]))
+            self.assertEqual((listed[name].version, listed[name].defined_on),
+                             (entry["version"], entry["defined_on"]))
+            self.assertEqual(ms.statement(name)[1]["defined_on"], entry["defined_on"])
+        edited = {**catalogue["revenue"], "where": "TRUE"}
+        self.assertEqual(ms.defined_on(edited), "")
+        self.assertEqual(ms.defined_on({**catalogue["revenue"], "defined_on": "soon"}), "")
+        self.assertIsNone(ins.info(next(s for s in ins.builtin())).measure)
+        saved = ins.Spec(id="s1", title="t", about="", sql="SELECT 1", chart={}, group="",
+                         person="", scope="everyone", saved=True)
+        self.assertIsNone(ins.info(saved).measure)
+
     def test_a_dated_measure_with_no_currency_draws_a_line_by_month_and_the_rest_a_table(self):
         tiles = {s.id: s for s in ins.declared()}
         self.assertEqual(tiles["measure_invoices_issued"].chart.get("kind"), "line")

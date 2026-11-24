@@ -665,34 +665,27 @@ class ScheduleTests(CaptureCase):
         return [unquote(u) for u in self.graph.gets()
                 if u.split("?")[0].endswith(f"/users/{U_COS}/chats")]
 
-    def test_a_chat_listing_cut_at_the_page_cap_is_counted_and_named_never_silent(self):
-        """Every chat listing (discovery's, its plain fallback's and the census's) asks
-        Graph for 50 a page and follows it in guarded segments up to 200 pages. A listing still
-        cut there leaves the chats past it undiscovered: discovery and the census each name it
-        (``cap:chat_listing_page_cap``, not a resumed read's ``cap:page_cap``) and count
-        it; a listing that ends on its last allowed page is whole."""
-        cap = capture_teams.CHAT_LISTING_MAX_PAGES
-        self.assertGreaterEqual(cap, 66)   # one mailbox's 2,608 chats at 50 a page, live
-        for pad, capped in ((cap - 1, 0), (cap, 1)):
-            with self.subTest(pad=pad):
-                self.graph.chat_listing_pad = pad
-                self.graph.calls.clear()
-                run = self.capture.run(scope())
-                listings = self.chat_listings()
-                self.assertEqual(len(listings), cap)
-                self.assertTrue(all("$top=50" in u and "$expand=lastMessagePreview" in u
-                                    for u in listings), listings[:1])
-                found = run["discovery"]
-                self.assertEqual(found["chat_listings_capped"], capped)
-                self.assertEqual("cap:chat_listing_page_cap" in found["reasons"], bool(capped))
-                self.assertNotIn("cap:page_cap", found["reasons"])
-                self.assertEqual(found["status"], "incomplete" if capped else "complete")
-                self.assertEqual(CHAT in self.listed(), not capped)
-                census, _private = self.capture.census(scope(), [])
-                self.assertEqual((census["chat_listings_capped"], census["chats"]),
-                                 (capped, 1 - capped))
-                self.assertEqual("cap:chat_listing_page_cap" in census["reasons"],
-                                 bool(capped))
+    def test_a_chat_listing_is_never_cut_by_a_page_or_chat_bound(self):
+        """Owner 11-23: a capture reads until the source sends no more pages. Every chat
+        listing (discovery's, its plain fallback's and the census's) asks Graph for 50 a
+        page and follows it to its end, however many pages: 2,101 pages (past the 2,000 the
+        old bound allowed) is read whole, nothing is named capped, and the chat on the last
+        page is discovered."""
+        pages = 2_101
+        self.graph.chat_listing_pad = pages - 1
+        self.graph.calls.clear()
+        run = self.capture.run(scope())
+        listings = self.chat_listings()
+        self.assertEqual(len(listings), pages)
+        self.assertTrue(all("$top=50" in u and "$expand=lastMessagePreview" in u
+                            for u in listings), listings[:1])
+        found = run["discovery"]
+        self.assertEqual(found["chat_listings_capped"], 0)
+        self.assertFalse(any(r.startswith("cap:chat_listing") for r in found["reasons"]))
+        self.assertEqual(found["status"], "complete")
+        self.assertIn(CHAT, self.listed())
+        census, _private = self.capture.census(scope(), [])
+        self.assertEqual((census["chat_listings_capped"], census["chats"]), (0, 1))
         # The plain listing of a refused expand asks for 50 a page too.
         self.graph.chat_listing_pad = 0
         self.graph.chat_expand_status = 400
@@ -701,14 +694,6 @@ class ScheduleTests(CaptureCase):
         self.assertEqual(["$expand" in u for u in self.chat_listings()], [True, False])
         self.assertTrue(all("$top=50" in u for u in self.chat_listings()))
         self.assertEqual(run["discovery"]["chat_preview_fallbacks"], 1)
-        # The GET-only client's own read is untouched: one get_pages follows at most 50
-        # pages and 5,000 items (the listing goes past it in segments, never by a raise).
-        url = grammar.url("graph.user_chats", user=U_COS)
-        self.graph.calls.clear()
-        for caps in ({"max_pages": 51, "max_items": 1}, {"max_pages": 1, "max_items": 5001}):
-            with self.assertRaises(ValueError):
-                self.capture.api.get_pages(url, **caps)
-        self.assertEqual(self.graph.gets(), [])
 
     def test_a_long_chat_listing_continues_in_guarded_segments_to_its_end(self):
         """Live 2026-11-17: one mailbox listed 2,608 chats over 66 pages at 50 a page, past

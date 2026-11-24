@@ -797,10 +797,31 @@ def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     if dump.name in manifest["files"] and dump.is_file():
         with psycopg.connect(base, autocommit=True) as admin:
             drop_stale_restores(admin)   # before the disk guard: a leftover holds its space
-    skipped = restore_disk_guard(dump) if dump.is_file() else None
-    if dump.is_file() and skipped is None:   # the live read only when the dump alone fits
-        skipped = restore_disk_guard(dump, live_bytes=restored_bytes_estimate())
-    if skipped:
+    remote = _env("PLX_RESTORE_REMOTE_HOST", "")
+    skipped = None
+    if remote:
+        pass   # the box's disk is not the restore's: the Spark holds the throwaway copy
+    else:
+        skipped = restore_disk_guard(dump) if dump.is_file() else None
+        if dump.is_file() and skipped is None:   # the live read only when the dump alone fits
+            skipped = restore_disk_guard(dump, live_bytes=restored_bytes_estimate())
+    if remote and dump.name in manifest["files"] and dump.is_file():
+        try:
+            from deploy.backup import spark_restore as sr
+        except ImportError:
+            import spark_restore as sr   # run as a script from deploy/backup
+        try:
+            toc = subprocess.run([_pg_bin("pg_restore"), "-l", str(dump)], check=True,
+                                 capture_output=True, text=True).stdout
+            restored = sr.restore_on(remote, dump, manifest["table_counts"],
+                                     f"{RESTORE_DB_PREFIX}{os.getpid()}", toc=toc)
+        except (sr.SparkRestoreError, OSError, subprocess.SubprocessError) as exc:
+            problems.append(f"restore_failed:{type(exc).__name__}:{str(exc)[:80]}")
+        else:
+            for table, n in sorted(manifest["table_counts"].items()):
+                if n is not None and restored.get(table) != n:
+                    problems.append(f"row_count:{table}:{n}!={restored.get(table)}")
+    elif skipped:
         # an alarm, not a pass: the throwaway restore is skipped, never run into a full disk
         problems.append("restore_skipped:disk_guard:"
                         f"free={skipped['free_bytes'] // 10**9}GB<{skipped['min_free_bytes'] // 10**9}GB")

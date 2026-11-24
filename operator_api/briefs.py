@@ -23,13 +23,10 @@ from .errors import UserFacing
 from .page_core import ENRICH_PRIORITY
 
 BRIEF_TIMEOUT_SECONDS = 90
-# A finished week is kept for its reader (``WeeklyArchive``) once read whole, so it is read
-# with a longer budget than a live brief's: cut at 15 s it was never kept and every visit
-# read it again, cut again (11-10: 20 s per visit, shipped and invoiced unread). A visit
-# waits at most ``KEPT_WEEK_BUDGET_SECONDS`` (inside the route's ``BRIEF_TIMEOUT_SECONDS``);
-# the read-ahead, off the request path, reads it whole with ``WARM_WEEK_BUDGET_SECONDS``.
-KEPT_WEEK_BUDGET_SECONDS = 45.0
-WARM_WEEK_BUDGET_SECONDS = 300.0
+# The weekly review is read whole (owner 11-23, no limit on what a page reads): no time
+# budget cuts it, so a finished week is always kept for its reader (``WeeklyArchive``) and
+# every later visit is the archive row. It was cut at 45 s (a visit) and 300 s (the read-ahead),
+# a cut page was never kept, and the page took 53-60 s on every visit.
 
 
 def _sources(raw: Any) -> list[m.Source]:
@@ -55,7 +52,7 @@ def brief_url(object_id: str) -> str:
     return f"/meetings/brief/{quote(br.type_of(object_id), safe='')}/{quote(object_id, safe='')}"
 
 
-LATE_ROWS = 10
+LATE_ROWS = 100   # the late list's page; the rest open from the section's link (Home's Late list)
 
 
 def late_from_home(brief: m.Brief, late: Any) -> m.Brief:
@@ -90,6 +87,7 @@ def late_from_home(brief: m.Brief, late: Any) -> m.Brief:
     section = m.BriefSection(
         key="late_pos", title="Late purchase orders (open now)",
         state="shown" if rows else "empty", rows=rows, more=max(0, got.total - len(rows)),
+        more_href="/late",
         note="The same list as Home's Late, longest late first.",
         figures=[m.BriefFigure(label="Late purchase orders", value=str(got.total),
                                unit="records")] if got.total else [])
@@ -142,59 +140,10 @@ def _held(view: Any) -> frozenset[str] | None:
 
 
 WEEKLY_FILE = "weekly-reviews.sqlite"
-# A read-ahead cut by its budget keeps nothing (``WeeklyArchive.put``), so the same reader's
-# same week is not read ahead again for ``WEEKLY_CUT_SECONDS``: on the live box 345 of 382
-# read-aheads in two days ran their whole 300 s of Postgres aggregates and were cut (11-19),
-# beside the readers' live requests. Opening the weekly view reads it as before. The week a
-# mark names is a closed week (its data stays as it was), so a read cut once is cut again: the
-# mark holds for as long as that week is "last week" (11-21: with a 6 h mark all 91 readers'
-# read-aheads were each cut at 300 s again every 6 h, 1.3-1.5 of the warm-up's 3 read
-# workers busy all day on reads that never kept anything, and every screen read behind them
-# ran into its 60-90 s limit).
-WEEKLY_CUT_FILE = "weekly-cut.json"
-WEEKLY_CUT_SECONDS = 7 * 24 * 3600.0
-
-
-class WeeklyCuts:
-    """Which reader's read-ahead of which week was last cut by its budget, and when (a
-    JSON file beside the archive, owner-only). Any failure of the file is a miss: the week
-    is read ahead as before."""
-
-    def __init__(self, path: Any) -> None:
-        self.path = Path(path)
-
-    def _read(self) -> dict[str, Any]:
-        import json
-        try:
-            held = json.loads(self.path.read_text())
-            return held if isinstance(held, dict) else {}
-        except Exception:  # noqa: BLE001 - a miss
-            return {}
-
-    def recent(self, reader: str, week: date, now: Optional[float] = None) -> bool:
-        import time
-        held = self._read().get(reader)
-        try:
-            return (isinstance(held, list) and held[0] == week.isoformat()
-                    and (now if now is not None else time.time()) - float(held[1])
-                    < WEEKLY_CUT_SECONDS)
-        except Exception:  # noqa: BLE001 - a miss
-            return False
-
-    def mark(self, reader: str, week: date, now: Optional[float] = None) -> None:
-        import json
-        import time
-        try:
-            held = self._read()
-            held[reader] = [week.isoformat(), now if now is not None else time.time()]
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            part = self.path.with_name(f"{self.path.name}.{os.getpid()}.part")
-            part.write_text(json.dumps(held))
-            from operating.file_modes import keep_private
-            keep_private(part, 0o600)
-            os.replace(part, self.path)
-        except Exception:  # noqa: BLE001 - not marked: read ahead again next round
-            return
+# how long each reader's week took to build here (seconds, the last ``WEEKLY_TIMES_KEPT``):
+# the estimate the page shows while a first review is built (an archive read is not a build).
+WEEKLY_TIMES_FILE = "weekly-build-seconds.json"
+WEEKLY_TIMES_KEPT = 20
 
 
 def _alerts(view: Any, *, resolved: bool = False,
@@ -354,12 +303,11 @@ def _grant_key(view: Any, held: frozenset[str]) -> Optional[str]:
 
 def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
                      reader: Optional[str] = None, today: Optional[date] = None,
-                     kept_budget: float = KEPT_WEEK_BUDGET_SECONDS
-                     ) -> Optional[dict[str, Any]]:
-    """The weekly review as this reader reads it; a finished week is kept in ``archive``
-    for ``reader`` and served from it while the grant is the same and every source it
-    shows still opens for the reader. A finished week not kept yet is read with
-    ``kept_budget`` (a live brief's budget otherwise)."""
+                     built: Any = None) -> Optional[dict[str, Any]]:
+    """The weekly review as this reader reads it, whole (no time budget; ``built(seconds)``
+    is told how long a build took, never an archive read); a finished week is
+    kept in ``archive`` for ``reader`` and served from it while the grant is the same and
+    every source it shows still opens for the reader."""
     held = _held(view)
     if held is None:
         return None
@@ -373,22 +321,24 @@ def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
             kept = archive.get(reader, start, grant, decide) if grant else None
         if kept is not None:
             return kept
+    import time
+    began = time.monotonic()
     alerts = _alerts(view, resolved=True)
     kept = archive is not None and bool(reader) and grant is not None \
         and start + timedelta(days=7) <= today
     with view._request():
         raw = br.weekly_review(view._call, held, alerts, week=start, today=today,
-                               decide=decide, people=_people(),
-                               budget_seconds=kept_budget if kept
-                               else br.BUDGET_SECONDS)
+                               decide=decide, people=_people(), budget_seconds=None)
+    if built is not None:
+        built(time.monotonic() - began)
     import logging
     log = logging.getLogger("operator_api")
     if archive is not None and reader and grant:
         if archive.put(reader, start, grant, raw, today):
             log.info("weekly review of %s kept", start.isoformat())
         elif kept:
-            log.info("weekly review not kept: %s", "cut by its budget"
-                     if (raw.get("budget") or {}).get("stopped") else "archive unwritable")
+            log.info("weekly review not kept: %s", "cut (%s)" % (raw.get("budget") or {}).get(
+                "stopped") if (raw.get("budget") or {}).get("stopped") else "archive unwritable")
     elif archive is not None:
         log.info("weekly review not kept: %s", "no reader" if not reader else "no grant")
     return raw
@@ -873,10 +823,12 @@ class BriefsMixin:
                                 managers={o: v for o, v in kept["managers"].items()
                                           if not gone(o)})
 
-    def _brief_run(self, reader: Reader, job: Any, *, priority: int = 0) -> Any:
-        # an old-engine enrichment read (``ENRICH_PRIORITY``) is a long read
-        return self.reads.run(reader, job, timeout=BRIEF_TIMEOUT_SECONDS,  # type: ignore
-                              priority=priority, long=priority >= ENRICH_PRIORITY)
+    def _brief_run(self, reader: Reader, job: Any, *, priority: int = 0,
+                   timeout: Optional[float] = BRIEF_TIMEOUT_SECONDS, long: bool = False) -> Any:
+        # an old-engine enrichment read (``ENRICH_PRIORITY``) is a long read; ``timeout``
+        # None: no time limit (the weekly review, whole whatever it takes)
+        return self.reads.run(reader, job, timeout=timeout,  # type: ignore
+                              priority=priority, long=long or priority >= ENRICH_PRIORITY)
 
     def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
         if object_type not in br.MEETING_TYPES + br.PARTY_TYPES \
@@ -896,15 +848,6 @@ class BriefsMixin:
         data_dir = getattr(self, "data_dir", None)
         return br.WeeklyArchive(data_dir / WEEKLY_FILE) if data_dir is not None else None
 
-    def _weekly_cut_recently(self, reader: Reader) -> bool:
-        """Last week's read-ahead for ``reader`` was cut by its budget within
-        ``WEEKLY_CUT_SECONDS`` (``WeeklyCuts``)."""
-        data_dir = getattr(self, "data_dir", None)
-        if data_dir is None:
-            return False
-        week = br.week_of(date.today()) - timedelta(days=7)
-        return WeeklyCuts(Path(data_dir) / WEEKLY_CUT_FILE).recent(reader.key, week)
-
     def _weekly_ahead(self, reader: Reader) -> Any:
         """Last week's review for ``reader`` as ``/api/brief/weekly`` reads it, kept in the
         archive (read whole once, served from there after); nothing when no archive."""
@@ -913,15 +856,9 @@ class BriefsMixin:
         def job(view: Any) -> None:
             if archive is None:
                 return
-            cuts = WeeklyCuts(Path(self.data_dir) / WEEKLY_CUT_FILE)
-            week = br.week_of(date.today()) - timedelta(days=7)
-            if cuts.recent(reader.key, week):
-                return
             try:
-                raw = weekly_review_of(view, None, archive=archive, reader=reader.key,
-                                       kept_budget=WARM_WEEK_BUDGET_SECONDS)
-                if isinstance(raw, Mapping) and (raw.get("budget") or {}).get("stopped"):
-                    cuts.mark(reader.key, week)
+                weekly_review_of(view, None, archive=archive, reader=reader.key,
+                                 built=self._weekly_took)
             except Exception as error:  # noqa: BLE001 - read when opened instead
                 import logging
                 import traceback
@@ -931,24 +868,76 @@ class BriefsMixin:
                     Path(where.filename).name, where.lineno)
         return job
 
+    def _weekly_times(self) -> Any:
+        data_dir = getattr(self, "data_dir", None)
+        return data_dir / WEEKLY_TIMES_FILE if data_dir is not None else None
+
+    def _weekly_seconds(self) -> Optional[float]:
+        """The usual time one reader's week took to build here (the median of the last
+        ``WEEKLY_TIMES_KEPT`` builds, kept in ``WEEKLY_TIMES_FILE``); None before any."""
+        import json
+        import statistics
+        path = self._weekly_times()
+        try:
+            seen = [float(x) for x in json.loads(path.read_text())] if path else []
+        except (OSError, ValueError, TypeError):
+            return None   # none measured yet (or unreadable): no estimate is given
+        return statistics.median(seen) if seen else None
+
+    def _weekly_took(self, seconds: float) -> None:
+        import json
+        import logging
+        path = self._weekly_times()
+        if path is None:
+            return
+        try:
+            try:
+                seen = [float(x) for x in json.loads(path.read_text())]
+            except (OSError, ValueError, TypeError):
+                seen = []
+            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps((seen + [round(seconds, 1)])[-WEEKLY_TIMES_KEPT:]))
+            os.replace(tmp, path)
+        except OSError as error:
+            logging.getLogger("operator_api").warning(
+                "weekly review build time not kept: %s", type(error).__name__)
+
+    def weekly_reading(self, reader: Reader) -> m.Brief:
+        """The weekly review as shown while its first build goes on (nothing of the
+        reader's data in it): ``reading`` and, from the usual build time here, about when
+        it will be ready."""
+        from datetime import datetime, timedelta as td, timezone
+        import time
+        now = datetime.now(timezone.utc)
+        usual = self._weekly_seconds()
+        began = self.__dict__.get("_weekly_began", {}).get(reader.key)
+        ready = None
+        if usual is not None:
+            left = usual - (time.monotonic() - began) if began is not None else usual
+            ready = (now + td(seconds=max(left, 0.0))).isoformat(timespec="seconds")
+        return m.Brief(kind="weekly", title="Weekly review", as_of=now.isoformat(timespec="seconds"),
+                       sections=[], basis="This review is being built from every record you may "
+                       "read; nothing is left out, so the first one takes a few minutes.",
+                       reading=True, ready_about=ready)
+
     def weekly_review(self, reader: Reader, week: Optional[date], *,
                       ahead: bool = False) -> m.Brief:
-        """Read ``ahead`` (the warm-up's screen read): last week's review cut by its budget
-        kept nothing, so it is marked in ``WeeklyCuts`` and not read ahead again while the
-        mark holds."""
+        """``ahead``: the warm-up's screen read (the same read, whole, kept in the archive).
+        No time limit: a reader's week is read whole (424-714 s), served from the archive
+        once built; until then the route answers ``weekly_reading``."""
+        import time
         archive = self._weekly_archive()
+        started = self.__dict__.setdefault("_weekly_began", {})
+        started[reader.key] = time.monotonic()
         try:
-            raw = self._brief_run(reader, lambda view: weekly_review_of(
-                view, week, archive=archive, reader=reader.key))
+            raw = self.weekly_run(reader, lambda view: weekly_review_of(
+                view, week, archive=archive, reader=reader.key, built=self._weekly_took))
         except br.BriefRefused:
             raise UserFacing("invalid_request", "That week has not started yet.", 422)
+        finally:
+            started.pop(reader.key, None)
         if raw is None:
             raise UserFacing("not_found", "The weekly review needs a signed-in reader.", 404)
-        data_dir = getattr(self, "data_dir", None)
-        if ahead and week is None and data_dir is not None and isinstance(raw, Mapping) \
-                and (raw.get("budget") or {}).get("stopped"):
-            WeeklyCuts(Path(data_dir) / WEEKLY_CUT_FILE).mark(
-                reader.key, br.week_of(date.today()) - timedelta(days=7))
         return late_from_home(brief_model(raw), lambda: self.late_list(reader, limit=LATE_ROWS))
 
     def labour(self, reader: Reader, weeks: Optional[int] = None) -> m.LabourPage:

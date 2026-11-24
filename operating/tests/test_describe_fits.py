@@ -60,9 +60,11 @@ class DescribeFits(gvt.Fixture, unittest.TestCase):
             patch.stop()
 
     def test_a_wide_type_is_described_within_one_response(self):
-        out = self.call({"describe": "CertificateOfAnalysis"}, tab.FULL)
-        self.assertNotIn("error", out, str(out)[:500])
-        self.assertTrue(ts._fits_response(out))
+        # the case tools' bound (48,000 bytes): the Ask's own (800,000) holds this type whole
+        with mock.patch("operating.mcp_server.ASK_RESULT_BYTES", 48000):
+            out = self.call({"describe": "CertificateOfAnalysis"}, tab.FULL)
+            self.assertNotIn("error", out, str(out)[:500])
+            self.assertTrue(ts._fits_response(out))
         sample = out["sample"]
         self.assertEqual(sample["records_you_can_read"], 60)
         self.assertTrue(sample["trimmed"])

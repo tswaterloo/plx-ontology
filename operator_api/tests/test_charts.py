@@ -77,6 +77,20 @@ class KindsTest(unittest.TestCase):
         self.assertEqual(sum(v for s in c["series"] for v in s["values"]),
                          sum(float(r[2]) for r in LONG))
 
+    def test_no_series_panel_or_chart_is_left_out_of_a_big_answer(self):
+        """Guardrail 1: 60 split values are 60 series, 40 facets are 40 panels, 11 chart
+        blocks are 11 charts (none of the old caps of 12, 24 and 8 holds)."""
+        rows = [[f"w{w}", f"d{d:02d}", str(d + 1)] for d in range(60) for w in range(3)]
+        (c,) = drawn({"type": "bar", "x": "week", "split": "dept", "y": ["n"]},
+                     ("week", "dept", "n"), rows)
+        self.assertEqual(len(c["series"]), 60)
+        self.assertEqual(c["omitted"], 0)
+        panel_rows = [[f"w{w}", f"f{f:02d}", str(f + 1)] for f in range(40) for w in range(3)]
+        (p,) = drawn({"type": "bar", "x": "week", "facet": "dept", "y": ["n"]},
+                     ("week", "dept", "n"), panel_rows)
+        self.assertEqual(len(p["panels"]), 40)
+        self.assertEqual(p["omitted"], 0)
+
     def test_a_split_value_with_no_amount_has_no_legend_entry(self):
         # the walk: a month chart split by status listed "Unknown" for rows of no value
         rows = [["2026-10", "Open", "210600"], ["2026-10", "Closed", "11970"],
@@ -285,7 +299,7 @@ class KindsTest(unittest.TestCase):
         self.assertEqual(sum(c["series"][0]["values"]), sum(range(1, 21)))   # nothing lost
 
     def test_histogram_counts_every_row_once(self):
-        for n in (1, 10, 60, 200):
+        for n in (1, 10, 60, 200, 1200):
             rows = [[str(i * 1.5)] for i in range(n)] + [["n/a"]]
             (c,) = drawn({"type": "histogram", "y": ["hours"]}, ("hours",), rows)
             self.assertEqual(sum(c["series"][0]["values"]), n, n)
@@ -454,12 +468,12 @@ class OpenPeriodTest(unittest.TestCase):
 
 class CardinalityTest(unittest.TestCase):
     def test_no_row_lost_or_duplicated_and_fast(self):
-        for n in (1, 10, 60, 200):
+        for n in (1, 10, 60, 200, 1200):
             rows = [[f"p{i}", str(i), str(Decimal(i) / 3)] for i in range(n)]
             started = time.monotonic()
             (c,) = drawn({"type": "bar", "x": "p", "y": ["a", "b"]}, ("p", "a", "b"), rows)
             self.assertLess(time.monotonic() - started, 0.5)
-            shown = min(n, ch.MAX_CHART_POINTS)
+            shown = n
             self.assertEqual((c["rows"], c["shown"], len(c["labels"])), (n, shown, shown))
             self.assertEqual(c["labels"], [f"p{i}" for i in range(shown)])
             (t,) = drawn({"type": "scatter", "x": "a", "y": ["b"], "trend": n >= 3},

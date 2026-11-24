@@ -23,13 +23,22 @@ const brief = (over: Partial<Brief> = {}): Brief => ({
 });
 
 describe("brief view", () => {
+  it("a section with every row elsewhere links them all: Show all N", () => {
+    const b = brief();
+    const late = b.sections.find((x) => x.key === "late_pos")!;
+    render(<BriefView brief={{ ...b, sections: [{ ...late, more_href: "/late" }] }} eyebrow="Weekly review" />);
+    const link = screen.getByTestId("brief-more");
+    expect(link.getAttribute("href")).toBe("/late");
+    expect(link).toHaveTextContent(`Show all ${4 + (late.rows ?? []).length}`);
+  });
+
   it("shows each figure in its unit, a finance-marked section without values, and visible counts only", () => {
     render(<BriefView brief={brief()} eyebrow="Weekly review" />);
     expect(screen.getByText("12")).toBeTruthy();
     expect(screen.getByText("+3 vs 9 the week before")).toBeTruthy();
     expect(screen.getByText("Not read")).toBeTruthy();
     expect(screen.getByText(/Finance-marked/)).toBeTruthy();
-    expect(screen.getByText("4 more not listed.")).toBeTruthy();
+    expect(screen.getByText("4 more not listed.")).toBeTruthy();   // a section with nowhere to open them says so
   });
 
   it("says an unread or finance-only section once, keeping 'may still have items', with dates in words", () => {

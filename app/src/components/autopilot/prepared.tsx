@@ -197,13 +197,6 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   );
 }
 
-/** Why the list is empty: nothing switched on, or on and nothing new as of the feed's last look. */
-export function emptyWords(area: Pick<Area, "my_drafts" | "checked_at">): string {
-  if (!(area.my_drafts ?? []).some((c) => c.on)) return "Nothing is prepared for you: nothing is switched on above.";
-  if (!area.checked_at) return "On. Nothing new for you yet.";
-  return `On. Nothing new for you as of ${formatDateTime(area.checked_at)}.`;
-}
-
 export function PreparedView({ items, empty, linked, onGone, onChanged }: { items: PreparedItem[]; empty: string; linked?: string | null; onGone: (id: string) => void; onChanged: () => void }) {
   if (items.length === 0) return <p className="py-6 text-[13px] text-muted" data-testid="prepared-empty">{empty}</p>;
   return (

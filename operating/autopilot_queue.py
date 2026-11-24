@@ -25,7 +25,7 @@ QUEUE_FILE = "autopilot.sqlite"
 CARD_PREFIX = "autopilot:"
 EVENT_TYPES = ("message.received", "task.assigned", "record.changed", "qc.result",
                "approval.requested", "meeting.ended", "record.due", "question.asked",
-               "assistant.look")
+               "assistant.look", "message.waiting")
 OWNER_RULES = ("recipient", "assignee", "approvers", "organizer", "buyer", "addressee",
                "hinted")
 ROLE_OWNER = re.compile(r"^role:[a-z_]{1,40}$")
@@ -62,7 +62,7 @@ HANDLER_TRIES = 3
 SUMMARY_CHARS = 160
 WORK_LOG_ENV = "PLX_WORK_LOG_DIR"  # where the Workbench keeps its work log
 REPLY_HOURS = 72          # an answer counts within this many hours (the replay's horizon)
-TEXT_CHARS = 4000
+TEXT_CHARS = 30000      # an event's text (the mail's own words; was 4,000, cut unsaid)
 
 EMAIL_PROPS = ("subject", "sender", "to_addresses", "cc_addresses", "received_at", "sent_at",
                "conversation_id", "internet_message_id", "body_preview", "mailbox")
@@ -71,7 +71,8 @@ BUSINESS = ("SalesOrder", "PurchaseOrder", "SalesInvoice", "Shipment", "Receipt"
 SIDE_LINKS = {"Email.sent_by_customer": "customer", "Email.sent_by_supplier": "supplier"}
 SO_LINE_OF, SO_LINE_ITEM = "SalesOrderLine.line_of", "SalesOrderLine.for_item"
 PO_LINE_OF, PO_LINE_ITEM = "PurchaseOrderLine.line_of", "PurchaseOrderLine.for_item"
-CLOSED = re.compile(r"\b(?:closed|complete[d]?|cancel(?:l?ed)?|void|shipped|invoiced|fully|done|"
+# a PARTIAL shipment/receipt/invoice is not closed ("Partially Shipped" is still open work)
+CLOSED = re.compile(r"(?<!partially )(?<!partial )\b(?:closed|complete[d]?|cancel(?:l?ed)?|void|shipped|invoiced|fully|done|"
                     r"merged|archived|posted|received)\b", re.I)
 TASK_DONE = re.compile(r"^(?:done|merged|closed|cancel+ed|complete[d]?|archived|wont_?do)$",
                        re.I)

@@ -7,15 +7,16 @@ import { useEffect, useState } from "react";
 import { bizPage, getObject, getObjectSection, mergeSection } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { businessToday, doorKey, formatDate, money, objectHref, readable, recordLabel, safeHref, typeLabel } from "@/lib/format";
-import { factMap, receivedOf, recordHead } from "@/lib/record";
+import { activityTitle, factMap, fileTitle, receivedOf, recordHead } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { briefingKind } from "@/lib/status";
-import type { ActionResult, BizCell, BizPage, BriefingItem, LatePo, ObjectPage, ProactiveSuggestion, Source, TrailStep } from "@/lib/types";
+import type { ActionResult, BizCell, BizPage, BriefingItem, LatePo, ObjectPage, ObjectRef, ProactiveSuggestion, Source, TrailStep } from "@/lib/types";
 import { AlertFired } from "./alert-fired";
 import { DraftSheet, SuggestionActions } from "./record/next-step";
 import { SourceChip } from "./source-chip";
 import { lateFigure, DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { RECORD_LIMIT_MS } from "./ui/skeleton";
+import { ShowAll } from "@/components/show-all";
 
 export interface QueueRow {
   key: string;
@@ -206,6 +207,22 @@ export function stepWords(rule: string | null | undefined, text: string, who: st
 }
 
 /** What the header says under the title: how late, and whether the supplier has given a date. Words and glyph in the status colour, as text, no pill. */
+/** The linked records as a person reads them: a file by its plain name, the same one saved twice once with a count. */
+function linkedRows(refs: ObjectRef[]): { ref: ObjectRef; label: string; count: number }[] {
+  const rows: { ref: ObjectRef; label: string; count: number }[] = [];
+  for (const r of refs) {
+    const named = r.label && r.label !== typeLabel(r.type) && !/^(PO line|Receipt)$/.test(r.label);
+    const label = named ? fileTitle(recordLabel(r.type, r.label)) : typeLabel(r.type);
+    const same = rows.find((x) => x.label === label);
+    if (same) same.count += 1;
+    else rows.push({ ref: r, label, count: 1 });
+  }
+  return rows;
+}
+
+/** How long a record is looked at before its evidence trail is asked for. */
+const TRAIL_AFTER_MS = 1200;
+
 function Facts({ row, trailEta, trailRead }: { row: QueueRow; trailEta?: string | null; trailRead: boolean }) {
   const out: React.ReactNode[] = [];
   if (row.days != null && row.status === "late")
@@ -308,6 +325,10 @@ export function TodayDetail({
     setFailed(false);
     // no wait without an end: past the record limit the pane says it didn't load (a later answer still shows)
     const limit = setTimeout(() => !c.signal.aborted && setFailed(true), RECORD_LIMIT_MS);
+    // the trail is the old engine's slow read (10-50 s cold): asked for only once the record has
+    // been looked at for a moment, so moving down the list with the arrow keys reads none
+    const looked: number[] = [];
+    const afterLook = (go: () => void) => { looked.push(window.setTimeout(() => !c.signal.aborted && go(), TRAIL_AFTER_MS)); };
     const trailOf = /^(PurchaseOrder|SalesOrder)$/.test(row.type) && row.objectId.startsWith(`${row.type}:`);
     const own = () =>
       getObject(row.type, row.objectId, c.signal, true)
@@ -320,9 +341,10 @@ export function TodayDetail({
           setPage(withTrail);
           // a page read whole already holds its trail: no second request
           if (!p.complete && trailOf)
-            getObjectSection("trail", row.type, row.objectId, c.signal, true)
-              .then((s) => !c.signal.aborted && s.trail && setPage((cur) => (cur ? mergeSection(cur, s) : cur)))
-              .catch(() => undefined);
+            afterLook(() =>
+              getObjectSection("trail", row.type, row.objectId, c.signal, true)
+                .then((s) => !c.signal.aborted && s.trail && setPage((cur) => (cur ? mergeSection(cur, s) : cur)))
+                .catch(() => undefined));
         })
         .catch(() => !c.signal.aborted && setFailed(true));
     const k = keyText ? doorKey(row.href, row.type, row.objectId) : null;
@@ -335,14 +357,16 @@ export function TodayDetail({
           setDoor(p);
           // the evidence trail is the old engine's: read after, never waited on
           if (trailOf && !row.item?.trail)
-            getObjectSection("trail", row.type, row.objectId, c.signal, true)
-              .then((s) => !c.signal.aborted && setTrailOnly(s.trail ?? { trails: [] } as unknown as ObjectPage["trail"]))
-              .catch(() => undefined);
+            afterLook(() =>
+              getObjectSection("trail", row.type, row.objectId, c.signal, true)
+                .then((s) => !c.signal.aborted && setTrailOnly(s.trail ?? { trails: [] } as unknown as ObjectPage["trail"]))
+                .catch(() => undefined));
         },
         () => !c.signal.aborted && own(),
       );
     return () => {
       clearTimeout(limit);
+      looked.forEach(clearTimeout);
       c.abort();
     };
   }, [row.type, row.objectId, row.href, keyText, row.item?.trail]);
@@ -535,14 +559,14 @@ export function TodayDetail({
               <section>
                 <SectionTitle>Linked</SectionTitle>
                 <ul className="-mx-2">
-                  {related.slice(0, 6).map((r) => (
-                    <li key={r.object_id}>
-                      <Link href={objectHref(r.type, r.object_id)} className="group flex h-8 items-center justify-between gap-2 rounded-lg px-2 text-[13px] hover:bg-hover">
-                        <span className="truncate">{r.label && r.label !== typeLabel(r.type) && !/^(PO line|Receipt)$/.test(r.label) ? recordLabel(r.type, r.label) : typeLabel(r.type)}</span>
-                        <ArrowUpRight className="size-3.5 shrink-0 text-faint group-hover:text-fg" aria-hidden />
+                  <ShowAll items={linkedRows(related)} first={6} as="li">{(r) => (
+                    <li key={r.ref.object_id}>
+                      <Link href={objectHref(r.ref.type, r.ref.object_id)} className="group flex min-h-8 items-start justify-between gap-2 rounded-lg px-2 py-1.5 text-[13px] hover:bg-hover">
+                        <span className="min-w-0 line-clamp-2">{r.label}{r.count > 1 && <span className="ml-1 text-muted">×{r.count}</span>}</span>
+                        <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-faint group-hover:text-fg" aria-hidden />
                       </Link>
                     </li>
-                  ))}
+                  )}</ShowAll>
                 </ul>
               </section>
             )}
@@ -551,12 +575,12 @@ export function TodayDetail({
               <section>
                 <SectionTitle>Sources</SectionTitle>
                 <ul className="space-y-2">
-                  {sources.slice(0, 5).map((src, i) => (
+                  <ShowAll items={sources} first={5} as="li" noun="sources">{(src, i) => (
                     <li key={i} className="flex min-w-0 items-center gap-2.5 text-[13px]">
                       <SystemCode system={src.system} size={18} />
                       <SourceChip source={src} className="min-w-0 max-w-full" />
                     </li>
-                  ))}
+                  )}</ShowAll>
                 </ul>
               </section>
             )}
@@ -565,12 +589,12 @@ export function TodayDetail({
               <section>
                 <SectionTitle>Activity</SectionTitle>
                 <ol className="space-y-2">
-                  {timeline.slice(0, 5).map((t, i) => (
+                  <ShowAll items={timeline} first={5} as="li">{(t, i) => (
                     <li key={i} className="flex items-baseline justify-between gap-3 text-[13px] leading-5">
-                      <span className="min-w-0 truncate" title={readable(t.title)}>{readable(t.title)}</span>
+                      <span className="min-w-0 line-clamp-2" title={readable(t.title)}>{readable(activityTitle(t.title, 1))}</span>
                       <span className="shrink-0 text-[12px] tabular-nums text-muted">{stepDate(t.at)}</span>
                     </li>
-                  ))}
+                  )}</ShowAll>
                 </ol>
               </section>
             )}

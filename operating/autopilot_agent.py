@@ -45,10 +45,11 @@ import json
 from typing import Any, Mapping, Optional, Sequence
 
 from . import autopilot_jobs as aj
+from .autopilot_records import shown
 
 OPTIONS = 3
 TODOS = 4
-REPLY_CHARS = 4000
+REPLY_CHARS = 20000
 
 TASK = """You are {person}'s assistant at PLX. It is {when} now.
 {what}
@@ -62,7 +63,8 @@ to go, whether to take it on, their plan or a commitment the records do not back
 reply; put it to them as "ask": the question in one or two plain sentences (no figure, price \
 or date restated: the thread beside it carries them), and the two or three answers they would \
 choose between, each with the full short reply that answer would send, in their voice, saying \
-only what is shown;
+only what is shown; and as "blank" the one reply they would send whatever they choose, with \
+the answer as a single [placeholder] (shown when no answer can be offered as it is);
 - when the reply is clear but a piece of it is only {person}'s to give (a date, a quantity, \
 the state of their own work, a yes or no on a fact of theirs), write the reply in full, ready \
 to send, with each such piece as a placeholder in square brackets ([ship date], [quantity]): \
@@ -112,7 +114,8 @@ Write operations (system operation: target ids; fields of change):
 
 Answer last with one JSON object only: {{"summary": "<one line: what {person} would do, or \
 empty>", "reply": "<the reply, or empty>", "ask": {{"question": "<or empty>", "options": \
-[{{"label": "<the answer in a few words>", "reply": "<the reply with that answer>"}}]}}, \
+[{{"label": "<the answer in a few words>", "reply": "<the reply with that answer>"}}], \
+"blank": "<the reply with the answer as a [placeholder], or empty>"}}, \
 "todos": [{{"system": "", "record": "", "what": ""}}], "nothing": "<why nothing, or empty>"}}"""
 
 LOOK_HEAD = "Nothing has just arrived"
@@ -192,7 +195,8 @@ def parsed(final: Any, proposals: Sequence[Mapping[str, Any]], message: bool) ->
     guessed); a reply only for a message; a question with no usable answer is kept only when
     it asks something; when both a reply and a question came, the written reply stands and
     the question is its ``note`` (what the person fills in): a reply the model wrote is
-    never replaced by a card."""
+    never replaced by a card. A question's ``blank`` is the reply with its answer as a
+    [placeholder], offered when fewer than two answers can be (``autopilot_agent_io``)."""
     got = aj._json(final) or {}
     ask = got.get("ask") if isinstance(got.get("ask"), Mapping) else {}
     question = _text(ask.get("question"), 300)
@@ -203,8 +207,10 @@ def parsed(final: Any, proposals: Sequence[Mapping[str, Any]], message: bool) ->
              for t in (got.get("todos") if isinstance(got.get("todos"), list) else [])
              if isinstance(t, Mapping) and _text(t.get("what"), 300)][:TODOS]
     reply = _text(got.get("reply"), REPLY_CHARS) if message else ""
+    blank = _text(ask.get("blank"), REPLY_CHARS) if message else ""
     return Decision(summary=_text(got.get("summary"), 300), reply=reply,
-                    ask={"question": question, "options": options if message else []}
+                    ask={"question": question, "options": options if message else [],
+                         **({"blank": blank} if blank else {})}
                     if question and not reply else None,
                     proposals=aj.kept(proposals), todos=todos,
                     note=question if reply else "")
@@ -248,7 +254,7 @@ answer true. Answer with one JSON object only: {{"reply": true or false, "what":
 words>"}}
 
 {event}"""
-SCREEN_CHARS = 8000
+SCREEN_CHARS = 30000      # what the reply sort reads (a cut is said in the text)
 SCREEN_FEATURE = "assist_reply_screen"
 
 
@@ -294,7 +300,7 @@ class Assistant(aj.Jobber):
         from .card_text import mask_served
         # card numbers and credential-shaped values masked, as every session's input is
         prompt = mask_served(REPLY_SCREEN.format(person=person or "the person",
-                                                 event=event_text[:SCREEN_CHARS]))
+                                                 event=shown(event_text, SCREEN_CHARS)))
         got = self.small(prompt, str(self.reply_screen), SCREEN_FEATURE)
         return got is not None and got.get("reply") is False
 
@@ -377,11 +383,10 @@ class Assistant(aj.Jobber):
         """Whether the screens ``_finish`` applies would drop this decision (the check then
         never sees it); undecidable (no people known) counts as screened."""
         from .autopilot_drafter import thread_screen
-        from integrations.image_ocr_gpu import touches_freightcom
         if self._people is None:
             return True
         seen = "\n".join([*looked, json.dumps(got.shown, default=str)])
-        return bool(thread_screen(self._people, seen) or touches_freightcom(seen))
+        return bool(thread_screen(self._people, seen))
 
     @staticmethod
     def _finish(got: Optional[Decision], why: str, looked: Sequence[str], people: Any,
@@ -390,13 +395,10 @@ class Assistant(aj.Jobber):
         if got is None:
             return None, why
         from .autopilot_drafter import thread_screen
-        from integrations.image_ocr_gpu import touches_freightcom
         seen = "\n".join([*looked, json.dumps(got.shown, default=str)])
         hit = thread_screen(people, seen)
         if hit:
             return None, hit
-        if touches_freightcom(seen):
-            return None, "freightcom"
         if event is not None and event.get("event_type") == "message.received":
             from .autopilot_agent_io import gated
             # whether a reply is due is computed (addressing, ask rules, the person's

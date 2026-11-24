@@ -1,0 +1,32 @@
+# PLX Workbench readings, the fresh run: `python3 -m operating.assist_readings run
+# --fresh-minutes 30 --seconds 50`, started by plx-assist-readings-fresh.path on every capture
+# delta publish, so a new message is read within a minute of capture (contract C4; AS7). It
+# reads only messages said in the last 30 minutes and holds its own lock: the long run
+# (plx-assist-readings) never holds it back. Same screens, model, exclusion and writes as the
+# long run (see plx-assist-readings.service).
+[Unit]
+Description=PLX one reading per message: the newest messages, after each capture delta
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+# Reads no business system (SEC-S-05; tests/test_deploy_release.py).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PLX_READINGS_MODEL=haiku
+# the tables and the guarded findings view exist before anything reads (idempotent: a no-op once made)
+ExecStartPre=/data/venv/bin/python3 -m operating.assist_readings install
+ExecStart=/data/venv/bin/python3 -m operating.assist_readings run --fresh-minutes 30 --seconds 50
+MemoryHigh=1500M
+MemoryMax=2G
+TimeoutStartSec=5min
+TimeoutStopSec=1min
+UMask=0077

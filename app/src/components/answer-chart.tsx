@@ -178,12 +178,28 @@ export function AnswerCharts({ charts, question, caption = true }: { charts: Ask
   );
 }
 
+/** Bars past this many names show the first ones and a "Show all" switch (a line keeps every point). */
+export const ANSWER_BARS = 60;
+
+/** Pure: a bar chart cut to its first `n` names; any other chart, or one with no more names, as it is. */
+export function firstBars(chart: AskChart, n = ANSWER_BARS): AskChart {
+  if (!["bar", "stacked_bar"].includes(chart.kind) || chart.panels?.length || chart.labels.length <= n) return chart;
+  return { ...chart, labels: chart.labels.slice(0, n), series: chart.series.map((s) => ({ ...s, values: s.values.slice(0, n) })) };
+}
+
 function OneChart({ chart, question, caption }: { chart: AskChart; question?: string; caption: boolean }) {
   const figure = useRef<HTMLElement>(null);
+  const [all, setAll] = useState(false);
+  const cut = firstBars(chart);
   return (
     <figure ref={figure} className="space-y-1.5">
       {caption && <figcaption className="text-[14px] font-semibold">{chart.title}</figcaption>}
-      <ChartView chart={chart} />
+      <ChartView chart={all ? chart : cut} />
+      {cut !== chart && (
+        <button type="button" className="cursor-pointer text-[12px] text-accent hover:underline" onClick={() => setAll((a) => !a)} data-testid="chart-all">
+          {all ? `Show the first ${ANSWER_BARS}` : `Showing the first ${ANSWER_BARS} of ${chart.labels.length}: show all`}
+        </button>
+      )}
       <div className="flex flex-wrap items-center gap-x-3 text-[12px] text-muted">
         {chart.as_of && <span>As of {formatDate(chart.as_of)}</span>}
         <ChartSaves chart={chart} figure={figure} />
@@ -196,5 +212,6 @@ function OneChart({ chart, question, caption }: { chart: AskChart; question?: st
 
 /** Pure: streamed answer text without a chart block the model is still writing. */
 export function withoutChartBlocks(text: string): string {
-  return text.replace(/```chart[\s\S]*?(```|$)/g, "").trimEnd();
+  // a chart, a question asked back or a declared gap: blocks the app reads, never shown as text
+  return text.replace(/```(?:chart|clarify|gap)\b[\s\S]*?(```|$)/gi, "").trimEnd();
 }

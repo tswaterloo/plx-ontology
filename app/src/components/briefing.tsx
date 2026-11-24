@@ -172,7 +172,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
               {kind.status !== "late" && <StatusGlyph status={kind.status} size={13} />}
             </span>
           </div>
-          <div className="mt-0.5 flex items-baseline gap-2.5 text-[12px] leading-4 text-muted">
+          <div className="mt-0.5 flex items-start gap-2.5 text-[12px] leading-4 text-muted">
             {item.new_since_visit && (
               <span className="inline-flex shrink-0 items-center gap-1 self-center text-fg">
                 <StatusGlyph status="new" size={11} />
@@ -180,7 +180,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
               </span>
             )}
             {item.acknowledged && <span className="shrink-0 text-fg/80">Acknowledged</span>}
-            <span className="min-w-0 flex-1 truncate">{[amount ? shortSummary(item.summary).replace(/\.$/, "") : shortSummary(item.summary), amount].filter(Boolean).join(" · ")}</span>
+            <span className="min-w-0 flex-1 line-clamp-2">{[amount ? shortSummary(item.summary).replace(/\.$/, "") : shortSummary(item.summary), amount].filter(Boolean).join(" · ")}</span>
             <button
               type="button"
               onClick={() => setOpen((v) => !v)}

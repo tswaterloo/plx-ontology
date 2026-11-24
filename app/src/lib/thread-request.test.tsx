@@ -13,9 +13,9 @@ vi.mock("./api", () => ({
   },
 }));
 
-import { askUrlKey, MAX_QUESTION, useThread } from "./thread";
+import { askUrlKey, useThread } from "./thread";
 
-const file = { id: "f1", name: "po.pdf", size: 10, image: false, data: "QUJD" };
+const file = { id: "f1", name: "po.pdf", size: 10, image: false, upload: "b".repeat(32) };
 
 describe("Ask requests (WEB-021, WEB-022, WEB-024)", () => {
   it("Retry resends the whole request: object, source, page context and the attachment bytes", async () => {
@@ -28,7 +28,7 @@ describe("Ask requests (WEB-021, WEB-022, WEB-024)", () => {
     await act(async () => result.current.retry(result.current.turns[0]));
     expect(sent).toHaveLength(2);
     for (const key of ["object_id", "source", "context", "attachments"]) expect(sent[1][key]).toEqual(sent[0][key]);
-    expect(sent[1].attachments).toEqual([{ name: "po.pdf", data: "QUJD" }]);
+    expect(sent[1].attachments).toEqual([{ name: "po.pdf", upload: "b".repeat(32) }]);
     expect(sent[1].question).toBe("what is the price?");
   });
 
@@ -42,17 +42,13 @@ describe("Ask requests (WEB-021, WEB-022, WEB-024)", () => {
     expect(sent[1].attachments).toBeUndefined();
   });
 
-  it("a question over the limit is refused, shown whole, and never sent cut short", async () => {
+  it("a long question is sent whole: no length limit", async () => {
     sent.length = 0;
-    const long = "a".repeat(MAX_QUESTION) + " but not for customer X";
+    const long = "a".repeat(120000) + " but not for customer X";
     const { result } = renderHook(() => useThread());
     await act(async () => result.current.run(long));
-    expect(sent).toHaveLength(0);
-    expect(result.current.turns[0].question).toBe(long);
-    expect(result.current.turns[0].phase).toBe("error");
-    expect(result.current.turns[0].error).toContain("1000");
-    await act(async () => result.current.run("a".repeat(MAX_QUESTION)));
-    expect(sent[0].question).toHaveLength(MAX_QUESTION);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].question).toBe(long);
   });
 
   it("the same question for another meeting, item or page is another request", () => {

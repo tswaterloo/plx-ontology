@@ -298,7 +298,7 @@ def snapshot_reads(clock: Callable[[], dt.datetime] | None = None) -> Any:
         yield
         return
     at = clock().astimezone(dt.timezone.utc) if clock is not None else None
-    snap: dict[str, Any] = {"at": at, "versions": {}}
+    snap: dict[str, Any] = {"at": at, "versions": {}, "opened": []}
     token = _SNAPSHOT.set(snap)
     try:
         yield
@@ -309,6 +309,20 @@ def snapshot_reads(clock: Callable[[], dt.datetime] | None = None) -> Any:
                 close()
             except Exception:  # noqa: BLE001 - a closed store holds nothing more
                 pass
+
+
+def note_opened(handles: Any) -> None:
+    """Every handle a tool call of this snapshot asked the door about (the ones its results name and
+    its arguments open) is kept in the snapshot, so a stored run can depend on everything it read,
+    not only what it cited (``plan_batch``). Outside a snapshot nothing is kept."""
+    snap = _SNAPSHOT.get()
+    if snap is not None:
+        snap.setdefault("opened", []).extend(h for h in handles if isinstance(h, str) and h)
+
+
+def opened_in(snap: dict[str, Any] | None) -> list[str]:
+    """The handles ``note_opened`` kept in a snapshot, once each, in the order they were opened."""
+    return list(dict.fromkeys((snap or {}).get("opened") or ()))
 
 
 def current_snapshot() -> dict[str, Any] | None:

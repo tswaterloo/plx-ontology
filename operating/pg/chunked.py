@@ -80,7 +80,6 @@ CHECKPOINT_DDL = ("CREATE TABLE IF NOT EXISTS ontology.load_state "
 DEFAULT_STATEMENT_SECONDS = 600.0
 DEFAULT_BUDGET_MINUTES = 110.0
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
-DEFAULT_DISK_FLOOR_GB = 40.0   # the train's own guard is 45 GB, the disk guard's 20
 RETRIES = 3   # a lock timeout, deadlock or serialization failure is retried this often
 EXIT_DONE, EXIT_FAILED, EXIT_USAGE, EXIT_STOPPED, EXIT_RUNNING = 0, 1, 2, 3, 75
 
@@ -648,7 +647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     go.add_argument("--rehearse-untransactional", action="store_true",
                     help="also run VACUUM/CONCURRENTLY/external slices in a rehearsal: only "
                          "against a scratch copy")
-    go.add_argument("--disk-floor-gb", type=float, default=DEFAULT_DISK_FLOOR_GB,
+    go.add_argument("--disk-floor-gb", type=float, default=None,
                     help="stop before a slice would leave less free (0: no floor)")
     go.add_argument("--disk-path", default="/data")
     go.add_argument("--yield-to", default=None,
@@ -676,8 +675,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     with _connect(dsn, autocommit=True) as conn:
         job = factory(conn, **opts)
     hooks: list[Hook] = []
-    if args.disk_floor_gb:
-        hooks.append(disk_floor(args.disk_path, args.disk_floor_gb))
+    from operating import disk_budget   # the one floor unless the caller names another
+    hooks.append(disk_floor(args.disk_path, disk_budget.floor_gb() if args.disk_floor_gb is None
+                            else args.disk_floor_gb))
     if not args.ignore_windows:
         hooks.append(window_free(args.yield_to, own=args.own_window))
         if args.own_window:

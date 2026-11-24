@@ -328,8 +328,9 @@ class AskCanaryTest(Base):
         cfg = ask_canary.load_config(root / "deploy" / "ops" / "ask-canary.json")
         self.assertIsNotNone(cfg)
         self.assertGreaterEqual(cfg["max_seconds"], 60)   # the fast path's p90 x 4 and more
-        from operating import fast_answer
-        self.assertIsNotNone(fast_answer.understand(cfg["question"]))   # a fast question
+        # the answer is read from the record at run time, never typed or echoed from the question
+        self.assertTrue(cfg["truth"].lstrip().lower().startswith("select"))
+        self.assertEqual(cfg["expect"], [])
         install = (root / "deploy" / "ops" / "install_keep_fresh.sh").read_text()
         self.assertIn('"$here/ask-canary.json" "$CANARY_CONFIG"', install)
         self.assertIn('if ! sudo -n test -e "$CANARY_CONFIG"', install)

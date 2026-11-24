@@ -5,7 +5,7 @@
 // rows. Hover shows exact values; colours come from one palette for light and dark.
 
 import { useTheme } from "next-themes";
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Answer } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import {
@@ -539,7 +539,7 @@ export function chartNotes(chart: AskChart): string[] {
   const out: string[] = [];
   const rows = chart.rows ?? null;
   if (rows !== null && chart.shown !== null && chart.shown !== undefined && chart.shown < rows) out.push(`Shows ${chart.shown} of ${rows} rows.`);
-  if (chart.partial) out.push("The query returned only its first rows: this is of those rows.");
+  if (chart.partial) out.push(chart.rows_total ? `Drawn from the first ${rows ?? "few"} of ${chart.rows_total} rows.` : "The query returned only its first rows: this is of those rows.");
   if (chart.omitted) out.push(`${chart.omitted} smaller ${chart.omitted === 1 ? "series is" : "series are"} not drawn.`);
   if (chart.skipped) out.push(`${chart.skipped} ${chart.skipped === 1 ? "row has no value and is" : "rows have no value and are"} not counted.`);
   if (chart.trend) {
@@ -618,9 +618,28 @@ function Multiples({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onT
 }
 
 /** One chart: its legend, the drawing of its kind with hover values, and its notes. */
+/** The box's width when it is narrower than the chart's own (a phone), else 0: a line or bar
+ * chart is drawn at that width so its labels keep their size (a 640-wide drawing shrunk to a
+ * 370 px screen made 11 px labels 6 px). */
+function useNarrow(box: React.RefObject<HTMLDivElement | null>): number {
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const read = () => { const x = Math.round(el.getBoundingClientRect().width); setW(x > 0 && x < W ? Math.max(x, 300) : 0); };
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [box]);
+  return w;
+}
+
 export function ChartView({ chart }: { chart: AskChart }) {
   const theme = useChartTheme();
   const tip = useTip();
+  const narrow = useNarrow(tip.box);
   let body: ReactNode;
   if (chart.panels?.length) body = <Multiples chart={chart} theme={theme} onTip={tip} />;
   else if (chart.kind === "pie" || chart.kind === "donut") body = <Pie chart={chart} theme={theme} onTip={tip} />;
@@ -629,7 +648,7 @@ export function ChartView({ chart }: { chart: AskChart }) {
   else if (chart.kind === "table") body = <ColourTable chart={chart} theme={theme} />;
   else if (chart.kind === "kpi") body = <Kpis chart={chart} theme={theme} />;
   else if (chart.kind === "funnel") body = <Funnel chart={chart} theme={theme} onTip={tip} />;
-  else body = <Cartesian chart={chart} labels={chart.labels} series={chart.series} theme={theme} onTip={tip} />;
+  else body = <Cartesian chart={chart} labels={chart.labels} series={chart.series} theme={theme} onTip={tip} width={narrow || W} />;
   const notes = chartNotes(chart);
   return (
     <div className="space-y-1.5" data-chart-kind={chart.kind}>

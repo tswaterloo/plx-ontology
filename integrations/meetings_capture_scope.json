@@ -18,6 +18,6 @@
  "max_event_reads_per_run": 20000,
  "max_plans_per_run": 500,
  "max_task_reads_per_run": 5000,
- "max_transcript_reads_per_run": 200,
- "transcript_days_back": 90
+ "max_transcript_reads_per_run": 2000,
+ "transcript_days_back": 3650
 }

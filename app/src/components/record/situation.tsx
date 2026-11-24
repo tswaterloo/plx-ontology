@@ -8,6 +8,7 @@
 import Link from "next/link";
 import { formatDate, objectHref, recordLabel } from "@/lib/format";
 import type { ObjectPage, ObjectRef } from "@/lib/types";
+import { ShowAll } from "@/components/show-all";
 
 /** Each record type's first two cells: the records it is read against, by link type. */
 const HEADS: Record<string, [string, string[]][]> = {
@@ -75,11 +76,11 @@ export function Situation({ obj, party, named }: { obj: ObjectPage; party?: Obje
               <dd className="mt-0.5 text-[13px] leading-5">
                 {c.refs.length > 0 ? (
                   <span className="flex flex-wrap gap-x-2">
-                    {c.refs.slice(0, 3).map((r) => (
+                    <ShowAll items={c.refs} first={3}>{(r) => (
                       <Link key={r.object_id} href={objectHref(r.type, r.object_id)} className="truncate font-medium hover:underline">
                         {recordLabel(r.type, r.label)}
                       </Link>
-                    ))}
+                    )}</ShowAll>
                     {c.refs.length > 3 && <span className="text-muted">+{c.refs.length - 3}</span>}
                   </span>
                 ) : (

@@ -222,7 +222,8 @@ def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
                         "workflow": wf.classify(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"),
                                                 side),
                         "conversation": autopilot_records._v(r, "conversation_id") or None,
-                        "to": sorted(set(to)), "records": sorted(links.get(oid, ()))})
+                        "to": sorted(set(to)), "records": sorted(links.get(oid, ())),
+                        "object_id": oid})
     return out
 
 
@@ -401,7 +402,7 @@ def teams_sent(st: Any, people: Any, who: set[str], since: str, until: str
                             "topic": wf.classify("", text, "internal"),
                             "conversation": conversation,
                             "other_at": ap._iso(max(others)) if others else None,
-                            "to": [], "records": []})
+                            "to": [], "records": [], "object_id": oid})
     return out
 
 
@@ -541,12 +542,19 @@ def _credit_burst(hit: Mapping[str, Any], actions: Sequence[tuple[datetime, Mapp
             last = when
 
 
+# the candidates of one item read (an item answered over several messages, a burst)
+MAX_CANDIDATES = 4
+
+
 def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, Any]],
           actions: Sequence[Mapping[str, Any]], *, horizon: timedelta, data_end: datetime,
           since: datetime, until: datetime, window_items: bool = False,
           anticipated: set[int] | None = None,
           source_end: Mapping[str, datetime] | None = None,
-          pools: Mapping[str, Sequence[str]] | None = None) -> dict[str, Any]:
+          pools: Mapping[str, Sequence[str]] | None = None,
+          candidates: list | None = None,
+          agrees: Callable[[Mapping[str, Any], Mapping[str, Any]], bool | None] | None = None
+          ) -> dict[str, Any]:
     """Per workflow: items prepared, judged, matched; the person's actions in [since, until)
     and how many an item anticipated. ``window_items``: only the items whose trigger is in
     [since, until) (a split of the window: dev or held-out days). ``source_end``
@@ -554,7 +562,18 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
     ends by that source's last event too (else unjudged: its answer may not be captured).
     The answer window is ``horizon`` of working time (``answer_end``). ``pools``: a pooled
     item's owner (``autopilot_queue.POOL_PREFIX``) -> its role's people; such an item
-    matches when any of them acted on it."""
+    matches when any of them acted on it.
+
+    A *candidate* is an action after the trigger, within the window, in the item's
+    conversation, series or on one of its records. Without ``agrees`` the first candidate
+    is the match (and a Teams burst after it is credited, ``_credit_burst``): this only
+    says the person did *something* there later, never that it was the prepared work (a
+    "thanks" counts). ``agrees(item, action)`` (the scoring audit 11-22): a candidate
+    counts only when it returns True (what was really sent does the prepared work, judged
+    on its content); None or False: not anticipated (fail closed); every agreeing
+    candidate is anticipated, at most ``MAX_CANDIDATES`` per item, and no burst is
+    credited. ``candidates``: every (item, event, action) candidate is appended to it (at
+    most ``MAX_CANDIDATES`` per item, first in time), for a judge to read."""
     by_person: dict[str, list[tuple[datetime, Mapping[str, Any]]]] = defaultdict(list)
     for a in actions:
         at = ap._instant(a.get("at"))
@@ -593,22 +612,31 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         if pools and item["owner"] in pools:
             mine = sorted((x for p in pools[item["owner"]] for x in by_person.get(p, ())),
                           key=lambda x: x[0])
+        found: list[Mapping[str, Any]] = []
         for when, a in mine:
             if when <= at or when > until_at:
                 continue
-            if a.get("series") and a["series"] in keys["series"]:
-                hit = a
-                break
-            # the same conversation or a record the item is about: a mail to the same
-            # contact about something else is no match
-            if (a.get("conversation") and a["conversation"] in keys["conversation"]) or \
+            # the same series, conversation or a record the item is about: a mail to the
+            # same contact about something else is no candidate
+            if (a.get("series") and a["series"] in keys["series"]) or \
+                    (a.get("conversation") and a["conversation"] in keys["conversation"]) or \
                     keys["records"] & set(a.get("records") or ()):
-                hit = a
-                break
-        if hit is not None:
-            c["matched"] += 1
-            anticipated.add(id(hit))
-            _credit_burst(hit, by_person.get(hit["person"], ()), anticipated)
+                found.append(a)
+                if len(found) >= (MAX_CANDIDATES if (agrees or candidates is not None) else 1):
+                    break
+        if candidates is not None:
+            candidates.extend((item, event, a) for a in found)
+        if agrees is None:
+            hit = found[0] if found else None
+            if hit is not None:
+                c["matched"] += 1
+                anticipated.add(id(hit))
+                _credit_burst(hit, by_person.get(hit["person"], ()), anticipated)
+        else:
+            agreed = [a for a in found if agrees(item, a) is True]
+            if agreed:
+                c["matched"] += 1
+                anticipated.update(id(a) for a in agreed)
     for person_actions in by_person.values():
         for when, a in person_actions:
             if since <= when < until:

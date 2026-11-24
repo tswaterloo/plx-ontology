@@ -8,13 +8,12 @@ SYSTEMS_OF_RECORD = ("sage", "filemaker")
 
 
 def bc_pilot_po_sql(alias: str = "") -> str:
-    """SQL true for a purchase order BC holds and no system of record holds: a BC pilot PO
-    (a Portal draft beside the BC copy does not make it one of record). ``source_systems``
-    is the view's comma-joined list of the systems holding the order."""
+    """SQL true for a purchase order only BC holds: a BC pilot PO. An order any other system
+    holds too (Portal, Sage, FileMaker) counts as an order: it is left out of nothing.
+    ``source_systems`` is the view's comma-joined list of the systems holding the order;
+    unknown holders: not a pilot order."""
     col = f"{alias}." if alias else ""
-    held = "|".join(SYSTEMS_OF_RECORD)
-    held_in = f"coalesce({col}source_systems, '')"   # unknown holders: not a pilot order
-    return (f"({held_in} ~ '(^|,)bc(,|$)' AND {held_in} !~ '(^|,)({held})(,|$)')")
+    return f"(coalesce({col}source_systems, '') = 'bc')"
 
 
 def bc_pilot_record_sql(system_col: str) -> str:
@@ -37,5 +36,4 @@ def is_bc_pilot_object(object_id: str | None) -> bool:
 
 def is_bc_pilot_po(source_systems: str | None) -> bool:
     """The same rule for one order's ``source_systems`` (tests hold the two together)."""
-    held = set((source_systems or "").split(","))
-    return "bc" in held and not held & set(SYSTEMS_OF_RECORD)
+    return (source_systems or "") == "bc"

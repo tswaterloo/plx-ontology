@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import asyncio
 import contextvars
 from datetime import date, datetime, timezone
 import itertools
@@ -36,10 +37,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import feedback as fb
 from . import view_as as va
+from .routes import page as page_routes
 from . import work_log as wl
 from . import memory as mem
 from .ask_drafts import cited_handles
-from operating.instruct import route as route_of
+from .stream_encoding import stream_encoding
 from operating.card_text import mask_served, mask_served_in
 from . import models as m
 from .briefing_view import HOME_GROUP_PAGE_ROWS, home_group_pages
@@ -51,21 +53,40 @@ latency_log = logging.getLogger("operator_api.latency")
 
 # The only routes the Ask canary's service session is served (session_identity.SERVICE_CANARY)
 CANARY_ROUTES = frozenset({("GET", "/api/me"), ("POST", "/api/ask")})
+# how far a list may be paged (late list, its supplier and search pages): every row, not 20,000
+LIST_OFFSET_MOST = 10_000_000
+
 # The page measure's service session (session_identity.SERVICE_MEASURE): the screens' reads,
-# GET only (a path exactly one of MEASURE_ROUTES or under one of MEASURE_PREFIXES); never a
-# write, an Ask, a file or original, the reader's work log, memory or chats, a Teams
-# connection or the view-as list
+# GET (a path exactly one of MEASURE_ROUTES or under one of MEASURE_PREFIXES) and the
+# MEASURE_POSTS; never a write, an action, an upload or the view-as list
 MEASURE_ROUTES = frozenset({
-    "/api/me", "/api/home", "/api/sidebar", "/api/briefing", "/api/briefing/items",
+    "/api/me", "/api/home", "/api/home/bundle", "/api/sidebar", "/api/briefing", "/api/briefing/items",
     "/api/briefing/pages", "/api/briefing/unjudged", "/api/suggestions", "/api/insights",
     "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/data-health", "/api/labour",
     "/api/my-work", "/api/suggest",
-    "/api/biz/page", "/api/records/list", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
+    "/api/biz/page", "/api/records/list", "/api/records/views", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
     "/api/workload/grants", "/api/approvals", "/api/replies", "/api/autopilot",
     "/api/autopilot/catalog", "/api/autopilot/schedules", "/api/autopilot/drafts",
     "/api/trust", "/api/ops/status", "/api/watch", "/api/actions/state", "/api/prepared",
-    "/api/writes", "/api/meetings/action-items", "/api/templates", "/api/templates/learned"})
-MEASURE_PREFIXES = ("/api/object/", "/api/object-section/", "/api/object-impact/",
+    "/api/writes", "/api/meetings/action-items", "/api/templates", "/api/templates/learned",
+    # the screens' own reads the measure was refused (11-23, owner: all 18 screens valid): the
+    # reader's chats list, feeds, Teams connection state, recurring instructions, action log,
+    # memory (and the people it names), the answer bank and the work log; GET only, read as
+    # the owner the measure's ticket names, nothing remembered or written for the session
+    "/api/ask/chats", "/api/feeds", "/api/teams/connection", "/api/instructions/recurring",
+    "/api/actions/log", "/api/memory", "/api/memory/people", "/api/templates/answer-bank",
+    "/api/work-log",
+    # a source and the records read out of it (business rule 11-23: every tool gets everything,
+    # the measure session reads as the owner): GET only; no file download or upload route
+    "/api/source", "/api/source/records", "/api/time-saved",
+    # every screen as the owner sees it (owner 11-23): the feedback list, the autopilot's
+    # audit; the work log's threads and days are under MEASURE_PREFIXES
+    "/api/feedback", "/api/autopilot/audit"})
+# what the measure may POST: an Ask (a service session's Ask is nobody's: no work log,
+# memory, chat, upload or kept session, and always the answer path, never the
+# instruction engine) and the briefing's "seen" mark, answered without marking anything
+MEASURE_POSTS = frozenset({"/api/ask", "/api/briefing/seen"})
+MEASURE_PREFIXES = ("/api/work-log/", "/api/object/", "/api/object-section/", "/api/object-impact/",
                     "/api/explore/", "/api/history/", "/api/brief/", "/api/insights/",
                     "/api/team/", "/api/as-of/", "/api/label-changes/", "/api/label-revisions/",
                     "/api/autopilot/workflows/", "/api/meetings/follow-up/", "/api/alerts/")
@@ -74,6 +95,8 @@ MEASURE_PREFIXES = ("/api/object/", "/api/object-section/", "/api/object-impact/
 def service_route(session: Any, method: str, path: str) -> bool:
     """Whether a service session (the Ask canary, the page measure) is served this route."""
     if getattr(session, "measure", False):
+        if method == "POST":
+            return path in MEASURE_POSTS
         return method == "GET" and ".." not in path and (
             path in MEASURE_ROUTES or path.startswith(MEASURE_PREFIXES))
     return (method, path) in CANARY_ROUTES
@@ -101,8 +124,9 @@ MESSAGES = {
     "access_link_refused": "This access link has expired or is not valid. Ask for a new one.",
     "dev_login_not_served": "Demo sign-in is off. Sign in with Microsoft.",
     "not_found": "We couldn't find that, or you don't have access to it.",
+    "moved": "This is read from {where} now; reload the app.",
     "invalid_request": "That request wasn't understood. Check it and try again.",
-    "request_too_large": "Attachments can be up to five files, 10 MB together.",
+    "request_too_large": "Attachments can be up to ten files, 50 MB together.",
     "origin_refused": "This request came from a page the Workbench does not trust.",
     "not_served": "That part of the Workbench isn't switched on here yet.",
     "forbidden": "Only the owner and the admins can do that.",
@@ -236,7 +260,7 @@ def origin_allowed(origin: str, headers: Any, allowed_origins: frozenset[str]) -
 
 # POST routes that change nothing the reader's screens show until they finish on their own
 # terms (the Ask counts its answer as a write itself)
-READ_POSTS = frozenset({"/api/ask"})
+READ_POSTS = frozenset({"/api/ask", "/api/ask/files"})
 # Writes that change only some of the reader's screens (the first part of a screen's name,
 # ``WorkspaceBackend._serving``); every other write leaves none of them current. Home marks
 # the briefing seen on each visit: its "new since your visit" marks and counts move; My work,
@@ -251,9 +275,13 @@ CHAT_WRITES = "/api/ask/chats/"
 OPS_READERS_ENV = "PLX_TEAM_VIEW_READERS"
 
 
-# Every request body but a question's (``/api/ask``: its attachments, ``ASK_BODY_MAX``):
-# notes, decisions and sign-in bodies are a few kilobytes (SEC-007).
+# Every request body but a file's (``STREAMED``): notes, decisions, questions and sign-in
+# bodies are a few kilobytes to a few megabytes (SEC-007). A file goes to ``STREAMED`` and is
+# written to disk as it arrives; no size limit (owner 11-23).
 BODY_MAX = 1024 * 1024
+# a question's JSON body: its text and history (a file is sent by upload, or inline when small)
+ASK_JSON_MAX = 64 * 1024 * 1024   # a transport guard on memory, not a read limit
+STREAMED = frozenset({"/api/ask/files"})
 # Threads for the synchronous routes at once (AnyIO's default is 40). A screen route's
 # thread waits on the read workers (up to its read limit), so at 40 such waits every other
 # route queued behind them, the ones that read nothing too (11-16 walk: /api/auth/config
@@ -329,12 +357,14 @@ class BodyLimit:
     over it at once, a streamed one once it passes it. The body is read in full only up
     to the limit, then handed on. GET and HEAD carry no body and pass through."""
 
-    def __init__(self, app: Any, limit: int, limits: Optional[Mapping[str, int]] = None
-                 ) -> None:
+    def __init__(self, app: Any, limit: int, limits: Optional[Mapping[str, int]] = None,
+                 streamed: frozenset = frozenset()) -> None:
         self.app, self.limit, self.limits = app, limit, dict(limits or {})
+        self.streamed = streamed
 
     async def __call__(self, scope: Any, receive: Callable, send: Callable) -> None:
-        if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD"):
+        if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD") \
+                or scope.get("path") in self.streamed:   # a file's route reads its own stream
             await self.app(scope, receive, send)
             return
         limit = self.limits.get(scope.get("path"), self.limit)
@@ -445,7 +475,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                   docs_url=None, redoc_url=None, openapi_url=None,
                   default_response_class=JSONResponse)
     app.state.backend, app.state.auth = backend, auth
-    app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": m.ASK_BODY_MAX})
+    app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": ASK_JSON_MAX},
+                       streamed=STREAMED)
     # a read whose connection closes cancels its work (``request_cancel``)
     from .request_cancel import CancelOnDisconnect
     app.add_middleware(CancelOnDisconnect)
@@ -585,10 +616,13 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         route = request.scope.get("route")
         ms = round((time.perf_counter() - started) * 1000, 1)
         path = getattr(route, "path", "unmatched")
-        latency_log.info(json.dumps({
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "method": request.method, "route": path, "status": response.status_code,
-            "ms": ms}))
+        line = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "method": request.method, "route": path, "status": response.status_code,
+                "ms": ms}
+        src = getattr(request.state, "plx_src", None)
+        if src is not None:   # where a served page came from (``served.SRC``)
+            line["src"] = src
+        latency_log.info(json.dumps(line))
         if request.method == "GET" and path.startswith("/api/") and path not in (
                 "/api/health", "/api/ready", "/api/ask") and response.status_code < 500:
             pages.add(ms)
@@ -689,17 +723,31 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/ops/status", include_in_schema=False,
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
-    def ops_status(who: Reader = Depends(reader)) -> dict[str, Any]:
+    def ops_status(summary: bool = False, who: Reader = Depends(reader)) -> dict[str, Any]:
         """The reliability alarms' last pass (``operating.ops_alarms``): open incidents,
         recent recoveries, every check and ``running`` (the pass is under 15 minutes
         old). The owner and the Team readers only (403 for every other reader); unit names,
         ages and counts, never a record. ``configured: False`` without a served state dir.
         ``queue``: the host job queue's last snapshot (``operating.jobq.status``: depth,
         running and waiting jobs, refusals, dead letters; class and unit names and numbers
-        only), ``fresh: False`` when its worker stopped writing it."""
+        only), ``fresh: False`` when its worker stopped writing it.
+
+        ``summary=1`` (speed plan 9.3 A4, the shell's nav dot): the same pass's ``configured``,
+        ``running``, ``checked_at`` and the ``open`` incidents (and their count), without the
+        recovered list, the checks, the queue and the policy: the same source, the same
+        readers, less to read and send."""
         if not ops_reader(who):
             raise UserFacing("forbidden", "Only the owner and the Team readers see the "
                              "reliability alarms.", 403)
+        if summary:
+            if not state_dir:
+                return {"configured": False, "running": False, "open": [], "open_count": 0}
+            from operating.ops_alarms import read_status
+            full = read_status(state_dir)
+            opened = full.get("open") or []
+            return {"configured": full.get("configured", True),
+                    "running": bool(full.get("running")), "checked_at": full.get("checked_at"),
+                    "open": opened, "open_count": len(opened)}
         if not state_dir:
             return {"configured": False, "running": False, "open": [], "recovered": [],
                     "checks": [], "queue": {"configured": False, "fresh": False}}
@@ -782,6 +830,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if not isinstance(auth, DevAuth):
             raise AuthRequired("dev_login_not_served", 404)
         token, who = auth.login(body.ticket)
+        doors = getattr(backend, "doors", None)
+        if doors is not None:
+            doors.decide(who)   # before the cookie: the reader's first page never decides it
         response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="strict",
                             secure=secure_cookie, path="/api",
                             max_age=24 * 60 * 60)   # the server session is the authority (8 h idle, 24 h cap)
@@ -827,30 +878,26 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}}
 
     @app.post("/api/ask", tags=["ask"], responses=ask_doc, response_class=StreamingResponse)
-    def ask(body: m.AskRequest, who: Reader = Depends(reader)) -> StreamingResponse:
+    def ask(body: m.AskRequest, request: Request,
+            who: Reader = Depends(reader)) -> StreamingResponse:
         """Ask a question; the answer streams as server-sent events."""
         def stream() -> Iterator[str]:
             # The steps taken and the time
             started, steps = time.perf_counter(), []
             failed: Optional[str] = None
             try:
-                # one box: a line asking for something done goes to the instruction
-                # engine (``instruct_api``), a question to the cited answer path
-                # (a reply to a question the answer asked back continues that answer)
-                route = "ask" if body.clarified is not None else route_of(
-                    body.question, mode=body.mode, continuing=body.instruction is not None)
-                does = getattr(backend, "ask_does", None)
-                if route != "ask" and callable(does) and does(who, body):
-                    # the simple Ask does it: it reads every record and holds the write,
-                    # memory, template and document tools (``assistant_tools.ask_does``)
-                    route = "ask"
-                events = (my_work_answer(who, body) if route == "ask"
-                          and body.clarified is None
-                          and wl.asks_about_my_work(body.question)
-                          and not getattr(who.session, "canary", False)
-                          and not body.object_id and not body.source
-                          else backend.ask(who, body) if route == "ask"
-                          else backend.instruct_ask(who, body))
+                # one box, no text router: the person's own pick (``mode``, the "Do it"
+                # button) or a continued instruction goes to the instruction engine
+                # (``instruct_api``); every other line to the Ask, whose model gives the
+                # line to the engine itself when it asks for one of the engine's drafts
+                # (``plx.hand_off``, ``asks_or_hands_off``)
+                # a service session (the Ask canary, the page measure) is only answered:
+                # never the instruction engine, so nothing is drafted or prepared for anyone
+                does = body.clarified is None and (body.instruction is not None
+                                                   or body.mode == "do") \
+                    and not getattr(who.session, "canary", False)
+                events = (backend.instruct_ask(who, body) if does
+                          else asks_or_hands_off(who, body))
                 # the answer's words are held until the next event and masked as one text:
                 # a credential split over two words is still masked (``sse`` masks each).
                 # A whole token (the answer so far in full, ``simple_ask.Streamed``) is
@@ -917,42 +964,64 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 if failed:
                     notes.ask_failed(who, body, failed, steps=steps[:40], stream_ms=int(
                         (time.perf_counter() - started) * 1000))
-        return StreamingResponse(kept_alive(stream()), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-store",
-                                          "X-Accel-Buffering": "no"})
+        sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        return StreamingResponse(stream_encoding(request.headers, kept_alive(stream()), sent),
+                                 media_type="text/event-stream", headers=sent)
 
-    def my_work_answer(who: Reader, body: m.AskRequest) -> Iterator[tuple[str, Any]]:
-        """A question about the asker's own work, answered from their own log only (no
-        model, no record the log does not name)."""
-        started = time.perf_counter()
-        yield "status", m.StatusEvent(step="understanding", message="Reading your work log",
-                                      elapsed_ms=0)
-        found = wl.recall(work, who.key, body.question)
-        if found["total"] == 0 and wl.asks_about_work_done_elsewhere(body.question):
-            # nothing done from the Workbench: the mail the person sent, the approvals they
-            # gave in the business systems are the evidence
-            yield from backend.ask(who, body)
-            return
-        text = wl.recall_answer(found)
-        seen: dict[str, m.ObjectRef] = {}
-        for event in found["events"]:
-            for r in event["records"]:
-                if r.get("type") and r["object_id"] not in seen:
-                    seen[r["object_id"]] = m.ObjectRef(
-                        object_id=r["object_id"], type=r["type"],
-                        label=r.get("label") or r["object_id"],
-                        open_url=f"/object/{r['type']}/{r['object_id']}")
-        for word in text.split(" "):
-            yield "token", m.TokenEvent(text=word + " ")
-        yield "answer", m.AnswerPayload(
-            answer_id="wl-" + secrets.token_hex(6), question=body.question,
-            outcome="answered" if found["total"] is not None else "refused",
-            direct_answer=text, hidden=m.Hidden(count=0), freshness=m.Freshness(),
-            subjects=list(seen.values())[:10],
-            conversation_id=body.conversation_id or secrets.token_hex(8),
-            latency_ms=int((time.perf_counter() - started) * 1000))
+    def ask_files() -> Any:
+        """The store of streamed uploads: the backend's own (the Ask reads from it), else one
+        under the served state dir."""
+        own = getattr(backend, "ask_uploads", None)
+        if callable(own):
+            return own()
+        if getattr(app.state, "ask_files", None) is None:
+            from operating import ask_uploads
+            app.state.ask_files = ask_uploads.Uploads.for_state_dir(
+                getattr(backend, "state_dir", None))
+        return app.state.ask_files
 
-    # ---- suggest, home, object, feedback ------------------------------------------------
+    @app.post("/api/ask/files", tags=["ask"], response_model=m.AskUpload,
+              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    async def ask_upload(request: Request, name: str = Query(..., min_length=1),
+                         who: Reader = Depends(reader)) -> m.AskUpload:
+        """Send one file to attach to a question: the request body IS the file (any size),
+        written to disk as it arrives, held for the person until they remove it (or a week).
+        The answer is its id, which ``/api/ask`` names in ``attachments``."""
+        from operating.disk_guard import DiskRefused
+        from . import ask_files as files
+        uploads = ask_files()
+        try:
+            meta = await files.receive(request.stream(), uploads, who.key, name)
+        except DiskRefused as why:
+            raise UserFacing("disk_full", str(why), 507) from None
+        except ConnectionError:
+            raise UserFacing("upload_cut_off", "The upload stopped before it ended: attach "
+                             "the file again.", 400) from None
+        if not meta["size"]:
+            uploads.forget(who.key, meta["id"])
+            raise UserFacing("invalid_request", "That file arrived empty: attach it again.")
+        return m.AskUpload(**meta)
+
+    @app.delete("/api/ask/files/{upload_id}", status_code=204, tags=["ask"],
+                responses={401: {"model": m.ErrorResponse}})
+    def ask_upload_remove(upload_id: str = PathParam(..., pattern=r"^[0-9a-f]{32}$"),
+                          who: Reader = Depends(reader)) -> Response:
+        """Take a file off a question: remove what ``POST /api/ask/files`` kept."""
+        ask_files().forget(who.key, upload_id)
+        return Response(status_code=204)
+
+    def asks_or_hands_off(who: Reader, body: m.AskRequest) -> Iterator[tuple[str, Any]]:
+        """The Ask's events; when its model gave the line to the drafting desk
+        (``plx.hand_off``: the answer's ``instruction`` part is a ``route`` one,
+        ``simple_ask.answer_payload``) the instruction engine answers it in its place, as
+        though the person had picked "Do it" (the Ask's own answer is never shown or kept)."""
+        for event, payload in backend.ask(who, body):
+            part = getattr(payload, "instruction", None) if event == "answer" else None
+            if part is not None and part.status == "route" and body.clarified is None \
+                    and not getattr(who.session, "canary", False):
+                yield from backend.instruct_ask(who, body.model_copy(update={"mode": "do"}))
+                return
+            yield event, payload
 
     @app.get("/api/suggest", response_model=m.SuggestResponse, tags=["search"],
              responses={401: {"model": m.ErrorResponse}})
@@ -966,27 +1035,48 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
                         503: {"model": m.ErrorResponse}})
     def biz_page(kind: Literal["customer", "chain", "supplier", "purchase_order",
-                               "sales_order", "product", "batch"],
-                 h: str = Query("", max_length=600), chain: str = Query("", max_length=200),
-                 record: str = Query("", max_length=700),
+                               "sales_order", "product", "batch",
+                               "supplier_invoice"],
+                 request: Request,
+                 h: str = Query("", max_length=4000), chain: str = Query("", max_length=4000),
+                 record: str = Query("", max_length=4000),
                  who: Reader = Depends(reader)) -> m.BizPage:
         """A customer's, chain's or supplier's account page, or a PO's or customer order's
         page (header, then lines): every number from the business tables, as you may see
         them, in one read. ``record``: a record id (object id) instead of ``h``: the page
         of the row it was read into."""
-        return backend.biz_page(who, kind, handle=h, chain=chain, record=record)
+        from . import served
+        try:
+            return backend.biz_page(who, kind, handle=h, chain=chain, record=record)
+        finally:
+            request.state.plx_src = served.SRC.get()
+
+    page_routes.register(app, backend, reader)
+
+    @app.get("/api/records/views", response_model=m.RecordViews, tags=["search"],
+             responses={401: {"model": m.ErrorResponse}})
+    def records_views(who: Reader = Depends(reader)) -> m.RecordViews:
+        """Every list Records offers: one per business view the door serves, from the
+        views' own metadata."""
+        return m.RecordViews(views=backend.records_views(who))
 
     @app.get("/api/records/list", response_model=m.RecordList, tags=["search"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
                         503: {"model": m.ErrorResponse}})
-    def records_list(view: Literal["production"], status: str = Query("", max_length=80),
-                     hold: Literal["", "yes", "no"] = Query(""),
+    def records_list(view: str = Query(..., max_length=60),
+                     f: list[str] = Query([], max_length=100),
                      q: str = Query("", max_length=80),
-                     offset: int = Query(0, ge=0, le=20000), limit: int = Query(25, ge=1, le=100),
+                     sort: str = Query("", max_length=60),
+                     direction: Literal["", "asc", "desc"] = Query(""),
+                     facets: bool = Query(True),
+                     offset: int = Query(0, ge=0, le=LIST_OFFSET_MOST), limit: int = Query(25, ge=1, le=100),
                      who: Reader = Depends(reader)) -> m.RecordList:
-        """A list of records from the business tables, as you may see them, with its
-        filters: ``production`` is the batches (status, QC hold, text)."""
-        return backend.records_list(who, view, status, hold, q, offset, limit)
+        """A list of one business view's records as you may see them: its columns, sort,
+        filters (``f=<column>:<value>``, repeated) and text search come from the view's
+        metadata. ``facets=false`` leaves the filters' choices out (a later page of the same
+        list)."""
+        chosen = {name: value for name, _, value in (x.partition(":") for x in f)}
+        return backend.records_list(who, view, chosen, q, sort, direction, offset, limit, facets)
 
     @app.get("/api/home", response_model=m.Home, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -1007,7 +1097,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def data_health(who: Reader = Depends(reader),
                     check: Optional[str] = Query(None, max_length=80),
-                    offset: int = Query(0, ge=0, le=20000),
+                    offset: int = Query(0, ge=0, le=LIST_OFFSET_MOST),
                     limit: int = Query(25, ge=1, le=100)) -> m.DataHealth:
         """Every data-health check: the findings you may see, and how many more it found on
         records you may not open (counted, never named). An Admin page: the owner and the
@@ -1047,7 +1137,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
-    def late_list(offset: int = Query(0, ge=0, le=20000), limit: int = Query(25, ge=1, le=100),
+    def late_list(offset: int = Query(0, ge=0, le=LIST_OFFSET_MOST), limit: int = Query(25, ge=1, le=100),
                   who: Reader = Depends(reader)) -> m.LateList:
         """Every late purchase order you may see, a page at a time, longest late first
         (Home shows the first ones: "show all")."""
@@ -1147,6 +1237,63 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         with first_partial():
             return backend.reply_triage(who)
 
+    @app.get("/api/home/bundle", tags=["home"],
+             responses={401: {"model": m.ErrorResponse}})
+    def home_bundle(who: Reader = Depends(reader)) -> Response:
+        """Home's seven first reads in ONE answer (home, sidebar, briefing with its group pages,
+        the first 100 late orders, suggestions, replies, approvals): each part is exactly what
+        its own route answers this reader, from the same kept pages and the same permission
+        checks, with its own status (a part that failed carries its own error; the others
+        stand). One round trip instead of seven; the parts run side by side."""
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+        parts: dict[str, Callable[[], Any]] = {
+            "home": lambda: home(who),
+            "sidebar": lambda: sidebar(who),
+            "briefing": lambda: briefing("all", True, who),
+            "late": lambda: late_list(0, 100, who),
+            "suggestions": lambda: suggestions(who),
+            "replies": lambda: reply_triage(who),
+            "approvals": lambda: approvals_queue(who)}
+
+        # viewing as someone: only the parts view-as may read (view_as.ROUTES); the sidebar
+        # (the viewed person's own recent questions) is not one: refused as its route is
+        viewing_as = bool(getattr(getattr(who, "session", None), "view_as", False))
+        as_allowed = {"home", "briefing", "late", "suggestions", "replies", "approvals"}
+
+        part_ms: dict[str, float] = {}
+
+        def one(name: str) -> dict[str, Any]:
+            started = time.perf_counter()
+            try:
+                return _one(name)
+            finally:
+                part_ms[name] = round((time.perf_counter() - started) * 1000, 1)
+
+        def _one(name: str) -> dict[str, Any]:
+            if viewing_as and name not in as_allowed:
+                return {"status": 403, "body": {"error": {
+                    "code": "view_as_refused", "message": va.READ_ONLY}}}
+            try:
+                got = parts[name]()
+                return {"status": 200, "body": got.model_dump(mode="json", by_alias=True)}
+            except UserFacing as error:
+                return {"status": error.status,
+                        "body": {"error": {"code": error.code, "message": error.message}}}
+            except AuthRequired as error:
+                return {"status": error.status, "body": {"error": {"code": error.code}}}
+            except Exception as error:  # noqa: BLE001 - this part's answer; the others stand
+                known = _known(error) or problem("internal", 500, incident=_incident(
+                    error, f"/api/home/bundle:{name}"))
+                return {"status": known.status_code, "body": json.loads(known.body)}
+        with ThreadPoolExecutor(max_workers=len(parts)) as pool:
+            futures = {n: pool.submit(contextvars.copy_context().run, one, n) for n in parts}
+            out = {n: f.result() for n, f in futures.items()}
+        # each part's own time (speed plan 9.3 A1): in the log and as Server-Timing, never in the body
+        latency_log.info(json.dumps({"route": "/api/home/bundle", "parts_ms": part_ms}))
+        return JSONResponse({"parts": out}, headers={"Server-Timing": ", ".join(
+            f"{n};dur={ms}" for n, ms in part_ms.items())})
+
     @app.get("/api/my-work", response_model=m.MyWork, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
     def my_work(who: Reader = Depends(reader)) -> m.MyWork:
@@ -1179,6 +1326,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                         headers={"Cache-Control": "no-store",
                                  "Content-Disposition": f'attachment; filename="{name}"'})
 
+    from . import assist_routes   # the list from matters; a matter's item actions first
+    assist_routes.install(app, backend, reader, notes)
+
     @app.get("/api/autopilot", response_model=m.AutopilotArea, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
     def autopilot_area(who: Reader = Depends(reader)) -> m.AutopilotArea:
@@ -1189,12 +1339,6 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if not getattr(who.session, "view_as", False):   # nothing logged as the person viewed
             notes.autopilot_prepared(who, area)
         return area
-
-    @app.get("/api/autopilot/drafts", response_model=m.AutopilotDrafts, tags=["actions"],
-             responses={401: {"model": m.ErrorResponse}})
-    def autopilot_prepared_list(who: Reader = Depends(reader)) -> m.AutopilotDrafts:
-        """Your open prepared replies and "your call" cards, newest first."""
-        return backend.autopilot_prepared_list(who)
 
     @app.post("/api/autopilot/never", response_model=m.AutopilotDrafts, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
@@ -1448,7 +1592,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/insights/all/stream", tags=["insights"], response_class=StreamingResponse,
              responses={401: {"model": m.ErrorResponse}})
-    def insights_stream(who: Reader = Depends(reader)) -> StreamingResponse:
+    def insights_stream(request: Request, who: Reader = Depends(reader)) -> StreamingResponse:
         """The whole dashboard in one response (one JSON object per line): your list, then
         each chart as it is read (its own result or its own error, each read as you)."""
         backend_ = _insights()
@@ -1457,17 +1601,59 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         def body() -> Iterator[bytes]:
             for line in lines:
                 yield json.dumps(line, separators=(",", ":")).encode() + b"\n"
-        return StreamingResponse(body(), media_type="application/x-ndjson",
-                                 headers={"Cache-Control": "no-store",
-                                          "X-Accel-Buffering": "no"})
+        sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        return StreamingResponse(stream_encoding(request.headers, body(), sent),
+                                 media_type="application/x-ndjson", headers=sent)
 
     @app.get("/api/insights/{insight_id}", response_model=m.InsightResult, tags=["insights"],
              responses=errs)
     def insight_result(insight_id: str = PathParam(pattern=r"^[a-z0-9_]{1,61}$"),
                        again: bool = False, who: Reader = Depends(reader)) -> Response:
-        """One insight as you read it (kept from your read of the last few minutes; again:
-        read now): its definition (the statement), rows, chart and the people they name."""
-        out = _insights().insight_result(who, insight_id, again)
+        """One insight as you read it (its stored value with its read time; never read in this
+        request: a Refresh starts the read behind it, a tile with nothing stored says 202): its definition (the statement), rows, chart and the people they name."""
+        from .insights import FILLING, NotStored
+        try:
+            out = _insights().insight_result(who, insight_id, again, stored_only=True)
+        except NotStored:
+            raise FILLING   # its read is running in the background; nothing is computed here
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/insights/{insight_id}/why", tags=["insights"],
+             response_class=StreamingResponse, responses=errs)
+    def insight_why(request: Request, insight_id: str = PathParam(pattern=r"^[a-z0-9_]{1,61}$"),
+                    who: Reader = Depends(reader)) -> StreamingResponse:
+        """Why did this figure change: step by step (one JSON object per line), each step read
+        as you and sent as it is read with the best answer so far; stop reading at any step."""
+        lines = _insights().insight_why_stream(who, insight_id)
+        first = next(lines, None)       # a figure that cannot be explained is its own error
+
+        def body() -> Iterator[bytes]:
+            if first is not None:
+                yield json.dumps(first, separators=(",", ":")).encode() + b"\n"
+            for line in lines:
+                yield json.dumps(line, separators=(",", ":")).encode() + b"\n"
+        sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        return StreamingResponse(stream_encoding(request.headers, body(), sent),
+                                 media_type="application/x-ndjson", headers=sent)
+
+    @app.post("/api/insights/{insight_id}/filtered", response_model=m.InsightResult,
+              tags=["insights"], responses=errs)
+    def insight_filtered(body: m.FilterEdits,
+                         insight_id: str = PathParam(pattern=r"^[a-z0-9_]{1,61}$"),
+                         who: Reader = Depends(reader)) -> Response:
+        """One insight read now with filters you changed or took out (its own statement's
+        conditions only), as you: nothing is saved or kept."""
+        out = _insights().insight_filtered(who, insight_id, body.edits)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/statement/read", response_model=m.StatementRead, tags=["insights"],
+              responses=errs)
+    def statement_read(body: m.StatementEdit, who: Reader = Depends(reader)) -> Response:
+        """An answer's query read now with filters you changed or took out, as you (your
+        door, as your Ask reads): nothing is saved."""
+        if not hasattr(backend, "statement_read"):
+            raise UserFacing("insights_not_served", "Insights aren't served here.", 503)
+        out = backend.statement_read(who, body.sql, body.edits)
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     @app.post("/api/insights", response_model=m.InsightInfo, tags=["insights"],
@@ -1796,7 +1982,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/templates/answer-bank", response_model=m.DocList, tags=["templates"],
              responses={401: {"model": m.ErrorResponse}})
-    def templates_answer_bank(question: Optional[str] = Query(None, max_length=700),
+    def templates_answer_bank(question: Optional[str] = Query(None),
                               who: Reader = Depends(reader)) -> m.DocList:
         """The questionnaire answers we gave that any customer may get, as you may read
         them (read only), each with the document it came from; ranked against ``question``
@@ -2112,6 +2298,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
               responses={401: {"model": m.ErrorResponse}})
     def briefing_seen(who: Reader = Depends(reader)) -> m.BriefingSeen:
         """Mark your briefing seen now: the next "since your last visit" starts here."""
+        if getattr(who.session, "canary", False):
+            return m.BriefingSeen(ok=False)   # a service session marks nothing of anyone's
         return backend.briefing_seen(who)
 
     @app.post("/api/briefing/watcher/{item_id}", response_model=m.WatcherItemState,
@@ -2180,6 +2368,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         Not found reads the same as a record the reader cannot see."""
         if len(object_type) > 60 or len(object_id) > 700 or not object_id:
             return problem("invalid_request", 422)
+        if object_type == "PurchaseOrder":
+            # served from the store only (route_budgets.SERVES history:PurchaseOrder): never
+            # computed here again (speed specs 9.3 V2)
+            return problem("moved", 410, where="/api/page/history/")
         try:
             out = backend.record_history(who, object_type, object_id, cursor)
         except ValueError:

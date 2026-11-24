@@ -100,7 +100,8 @@ export function ReplyCard({ line, state, onDone, className }: { line: ReplyLine;
       <div className="text-muted">{meta(line)}</div>
       {line.drafted_by === "model" && line.draft?.body && (
         <div className="space-y-1" data-testid="reply-draft">
-          <p className="whitespace-pre-line line-clamp-6">{line.draft.body}</p>
+          {/* the whole draft: a person approves only what they have read */}
+          <p className="whitespace-pre-line">{line.draft.body}</p>
           <DraftNote note={line.draft_note} warning={line.draft_warning} />
         </div>
       )}

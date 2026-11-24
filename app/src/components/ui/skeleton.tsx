@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import { useWaiting } from "@/lib/ready";
 
 /** After this long a read still under way says so, so a slow server never looks stuck. */
 export const SLOW_MS = 8_000;
@@ -68,6 +69,7 @@ export function Pending({ label, className, testId, page, after = 0, limit = LIM
   const slow = useSlow();
   const shown = useSlow(after) || after <= 0;
   const over = useSlow(limit);
+  useWaiting(!over);   // a placeholder (shown or not yet shown) means the page is not ready
   if (over) return <TimedOut label={label} onRetry={onRetry} ms={limit} className={cn(page && "flex min-h-[40vh] flex-col items-center justify-center text-center", className)} />;
   if (!shown) return null;
   return (

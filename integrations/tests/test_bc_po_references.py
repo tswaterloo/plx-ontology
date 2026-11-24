@@ -265,13 +265,30 @@ class ReferenceCaptureTests(unittest.TestCase):
         self.assertEqual(h.store.records(SERVICE, "bc", bc_unit(CO[1], REFERENCE_SET),
                                          limit=10)["items"], [])
 
-    def test_a_truncated_read_is_partial(self):
-        h = harness(self)
+    def test_a_long_listing_is_read_to_the_last_page_never_cut(self):
+        # 120 one-row pages: past the 50 pages the old bound read. The unit is complete.
+        h = harness(self, FakeBc({"purchaseOrders": 120}))
         h.reader.purchase_order_references = functools.partial(
-            type(h.reader).purchase_order_references, h.reader, max_pages=1)
+            type(h.reader).purchase_order_references, h.reader, page_size=1)
         unit = h.unit(h.run(entity_sets=("purchaseOrders",)), CO[1], REFERENCE_SET)
-        self.assertEqual((unit["state"], unit["reason"]), ("partial", "page_cap"))
-        self.assertEqual(unit["references"]["stored"], 2)
+        self.assertEqual(unit["state"], "complete")
+        self.assertEqual(unit["references"]["stored"], 120)
+        self.assertEqual(unit["records_current"], 120)
+
+    def test_a_nextlink_that_repeats_a_page_fails_loud_never_loops(self):
+        class Looping(FakeBc):
+            def odata(self, name, entity, parts, headers):
+                status, head, body = super().odata(name, entity, parts, headers)
+                page = json.loads(body)
+                if "@odata.nextLink" in page:
+                    page["@odata.nextLink"] = f"{PAGE}?{SELECT}"
+                return status, head, self.body(page)
+        h = harness(self, Looping({"purchaseOrders": 5}))
+        h.reader.purchase_order_references = functools.partial(
+            type(h.reader).purchase_order_references, h.reader, page_size=1)
+        unit = h.unit(h.run(entity_sets=("purchaseOrders",)), CO[1], REFERENCE_SET)
+        self.assertEqual(unit["state"], "failed")
+        self.assertLess(len(h.fake.bc_gets(r"/PurchaseOrder\?")), 10)
 
     def test_a_page_listing_an_order_no_more_marks_its_reference_missing(self):
         fake = FakeBc({"purchaseOrders": 3})

@@ -22,10 +22,12 @@ At rest only plx-api.service listens, on 8780. A restart:
    sends to the standby's socket (its admin socket, read as the caddy user);
 3. writes `/run/plx-api/hold-plx-api-standby` and starts plx-api@standby on current: an API
    started while its hold file (under 15 min old) exists starts its warm-up at once and opens
-   its socket or port only once ready, at most 600 s (every
-   known reader's Today and main screens read and kept on disk under the new code version;
-   operator_api/server.py). plx-release waits for its `/api/health` and `/api/ready` (at most
-   660 s, past the 600 s hold; below 1 GiB available it stops it);
+   its socket or port only once ready, at most 180 s (the Today and main screens of the
+   readers active in the last 30 min read and kept on disk under the new code version, cut at
+   25 s; everyone else, the directory too, is read after, while it serves;
+   operator_api/server.py, operator_api/warm_process.py). plx-release waits for its
+   `/api/health` and `/api/ready` (at most 240 s, past the 180 s hold; below 1 GiB available
+   it stops it);
 4. restarts plx-api.service held the same way (`/run/plx-api/hold-8780`). SIGTERM makes the
    API close 8780, end the requests under way (at most 60 s; an Ask still streaming then is
    cut) and exit, so Caddy sends the next request to the standby; the new plx-api opens 8780
@@ -42,6 +44,11 @@ Edge cases left: a POST that Caddy sends on a pooled keep-alive connection at th
 old API closes it gets a 502 (never sent twice: Caddy retries only GETs after a connection was
 made); one transport error on 8780 (a 120 s response timeout) makes Caddy pass it over for 2 s,
 so requests in those 2 s wait for it.
+
+`restart` and `slots` always run the serving release's own copy of `plx-release`: a copy
+anywhere else (the repository checkout on PATH, the release a deploy started from) hands
+them to `current/deploy/release/plx-release` (sealed) once. 11-22: a checkout from before
+the restart guard asked for a direct `systemctl restart plx-api`, which the host refuses.
 
 plx-api.service is the serving unit again at the end, so every script that starts, stops or
 reads plx-api and 127.0.0.1:8780 works as before. A standby that is not ready is stopped and

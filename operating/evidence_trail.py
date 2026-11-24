@@ -42,6 +42,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from operating import impact_chain as ic
 from operating import ontology_tools_traverse as tt
 from operating import po_status as ps
+from operating.order_confirmation import order_confirmation
 
 PROCESS = "po_delivery_window"
 _GRAPH = Path(__file__).resolve().parent.parent / "ontology" / "schema" / "process" / \
@@ -50,7 +51,6 @@ FIRM = ic.FIRM_TIERS
 MAX_TWINS = 4
 MAX_MESSAGES = 8           # follow-up messages shown per PO (newest kept)
 MAX_MESSAGE_ROOTS = 3      # the PO and its first twins whose messages are read
-MAX_CONFIRMATIONS = 20
 MAX_STEPS = 40
 MAX_TEXT = 240
 MAX_ORDERS = 5             # customer orders a materials walk starts from
@@ -144,6 +144,28 @@ def _ok(result: Any) -> bool:
     return isinstance(result, Mapping) and "error" not in result
 
 
+# The gap reasons a trail states, said apart by what they are. A FAILED read can succeed on another
+# try (the trail is not an answer yet and is run again); a data gap is a property of the record
+# (run again it states the same). ``plan_sections`` stores each as its own typed outcome.
+FAILED_GAPS = ("call_failed", "read_failed", "trail_cut", "tool_error")
+DATA_GAPS = ("no_lateness_entry", "chain_incomplete")
+
+
+def _error_code(result: Any) -> Any:
+    return (result.get("error") or {}).get("code") if isinstance(result, Mapping) \
+        and isinstance(result.get("error"), Mapping) else None
+
+
+def tool_failed(gaps: list, what: str, result: Any) -> None:
+    """A tool the trail reads answered an error (or nothing): the trail is missing what it
+    would have given, and says so as a gap (never a silently shorter trail). The reason
+    ``tool_error`` also keeps the trail from being stored as an answer."""
+    code = (result.get("error") or {}).get("code") if isinstance(result, Mapping) \
+        and isinstance(result.get("error"), Mapping) else None
+    gaps.append({"reason": "tool_error", "what": what,
+                 "where": f"the read failed ({code or 'no answer'}); what it holds is not shown"})
+
+
 def _withheld_count(result: Mapping[str, Any]) -> int | None:
     """0, or None when the tool says this reader's grants may hide part of what it read
     (``completeness`` not complete for a permission): the tools trim before counting, so
@@ -219,10 +241,19 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
     entry = next((e for e in (proc.get("lateness") or ()) if isinstance(e, Mapping)
                   and e.get("root") == oid), None) if _ok(proc) else None
     if entry is None:
-        out["gaps"].append({"reason": "lateness_unavailable",
-                            "what": "Whether this purchase order is late",
-                            "where": "plx.process po_delivery_window did not state a "
-                                     "lateness entry for this record"})
+        # two different facts, said apart: the call failed (a read that can succeed on another
+        # try) or it succeeded and states no lateness entry for the record (a property of the data)
+        if _ok(proc):
+            out["gaps"].append({"reason": "no_lateness_entry",
+                                "what": "Whether this purchase order is late",
+                                "where": "plx.process po_delivery_window answered and did not "
+                                         "state a lateness entry for this record"})
+        else:
+            out["gaps"].append({"reason": "call_failed",
+                                "what": "Whether this purchase order is late",
+                                "where": "the plx.process read failed ("
+                                         f"{_error_code(proc) or 'no answer'}); no lateness "
+                                         "entry was read"})
         return out
     today = str((proc.get("meta") or {}).get("as_known_at") or "")[:10] or None
     steps: list[dict[str, Any]] = []
@@ -288,19 +319,14 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
             hidden.append(_withheld_count(card))
             if out["label"] is None:
                 out["label"] = text_of((card.get("object") or {}).get("display"))
-        source = ps.ToolSource(call)
+        else:
+            tool_failed(out["gaps"], "The purchase order's own record", card)
         budget.check()
-        members, blind = ps.copies(source, oid)
-        if blind:
-            hidden.append(None)   # a twin link this reader can't read may join another copy
-        members = members[:1 + MAX_TWINS]
         # the order's confirmations by the one rule, on every copy: settled, a lead, none
-        budget.check()
-        links = source.confirm_links(members)
-        collides = links is None or (any(l["tier"] not in ps.CONFIRMING for l in links)
-                                     and source.colliding(members))
-        shared = {"links": None if links is None else ps.counted_confirmations(
-            links, lambda _oid: collides), "collides": collides}
+        shared = order_confirmation(call, oid, most_copies=1 + MAX_TWINS)
+        members = shared["members"]
+        if shared["blind"]:
+            hidden.append(None)   # a twin link this reader can't read may join another copy
         # the number the supplier knows, read on every copy (``po_status.vendor_facing``)
         out["vendor_number"] = _vendor_number(call, members, budget)
         seen_events: set[tuple[str, str]] = set()
@@ -310,6 +336,7 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
                                         "event_types": list(ISSUE_EVENTS + SHIPPED_EVENTS),
                                         "limit": 20})
             if not _ok(got):
+                tool_failed(out["gaps"], "When the purchase order was issued or shipped", got)
                 continue
             hidden.append(_withheld_count(got))
             for event in got.get("events") or ():
@@ -349,10 +376,15 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
         out["gaps"].append({"reason": "dates_disagree", "what": "The vendor's delivery date",
                             "where": "the vendor's documents state different dates and none "
                                      "is later than the others"})
+    elif not promises_whole and not read_complete:
+        out["gaps"].append({"reason": "read_failed", "what": "Every vendor promise date",
+                            "where": "a read of a supplier confirmation failed or said it was "
+                                     "incomplete, so the promise history is not complete here"})
     elif not promises_whole:
-        out["gaps"].append({"reason": "dates_cut", "what": "Every vendor promise date",
-                            "where": "this purchase order has more dates than were read, so "
-                                     "the promise history is not complete here"})
+        out["gaps"].append({"reason": "chain_incomplete", "what": "Every vendor promise date",
+                            "where": "the dates the records state do not form one chain from the "
+                                     "first promise to the latest, so the promise history is not "
+                                     "complete here"})
     for gap in entry.get("gaps") or ():
         if gap.get("reason") == "withheld" or gap.get("state") == "inaccessible":
             hidden.append(1)   # a promise or receipt the reader may not read: counted
@@ -397,6 +429,9 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
                             shared.get("links"), steps)
     out["vendor_promise"] = vendor_promise(call, entry.get("vs_vendor_promise"), budget)
     out["steps"] = ordered(steps)[:MAX_STEPS]
+    # the sources whose capture was stale when the verdict was written (its sentence says so):
+    # kept so a stored copy is known to rest on a stale capture and is renewed, not trusted
+    out["stale_sources"] = [x for x in entry.get("stale_sources") or () if isinstance(x, str)]
     out["hidden"] = sum(h for h in hidden if h)
     out["may_hide"] = any(h is None for h in hidden)
     if entry.get("gap") and entry.get("state") == "undetermined":
@@ -641,8 +676,8 @@ def _confirmations(call: Callable, proc: Mapping[str, Any], budget: _Budget
     stage = next((s for s in proc.get("stages") or () if s.get("stage") ==
                   "supplier_confirmation"), {})
     ids = [e for e in stage.get("events") or () if isinstance(e, str)]
-    complete = len(ids) <= MAX_CONFIRMATIONS
-    for cid in ids[:MAX_CONFIRMATIONS]:
+    complete = True      # every confirmation is read (no count limit)
+    for cid in ids:
         budget.check()
         card = call("plx.object", {"object_id": cid})
         if not _ok(card):

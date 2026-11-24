@@ -6,7 +6,7 @@ from unittest import mock
 
 from operator_api import insight_tool as it
 from operator_api import insights
-from operator_api import simple_ask
+from operator_api import ask_legs, simple_ask
 
 ME, OTHER = "0000-me", "0000-other"
 
@@ -45,10 +45,12 @@ class InsightToolTest(unittest.TestCase):
     def test_off_unless_its_flag_is_set(self):
         with mock.patch.dict(os.environ, {it.FLAG: ""}):
             self.assertEqual(it.tools(Backend(False), None), [])
-            self.assertEqual(simple_ask.write_tools(Backend(False), None), [])
+            # plx.legs is every Ask session's own (A3); the tile tool only with its flag
+            self.assertEqual([t.spec["name"] for t in simple_ask.write_tools(Backend(False), None)],
+                             [ask_legs.NAME])
         with mock.patch.dict(os.environ, {it.FLAG: "1"}):
             names = [t.spec["name"] for t in simple_ask.write_tools(Backend(False), None)]
-        self.assertEqual(names, [it.NAME])
+        self.assertEqual(names, [ask_legs.NAME, it.NAME])
 
     def test_a_row_the_tile_hides_from_the_asker_never_comes_back(self):
         out = self.call(Backend(False), "colleagues_waiting")
@@ -87,24 +89,23 @@ class InsightToolTest(unittest.TestCase):
         self.assertEqual(out["row_count"], 1)
 
     def test_a_figure_the_tile_returned_binds_the_reply_and_is_cited(self):
-        """The Ask's figure gate and citations read a plx.insight result as a plx.sql one:
-        the tile's own number passes, a number it does not hold is still marked, and the
+        """The Ask's figure check and citations read a plx.insight result as a plx.sql one:
+        the tile's own number is backed, a number it does not hold is untraced, and the
         citation holds only the rows the asker got (live 11-21 wt10, flag on: every tile
         number came out "(unverified)", 8/10 answers partial)."""
+        from operator_api import ask_refs
         out = self.call(Backend(False), "colleagues_waiting")
         events = [{"type": "tool_call", "name": it.NAME, "arguments": {"id": "colleagues_waiting"},
                    "result": json.dumps(out)}]
-        text, marked = simple_ask.gate("Me Myself has 3 colleagues waiting.", events)
-        self.assertEqual(marked, [], text)
-        text, marked = simple_ask.gate("Me Myself has 7 colleagues waiting.", events)
-        self.assertIn("7" + simple_ask.UNVERIFIED, text)
+        self.assertEqual(ask_refs.render("Me Myself has 3 colleagues waiting.", events).untraced, [])
+        self.assertEqual(ask_refs.render("Me Myself has 7 colleagues waiting.", events).untraced, ["7"])
         (table,) = simple_ask.cited(events)
         self.assertTrue(table["about"].startswith("Insights: "), table)
         self.assertEqual(table["rows"], [["Me Myself", "3"]])
         self.assertNotIn("Other Person", json.dumps(table))
         failed = [{**events[0], "is_error": True}]
         self.assertEqual(simple_ask.cited(failed), [])
-        self.assertIn("3" + simple_ask.UNVERIFIED, simple_ask.gate("Me Myself has 3.", failed)[0])
+        self.assertEqual(ask_refs.render("Me Myself has 3.", failed).untraced, ["3"])
 
     def test_a_tile_that_fails_to_read_is_unreadable_and_logs_no_value(self):
         class Broken(Backend):

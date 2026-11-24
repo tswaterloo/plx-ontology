@@ -553,7 +553,8 @@ WORKSPACE_CLASSES = {
 class DiskProbe(FakeProbe):
     def __init__(self) -> None:
         super().__init__(200 * GB)
-        self.free = {"/data": 50 * GB}
+        from operating.disk_budget import FLOOR_GB
+        self.free = {"/data": int((FLOOR_GB + 10) * GB)}   # 10 GB above the one floor
 
     def disk_free_mb(self, path: str) -> int:
         return self.free[self.mount(path)]
@@ -619,15 +620,17 @@ class DeclaredAdmissionTests(unittest.TestCase):
 
     def test_a_job_its_disk_cannot_hold_waits_and_never_holds_the_others_back(self):
         floor_gb = jq.disk_floor_mb("/data", {}) / GB
-        self.assertEqual(floor_gb, 40.0)           # ops_health.DISK_FLOOR_GB["/data"]
+        from operating.disk_budget import FLOOR_GB
+        self.assertEqual(floor_gb, FLOOR_GB)       # the one floor (operating.disk_budget)
         big = self.q.enqueue("workspace", kind="inline", cpus=1, disk_gb=20, disk_path="/data/x",
                              workspace="a")[0]
         small = self.q.enqueue("workspace", kind="inline", cpus=1, disk_gb=6, workspace="b")[0]
         second = self.q.enqueue("workspace", kind="inline", cpus=1, disk_gb=6, workspace="c")[0]
         plain = self.q.enqueue("workspace", kind="inline", cpus=1, workspace="d")[0]
         claimed, _ = self.admit_all()
-        self.assertEqual(claimed, [small, plain])  # 50 - 6 held - 6 < 40
-        self.assertTrue(self.refusal(big).startswith("disk: 51200 MB free on /data"))
+        self.assertEqual(claimed, [small, plain])  # floor + 10 - 6 held - 6 < floor
+        self.assertTrue(self.refusal(big).startswith(
+            f"disk: {int((FLOOR_GB + 10) * 1024)} MB free on /data"))
         self.assertIn("6144 MB declared by held jobs", self.refusal(second))
 
     def test_a_workspace_holds_two_jobs_and_other_workspaces_still_start(self):

@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { OpsAlarms } from "@/lib/api";
 
@@ -9,6 +10,9 @@ vi.mock("@/lib/api", async (orig) => ({
 }));
 
 import OpsPage from "./page";
+
+/** The page opens on plain words; the checks, queue and history are behind the toggle. */
+const showDetail = async () => userEvent.click(await screen.findByTestId("ops-detail-toggle"));
 
 const base: OpsAlarms = { configured: true, running: true, checked_at: new Date().toISOString(), open: [], recovered: [], checks: [] };
 
@@ -28,6 +32,7 @@ describe("Reliability: job queue", () => {
       },
     };
     render(<OpsPage />);
+    await showDetail();
     const queue = await screen.findByTestId("ops-queue");
     expect(queue).toHaveTextContent("1 queued · 1 running · 4 refusals and 1 dead in the last hour");
     expect(queue).toHaveTextContent("6.0 GB of 24.0 GB");
@@ -41,10 +46,12 @@ describe("Reliability: job queue", () => {
   it("says when the queue worker stopped, and shows nothing before the queue is on", async () => {
     api.body = { ...base, queue: { configured: true, fresh: false, written_at: new Date(0).toISOString() } };
     const { unmount } = render(<OpsPage />);
+    await showDetail();
     expect(await screen.findByTestId("ops-queue-stale")).toHaveTextContent("The queue worker has stopped");
     unmount();
     api.body = { ...base, queue: { configured: false, fresh: false } };
     render(<OpsPage />);
+    await showDetail();
     await screen.findByTestId("ops-summary");
     expect(screen.queryByTestId("ops-queue")).toBeNull();
   });
@@ -60,6 +67,7 @@ describe("Reliability: job queue", () => {
       ],
     } as OpsAlarms;
     render(<OpsPage />);
+    await showDetail();
     const line = await screen.findByTestId("ops-by-area");
     expect(line).toHaveTextContent("Open by areaServices 2Data freshness 1");
     expect(line).toHaveTextContent("Oldest open 2 days: mail capture last refreshed 3 days ago");
@@ -76,6 +84,7 @@ describe("Reliability: pauses and mail", () => {
       notify: { sending: false, why_not: "no sender set", recipients: 0, pending: 0 },
     };
     render(<OpsPage />);
+    await showDetail();
     const paused = await screen.findByTestId("ops-paused");
     expect(paused).toHaveTextContent("Delta schedule: stopped: no next run");
     expect(paused).toHaveTextContent("migration window");
@@ -93,6 +102,7 @@ describe("Reliability: pauses and mail", () => {
       maintenance: { state: "in_window", reason: "live data rebuild", until },
     };
     const { unmount } = render(<OpsPage />);
+    await showDetail();
     const note = await screen.findByTestId("ops-maintenance");
     expect(note).toHaveTextContent("Paused for maintenance until");
     expect(note).toHaveTextContent("live data rebuild");
@@ -101,6 +111,7 @@ describe("Reliability: pauses and mail", () => {
     api.body = { ...base, open: [{ key: "maintenance_window", line: "Planned maintenance: live data rebuild: past its planned end", opened_at: new Date().toISOString(), level: "high" }],
                  maintenance: { state: "overrun", reason: "live data rebuild", until } };
     render(<OpsPage />);
+    await showDetail();
     expect(await screen.findByTestId("ops-open")).toHaveTextContent("past its planned end");
     expect(screen.queryByTestId("ops-maintenance")).toBeNull();
   });
@@ -115,5 +126,16 @@ describe("Reliability: open problems in words", () => {
     expect(opsLine("some_check", "some_check_other: x")).toBe("some_check_other: x");
     // a line the check already words is left alone
     expect(opsLine("disk_forecast:/data", "Disk forecast: /data fills in about 11.8 days")).toBe("Disk forecast: /data fills in about 11.8 days");
+  });
+
+  it("opens on plain words, the technical detail behind a toggle", async () => {
+    render(<OpsPage />);
+    expect(await screen.findByTestId("ops-plain")).toBeInTheDocument();
+    expect(screen.queryByTestId("ops-checks")).toBeNull();
+    expect(screen.queryByTestId("ops-summary")).toBeNull();
+    await showDetail();
+    expect(screen.getByTestId("ops-checks")).toBeInTheDocument();
+    await showDetail();
+    expect(screen.queryByTestId("ops-checks")).toBeNull();
   });
 });

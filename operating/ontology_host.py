@@ -1350,8 +1350,8 @@ class CaseHostTools:
 
     @contextmanager
     def policy_pinned(self, actor: Any) -> Iterator[None]:
-        """One answer's reads (code's own, ``fast_answer.Reads``: the fast path, the
-        profit route) under one policy, as the console pins one per request
+        """One answer's reads (code's own, ``record_reads.Reads``: the Assist's
+        party addresses) under one policy, as the console pins one per request
         (``object_workspace.HostAccess``): ``policy_now(actor)`` decided once here is every
         call's of this context for that same actor (``policy_for``), at most
         ``POLICY_PIN_SECONDS``. As the console's, a transient answer in it (a BC company

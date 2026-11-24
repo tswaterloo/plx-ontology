@@ -389,6 +389,15 @@ describe("AnswerCard", () => {
     expect(screen.getByTestId("verdict")).toHaveTextContent("PO 90412 is 12 days late.");
   });
 
+  it("says a refusal as itself: no 'didn't finish' before it and no Try again that cannot help", () => {
+    const refusal = "You don't have access to this. Ask the owner or your team lead if you need it.";
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "error", streamed: "", steps: [], error: refusal }} onRetry={() => undefined} />);
+    const card = screen.getByTestId("answer-card");
+    expect(card).toHaveTextContent(refusal);
+    expect(card).not.toHaveTextContent("didn't finish");
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+  });
+
   it("marks the early verdict as not confirmed when the answer errors or is stopped", () => {
     for (const error of ["The Workbench server failed on this request. Try again.", "Stopped. Ask again whenever you're ready."]) {
       const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "error", streamed: "", steps: [], verdict: "PO 90412 is 12 days late.", error }} />);

@@ -87,10 +87,11 @@ class Pure(unittest.TestCase):
             got = tp.fill("{{items}}", ORDER, TERMS, lines=[line(i) for i in range(1, n + 1)])
             rows = got["text"].splitlines()
             shown = [r for r in rows if r.startswith("- ")]
-            self.assertEqual(len(shown), min(n, tp.MAX_LINES), n)
+            self.assertEqual(len(shown), n)                 # every line, none left behind
             self.assertEqual(len({r for r in shown}), len(shown))       # none duplicated
-            if n > tp.MAX_LINES:
-                self.assertEqual(rows[-1], f"[check: {n - tp.MAX_LINES} more lines]")
+            self.assertFalse(any("more lines" in r for r in rows))
+        many = tp.fill("{{items}}", ORDER, TERMS, lines=[line(i) for i in range(1, 301)])
+        self.assertEqual(len([r for r in many["text"].splitlines() if r.startswith("- ")]), 300)
 
     def test_a_draft_becomes_a_template(self):
         got = tp.propose("Hi Acme Foods, PO PO-7781 is booked as SO-5512. Thanks", ORDER, TERMS)
@@ -100,11 +101,8 @@ class Pure(unittest.TestCase):
                          "Hi Acme Foods, PO PO-7781 is booked as SO-5512. Thanks")
 
     def test_the_one_box_line(self):
-        from operating.instruct import route
         self.assertEqual(tp.template_request("use my order confirmation template for SO 5512"),
                          {"name": "order confirmation", "for": "SO 5512"})
-        self.assertEqual(route("use my order confirmation template for SO 5512"), "do")
-        self.assertEqual(route("which template do I use for quotes?"), "ask")
         self.assertIsNone(tp.template_request("where is SO 5512?"))
 
 
@@ -286,6 +284,28 @@ class Store(unittest.TestCase):
         with psycopg.connect(self.dsn) as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM templates.template").fetchone()[0], 0)
 
+    def test_a_long_template_is_kept_whole_and_one_past_the_bound_is_refused(self):
+        """Migration 0059: the body holds 100,000 characters (0022 stopped it at 8,000)."""
+        filler = "\nPlease check the labels against the order before it leaves the dock."
+        long_body = BODY + filler * ((tp.MAX_BODY - len(BODY)) // len(filler))
+        self.assertGreater(len(long_body), 90_000)
+        made = self.save("ana", body=long_body)
+        self.assertEqual(made.status_code, 200, made.text[:300])
+        with psycopg.connect(self.dsn) as conn:
+            kept = conn.execute("SELECT body FROM templates.template WHERE id = %s",
+                                (made.json()["id"],)).fetchone()[0]
+            checks = conn.execute(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = 'templates.template'"
+                "::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE "
+                "'%%length(body)%%'").fetchone()[0]
+        self.assertEqual(kept, long_body)
+        self.assertEqual(checks, 1)
+        over = self.save("ana", name="Too long", body=BODY + "x" * (tp.MAX_BODY - len(BODY) + 1))
+        self.assertEqual(over.status_code, 422, over.text[:300])
+        with psycopg.connect(self.dsn) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM templates.template").fetchone()[0],
+                             1)
+
     def test_the_people_exclusion_fails_closed(self):
         tid = self.save("ana").json()["id"]
         # unavailable: nothing written, nothing read
@@ -367,7 +387,8 @@ class Store(unittest.TestCase):
         self.assertIsNone(said)     # reader("ana") is not the fixture reader: not theirs
         from operator_api.auth import fixture_identity  # noqa: F401
         c = self.as_("ana")
-        r = c.post("/api/ask", json={"question": "use my order confirmation template for SO 5512"})
+        r = c.post("/api/ask", json={"question": "use my order confirmation template for SO 5512",
+                                     "mode": "do"})
         self.assertEqual(r.status_code, 200)
         self.assertIn("event: answer", r.text)
         self.assertIn("PO-7781", r.text)
@@ -421,6 +442,14 @@ class Store(unittest.TestCase):
             rows = ana.get("/api/templates").json()["templates"]
             self.assertEqual(sorted(t["name"] for t in rows),
                              sorted(f"T{i}" for i in range(1, n + 1)))
+
+    def test_a_list_of_more_than_two_hundred_templates_shows_every_one(self):
+        ana = self.clients["ana"]
+        for made in range(1, 251):
+            r = self.save("ana", name=f"B{made}", body=f"Note {made} {{{{po_number}}}}")
+            self.assertEqual(r.status_code, 200, r.text)
+        rows = ana.get("/api/templates").json()["templates"]
+        self.assertEqual(len([t for t in rows if t["name"].startswith("B")]), 250)
 
 
 if __name__ == "__main__":

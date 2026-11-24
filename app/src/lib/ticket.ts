@@ -33,3 +33,11 @@ export function takeTicket(): string | null {
   captured = null;
   return t;
 }
+
+/** True while an access link's ticket is on this page and not yet used: who reads is not yet
+ * settled, so the page's reads wait for the sign-in check as before. */
+export function ticketComing(): boolean {
+  if (captured) return true;
+  if (typeof window === "undefined") return false;
+  return typeof (window as unknown as { __plxTicket?: string }).__plxTicket === "string" || /(?:^#|&)ticket=/.test(window.location.hash);
+}

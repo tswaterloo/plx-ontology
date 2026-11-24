@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Related } from "@/components/related";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
-import type { NoticeKind } from "@/lib/errors";
+import { FINAL_ERRORS, type NoticeKind } from "@/lib/errors";
 import type { TurnRequest } from "@/lib/thread";
 import { formatDate, internalType, objectHref, plural, proseMoney, readable, recordKind, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { fieldPairs, parseMarkdown, type Block } from "@/lib/markdown";
@@ -26,6 +26,7 @@ import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-c
 import { lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { ErrorNotice } from "./ui/notice";
 import { SimpleAnswer } from "./simple-answer";
+import { ShowAll } from "@/components/show-all";
 
 /** Server prose as a reader reads it: codes and dates in words, amounts with their currency. */
 /** Answer prose as the app writes it: money as money, every PO/SO number spaced one way
@@ -120,6 +121,9 @@ export function choiceLabel(c: Pick): string {
     .replace(/\bPO (?=PO\d)/g, "");
 }
 
+/** Choices shown before "Show all". */
+const CHOICES = 6;
+
 function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[]; onPick?: (p: Pick) => void }) {
   if (choices.length === 0) return null;
   const ids = choices.map((c) => c.object_id);
@@ -129,7 +133,7 @@ function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[];
     <section data-testid="did-you-mean">
       <SectionTitle>Which one{text ? <> is “{text}”</> : null}?</SectionTitle>
       <ul className="-mx-2">
-        {ordered.map((c) => (
+        <ShowAll items={ordered} first={CHOICES} as="li">{(c) => (
           <li key={c.object_id}>
             <button
               type="button"
@@ -149,7 +153,7 @@ function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[];
               <ArrowRight className="size-3.5 shrink-0 text-faint opacity-0 group-hover:opacity-100" aria-hidden />
             </button>
           </li>
-        ))}
+        )}</ShowAll>
       </ul>
     </section>
   );
@@ -541,14 +545,14 @@ function RecordsList({ refs }: { refs: ObjectRef[] }) {
     <section aria-label="Records">
       <SectionTitle>Records</SectionTitle>
       <ul className="-mx-2">
-        {refs.slice(0, 5).map((r) => (
+        <ShowAll items={refs} first={5} as="li">{(r) => (
           <li key={r.object_id}>
             <Link href={refHref(r)} className="group flex h-8 items-center gap-2.5 rounded-lg px-2 text-[13px] hover:bg-hover">
               <span className="min-w-0 flex-1 truncate">{recordLabel(r.type, r.label)}</span>
               <ArrowUpRight className="size-3.5 shrink-0 text-faint group-hover:text-fg" aria-hidden />
             </Link>
           </li>
-        ))}
+        )}</ShowAll>
       </ul>
     </section>
   );
@@ -672,6 +676,7 @@ export function AnswerCard(props: CardProps) {
   return (
     <>
       <SimpleAnswer answer={turn.answer} streamed={turn.streamed} busy={busy} status={turn.status} progress={busy ? <Progress turn={turn} /> : undefined} />
+      {turn.phase === "done" && turn.answer?.clarify && <div className="mt-3 space-y-2"><p className="text-[15px] font-medium">{turn.answer.clarify.question}</p><ClarifyPart a={turn.answer} onReply={props.onClarify} /></div>}
       {turn.phase === "error" && <ErrorNotice message={turn.error ?? "This answer didn't finish. Try again."} tone={turn.notice ? "notice" : "error"} onRetry={turn.notice === "off" ? undefined : onRetry} />}
       {turn.phase === "done" && onDeeper && !turn.request?.extra?.deep && !turn.answer?.assistant_unavailable && (
         <button
@@ -751,7 +756,6 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
               text={e.text}
               choices={(e.candidates ?? [])
                 .filter((c) => !internalType(c.type))
-                .slice(0, 5)
                 .map((c) => ({ object_id: c.object_id, type: c.type, label: c.label }))}
               onPick={onPick}
             />
@@ -792,12 +796,12 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
         {turn.phase === "error" && (
           <ErrorNotice
             message={
-              turn.notice || /^Stopped\./.test(turn.error ?? "")
+              turn.notice || /^Stopped\./.test(turn.error ?? "") || FINAL_ERRORS.has(turn.error ?? "")
                 ? (turn.error ?? "")
                 : `This answer didn't finish. ${(turn.error ?? "Try again.").replace(/^Server error\.\s*/, "")}`
             }
             tone={turn.notice ? "notice" : "error"}
-            onRetry={turn.notice === "off" ? undefined : onRetry}
+            onRetry={turn.notice === "off" || FINAL_ERRORS.has(turn.error ?? "") ? undefined : onRetry}
           />
         )}
 
@@ -806,7 +810,6 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
             <DidYouMean
               choices={(a.did_you_mean ?? [])
                 .filter((r) => !internalType(r.type))
-                .slice(0, 6)
                 .map((r) => ({ object_id: r.object_id, type: r.type, label: r.label }))}
               onPick={onPick}
             />

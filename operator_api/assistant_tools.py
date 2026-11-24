@@ -40,7 +40,9 @@ DOCUMENT = "plx.make_document"
 EDITED = "plx.edit_document"
 WATCH = "plx.watch_measure"
 READ_DOCUMENT = "plx.read_document"
-NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH, READ_DOCUMENT)
+MY_WORK = "plx.my_work"
+HAND_OFF = "plx.hand_off"
+NAMES = (REMEMBER, TEMPLATE, DOCUMENT, WATCH, READ_DOCUMENT, MY_WORK, HAND_OFF)
 # the kinds of file plx.make_document makes (``operating.instruct_files.KINDS``)
 KINDS = ("docx", "xlsx", "pdf", "pptx", "csv")
 MOST_LISTED = 40
@@ -109,9 +111,9 @@ DOCUMENT_SPEC = {
         "'[chart N]' line under a heading with up to 3 lines puts the chart on that slide), "
         "csv (rows only, cells split by | as xlsx; no charts). A file for a customer or "
         "supplier holds only what is on record or asked for: no terms, dates, conditions or "
-        "notes you made up, no internal ids, statuses or tool words, and never the "
-        "answer's '(unverified)' mark: a figure you could not check stays out of the file "
-        "or goes in a plain note, and you say so in the answer. charts: up to 8 "
+        "notes you made up, no internal ids, statuses or tool words: a figure no result of "
+        "yours holds stays out of the file or goes in a plain note, and you say so in the "
+        "answer; a figure from a result is written as its {{...}} reference, as in the answer. charts: up to 8 "
         "charts, each {\"sql\": <a SELECT you ran with plx.sql>, \"type\", \"title\", "
         "\"x\", \"y\": [...], options as in a chart block}: the statement is read again as "
         "the person and the chart drawn from its rows (a native chart in Word, Excel and "
@@ -136,7 +138,7 @@ DOCUMENT_SPEC = {
                        "content": {"type": "string"},
                        "charts": {"type": "array", "maxItems": 8,
                                   "items": {"type": "object", "required": ["sql", "type", "y"]}},
-                       "tables": {"type": "array", "maxItems": 8,
+                       "tables": {"type": "array",
                                   "items": {"type": "object", "required": ["sql"],
                                             "properties": {"sql": {"type": "string"},
                                                            "title": {"type": "string"}}}}}},
@@ -155,13 +157,54 @@ def autopilot_effect(text: Any) -> list[str]:
             if str(r.get("key", "")).startswith(learning.RULE_PREFIXES)]
 
 
-# "0": a line asking for something done goes to the instruction engine, as before
-DO_ENV = "PLX_ASK_SIMPLE_DO"
-# where the instruction engine's own flows start: an email, file, meeting or autopilot item
-# the person has open (a reply in its thread, a meeting's follow-up, the item's work)
-ENGINE_CONTEXTS = ("email", "source", "meeting", "autopilot")
-# a reply or forward goes in the thread of the person's own message (the engine's desk)
-ENGINE_VERBS = ("reply", "respond", "forward", "answer")
+MY_WORK_SPEC = {
+    "name": MY_WORK,
+    "description": (
+        "The person's own work log in the Workbench, newest first: the questions they asked "
+        "here, alerts they saw, dismissed or snoozed, Autopilot drafts they accepted, edited "
+        "or rejected, messages and changes prepared, confirmed or sent from the Workbench, "
+        "records they followed or saved, notes. Mail they sent from Outlook and approvals "
+        "they gave in another system are not in it (those are in the emails view and the "
+        "systems' own records). since / until: ISO dates or times (the business time zone "
+        "is America/Toronto); words: a record number or words its entries name; kind: "
+        "ask | alert | autopilot | action | write | watch | note | save; sends: only "
+        "messages that went out; waiting: only messages still waiting for a reply. Each "
+        "entry: at, what (as the log says it), records it names."),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "since": {"type": "string", "maxLength": 40},
+            "until": {"type": "string", "maxLength": 40},
+            "words": {"type": "string", "maxLength": 200},
+            "kind": {"type": "string",
+                     "enum": ["ask", "alert", "autopilot", "action", "write", "watch",
+                              "note", "save"]},
+            "sends": {"type": "boolean"}, "waiting": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50}}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False},
+}
+MY_WORK_MOST = 50
+
+HAND_OFF_SPEC = {
+    "name": HAND_OFF,
+    "description": (
+        "Gives the person's line to the Workbench's drafting desk, which then answers it in "
+        "your place with a draft for them to review and approve: a reply to or forward of "
+        "an email or message (sent in its thread), a meeting's follow-up, an Autopilot "
+        "item's work, a record created from another record, a form they attached filled "
+        "in, or a job that repeats on a schedule. Nothing you write after the call is "
+        "shown. No arguments."),
+    "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False},
+}
+
+
+def handed_off(events: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the session gave the line to the drafting desk (a ``plx.hand_off`` call that
+    did not fail; the catalog name or Claude Code's mcp__<server>__plx_hand_off)."""
+    return any(e.get("type") == "tool_call" and not e.get("is_error")
+               and str(e.get("name") or "").split("__")[-1].replace(".", "_")
+               == HAND_OFF.replace(".", "_") for e in events)
 
 
 # when a monitor runs (``insights_runs``: business time zone)
@@ -250,36 +293,12 @@ class AssistantToolsMixin:
     ``template_store`` (``TemplatesMixin``) and ``_prepare_document`` / ``_instruct_guard``
     (``InstructMixin``)."""
 
-    def ask_does(self, reader: Any, request: Any) -> bool:
-        """Whether a line asking for something done (or one the router cannot tell, a
-        question or a job) goes to the simple Ask, which reads every record and has these
-        tools and the write tools, rather than the instruction engine: when the simple
-        Ask serves this reader (``simple_ask.enabled``, the agent path) and the line is
-        none of the engine's own flows: a continued instruction, an email, file, meeting
-        or autopilot item open (``ENGINE_CONTEXTS``), attached files, a reply or a forward
-        (sent in the thread of the person's own message, ``ENGINE_VERBS``), a record to
-        create from another, or a recurring job. "Use my <name> template for <record>" is
-        the Ask's: it reads the template (``plx.template``) and fills it from every record."""
-        import os
-        from operating import instruct as ins
-        from operating.entry_assist import create_kind
-        from . import simple_ask
-        agent = getattr(self, "agent_ask", None)
-        if os.environ.get(DO_ENV, "1") == "0" or not simple_ask.enabled() or agent is None \
-                or not agent.serves(reader.session):
-            return False
-        context = getattr(request, "context", None)
-        text = " ".join(str(request.question or "").split())
-        return not (request.instruction is not None or request.source or request.attachments
-                    or getattr(context, "kind", None) in ENGINE_CONTEXTS
-                    or (ins.verb(text) or "").startswith(ENGINE_VERBS)
-                    or create_kind(text) or ins.recurring(text))
-
     def assistant_tools(self, reader: Any) -> list[Any]:
         """The reader's assistant tools (``plx.remember``, ``plx.template``,
-        ``plx.make_document``) for the Ask; none that cannot be made, and none for a session
-        that is not the person's own (viewing as someone, the Ask canary): it keeps nothing
-        and makes nothing in their name."""
+        ``plx.make_document``, ``plx.my_work``, ``plx.hand_off``, ...) for the Ask; none
+        that cannot be made, and none for a session that is not the person's own (viewing
+        as someone, the Ask canary): it keeps nothing, makes nothing and reads no work log
+        in their name."""
         from operating.agent_session import LocalTool
         session = getattr(reader, "session", None)
         if getattr(session, "view_as", False) or getattr(session, "canary", False):
@@ -297,7 +316,43 @@ class AssistantToolsMixin:
             out.append(doc_read_tool.tool(self, reader))
         if callable(getattr(self, "insight_store", None)):
             out.append(LocalTool(spec=WATCH_SPEC, call=lambda a: self._watch_call(reader, a)))
+        if getattr(self, "work_log", None) is not None:
+            out.append(LocalTool(spec=MY_WORK_SPEC,
+                                 call=lambda a: self._my_work_call(reader, a)))
+        if callable(getattr(self, "instruct_ask", None)):
+            # the call itself does nothing: the app sees it in the answer
+            # (``handed_off``) and gives the line to ``instruct_ask``
+            out.append(LocalTool(spec=HAND_OFF_SPEC, call=lambda a: {
+                "handed_off": True, "note": "The drafting desk answers the person now."}))
         return out
+
+    # -- plx.my_work --------------------------------------------------------------------
+
+    def _my_work_call(self, reader: Any, args: Mapping[str, Any]) -> Any:
+        """The reader's own work-log entries (``work_log.recall``): theirs only, each row
+        re-checked against the people exclusion; unreadable while it cannot decide."""
+        from . import work_log as wl
+        store = getattr(self, "work_log", None)
+        if store is None:
+            return {"error": "The work log is not set up on this server."}
+        kind = args.get("kind")
+        if kind is not None and kind not in wl.KINDS:
+            return {"error": f"kind is one of {', '.join(wl.KINDS)}"}
+        limit = args.get("limit") if type(args.get("limit")) is int else 20
+        found = wl.recall(store, reader.key, since=_words(args.get("since")) or None,
+                          until=_words(args.get("until")) or None,
+                          words=_words(args.get("words")) or None, kind=kind,
+                          sends=args.get("sends") is True,
+                          open_loops=args.get("waiting") is True,
+                          limit=max(1, min(limit, MY_WORK_MOST)))
+        if found["total"] is None:
+            return {"error": "The work log cannot be read right now (the list of people "
+                             "kept out of the Workbench is not loaded): nothing is shown."}
+        return {"total": found["total"], "entries": [
+            {"at": e["at"], "what": wl.say(e),
+             "records": [{k: r[k] for k in ("object_id", "type", "label") if r.get(k)}
+                         for r in e.get("records") or ()]}
+            for e in found["events"]]}
 
     # -- plx.watch_measure --------------------------------------------------------------
 
@@ -344,7 +399,6 @@ class AssistantToolsMixin:
         from . import insights_runs as runs
         from .charts import _period, _text
         from .errors import UserFacing
-        from .simple_ask import _redacted
         spec = store.get(reader.key, str(args.get("insight") or ""))
         if spec is None:
             return {"not_kept": "That is not one of their pinned charts (its id is s<n>, "
@@ -357,11 +411,11 @@ class AssistantToolsMixin:
         rows = [r.get("cells", []) for r in got.get("rows") or () if isinstance(r, Mapping)]
         x = str((spec.chart or {}).get("x") or "") or None
         x = x if x in columns else None
-        title = _redacted(spec.title)
+        title = spec.title
         if args.get("column") is None:
             return {"chart": title, "columns": columns, "axis": x,
                     "currency_columns": runs.currency_columns(columns),
-                    "last_rows": [[_redacted(_text(c) or "") if isinstance(c, str) else c
+                    "last_rows": [[(_text(c) or "") if isinstance(c, str) else c
                                    for c in r] for r in rows[-SHOWN_ROWS:]],
                     "row_count": len(rows), "next": "send column, op, value, row and, for "
                     "one currency, where; nothing is kept until they say yes"}
@@ -547,8 +601,8 @@ class AssistantToolsMixin:
         from .errors import UserFacing
         guard = self._instruct_guard()  # type: ignore[attr-defined]
         if guard is None:
-            return {"refused": "This is paused: the list of people whose data stays out is "
-                    "not loaded."}
+            return {"refused": "This is paused right now; nothing was made. Try again in a few "
+                    "minutes."}
         kind = args.get("kind") if args.get("kind") in KINDS else "docx"
         if kind == "csv" and args.get("charts"):
             return {"refused": "A CSV file holds rows only, never a chart: make an xlsx "
@@ -558,10 +612,6 @@ class AssistantToolsMixin:
                 > files.MAX_ROWS:
             return {"refused": f"More than {files.MAX_ROWS:,} rows typed into content: put "
                     "a list of rows in tables (its SELECT; every row is read for the file)."}
-        from integrations.image_ocr_gpu import touches_freightcom
-        if touches_freightcom(str(args.get("content") or ""), str(args.get("name") or "")):
-            # the carrier whose data never reaches the AI or an action: no file of it
-            return {"refused": "That carrier is never written about through the Workbench."}
         try:
             charts = self._document_charts(reader, args.get("charts"))
             tables, held = self._document_tables(reader, args.get("tables"), kind)
@@ -588,15 +638,13 @@ class AssistantToolsMixin:
         what each holds (rows, columns, order) for the answer. One that cannot be read
         whole refuses the document with why: never a file with part of the rows."""
         from operating import instruct_files as files
-        from integrations.image_ocr_gpu import touches_freightcom
         from . import doc_tables
         from .errors import UserFacing
         from .insights import Refused, read_sql
         if raw is None:
             return [], []
-        if not isinstance(raw, list) or len(raw) > doc_tables.MAX_TABLES:
-            raise UserFacing("table", f"A document holds up to {doc_tables.MAX_TABLES} "
-                             "tables.", 422)
+        if not isinstance(raw, list):
+            raise UserFacing("table", "tables is a list of statements.", 422)
         tables, held = [], []
         for n, item in enumerate(raw, 1):
             sql = item.get("sql") if isinstance(item, Mapping) else None
@@ -604,16 +652,12 @@ class AssistantToolsMixin:
                 raise UserFacing("table", f"Table {n} is not a table of a statement "
                                  "(sql, title).", 422)
             try:
-                got = doc_tables.read_all(lambda q: read_sql(self, reader, q), sql,
-                                          max_rows=files.MAX_TABLE_ROWS[kind])
+                got = doc_tables.read_all(lambda q: read_sql(self, reader, q), sql)
             except doc_tables.TableRefused as why:
                 raise UserFacing("table", f"Table {n} is not made: {why}", 422) from None
             except Refused as why:
                 raise UserFacing("table", f"Table {n} can't be read: {why.message}", 422) from None
             t = files.table(item.get("title"), got["columns"], got["rows"])
-            if touches_freightcom(t["title"], t["lines"]):
-                raise UserFacing("table", "That carrier is never written about through "
-                                 "the Workbench.", 422)
             tables.append(t)
             held.append({"table": n, "rows": len(got["rows"]), "columns": got["columns"],
                          "ordered": got["ordered"]} | ({"partial": "some cells are values "

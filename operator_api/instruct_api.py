@@ -1,7 +1,8 @@
 """Tell it to do anything, anywhere: the Ask box's "do X". One box serves questions and
-instructions; ``operating.instruct.route`` sends a line asking for something done here
-(``instruct_ask``), a question to the cited answer path as before, and asks which when it
-cannot tell. ``operating.instruct`` is the pure part; this is the reading and the desk.
+instructions: the person's "Do it" pick, a continued instruction, or the Ask's own model
+handing the line over (``plx.hand_off``) brings a line here (``instruct_ask``); every other
+line is the Ask's. No text rule decides it. ``operating.instruct`` is the pure part; this is
+the reading and the desk.
 
 * **As the reader.** The page's context (the box's ``source``, ``object_id`` or
   ``context``) is read through the reader's own reads: an email or file through ``source``
@@ -55,7 +56,6 @@ from .errors import UserFacing
 
 REFUSED = {
     "empty": ("Type what you want done.", 422),
-    "too_long": ("Keep the instruction under 1000 characters.", 422),
     "people_exclusion_unavailable": ("This is paused: the list of people whose data stays "
                                      "out is not loaded.", 503),
     "model_unavailable": ("The assistant is not set up on this server.", 503),
@@ -96,7 +96,6 @@ _READ_KIND = {"email": "email", "autopilot item": "email", "record": "record",
 _ADAPTER_OF = {"bc": "bc_write", "business central": "bc_write", "mc": "mc_approval",
                "mission control": "mc_approval", "sage": "sage_write",
                "portal": "portal_write", "filemaker": "filemaker_write"}
-ROUTE_QUESTION = "Should I draft this for your approval, or answer it from the records?"
 
 
 def _refuse(code: str) -> UserFacing:
@@ -431,8 +430,10 @@ class InstructMixin(ia.InstructAssistMixin):
 
     def instruct_ask(self, reader: Reader, request: m.AskRequest
                      ) -> Iterator[tuple[str, Any]]:
-        """The Ask box's line when it asks for something done (``instruct.route``): the
-        Ask's events, its answer carrying the drafts and the ``instruction`` part. The work
+        """The Ask box's line when it asks for something done (the person picked "Do it",
+        continued an instruction, or the Ask's model handed the line over, ``plx.hand_off``;
+        a recurring job's run): the Ask's events, its answer carrying the drafts and the
+        ``instruction`` part. The work
         log keeps it as the reader's Ask (the app's ``notes.ask``)."""
         started = time.monotonic()
 
@@ -448,16 +449,6 @@ class InstructMixin(ia.InstructAssistMixin):
             raise _refuse(refused.code) from None
         context = self._context_of(request)
         self._assist_mail(reader, 0.0)   # the reader's own mail, read in the background
-        if ins.route(text, mode=request.mode, continuing=request.instruction is not None) \
-                == "unsure":
-            # one question: do it, or answer it (the person's pick comes back as ``mode``)
-            yield from self._said(m.AnswerPayload(
-                answer_id=secrets.token_hex(12), question=text, outcome="answered",
-                direct_answer=ROUTE_QUESTION, hidden=m.Hidden(count=0),
-                freshness=m.Freshness(), conversation_id=conversation, latency_ms=ms(),
-                instruction=m.InstructPart(status="route", text=text, question=ROUTE_QUESTION,
-                                           context=context)))
-            return
         guard = self._instruct_guard()
         if guard is None:
             raise _refuse("people_exclusion_unavailable")
@@ -522,7 +513,7 @@ class InstructMixin(ia.InstructAssistMixin):
         call = self._instruct_model()
         if call is None:
             raise _refuse("model_unavailable")
-        attached = self._instruct_attached(request, guard)
+        attached = self._instruct_attached(request, guard, reader)
         # API-009: a continuation reads the first turn's files again, so they come again
         # with it (the app resends them); without them it says which to attach, never
         # drafting from the words alone
@@ -601,15 +592,17 @@ class InstructMixin(ia.InstructAssistMixin):
             return request.context.model_dump()
         return {"kind": "page"}
 
-    def _instruct_attached(self, request: m.AskRequest, guard: Any) -> list[Any]:
+    def _instruct_attached(self, request: m.AskRequest, guard: Any,
+                           reader: Optional[Reader] = None) -> list[Any]:
         """The request's files as read (``operating.ask_attachments``: its limits), their
         text cleaned of excluded people; nothing of them is kept."""
         if not request.attachments:
             return []
         import dataclasses
         from operating import ask_attachments
+        from . import ask_files
         from .feedback import clean
-        batch = ask_attachments.decode(a.model_dump() for a in request.attachments)
+        batch = ask_attachments.decode(ask_files.items(self, request, reader))
         return [dataclasses.replace(f, text=clean(f.text, guard, len(f.text) + 1) or "",
                                     data=None)
                 if f.text else dataclasses.replace(f, data=None)

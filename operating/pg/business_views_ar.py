@@ -21,13 +21,9 @@ AR_HISTORY_PROPS = ("idinvc", "idcust", "trxtypetxt", "trxtypeid", "dateinvc", "
 
 @view("receivable_documents", "Every Sage AR document ever booked, paid or open: invoice, "
       "credit note, receipt and the rest, with its date, due date and the date Sage shows it "
-      "paid (paid_date). For the invoices owed on a past day D: sum original_amount of the "
-      "invoices with document_date <= D and (status = 'open' or paid_date > D), per "
-      "currency. Approximate: Sage dates only the final payment (paid_date), so a part "
-      "payment before D is not netted, and receipts and prepayments (live 11-22: 25,407 and "
-      "1,526 of them) and 416 invoices Sage marks paid carry no paid date, so restrict "
-      "history to document_type = 'invoice' and say so. What is owed today is "
-      "customer_balances. BC aged receivables are pilot data and are not used.",
+      "paid (paid_date, Sage datepaid: the date of the final payment only, so a part payment "
+      "has no date of its own; most receipts and prepayments carry none). What is owed today "
+      "is customer_balances. Business Central's aged receivables are not in this view.",
       [("customer", "text", "customer name (the linked customer)"),
        ("customer_code", "text", "Sage customer code"),
        ("document_number", "text", "invoice / credit note / receipt number"),

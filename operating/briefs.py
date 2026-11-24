@@ -229,7 +229,7 @@ class Reads:
     """The reader's reads for one brief: ``CitedReads`` (budget, paging, typed gaps) with
     every cell checked against ``held``. Withheld counts are never passed on."""
 
-    def __init__(self, call: Call, held: Iterable[str], *, budget_seconds: float,
+    def __init__(self, call: Call, held: Iterable[str], *, budget_seconds: float | None,
                  clock: Callable[[], float] | None = None,
                  declared: frozenset[str] | None = None) -> None:
         kw: dict[str, Any] = {"budget_seconds": budget_seconds}
@@ -1555,7 +1555,7 @@ def _cash(reads: Reads, today: date) -> list[dict[str, Any]]:
 
 def weekly_review(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | None, *,
                   week: date | None = None, today: date | None = None,
-                  budget_seconds: float = BUDGET_SECONDS,
+                  budget_seconds: float | None = None,
                   clock: Callable[[], float] | None = None,
                   decide: Decide | None = None, people: Any = None) -> dict[str, Any]:
     """The weekly review for the week starting ``week`` (default: the last full week) and

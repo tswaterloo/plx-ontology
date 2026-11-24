@@ -65,7 +65,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from . import ask_progress
 from . import errors
-from .errors import RecordNotFound, source_refused
+from .errors import RecordAmbiguous, RecordNotFound, source_refused
 from . import models as m
 from . import presentation
 from operating import currency_display
@@ -98,7 +98,7 @@ from .test_records import hidden_words
 from .serving import (  # noqa: F401 - re-exported
     MAX_WORKSPACES, MAX_FACTS, LATE_LIST_LIMIT, LATE_COUNT_LIMIT,
     SAME_NAME_ROWS, LATE_LABEL_LIMIT, MAX_SOURCES_PER_FACT, MAX_ANSWERS_KEPT,
-    ACCESS_WORKERS, CHECK_WORKERS, ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB,
+    ACCESS_WORKERS, CHECK_WORKERS, WEEKLY_WORKERS, WEEKLY_WORKERS_WARM, ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB,
     ASK_WORKERS_MOST,
     WARM_HOSTS, ask_worker_count, ASK_TOP_UP_SECONDS, top_up_ask_workers, looked_up,
     ASK_SESSION_GB, ASK_SESSION_FLOOR_GB, ASK_SESSION_RAMP_SECONDS, ASK_SESSIONS_MOST,
@@ -114,7 +114,7 @@ from .serving import (  # noqa: F401 - re-exported
     SNAPSHOT_REFRESH_KEPT, SNAPSHOT_REFRESH, files_stamp,
     ACCESS_WAIT_SECONDS, REWARM_SECONDS, READER_CACHE_KEPT, CARD_WORDS_KEPT,
     KNOWN_READERS_FILE, KNOWN_READERS, GENERATION_POLL_SECONDS, FLIGHT_SECONDS,
-    DOOR_KEEP_SECONDS, DOOR_KEEP_RECENT_SECONDS,
+    DOOR_KEEP_RECENT_SECONDS,
     ORIGINAL_READS, ORIGINAL_READS_PER_READER, ORIGINAL_READ_WAIT, HOST_READ_SCHEMES,
     AGENT_QUEUE_SECONDS, AGENT_FALLBACK, DEFAULT_DATA_DIR, DEPARTMENTS, SCHEMES,
     FAMILY_OWNER, LEDGER_SYSTEMS, BEHIND_SECONDS, CAPTURE_RANK, TRUTH_STATUS,
@@ -192,10 +192,10 @@ from .backend_ask import AskMixin  # noqa: F401 - re-export
 from .backend_serving import ServingMixin  # noqa: F401 - re-export
 from .backend_screens import ScreensMixin  # noqa: F401 - re-export
 from .backend_trails import (
-    _batched_words, _person, answer_trail, customer_names, fast_off, quicker_answer,
+    _batched_words, _person, answer_trail, customer_names, quicker_answer,
     why_answer_trail)
 from .backend_pages import (
-    _count, _marks_stamp, own_shown, PAGE_SPREAD, PAGE_SPREAD_PRIORITY, plan_families, _ReadByOtherCode,
+    _count, _marks_stamp, AccessState, own_shown, same_access, PAGE_SPREAD, PAGE_SPREAD_PRIORITY, plan_families, _ReadByOtherCode,
     SPREAD_SECTIONS)
 from .page_core import CorePageMixin
 from .backend_run import (
@@ -219,7 +219,8 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
 # the parts of a full reader's policy (``policy_parts``) left out of a kept page's access
 # state (``_access_job``): they grow with the data's source keys, never with what that
 # reader may read; a staff reader's stay whole (a new specific grant can narrow a family)
-FULL_READER_MOVING_PARTS = ("audiences", "audiences_held", "audiences_keys", "units")
+FULL_READER_MOVING_PARTS = ("audiences", "audiences_held", "audiences_keys",
+                            "audiences_reach", "units")
 
 
 def shared_key(reader: Any) -> Any:
@@ -229,6 +230,11 @@ def shared_key(reader: Any) -> Any:
 
 
 ACCESS_LOG_SECONDS = float(os.environ.get("PLX_ACCESS_LOG_SECONDS", "1.0"))
+
+
+# why a kept screen was not served at once (the first-wait and stale reads behind slow
+# routes): one line per miss, so the misses can be counted by reason from the journal
+_MISS_LOG = logging.getLogger("operator_api.serving_miss")
 
 
 class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
@@ -254,14 +260,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             seen = self.inputs_stamp()
         except Exception:  # noqa: BLE001 - unread: the first change read decides
             seen = None
-        doors_at = 0.0
         while not worker.stopped.wait(GENERATION_POLL_SECONDS):
-            if time.monotonic() - doors_at >= DOOR_KEEP_SECONDS:
-                doors_at = time.monotonic()
-                try:
-                    self._keep_doors(worker)
-                except Exception:  # noqa: BLE001 - the next round tries again
-                    pass
             try:
                 now = self.inputs_stamp()
                 if now is not None and now != seen:
@@ -274,41 +273,28 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             except Exception:  # noqa: BLE001 - the next change tries again
                 continue
 
-    def _keep_doors(self, worker: Worker) -> int:
-        """Queue on ``worker``, behind every live job (``_touch_access``'s priority) and
-        dropped when not run within ``DOOR_KEEP_SECONDS``, one door read per known reader
-        seen within ``DOOR_KEEP_RECENT_SECONDS``: the cheapest read through the page door
-        (``alert_runs``), so their door is decided again before it ages out
-        (``ontology_tools_sql.DOOR_MAX_AGE_SECONDS``) and a page they open never waits on
-        deciding it (1.5 s a door, two of Home's reads at once, measured on a returning
-        visit). Nothing is kept from the read; the door's own age limit is unchanged. Only
-        while pages read through the door. How many were queued."""
-        from . import page_sql
-        if (not page_sql.alerts_on() and not os.environ.get(page_sql.SWITCH, "").strip()) \
-                or self.identity_for is None:
-            return 0
-        queued, now = 0, time.time()
-        for oid, held in self.known_readers().items():
-            if now - float(held.get("seen") or 0) > DOOR_KEEP_RECENT_SECONDS:
-                continue
-            try:
-                if self.revoked(str(held["ref"])):
+    def _start_doors(self) -> None:
+        """Readers' doors decided ahead (``operator_api.doors``): the known readers seen
+        within ``DOOR_KEEP_RECENT_SECONDS`` first, then every reader a page is read for. A
+        page read then takes its door from memory and reads on its own thread."""
+        from .doors import Doors
+        if getattr(self, "doors", None) is not None:
+            return
+        self.doors = Doors(self)
+        readers, now = [], time.time()
+        if self.identity_for is not None:
+            for oid, held in self.known_readers().items():
+                if now - float(held.get("seen") or 0) > DOOR_KEEP_RECENT_SECONDS:
                     continue
-                session = self.identity_for(oid, int(held["exp"]))
-            except Exception:  # noqa: BLE001 - refused now: not kept
-                continue
-            deadline = time.monotonic() + DOOR_KEEP_SECONDS
-
-            def keep(view: Any, deadline: float = deadline) -> None:
-                if time.monotonic() <= deadline:
-                    view._call(page_sql.TOOL, {"reads": [{"name": "alert_runs"}]})
-            try:
-                worker.submit(Reader(session, self.reader_mode, "", None), keep,
-                              priority=1, deadline=deadline)
-            except Exception:  # noqa: BLE001 - not queued: the others still are
-                continue
-            queued += 1
-        return queued
+                try:
+                    if self.revoked(str(held["ref"])):
+                        continue
+                    readers.append(Reader(self.identity_for(oid, int(held["exp"])),
+                                          self.reader_mode, "", None))
+                except Exception as exc:  # noqa: BLE001 - refused now: decided on its first read
+                    logging.getLogger("operator_api").info("door not decided ahead: %s",
+                                                           type(exc).__name__)
+        self.doors.start(readers)
 
     def _sections_on_pool(self, reader: Reader, object_type: str, object_id: str,
                           sections: Sequence[str] = m.PAGE_SECTIONS) -> Callable[[], None]:
@@ -372,9 +358,11 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
 
     def _spread(self, reader: Reader, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
         """``job`` with ``PAGE_SPREAD`` set for its read: a record page's per-order margin
-        reads go to the Ask pool's idle workers as well (``serving.fan_out``, each read
-        as this reader on that worker's own runtime), after any question waiting there;
-        one after another when the pool has under two workers."""
+        reads, and its walk's hops, timelines, process and documents
+        (``object_workspace.WORKSPACE_SPREAD``), go to the Ask pool's idle workers as well
+        (``serving.fan_out``, each read as this reader on that worker's own runtime),
+        after any question waiting there; one after another when the pool has under two
+        workers."""
         if len(self.ask_workers) < 2:
             return job
         width = len(self.ask_workers)
@@ -386,10 +374,13 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                            deadline=time.monotonic() + PAGE_TIMEOUT_SECONDS)
 
         def run(view: Any) -> Any:
+            from .workspace.object_workspace import WORKSPACE_SPREAD
             token = PAGE_SPREAD.set(spread)
+            walk = WORKSPACE_SPREAD.set(spread)   # the record's walk too (``_walk``)
             try:
                 return job(view)
             finally:
+                WORKSPACE_SPREAD.reset(walk)
                 PAGE_SPREAD.reset(token)
         return run
 
@@ -586,15 +577,14 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             warmer.submit(reader, self.yielding(warm_timed("pages", pages)),
                           priority=WARM_PRIORITY + 1 if warmer is self.reads and today
                           else 0)
-            if today and pending is None and not directory:
+            if today and pending is None:
                 # last week's review, read whole once and kept (``WeeklyArchive``): the
                 # Meetings page's weekly view then opens from the archive. Not in the
                 # warm-up's first pass: its Postgres aggregates for every known and
                 # directory reader held the first Home after a restart 14-20 s (11-19);
                 # the next round (REWARM_SECONDS) reads it
-                warmer.submit(reader, self.yielding(warm_timed(
-                    "weekly review", self._weekly_ahead(reader))),
-                    priority=WARM_PRIORITY + 1 if warmer is self.reads else 0)
+                self.weekly_submit(reader, self.yielding(warm_timed(
+                    "weekly review", self._weekly_ahead(reader))), warmer)
         return True
 
     def _screens_all(self, reader: Reader, later: bool = False) -> Future:
@@ -602,14 +592,37 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         screens pool, most visited first: with several workers (the warm-up process's) they
         are read side by side, never one reader's slow screen holding the rest. ``later``:
         a directory employee with no session, whose screens go after every session
-        reader's (``ScreensPool``) and whose weekly review is not read ahead (each one ran
-        its whole 300 s budget and kept nothing). A future done when every one is (the
-        first pass waits on it)."""
+        reader's (``ScreensPool``); their weekly review is read like the rest (no time
+        limit, so it is kept), after everyone else's. A pilot reader (``_warm_first``) goes
+        before all: an order, not a cut. A future done when every one is (the first pass
+        waits on it)."""
         pool = self._screens_pool()
+        first = self._warm_first(reader)
         return _all_done([pool.submit(self._screens_ahead, reader, (screen,), None, later,
-                                      later=later, key=(reader.key, reader.mode, repr(screen)))
-                          for screen in SCREENS_AHEAD
-                          if not (later and _screen_name(screen) == "weekly_review")])
+                                      later=later, key=(reader.key, reader.mode, repr(screen)),
+                                      first=first)
+                          for screen in SCREENS_AHEAD])
+
+    def _warm_first(self, reader: Reader) -> bool:
+        """Whether ``reader`` is read ahead before every other reader: the owner-open
+        reader, or one who switched an autopilot workflow on (the pilot's people). Undecidable:
+        not first (read in order after them, never skipped)."""
+        try:
+            if self._is_owner(reader):
+                return True
+            state = self._apa_state()
+            if state is None:
+                return False
+            from operating import autopilot_write as aw
+            from operating.proactive_commitments import owner_ids
+            from .autopilot_area import _principals
+            ids = {i.lower() for i in owner_ids(_principals(reader))}
+            return any(row["on"] and person in ids
+                       for (person, _flow), row in aw.opt_ins(
+                           self._apa_journal(state).rows()).items())
+        except Exception:  # noqa: BLE001 - undecided: read in order, after the pilot's people
+            logging.getLogger("operator_api.warm").info("pilot reader not decided")
+            return False
 
     def _screens_ahead(self, reader: Reader, screens: Sequence[Any] = SCREENS_AHEAD,
                        until: Optional[float] = None, later: bool = False) -> int:
@@ -641,14 +654,6 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             if name == "_home_served" and page_sql.alerts_on():
                 name = "home"   # the SQL alerts' Home, not the old engine's
             named = args.pop() if args and isinstance(args[-1], dict) else {}
-            if name == "weekly_review" and self._weekly_cut_recently(reader):
-                # cut by its budget at every read (11-19: the first session's top Postgres
-                # wait after each restart); its last good page stays on disk 12 h and
-                # opens the first visit
-                log.info("warm screen weekly_review skipped: cut by its budget lately")
-                continue
-            if name == "weekly_review":
-                named = {**named, "ahead": True}   # a cut read marks itself (WeeklyCuts)
             if name in AHEAD_LATER:
                 named = {**named, "later": later}
             began = time.monotonic()
@@ -718,42 +723,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         except Exception:  # noqa: BLE001 - a warm-up never fails a request
             pass
 
-    def _front_read(self, request: m.AskRequest) -> Any:
-        """The front door's reading of the question (``operating.front_door``), or None:
-        none configured, a did-you-mean pick, or no reading in time."""
-        if self.front_door is None or request.object_id:
-            return None
-        earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
-                   and turn.text.strip()]
-        try:
-            return self.front_door.read(request.question, earlier)
-        except Exception:  # noqa: BLE001 - the question then routes as typed
-            return None
 
-    def _record_read(self, request: m.AskRequest) -> Any:
-        """The front door's reading of a question asked about one record (``object_id``:
-        a record's page, a did-you-mean pick), which ``_front_read`` leaves unread so the
-        question is never rewritten away from its record: read here only to route it to a
-        ready answer (``read_shortcut``: a customer's profit), a pick by the question it
-        answers (``picked_question``). Only a customer's: no other record has a ready answer
-        (``read_shortcut``), so no other pays for the read; and only a question (or its
-        conversation) worded about profit (``profit_worded``): the read is the only route
-        there is, so any other question on a customer's page goes straight on to the fast
-        path and the agent instead of waiting up to ``QUEUE_SECONDS`` + ``SECONDS`` for a
-        reading that could route it nowhere (di02 review, 2026-11-15). None: no customer
-        record, not profit-worded, no front door, no reading in time."""
-        if self.front_door is None or not request.object_id \
-                or not customer_object(request.object_id):
-            return None
-        question = picked_question(request) or request.question
-        earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
-                   and turn.text.strip() and turn.text.strip() != question]
-        if not profit_worded(question, *earlier):
-            return None
-        try:
-            return self.front_door.read(question, earlier)
-        except Exception:  # noqa: BLE001 - the fast path and the agent answer
-            return None
 
     @staticmethod
     def _objective(request: m.AskRequest) -> str:
@@ -801,243 +771,27 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
         from . import simple_ask
-        files = self._attached(request, reader) if simple_ask.enabled() else None
-        if simple_ask.enabled() and self.agent_ask is not None \
-                and self.agent_ask.serves(reader.session):
-            # the simple Ask: the model with plx.sql and plx.search, its figures bound to
-            # what they returned (``operator_api.simple_ask``), with the page, record or
-            # email asked on, a reply to a question asked back and the person's attached
-            # files; a line asking for something done never reaches it (the app routes it
-            # to the instruction engine first), an attached image is shown to the model
-            # with the task (a kept session's turn or one run); the path below is the
-            # rollback (PLX_ASK_SIMPLE unset or 0)
-            answer = yield from simple_ask.ask(self, reader, request, conversation, ms,
-                                               files=files)
-            yield from simple_ask.finish(self, reader, request, answer, conversation, ms,
-                                         nobodys)
-            return
-        if request.clarified is not None:
-            # a reply to the question asked back: that question, as the person meant it
-            request = self._clarified(reader, request)
-        answer = None
-        asked = request
-        # "open the second one", "who sent that email?": the previous answer's records in
-        # this conversation, never a name to look up (``operating.conversation_refs``)
-        answer, request = self._referred(reader, request, conversation, ms)
-        settled = answer is not None
-        pointed = settled or request is not asked   # its own records are no new list
-        # the agent's host starts while the question is read and its records resolved
-        if not settled:
-            self._prewarm_agent(reader)
-        # the question's records are looked up while the front door reads it, unless that
-        # look-up would hold Ask workers from a ready answer the question is worded for
-        # (``_ready_first``)
-        early = None if settled or self._ready_first(request) \
-            else self._early_find(reader, request)
-        mark = ms()
-        reading = None if settled else self._front_read(request)
-        phases["front_door"] = ms() - mark
-        if reading is not None:
-            # the model's reading of a messy question routes it; the person's own words
-            # stay the answer's question
-            yield "status", m.StatusEvent(step="understanding", message=reading.status,
-                                          elapsed_ms=ms())
-            if reading.changed:
-                request = request.model_copy(update={"question": reading.rewrite})
-        # One question asked back when the answer turns on a choice the person has not
-        # made (``operating.clarify``), or the reading assumed, said in one line; a reply
-        # to that question continues it and is never asked back again.
-        assumed: Optional[m.Assumption] = None
-        clarify: Optional[m.Clarify] = None
-        if request.clarified is None and reading is not None and reading.open is not None \
-                and not labour_hours.serves(request.question):
-            # (labour hours never reach a model: no record of them is offered to one)
-            decided = self._clarify(reader, request, reading, early, conversation)
-            if decided is not None:
-                clarify, assumed, request = decided
-        # A did-you-mean pick keeps the question it answers (its intent) with the record
-        # picked as ``object_id``.
-        intent = picked_question(request) or request.question
-        # only the model's reading picks a ready answer (a question about one record: its
-        # reading for the route alone); without one the fast path and the agent answer
-        routing = reading if reading is not None or settled else self._record_read(request)
-        shortcut = None if routing is None else read_shortcut(request, routing)
-        # What answers it (``operating.general_answer``): PLX's records (the evidence path
-        # below, unchanged), general knowledge, or both; fail closed to the records.
-        labour = labour_hours.serves(intent)
-        scope = "company" if labour else general_answer.scope_of(
-            reading, request.question, object_id=request.object_id, source=request.source,
-            picked=picked_question(request) is not None)
-        earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
-                   and turn.text.strip()]
-        # the person's own files (``operating.ask_attachments``), read for this question
+        if self.agent_ask is None or not self.agent_ask.serves(reader.session):
+            # one Ask path (owner 11-22): the model with the reader's tools; a server
+            # without it (no agent configured, or a reader it cannot serve) says so
+            raise errors.ASK_NO_AGENT
+        # the simple Ask: the model with plx.sql, plx.search and plx.open, its figures
+        # bound to what they returned (``operator_api.simple_ask``), with the page, record
+        # or email asked on, a reply to a question asked back and the person's attached
+        # files; a line the model hands to the drafting desk (``plx.hand_off``) is
+        # answered there by the app, an attached image is shown to the model with the
+        # task (a kept session's turn or one run)
         files = self._attached(request, reader)
-        if files is not None and files.read:
-            yield "status", m.StatusEvent(step="reading", message="Reading your attachment"
-                                          + ("s" if len(files.read) > 1 else ""),
-                                          elapsed_ms=ms())
-        heading = general_answer.ATTACHMENT_HEADING if files is not None and files.read \
-            else general_answer.HEADING
-        # a mixed question's general part is written while the records answer the rest;
-        # with attachments, the part read from them (with general knowledge) is that part
-        general_part = self._general_start(request.question, earlier, "mixed",
-                                           files=files, person=_person(reader)) \
-            if not settled and (scope == "mixed" or (files is not None and files.read
-                                                     and scope != "general")) else None
-        if settled:
-            pass   # the pointer's own answer (or why it points at nothing)
-        elif clarify is not None:
-            answer = m.AnswerPayload(
-                answer_id=secrets.token_hex(12), question=request.question,
-                outcome="partial", direct_answer=clarify.question, hidden=m.Hidden(count=0),
-                freshness=m.Freshness(), clarify=clarify, conversation_id=conversation,
-                latency_ms=ms())
-            general_part = None
-        elif labour:
-            # Labour hours are answered from the hr-marked aggregates alone, for a reader
-            # holding hr or ops-management; never by the agent, so no time sheet reaches a
-            # model.
-            answer = self._labour_ask(reader, request, conversation, ms, intent)
-        elif scope == "general":
-            # no record answers it: general knowledge, marked so, never a company fact
-            # (None: the model gave nothing, and the evidence path answers as before)
-            answer = yield from self._general_ask(request, conversation, ms, earlier,
-                                                  files=files, person=_person(reader))
-            scope = "general" if answer is not None else "company"
-        elif shortcut == "late_list":
-            answer = yield from self._late_ask(reader, request, conversation, ms)
-        elif shortcut == "at_risk":
-            # customer orders a late PO holds up, from the reader's own chain findings;
-            # an order or customer with none goes on (the agent walks its materials)
-            answer = yield from self._at_risk_ask(reader, request, conversation, ms)
-        elif shortcut == "profit":
-            # A customer the question names (or the customer record it is asked about),
-            # answered from checked order margins; a question naming no readable customer
-            # goes on to the agent path.
-            answer = yield from self._profit_ask(reader, request, conversation, ms,
-                                                 question=intent)
-        if answer is None and not request.object_id and (
-                reading is None or reading.route == "lookup"):
-            # The most common questions about one record, answered by code's own reads
-            # through the same answer gate (``operating.fast_answer``); anything it does
-            # not settle goes on to the agent.
-            mark = ms()
-            answer = yield from self._fast_ask(reader, request, conversation, ms)
-            phases["fast"] = ms() - mark
-        if answer is not None:
-            pass
-        elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
-            answer = yield from self._agent_ask(reader, request, conversation, ms,
-                                                route=reading.route if reading else None,
-                                                early=early, phases=phases)
-        else:
-            answer = yield from self._box_ask(reader, request, conversation, ms)
-            if self.agent_missing is not None:
-                # the agent path this server was started with cannot run (its claude CLI
-                # is missing, ...): the box's answer is the quicker one, and says so
-                answer = quicker_answer(answer, UNAVAILABLE_WORDS["not_started"])
-        # A question about PLX's own records that they could not answer says so (the
-        # answer's own words: what was missing and why); no general how-to follows it.
-        # General knowledge answers only a general question or a mixed one's general part.
-        if general_part is not None:
-            mark = ms()
-            answer = self._with_general(answer, general_part, heading=heading)
-            phases["general_wait"] = ms() - mark
-        if files is not None:
-            answer = answer.model_copy(update={"attachments": [
-                m.AskAttachmentNote(**f.meta) for f in files.files]})
-        answer = presentation.polished(answer)   # no codes or escapes reach the reader
-        if request is not asked:
-            answer.question = asked.question     # the person's own words
-            request = asked
-        # a question about a period the data does not reach yet says so: one short note
-        # after the answer (never in place of its start), naming a lagging source only
-        # where it bears on the answer, and once per conversation
-        if assumed is not None:
-            answer.assumption = assumed
-        notice = None if clarify is not None else presentation.period_notice(
-            intent, answer.freshness, self.clock(),
-            cited={s.system for f in answer.facts for s in f.sources},
-            settled=answer.outcome == "answered")
-        if notice and scope != "general" and notice not in answer.direct_answer \
-                and (nobodys or self._first_notice(reader.key, conversation, notice)):
-            answer.direct_answer = f"{answer.direct_answer} {notice}".strip()
-        # what to ask next: from the answer's own records and gaps, as this reader sees them
-        if clarify is None:
-            answer.follow_ups = presentation.follow_ups(request.question, answer)
-            answer.proposals = proposals.for_answer(answer)   # drafts only: never sent
-        cited = {s.handle: s for f in answer.facts for s in f.sources}
-        if cited:
-            yield "sources", m.SourcesEvent(sources=list(cited.values()))
-        yield "status", m.StatusEvent(step="answering", message="Writing the answer",
-                                      elapsed_ms=ms())
-        for word in re.findall(r"\S+\s*", answer.direct_answer):
-            yield "token", m.TokenEvent(text=word)
-        answer.latency_ms = ms()
-        logging.getLogger("operator_api.ask").info(json.dumps({"ask_phases": {
-            **phases, "total": answer.latency_ms, "outcome": answer.outcome}}))
-        answer.access_label = access_label(reader.session)
-        if answer.access_label:
-            self.journal_full_read(reader, "/api/ask")
-        if nobodys:
-            # the Ask canary's service session (``operating.ask_canary``): answered, and
-            # nothing kept for the reader its claims name: no answer to rate or continue,
-            # no recent question, none of their pages made stale
+        answer = yield from simple_ask.ask(self, reader, request, conversation, ms,
+                                           files=files)
+        if answer.instruction is not None and answer.instruction.status == "route":
+            # handed to the drafting desk (``plx.hand_off``): the app answers it there;
+            # this answer is neither polished, streamed nor kept
             yield "answer", answer
             return
-        from .feedback import served_markings
-        markings = served_markings(self, reader)
-        with self._lock:
-            self._answers[answer.answer_id] = {"reader": reader.key,
-                                               "question": request.question,
-                                               "at": _iso_now(),
-                                               **_answer_kept(answer),
-                                               "markings": markings,
-                                               "pointed": pointed}
-            if clarify is not None or assumed is not None:
-                # what a reply to the question (or another reading) continues
-                self._answers[answer.answer_id]["clarify"] = {
-                    # the person's own words, never the rewrite or the assumed reading
-                    "question": asked.question,
-                    "context": asked.context.model_dump() if asked.context else None,
-                    "asked": clarify.question if clarify is not None else "",
-                    "options": [{"label": o.label, "object_id": o.object.object_id
-                                 if o.object else None} for o in (
-                        clarify or assumed).options]}   # type: ignore[union-attr]
-            while len(self._answers) > MAX_ANSWERS_KEPT:
-                self._answers.pop(next(iter(self._answers)))
-            recent = self._recent.setdefault(reader.key, [])
-            recent.insert(0, m.RecentQuestion(question=request.question, asked_at=_iso_now(),
-                                              answer_id=answer.answer_id,
-                                              conversation_id=conversation))
-            del recent[10:]
-        self.reader_wrote(reader)   # Home lists the question now
-        yield "answer", answer
+        yield from simple_ask.finish(self, reader, request, answer, conversation, ms,
+                                     nobodys)
 
-    def _general_start(self, question: str, earlier: Sequence[str], mode: str, *,
-                       files: Optional[Any] = None, person: Optional[str] = None
-                       ) -> "Future[Optional[general_answer.GeneralAnswer]]":
-        """``general_answer.answer`` in ``mode`` on its own thread (the model sees only the
-        question and the person's earlier questions); its future, never raising."""
-        call = self.general_call or functools.partial(
-            general_answer.claude_call,
-            binary=getattr(self.agent_ask, "claude_bin", None) or "claude")
-        future: "Future[Optional[general_answer.GeneralAnswer]]" = Future()
-
-        def run() -> None:
-            try:
-                got = general_answer.answer(
-                    question, earlier, mode=mode, call=call, person=person,
-                    attachments=files.read if files is not None else ())
-                if got is not None and files is not None and files.read:
-                    # the model's words about a file are cleaned as the file was
-                    guard = self.people_guard()
-                    got = dataclasses.replace(got, text=_clean_text(got.text, guard))
-                future.set_result(got)
-            except Exception:  # noqa: BLE001 - no general part, never a failed Ask
-                future.set_result(None)
-        threading.Thread(target=run, name="ask-general", daemon=True).start()
-        return future
 
     def at_risk_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int]
                     ) -> Callable[[Any], Optional[m.AnswerPayload]]:
@@ -1055,128 +809,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 return at_risk_answer(self, view, request, inbox, conversation, ms)
         return job
 
-    def _earlier_records(self, reader: Reader, conversation: Optional[str]
-                         ) -> list[dict[str, str]]:
-        """The records (object_id, type, label) the reader's own latest answer in this
-        conversation showed them, in its order (an answer to a follow-up that pointed at
-        records is skipped: "the third one" still counts the list); [] with no such answer
-        (another reader's answer, another conversation, none kept since a restart)."""
-        if not conversation:
-            return []
-        with self._lock:
-            kept = [k for k in self._answers.values() if k.get("reader") == reader.key
-                    and k.get("conversation_id") == conversation and not k.get("pointed")]
-        if not kept:
-            return []
-        return [{"object_id": str(s.get("object_id")), "type": str(s.get("type") or ""),
-                 "label": str(s.get("label") or "")} for s in kept[-1].get("subjects") or ()
-                if isinstance(s, Mapping) and isinstance(s.get("object_id"), str)]
 
-    def _referred(self, reader: Reader, request: m.AskRequest, conversation: str,
-                  ms: Callable[[], int]) -> tuple[Optional[m.AnswerPayload], m.AskRequest]:
-        """A follow-up pointing at the previous answer's records (``conversation_refs``):
-        (its answer, request) when it only asks to see them or cannot be settled (the one
-        line why); (None, the request about those records) when it asks something of
-        them; (None, request) when it points at nothing. Each record picked is read again
-        as this reader now (``visible_objects``): one they may no longer read is never
-        named; none left, it says it cannot tell."""
-        from operating import conversation_refs as refs
-        if request.object_id or request.source or request.clarified is not None \
-                or request.attachments or request.context is not None:
-            return None, request   # "these" is the record, file or page asked about
-        earlier = self._earlier_records(reader, request.conversation_id)
-        picked = refs.pick(request.question, earlier)
-        if picked is None:
-            return None, request
-        ref, got = picked
 
-        def said(text: str, outcome: str, subjects: Sequence[m.ObjectRef] = ()
-                 ) -> tuple[m.AnswerPayload, m.AskRequest]:
-            return m.AnswerPayload(
-                answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
-                direct_answer=text, hidden=m.Hidden(count=0), freshness=m.Freshness(),
-                subjects=list(subjects), conversation_id=conversation,
-                latency_ms=ms()), request
-
-        if not got.records:
-            return said(refs.cannot(ref, got.why), "abstained")
-        ids = [r["object_id"] for r in got.records]
-
-        def job(view: Any) -> frozenset[str]:
-            visible = getattr(view.access, "visible_objects", None)
-            if not callable(visible):
-                return frozenset()
-            with view._request():
-                seen = visible(ids)
-            return frozenset(seen) if isinstance(seen, (set, frozenset)) else frozenset()
-        try:
-            seen = self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 - undecided: nothing is named
-            seen = frozenset()
-        records = [r for r in got.records if r["object_id"] in seen]
-        if not records:
-            return said(refs.cannot(ref, "you can't open the records it pointed to now"),
-                        "abstained")
-        if refs.opens_only(request.question, ref):
-            subjects = [m.ObjectRef(object_id=r["object_id"], type=r["type"] or "Object",
-                                    label=r["label"][:200] or r["type"] or "Record",
-                                    open_url=object_url(r["type"] or "Object", r["object_id"]))
-                        for r in records]
-            return said("Here it is: linked below." if len(records) == 1 else
-                        "Here they are: linked below.", "answered", subjects)
-        update: dict[str, Any] = {"question": refs.rewritten(
-            request.question, ref, [r["label"] or r["type"] for r in records])}
-        if len(records) == 1:
-            update["object_id"] = records[0]["object_id"]   # asked about that record
-        return None, request.model_copy(update=update)
-
-    def _fast_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
-                  ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
-        """A question ``operating.fast_answer`` recognises, answered by its reads as this
-        reader through the session's answer gate, and shaped as the agent's gated reply is
-        (``agent_answer``: the passed claims as facts, each source decided for this reader
-        again); several records of the name or number asked are a did-you-mean. None:
-        not a fast question, or one it declined (the agent answers)."""
-        from operating import fast_answer
-        from operating.answer_contract import parse_answer
-        from .agent_ask import AskRun
-
-        if fast_off(os.environ) or not fast_answer.serves(request.question):
-            return None
-        yield "status", m.StatusEvent(step="reading",
-                                      message=fast_answer.step_label(request.question),
-                                      elapsed_ms=ms())
-
-        def job(view: Any) -> Optional[m.AnswerPayload]:
-            access = view.access
-            if not all(hasattr(access, name) for name in ("host", "runtime", "agent_server")):
-                return None   # a reader with no host session (a fixture console)
-            reads = fast_answer.Reads(access.host, access.runtime, access.actor,
-                                      access.agent_server())
-            ran = fast_answer.answer(request.question, reads)
-            if ran is None:
-                return None
-            with view._request():
-                if ran.found.get("ambiguous"):
-                    choices, _promoted = business_choices(ran.found["ambiguous"])
-                    if len(choices) < 2:
-                        return None
-                    return m.AnswerPayload(
-                        answer_id=secrets.token_hex(12), question=request.question,
-                        outcome="partial", direct_answer="That name or number matches "
-                        "more than one record. Which did you mean?",
-                        hidden=m.Hidden(count=0, by_owner=[], message=None),
-                        freshness=self.freshness(_base(view)), did_you_mean=choices[:8],
-                        conversation_id=conversation, latency_ms=ms())
-                answer, _error = parse_answer(ran.final_text)
-                run = AskRun(final_text=ran.final_text, answer=answer, events=ran.events,
-                             decision=None, stopped=False, seconds=ran.seconds,
-                             final_reply=ran.reply)
-                return agent_answer(self, view, request, run, ran.found, conversation, ms)
-        try:
-            return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
-        except (TimeoutError, PermissionError):
-            return None   # the agent answers
 
     def profit_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int], *,
                    question: Optional[str] = None,
@@ -1305,348 +939,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 return profit_answer(self, view, request, profit, conversation, ms)
         return job
 
-    def _ready_first(self, request: m.AskRequest) -> bool:
-        """Whether the question's look-up ahead (``_early_find``) is left out: the question
-        is worded as one a ready answer that reads on the Ask pool itself takes (``profit``,
-        ``at_risk``), should the front door's reading route it there (only that reading
-        routes, ``read_shortcut``; this only spares the pool). With one worker the
-        look-up, started first, held it and the ready answer's reads queued behind it
-        (2026-11-13: a margin Ask's 56 s look-up ran before its 164 s profit job); with two
-        it held the worker the ready answer's own reads spread over (``fan_out``: 11-14, a
-        344 s look-up beside a 343 s profit job). The look-up is only ever used when the
-        ready answer gives none: the agent path then looks up its own, and a question
-        asked back lists its choices by kind (``_clarify``)."""
-        try:
-            intent = picked_question(request) or request.question
-            if not request.object_id and (orders_at_risk_question(request.question)
-                                          or late_for_target(request.question)):
-                return True
-            return bool((profit_question(intent) or order_margin_question(intent))
-                        and (not request.object_id or customer_object(request.object_id)))
-        except Exception:  # noqa: BLE001 - the look-up ahead, as before
-            return False
 
-    def _early_find(self, reader: Reader, request: m.AskRequest
-                    ) -> Optional[tuple[str, Future, dict[str, Any]]]:
-        """The records the question names (``objective_runner.find_roots`` as the reader),
-        looked up while the front door reads the question: (the objective looked up, its
-        future, the understanding it gives once done). ``_agent_ask`` takes it when the
-        objective it asks is the same (the question not rewritten), else looks up its
-        own. None: no agent path for this reader."""
-        from operating import objective_runner
-        agent = self.agent_ask
-        try:
-            if agent is None or not agent.serves(reader.session):
-                return None
-            objective = self._objective(request)
-        except Exception:  # noqa: BLE001 - the agent path looks up its own
-            return None
-        told: dict[str, Any] = {}
 
-        def understand(view: Any) -> Mapping[str, Any]:
-            with view._request():
-                found = objective_runner.find_roots(
-                    objective, lambda arguments: view._call("plx.find", arguments))
-                told["understanding"] = self._understanding(view, request, found)
-            return found
-        return objective, submit(self.ask_jobs, self.ask_stopped, reader, understand, 1), told
-
-    def _agent_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
-                   ms: Callable[[], int], route: Optional[str] = None,
-                   early: Optional[tuple[str, Future, dict[str, Any]]] = None,
-                   phases: Optional[dict[str, int]] = None
-                   ) -> Iterator[tuple[str, Any]]:
-        """The scoreboard's agent path as this reader (``agent_ask.AgentAsk``): its tool
-        calls stream as steps; the answer is what the session's answer gate passed.
-        ``early``: the question's records looked up ahead (``_early_find``).
-        ``phases``: where its time went, in ms (``ask``'s ``ask_phases`` line)."""
-        from operating import objective_runner
-        from operating.agent_session import ANSWER_GATE_TOOL
-
-        events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
-        phases = {} if phases is None else phases
-        question = self._objective(request)
-        if request.object_id:
-            question = (f"{question}\n(The question is about the record with object id "
-                        f"{request.object_id}.)")
-
-        def understand(view: Any) -> Mapping[str, Any]:
-            with view._request():
-                found = objective_runner.find_roots(
-                    self._objective(request),
-                    lambda arguments: view._call("plx.find", arguments))
-                events.put(("understanding", self._understanding(view, request, found)))
-            return found
-        if early is not None and early[0] == self._objective(request):
-            found_future, told = early[1], early[2]
-
-            def understood(_done: Future) -> None:
-                if "understanding" in told:
-                    events.put(("understanding", told["understanding"]))
-            found_future.add_done_callback(understood)
-        else:
-            found_future = submit(self.ask_jobs, self.ask_stopped, reader, understand, 1)
-
-        said: list[str] = []
-
-        def status(step: str, message: str) -> None:
-            if said and said[-1] == message:
-                return   # one line per step: the same step again is not repeated
-            said.append(message)
-            events.put(("status", m.StatusEvent(step=step, message=message, elapsed_ms=ms())))
-
-        def emit(kind: str, data: Mapping[str, Any]) -> None:
-            """The session's tool events as plain-words steps (``ask_progress``): never
-            a tool name, id or argument; a source named only from a result the reader's
-            session was served."""
-            if kind == "call" and data.get("tool") == ANSWER_GATE_TOOL:
-                status("checking", ask_progress.GATE_STEP)
-            elif kind == "call":
-                status("reading", ask_progress.call_step(str(data.get("tool"))))
-            elif kind == "result" and isinstance(data.get("step"), str):
-                status("reading", data["step"])
-            elif kind == "gate" and data.get("outcome") == "answered":
-                if data.get("verdict") and data.get("citations") and not pre.get("told"):
-                    pre["told"] = True
-                    events.put(("verdict?", (data["verdict"], list(data["citations"]))))
-                status("checking", ask_progress.GATE_PASSED)
-            elif kind == "gate" and data.get("outcome") == "repair":
-                status("checking", ask_progress.GATE_REPAIR)
-            elif kind == "gate" and data.get("outcome") == "continue":
-                status("reading", ask_progress.GATE_CONTINUE)
-
-        session: Future = Future()
-        pre: dict[str, Any] = {}
-
-        def source_line() -> str:
-            """The document the question is asked about (``request.source``): the agent
-            reads it first, whole, through its own gates (a document this reader may not
-            read is refused there and said so), whatever the records read before found."""
-            from operating.answer_gate import HANDLE
-            if not request.source or not HANDLE.fullmatch(request.source):
-                return ""
-            return ("\n\nThe question is asked about the document " + request.source
-                    + ": read it first, whole (plx.read, paging with text_offset), resolve "
-                    "the codes and names in it (plx.find; plx.query from codes for many), "
-                    "and answer about it.")
-
-        def prepare() -> Optional[str]:
-            """Before the session (``operator_api.preread``): which record each identifier
-            names, and the evidence the answer's trail shows (a purchase order's trail or
-            an order's materials walk), read once as this reader and handed to the agent as
-            a tool output it cites from, so its reply and the trail agree. None: the
-            question names records that only share a number, so the person picks one
-            first (no session)."""
-            from . import preread, trail as trails
-            mark = ms()
-            try:
-                found = found_future.result(timeout=READ_TIMEOUT_SECONDS)
-            except Exception:  # noqa: BLE001 - no roots: the agent finds its own
-                return ""
-            finally:
-                phases["find_wait"] = ms() - mark
-
-            def read(view: Any) -> tuple[dict, list, Optional[m.EvidenceTrail], str]:
-                with view._request():
-                    call = lambda name, args: view._call(name, dict(args))  # noqa: E731
-                    resolved, several = preread.resolve(call, found, request.object_id,
-                                                        question=request.question)
-                    if several:
-                        # a number the record asked about (a pick, a page) does not settle
-                        # is asked back again, never dropped
-                        return resolved, several, None, ""
-                    roots = list(resolved.get("roots") or ())
-                    late = named_late_pos(self, view, request.question, resolved)
-                    starts = trails.materials_starts(request.question, roots + (
-                        [{"object_id": request.object_id}] if request.object_id else []),
-                        list(resolved.get("ambiguous") or ()), late)
-                    names_po = late or any(
-                        str(r.get("object_type") or r.get("object_id")).startswith(
-                            "PurchaseOrder") for r in roots)
-                    if not starts and not names_po:
-                        return resolved, [], None, preread.brief(
-                            None, [r for r in roots if r.get("found_by") in (
-                                "identifier", "resolver")], call,
-                            entities=resolved.get("entities") or (),
-                        unfound=resolved.get("unfound") or ())
-                    status("reading", "Reading the purchase orders behind the order's "
-                                      "materials" if starts else
-                           "Reading the purchase order's trail: receipts, confirmations "
-                           "and mail")
-                    got = answer_trail(self, view, request, resolved, late, [])
-                    if got is None or got.kind not in ("materials", "purchase_order"):
-                        return resolved, [], None, ""
-                    return resolved, [], got, preread.brief(
-                        got, [r for r in roots if r.get("found_by") in (
-                            "identifier", "resolver")], call,
-                        entities=resolved.get("entities") or (),
-                        unfound=resolved.get("unfound") or ())
-            mark = ms()
-            try:
-                resolved, several, got, told = submit(
-                    self.ask_jobs, self.ask_stopped, reader, read, 1).result(
-                    timeout=trails.MATERIALS_SECONDS + READ_TIMEOUT_SECONDS + 30)
-            except Exception as error:  # noqa: BLE001 - the agent answers without it
-                # counted and logged by type only (a message may carry a value)
-                _count_preread_failure(error)
-                return ""
-            finally:
-                phases["preread"] = ms() - mark
-            pre["found"] = resolved
-            if isinstance(found.get("entities"), list):
-                # the question's things as the front door resolved them: the session's
-                # answer gate takes them, never searching for them at the submission
-                pre["entities"] = found["entities"]
-            if several:
-                pre["several"] = several
-                return None
-            pre["trail"] = got
-            return told
-
-        cancel = threading.Event()   # set when nobody waits for this answer any more
-
-        def run_session() -> None:
-            try:
-                brief = prepare()
-                if brief is None:
-                    session.set_result(None)   # the person picks the record first
-                    return
-                brief += source_line()
-                def queued(ahead: int, waited: float) -> None:
-                    status("searching", "Waiting for a free agent: "
-                           + (f"{ahead} question{'s' if ahead != 1 else ''} ahead of yours"
-                              if ahead else "yours is next")
-                           + (f", {int(waited)} s so far" if waited >= 1 else ""))
-
-                # queued, never refused, within the answer's own time budget
-                mark = ms()
-                if not self._sessions.acquire(timeout=AGENT_QUEUE_SECONDS, report=queued):
-                    raise errors.ASK_BUSY
-                phases["session_queue"] = ms() - mark
-                try:
-                    status("searching", "Finding the records your question is about")
-                    roots = [root for root in (pre.get("found") or {}).get("roots") or ()
-                             if isinstance(root, Mapping)
-                             and root.get("found_by") in ("identifier", "resolver")]
-                    if request.object_id:
-                        roots.insert(0, {"object_id": request.object_id})
-                    looked = looked_up(pre.get("found"))
-                    mark = ms()
-                    remembered = self._memory_turn(reader, request, conversation, roots)
-                    phases["memory"] = ms() - mark
-                    mark = ms()
-                    session.set_result(self.agent_ask.run(
-                        reader.session, question, emit, context=brief,
-                        **({"route": route} if route else {}),
-                        **({"roots": roots} if roots else {}),
-                        **({"entities": pre["entities"]} if "entities" in pre else {}),
-                        **({"looked": looked} if looked is not None else {}),
-                        **({"memory": remembered} if remembered is not None else {}),
-                        cancel=cancel))
-                    phases["agent"] = ms() - mark
-                finally:
-                    self._sessions.release()
-            except BaseException as error:  # noqa: BLE001 - handed to the route
-                session.set_exception(error)
-            finally:
-                events.put(("done", None))
-        for step in ask_progress.finding_steps(request.question):
-            # the reader's own identifier, as their question writes it
-            yield "status", m.StatusEvent(step="searching", message=step, elapsed_ms=ms())
-        threading.Thread(target=run_session, name="app-ask-session", daemon=True).start()
-        for name, payload in self._drain(events, session,
-                                         AGENT_QUEUE_SECONDS + self.agent_ask.seconds + 120,
-                                         cancel):
-            if name == "verdict?":
-                shown = self._early_verdict(reader, request, pre, *payload)
-                if shown:
-                    yield "verdict", m.VerdictEvent(text=shown)
-                continue
-            yield name, payload
-        if pre.get("several"):
-            from . import preread
-
-            def pick(view: Any) -> m.AnswerPayload:
-                with view._request():
-                    return preread.choices_answer(
-                        lambda name, args: view._call(name, dict(args)), request,
-                        pre["several"], conversation=conversation,
-                        freshness=self.freshness(_base(view)), object_url=object_url,
-                        latency_ms=ms(), answer_id=secrets.token_hex(12))
-            return submit(self.ask_jobs, self.ask_stopped, reader, pick, 0).result(
-                timeout=READ_TIMEOUT_SECONDS)
-        try:
-            ran = session.result()
-        except errors.UserFacing:
-            raise
-        except Exception as error:  # noqa: BLE001 - the host did not start: the quicker answer
-            # the reason in the server log (its type and code only, never a value)
-            logging.getLogger("operator_api.ask").warning(json.dumps(
-                {"agent_not_started": type(error).__name__,
-                 "code": next((str(c) for c in (getattr(error, "code", None),
-                                                 *getattr(error, "args", ())[:1])
-                               if isinstance(c, str) and re.fullmatch(r"[a-z_]{1,60}", c)),
-                              None)}))
-            yield "status", m.StatusEvent(
-                step="searching", message="The full check could not start; giving the "
-                                          "quicker answer", elapsed_ms=ms())
-            answer = yield from self._box_ask(reader, request, conversation, ms)
-            return quicker_answer(answer, UNAVAILABLE_WORDS["error"])
-        try:
-            found = pre.get("found") or found_future.result(timeout=READ_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 - the subjects are a hint; the answer stands
-            found = {}
-        memory = getattr(self, "memory", None)
-        if memory is not None and ran is not None:
-            # the tools this turn used, in the reader's log (names and arguments only)
-            memory.observe("tools", reader, conversation, secrets.token_hex(6), [
-                {"name": e.get("name"), "arguments": e.get("arguments")}
-                for e in getattr(ran, "events", None) or ()
-                if isinstance(e, Mapping) and e.get("type") == "tool_call"])
-        while not events.empty():
-            name, payload = events.get()
-            if name == "understanding":
-                yield name, payload
-
-        def shape(view: Any, read_trail: bool = True) -> m.AnswerPayload:
-            with view._request():
-                return agent_answer(self, view, request, ran, found, conversation, ms,
-                                    trail=pre.get("trail"), read_trail=read_trail)
-        mark = ms()
-        future = submit(self.ask_jobs, self.ask_stopped, reader, shape, 0)
-        try:
-            return future.result(timeout=SHAPE_SECONDS)
-        except FutureTimeout:
-            pass
-        finally:
-            phases["shape"] = ms() - mark
-        # The agent's reply is written and gated; what outran its time is the answer's
-        # trail (one store statement may run to its own limit). The reply is never lost
-        # to it as "busy" (the person asking again ran the whole agent again): the same
-        # answer is shaped without reading a trail, and whichever comes first is given,
-        # the one with the trail when both are ready.
-        logging.getLogger("operator_api.ask").info(json.dumps({"trail": "left_out_slow"}))
-        bare = submit(self.ask_jobs, self.ask_stopped, reader,
-                      lambda view: shape(view, read_trail=False), 0)
-        # (with one Ask worker the bare shaping waits behind the slow one, which ends at
-        # its statement's own limit: the reply is waited for that long, never less)
-        until = time.monotonic() + SHAPE_WAIT_FACTOR * SHAPE_SECONDS
-        waiting = {future, bare}
-        while waiting:
-            # the first shaping ready that did not fail is given (one that failed while
-            # the other still runs waits for the other)
-            done, waiting = wait_futures(waiting, timeout=max(0.0, until - time.monotonic()),
-                                         return_when=FIRST_COMPLETED)
-            if not done:
-                break
-            for ready in (future, bare):
-                if ready in done and ready.exception() is None:
-                    bare.cancel()
-                    return ready.result()
-        for ready in (future, bare):
-            if ready.done() and not ready.cancelled():
-                return ready.result()   # both failed: its own error, as before
-        raise TimeoutError("workbench_busy")
 
     def _payload(self, view: Any, request: m.AskRequest, out: Mapping[str, Any],
                  ran: Mapping[str, Any], conversation: str,
@@ -1984,7 +1278,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             objects=shown_objects(got[1]),
             page=(time.time() - (time.monotonic() - got[0]), shown_objects(got[1]))),
             ACCESS_WAIT_SECONDS)
-        if now is None or now[0] != got[2] or now[1] is not True:
+        if now is None or not same_access(now[0], got[2]) or now[1] is not True:
             return None
         return got[1].model_copy(deep=True)
 
@@ -1997,15 +1291,27 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         reader's access state now is the one it was read under and every source it shows
         still opens for them (``before``, the same check a stale page passes); None
         otherwise (the read decides, as before)."""
+        miss = _MISS_LOG.info if _MISS_LOG.isEnabledFor(logging.INFO) else None
+        screen = key[2][0] if isinstance(key[2], tuple) and key[2] else key[2]
         if inputs is None or held is None or time.time() - held[0] > LAST_GOOD_SECONDS:
-            return None   # no inputs to judge it by: the read decides, as before
+            if miss is not None:   # no inputs to judge it by: the read decides, as before
+                miss("kept page not served: %s %s", screen, "none_kept" if held is None
+                     else "no_inputs" if inputs is None else "older_than_last_good")
+            return None
         with self._lock:
             read_under = self._snap_inputs().get(key)
         if read_under is not None and read_under[1] != inputs[1]:
-            return None   # the reader wrote since (marked seen, asked, acted): read now
+            if miss is not None:   # the reader wrote since (marked seen, asked, acted)
+                miss("kept page not served: %s reader_wrote_since", screen)
+            return None
         current = read_under == inputs and time.time() - held[0] < SNAPSHOT_FRESH_SECONDS
         now = self._access_result(before, ACCESS_WAIT_SECONDS)
-        if now is None or now[0] != held[2] or now[1] is not True:
+        if now is None or not same_access(now[0], held[2]) or now[1] is not True:
+            if miss is not None:
+                miss("kept page not served: %s %s", screen,
+                     "access_not_decided_in_time" if now is None
+                     else "access_changed" if not same_access(now[0], held[2])
+                     else "a_source_no_longer_opens")
             return None
         if current:
             # served as read then: a screen that shows other people's decisions or actions
@@ -2081,14 +1387,15 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
         if held is None or time.time() - held[0] > LAST_GOOD_SECONDS:
             return None
         now = self._access_result(before, ACCESS_WAIT_SECONDS)
-        if now is None or now[0] != held[2] or now[1] is not True:
+        if now is None or not same_access(now[0], held[2]) or now[1] is not True:
             # why a kept page was not served (the reader then waits the whole read): the
             # screen and which check said no, never the reader or a value
             logging.getLogger("operator_api.kept").info(json.dumps({
                 "kept_page_not_served": str(key[2][0]) if isinstance(key[2], tuple)
                 and key[2] else str(key[2]),
                 "why": "access_not_decided" if now is None
-                else "access_state_changed" if now[0] != held[2] else "source_closed",
+                else "access_state_changed" if not same_access(now[0], held[2])
+                else "source_closed",
                 "other_code": isinstance(held, _ReadByOtherCode),
                 "parts_changed": None if now is None or not isinstance(now[0], tuple)
                 or not isinstance(held[2], tuple) or len(now[0]) != len(held[2])
@@ -2267,7 +1574,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     page: Optional[tuple] = None) -> Callable[[Any], tuple]:
         """The job ``_access_later`` runs on a view of the reader (its answer: (access
         state, everything shown opens))."""
-        from operating.pg.permissions import exclusion_stamp, policy_parts
+        from operating.pg.permissions import (exclusion_rule_stamp, exclusion_set_version,
+                                              policy_parts)
         listed = sorted(set(handles))
         records = None if objects is None else sorted(set(objects))
         screen_state = self._screen_access(screen)
@@ -2298,12 +1606,25 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     # read is decided by the wildcard grants, the markings, the exclusion
                     # (its own part below) and each source again before a kept page serves
                     parts = tuple(p for p in parts if p[0] not in FULL_READER_MOVING_PARTS)
-                state = (parts, full, exclusion_stamp(),
-                         # the withheld set only: a PLX-issued document refuses the kept
-                         # pages that show it (``own_shown``, below), not every page
-                         _marks_stamp(view, own_issued=False),
-                         # unreadable: raises, no state, nothing kept is served
-                         screen_state())
+                # the exclusion's rule, and for a full reader (the one the precomputed set
+                # withholds from) the set's version apart: it moves on every delta cycle,
+                # and a page kept under an older one is served only once every record it
+                # shows is decided again (``_held_good``, ``exclusion_set_moved``); staff
+                # gates decide without the set (11-23 live: 487 of 574 refusals in 6 h)
+                excluded = (exclusion_rule_stamp(),
+                            exclusion_set_version() if full else None)
+                marks = _marks_stamp(view, own_issued=False)
+                state = AccessState((parts, full, excluded,
+                                     # the withheld set only: a PLX-issued document refuses
+                                     # the kept pages that show it (``own_shown``, below)
+                                     marks,
+                                     # unreadable: raises, no state, nothing kept is served
+                                     screen_state()))
+                # a page kept under the marks part's older form (with the PLX-issued
+                # documents' digest) is still the reader's while both sets are the same
+                older = _marks_stamp(view)
+                if older != marks:
+                    state.legacy = state[:3] + (older,) + state[4:]
                 if listed and who is not None:
                     # the checks of one page load name the same records: each is decided once
                     # for this reader under this access state, the rest reuse or wait for it
@@ -2791,6 +2112,15 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 STAGE_LOG.info("object page %s at %.2f s", name, time.monotonic() - began)
 
         def read() -> m.ObjectPage:
+            try:
+                return read_record()
+            except RecordAmbiguous as many:
+                # a number several records hold: the records to choose from, as this reader
+                # may see them (none they may see: not found)
+                from . import page_sql
+                return page_sql.choices_page(self, reader, object_type, object_id, many.ids)
+
+        def read_record() -> m.ObjectPage:
             if quick:
                 self._sections_ahead(reader, object_type, object_id)
             elif self.sections is not None and self.page_cache.store is not None:
@@ -3514,13 +2844,18 @@ def page_oid(backend: WorkspaceBackend, view: Any, object_type: str, object_id: 
     cache = backend.page_cache
     ref = page_key(view, f"ref:{object_type}:{object_id}")
 
-    def read() -> tuple[Optional[str]]:
+    def read() -> tuple[Optional[str], ...]:
         try:
             return (resolve_object(view, object_type, object_id),)
+        except RecordAmbiguous as many:   # several records: the page lists them
+            return (None, *many.ids)
         except RecordNotFound:   # only that: any other KeyError is a bug, never kept
             return (None,)
-    oid = cache.once(ref, read)[0]
+    got = cache.once(ref, read)
+    oid = got[0]
     if oid is None:
+        if len(got) > 1:
+            raise RecordAmbiguous(got[1:])
         raise RecordNotFound()   # resolved to nothing for this reader
     _search_marked(view, oid)   # a document marked beyond the reader in search
     return oid
@@ -3571,8 +2906,31 @@ def object_section(backend: WorkspaceBackend, view: Any, object_type: str,
         raise ValueError("unknown_section")
     with view._request(), plans_once():   # one grant and generation for the section
         oid = page_oid(backend, view, object_type, object_id)
-        page = quick_page(backend, view, oid)   # KeyError when not visible; kept
+        page = core_for_section(backend, view, object_type, object_id) \
+            if section in CORE_SECTIONS else None
+        if page is None:
+            page = quick_page(backend, view, oid)   # KeyError when not visible; kept
         return kept_section(backend, view, page, section)
+
+
+# The sections that read nothing of the quick read but the record's id and type: they start
+# from the card alone (``core_page``, one read of the record, kept) instead of waiting for
+# the page's walk of its links, timeline and documents (3-6 s cold: every section of a cold
+# record waited for it). The rest (the trail and its proposals, the margin: the page's label,
+# not-found list and facts) keep the quick read.
+CORE_SECTIONS = frozenset({"late", "people", "landed_cost", "knows", "documents", "formula"})
+
+
+def core_for_section(backend: WorkspaceBackend, view: Any, object_type: str,
+                     object_id: str) -> Optional[m.ObjectPage]:
+    """The record's core page for a section (``page_core.core_page``: the same resolution
+    and visibility as the page, a record the reader cannot see is not found), None when its
+    card could not be read (the quick read then decides, as before)."""
+    from .page_core import CoreUnread, core_page
+    try:
+        return core_page(backend, view, object_type, object_id)
+    except CoreUnread:
+        return None
 
 
 def object_impact(backend: WorkspaceBackend, view: Any, object_type: str, object_id: str,
@@ -3783,10 +3141,16 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
         # alone over a large order did not fit one response; after the late plan it did),
         # so a section read on its own (a slot of the section pool, ``object_section``) is
         # the main read's section, never another.
-        with view._request():
-            plans = plan_runs(view, kind, oid, (*plans_before(section), family))
+        from . import plan_section_door
+        with view._request(), plan_section_door.stale_scope() as old_rows, \
+                plan_section_door.not_run_scope() as not_run:
+            plans = kept_plan_run(backend, view, kind, oid, family)
+        if old_rows:   # an old stored row, served with its age; the resident runner renews it
+            out.stale_since = min(old_rows)
         if family not in plans:
             out.applies = family in plan_families(kind)
+            if not_run:
+                out.not_run = m.NotRun(**{k: _not_run_of(not_run)[k] for k in ("status", "why", "requested")})
             return out
         with view._request():
             ran = plans[family]
@@ -3803,8 +3167,9 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
         # a purchase order's lateness trail; a customer order's or customer's materials
         # walk (the late materials holding it, each late PO with its cited trail), as Ask
         # reads it for this reader (``trail.for_page``)
-        from . import trail as trails
-        with view._request():
+        from . import plan_section_door, trail as trails
+        with view._request(), plan_section_door.stale_scope() as old_rows, \
+                plan_section_door.not_run_scope() as not_run:
             out.trail = trails.for_page(
                 backend, view, oid, page.label, object_url=object_url, open_url=open_url,
                 host_schemes=HOST_READ_SCHEMES,
@@ -3812,6 +3177,10 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
                                  backend.today() if backend.today else None,
                                  kept=backend.page_cache) if kind == "PurchaseOrder" else ())
             out.not_found = reconciled_not_found(page.not_found, out.trail)
+        if not_run and out.trail is None:
+            out.not_run = m.NotRun(**{k: _not_run_of(not_run)[k] for k in ("status", "why", "requested")})
+        if old_rows:
+            out.stale_since = min(old_rows)
     out = presentation.polished(out)
     if section == "trail":
         # The page's drafts and proposed updates come with its trail: built from the
@@ -3874,6 +3243,50 @@ def plan_runs(view: Any, kind: str, oid: str, families: Sequence[str] = PAGE_PLA
         if ran is not None:
             out[family] = ran
     return out
+
+
+def _not_run_of(seen: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """The one not-run entry a section says: a failure before anything else."""
+    return next((n for n in seen if n.get("status") == "failed"), seen[0])
+
+
+def kept_plan_run(backend: WorkspaceBackend, view: Any, kind: str, oid: str, family: str
+                  ) -> dict[str, Mapping[str, Any]]:
+    """``plan_runs`` of one family over the record, kept per record, reader state and family
+    (``ReaderCache.once``: the sections of one page read at the same time share the one run,
+    and a section read again finds it), read as one picture (``snapshot_reads``: the store's
+    visible versions of an object read once across the whole plan). The plans of a page are
+    independent: a plan's answer is the same alone as after the others (checked over 12
+    records, only set handles and the read moment differ), so no section re-runs the plans
+    before it. Kept only while every source handle it shows still opens for the reader
+    (``shown_handles``). A plan that failed is not kept (the next read runs it again)."""
+    from operating.ontology_tools_policy import snapshot_reads
+    if family not in plan_families(kind):
+        return {}
+    from . import plan_section_door
+    if plan_section_door.on():
+        with view._request():
+            stored = plan_section_door.precomputed(
+                view, kind, oid, family, backend.today() if backend.today else None)
+        if stored is not None:
+            if "no_answer" in stored:     # the runner ran it and it gave none: said, typed
+                return {}
+            return {family: stored}
+        if kind in plan_section_door.KINDS and plan_section_door.last_miss() not in (
+                None, *plan_section_door.READER_OWN):
+            # no row for this record yet: answered "not run" and asked of the runner, never run
+            # here (a plan takes seconds, cold)
+            plan_section_door.answer_not_run(oid, family, plan_section_door.last_miss())
+            return {}
+    with view._request():
+        key = page_key(view, ("plan", family, oid))
+
+    def read() -> Optional[Mapping[str, Any]]:
+        with view._request(), snapshot_reads():
+            return plan_runs(view, kind, oid, (family,)).get(family)
+    ran = backend.page_cache.kept(view, key, read, shown_handles,
+                                  copy=lambda value: copy.deepcopy(value))
+    return {family: ran} if ran is not None else {}
 
 
 def listed_late(view: Any, oid: str, label: str, today: Optional[date] = None, *,
@@ -4136,19 +3549,18 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                         freshness=backend.freshness(page, handles=page_handles(facts)))
 
 
-def received_before_ordered(backend: WorkspaceBackend, view: Any,
-                            values: Sequence[Mapping[str, Any]], page: Mapping[str, Any],
-                            label: str) -> list[m.Conflict]:
-    """A data conflict when the record's own order date is after a receipt its timeline
-    shows: goods cannot arrive before the order is placed, so one of the two dates is not
-    what it says (an order date that is the day the order was entered in a new system, a
-    receipt of another order of that number). Both values cited, neither trusted: never a
-    link removed or a date chosen here. Only a receipt this reader opens is compared."""
+def received_inputs(values: Sequence[Mapping[str, Any]], page: Mapping[str, Any]
+                    ) -> Optional[dict[str, Any]]:
+    """What ``received_before_ordered`` compares, read from the record's workspace page as the
+    reader gets it: the record's order date with its citation, and every receipt its timeline
+    shows dated before it as (day, handle); None when there is no order date or no early
+    receipt. Pure: no reader's permission is asked here (``received_conflict`` and the caller
+    decide the earliest receipt)."""
     order = next((v for v in values if v.get("property") == "order_date"
                   and isinstance(citation_handle(v.get("citation")), str)
                   and re.match(r"\d{4}-\d{2}-\d{2}", str(plain(v.get("value")) or ""))), None)
     if order is None:
-        return []
+        return None
     ordered = str(plain(order.get("value")))[:10]
     early = []
     for event in (page.get("timeline") or {}).get("events") or ():
@@ -4160,21 +3572,46 @@ def received_before_ordered(backend: WorkspaceBackend, view: Any,
                 and isinstance(handle, str) and when[:10] < ordered:
             early.append((when[:10], handle))
     if not early:
-        return []
+        return None
+    return {"ordered": ordered, "order_handle": citation_handle(order.get("citation")),
+            "early": early, "order_markings": list(order.get("markings") or ())}
+
+
+def received_conflict(source: Callable[..., Any], label: str, got: Mapping[str, Any]
+                      ) -> m.Conflict:
+    """The one conflict card for ``received_inputs``' answer (``source(handle, fields=...)``
+    builds each value's source): the one definition of its words, read by the page's old read
+    and by the served page."""
+    ordered, early = got["ordered"], [tuple(e) for e in got["early"]]
     when, handle = min(early)
-    if view.access.decide([handle]).get(handle) is not None:
-        return []   # a receipt this reader may not open is never compared
     why = (f"{len(early)} receipts of this order are dated before its order date"
            if len(early) > 1 else "a receipt of this order is dated before its order date")
-    return [m.Conflict(field="order date vs receipt date", subject=label, values=[
-        m.ConflictValue(value=ordered, trusted=False, source=backend._source(
-            view, citation_handle(order.get("citation")), fields={"order_date": ordered}),
+    return m.Conflict(field="order date vs receipt date", subject=label, values=[
+        m.ConflictValue(value=ordered, trusted=False, source=source(
+            got["order_handle"], fields={"order_date": ordered}),
             why=f"The order date on the record; {why}, so it may be the day the order was "
                 "entered in this system rather than placed."),
-        m.ConflictValue(value=when, trusted=False, source=backend._source(view, handle),
+        m.ConflictValue(value=when, trusted=False, source=source(handle),
                         why="The earliest receipt against this order; goods cannot arrive "
                             "before the order is placed, so check the receipt belongs to "
-                            "this order.")])]
+                            "this order.")])
+
+
+def received_before_ordered(backend: WorkspaceBackend, view: Any,
+                            values: Sequence[Mapping[str, Any]], page: Mapping[str, Any],
+                            label: str) -> list[m.Conflict]:
+    """A data conflict when the record's own order date is after a receipt its timeline
+    shows: goods cannot arrive before the order is placed, so one of the two dates is not
+    what it says (an order date that is the day the order was entered in a new system, a
+    receipt of another order of that number). Both values cited, neither trusted: never a
+    link removed or a date chosen here. Only a receipt this reader opens is compared."""
+    got = received_inputs(values, page)
+    if got is None:
+        return []
+    handle = min(tuple(e) for e in got["early"])[1]
+    if view.access.decide([handle]).get(handle) is not None:
+        return []   # a receipt this reader may not open is never compared
+    return [received_conflict(lambda h, **kw: backend._source(view, h, **kw), label, got)]
 
 
 # ---- start-up --------------------------------------------------------------------------
@@ -4230,10 +3667,7 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         if args.ask and args.ask_path == "agent":
             from .agent_ask import AgentAsk
             agent = AgentAsk.from_args(Path(ctx["state_dir"]), args.host_config, os.environ,
-                                       seconds=max(30, args.ask_seconds),
-                                       **({} if args.ask_lookup_model is None else
-                                          {"lookup_model": args.ask_lookup_model or None}))
-        front_door = None
+                                       seconds=max(30, args.ask_seconds))
         missing = None
         if args.ask and args.ask_path == "agent" and agent is None:
             from .agent_ask import AgentAsk
@@ -4243,11 +3677,6 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
             # the reason's code only (never a path or a secret)
             logging.getLogger("operator_api").warning(json.dumps(
                 {"agent_path_unavailable": missing}))
-        if agent is not None:
-            from operating.front_door import FrontDoor
-            if FrontDoor.enabled():
-                front_door = FrontDoor(binary=agent.claude_bin)
-                front_door.warm()
         backend = WorkspaceBackend(ctx["objects_for"], data_label=str(label),
                                    state_dir=Path(ctx["state_dir"]),
                                    store_path=ctx.get("ontology_path"),
@@ -4258,14 +3687,9 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    # sessions admitted by the memory available
                                    # at each one (``SessionSlots``), not a count
                                    agent_ask=agent, agent_sessions=ASK_SESSIONS_MOST,
-                                   front_door=front_door,
                                    keep_pages=live and getattr(args, "keep_pages", 1) == 1)
         backend.agent_missing = missing
-        if front_door is not None:
-            from operating.clarify import Clarifier
-            if Clarifier.enabled():
-                backend.clarifier = Clarifier(binary=agent.claude_bin)
-                backend.clarifier.warm()
+
         resolver = ctx.get("resolver")
         if resolver is not None and not args.dev_fixture_principal:
             from operating.session_identity import warm_session
@@ -4325,6 +3749,10 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                                       CHECK_WORKERS)))]
             threads.append(start_read_worker(backend, argv, "state", access=True,
                                              checks=True, states=True))
+            # the weekly review's builds, off every page read's workers and long slots
+            backend.weekly_expected = WEEKLY_WORKERS
+            threads += [start_read_worker(backend, argv, f"weekly-{n}", weekly=True)
+                        for n in range(WEEKLY_WORKERS)]
         settings = {"data_label": str(label), "state_dir": Path(ctx["state_dir"]),
                     "store_path": ctx.get("ontology_path"),
                     "freshness_bounds": ctx.get("freshness_bounds"),
@@ -4364,6 +3792,9 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         # the known readers' permission setup decided here (the thread that serves their
         # reads) while the pool comes up, so their first Home or briefing does not pay it
         backend.prewarm_policies()
+        # the readers' doors decided ahead (``operator_api.doors``): ``ready`` waits for the
+        # first pass over every reader with a recent session, so no GET decides one
+        backend._start_doors()
         if backend.sections is not None:
             # a page's sections are read on the pool from the first request: none on a
             # request's read worker while the pool comes up
@@ -4410,16 +3841,20 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
 
 def start_read_worker(backend: WorkspaceBackend, argv: list[str],
                       number: Any, access: bool = False,
-                      checks: bool = False, states: bool = False) -> threading.Thread:
+                      checks: bool = False, states: bool = False,
+                      weekly: bool = False) -> threading.Thread:
     """One more read worker: the console's builder run again on its own thread (its own
     case runtime and stores, every check again), serving reads from the read queue once
     it is up; until then the owner thread serves them all. ``access``: the access worker
     instead (``add_access_worker``: the door's reads and the kept pages' access checks);
-    ``checks``: with ``access``, the check worker (the access checks alone)."""
+    ``checks``: with ``access``, the check worker (the access checks alone); ``weekly``:
+    a weekly-review worker (``add_weekly_worker``: its own queue)."""
     from operator_api.workspace import case_console
 
     def serve_reads(ctx: Mapping[str, Any]) -> int:
-        if access:
+        if weekly:
+            backend.add_weekly_worker(ctx["objects_for"]).loop()
+        elif access:
             backend.add_access_worker(ctx["objects_for"], checks=checks,
                                       states=states).loop()
         else:

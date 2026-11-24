@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import subprocess
+from operating import tmp as _tmp
 import threading
 import time
 from dataclasses import dataclass
@@ -471,8 +472,29 @@ def mode() -> str:
     return raw if raw in ("off", "repair", "rewrite") else "repair"
 
 
+# What a ``claude -p`` call that only rewrites or checks a text carries (measured 11-23 on the
+# Sparks, haiku: 3,252 tokens written to the cache from the app's directory, 2,935 from a
+# neutral one, 581 with the short system prompt below, then read from the cache): no project
+# memory (CLAUDE.md is found from the working directory), and Claude Code's own long coding
+# system prompt replaced by one line. The call's prompt carries every instruction itself.
+NEUTRAL_SYSTEM = "Follow the instructions in the message. Reply with only what they ask for."
+_NEUTRAL: list[str] = []
+
+
+def neutral_dir() -> str:
+    """An empty working directory for calls that need no project: no CLAUDE.md or memory is
+    found from it. Made once per process."""
+    if not _NEUTRAL or not os.path.isdir(_NEUTRAL[0]):
+        _NEUTRAL[:] = [_tmp.mkdtemp(prefix="plx-neutral-")]
+    return _NEUTRAL[0]
+
+
+NO_LIMIT = -1.0   # ``rewriter(seconds=NO_LIMIT)``: no time limit on the call
+
+
 def rewriter(binary: str = "claude", model: Optional[str] = None,
-             seconds: Optional[float] = None) -> Callable[[str], Optional[str]]:
+             seconds: Optional[float] = None, feature: str = "humanize_rewrite"
+             ) -> Callable[[str], Optional[str]]:
     """One ``claude -p`` turn with no tools and no settings on the operator's login
     (``agent_environment``), its prompt masked first (``operating.card_text``: no card
     number or credential reaches the model); the reply text or None (a timeout, an error)."""
@@ -483,22 +505,24 @@ def rewriter(binary: str = "claude", model: Optional[str] = None,
         prompt = mask_served(prompt)   # no card number or credential reaches the model
         argv = [binary, "-p", "--setting-sources", "", "--tools", "",
                 "--no-session-persistence", "--max-turns", "1", "--output-format", "json",
+                "--system-prompt", NEUTRAL_SYSTEM, "--exclude-dynamic-system-prompt-sections",
                 "--model", model or os.environ.get(MODEL_ENV) or MODEL]
-        limit = seconds or float(os.environ.get(SECONDS_ENV) or SECONDS)
+        limit = (None if seconds == NO_LIMIT else
+                 seconds or float(os.environ.get(SECONDS_ENV) or SECONDS))
         started = time.monotonic()
         try:
             done = subprocess.run(argv, input=prompt, capture_output=True, text=True,
                                   timeout=limit, env=agent_environment(os.environ),
-                                  start_new_session=True)
+                                  cwd=neutral_dir(), start_new_session=True)
             reply = json.loads(done.stdout or "{}")
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-            model_ledger.record("humanize_rewrite", prompt=prompt, ok=False,
+            model_ledger.record(feature, prompt=prompt, ok=False,
                                 seconds=time.monotonic() - started, reason=type(exc).__name__)
             return None
         good = isinstance(reply, dict) and not reply.get("is_error") \
             and isinstance(reply.get("result"), str)
         turns, tokens = model_ledger.usage_of(reply)
-        model_ledger.record("humanize_rewrite", prompt=prompt, ok=good, turns=turns,
+        model_ledger.record(feature, prompt=prompt, ok=good, turns=turns,
                             tokens=tokens, seconds=time.monotonic() - started)
         return reply["result"] if good else None
     return call

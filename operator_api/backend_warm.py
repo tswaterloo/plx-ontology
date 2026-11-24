@@ -26,7 +26,7 @@ from .auth import Reader, sign_in_kind
 from .serving import (
     access_label, ASK_WORKERS, CAPTURE_RANK, CARD_WORDS_KEPT, derived_code_status, eastern_words,
     KNOWN_MEASURE_FILE, KNOWN_READERS, KNOWN_READERS_FILE, RECENT_USER_SECONDS, LEDGER_SYSTEMS, ORIGINAL_READS, others_app_data,
-    PAGE_DIR, page_scope,
+    PAGE_DIR, page_scope, WARM_PRIORITY,
     ReaderCache, REWARM_SECONDS, SessionSlots, STORE_SYSTEMS, truth_flag, WARM_IDLE_SECONDS,
     WARM_RECENT_PAGES, Worker
 )
@@ -58,7 +58,7 @@ DIRECTORY_ROUND = threading.local()
 
 class ScreensPool:
     """The screens read ahead (``_screens_ahead``): ``workers`` daemon threads taking jobs
-    in order of (``later``, when queued), so a session reader's screens are read before any
+    in order of (pilot reader, ``later``, when queued), so a pilot reader's screens come first and a session reader's before any
     directory employee's however many of those are queued. One round reads ahead for every
     session reader and up to ``DIRECTORY_WARM_MOST`` employees (17 screens each); first in,
     first out, a session reader's screens after an access change waited behind the whole
@@ -75,7 +75,9 @@ class ScreensPool:
             threading.Thread(target=self._loop, name=f"{name}_{number}", daemon=True).start()
 
     def submit(self, fn: Callable[..., Any], *args: Any, later: bool = False,
-               key: Any = None) -> Any:
+               key: Any = None, first: bool = False) -> Any:
+        """``first``: a pilot reader's job goes before every other reader's (ordering only:
+        every queued job is read)."""
         from concurrent.futures import Future
         with self._lock:
             if key is not None:
@@ -86,7 +88,7 @@ class ScreensPool:
             if key is not None:
                 self._queued[key] = future
             self._seq += 1
-            self._jobs.put((1 if later else 0, self._seq, (future, key, fn, args)))
+            self._jobs.put((0 if first else 2 if later else 1, self._seq, (future, key, fn, args)))
         return future
 
     def queued(self) -> int:
@@ -136,10 +138,8 @@ class WarmMixin:
                  agent_sessions: int = ASK_WORKERS, store_path: Optional[Path] = None,
                  freshness_bounds: Mapping[str, float] | None = None,
                  clock: Callable[[], datetime] | None = None,
-                 front_door: Any = None, keep_pages: bool = False) -> None:
-        """``front_door``: the warm model every question is read by first
-        (``operating.front_door.FrontDoor``; None: questions route as typed).
-        ``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
+                 keep_pages: bool = False) -> None:
+        """``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
         objective box answers), at most ``agent_sessions`` sessions at once.
         ``store_path`` and ``freshness_bounds``: the served projection and the host's
         capture bounds (``operating.host.freshness_bounds``), so Home states each source's
@@ -159,10 +159,6 @@ class WarmMixin:
         # None when it runs or was never asked for. Its box answers then say so
         # (``quicker_answer``), never passing for the full check.
         self.agent_missing: Optional[str] = None
-        self.front_door = front_door
-        # asks back when the answer turns on a choice not made (``operating.clarify``;
-        # None: every question is answered as read)
-        self.clarifier: Any = None
         # the general answerer's model call (``general_answer.claude_call`` on the agent's
         # binary); tests replace it
         self.general_call: Optional[Callable[..., Optional[str]]] = None
@@ -184,6 +180,14 @@ class WarmMixin:
         # so a long read on every read worker never holds it up (None: on the read queue)
         self.access_worker: Optional[Worker] = None
         # the access workers' one queue (``add_access_worker``: ``ACCESS_WORKERS`` of them)
+        # the weekly review's build (7-12 min a reader) on workers of its own and one queue
+        # (``add_weekly_worker``): no page read ever waits behind it, and it never holds a
+        # shared long slot (``serving._LongSlots``). ``weekly_expected``: workers a start
+        # is bringing up (jobs wait for them); none expected (tests, fixtures): the read
+        # queue serves it, as before.
+        self.weekly_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+        self.weekly_workers: list[Worker] = []
+        self.weekly_expected = 0
         self.access_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         # the kept pages' access checks alone (``add_access_worker(checks=True)``): a check
         # queued behind the door's reads on the access workers (Home, the late list and the
@@ -270,6 +274,39 @@ class WarmMixin:
         worker.scope = getattr(self.reads, "scope", None) or page_scope
         self.read_helpers.append(worker)
         return worker
+
+    def add_weekly_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
+        """One weekly-review worker (its own runtime, built by the caller on the thread
+        that runs its ``loop``), on the weekly queue; it stops with the owner thread's."""
+        worker = Worker(objects_for, self.weekly_jobs)
+        worker.stopped = self.reads.stopped
+        worker.scope = getattr(self.reads, "scope", None) or page_scope
+        with self._lock:
+            self.weekly_workers.append(worker)
+        return worker
+
+    def weekly_submit(self, reader: Reader, job: Callable[[Any], Any], warmer: Any) -> Any:
+        """``job`` queued for the weekly workers (a future); with none expected, on
+        ``warmer`` as before."""
+        if not (self.weekly_expected or self.weekly_workers):
+            return warmer.submit(reader, job, priority=WARM_PRIORITY + 1 if warmer is self.reads
+                                 else 0)
+        from .serving import submit as submit_job
+        return submit_job(self.weekly_jobs, self.reads.stopped, reader, job, 0, None, None)
+
+    def weekly_run(self, reader: Reader, job: Callable[[Any], Any]) -> Any:
+        """``job`` on the weekly workers, waited for with no time limit. Never cut when
+        the request that asked goes away (the build is kept for the reader's next visit);
+        with no weekly worker expected, on the read queue as a long read."""
+        if not (self.weekly_expected or self.weekly_workers):
+            return self.reads.run(reader, job, timeout=None, long=True)
+        from concurrent.futures import CancelledError
+        from .serving import submit as submit_job
+        future = submit_job(self.weekly_jobs, self.reads.stopped, reader, job, 0, None, None)
+        try:
+            return future.result()
+        except CancelledError:
+            raise TimeoutError("workbench_busy") from None
 
     def add_access_worker(self, objects_for: Callable[[Any], Any],
                           checks: bool = False, states: bool = False) -> Worker:
@@ -603,9 +640,12 @@ class WarmMixin:
     def ready(self) -> bool:
         """Whether this API is warm enough to be routed readers (``/api/ready``): it
         serves (its known readers' policies were decided before it did:
-        ``prewarm_policies``), and with a warm-up process, that process's first pass over
+        ``prewarm_policies``, and their doors: ``operator_api.doors``), and with a warm-up process, that process's first pass over
         the known readers is kept on disk under this code version. Without one there is
         nothing more to wait for."""
+        doors = getattr(self, "doors", None)
+        if doors is not None and not doors.ready():
+            return False   # a reader's first page would decide its door in the request
         process = self.warm_process
         return process is None or bool(process.ready())
 
@@ -616,17 +656,43 @@ class WarmMixin:
         if process is not None:
             process.start_now()
 
-    def warm_known(self, *, today: bool = True) -> int:
+    def active_readers(self, within: float) -> dict[str, float]:
+        """Employees who loaded the app or opened a page within ``within`` seconds (the known
+        readers' file: ``remember_reader`` notes it at most once a minute), never one who
+        signed out: object id -> seconds since."""
+        path = self._known_path()
+        try:
+            held = json.loads(path.read_text(encoding="utf-8")) if path else {}
+        except (OSError, ValueError):
+            return {}
+        now = time.time()
+        out: dict[str, float] = {}
+        for oid, v in (held.items() if isinstance(held, dict) else ()):
+            if not isinstance(v, Mapping) or v.get("signed_out") is True or v.get("measure") \
+                    or not re.fullmatch(r"[0-9a-f-]{36}", str(oid)):
+                continue
+            seen = v.get("seen")
+            if isinstance(seen, (int, float)) and 0 <= now - float(seen) <= within:
+                out[str(oid)] = now - float(seen)
+        return out
+
+    def warm_known(self, *, today: bool = True,
+                   active_within: Optional[float] = None) -> int:
         """Read ahead for each known reader (start, a new generation): only while their real
         session is unexpired and its ticket not revoked (the replay guard), each resolved
         again as a sign-in is (``session_identity.warm_session``: refused for an inactive,
         unverified or excluded employee; it serves nothing). Results are kept under their
-        own policy, as their own requests would be."""
+        own policy, as their own requests would be. ``active_within``: only the readers
+        active that recently (``active_readers``), most recent first, and not the directory
+        (a deploy's first pass: ``warm_process.first_pass``)."""
         if self.identity_for is None:
             return 0
         warmed = 0
         known = self.known_readers()
         people = self.prewarm_people()   # and the recent users whose session ended
+        if active_within is not None:
+            active = self.active_readers(active_within)
+            people = sorted((p for p in people if p[0] in active), key=lambda p: active[p[0]])
         for oid, exp, ref in people:
             held = known.get(oid) or {}
             try:
@@ -642,6 +708,8 @@ class WarmMixin:
                 if pages and not self._pages_seen.get(reader.key):
                     self._pages_seen[reader.key] = pages[:WARM_RECENT_PAGES]
             warmed += self.warm(reader, force=True, today=today)
+        if active_within is not None:
+            return warmed
         return warmed + self._warm_directory({oid for oid, _e, _r in people}, today=today)
 
     def _warm_directory(self, known: set, *, today: bool = True) -> int:

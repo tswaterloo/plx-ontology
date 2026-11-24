@@ -438,6 +438,55 @@ class WarmSwitchThroughCaddy(unittest.TestCase):
         self.assertNotIn("restart plx-api\n", ran)
         self.assertIsNone(host.serving("standby"))
 
+    def test_an_older_copy_of_the_tool_hands_the_restart_to_the_serving_release_s_copy(self):
+        """11-22 5:11 PM ET: `plx-release` on PATH was the repository checkout, from before the
+        restart guard; its warm switch asked for a direct `systemctl restart plx-api` once the
+        standby was ready, the host refused it, and the switch failed. A copy other than the
+        serving release's runs that release's own copy instead, once."""
+        host = Host(self, caddy=True, guard=True)
+        for rid in ("old", "new"):          # each release carries its own copy of the tool
+            tools = Path(host.cfg["current"]).parent / rid / "deploy"
+            (tools / "release").mkdir(parents=True, exist_ok=True)
+            shutil.copy(DEPLOY / "lib.sh", tools / "lib.sh")
+            shutil.copy(TOOL, tools / "release" / "plx-release")
+        stale = host.tmp / "checkout" / "deploy"   # a checkout that predates the guard
+        (stale / "release").mkdir(parents=True)
+        shutil.copy(DEPLOY / "lib.sh", stale / "lib.sh")
+        text = TOOL.read_text()
+        old_text = re.sub(r"api_cycled\(\) \{[^}]*\}", "api_cycled() { return 1; }", text, count=1)
+        self.assertNotEqual(old_text, text)
+        (stale / "release" / "plx-release").write_text(old_text)
+        (stale / "release" / "plx-release").chmod(0o755)
+        host.switch_to_new()
+        loop = Loop(host)
+        loop.start()
+        got = subprocess.run([str(stale / "release" / "plx-release"), "restart"], env=host.env,
+                             text=True, capture_output=True, timeout=120)
+        time.sleep(0.5)
+        loop.stop.set()
+        loop.join()
+        self.assertEqual(got.returncode, 0, got.stderr + got.stdout)
+        self.assertIn("the serving release's copy (new) runs it", got.stderr)
+        self.assertIn("warm switch", got.stdout)
+        self.assertNotIn("refused", got.stderr + got.stdout)
+        self.assertEqual(loop.failed, 0, loop.errors)
+        self.assertEqual(host.serving("plx-api")["code"], "code-new")
+        self.assertIsNone(host.serving("standby"))
+        timeline = (host.state / "timeline").read_text()
+        self.assertNotIn("restart plx-api\n", timeline)
+        # the serving release's copy does not hand it on again
+        again = subprocess.run([str(Path(host.cfg["current"]) / "deploy" / "release" / "plx-release"),
+                                "slots"], env=host.env, text=True, capture_output=True, timeout=60)
+        self.assertNotIn("runs it", again.stderr)
+        # sealed, a copy others may write is never run in its place
+        tool = Path(host.cfg["current"]).parent / "new" / "deploy" / "release" / "plx-release"
+        tool.chmod(0o777)
+        sealed = subprocess.run([str(stale / "release" / "plx-release"), "slots"],
+                                env={**host.env, "PLX_RELEASE_OWNER": os.environ.get("USER") or
+                                     __import__("getpass").getuser()},
+                                text=True, capture_output=True, timeout=60)
+        self.assertNotIn("runs it", sealed.stderr)
+
     def test_a_warming_api_yields_the_cores_to_the_one_that_serves(self):
         """While a held API warms beside the serving one its cgroup's CPU and IO weight are
         the deploy's low ones (live 11-21: at equal weight the serving standby's reads took

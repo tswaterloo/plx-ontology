@@ -689,10 +689,8 @@ class AgentBudget(Temp):
         # the app's cap is the deep budget; each question runs its own under it
         self.assertEqual((made.budget_seconds, made.max_steps, made.max_turns),
                          (deep.DEEP_SECONDS, deep.MAX_STEPS, deep.MAX_TURNS))
-        # the front door's reading sets it, never the question's wording
-        self.assertEqual(deep.question_budget("q", deep.DEEP_SECONDS, "lookup"),
-                         deep.LOOKUP_SECONDS)
-        self.assertEqual(deep.question_budget("q", None, "investigate"), deep.DEEP_SECONDS)
+        # no router sets it, and never the question's wording
+        self.assertEqual(deep.question_budget("q", 60), 60)
         self.assertEqual(deep.question_budget("q"), deep.DEEP_SECONDS)
         source = Path(eval_case_cards.__file__).read_text(encoding="utf-8")
         self.assertIn("default=deep.SESSION_SECONDS", source)
@@ -754,44 +752,6 @@ class Task(unittest.TestCase):
         # the scoreboard's untimed card and the app ask the same task
         self.assertEqual(agent_session.ask_prompt(question),
                          runner.build_prompt(runner.UNPINNED_ITEM, question))
-
-    def test_a_lookup_of_one_named_record_gets_the_short_method(self):
-        """A question about one named record (one identifier, not a why, compare or
-        policy question) is asked with the short method: no written plan, the record and
-        its plan in the first turn, submit once the asked values are cited (measured: the
-        deep method took such questions a median 11 turns). Two records, an open intent,
-        no identifier or anything unreadable keeps the deep method."""
-        for question in ("whats up w so 61873 last week, is it late", "status on PO#10855?",
-                         "who set up PO#5241?", "when does lot 25A0165 expire"):
-            self.assertTrue(deep.is_lookup(question), question)
-            prompt = agent_session.ask_prompt(question)
-            self.assertIn(deep.method_for(question), prompt)
-            self.assertIn("No written plan", deep.method_for(question))
-            for said in ("No written plan", "in one turn", deep.BUDGET_REFUSAL,
-                         "where it would live", agent_session.REPLY_RULE):
-                self.assertIn(said, prompt)
-            self.assertNotIn("Spend the budget", prompt)
-        for question in ("why is PO#4720 late", "compare PO 4720 and PO 4882",
-                         "how many POs are late rn", "open AR for Dandylion Pet INC?",
-                         "", None, 12, "\x00\x01"):
-            self.assertFalse(deep.is_lookup(question), question)
-        self.assertIn(deep.method_for("how many POs are late"),
-                      agent_session.ask_prompt("how many POs are late"))
-
-    def test_only_a_lookup_runs_on_the_lookup_model(self):
-        """``lookup_model``: a lookup's session starts on it, every other question on the
-        session's model; the shared agent itself never changes (parallel runs)."""
-        agent = agent_session.ClaudeCodeAgent(model="open-model", lookup_model="fast-model")
-
-        def model(question):
-            argv = agent.routed(question).argv("p", "c")
-            return argv[argv.index("--model") + 1]
-        self.assertEqual(model("status on PO#10855?"), "fast-model")
-        for question in ("why is PO#4720 late", "how many POs are late rn", None):
-            self.assertEqual(model(question), "open-model", question)
-        self.assertEqual(agent.model, "open-model")
-        plain = agent_session.ClaudeCodeAgent(model="open-model")
-        self.assertIs(plain.routed("status on PO#10855?"), plain)
 
     def test_a_pinned_question_is_read_against_its_pin_never_today(self):
         pinned = "Answer as known at 2026-03-04T10:00:00Z (capture generations: a=1)."

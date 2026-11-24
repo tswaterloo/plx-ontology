@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, ASK_STALL_MS, GET_TIMEOUT_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, prefetchRecord, streamInsights, saveInsight, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider, PANE_REUSE_MS } from "./api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setBundlePrincipal, ask, ASK_STALL_MS, getApprovals, onHomeBundleFresh, startHomeBundle, IDLE_STALL_MS, getLateList, getMe, getOpsAlarms, getObject, getSuggestions, prefetchRecord, streamInsights, getInsight, saveInsight, logout, getObjectSection, getSource, bizPage, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider, PANE_REUSE_MS } from "./api";
 import { ApiError } from "./errors";
 import { resetSessionCaches } from "./session-cache";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
@@ -132,6 +132,18 @@ describe("identity on every call", () => {
     }
   });
 
+  it("sends a record's handle, chain and id whole: a cut identifier would name another record", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    const h = "sage://customer/" + "x".repeat(900);
+    await bizPage("customer", { h, chain: "c".repeat(300) });
+    await bizPage("purchase_order", { record: "PurchaseOrder:" + "y".repeat(900) });
+    const urls = (f.mock.calls as unknown as [string][]).map((c) => new URL(c[0], "http://x"));
+    expect(urls[0].searchParams.get("h")).toBe(h);
+    expect(urls[0].searchParams.get("chain")).toHaveLength(300);
+    expect(urls[1].searchParams.get("record")).toHaveLength(914);
+  });
+
   it("sends no Authorization header in cookie (dev) mode", async () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
@@ -178,7 +190,8 @@ describe("Today lists still being read", () => {
     expect(readingDelay(0, 0)).toBeLessThan(READING_POLL_MS);
     expect(readingDelay(1, 500)).toBeGreaterThan(readingDelay(0, 0));
     expect(readingDelay(20, 5_000)).toBe(READING_POLL_MS);
-    expect(readingDelay(20, 60_000)).toBe(READING_POLL_MS * 2);
+    expect(readingDelay(20, 20_000)).toBe(READING_POLL_MS * 2);
+    expect(readingDelay(20, 60_000)).toBe(READING_POLL_MS * 4);   // a long read: asked seldom
   });
 
   it("shares one request between callers of the same read, and one caller's abort leaves the other's", async () => {
@@ -283,17 +296,47 @@ describe("a read the server never answers", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("times out as a plain 504 instead of spinning for ever", async () => {
+  it("a request nothing arrives for in IDLE_STALL_MS fails as a typed 'connection stalled', never as empty data; a slow answer is never cut", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal("fetch", hanging);
-    const asked: number[] = [];
-    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
-      asked.push(ms);
-      return AbortSignal.abort(new DOMException("timed out", "TimeoutError"));
-    });
-    const err = await getSuggestions().catch((e) => e);
+    const got = getSuggestions().catch((e) => e);
+    await vi.advanceTimersByTimeAsync(IDLE_STALL_MS - 1000);   // far past the old 90 s: still waiting
+    vi.stubGlobal("fetch", hanging);
+    await vi.advanceTimersByTimeAsync(2000);
+    const err = await got;
     expect(err).toBeInstanceOf(ApiError);
-    expect([err.status, err.code]).toEqual([504, "read_timeout"]);
-    expect(asked).toEqual([GET_TIMEOUT_MS]);
+    expect([err.status, err.code]).toEqual([504, "connection_stalled"]);
+    vi.useRealTimers();
+  });
+
+  it("a body that stops arriving stalls the same way; chunks keep it alive past the limit in total", async () => {
+    vi.useFakeTimers();
+    const enc = new TextEncoder();
+    let push: (s: string) => void = () => undefined;
+    let fail: (e: unknown) => void = () => undefined;
+    vi.stubGlobal("fetch", vi.fn((_p: string, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          push = (t) => c.enqueue(enc.encode(t));
+          fail = (e) => c.error(e);
+          init?.signal?.addEventListener("abort", () => c.error(init.signal!.reason));
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }));
+    const got = getSuggestions().catch((e) => e);
+    push('{"items":');
+    await vi.advanceTimersByTimeAsync(IDLE_STALL_MS - 5000);
+    push('[],');
+    await vi.advanceTimersByTimeAsync(IDLE_STALL_MS - 5000);   // 230 s in total, never 120 s idle
+    push('"status":"read"}');
+    fail = () => undefined;
+    const done = await Promise.race([got, vi.advanceTimersByTimeAsync(1).then(() => "waiting")]);
+    expect(done).toBe("waiting");   // body not closed yet: still open, not cut
+    await vi.advanceTimersByTimeAsync(IDLE_STALL_MS + 1000);
+    const err = await got;
+    expect([err.status, err.code]).toEqual([504, "connection_stalled"]);
+    vi.useRealTimers();
   });
 
   it("leaves the caller's own cancel as a cancel, and never cuts a write", async () => {
@@ -303,10 +346,8 @@ describe("a read the server never answers", () => {
     own.abort();
     const err = await pending;
     expect(err).not.toBeInstanceOf(ApiError);
-    const timeout = vi.spyOn(AbortSignal, "timeout");
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
-    await logout().catch(() => undefined);
-    expect(timeout).not.toHaveBeenCalled();
+    await expect(logout()).resolves.toBeUndefined();
   });
 });
 
@@ -425,5 +466,179 @@ describe("the one-request dashboard", () => {
     const got: unknown[] = [];
     await streamInsights((l) => got.push(l));
     expect(got).toEqual(lines);
+  });
+});
+
+describe("Home's one-round-trip bundle", () => {
+  const ok = (body: unknown) => ({ status: 200, body });
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  beforeEach(() => setBundlePrincipal("alice"));
+  afterEach(() => {
+    resetSessionCaches();
+    setBundlePrincipal(null);
+    window.sessionStorage.clear();
+  });
+  const kept = (principal: string, as = "", parts: unknown = { suggestions: ok({ status: "read", items: [{ old: true }] }) }) =>
+    JSON.stringify({ at: Date.now(), principal, as, parts });
+  const neverReaches = () => vi.fn(async () => new Response(JSON.stringify({ parts: { suggestions: ok({ status: "read", items: [{ fresh: true }] }) } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+  it("answers the reads it lists from one request, each with its own status", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url !== "/api/home/bundle") throw new Error("a read made on its own: " + url);
+      return json({ parts: {
+        suggestions: ok({ status: "read", items: [{ x: 1 }] }),
+        late: ok({ items: [], total: 0 }),
+        approvals: { status: 503, body: { error: { code: "busy", message: "The Workbench is busy right now. Try again in a moment." } } },
+      } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    startHomeBundle();
+    startHomeBundle();   // once
+    const [sug, late, appr] = await Promise.allSettled([getSuggestions(), getLateList(0, undefined, 100), getApprovals()]);
+    expect(sug).toMatchObject({ status: "fulfilled", value: { items: [{ x: 1 }] } });
+    expect(late.status).toBe("fulfilled");
+    expect(appr.status).toBe("rejected");
+    expect((appr as PromiseRejectedResult).reason).toBeInstanceOf(ApiError);
+    expect((appr as PromiseRejectedResult).reason).toMatchObject({ status: 503, code: "busy" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads each part on its own when the bundle fails or lacks it, and never for a part that is still being read", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url === "/api/home/bundle") return json({ parts: { suggestions: ok({ reading: true }) } });
+      return json({ status: "read", items: [] });
+    }));
+    startHomeBundle();
+    await getSuggestions();   // reading in the bundle: asks for itself
+    await getApprovals();     // not in the bundle: asks for itself
+    expect(calls).toEqual(["/api/home/bundle", "/api/suggestions", "/api/approvals"]);
+    resetSessionCaches();
+    calls.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url === "/api/home/bundle") return json({ error: { code: "internal" } }, 500);
+      return json({ status: "read", items: [] });
+    }));
+    startHomeBundle();
+    await getSuggestions();
+    expect(calls).toEqual(["/api/home/bundle", "/api/suggestions"]);
+  });
+
+  it("shows the last kept bundle at once, then the fresh one, and never one read twice from the network", async () => {
+    window.sessionStorage.setItem("plx.home-bundle ", JSON.stringify({ at: Date.now(), principal: "alice", as: "", parts: { suggestions: ok({ status: "read", items: [{ old: true }] }) } }));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      await gate;
+      return json({ parts: { suggestions: ok({ status: "read", items: [{ fresh: true }] }) } });
+    }));
+    const fresh = vi.fn();
+    onHomeBundleFresh(fresh);
+    startHomeBundle();
+    expect(await getSuggestions()).toMatchObject({ items: [{ old: true }] });   // before the answer
+    release();
+    await vi.waitFor(() => expect(fresh).toHaveBeenCalledTimes(1));
+    expect(await getSuggestions()).toMatchObject({ items: [{ fresh: true }] });
+    expect(calls).toEqual(["/api/home/bundle"]);
+    // kept for the next page load: the fresh one
+    expect(JSON.parse(window.sessionStorage.getItem("plx.home-bundle ") ?? "{}").parts.suggestions.body.items).toEqual([{ fresh: true }]);
+  });
+
+  it("never shows a bundle kept for someone else or too long ago, and keeps no error", async () => {
+    window.sessionStorage.setItem("plx.home-bundle ", JSON.stringify({ at: Date.now() - 31 * 60 * 1000, principal: "alice", as: "", parts: { suggestions: ok({ items: [{ old: true }] }) } }));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ parts: { suggestions: { status: 503, body: { error: { code: "busy" } } } } })));
+    startHomeBundle();
+    await expect(getSuggestions()).rejects.toMatchObject({ status: 503 });
+    expect(JSON.parse(window.sessionStorage.getItem("plx.home-bundle ") ?? "{}").parts).toEqual({});
+    resetSessionCaches();   // sign-out / another person: nothing kept
+    expect(window.sessionStorage.getItem("plx.home-bundle ")).toBeNull();
+  });
+
+  it("never shows person A's kept bundle to person B on one tab, nor after a reload that finds nobody signed in", async () => {
+    window.sessionStorage.setItem("plx.home-bundle ", kept("alice"));
+    // a reload: the auth layer learns the principal first. B signs in on the same tab:
+    setBundlePrincipal("bob");
+    expect(window.sessionStorage.getItem("plx.home-bundle ")).toBeNull();   // dropped at once
+    vi.stubGlobal("fetch", neverReaches());
+    startHomeBundle();
+    expect(await getSuggestions()).toMatchObject({ items: [{ fresh: true }] });   // never { old: true }
+    // the session expired on the reload (401 on /api/me): nobody known, nothing kept stays
+    window.sessionStorage.setItem("plx.home-bundle ", kept("bob"));
+    setBundlePrincipal(null);
+    expect(window.sessionStorage.getItem("plx.home-bundle ")).toBeNull();
+    resetSessionCaches();
+    vi.stubGlobal("fetch", neverReaches());
+    startHomeBundle();   // no principal: never shown, never written
+    await getSuggestions();
+    expect(window.sessionStorage.getItem("plx.home-bundle ")).toBeNull();
+  });
+
+  it("keeps nothing from A's request that is still in flight when B signs in", async () => {
+    let answer: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((res) => { answer = res; })));
+    startHomeBundle();                 // A's request goes out
+    setBundlePrincipal("bob");         // B signs in on the tab before it answers
+    answer(json({ parts: { suggestions: ok({ status: "read", items: [{ aliceOnly: true }] }) } }));
+    await Promise.resolve(); await new Promise((r) => setTimeout(r, 0));
+    expect(window.sessionStorage.getItem("plx.home-bundle ")).toBeNull();   // not stored under B
+    vi.stubGlobal("fetch", neverReaches());
+    startHomeBundle();                 // B's own request: only B's answer is shown
+    expect(await getSuggestions()).toMatchObject({ items: [{ fresh: true }] });
+  });
+
+  it("keeps a record that names another principal or view-as target out even if it is in the storage", async () => {
+    window.sessionStorage.setItem("plx.home-bundle ", kept("bob"));        // a leftover written by someone else
+    vi.stubGlobal("fetch", neverReaches());
+    startHomeBundle();   // alice: the kept one is bob's, never shown
+    expect(await getSuggestions()).toMatchObject({ items: [{ fresh: true }] });
+    resetSessionCaches();
+    setBundlePrincipal("alice");
+    window.sessionStorage.setItem("plx.home-bundle ", kept("alice", "someone-else"));   // read while viewing as another
+    vi.stubGlobal("fetch", neverReaches());
+    startHomeBundle();
+    expect(await getSuggestions()).toMatchObject({ items: [{ fresh: true }] });
+    // and the kept record Alice's own fresh read leaves names her and no view-as target
+    const own = JSON.parse(window.sessionStorage.getItem("plx.home-bundle ") ?? "{}");
+    expect([own.principal, own.as]).toEqual(["alice", ""]);
+  });
+});
+
+
+describe("getInsight polls a tile that is not stored yet", () => {
+  const stored = (read_at: string) => new Response(JSON.stringify({ id: "t", read_at }), { status: 200, headers: { "Content-Type": "application/json" } });
+  const filling = () => new Response(JSON.stringify({ error: { code: "insight_filling", message: "being prepared" } }), { status: 425, headers: { "Content-Type": "application/json" } });
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("asks again every few seconds until stored, and not at all while the page is hidden", async () => {
+    const calls: number[] = [];
+    vi.stubGlobal("fetch", vi.fn(async () => { calls.push(1); return calls.length < 3 ? filling() : stored("2026-11-24T10:00:00Z"); }));
+    let hidden = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    const got = getInsight("t");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.length).toBe(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls.length).toBe(1);               // hidden: no poll at all
+    hidden = false;
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls.length).toBe(3);
+    expect((await got).read_at).toBe("2026-11-24T10:00:00Z");
+  });
+
+  it("a Refresh draws the stored value, then waits for a newer one", async () => {
+    const reads = ["2026-11-24T10:00:00Z", "2026-11-24T10:00:00Z", "2026-11-24T10:05:00Z"];
+    vi.stubGlobal("fetch", vi.fn(async () => stored(reads.shift() as string)));
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    const seen: string[] = [];
+    const got = getInsight("t", undefined, true, (old) => seen.push(old.read_at));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(seen).toEqual(["2026-11-24T10:00:00Z"]);
+    expect((await got).read_at).toBe("2026-11-24T10:05:00Z");
   });
 });

@@ -318,7 +318,7 @@ class ReplyDrafts(unittest.TestCase):
         from operating import autopilot as apm, autopilot_engine as eng
         from operating.autopilot_agent import Decision
         reg = {"autopilots": [{"id": "assistant", "label": "Assistant"}],
-               "limits": {"handler_seconds": 5, "per_owner_per_hour": 2}}
+               "limits": {}}
         ev = {"event_id": "ev1", "event_type": "message.received", "cleared": True,
               "object_id": "Email:r", "side": "internal", "sender": "bo@plx.example",
               "to": ["ana@plx.example"], "to_me": True, "asks": True, "subject": "PO date"}
@@ -382,11 +382,12 @@ class ReplyDrafts(unittest.TestCase):
             queue.killed_file.touch()
             self.assertEqual(draft(), [{"draft": "Sure.", "note": ""}])
             queue.killed_file.unlink()
-            # the person's hourly cap (2 here, one spent): the next line's changes wait
+            # no hourly cap (owner 11-23): every line's changes are kept, however many
             self.assertIn("jobs", draft()[0])
-            ev["event_id"] = "ev3"
-            self.assertEqual(draft(), [{"draft": "Sure.", "note": ""}])
-            self.assertEqual(sorted(i["event_id"] for i in queue.items()), ["ev1", "ev2"])
+            for n in range(3, 40):
+                ev["event_id"] = f"cap{n}"
+                self.assertIn("jobs", draft()[0])
+            self.assertEqual(len(queue.items()), 39)
             # things to do by hand alone (no write path): a to-do item, nothing to confirm
             ev["event_id"] = "ev5"
             queue.conn.execute("DELETE FROM rate")

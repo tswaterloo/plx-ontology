@@ -33,7 +33,7 @@ def _instant(value: Optional[str]) -> Optional[datetime]:
 def capture_alarm_status(state_dir: Any, now: Optional[datetime] = None
                          ) -> Optional[m.CaptureAlarm]:
     """The stale-capture alarm over the served state dir (``operating.ops_health``'s capture
-    and start checks); None with no state dir, nothing stalled, or an unreadable ledger."""
+    and start checks); None with no state dir or nothing stalled; an unreadable health read says so in its line."""
     if not state_dir:
         return None
     from operating import ops_health
@@ -48,7 +48,9 @@ def capture_alarm_status(state_dir: Any, now: Optional[datetime] = None
                              ops_health.config_keys_check(state)) if c is not None]
         alarm = ops_health.capture_alarm({"checks": checks + extra})
     except Exception:  # noqa: BLE001 - a health line never breaks a page
-        return None
+        # said, never an absent line: a page with no alarm reads as every capture being fine
+        return m.CaptureAlarm(line="Capture health could not be read just now, so a stalled "
+                                   "capture would not show.")
     return None if alarm is None else m.CaptureAlarm(**alarm)
 
 

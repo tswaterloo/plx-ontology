@@ -292,6 +292,9 @@ class Privacy(MemoryCase):
             def __init__(self, users, complete=True):
                 self.users, self.complete = users, complete
 
+            def get_all_pages(self, url, **kw):
+                return self.get_pages(url, **kw)
+
             def get_pages(self, url, **_):
                 return self.users, {"complete": self.complete}
 

@@ -12,6 +12,11 @@ import { plainError } from "@/lib/errors";
 import type { Template, TemplateDocType, TemplateFilled, TemplateList, TemplateSuggestion } from "@/lib/types";
 import { Button } from "./ui/button";
 
+/** The longest draft text a template is proposed from (the API's bound); a saved template holds as much. */
+const PROPOSE_MAX = 100000;
+/** What a saved template holds (the templates table's bound, migration 0059). */
+const TEMPLATE_MAX = 100000;
+
 export const DOC_TYPE_LABEL: Record<TemplateDocType, string> = {
   quote: "Quote",
   order_confirmation: "Order confirmation",
@@ -183,7 +188,10 @@ export function TemplateForm({
       </div>
       <label className="block space-y-1 text-[12px] text-muted">
         Text, with {"{{field}}"} where a record&apos;s value goes
-        <textarea className={`${field} min-h-40 font-mono text-[12px] leading-5`} value={body} onChange={(e) => setBody(e.target.value)} maxLength={8000} data-testid="template-body" />
+        <textarea className={`${field} min-h-40 font-mono text-[12px] leading-5`} value={body} onChange={(e) => setBody(e.target.value)} maxLength={TEMPLATE_MAX} data-testid="template-body" />
+        <p className={`text-[12px] ${body.length > TEMPLATE_MAX ? "text-late" : "text-muted"}`} data-testid="template-length">
+          {body.length.toLocaleString("en-US")} of {TEMPLATE_MAX.toLocaleString("en-US")} characters{body.length > TEMPLATE_MAX ? `: a template holds ${TEMPLATE_MAX.toLocaleString("en-US")}; shorten it to save it` : ""}
+        </p>
       </label>
       {list && (list.fields ?? []).length > 0 && (
         <p className="text-[12px] leading-5 text-muted" data-testid="template-field-list">
@@ -238,12 +246,12 @@ export function SaveAsTemplate({ text, record, docType, sourceRef }: { text: str
     setOpen(true);
     setProblem(null);
     try {
-      const [proposal, got] = await Promise.all([proposeTemplate(text.slice(0, 8000), record), getTemplates()]);
+      const [proposal, got] = await Promise.all([proposeTemplate(text.slice(0, PROPOSE_MAX), record), getTemplates()]);
       setList(got);
       setInitial({ body: proposal.body });
     } catch (err) {
       setProblem(refusal(err));
-      setInitial({ body: text.slice(0, 8000) });
+      setInitial({ body: text });
     }
   };
   if (saved) return <p className="text-[12px] text-muted" data-testid="template-saved">Saved as template &ldquo;{saved.name}&rdquo;.</p>;

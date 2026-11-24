@@ -31,13 +31,15 @@ describe("Home's three tabs (simpler tabs, 11-18): what needs you, Alerts (was /
     try {
       nav.search = "show=alerts";
       const a = render(<HomePage />);
+      // the Alerts and Late POs tabs load as their own chunks (first drawn as "Reading ...")
+      await screen.findAllByRole("link", { name: "Alerts" });
       expect(within(tabs()).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Needs you", "/"], ["Alerts", "/?show=alerts"], ["Late POs", "/?show=late"], ["Switches", "/autopilot"]]);
       expect(on()).toEqual(["Alerts"]);
       expect(screen.queryByTestId("needs-you")).toBeNull();
       a.unmount();
       nav.search = "show=late&supplier=Acme";
       const l = render(<HomePage />);
-      expect(screen.getByTestId("late-header")).toBeInTheDocument();
+      expect(await screen.findByTestId("late-header")).toBeInTheDocument();
       expect(on()).toEqual(["Late POs"]);
       l.unmount();
       nav.search = "show=../../ops";
@@ -368,16 +370,10 @@ describe("Home's counts add up", () => {
     try {
       const { unmount } = render(<HomePage />);
       const header = await screen.findByTestId("home-header");
-      const chip = (name: string) => within(header).getByRole("tab", { name: new RegExp(`^${name}`) });
-      await waitFor(() => expect(chip("All")).toHaveTextContent("All5"));
-      // nothing to confirm: no Confirm chip, and the alerts are not called prepared
-      expect(within(header).queryByRole("tab", { name: /^Confirm/ })).toBeNull();
-      expect(chip("Decide")).toHaveTextContent("Decide5");
-      expect(screen.getByTestId("assist-queue")).toHaveAccessibleName("Waiting on you");
+      // one kind of thing waiting (Decide 5 is All 5): no chips, the list says it
+      await waitFor(() => expect(screen.getByTestId("assist-queue")).toHaveAccessibleName("Waiting on you"));
+      expect(within(header).queryByRole("tab")).toBeNull();
       expect(screen.queryByText("Prepared for you")).toBeNull();
-      // under Decide the alerts waiting on you are listed with the rest Decide counts
-      fireEvent.click(chip("Decide"));
-      expect(screen.getByTestId("assist-queue").closest("[hidden]")).toBeNull();
       unmount();
       // a draft to confirm is prepared for you and counts under Confirm alone
       ok.drafts = [alert, { ...alert, item_id: "ap_d", kind: "reply", subject: "Re: order", summary: "Reply drafted." }];

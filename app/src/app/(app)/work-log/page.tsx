@@ -153,7 +153,7 @@ function WorkLog() {
       </form>}
 
       {closedLog ? (
-        <p className="px-6 py-10 text-[13px] text-muted">Your work log can&apos;t be shown right now: the list of people kept out of the Workbench isn&apos;t loaded, so nothing is shown or kept until it is.</p>
+        <p className="px-6 py-10 text-[13px] text-muted">Your work log can&apos;t be shown right now. Nothing is lost; try again in a few minutes.</p>
       ) : main.error ? (
         <div className="p-5">
           <LoadProblem message={main.error} onRetry={main.load} />

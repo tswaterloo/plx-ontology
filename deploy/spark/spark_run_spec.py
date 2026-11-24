@@ -70,6 +70,7 @@ def build(argv: Sequence[str], environ: Mapping[str, str], *,
     return {"sha": environ["SPEC_SHA"], "tree": environ["SPEC_TREE"],
             "cwd": environ["SPEC_CWD"], "state": environ["SPEC_STATE"],
             "pg": environ.get("SPEC_PG", "box"),
+            "sandbox": environ.get("SPEC_SANDBOX", "auto"),
             "name": environ["SPEC_NAME"], "ship": ship, "out": out, "env": env,
             "cmd": cmd}
 

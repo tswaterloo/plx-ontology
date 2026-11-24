@@ -66,10 +66,8 @@ KINDS: dict[str, str] = {
 # the Ask's draft kinds and the learned document kinds, as template types
 DRAFT_KIND = {"email": ("supplier_email", "customer_email", "order_confirmation", "po_note",
                         "phrasing")}
-MAX_NAME, MAX_BODY, MAX_STYLE = 120, 8000, 2000
+MAX_NAME, MAX_BODY, MAX_STYLE = 120, 100_000, 2000  # body: migration 0059
 MAX_PLACEHOLDERS = 60
-MAX_LINES = 50
-MAX_LIST = 200
 LINE_FIELDS = ("ordered_quantity", "unit_of_measure", "product_code", "product_name")
 SPECIAL = {"items": "lines", "today": "date"}
 
@@ -103,8 +101,8 @@ REFUSED = {
     "too_long": "That is too long for a template.",
     "empty": "A template needs a name and a body.",
     "view_as": "Templates are not changed while viewing as someone else.",
-    "people_exclusion_unavailable": "This is paused: the list of people whose data stays "
-                                    "out is not loaded.",
+    "people_exclusion_unavailable": "Templates are paused right now; nothing was saved. "
+                                    "Try again in a few minutes.",
     "not_kept": "Templates are not kept for you.",
     "not_found": "No template of yours by that id.",
     "unavailable": "Templates are not available on this server.",
@@ -271,7 +269,7 @@ def _items(lines: Optional[Sequence[Sequence[df.Fact]]], terms: df.Terms
         return None, "no lines read for this record", []
     labels = field_labels(terms)
     out, cites, checks = [], [], 0
-    for facts in list(lines)[:MAX_LINES]:
+    for facts in list(lines):
         parts = []
         for name in LINE_FIELDS:
             got = _plan_one(labels.get(name, name), facts, terms)
@@ -283,11 +281,9 @@ def _items(lines: Optional[Sequence[Sequence[df.Fact]]], terms: df.Terms
                 parts.append(_check(name.replace("_", " ")))
                 checks += 1
         out.append("- " + " ".join(parts))
-    if len(lines) > MAX_LINES:
-        out.append(_check(f"{len(lines) - MAX_LINES} more lines"))
     reason = f"{len(lines)} line{'s' if len(lines) != 1 else ''}" + (
         f", {checks} part{'s' if checks != 1 else ''} to check" if checks else "")
-    return "\n".join(out), reason, cites[:MAX_LIST]
+    return "\n".join(out), reason, cites
 
 
 def propose(text: str, facts: Sequence[df.Fact], terms: df.Terms) -> dict[str, Any]:
@@ -541,9 +537,8 @@ class TemplateStore:
                 "SELECT " + ", ".join(_COLUMNS) + " FROM templates.template WHERE "
                 "deleted_at IS NULL AND (owner = %s OR shared_with && %s) AND "
                 "(%s::text IS NULL OR doc_type = %s) ORDER BY (owner = %s) DESC, uses DESC, "
-                "updated_at DESC LIMIT %s",
-                (reader.key, _keys(reader, roles), doc_type, doc_type, reader.key,
-                 MAX_LIST)).fetchall()
+                "updated_at DESC",
+                (reader.key, _keys(reader, roles), doc_type, doc_type, reader.key)).fetchall()
         out = []
         for r in (dict(zip(_COLUMNS, x)) for x in rows):
             if not self._visible(guard, r):

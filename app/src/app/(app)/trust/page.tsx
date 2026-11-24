@@ -322,7 +322,7 @@ export default function TrustRoute() {
                   {(page.switches ?? []).map((s) => (
                     <tr key={s.system}>
                       <td className="w-48 py-1.5 pr-3 font-medium">{s.system}</td>
-                      <td className={cn("w-16 py-1.5 pr-3 text-[12px] font-medium", s.state === "on" ? "text-ok" : "text-muted")}>{s.state === "on" ? "On" : s.state === "off" ? "Off" : "None"}</td>
+                      <td className={cn("w-16 py-1.5 pr-3 text-[12px] font-medium", s.state === "on" ? "text-ok" : "text-muted")}>{s.state === "on" ? "On" : s.state === "off" ? "Off" : "Read only"}</td>
                       <td className="py-1.5 text-[12px] text-muted">{s.words}</td>
                     </tr>
                   ))}

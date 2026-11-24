@@ -21,7 +21,7 @@ PG_ONLY_UNITS = (
     "plx-autopilot-follow", "plx-proactive", "plx-proactive-inc", "plx-proactive-nightly",
     "plx-proactive-whole", "plx-delta", "plx-delta-compact", "plx-ontology-pg-follow",
     "plx-search-follow", "plx-search-generation", "plx-rag-backfill", "plx-truth-check",
-    "plx-alerts", "plx-comms-findings",
+    "plx-alerts", "plx-comm-text", "plx-assist-readings", "plx-assist-readings-fresh", "plx-comms-indexes", "plx-daily-changes",
 )
 # The interpreter running the test is the release's Python (lib.sh defaults PLX_VENV to the
 # served host's /data/venv, which a test runner elsewhere, a Spark, does not have).
@@ -229,7 +229,7 @@ class DeployFilesTest(unittest.TestCase):
             self.assertRegex(views, r"(?m)^OnSuccess=plx-alerts\.service$")
             # owner 11-18: a build runs at full speed (no nice, CPU or IO caps), bounded by
             # memory and its disk floor only
-            for name in ("plx-business-views", "plx-business-comms-recheck"):
+            for name in ("plx-business-views",):
                 unit = Path(tmp, "s", f"{name}.service").read_text()
                 self.assertNotRegex(unit, r"(?m)^(Nice|CPUWeight|IOWeight|IOSchedulingClass)=",
                                     name)
@@ -245,19 +245,28 @@ class DeployFilesTest(unittest.TestCase):
                              r"(?m)^OnCalendar=")
             self.assertIn("plx-alerts", install.split('\nSYS_UNITS="', 1)[1].split('"', 1)[0]
                           .split())
-            # what mail and Teams record is read after every refresh and on its own timer,
-            # bounded, never ordered behind a refresh; the model is named (none: no read)
-            self.assertRegex(views, r"(?m)^OnSuccess=plx-comms-findings\.service$")
-            found = Path(tmp, "s", "plx-comms-findings.service").read_text()
-            self.assertIn("-m operating.pg.comms_findings run", found)
+            # the comms text sidecar's refresh: its own timer, the refresh command, installed
+            ct = Path(tmp, "s", "plx-comm-text.service").read_text()
+            self.assertIn("-m operating.pg.comm_text refresh", ct)
+            self.assertRegex(ct, r"(?m)^Type=oneshot$")
+            self.assertRegex(ct, r"(?m)^TimeoutStartSec=")
+            self.assertRegex(Path(tmp, "s", "plx-comm-text.timer").read_text(),
+                             r"(?m)^OnCalendar=\*:0/5$")
+            self.assertIn("plx-comm-text", install.split('\nSYS_UNITS="', 1)[1].split('"', 1)[0]
+                          .split())
+            # every mail and Teams message is read after every refresh and on its own timer,
+            # bounded, never ordered behind a refresh; the model is named (off: no read)
+            self.assertRegex(views, r"(?m)^OnSuccess=plx-assist-readings\.service$")
+            found = Path(tmp, "s", "plx-assist-readings.service").read_text()
+            self.assertIn("-m operating.assist_readings run", found)
             for line in (r"^Type=oneshot$", r"^MemoryMax=", r"^TimeoutStartSec=",
-                         r"^Environment=PLX_COMMS_FINDINGS_MODEL=\w+$",
+                         r"^Environment=PLX_READINGS_MODEL=\w+$",
                          r"^EnvironmentFile=-.*proactive\.env$"):
                 self.assertRegex(found, "(?m)" + line)
             self.assertNotRegex(found, r"(?m)^After=.*plx-business-views")
-            self.assertRegex(Path(tmp, "s", "plx-comms-findings.timer").read_text(),
+            self.assertRegex(Path(tmp, "s", "plx-assist-readings.timer").read_text(),
                              r"(?m)^OnCalendar=")
-            self.assertIn("plx-comms-findings", install.split('\nSYS_UNITS="', 1)[1]
+            self.assertIn("plx-assist-readings", install.split('\nSYS_UNITS="', 1)[1]
                           .split('"', 1)[0].split())
 
     def test_only_units_that_read_a_business_system_keep_its_credentials(self) -> None:

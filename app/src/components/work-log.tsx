@@ -7,6 +7,7 @@ import { realName } from "@/lib/actions";
 import { getWorkThread, organiseWorkThread } from "@/lib/api";
 import { clockET, formatDateTime, objectHref, recordLabel, typeLabel } from "@/lib/format";
 import type { WorkLogEvent, WorkLogKind } from "@/lib/types";
+import { ShowAll } from "./show-all";
 
 export const KIND_ICON: Record<WorkLogKind, LucideIcon> = {
   ask: MessageCircle,
@@ -113,7 +114,7 @@ export function LoopLine({ e }: { e: WorkLogEvent }) {
         {loop.follow_up && (
           <>
             {" "}
-            <Link href={`/ask?q=${encodeURIComponent(loop.follow_up)}`} className="font-medium text-[color:var(--accent)] hover:underline">
+            <Link prefetch={false} href={`/ask?q=${encodeURIComponent(loop.follow_up)}`} className="font-medium text-[color:var(--accent)] hover:underline">
               Draft a follow-up
             </Link>
           </>
@@ -144,7 +145,7 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
     }
   };
   return (
-    <li className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-start gap-x-3 rounded-[3px] px-3 py-2.5 hover:bg-hover" data-testid="work-log-row">
+    <li className="cv-auto cv-row grid grid-cols-[28px_minmax(0,1fr)_auto] items-start gap-x-3 rounded-[3px] px-3 py-2.5 hover:bg-hover" data-testid="work-log-row">
       <span className="flex size-7 items-center text-[color:var(--accent)]" aria-hidden>
         <Icon className="size-4" strokeWidth={1.8} />
       </span>
@@ -157,15 +158,17 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
         <div className="mt-0.5 flex flex-wrap gap-x-2 text-[12px] leading-4 text-muted">
           <span className="text-faint">{e.kind === "action" && e.verb === "prepared" ? "Not sent" : (KIND_LABEL[e.kind] ?? e.kind)}</span>
           {showWho && e.reader_name && <span>{e.reader_name}</span>}
-          {(e.records ?? []).slice(0, 3).map((r) =>
-            r.type ? (
-              <Link key={r.object_id} href={objectHref(r.type, r.object_id)} className="hover:underline">
-                {recordName(r)}
-              </Link>
-            ) : (
-              <span key={r.object_id}>{recordName(r)}</span>
-            ),
-          )}
+          <ShowAll items={e.records ?? []} first={3} noun="records">
+            {(r) =>
+              r.type ? (
+                <Link href={objectHref(r.type, r.object_id)} className="hover:underline">
+                  {recordName(r)}
+                </Link>
+              ) : (
+                <span>{recordName(r)}</span>
+              )
+            }
+          </ShowAll>
           {people.length > 0 && <span>{people.slice(0, 2).join(", ")}{people.length > 2 ? ` +${people.length - 2}` : ""}</span>}
           {e.case_id && <span>Case {e.case_id}</span>}
           <LoopLine e={e} />

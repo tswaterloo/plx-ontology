@@ -471,6 +471,21 @@ class NeverServedCold(LastGoodPage.__base__):
         got = self.serve(who, slow(page(5), 0.3))
         self.assertEqual((got.total, got.stale_since), (5, None))
 
+    def test_each_kept_page_not_served_logs_why(self):
+        # the slow routes' misses are counted by reason from the journal
+        who = reader("grp-a")
+        with self.assertLogs("operator_api.serving_miss", "INFO") as said:
+            self.serve(who, slow(page(4), 0.3))                    # nothing kept yet
+            self.reads.policy = policy()                           # finance revoked
+            self.serve(who, slow(page(5), 0.3))
+        reasons = [line.rsplit(" ", 1)[-1] for line in said.output]
+        self.assertEqual(reasons[0], "none_kept")
+        self.assertEqual(len(reasons), 2)   # the second: kept, but not servable as it is
+        self.assertTrue(all(r in ("none_kept", "no_inputs", "older_than_last_good",
+                                  "reader_wrote_since", "access_not_decided_in_time",
+                                  "access_changed", "a_source_no_longer_opens")
+                            for r in reasons), reasons)
+
     def test_a_document_re_marked_beyond_the_reader_refuses_the_kept_page(self):
         who = reader("grp-a")
         self.serve(who, lambda: page(3))
@@ -537,6 +552,26 @@ class NeverServedCold(LastGoodPage.__base__):
             # the disk copy is gone too: a read that works is a fresh page, not the old
             self.assertEqual(self.serve(who, lambda: page(1)).total, 1)
 
+    def test_a_kept_home_served_stale_keeps_its_own_data_stamp_not_nows(self):
+        """Old numbers never sit under a fresh "as of" (audit 11-22): a kept page served
+        stale keeps the freshness it was read with; a current one carries today's."""
+        from operator_api import page_sql
+        b = self.backend
+        b._recent = {}
+        b.freshness = lambda: m.Freshness(as_of="2026-11-22T23:00:00+00:00")
+        who = reader("grp-a")
+        who.display_name = "Test Reader"
+        old = m.Home(greeting_name="T", examples=[], needs_attention=m.NeedsAttention(
+            status="read"), recent_questions=[], freshness=m.Freshness(
+            as_of="2026-11-22T11:00:00+00:00"), stale_since="2026-11-22T12:00:00+00:00")
+        with mock.patch.object(page_sql, "alerts_on", lambda: True), \
+                mock.patch.object(b, "_serving", lambda *a, **k: old):
+            self.assertEqual(b._home_alerts(who).freshness.as_of, "2026-11-22T11:00:00+00:00")
+            fresh = old.model_copy(update={"stale_since": None})
+        with mock.patch.object(page_sql, "alerts_on", lambda: True), \
+                mock.patch.object(b, "_serving", lambda *a, **k: fresh):
+            self.assertEqual(b._home_alerts(who).freshness.as_of, "2026-11-22T23:00:00+00:00")
+
     def test_the_alerts_home_briefing_and_items_are_kept_screens_not_a_door_read_each_visit(self):
         """Under the SQL alerts Home, the briefing and a type's items go through
         ``_serving`` (kept per reader, served at once after a restart), as the other
@@ -558,7 +593,7 @@ class NeverServedCold(LastGoodPage.__base__):
 
         def alert_home(*a, **kw):
             calls.append("home")
-            return 2, [], "2026-11-19", [], {}
+            return 2, [], "2026-11-19", [], {}, 0
 
         stopped = errors.UserFacing("alerts_stale", "Late purchase orders are unavailable")
 
@@ -588,28 +623,29 @@ class NeverServedCold(LastGoodPage.__base__):
         self.assertEqual(seen, [("home", "alerts"), ("briefing", False),
                                 ("home", "alerts"), ("briefing_items", "po_late", 0, 25)])
 
-    def test_a_record_page_through_the_door_is_a_kept_screen_whose_refusals_stand(self):
+    def test_a_record_page_through_the_door_is_read_each_time_and_its_refusals_stand(self):
+        """The door decides each read at its own snapshot: a record page is never a kept
+        screen (no copy served for another moment's access), and a refusal is the
+        reader's answer (404), never a page kept for them before."""
         from operator_api import page_sql
         b = self.backend
-        b._screen_inputs = lambda **kw: (lambda: "inputs")
         who = reader("grp-a")
-        seen = []
-        served = b._serving
+        reads = []
 
-        def spy(reader_, name, read, *a, **kw):
-            seen.append(name)
-            return served(reader_, name, read, *a, **kw)
+        def order(backend, reader_, kind, at):
+            reads.append(at)
+            if len(reads) > 1:
+                raise page_sql.NotFound()
+            return "page"
 
-        def missing(*a, **k):
-            raise page_sql.NotFound()
-
-        with mock.patch.object(b, "_serving", spy), \
+        with mock.patch.object(b, "_serving", lambda *a, **k: self.fail("a kept screen")), \
                 mock.patch.object(page_sql, "on", lambda kind=None: True), \
-                mock.patch.object(page_sql, "order", missing):
+                mock.patch.object(page_sql, "order", order):
+            self.assertEqual(b.biz_page(who, "purchase_order", "bc://x/1"), "page")
             with self.assertRaises(errors.UserFacing) as raised:
                 b.biz_page(who, "purchase_order", "bc://x/1")
         self.assertEqual(raised.exception.status, 404)
-        self.assertEqual(seen, [("biz_page", "purchase_order", "bc://x/1", "", "")])
+        self.assertEqual(reads, ["bc://x/1", "bc://x/1"])
 
     def revoked_mid_read(self, value):
         """A read that outlasts the fast budget, with finance revoked once it started."""
@@ -722,6 +758,55 @@ class NeverServedCold(LastGoodPage.__base__):
             items[0] = items[0].model_copy(update={"sources": [extra]})
         return m.LateList(total=len(items), offset=0, items=items, more=False,
                           next_offset=0)
+
+    def test_the_exclusion_sets_new_version_re_decides_a_full_readers_records_only(self):
+        """The precomputed exclusion set moves its version on every delta cycle (live: 487 of
+        574 kept pages refused in 6 h on that part alone). A full reader's kept page
+        is served again only after one batched check of every record it shows under the set
+        now; a record now withheld refuses it. Staff gates do not use the set: no check. A
+        new exclusion list (another tag) refuses every kept page."""
+        from operating.pg import permissions as perms
+        stamp = ["tag-1", 100]
+        self.enterContext(mock.patch.object(perms, "exclusion_set_stamp", lambda: list(stamp)))
+        ids = ("PurchaseOrder:bc:PO-1", "PurchaseOrder:bc:PO-2")
+        full = reader("grp-a")
+        self.reads.policy = policy("finance", unrestricted=True)
+        self.backend._serving(full, ("late", 0, 25), lambda: self.late_page(*ids))
+        self.reads.looked_up = []
+        self.assertEqual(self.serve(full, busy).total, 2)       # same version: no check
+        self.assertEqual(self.reads.looked_up, [])
+        for n in (1, 10, 60):   # every record, decided in one batch, whatever the count
+            many = [f"PurchaseOrder:bc:{i}" for i in range(n)]
+            stamp[1] += 1
+            self.backend._serving(full, ("late", 0, 25), lambda: self.late_page(*many))
+            stamp[1] += 1                                       # a delta cycle since
+            self.reads.looked_up = []
+            got = self.serve(full, busy)
+            self.assertEqual((got.total, got.stale_since is not None), (n, True))
+            self.assertEqual(self.reads.looked_up, [sorted(many)])
+            self.reads.hidden = {many[-1]}                      # now withheld: refused
+            stamp[1] += 1
+            with self.assertRaises(TimeoutError):
+                self.serve(full, busy)
+            self.reads.hidden = set()
+        staff = reader("grp-b")
+        self.reads.policy = policy("finance")
+        self.backend._serving(staff, ("late", 0, 25), lambda: self.late_page(*ids))
+        stamp[1] += 1
+        self.reads.looked_up = []
+        self.assertEqual(self.serve(staff, busy).total, 2)
+        self.assertEqual(self.reads.looked_up, [])
+        stamp[0] = "tag-2"                                      # another list: refused
+        with self.assertRaises(TimeoutError):
+            self.serve(staff, busy)
+
+    def test_an_answer_kept_under_another_exclusion_set_version_is_not_the_readers(self):
+        from operator_api.backend_pages import same_answer_access
+        held = ((("p", 1),), True, ("rule", 7), "marks", None)
+        self.assertTrue(same_answer_access((held, "d"), held))
+        moved = held[:2] + (("rule", 8),) + held[3:]
+        self.assertFalse(same_answer_access((moved, "d"), held))
+        self.assertFalse(same_answer_access((moved, "d"), (held, "d")))
 
     def test_after_a_deploy_a_record_the_reader_lost_under_the_new_code_is_not_served(self):
         """The new code (any module: no list of them decides it) reads a record the kept
@@ -1166,36 +1251,6 @@ class NeverServedCold(LastGoodPage.__base__):
             watch.join(2)
         self.assertEqual(sorted(queued), [("grp-a", 1), ("grp-b", 1)])
         self.assertEqual(len(opened), 2)
-
-    def test_a_recent_readers_page_door_is_decided_again_before_it_ages_out(self):
-        """While pages read through the door, each known reader seen within the last hours
-        gets one cheap door read queued behind live jobs (priority 1) every
-        DOOR_KEEP_SECONDS, inside the door's own age limit; one seen long ago, or revoked,
-        gets none, and with the door off nothing is queued."""
-        from operating import ontology_tools_sql as ots
-        from operator_api import page_sql, serving
-        self.assertLess(serving.DOOR_KEEP_SECONDS, ots.DOOR_MAX_AGE_SECONDS)
-        now = time.time()
-        known = {"11111111-0000-4000-8000-000000000001": ("grp-a", now - 60),
-                 "11111111-0000-4000-8000-000000000002": ("grp-old", now - 9 * 3600),
-                 "11111111-0000-4000-8000-000000000003": ("grp-gone", now - 60)}
-        self.backend.known_readers = lambda: {o: {"ref": k, "exp": 1, "seen": t}
-                                              for o, (k, t) in known.items()}
-        self.backend.revoked = lambda ref: ref == "grp-gone"
-        self.backend.identity_for = lambda oid, exp: SimpleNamespace(principals=[known[oid][0]])
-        self.backend.reader_mode = "dev"
-        queued, called = [], []
-
-        def submit(who, job, *, priority=0, deadline=None):
-            queued.append((who.key, priority))
-            job(SimpleNamespace(_call=lambda tool, args: called.append((tool, args))))
-        worker = SimpleNamespace(submit=submit)
-        with mock.patch.dict(os.environ, {page_sql.ALERTS_SWITCH: "", page_sql.SWITCH: ""}):
-            self.assertEqual(self.backend._keep_doors(worker), 0)
-        with mock.patch.dict(os.environ, {page_sql.ALERTS_SWITCH: "1"}):
-            self.assertEqual(self.backend._keep_doors(worker), 1)
-        self.assertEqual(queued, [("grp-a", 1)])
-        self.assertEqual(called, [(page_sql.TOOL, {"reads": [{"name": "alert_runs"}]})])
 
     def test_after_a_deploy_an_excluded_persons_record_is_never_served(self):
         """A page the old code kept showing a record of a person the exclusion names (the
@@ -1661,7 +1716,8 @@ class FullReaderMovingParts(unittest.TestCase):
         names = [n for n, _ in pp.policy_parts(SimpleNamespace(
             tenant="t", audiences={"mail:a": {"u"}}, markings={}, units={}), actor)]
         moving = [n for n in names if n.startswith(("audiences", "units"))]
-        self.assertEqual(sorted(moving), ["audiences", "audiences_held", "audiences_keys", "units"])
+        self.assertEqual(sorted(moving), ["audiences", "audiences_held", "audiences_keys",
+                                         "audiences_reach", "units"])
         self.assertEqual(sorted(set(moving) - set(be.FULL_READER_MOVING_PARTS)), [])
 
 if __name__ == "__main__":

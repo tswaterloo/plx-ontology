@@ -40,6 +40,7 @@ Evidence: isolated-fixture (``operator_api/tests/test_autopilot_context.py``).
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 import re
@@ -49,10 +50,12 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from operating import learning
 
 from . import memory as mem
+from operating.autopilot_records import shown
 
 # its own name: the served PLX_PG_DSN changes other paths of the autopilot (entity resolution)
 DSN_ENV = "PLX_AUTOPILOT_MEMORY_DSN"
-MOST_MEMORY = 6
+MOST_MEMORY = 20         # memory rows a draft reads
+MEMORY_CHARS = 2000      # of each (a cut is said in the text)
 WORDS_SHARED = 0.34
 _WRITING = re.compile(
     r"\b(?:repl(?:y|ies|ying)|email|e-mail|draft|write|writing|message|sign(?:-?off|ed|s)?"
@@ -226,7 +229,8 @@ class DraftContext:
         # model names the ones it followed, shown on the draft as applied
         return [(f"[pref {int(r['id'])}] " if r.get("kind") in ("instruction", "preference")
                  and type(r.get("id")) is int else "")
-                + " ".join(f"{r.get('subject') or ''} {r.get('text') or ''}".split())[:400]
+                + shown(" ".join(f"{r.get('subject') or ''} {r.get('text') or ''}".split()),
+                        MEMORY_CHARS)
                 for r in rows]
 
     def for_draft(self, owner: str, autopilot: str, work: Mapping[str, Any],
@@ -395,8 +399,8 @@ CLAIMS = ("uid", "email", "entraTenantId", "entraObjectId")
 # known (``autopilot_drafter.LOOKUP_GAP``), both inside the cycle's draft wait (160 s)
 LOOKUP_SECONDS = 100
 LOOKUP_BUDGET = 70            # research ends before it (the gate's budget)
-LOOKUP_STEPS = 10
-LOOKUP_TURNS = 16
+LOOKUP_STEPS = 16
+LOOKUP_TURNS = 24
 # a job finds the record and its ids before it proposes (``operating.autopilot_jobs``): more
 # steps; it runs on the jobber's pool, so a cycle defers its event while it runs
 JOB_SECONDS = 240
@@ -500,8 +504,11 @@ class Lookup:
             budget_seconds=budget, max_steps=steps, aliases=False,
             end_at_gate=False, prefetch=False, helpers=0,
             extra_args=["--system-prompt", said])
-        if tools:
-            session.local_tools = {**session.local_tools, **{t.spec["name"]: t for t in tools}}
+        # the Ask's prompt asks for plx.legs and {{...}} references: the session gets the
+        # legs tool, its tools print references before they act, its text is printed
+        given = session_tools(tools)
+        session.local_tools = {**(getattr(session, "local_tools", None) or {}),
+                               **{t.spec["name"]: t for t in given}}
         import time
         started = time.monotonic()
         try:
@@ -519,7 +526,31 @@ class Lookup:
         looked = [str(e.get("result")) for e in ran.events
                   if e.get("type") == "tool_call" and e.get("name") in simple_ask.TOOLS
                   and not e.get("is_error") and e.get("result") is not None]
-        return str(ran.final_text or ""), looked
+        return session_text(ran), looked
+
+
+def session_tools(tools: Sequence[Any] = ()) -> list[Any]:
+    """A session on the Ask's prompt (``simple_ask.system_prompt``): ``plx.legs`` and
+    ``tools`` each printing the session's references before it acts
+    (``ask_refs.rendering``): one prompt, one renderer."""
+    from . import ask_refs, simple_ask
+    return [simple_ask.legs_tool(), *(ask_refs.rendering(t) for t in tools)]
+
+
+def session_text(ran: Any) -> str:
+    """A session's final text with its references printed from its own results
+    (``ask_refs.print_refs``). A reference that does not resolve refuses the text: it is
+    returned empty, as a session that wrote no answer (the drafter then writes the reply
+    without the look-up, a job or the assistant keeps only its tools' proposals), logged
+    ``session_refs_unresolved`` with the count; never a draft with a hole in it."""
+    from . import ask_refs
+    import json
+    text, bad = ask_refs.print_refs(str(ran.final_text or ""), list(ran.events or ()))
+    if bad:
+        logging.getLogger("operator_api.autopilot").warning(json.dumps(
+            {"session_refs_unresolved": len(bad)}))
+        return ""
+    return text
 
 
 class NoReads:
@@ -610,10 +641,32 @@ def allowed_env(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """The autopilot's command; after a ``follow`` cycle, the Assist matters cycle
+    (``operating.assist_matters``: open, re-verify, heartbeat) over the same state dir. A
+    matters failure fails the unit (never silent); the follow's own result is kept."""
     from operating import autopilot
     os.environ.update(allowed_env(os.environ))
     register()
-    return autopilot.main(argv)
+    args = list(sys.argv[1:] if argv is None else argv)
+    rc = autopilot.main(args)
+    if args[:1] == ["follow"]:
+        rc = max(rc, matters_cycle(args))
+    return rc
+
+
+def matters_cycle(args: Sequence[str]) -> int:
+    """``assist_matters cycle`` with the follow's state dir and queue."""
+    from operating import assist_matters
+    state = "/data/plx-state"
+    if "--state-dir" in args and args.index("--state-dir") + 1 < len(args):
+        state = args[args.index("--state-dir") + 1]
+    queue = os.environ.get(assist_matters.QUEUE_ENV) or str(
+        Path(state) / "autopilot" / "autopilot.sqlite")
+    try:
+        return assist_matters.main(["cycle", "--queue", queue, "--state-dir", state])
+    except Exception:  # noqa: BLE001 - said and failed, the follow's result kept
+        logging.getLogger(__name__).exception("assist matters cycle failed")
+        return 1
 
 
 if __name__ == "__main__":

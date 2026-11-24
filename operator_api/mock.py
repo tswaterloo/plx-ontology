@@ -8,13 +8,14 @@ models as the real backend's, so a shape the contract does not allow fails here 
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import json
 import re
 import secrets
 import threading
 import time
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, Iterator, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from operating.answer_gate import _sentences
@@ -746,24 +747,69 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                 self._kept.pop(next(iter(self._kept)))
         yield "answer", answer
 
-    def records_list(self, reader: Reader, view: str, status: str = "", hold: str = "",
-                     q: str = "", offset: int = 0, limit: int = 25) -> m.RecordList:
-        rows = [("BC-1A", "Shampoo Base", "Realized", "On-Hold"), ("BC-2A", "Shampoo Base", "Realized", "Released")]
-        rows = [r for r in rows if (not status or r[2] == status)
-                and (not hold or (r[3] == "On-Hold") == (hold == "yes"))
-                and (not q or q.lower() in " ".join(r).lower())]
+    def records_views(self, reader: Reader) -> list[m.RecordView]:
+        from operating import record_lists
+        return [m.RecordView(view=v.view, title=v.title) for v in record_lists.specs().values()]
+
+    def records_list(self, reader: Reader, view: str, filters: Optional[Mapping[str, str]] = None,
+                     q: str = "", sort: str = "", direction: str = "", offset: int = 0,
+                     limit: int = 25, facets: bool = True) -> m.RecordList:
+        """Fixture rows shaped by the view's own list spec (the demo has no business tables)."""
+        from operating import record_lists
+        spec = record_lists.specs().get(view)
+        if spec is None:
+            raise UserFacing("not_found", "No such list.", 404)
+        filters = {k: v for k, v in (filters or {}).items() if v}
+        sort, direction = sort or spec.sort, direction or spec.direction
+        if spec.column(sort) is None or any(spec.filter(k) is None for k in filters):
+            raise UserFacing("not_found", "No such list.", 404)
+        states = ("Open", "Closed", "On hold")
+
+        def value(c: Any, i: int) -> Any:
+            if c.kind == "money":
+                return Decimal(1000 + 7919 * i) / 4
+            if c.kind == "date":
+                return date(2026, 1, 1) + timedelta(days=(i * 5) % 320)
+            if c.kind == "number":
+                return Decimal(i * 3 + 1)
+            if c.kind == "boolean":
+                return i % 3 == 0
+            if i % 11 == 0 and c.name != spec.columns[0].name:
+                return None
+            return states[i % 3] if spec.filter(c.name) else f"{c.label} {1000 + i}"
+
+        rows = [{c.name: value(c, i) for c in spec.columns} for i in range(57)]
+        for k, v in filters.items():
+            rows = [r for r in rows if str(r[k]) == v or (isinstance(r[k], bool) and (v == "yes") == r[k])]
+        if q:
+            rows = [r for r in rows if q.lower() in " ".join(str(r[c]) for c in spec.search).lower()]
+        rows.sort(key=lambda r: (r[sort] is None, r[sort] if r[sort] is not None else 0), reverse=direction == "desc")
         page = rows[offset:offset + limit]
-        cell = lambda t: m.BizCell(text=t)
+
+        def cell(c: Any, r: Mapping[str, Any], i: int) -> m.BizCell:
+            v = r[c.name]
+            if c.kind == "money":
+                return m.BizCell(money=m.Money(amount=format(v, "f"), currency="CAD" if i % 2 else "USD"))
+            if c.kind == "date":
+                return m.BizCell(day=v.isoformat())
+            if c.kind == "number":
+                return m.BizCell(number=format(v, "f"))
+            if c.kind == "boolean":
+                return m.BizCell(text=None if v is None else "Yes" if v else "No")
+            return m.BizCell(text=v, href=f"/object/Batch/{view}-{offset + i}" if c is spec.columns[0] else None)
+
+        options = lambda f: ([m.RecordFilterOption(value="", label="All")] + (
+            [m.RecordFilterOption(value=x, label=x, count=19) for x in states] if f.kind == "choice" else
+            [m.RecordFilterOption(value="yes", label="Yes"), m.RecordFilterOption(value="no", label="No")]))
         return m.RecordList(
-            view="production", title="Production batches", total=len(rows), offset=offset,
+            view=view, title=spec.title, total=len(rows), offset=offset,
             more=offset + len(page) < len(rows), next_offset=offset + len(page),
-            table=m.BizTable(key="batches", title="Batches", columns=["Batch", "Product", "Status", "QC"],
-                             rows=[[cell(c) for c in r] for r in page], total=len(rows)),
-            filters=[m.RecordFilter(key="status", label="Status", options=[
-                m.RecordFilterOption(value="", label="All"), m.RecordFilterOption(value="Realized", label="Realized", count=2)]),
-                m.RecordFilter(key="hold", label="QC hold", options=[
-                    m.RecordFilterOption(value="", label="All"), m.RecordFilterOption(value="yes", label="On hold"),
-                    m.RecordFilterOption(value="no", label="Not on hold")])])
+            table=m.BizTable(key=view, title=spec.title, columns=[c.label for c in spec.columns],
+                             rows=[[cell(c, r, i) for c in spec.columns] for i, r in enumerate(page)],
+                             total=len(rows)),
+            column_keys=[c.name for c in spec.columns], sort=sort, direction=direction,
+            searchable=bool(spec.search),
+            filters=[m.RecordFilter(key=f.name, label=f.label, options=options(f)) for f in spec.filters] if facets else [])
 
     def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = "",
                  record: str = "") -> m.BizPage:

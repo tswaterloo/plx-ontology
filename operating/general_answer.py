@@ -1,7 +1,7 @@
 """General answers: the part of a question that PLX's records do not answer, answered from
 the model's own knowledge, marked as such, and screened so it never states a company fact.
 
-The front door (``operating.front_door``) reads each question's ``scope``:
+(The front door that read each question's ``scope`` is gone; this module is kept for the scopes below.)
 
 * ``company``: the answer needs PLX's records; the evidence path answers it as before
   (the answer gate, citations, the final-reply screen), unchanged;

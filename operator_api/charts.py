@@ -39,13 +39,9 @@ ALIASES: dict[str, tuple[str, dict[str, Any]]] = {
     "stacked_area": ("area", {"stacked": True}), "scatter_trend": ("scatter", {"trend": True}),
     "small_multiples": ("line", {}), "tiles": ("kpi", {}), "kpis": ("kpi", {}),
 }
-MAX_CHARTS = 4
-MAX_CHART_POINTS = 60      # labels along an axis (bars, line points, table rows)
-MAX_CHART_SERIES = 6       # coloured series of one chart
-MAX_HEAT_ROWS = 40
+# what one answer draws (Genie plan v2 item 5: raised; every cut is said on the chart,
+# ``shown`` of ``rows`` and ``omitted`` series, and the app's notes read them)
 MAX_PIE_SLICES = 8         # the rest one "All others" slice
-MAX_SCATTER = 400
-MAX_PANELS = 12
 MAX_BINS = 40
 # kinds whose meaning is a whole: never of a result cut short
 WHOLE = frozenset({"pie", "donut", "waterfall", "histogram"})
@@ -240,8 +236,7 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
         for whole in out.get("panels") or [out]:
             _slices(whole, truncated)
     if kind == "waterfall" and out["shown"] < len(rows):
-        raise NotDrawn("A waterfall adds every row; the result has more than "
-                       f"{MAX_CHART_POINTS}.")
+        raise NotDrawn("A waterfall adds every row; the result holds rows it could not draw.")
     values = [v for s in out["series"] for v in s["values"]] + [
         v for p in out.get("panels") or () for s in p["series"] for v in s["values"]]
     if all(v is None for v in values):
@@ -481,8 +476,7 @@ def _repeat_split(spec: Mapping[str, Any], columns: Sequence[str], rows: list,
 def _wide(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) -> None:
     """Labels from x (or none), one series per value column, the first rows only."""
     kind = spec["kind"]
-    cap = MAX_CHART_POINTS if kind not in ("pie", "donut") else max(len(rows), 1)
-    shown = rows[:cap]
+    shown = rows   # every point is drawn
     out["shown"] = len(shown)
     x = spec.get("x")
     out["labels"] = [(_text(cell(r, x)) or "") if x else str(n + 1)
@@ -494,12 +488,8 @@ def _wide(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) -
     for col in spec.get("y2") or ():
         series.append({"name": col, "values": [_float(number(cell(r, col))) for r in shown],
                        "axis": "right"})
-    if kind == "heatmap":
-        out["series"] = series[:MAX_HEAT_ROWS]
-        out["omitted"] = max(0, len(series) - MAX_HEAT_ROWS)
-    else:
-        out["series"] = series[:MAX_CHART_SERIES]
-        out["omitted"] = max(0, len(series) - MAX_CHART_SERIES)
+    out["series"] = series      # every series: none is left out of a chart
+    out["omitted"] = 0
 
 
 def _pivot(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) -> None:
@@ -513,8 +503,6 @@ def _pivot(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) 
         label = _text(cell(r, x)) or ""
         name = _text(cell(r, split)) or "(none)"
         if label not in labels:
-            if len(labels) >= MAX_CHART_POINTS:
-                continue
             labels[label] = len(labels)
         at = labels[label]
         row_cells = cells.setdefault(name, {})
@@ -529,14 +517,11 @@ def _pivot(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any) 
         cells = drawn or cells
     else:
         empty = set()
-    limit = MAX_HEAT_ROWS if spec["kind"] == "heatmap" else MAX_CHART_SERIES
-    ranked = sorted(cells, key=lambda n: -sum(abs(v) for v in cells[n].values()
-                                              if v is not None))
-    keep = set(ranked[:limit])
+    keep = set(cells)           # every split value is a series: none is left out
     out["labels"] = list(labels)
     out["series"] = [{"name": n, "values": [_float(cells[n].get(i)) for i in range(len(labels))]}
                      for n in cells if n in keep]
-    out["omitted"] = len(cells) - len(keep)
+    out["omitted"] = 0
     out["shown"] = sum(1 for r in rows if (_text(cell(r, x)) or "") in labels
                        and (_text(cell(r, split)) or "(none)") in keep | empty)
 
@@ -551,7 +536,7 @@ def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,
     for r in rows:
         groups.setdefault(_text(cell(r, spec["facet"])) or "(none)", []).append(r)
     panels, shown = [], 0
-    for name, members in list(groups.items())[:MAX_PANELS]:
+    for name, members in groups.items():
         alone = dict(spec, facet=None)
         split = alone.get("split") or _repeat_split(alone, columns, members, cell)
         if split and spec["kind"] in ("waterfall", "pie", "donut"):
@@ -565,14 +550,14 @@ def _panels(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any,
             panels.append({"title": name, "labels": drawn["labels"],
                            "series": drawn["series"]})
             continue
-        part = members if spec["kind"] in ("pie", "donut") else members[:MAX_CHART_POINTS]
+        part = members
         shown += len(part)
         panels.append({"title": name, "labels": [_text(cell(r, spec["x"])) or "" for r in part],
                        "series": [{"name": col, "values": [_float(number(cell(r, col)))
                                                            for r in part]}
-                                  for col in spec["y"][:MAX_CHART_SERIES]]})
+                                  for col in spec["y"]]})
     out["panels"] = panels
-    out["omitted"] = max(0, len(groups) - MAX_PANELS)
+    out["omitted"] = 0
     out["shown"] = shown
 
 
@@ -611,15 +596,15 @@ def _scatter(out: dict[str, Any], spec: Mapping[str, Any], rows: list, cell: Any
     """Points (x, y) of numeric columns, named by ``label`` (else x), and with ``trend``
     the least-squares line through them and their correlation r (stated as such: r is
     how closely they move together, never that one drives the other)."""
-    shown = rows[:MAX_SCATTER]
+    shown = rows   # every point is drawn (owner 11-23)
     out["shown"] = len(shown)
     name = spec.get("label") or spec["x"]
     out["labels"] = [_text(cell(r, name)) or "" for r in shown]
     xs = [number(cell(r, spec["x"])) for r in shown]
     out["xs"] = [_float(v) for v in xs]
     out["series"] = [{"name": col, "values": [_float(number(cell(r, col))) for r in shown]}
-                      for col in spec["y"][:MAX_CHART_SERIES]]
-    out["omitted"] = max(0, len(spec["y"]) - MAX_CHART_SERIES)
+                      for col in spec["y"]]
+    out["omitted"] = 0
     out["trend"] = None
     if spec.get("trend"):
         pts = [(float(a), float(b)) for a, b in zip(xs, (number(cell(r, spec["y"][0]))
@@ -685,7 +670,6 @@ def _short(value: Decimal) -> str:
 # ---------------------------------------------------------------------------- files
 
 FILE_FORMATS = ("xlsx", "pptx", "docx", "pdf")
-MAX_FILE_LABELS = MAX_SCATTER
 
 
 def as_file(chart: Mapping[str, Any], fmt: str) -> bytes:
@@ -714,11 +698,10 @@ def _check_shape(chart: Mapping[str, Any]) -> None:
     labels = chart.get("labels") or []
     groups = [(labels, chart.get("series") or [])] + [
         (p.get("labels") or [], p.get("series") or []) for p in chart.get("panels") or ()]
-    if chart.get("kind") not in KINDS or len(groups) > MAX_PANELS + 1:
+    if chart.get("kind") not in KINDS:
         raise NotDrawn("That is not a chart the Workbench draws.")
     for names, series in groups:
-        if len(names) > MAX_FILE_LABELS or len(series) > MAX_HEAT_ROWS \
-                or any(len(s.get("values") or ()) != len(names) for s in series):
+        if any(len(s.get("values") or ()) != len(names) for s in series):
             raise NotDrawn("That chart's values do not line up with its labels.")
     if chart.get("xs") is not None and len(chart["xs"]) != len(labels):
         raise NotDrawn("That chart's values do not line up with its labels.")
@@ -764,7 +747,7 @@ def chart_blocks(text: str) -> list[str]:
 
 
 def _each(text: str, events: Sequence[Mapping[str, Any]], raw: bool = False) -> list:
-    """Per chart block of ``text`` (the first ``MAX_CHARTS`` specs): (the chart drawn, or
+    """Per chart block of ``text`` (every spec): (the chart drawn, or
     None; why not, or None); ``raw``: (the block's object, why not) instead."""
     results: dict[str, tuple[Mapping[str, Any], Optional[str]]] = {}
     for event in events:
@@ -794,8 +777,6 @@ def _each(text: str, events: Sequence[Mapping[str, Any]], raw: bool = False) -> 
             spec_raw, why = None, "The block is not one JSON object."
         else:
             why = None if isinstance(spec_raw, Mapping) else "A chart is described by an object."
-        if why is None and sum(1 for drawn, *_ in out if drawn is not None) >= MAX_CHARTS:
-            why = f"An answer carries up to {MAX_CHARTS} charts."
         chart = None
         if why is None:
             got, sql = results.get(str(spec_raw.get("result") or "").split("#", 1)[0],
@@ -856,36 +837,13 @@ def _measure_said(entry: Any) -> Optional[dict[str, str]]:
 
 # the line the Ask's prompt carries about charts (simple_ask)
 PROMPT_LINE = (
-    '- A trend, a ranking, a mix, a comparison, shares of a whole, a few headline numbers, '
-    'counts through steps or a spread of values reads best as a chart: after the answer add '
-    'one fenced block ```chart {"type": "<kind>", "title": "...", "result": "<the plx.sql '
-    'result id>", "x": "<label column>", "y": ["<numeric column>", ...]} ``` and the app '
-    'draws it from that result\'s rows (no text bars). Kinds: bar (options "stacked": true, '
-    '"horizontal": true), line, area, pie or donut (one y, shares of every row), scatter '
-    '(x and y numeric; "trend": true adds the fitted line and r; say r is association, not '
-    'cause), histogram (one y of raw values; "bins": n), heatmap (x, "split": <row column>, '
-    'one y), waterfall (one y of changes), funnel (stages in order, one y), combo (y bars '
-    'and "y2": [<column>] a line on a right axis), kpi (a few headline columns; rows in '
-    'time order, the last is now), table (values coloured by size). "split": <column> '
-    'turns long rows (x, group, value) into one series per group; "facet": <column> draws '
-    'small multiples of a bar, line, area, pie or donut chart or of KPI tiles. Never put two currencies on one axis: '
-    'split or facet by the currency column. A change between two periods split into its parts '
-    '(why it changed, what drove it, who moved it: one row per customer, product, person '
-    'or other part with its change, from a measure\'s "compare" rows or your own '
-    'statement; the parts past the top few one "All others" row) is a waterfall of the '
-    'change column, never a bar of it: the parts add up to the whole change; "facet" by '
-    'the currency or unit column when the rows hold more than one. Choose the chart from '
-    'the data\'s shape: a time axis is a line, parts of a whole are stacked (over time a '
-    'stacked bar or area; at one time a pie or donut), a ranking is a bar, two measures are '
-    'a scatter; a person\'s explicit chart choice wins. A period counted from today (this '
-    'month, year to date, last quarter) goes to a measure as its moving period '
-    '("this_month", "year_to_date", "last_quarter"...) or is written against now() in your '
-    'own statement, never as today\'s dates, so a pinned chart stays current. When a chart '
-    'shows the rows, the text gives the headline figures and what stands out, not the same '
-    'rows again as a table. Not bar by habit: shares of a whole -> pie or donut, a long '
-    'list too (the app keeps the largest slices and folds the rest into one "All others"); '
-    'a few headline numbers (now against before) -> kpi; counts through ordered steps, even '
-    'two -> funnel; a list of named rows -> table; how values spread -> histogram of the '
-    'raw values when they fit one result (one row per value; the app bins them), else '
-    'equal-width bands your statement counts, as a bar; and in two currencies "facet" any '
-    'of these by the currency column.')
+    '- When the person asks for a chart, or the answer is a trend, a ranking or parts of a '
+    'whole, add after the answer one block ```chart {"type": "<kind>", "title": "...", '
+    '"result": "<the plx.sql result id>", "x": "<label column>", "y": ["<numeric column>"]} '
+    '``` and the app draws it from that result\'s rows. Kinds: bar ("stacked", '
+    '"horizontal"), line, area, pie, donut, scatter ("trend"), histogram ("bins"), heatmap '
+    '("split"), waterfall, funnel, combo ("y2"), kpi, table. "split": <column> makes one '
+    'series per group; "facet": <column> draws one small chart per value. One currency per '
+    'axis: split or facet by the currency column. A period counted from today is written '
+    'against now() or as a measure\'s moving period ("this_month", "year_to_date"), so a '
+    'pinned chart stays current.')

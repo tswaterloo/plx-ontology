@@ -117,12 +117,11 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
             with self.subTest(actor=sorted(actor.principals)):
                 got = self.oids(actor)
                 self.assertEqual(got, self.gated(actor) - self.fc())
-                self.assertEqual(self.ids(got), expected[actor])
+                self.assertEqual(self.ids(got), expected[actor] | (
+                    self.ids(self.gated(actor)) & {"3003"}))
                 out = self.sql(actor, "SELECT count(*), count(DISTINCT chat) FROM "
                                       "teams_messages")
                 self.assertEqual(int(_cell(out["rows"][0]["cells"][0])), len(got))
-                self.assertNotIn("Freightcom", json.dumps(out))
-        self.assertTrue(self.gated(tct.COS_ONLY) & self.fc())
 
     def found(self, actor, query):
         """Every plx.search hit (mail and Teams path) for ``query``, page by page."""
@@ -144,7 +143,7 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
     def test_search_finds_only_messages_in_the_readers_chats_and_window(self):
         """A word of a Teams message's text: the hits are exactly the reader's own rows
         (``teams_messages`` through the door) whose text holds it; never one outside the
-        reader's chats or history window, never Freightcom's."""
+        reader's chats or history window."""
         import psycopg
         import re
         from operating.pg import comms_search as cs
@@ -156,7 +155,8 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         for h, f, start, body in rows:
             pieces.setdefault(h, []).append((f, start, body))
         texts = {h: cs.assemble(v).lower() for h, v in pieces.items()}
-        for word in ("note", "quote", "freight", "pickup", "freightcom"):
+        # ("freight" and "freightcom" tested the Freightcom withholding, removed 11-23)
+        for word in ("note", "quote", "pickup"):
             for actor in READERS:
                 with self.subTest(word=word, actor=sorted(actor.principals)):
                     mine = self.handles(actor)
@@ -165,10 +165,138 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         self.assertEqual(len(self.found(tct.COS_ONLY, "note")), 60)
         self.assertEqual(len(self.found(tct.VINCE_ONLY, "note")), 60)
         self.assertEqual(self.found(tct.OUTSIDER, "note"), set())
-        self.assertEqual(self.found(tct.COS_ONLY, "pickup"), set())
         # vince's window starts after the first message: its words are cos's only
         self.assertLess(len(self.found(tct.VINCE_ONLY, "quote")),
                         len(self.found(tct.COS_ONLY, "quote")))
+
+    def test_the_text_sidecar_finds_what_the_word_index_finds_and_follows_a_marking(self):
+        """``biz.comm_text`` (migration 0074): a word search through the sidecar returns, for
+        every reader, the hits the chunk word index returns (60 for 'note'); a message the
+        sidecar has no row for yet is found all the same (its text read the old way); a
+        marking set on a field after the build hides the message at once, and lifted shows
+        it again; no state (the sidecar not built) reads the old way."""
+        import psycopg
+        from operating.pg import comm_text
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for name in ("0074_comm_text.sql", "0075_comm_text_parts.sql"):
+                pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+        words = ("note", "quote", "pickup")
+        old = {(tuple(sorted(a.principals)), w): self.found(a, w) for a in READERS
+               for w in words}                       # no state yet: the old way
+        self.assertEqual(len(old[(tuple(sorted(tct.COS_ONLY.principals)), "note")]), 60)
+        with mock.patch("operating.pg.generic_records.room"):
+            built = comm_text.build(self.dsn, views=["teams_messages"], log=lambda *a, **k: None)
+        self.assertGreater(built["teams_messages"]["rows"], 60)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            self.assertEqual(pg.execute("SELECT count(*) FROM biz.comm_text WHERE field_id IS "
+                                        "NOT NULL").fetchone()[0],
+                             built["teams_messages"]["rows"] - built["teams_messages"]["no_text"])
+        for a in READERS:
+            for w in words:
+                with self.subTest(sidecar="built", actor=sorted(a.principals), word=w):
+                    self.assertEqual(self.found(a, w), old[(tuple(sorted(a.principals)), w)])
+        # 1, 10 and all of the sidecar's rows gone: each of those messages read the old way
+        for n in (1, 10, 60):
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                pg.execute("UPDATE biz.comm_text_state SET built_field_id = 0")
+                pg.execute("DELETE FROM biz.comm_text WHERE handle IN (SELECT handle FROM "
+                           "biz.comm_text WHERE field_id IS NOT NULL ORDER BY handle LIMIT %s)",
+                           (n,))
+            for a in READERS:
+                with self.subTest(missing=n, actor=sorted(a.principals)):
+                    self.assertEqual(self.found(a, "note"),
+                                     old[(tuple(sorted(a.principals)), "note")])
+            with mock.patch("operating.pg.generic_records.room"):
+                comm_text.refresh(self.dsn, log=lambda *a, **k: None)   # puts them back
+        # a marking set after the build: the message is gone at once; lifted, it is back
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            h, fid = pg.execute("SELECT handle, field_id FROM biz.comm_text WHERE field_id IS "
+                                "NOT NULL ORDER BY handle LIMIT 1").fetchone()
+            pg.execute("UPDATE ontology.text_fields SET markings = '[\"hr\"]' WHERE "
+                       "field_id = %s", (fid,))
+        gone = self.found(tct.COS_ONLY, "note") | self.found(tct.COS_ONLY, "quote") \
+            | self.found(tct.COS_ONLY, "pickup")
+        self.assertNotIn(h, gone)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("UPDATE ontology.text_fields SET markings = '[]' WHERE field_id = %s",
+                       (fid,))
+        back = self.found(tct.COS_ONLY, "note") | self.found(tct.COS_ONLY, "quote") \
+            | self.found(tct.COS_ONLY, "pickup")
+        self.assertEqual(back, old[(tuple(sorted(tct.COS_ONLY.principals)), "note")]
+                         | old[(tuple(sorted(tct.COS_ONLY.principals)), "quote")]
+                         | old[(tuple(sorted(tct.COS_ONLY.principals)), "pickup")])
+
+    def test_the_sidecar_holds_a_second_text_field_and_a_split_field_whole(self):
+        """Review minors on 0074: a message with two text fields has a sidecar row for each
+        (a word only the second holds is found, one row per field, no stop); a field whose
+        vectors pass the piece size is held in pieces (every piece a row, none lost) and still
+        matches what the word index matches, words that sit in two pieces included; the search
+        and the refresh never drop a message for either."""
+        import psycopg
+        from operating.pg import comm_text
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for name in ("0074_comm_text.sql", "0075_comm_text_parts.sql"):
+                pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+        words = ("note", "quote", "pickup")
+        old = {w: self.found(tct.COS_ONLY, w) for w in words}
+        with mock.patch("operating.pg.generic_records.room"):
+            comm_text.build(self.dsn, views=["teams_messages"], log=lambda *a, **k: None)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            h, obj, fid = pg.execute(
+                "SELECT t.handle, f.object_id, f.field_id FROM biz.comm_text t JOIN "
+                "ontology.text_fields f ON f.field_id = t.field_id ORDER BY t.handle LIMIT 1"
+            ).fetchone()
+            top = pg.execute("SELECT max(field_id) FROM ontology.text_fields").fetchone()[0]
+            cid = pg.execute("SELECT coalesce(max(chunk_id), 0) FROM ontology.text_chunks"
+                             ).fetchone()[0] + 1
+            pg.execute("INSERT INTO ontology.text_fields (field_id, object_id, version_handle, "
+                       "citation, field_path, document_kind, sender_class, markings, "
+                       "text_digest) SELECT %s, object_id, version_handle, citation, "
+                       "'row.second', document_kind, sender_class, '[]', 'd2' FROM "
+                       "ontology.text_fields WHERE field_id = %s", (top + 1, fid))
+            pg.execute("INSERT INTO ontology.text_chunks (chunk_id, field_id, start, body) "
+                       "VALUES (%s, %s, 0, ''::bytea)", (cid, top + 1))
+            pg.execute("INSERT INTO ontology.chunk_words (chunk_id, words) VALUES (%s, "
+                       "to_tsvector('simple', 'zebrasecond'))", (cid,))
+            pg.execute("UPDATE biz.comm_text_state SET built_field_id = %s", (top,))
+        with mock.patch("operating.pg.generic_records.room"):
+            comm_text.refresh(self.dsn, log=lambda *a, **k: None)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            rows = pg.execute("SELECT field_id, part, whole FROM biz.comm_text WHERE handle = %s "
+                              "ORDER BY field_id", (h,)).fetchall()
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows], [(fid, 0, True), (top + 1, 0, True)])
+        self.assertIn(h, self.found(tct.COS_ONLY, "zebrasecond"))
+        for w in words:
+            self.assertEqual(self.found(tct.COS_ONLY, w), old[w])
+        # pieces: the same build with a piece of a few bytes (every field splits)
+        with mock.patch.object(comm_text, "PIECE_BYTES", 60), \
+                mock.patch("operating.pg.generic_records.room"):
+            comm_text.build(self.dsn, views=["teams_messages"], log=lambda *a, **k: None)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            split, whole = pg.execute("SELECT count(*) FILTER (WHERE NOT whole), "
+                                      "count(*) FILTER (WHERE whole AND field_id IS NOT NULL) "
+                                      "FROM biz.comm_text").fetchone()
+            pieces = pg.execute("SELECT max(part) FROM biz.comm_text").fetchone()[0]
+        self.assertGreater(split, 0)
+        self.assertGreater(pieces, 0)
+        for w in words:
+            self.assertEqual(self.found(tct.COS_ONLY, w), old[w], w)
+        self.assertIn(h, self.found(tct.COS_ONLY, "zebrasecond"))
+        # seal (a build that stopped on its disk floor): refused while a message since the date
+        # has no row, written once every one has
+        import datetime as dt
+        since = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("DELETE FROM biz.comm_text WHERE handle = %s", (h,))
+        with self.assertRaises(comm_text.CommTextError):
+            comm_text.seal(self.dsn, view="teams_messages", since=since, log=lambda *a, **k: None)
+        with mock.patch("operating.pg.generic_records.room"):
+            comm_text.refresh(self.dsn, log=lambda *a, **k: None)
+        got = comm_text.seal(self.dsn, view="teams_messages", since=since,
+                             log=lambda *a, **k: None)
+        self.assertGreater(got["teams_messages"]["rows"], 60)
 
     def test_a_word_search_reads_the_word_index_once_whatever_the_reader_reads(self):
         """The search's word match is read once per statement, never again for each row
@@ -263,23 +391,6 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         self.assertTrue(walked, "no search held more rows than the walk: the index read "
                                 "past the walk never ran")
 
-    def test_a_freightcom_message_reaches_its_readers_pages_never_the_ai(self):
-        tool = ts.SqlTool(self.tool().base)
-        fc = {self.messages[o] for o in self.fc()}
-        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
-            for actor in READERS:
-                with self.subTest(actor=sorted(actor.principals)):
-                    theirs = {self.messages[o] for o in self.gated(actor)} & fc
-                    person = {h["citation"] for h in tool.person_search(
-                        {"query": "freightcom", "limit": 50}, actor)["documents"]}
-                    self.assertEqual(person, theirs)
-                    self.assertEqual(self.found(actor, "freightcom"), set())
-                    for h in theirs:
-                        self.assertEqual(tool.person_open({"citation": h}, actor)["citation"], h)
-                        with self.assertRaises(ts.ToolError):
-                            tool.comms_open({"citation": h}, actor)
-        self.assertTrue(fc & {self.messages[o] for o in self.gated(tct.COS_ONLY)})
-
     def test_cardinality_1_10_60_by_day(self):
         out = self.sql(tct.COS_ONLY, "SELECT created_date, count(*) FROM teams_messages "
                                      "GROUP BY 1 ORDER BY 1")
@@ -292,13 +403,15 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
         (``comms_findings.view_ddl``): each reader sees exactly the findings of the messages
         their own guarded view shows, and a day filter has its own index."""
         import psycopg
+        from operating import assist_readings as ar
         from operating.pg import comms_findings as cf
         with psycopg.connect(self.dsn) as pg:
-            cf.ensure(pg)
-            pg.execute(f"INSERT INTO {bv.SCHEMA}.{cf.VIEW} (source_view, message_key, n, "
-                       "handles, kind, topic, summary, said_at, model, found_at) SELECT "
-                       "'teams_messages', handle, 0, ARRAY[handle], 'request', 'order', "
-                       f"'Asked', created_at, 'stand-in', now() FROM {bv.SCHEMA}.teams_messages")
+            ar.ensure(pg)
+            pg.execute(f"INSERT INTO {ar.SCHEMA}.{ar.TABLE} (source, message_key, handles, "
+                       "said_at, read_ver, status, findings) SELECT 'teams_messages', handle, "
+                       "ARRAY[handle], created_at, 1, 'ok', '[{\"kind\": \"request\", \"topic\": "
+                       "\"order\", \"summary\": \"Asked\", \"who\": \"\", \"quote\": \"\"}]' "
+                       f"FROM {bv.SCHEMA}.teams_messages ON CONFLICT DO NOTHING")
             cf.create_view(pg)
             days = [r[0] for r in pg.execute(
                 "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND tablename = "
@@ -315,7 +428,7 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
                 seen += len(got)
         self.assertTrue(seen)
 
-    def test_unindexed_text_unset_window_or_other_exclusion_shows_nothing(self):
+    def test_unset_window_or_other_exclusion_shows_nothing(self):
         import psycopg
         for tag in ("", "another-list"):
             with self.subTest(tag=tag):
@@ -331,7 +444,9 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
             pg.execute("DELETE FROM ontology.text_chunks")
             pg.execute("DELETE FROM ontology.text_fields")
             bc.refresh_changed(pg, "teams_messages", {**state["marks"], "ver": 0, "link": 0})
-        self.assertEqual(self.handles(tct.COS_ONLY), set(), "unreadable text is withheld")
+        # a row whose text is not indexed is no longer withheld from the AI (the text check
+        # went with the Freightcom rule, 11-23): the reader's rows stay
+        self.assertEqual(self.handles(tct.COS_ONLY), before)
         self.assertTrue(before)
 
     def test_a_member_excluded_after_the_capture_withholds_the_chat_from_everyone(self):

@@ -136,8 +136,8 @@ UNIT_PREFIX = "sharepoint-list:"
 _ITEM = re.compile(r"[1-9][0-9]{0,9}")
 _ROW_KEYS = ("createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy", "webUrl",
              "contentType")
-_LIMITS = {"page_size": (200, 1, 999), "max_pages_per_run": (50, 1, 500),
-           "max_items_per_run": (5000, 1, 20_000)}
+_LIMITS = {"page_size": (200, 1, 999), "max_pages_per_run": (50, 1, 2_000),
+           "max_items_per_run": (5000, 1, 200_000)}   # 11-23 maxima were 500 / 20,000
 _RESYNC_CODES = frozenset({"resync_required", "sync_state_not_found"})
 _DISCOVER_LIMITS = {"max_sites": (500, 1, 5000), "max_lists": (500, 1, 5000)}
 # SharePoint's own bookkeeping columns: never a list's content (its times and authors are

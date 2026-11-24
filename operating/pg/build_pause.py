@@ -6,7 +6,7 @@ behind the WAL budget (a lost slot reads as endless lag), holding its half-built
 
 * ``before_build``: outside any transaction, before the build: the WAL budget lets it write
   now (else ``BuildPaused``: nothing begun), and the disk holds ``BUILD_NEED_FACTOR`` x the
-  live table above the floor (``business_comms.MIN_FREE_GB_DEFAULT``, 65 GB).
+  live table above the floor (the one disk floor, ``operating.disk_floor``).
 * between write chunks (``business_comms.fill``): paused, the build raises ``BuildPaused``
   and its transaction rolls back at once; never a wait inside it.
 A paused build is a quiet retry: ``business_views.build`` reports it as ``paused`` (no

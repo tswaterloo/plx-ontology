@@ -311,15 +311,18 @@ class AlertRules(unittest.TestCase):
         thread("noask", [(10, "us", "PO", "Thanks for the update.", {})])
         thread("closed", [(10, "us", "PO", ask, {})], status="closed")
         thread("internal", [(10, "us", "PO", ask, {"told": ["boss@petrasoap.com"]})])
-        self.conn.execute(f"UPDATE {S}.emails SET records = records || ARRAY['a','b','c','d']"
-                          " WHERE handle = 'm-noask-0'")
+        # a message that names many records is not "a report" any more (11-23): its request
+        # waits on each order it names, like any other
+        thread("many", [(10, "us", "PO", ask, {})])
+        self.conn.execute(f"UPDATE {S}.emails SET records = records || ARRAY['a','b','c','d','e']"
+                          " WHERE handle = 'm-many-0'")
         got = self.fire("vendor_no_reply")
-        self.assertEqual(set(self.rows("vendor_no_reply")), {"waits"})
+        self.assertEqual(set(self.rows("vendor_no_reply")), {"waits", "many"})
         self.assertIn("no reply for 10 days", self.rows("vendor_no_reply")["waits"]["why"])
         self.assertEqual(got["vendor_no_reply"]["status"], "ok")
         # the unit ids of every message in the thread are the reader's requirement
-        units = self.conn.execute(f"SELECT units FROM {S}.alerts WHERE rule = 'vendor_no_reply'"
-                                  ).fetchone()[0]
+        units = self.conn.execute(f"SELECT units FROM {S}.alerts WHERE rule = 'vendor_no_reply' "
+                                  "AND handle = 'waits'").fetchone()[0]
         self.assertEqual(sorted(units), [5, 6])
         # the vendor writes: it resolves
         self._insert(dict(handle="late", unit=9, ai_ok=True, excluded=False, mailbox=ME,
@@ -378,6 +381,46 @@ class AlertRules(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertIn("25 days at risk from 2 late purchase orders", got["so1"]["why"])
 
+    def test_late_customer_orders_are_the_measure_and_slower_than_usual_is_its_own_type(self):
+        """customer_order_late = every live open order past its required date, whichever
+        system holds it (the measure late_orders' own where), with no slack; one that is
+        stale or owes nothing is open on the books, never late; the usual-slack rule is
+        another type and never fires under the late name."""
+        d = dt.date
+        self.slack_history()
+
+        def order(h, **kw):
+            base = dict(order_number=h.upper(), status="open", of_record=True,
+                        order_date=d(2026, 10, 1), required_date=d(2026, 11, 16), days_late=1,
+                        open_state="live")
+            self.put("sales_orders", h, **{**base, **kw})
+        order("one_day")                                   # 1 day late: within any slack
+        order("long_ago", order_date=d(2023, 1, 2), required_date=d(2023, 2, 1), days_late=1000,
+              open_state="stale")
+        order("owes_nothing", open_state="nothing_outstanding")
+        order("on_time", days_late=0)
+        order("closed", status="closed")
+        order("copy", of_record=False)
+        out = self.fire("customer_order_late")["customer_order_late"]
+        self.assertEqual(out["status"], "ok", out)
+        self.assertEqual(set(self.rows("customer_order_late")), {"one_day", "copy"})
+        self.assertIn("1 day past its required date", self.rows("customer_order_late")["one_day"]["why"])
+        self.assertEqual(self.fire("customer_order_slower_than_usual")
+                         ["customer_order_slower_than_usual"]["status"], "ok")
+        self.assertNotIn("one_day", self.rows("customer_order_slower_than_usual"))
+
+    def test_late_orders_still_read_before_the_view_has_its_new_column(self):
+        """Deploy before the order view's refresh: a table without open_state is read by the
+        old definition (open, past due, not a quote), never an error."""
+        self.slack_history()
+        self.put("sales_orders", "o1", order_number="O1", status="open", of_record=True,
+                 order_date=dt.date(2026, 10, 1), required_date=dt.date(2026, 11, 1),
+                 days_late=16, open_state="live")
+        self.conn.execute(f"ALTER TABLE {S}.sales_orders DROP COLUMN open_state")
+        out = self.fire("customer_order_late")["customer_order_late"]
+        self.assertEqual(out["status"], "ok", out)
+        self.assertEqual(set(self.rows("customer_order_late")), {"o1"})
+
     def test_cardinality_1_10_60_each_record_once(self):
         for n in (1, 10, 60):
             self.setUp()
@@ -386,8 +429,8 @@ class AlertRules(unittest.TestCase):
                 self.po(f"c{n}x{i}", 1 + i % 7)
                 self.put("sales_orders", f"o{n}x{i}", order_number=f"O{i}", status="open",
                          days_late=16, required_date=dt.date(2026, 11, 1))
-            got = self.fire("po_late", "customer_order_late")
-            self.assertEqual((got["po_late"]["open"], got["customer_order_late"]["open"]),
+            got = self.fire("po_late", "customer_order_slower_than_usual")
+            self.assertEqual((got["po_late"]["open"], got["customer_order_slower_than_usual"]["open"]),
                              (n, n))
             count = self.conn.execute(f"SELECT count(*), count(DISTINCT handle) FROM {S}.alerts"
                                       ).fetchone()
@@ -430,17 +473,17 @@ class AlertRules(unittest.TestCase):
         line("partial", 2, 3)
         order("future_invoice", d(2023, 1, 2), d(2023, 2, 1))   # a date after the day: none
         invoice("future_invoice", d(2026, 12, 1))
-        out = self.fire("customer_order_late")["customer_order_late"]
+        out = self.fire("customer_order_slower_than_usual")["customer_order_slower_than_usual"]
         self.assertEqual(out["status"], "ok", out)
-        self.assertEqual(set(self.rows("customer_order_late")), {"recent", "active", "partial"})
+        self.assertEqual(set(self.rows("customer_order_slower_than_usual")), {"recent", "active", "partial"})
         self.assertEqual(out["skipped"], {"historic": 3, "invoiced": 1,
                                           "nothing_outstanding": 1})
         stored = self.conn.execute(f"SELECT skipped FROM {S}.alert_runs WHERE rule = "
-                                   "'customer_order_late'").fetchone()[0]
+                                   "'customer_order_slower_than_usual'").fetchone()[0]
         self.assertEqual(stored, out["skipped"])
         # the invoice that keeps "active" live is class 2: a reader without it never sees
         # the alert (its verdict rests on that row); every other one needs class 1 only
-        late = {"customer_order_late"}
+        late = {"customer_order_slower_than_usual"}
         self.assertEqual({h for r, h in self.read([1]) if r in late}, {"recent", "partial"})
         self.assertEqual({h for r, h in self.read([1, 2]) if r in late},
                          {"recent", "active", "partial"})
@@ -479,16 +522,16 @@ class AlertRules(unittest.TestCase):
         order("fm_never", ["filemaker"])                                  # no edit stamp
         order("bc_pilot", ["bc"])
         order("no_lineage_copy", [])                                      # not judged
-        out = self.fire("customer_order_late")["customer_order_late"]
+        out = self.fire("customer_order_slower_than_usual")["customer_order_slower_than_usual"]
         self.assertEqual(out["status"], "ok", out)
-        rows = self.rows("customer_order_late")
+        rows = self.rows("customer_order_slower_than_usual")
         self.assertEqual(set(rows), {"sage", "portal_only", "fm_edited"})
         self.assertIn("Order with no order number for C fm_edited", rows["fm_edited"]["why"])
         self.assertEqual(out["skipped"], {"historic": 1, "retiring_source_untouched": 2})
         # the edit stamp is read from the CURRENT value only
         self.conn.execute("UPDATE ontology.object_values SET superseded_at = '2026-11-01'")
-        self.fire("customer_order_late")
-        self.assertEqual({h for h, r in self.rows("customer_order_late").items()
+        self.fire("customer_order_slower_than_usual")
+        self.assertEqual({h for h, r in self.rows("customer_order_slower_than_usual").items()
                           if r["state"] == "open"}, {"sage", "portal_only"})
 
     def test_late_only_beyond_the_customers_usual_slack(self):
@@ -505,7 +548,7 @@ class AlertRules(unittest.TestCase):
                      customer_handle=cust, customer="C " + cust, order_date=req,
                      required_date=req, days_late=late)
         order("lone", "new", 9)
-        out = self.fire("customer_order_late")["customer_order_late"]
+        out = self.fire("customer_order_slower_than_usual")["customer_order_slower_than_usual"]
         self.assertEqual((out["open"], out["skipped"]), (0, {"no_slack_history": 1}))
         self.slack_history("slow", slip=20, inv_cls=3)     # its own: usually 20 days late
         self.slack_history("hist", slip=1)
@@ -515,9 +558,9 @@ class AlertRules(unittest.TestCase):
         order("new_late", "new", 21)
         order("tiny_ok", "hist", 3)           # its own usual 1 day: the 3-day floor holds
         order("tiny_late", "hist", 4)
-        out = self.fire("customer_order_late")["customer_order_late"]
+        out = self.fire("customer_order_slower_than_usual")["customer_order_slower_than_usual"]
         self.assertEqual(out["status"], "ok", out)
-        rows = self.rows("customer_order_late")
+        rows = self.rows("customer_order_slower_than_usual")
         self.assertEqual(set(rows), {"slow_late", "new_late", "tiny_late"})
         self.assertEqual(out["skipped"], {"within_usual_slack": 4})
         self.assertIn("this customer's orders usually ship within 20 days of it",
@@ -526,7 +569,7 @@ class AlertRules(unittest.TestCase):
                       rows["new_late"]["why"])
         # the late rule's day is the end of the allowed slack, not the required date
         self.assertEqual(rows["tiny_late"]["since"].date(), d(2026, 11, 17))
-        late = {"customer_order_late"}
+        late = {"customer_order_slower_than_usual"}
         self.assertEqual({h for r, h in self.read([1]) if r in late},
                          {"new_late", "tiny_late"})
         self.assertEqual({h for r, h in self.read([1, 3]) if r in late},
@@ -563,9 +606,9 @@ class AlertRules(unittest.TestCase):
         fm("unknown_qty", "2026-10-01", ["1000", None])
         fm("far", "2026-09-27", ["500", "1000"])           # 8 days apart
         fm("other_cust", "2026-10-01", ["500", "1000"], cust="cu2")
-        out = self.fire("customer_order_late")["customer_order_late"]
+        out = self.fire("customer_order_slower_than_usual")["customer_order_slower_than_usual"]
         self.assertEqual(out["status"], "ok", out)
-        self.assertEqual(set(self.rows("customer_order_late")),
+        self.assertEqual(set(self.rows("customer_order_slower_than_usual")),
                          {"other_qty", "unknown_qty", "far", "other_cust"})
         self.assertEqual(out["skipped"], {"copy_of_order_of_record": 1})
 
@@ -944,13 +987,16 @@ class AlertRules(unittest.TestCase):
         self.mail("m_excluded", excluded=True)
         self.mail("m_no_sender", sender="")
         self.mail("m_list", to_addresses=[ME] + [f"p{i}@ours.example" for i in range(5)])
-        self.mail("m_old", hours_ago=24 * 31)
+        self.mail("m_old", hours_ago=24 * 31)             # inside the 60 days now (was 30)
+        self.mail("m_older", hours_ago=24 * 61)
         self.mail("m_future", hours_ago=-48)
         self.mail("m_answered", owner_replied_at=dt.datetime(2026, 11, 17, 11,
                                                               tzinfo=dt.timezone.utc))
         out = self.fire("needs_my_reply")["needs_my_reply"]
         self.assertEqual(out["status"], "ok")
-        self.assertEqual(set(self.rows("needs_my_reply")), {"m_ok"})
+        # a message to many people and one 31 days old are still owed (the mailing and
+        # 30-day guesses are gone); bulk, role, window and answered are what decide
+        self.assertEqual(set(self.rows("needs_my_reply")), {"m_ok", "m_list", "m_old"})
         row = self.rows("needs_my_reply")["m_ok"]
         self.assertIn('bo@client.example wrote "Quote for May" on Nov 17', row["why"])
         self.assertEqual(row["since"], dt.datetime(2026, 11, 17, 7, tzinfo=dt.timezone.utc))

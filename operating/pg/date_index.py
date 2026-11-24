@@ -10,7 +10,7 @@ The served database gets it from this command::
 ``build`` is idempotent: a valid index of the definition is skipped; an INVALID one (an
 interrupted concurrent build) or one of another definition is dropped CONCURRENTLY and
 built again, then checked valid (exit 1 when not). Value writes go on during the build.
-Nothing a reader sees changes: the newest-first lists (``operating.fast_listing``) only
+Nothing a reader sees changes: the newest-first lists (retired 11-23 with the fast-answer router) only
 read faster.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import sys
 from typing import Any, Sequence
 
 NAME = "value_cells_dates"
-PREDICATE = "^[12][0-9]{3}-[01][0-9]-[0-3][0-9]"   # = fast_listing.DATE_SHAPE
+PREDICATE = "^[12][0-9]{3}-[01][0-9]-[0-3][0-9]"   # a date-shaped text value
 DDL = (f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {NAME} ON ontology.value_cells "
        f"(field, value) WHERE value ~ '{PREDICATE}'")
 _MEMORY = re.compile(r"^\d{1,5}(?:kB|MB|GB)$")

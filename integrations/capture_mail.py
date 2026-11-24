@@ -4539,6 +4539,12 @@ def apply_recapped_pass(store: MailCaptureStore, readings: Any, held: set[str], 
 # left: ``unsupported``) leaves the attachment as it is, for the capture's own passes.
 _STORED_APPLY = {"unsupported": (TEXT_OCR, "ocr_no_text"),
                  OCR_PENDING: (TEXT_OCR, "ocr_no_text", TEXT_EXTRACTED)}
+# A document the Spark reader read (``integrations.spark_doc_reader``, kind ``doc``): any
+# unread status below becomes the reading's, but only a reading WITH text (never a failure or
+# an empty answer: those leave the attachment as it is).
+_DOC_WAS = ("ocr_deferred", "failed", "no_text", "unsupported", OCR_PENDING,
+            "extraction_timed_out", "exceeds_bound")
+_DOC_APPLY = (TEXT_EXTRACTED, TEXT_OCR)
 
 
 def apply_stored_pass(store: MailCaptureStore, fetch_dir: str | Path, readings: Any,
@@ -4581,10 +4587,17 @@ def apply_stored_pass(store: MailCaptureStore, fetch_dir: str | Path, readings: 
             reading = readings.get(row["read_key"])
             if reading is None or reading["sha256"] != row["content_sha256"]:
                 continue
-            was = by_kind.get(row["kind"])
-            if was is None or reading["text_status"] not in _STORED_APPLY[was]:
+            doc = row["kind"] == "doc"
+            was = None if doc else by_kind.get(row["kind"])
+            if doc:
+                if reading["text_status"] not in _DOC_APPLY or not reading["text"]:
+                    counts["not_applicable"] += 1
+                    continue
+            elif was is None or reading["text_status"] not in _STORED_APPLY[was]:
                 counts["not_applicable"] += 1
                 continue
+            from_status = (f"+a.text_status IN ({','.join('?' * len(_DOC_WAS))}) OR "
+                           "+a.text_status LIKE 'ocr_failed%'") if doc else "+a.text_status=?"
             targets = []
             # ``+``: by the digest's index (a few rows), never the text-status one: the
             # planner (no statistics) took it, a scan of every ``unsupported`` attachment
@@ -4593,8 +4606,8 @@ def apply_stored_pass(store: MailCaptureStore, fetch_dir: str | Path, readings: 
                     "SELECT a.l1_handle, a.metadata, a.mailbox_id FROM attachments a JOIN "
                     "messages m ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL "
                     "WHERE a.content_sha256=? AND a.content_status='captured' AND "
-                    "+a.text_status=? AND a.l1_handle IS NOT NULL",
-                    (row["content_sha256"], was)):
+                    f"({from_status}) AND a.l1_handle IS NOT NULL",
+                    (row["content_sha256"], *(_DOC_WAS if doc else (was,)))):
                 if read_key(row["content_sha256"], json.loads(at["metadata"])) != \
                         row["read_key"]:
                     continue   # the same bytes under another type or name: its own reading

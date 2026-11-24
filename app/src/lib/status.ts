@@ -79,6 +79,7 @@ const BRIEFING: Record<string, Shown> = {
   quantity_mismatch: { status: "suspect", label: "Quantities differ" },
   customer_order_at_risk: { status: "risk", label: "Order at risk" },
   customer_order_late: { status: "late", label: "Order past due" },
+  customer_order_slower_than_usual: { status: "risk", label: "Slower than usual" },
   watcher_attention: { status: "risk", label: "Needs a look" },
 };
 

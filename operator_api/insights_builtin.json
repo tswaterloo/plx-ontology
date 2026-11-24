@@ -5,8 +5,8 @@
    "id": "team_output",
    "group": "Team",
    "title": "Work sent per person, last 28 days",
-   "about": "Per person: distinct emails sent from their work address (counted once, whichever mailboxes hold it), Teams messages they posted and meetings they organised (not cancelled), over the last 28 days. Sorted by mail plus Teams, busiest first. Floor, lab and phone work is not seen, and mail sent from another address of theirs is not counted.",
-   "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE received_at >= now() - interval '28 days' AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     g AS (SELECT organizer, count(DISTINCT ical_uid) AS n FROM meetings\n           WHERE start_at >= now() - interval '28 days' AND NOT is_cancelled GROUP BY 1)\nSELECT s.name AS person, s.department, coalesce(m.n, 0) AS mail_sent, coalesce(t.n, 0) AS teams_sent,\n       coalesce(g.n, 0) AS meetings_organised, s.person_id\nFROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id LEFT JOIN g ON g.organizer = s.email\nWHERE coalesce(m.n, 0) + coalesce(t.n, 0) + coalesce(g.n, 0) > 0\nORDER BY coalesce(m.n, 0) + coalesce(t.n, 0) DESC",
+   "about": "Per person: distinct non-bulk emails sent from their work address by sent date (the mail_sent measure, counted once whichever mailboxes hold it), Teams messages they posted and meetings they organised (not cancelled), over the last 28 days. Sorted by mail plus Teams, busiest first. Floor, lab and phone work is not seen, and mail sent from another address of theirs is not counted.",
+   "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE sent_at >= now() - interval '28 days' AND {where:mail_sent} AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     g AS (SELECT organizer, count(DISTINCT ical_uid) AS n FROM meetings\n           WHERE start_at >= now() - interval '28 days' AND NOT is_cancelled GROUP BY 1)\nSELECT s.name AS person, s.department, coalesce(m.n, 0) AS mail_sent, coalesce(t.n, 0) AS teams_sent,\n       coalesce(g.n, 0) AS meetings_organised, s.person_id\nFROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id LEFT JOIN g ON g.organizer = s.email\nWHERE coalesce(m.n, 0) + coalesce(t.n, 0) + coalesce(g.n, 0) > 0\nORDER BY coalesce(m.n, 0) + coalesce(t.n, 0) DESC",
    "chart": {
     "kind": "bar",
     "x": "person",
@@ -21,6 +21,7 @@
   },
   {
    "id": "team_reply_time",
+   "needs": ["emails.owner_role"],
    "group": "Team",
    "title": "Reply time per person, last 28 days",
    "about": "Messages in each person's own mailbox addressed to them (To), from someone else, not bulk, received 1 to 28 days ago: how many, how many they answered in the same thread, and the median hours to their answer (over the ones answered). People with fewer than 5 answers are left out. Fastest first.",
@@ -38,6 +39,7 @@
   },
   {
    "id": "team_waiting",
+   "needs": ["emails.owner_role"],
    "group": "Team",
    "title": "Threads waiting on each person",
    "about": "Mail threads in each person's own mailbox from the last 30 days where they had written in the last 13 weeks, the latest message is to them (To) from someone else, not bulk, more than a day old, and they have not answered since. A blocker list: some are only 'thanks' notes, so open the person to see the threads.",
@@ -56,6 +58,7 @@
   },
   {
    "id": "colleagues_waiting",
+   "needs": ["emails.owner_role"],
    "group": "Team",
    "title": "Who colleagues are waiting on",
    "about": "Per person: mail threads in their own mailbox from the last 30 days where they had written in the last 13 weeks, the latest message is to them (To) from a colleague in the directory, not bulk, more than a day old, and they have not answered since; and one-to-one Teams chats from the last 30 days where they had written in the last 13 weeks and the latest message is a colleague's, more than a day old (group chats are not counted); how many colleagues sent those (one colleague by mail and Teams is one), how many threads and chats, how many are more than 3 days old and the oldest in days, beside the person's median hours to answer colleagues over the last 28 days (messages received 1 to 28 days ago that they answered in the same thread). Many colleagues waiting and a slow answer together mark a bottleneck. Some are only 'thanks' notes.",
@@ -164,6 +167,7 @@
   },
   {
    "id": "team_responsiveness",
+   "needs": ["emails.owner_role"],
    "group": "Team",
    "title": "Reply time and reply rate per department, last 28 days",
    "about": "Per department: mail addressed (To) to its people in their own mailboxes from someone else, not bulk, received 1 to 28 days ago; how many they answered in the same thread and the median hours to the answer. Many To messages need no answer (notices, thanks), so the rate is a comparison between teams, not a target. People with no department are shown as (none).",
@@ -183,7 +187,7 @@
    "group": "Team",
    "title": "Workload balance per department, last 28 days",
    "about": "Per department in the directory: people, how many sent any mail or Teams message in the last 28 days, what they sent (distinct emails from their work address plus Teams messages), the median per person who sent any, the busiest person's count and share, and how few people send half of it (1 means one person sends at least half). Floor, lab and phone work is not seen. People with no department are shown as (none).",
-   "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE received_at >= now() - interval '28 days' AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     w AS (SELECT coalesce(nullif(s.department, ''), '(none)') AS department, coalesce(m.n, 0) + coalesce(t.n, 0) AS n\n           FROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id),\n     r AS (SELECT department, n, row_number() OVER (PARTITION BY department ORDER BY n DESC) AS rank,\n                  sum(n) OVER (PARTITION BY department ORDER BY n DESC ROWS UNBOUNDED PRECEDING) AS running,\n                  sum(n) OVER (PARTITION BY department) AS total FROM w)\nSELECT department, count(*) AS people, count(*) FILTER (WHERE n > 0) AS active, sum(n) AS sent,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY n) FILTER (WHERE n > 0))::numeric, 1) AS median_per_active_person,\n       max(n) AS busiest_person, round(100.0 * max(n) / nullif(sum(n), 0)) AS busiest_share_pct,\n       min(rank) FILTER (WHERE total > 0 AND 2 * running >= total) AS people_sending_half\nFROM r GROUP BY department ORDER BY sent DESC, department",
+   "sql": "WITH m AS (SELECT sender, count(DISTINCT message_id) AS n FROM emails\n           WHERE sent_at >= now() - interval '28 days' AND {where:mail_sent} AND sender IN (SELECT email FROM staff) GROUP BY 1),\n     t AS (SELECT (sender::jsonb) ->> 'id' AS pid, count(*) AS n FROM teams_messages\n           WHERE created_at >= now() - interval '28 days' AND left(sender, 1) = '{' GROUP BY 1),\n     w AS (SELECT coalesce(nullif(s.department, ''), '(none)') AS department, coalesce(m.n, 0) + coalesce(t.n, 0) AS n\n           FROM staff s LEFT JOIN m ON m.sender = s.email LEFT JOIN t ON t.pid = s.person_id),\n     r AS (SELECT department, n, row_number() OVER (PARTITION BY department ORDER BY n DESC) AS rank,\n                  sum(n) OVER (PARTITION BY department ORDER BY n DESC ROWS UNBOUNDED PRECEDING) AS running,\n                  sum(n) OVER (PARTITION BY department) AS total FROM w)\nSELECT department, count(*) AS people, count(*) FILTER (WHERE n > 0) AS active, sum(n) AS sent,\n       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY n) FILTER (WHERE n > 0))::numeric, 1) AS median_per_active_person,\n       max(n) AS busiest_person, round(100.0 * max(n) / nullif(sum(n), 0)) AS busiest_share_pct,\n       min(rank) FILTER (WHERE total > 0 AND 2 * running >= total) AS people_sending_half\nFROM r GROUP BY department ORDER BY sent DESC, department",
    "chart": {
     "kind": "combo",
     "x": "department",
@@ -201,8 +205,8 @@
    "id": "team_mail_weekly",
    "group": "Team",
    "title": "Mail sent by our people per week",
-   "about": "Distinct emails sent from a staff work address per week (Monday start, business time zone), the last 12 weeks: the company's outgoing mail pulse.",
-   "sql": "SELECT to_char(date_trunc('week', e.received_at AT TIME ZONE '{business_tz}'), 'YYYY-MM-DD') AS week, count(DISTINCT e.message_id) AS mail_sent FROM emails e JOIN staff s ON s.email = e.sender WHERE e.received_at >= (date_trunc('week', now() AT TIME ZONE '{business_tz}') - interval '12 weeks') AT TIME ZONE '{business_tz}' GROUP BY 1 ORDER BY 1",
+   "about": "Distinct non-bulk emails sent from a staff address domain per week (Monday start, business time zone), the last 12 weeks: the mail_sent measure, the same number Ask and the pages give.",
+   "sql": "SELECT to_char(date_trunc('week', e.sent_at AT TIME ZONE '{business_tz}'), 'YYYY-MM-DD') AS week, count(DISTINCT e.message_id) AS mail_sent FROM emails e WHERE {where:mail_sent} AND e.sent_at >= (date_trunc('week', now() AT TIME ZONE '{business_tz}') - interval '12 weeks') AT TIME ZONE '{business_tz}' GROUP BY 1 ORDER BY 1",
    "chart": {
     "kind": "line",
     "x": "week",
@@ -217,7 +221,7 @@
    "id": "customer_mail",
    "group": "Customers",
    "title": "Customers by mail, last 28 days",
-   "about": "Customers by the number of distinct non-bulk emails about them or from them in the mail you can read over the last 28 days, with the threads and how many came from outside our domain. A customer is linked to a message by the mail's customer links.",
+   "about": "Customers by the number of distinct non-bulk emails about them or from them in the mail you can read over the last 28 days, with the threads and how many came from outside our domain. A customer is linked to a message by the mail's customer links. This is its own count, not the mail_received measure: that one counts only mail from outside our domain addressed to our people, with no customer link needed; this one counts mail in both directions that the customer links name.",
    "sql": "SELECT c.name AS customer, count(DISTINCT e.message_id) AS messages, count(DISTINCT e.thread) AS threads, count(DISTINCT e.message_id) FILTER (WHERE e.sender_domain IS DISTINCT FROM split_part(s.email, '@', 2)) AS from_them FROM emails e JOIN customers c ON c.handle = ANY(e.customers) LEFT JOIN staff s ON s.person_id = e.mailbox WHERE e.received_at >= now() - interval '28 days' AND NOT e.is_bulk GROUP BY c.name ORDER BY messages DESC LIMIT 25",
    "chart": {
     "kind": "bar",
@@ -231,6 +235,7 @@
   },
   {
    "id": "customers_waiting",
+   "needs": ["emails.owner_role"],
    "group": "Waiting",
    "title": "Customers waiting on us",
    "about": "Customers whose latest message in a thread to one of our people (in that person's own mailbox, addressed to them, not bulk) has had no answer from that person for more than a day, over the last 30 days: how many threads, how many of our people they wait on, and the oldest wait in days. A colleague's answer from another mailbox is not seen unless that person was copied.",
@@ -436,7 +441,7 @@
    "group": "Purchasing",
    "title": "Supplier lead time: days from PO to first receipt, last 12 months against the 12 before",
    "about": "Purchase orders with a posted receipt linked to them (Receipt.receives), per supplier: POs received in the last 365 days, the median and slowest-tenth days from the PO's order date to its first receipt, the median for the 365 days before, and the drift (now minus before; positive is slower). Draft POs and BC pilot POs (held only in Business Central) are left out. Receipts dated before their PO's order date are left out and counted. Coverage: only receipts linked to a PO the purchase orders view holds (Sage receipts, about 50 a quarter; FileMaker receipts carry no PO link yet), suppliers with at least 3 receipted POs in the year.",
-   "sql": "WITH x AS (SELECT p.supplier, p.po_number, p.order_date, min((r.fields->>'received_date')::date) AS received\n  FROM record_links l JOIN purchase_orders p ON p.handle = l.to_handle\n  JOIN LATERAL (SELECT fields FROM records WHERE records.handle = l.from_handle AND records.type = 'Receipt' LIMIT 1) r ON true\n  WHERE l.link_type = 'Receipt.receives' AND p.order_date IS NOT NULL\n    AND p.status IS DISTINCT FROM 'draft' AND NOT (coalesce(p.source_systems, '') ~ '(^|,)bc(,|$)' AND coalesce(p.source_systems, '') !~ '(^|,)(sage|filemaker)(,|$)')\n    AND coalesce(r.fields->>'received_date', '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'\n  GROUP BY 1, 2, 3),\ny AS (SELECT supplier, received - order_date AS days, received >= (now() AT TIME ZONE '{business_tz}')::date - 365 AS recent,\n  received < (now() AT TIME ZONE '{business_tz}')::date - 365 AND received >= (now() AT TIME ZONE '{business_tz}')::date - 730 AS before FROM x)\nSELECT supplier, count(*) FILTER (WHERE recent AND days >= 0) AS pos_received,\n  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE recent AND days >= 0)::numeric, 1) AS median_days,\n  round(percentile_cont(0.9) WITHIN GROUP (ORDER BY days) FILTER (WHERE recent AND days >= 0)::numeric, 1) AS slowest_tenth_days,\n  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE before AND days >= 0)::numeric, 1) AS median_days_before,\n  round((percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE recent AND days >= 0)\n    - percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE before AND days >= 0))::numeric, 1) AS drift_days,\n  count(*) FILTER (WHERE recent AND days < 0) AS received_before_ordered\nFROM y GROUP BY 1 HAVING count(*) FILTER (WHERE recent AND days >= 0) >= 3\nORDER BY pos_received DESC, supplier",
+   "sql": "WITH x AS (SELECT p.supplier, p.po_number, p.order_date, min((r.fields->>'received_date')::date) AS received\n  FROM record_links l JOIN purchase_orders p ON p.handle = l.to_handle\n  JOIN LATERAL (SELECT fields FROM records WHERE records.handle = l.from_handle AND records.type = 'Receipt' LIMIT 1) r ON true\n  WHERE l.link_type = 'Receipt.receives' AND p.order_date IS NOT NULL\n    AND p.status IS DISTINCT FROM 'draft' AND NOT (coalesce(p.source_systems, '') = 'bc')\n    AND coalesce(r.fields->>'received_date', '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'\n  GROUP BY 1, 2, 3),\ny AS (SELECT supplier, received - order_date AS days, received >= (now() AT TIME ZONE '{business_tz}')::date - 365 AS recent,\n  received < (now() AT TIME ZONE '{business_tz}')::date - 365 AND received >= (now() AT TIME ZONE '{business_tz}')::date - 730 AS before FROM x)\nSELECT supplier, count(*) FILTER (WHERE recent AND days >= 0) AS pos_received,\n  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE recent AND days >= 0)::numeric, 1) AS median_days,\n  round(percentile_cont(0.9) WITHIN GROUP (ORDER BY days) FILTER (WHERE recent AND days >= 0)::numeric, 1) AS slowest_tenth_days,\n  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE before AND days >= 0)::numeric, 1) AS median_days_before,\n  round((percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE recent AND days >= 0)\n    - percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE before AND days >= 0))::numeric, 1) AS drift_days,\n  count(*) FILTER (WHERE recent AND days < 0) AS received_before_ordered\nFROM y GROUP BY 1 HAVING count(*) FILTER (WHERE recent AND days >= 0) >= 3\nORDER BY pos_received DESC, supplier",
    "chart": {
     "kind": "bar",
     "x": "supplier",

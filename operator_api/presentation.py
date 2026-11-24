@@ -494,7 +494,8 @@ def status_words(text: str) -> str:
     yet. The purchase order is on record but not issued yet. ..."). Any other text is
     returned as it is."""
     if not isinstance(text, str) or not re.match(
-            r"^(?:Missing|Not established|Held, its status not reached yet): ", text):
+            r"^(?:Missing|Not established|Held, its status not reached yet|"
+            r"Found but unverified|Needs a check): ", text):
         return text
     said = []
     for part in text.split("; "):
@@ -513,6 +514,13 @@ def status_words(text: str) -> str:
             said.append(f"Not known yet whether the {_either(items)}."
                         if all(re.search(r"\w+ed$", i.strip()) for i in items)
                         else f"Not known yet: {_listed(items)}.")
+        elif head == "found but unverified" and items:
+            # a lead: neither on record nor missing (``po_status.confirmation_state``)
+            said.append(f"A {_either(items)} was found but is unverified: it is linked to "
+                        "this order only as a lead.")
+        elif head == "needs a check" and items:
+            said.append(f"A {_either(items)} needs a check: it names this order's number, "
+                        "but another order holds that number too.")
         elif re.fullmatch(r"\d+ more steps? not visible to you", part.strip()):
             n = int(part.split()[0])
             said.append(f"{n} more step{'s are' if n != 1 else ' is'} in places you can't "

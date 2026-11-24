@@ -52,10 +52,13 @@ PER_CYCLE_ENV = "PLX_AUTOPILOT_JOB_PER_CYCLE"
 PARALLEL_ENV = "PLX_AUTOPILOT_JOB_PARALLEL"
 TRIAGE = "haiku"
 TRIAGE_SECONDS = 60.0
-PER_CYCLE = 8          # sessions started a cycle (the rest wait: ``job_busy``)
+PER_CYCLE = 16         # sessions started a cycle (the rest wait: ``job_busy``)
 PARALLEL = 3           # sessions at once (each a model process and a reader host)
 MOST = 4               # proposed changes one event may carry
-EVENT_CHARS = 6000
+EVENT_CHARS = 30000    # of the event's text (a cut is said in the text)
+FIELDS = 60            # of its fields, each to FIELD_CHARS
+FIELD_CHARS = 2000
+TRIAGE_CHARS = 12000   # what the jobs triage reads of the event
 BRIEF_CHARS = 3000     # a brief the model writes for an event that asks for one
 FEATURE = "autopilot_job"
 # the systems a job may change; mail and Teams replies are the drafts' (one item each)
@@ -105,9 +108,12 @@ def described(event: Mapping[str, Any], text: str, linked: Sequence[str] = ()) -
         if found:
             lines.append(f"{key.capitalize()}: {', '.join(found)}")
     fields = event.get("fields") if isinstance(event.get("fields"), Mapping) else {}
-    for key, value in list(fields.items())[:20]:
+    from .autopilot_records import shown
+    for key, value in list(fields.items())[:FIELDS]:
         if value not in (None, "", [], {}):
-            lines.append(f"{key}: {str(value)[:300]}")
+            lines.append(f"{key}: {shown(value, FIELD_CHARS)}")
+    if len(fields) > FIELDS:
+        lines.append(f"[{len(fields) - FIELDS} more fields not shown]")
     handles = [str(h) for h in event.get("handles") or () if h][:4]
     if handles:
         lines.append("Open it whole with plx.open: " + ", ".join(handles))
@@ -116,7 +122,7 @@ def described(event: Mapping[str, Any], text: str, linked: Sequence[str] = ()) -
         lines.append("Records it names (open with plx.open): " + ", ".join(linked))
     body = (text or str(event.get("text") or "")).strip()
     if body:
-        lines += ["", "Text:", body[:EVENT_CHARS]]
+        lines += ["", "Text:", shown(body, EVENT_CHARS)]
     return "\n".join(lines)
 
 
@@ -318,7 +324,8 @@ def field_hints(problems: Sequence[str]) -> list[str]:
 
 
 def triage_prompt(event_text: str) -> str:
-    return TRIAGE_PROMPT.format(event=event_text[:3000])
+    from .autopilot_records import shown
+    return TRIAGE_PROMPT.format(event=shown(event_text, TRIAGE_CHARS))
 
 
 def _json(text: Any) -> Optional[dict[str, Any]]:
@@ -348,8 +355,6 @@ def check(tool: str, arguments: Any) -> list[str]:
     from . import prepared_writes as pw
     if not isinstance(arguments, Mapping):
         return ["Arguments must be an object."]
-    if pw._freightcom(arguments):
-        return ["That carrier is never acted on through the Workbench."]
     if tool == DOC_TOOL_NAME:
         unknown = set(arguments) - set(pw.DOC_TOOL_SPEC["inputSchema"]["properties"])  # type: ignore[index]
         if unknown:
@@ -521,7 +526,6 @@ def screen(event: Mapping[str, Any], people: Any, owner: str, prompt: str, text:
     Undecidable: refused (fail closed)."""
     from .autopilot_drafter import screened, thread_screen
     from .autopilot_engine import pay_or_hr
-    from integrations.image_ocr_gpu import touches_freightcom
     if event.get("event_type") == "message.received":
         return screened(event, people, owner, prompt, text)
     fields = event.get("fields") if isinstance(event.get("fields"), Mapping) else {}
@@ -539,9 +543,6 @@ def screen(event: Mapping[str, Any], people: Any, owner: str, prompt: str, text:
     why = thread_screen(people, f"{event.get('subject') or ''}\n{text or prompt}")
     if why:
         return why
-    if touches_freightcom(prompt, text, json.dumps(fields, default=str),
-                          event.get("audience"), event.get("records")):
-        return "freightcom"
     return None
 
 
@@ -702,14 +703,11 @@ class Jobber:
         if got is None:
             return None, why
         from .autopilot_drafter import thread_screen
-        from integrations.image_ocr_gpu import touches_freightcom
         seen = "\n".join([*looked, json.dumps(got.proposals, default=str), got.summary,
                           got.brief])
         hit = thread_screen(people, seen)
         if hit:
             return None, hit
-        if touches_freightcom(seen):
-            return None, "freightcom"
         proposals = kept(got.proposals)
         if event is not None and event.get("event_type") == "message.received":
             proposals = not_a_reply(proposals, event)

@@ -38,14 +38,17 @@ from .autopilot_queue import Queue, matches
 from .autopilot_records import _digest
 
 RECHECK_BATCH = 100       # open reply items read a cycle
-EARLIER = 3               # messages before this one the model reads
-EARLIER_CHARS = 300       # of each
-BODY_CHARS = 2000         # of a mail's own words (the preview is 255)
-FILES = 3                 # attachments read, each by name and the start of its text
-FILE_CHARS = 400
-RECORDS = 3               # the states of the orders a message names
+# what the model reads beside a message (every
+# remaining cut is said in the text, ``autopilot_records.shown``)
+EARLIER = 40              # messages before this one the model reads (a whole thread in practice)
+EARLIER_CHARS = 12000     # of each
+BODY_CHARS = 12000        # of a mail's own words (the preview is 255)
+FILES = 30                # attachments read, each by name and its text
+FILE_CHARS = 20000
+RECORDS = 40              # the states of the orders a message names
 # what the model reads beside a message (``earlier_for``), put on it for the call only
-READ_WITH = ("earlier", "full_text", "attachments", "files_unread", "records")
+READ_WITH = ("earlier", "full_text", "attachments", "files_unread", "files_not_shown",
+             "records")
 _HEADER = re.compile(r"^\s*(sent|to|cc|bcc|date|subject|importance)\s*:", re.I)
 
 
@@ -93,7 +96,8 @@ def _ask_wanted(queue: Queue, event: Mapping[str, Any], asking: Sequence[Mapping
     # a message leaves its reader, ``autopilot_message_work``)
     rules = [a for a in asking if a.get("enabled") is not False and
              a.get("on") == event.get("event_type")
-             and matches(a.get("when") or {}, {**event, "asks": True, "triage": "reply"})
+             and matches(a.get("when") or {}, {**event, "asks": True, "triage": "reply",
+                                              "triage_work": "work"})
              != matches(a.get("when") or {}, {**event, "asks": False, "triage": "fyi",
                                               "triage_work": "work"})]
     if not reader or not message or not rules:
@@ -118,7 +122,6 @@ def earlier_of(st: Any, state: Optional[Path], event: Mapping[str, Any], reader:
     first, at most ``EARLIER`` lines of ``EARLIER_CHARS``; [] when there is none, it cannot
     be read, or any of it fails the screens (an excluded person's words, pay or HR,
     Freightcom): the message is then read alone, as before."""
-    from integrations.image_ocr_gpu import touches_freightcom
     from .autopilot_drafter import thread_screen
     try:
         if event.get("channel") == "teams":
@@ -126,7 +129,7 @@ def earlier_of(st: Any, state: Optional[Path], event: Mapping[str, Any], reader:
                 return []
             from .autopilot_chat import chat_thread
             name = reader_names[0].capitalize() if reader_names else ""
-            lines = chat_thread(state, event, reader, name)[-EARLIER:]
+            lines = chat_thread(state, event, reader, name, most=EARLIER)
             raw = "\n".join(lines)
         elif event.get("channel") == "mail":
             from .autopilot_work import body_text
@@ -145,9 +148,10 @@ def earlier_of(st: Any, state: Optional[Path], event: Mapping[str, Any], reader:
             lines = [f"{who}: {body}"] if body else []
         else:
             return []
-        lines = [" ".join(str(x).split())[:EARLIER_CHARS] for x in lines if str(x).strip()]
+        from .autopilot_records import shown
+        lines = [shown(" ".join(str(x).split()), EARLIER_CHARS) for x in lines if str(x).strip()]
         joined = "\n".join(lines)
-        if not lines or any(thread_screen(people, t) or touches_freightcom({"text": t})
+        if not lines or any(thread_screen(people, t)
                             for t in (raw, joined)):
             return []
         return lines
@@ -195,28 +199,29 @@ def content_of(event: Mapping[str, Any], people: Any, ctx: Callable[[], Any]
     (an outside sender's own customer's orders only, ``autopilot_handlers.senders_own``),
     each piece screened like the earlier part (excluded people, pay or HR, Freightcom) and
     left out when it fails. ``files_unread``: attachments with no text to read, said so."""
-    from integrations.image_ocr_gpu import touches_freightcom
     from .autopilot_drafter import thread_screen
     if event.get("channel") != "mail":
         return {}
     out: dict[str, Any] = {}
 
     def ok(text: str) -> bool:
-        return bool(text.strip()) and not thread_screen(people, text) and \
-            not touches_freightcom({"text": text})
+        return bool(text.strip()) and not thread_screen(people, text)
     try:
         from . import autopilot_handlers as ah
         from .autopilot_work import _current, _status_lines, attachments, body_text
         c = ctx()
         own = str(body_text(c, event) or "").split("\nFrom:")[0]
-        own = " ".join(own.split())[:BODY_CHARS]
+        from .autopilot_records import shown
+        own = shown(" ".join(own.split()), BODY_CHARS)
         if len(own) > len(str(event.get("text") or "")) and ok(own):
             out["full_text"] = own
         unread: list[dict[str, str]] = []
-        files = [f for f in attachments(c, event, unread=unread)[:FILES]
-                 if ok(f"{f['name']}\n{f['text'][:FILE_CHARS]}")]
+        found = attachments(c, event, unread=unread)
+        files = [f for f in found[:FILES] if ok(f"{f['name']}\n{f['text'][:FILE_CHARS]}")]
+        if len(found) > FILES:
+            out["files_not_shown"] = len(found) - FILES
         if files:
-            out["attachments"] = [f"{f['name']}: {' '.join(f['text'].split())[:FILE_CHARS]}"
+            out["attachments"] = [f"{f['name']}: {shown(' '.join(f['text'].split()), FILE_CHARS)}"
                                   for f in files]
         if unread:
             out["files_unread"] = len(unread)

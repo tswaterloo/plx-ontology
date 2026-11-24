@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import { getInsight, getTeamPerson } from "@/lib/api";
 import type { TeamPerson, TeamView } from "@/lib/types";
-import { PLANNER_INSIGHT, TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
+import { PLANNER_INSIGHT, readPlannerAhead, TeamDashboard, WeekTracker, busiest, minutes } from "./dashboard";
 
 const planner = vi.hoisted(() => ({ rows: [] as string[][], people: [] as (string | null)[] }));
 vi.mock("@/lib/api", () => ({
@@ -45,7 +45,7 @@ describe("Team dashboard", () => {
     const cols = within(table).getAllByRole("columnheader").filter((th) => th.closest("tr") === table.querySelectorAll("thead tr")[1]).length;
     for (const r of screen.getAllByTestId("team-row")) expect(r.querySelectorAll("td")).toHaveLength(cols);
     // one sentence on what the table is for
-    expect(screen.getByTestId("team-intro").textContent).toMatch(/^Who is busy and what is waiting on whom/);
+    expect(screen.getByTestId("team-intro").textContent).toMatch(/^What each person sent and did over the period/);
     fireEvent.click(within(table).getByText("Person"));
     expect(names()).toEqual(["Avery Lindqvist", "Bea Okafor", "Cal Mendes"]);
     fireEvent.click(within(table).getByText("Median"));
@@ -73,6 +73,23 @@ describe("Team dashboard", () => {
     const table = screen.getByTestId("team-table");
     expect(within(table).getByTitle("Open Planner tasks assigned to them")).toBeTruthy();
     expect(within(table).getByTitle("2 past due").textContent).toBe("5");
+    planner.rows = [];
+    planner.people = [];
+  });
+
+  it("uses the planner read the Team page started beside its people read, once", async () => {
+    planner.rows = [["Avery Lindqvist", "Purchasing", "7", "0", "0", "p1"]];
+    planner.people = ["k1"];
+    vi.mocked(getInsight).mockClear();
+    readPlannerAhead();
+    expect(getInsight).toHaveBeenCalledTimes(1);
+    const { unmount } = render(<TeamDashboard data={view} />);
+    await waitFor(() => expect(screen.getByTestId("team-planner-total").textContent).toBe("7"));
+    expect(getInsight).toHaveBeenCalledTimes(1);
+    unmount();
+    // a later visit reads again (the early read is used once)
+    render(<TeamDashboard data={view} />);
+    await waitFor(() => expect(getInsight).toHaveBeenCalledTimes(2));
     planner.rows = [];
     planner.people = [];
   });
@@ -134,6 +151,14 @@ describe("Team dashboard", () => {
     expect(busiest(hours)).toBe("9a, 10a, 2p");
   });
 
+  it("the person sheet says when the open items could not be read, and does not call them hidden", async () => {
+    (getTeamPerson as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({ person: person("k1", "Avery Lindqvist"), items: [], withheld: 0, truncated: false, timeline: [], partners: [], items_unread: true });
+    render(<TeamDashboard data={view} />);
+    fireEvent.click(screen.getAllByTestId("team-row")[0]);
+    expect(await screen.findByTestId("team-items-unread")).toHaveTextContent("could not be read just now");
+    expect(screen.queryByTestId("team-withheld")).toBeNull();
+  });
+
   it("the person sheet labels the busiest-hours chart under its own bars", async () => {
     render(<TeamDashboard data={view} />);
     fireEvent.click(screen.getAllByTestId("team-row")[0]);
@@ -142,6 +167,7 @@ describe("Team dashboard", () => {
     const labels = [...chart.querySelectorAll("text")];
     expect(labels.map((t) => t.textContent)).toEqual(["12a", "6a", "12p", "6p", "11p"]);
     expect(screen.getByTestId("team-person")).toHaveTextContent("Busiest: 9a, 10a, 2p");
+    expect(screen.getByTestId("team-window")).toHaveTextContent("Counts for the last 28 days");
     for (const [i, h] of [[1, 6], [2, 12], [3, 18]]) {
       const bar = bars[h];
       expect(Number(labels[i].getAttribute("x"))).toBe(Number(bar.getAttribute("x")) + Number(bar.getAttribute("width")) / 2);
@@ -175,5 +201,38 @@ describe("WeekTracker", () => {
     render(<WeekTracker weeks={weeks.map((w) => ({ ...w, saved_minutes: null }))} waiting={0} />);
     expect(screen.queryByTitle(/Workbench saved/)).toBeNull();
     expect(screen.getByTestId("team-waiting").textContent).toBe("Nothing waiting on them now.");
+  });
+});
+
+describe("a person's panel is read once the pointer rests on their row", () => {
+  it("rests: one read for that person; passing over a row reads nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      (getTeamPerson as unknown as { mockClear: () => void }).mockClear();
+      render(<TeamDashboard data={view} />);
+      const rows = screen.getAllByTestId("team-row");
+      fireEvent.pointerEnter(rows[0]);
+      fireEvent.pointerLeave(rows[0]);
+      fireEvent.pointerEnter(rows[1]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(getTeamPerson).toHaveBeenCalledTimes(1);
+      fireEvent.pointerEnter(rows[1]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(getTeamPerson).toHaveBeenCalledTimes(1);   // once per person
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("shared mailboxes and accounts are listed apart from the people", () => {
+  it("out of the People count and the people table, in their own section", () => {
+    const withAccount: TeamView = { ...view, people: [...(view.people ?? []), person("acct", "info", { shared: true, d7: { mail_sent: 40 }, d28: { mail_sent: 90 } })] };
+    render(<TeamDashboard data={withAccount} />);
+    expect(within(screen.getByTestId("team-table")).queryByText("info")).toBeNull();
+    const section = screen.getByTestId("team-accounts");
+    expect(within(section).getByText("info")).toBeTruthy();
+    expect(section).toHaveTextContent("Shared mailboxes and accounts 1");
+    expect(within(screen.getByTestId("team-totals")).getByText("People").parentElement).toHaveTextContent(String((view.people ?? []).length));
   });
 });

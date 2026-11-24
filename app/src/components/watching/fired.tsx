@@ -62,7 +62,7 @@ function ItemRow({ it }: { it: BriefingItem }) {
       <Link href={href} className={cn("truncate font-medium hover:underline max-sm:col-start-2", bare && "col-span-2 max-sm:col-span-1")}>
         {recordLabel(it.object_type, it.subject_label)}
       </Link>
-      {!bare && <span className="truncate text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2 max-sm:line-clamp-2 max-sm:whitespace-normal" title={readable(it.summary)}>
+      {!bare && <span className="line-clamp-2 text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2" title={readable(it.summary)}>
         {it.counterpart ? <span className="text-fg">{it.counterpart} · </span> : null}
         {line}
       </span>}
@@ -80,7 +80,7 @@ function ItemNext({ it }: { it: BriefingItem }) {
   const since = it.first_seen ? formatDateTime(it.first_seen).split(", ")[0] : null;
   if (!next && !contact && !it.yours && !since) return null;
   return (
-    <p className="col-start-3 col-end-5 -mt-0.5 truncate text-[12px] leading-4 text-muted max-sm:col-start-2 max-sm:col-end-4 max-sm:whitespace-normal" data-testid="fired-next">
+    <p className="col-start-3 col-end-5 -mt-0.5 line-clamp-2 text-[12px] leading-4 text-muted max-sm:col-start-2 max-sm:col-end-4" data-testid="fired-next">
       {next && <span className="text-fg/80">{next}</span>}
       {contact && <span>{next ? " · " : ""}ask {contact}</span>}
       {it.yours && <span className="text-accent">{next || contact ? " · " : ""}yours</span>}

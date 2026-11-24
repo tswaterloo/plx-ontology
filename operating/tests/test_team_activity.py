@@ -93,11 +93,11 @@ class World:
                                "message_type": "message", "body_text": "SECRET BODY"}}),
                                NOW.isoformat()))
 
-    def build(self, *, system=None, roles=None, guard=Guard()) -> dict:
+    def build(self, *, system=None, roles=None, guard=Guard(), bulk=frozenset()) -> dict:
         for db in (self.mail, self.teams, self.meet):
             db.commit()
         return ta.build(self.state, until=UNTIL, system=system, roles=roles or {},
-                        people=guard, workers=2)
+                        people=guard, workers=2, bulk=bulk)
 
 
 class Snapshot(unittest.TestCase):
@@ -155,24 +155,87 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(total(w.build(system=old)["people"].get(oid(3), {"days": {}}),
                                "planner"), 0)
 
-    def test_excluded_people_and_undecidable_colleagues_fail_closed(self):
+    def test_excluded_people_and_undecidable_senders_fail_closed_an_undecidable_recipient_only_is_left_out(self):
         w, h = self.w, timedelta(hours=1)
         w.message(1, addr(1), [addr(2), "gone@" + DOMAIN], ago=h)          # names the excluded
-        w.message(1, addr(1), [addr(2), "stranger@" + DOMAIN], ago=h)      # undecidable colleague
+        w.message(1, addr(1), [addr(2), "stranger@" + DOMAIN], ago=h)      # undecidable recipient
+        w.message(1, "stranger@" + DOMAIN, [addr(1)], ago=h)               # undecidable SENDER
+        w.message(1, "gone@" + DOMAIN, [addr(1)], ago=h)                   # sent by the excluded
         w.message(999, "gone@" + DOMAIN, [addr(1)], ago=h)                # their mailbox
         w.message(1, addr(1), [addr(2)], ago=h)                           # the one counted
         w.chat(EXCL, "chat-x", ago=h, name="Gone Person")
         w.chat(oid(1), "chat-x", ago=h, name="Avery Lindqvist")           # a chat with them
         w.chat(oid(1), "chat-y", ago=h, name="Avery Lindqvist")
         s = w.build()
-        self.assertEqual(sum(c.get("mail_sent", 0) for c in s["people"][oid(1)]["days"].values()), 1)
+        # the undecidable recipient's message counts for the readable sender; the three
+        # others (excluded named, undecidable sender, excluded sender) for nobody
+        self.assertEqual(sum(c.get("mail_sent", 0) for c in s["people"][oid(1)]["days"].values()), 2)
+        self.assertEqual(sum(c.get("mail_received", 0) for c in s["people"][oid(1)]["days"].values()), 0)
         self.assertEqual(sum(c.get("teams", 0) for c in s["people"][oid(1)]["days"].values()), 1)
         self.assertNotIn(EXCL, json.dumps(s))
         self.assertNotIn("Gone", json.dumps(s))
-        self.assertEqual(s["withheld"], {"mail": 2, "mail_mailbox": 1, "teams": 2})
+        self.assertEqual(s["withheld"], {"mail": 3, "mail_names": 1, "mail_mailbox": 1, "teams": 2})
         for guard in (None, mock.Mock(unavailable="no_list")):
             blocked = w.build(guard=guard)
             self.assertEqual((blocked["status"], blocked["people"]), ("blocked", {}))
+
+    def test_a_message_naming_an_excluded_person_leaves_what_is_served_unchanged(self):
+        """The people, counts and days are the same with or without a message that names an
+        excluded colleague, whether they sent it or got it: nothing shows who is excluded."""
+        plain = World(2)
+        plain.message(1, addr(1), [addr(2)], ago=timedelta(hours=1))
+        named = World(2)
+        named.message(1, addr(1), [addr(2)], ago=timedelta(hours=1))
+        named.message(1, addr(1), [addr(2), "gone@" + DOMAIN], ago=timedelta(hours=2))
+        named.message(1, "gone@" + DOMAIN, [addr(1)], ago=timedelta(hours=3))
+        self.assertEqual(json.dumps(plain.build()["people"], sort_keys=True),
+                         json.dumps(named.build()["people"], sort_keys=True))
+
+    def test_mail_sent_follows_the_measure_bulk_mail_is_not_a_persons_sent_mail(self):
+        w = self.w
+        for k in range(5):
+            w.message(1, addr(1), ["buyer@customer.example"], ago=timedelta(hours=k + 1),
+                      mid=f"m{k}")
+        sent = lambda s: sum(d.get("mail_sent", 0) for d in
+                             s["people"][oid(1)]["days"].values())  # noqa: E731
+        self.assertEqual(sent(w.build()), 5)
+        got = w.build(bulk=frozenset({"m1", "m3", "unrelated"}))
+        self.assertEqual(sent(got), 3)
+        self.assertEqual(got["withheld"].get("mail_bulk"), 2)
+        # no bulk flags (the business tables unreadable): nothing is built, never a count
+        # that differs from the measure
+        self.assertEqual(w.build(bulk=None)["status"], "blocked")
+
+    def test_unreadable_bulk_flags_keep_the_previous_snapshot_marked_stale(self):
+        w = self.w
+        w.message(1, addr(1), ["buyer@customer.example"], ago=timedelta(hours=1))
+        for db in (w.mail, w.teams, w.meet):
+            db.commit()
+        out = w.state / "out" / "team-activity.json"
+
+        def run(flags):
+            with mock.patch("integrations.people_exclusion.PeopleExclusion.from_env",
+                            return_value=Guard()), \
+                    mock.patch.object(ta, "bulk_message_ids", **flags), \
+                    mock.patch("operating.pg.config.dsn", return_value="x"):
+                return ta.main(["--state-dir", str(w.state), "--out", str(out)])
+
+        self.assertEqual(run({"return_value": frozenset()}), 0)
+        first = json.loads(out.read_text())
+        self.assertEqual(first["status"], "built")
+        self.assertNotIn("stale", first)
+        # the flags cannot be read: the previous counts stay, its own time, plus a note
+        self.assertEqual(run({"side_effect": RuntimeError("down")}), 1)
+        kept = json.loads(out.read_text())
+        self.assertEqual(kept["status"], "built")
+        self.assertTrue(kept["stale"])
+        self.assertIn("couldn't refresh", kept["stale_note"])
+        self.assertEqual(kept["generated_at"], first["generated_at"])
+        self.assertEqual(kept["people"], first["people"])
+        # nothing earlier to keep: blocked, never a count
+        out.unlink()
+        self.assertEqual(run({"side_effect": RuntimeError("down")}), 1)
+        self.assertEqual(json.loads(out.read_text())["status"], "blocked")
 
     def test_one_ten_sixty_people_each_counted_once(self):
         for n in (1, 10, 60):

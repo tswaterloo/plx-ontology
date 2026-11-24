@@ -24,9 +24,9 @@ Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PLX_ONTOLOGY_PG=only
 Environment=PGAPPNAME=%N
 UnsetEnvironment=PLX_WORKBENCH_API_KEY AZURE_CLIENT_SECRET
-ExecStart=/bin/bash -c 'rc=0; for r in purchasing customer_service receivables payables; do \
-  /data/venv/bin/python3 -m operating.autopilot_roster --store /data/plx-state/projection/ontology.sqlite \
-  --source postgres --role $$r --days 91 --out /data/plx-state/work-graph/roles-derived.json >/dev/null || rc=1; done; exit $$rc'
+ExecStart=/data/venv/bin/python3 -m operating.autopilot_roster --store /data/plx-state/projection/ontology.sqlite \
+  --source postgres --role all --days 91 --out /data/plx-state/work-graph/roles-derived.json
+StandardOutput=null
 Nice=10
 CPUWeight=20
 IOSchedulingClass=idle

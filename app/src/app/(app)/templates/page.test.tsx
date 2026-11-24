@@ -65,8 +65,8 @@ describe("templates page: the answer bank while it is first read", () => {
   });
 });
 
-describe("templates not ready on the first read", () => {
-  it("reads again by itself and never says templates are not available", async () => {
+describe("templates not ready on the first read (W2: no timed re-read)", () => {
+  it("the first answer is final: one read, a plain notice with Retry, and Retry reads again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let reads = 0;
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
@@ -77,12 +77,12 @@ describe("templates not ready on the first read", () => {
     }));
     try {
       render(<TemplatesPage />);
-      await waitFor(() => expect(reads).toBe(1));
-      expect(screen.queryByText(/not available/)).toBeNull();
-      await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+      expect(await screen.findByText(/couldn't be read/)).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+      expect(reads).toBe(1);   // nothing asked again by a timer
+      fireEvent.click(screen.getByRole("button", { name: /retry|try again/i }));
       await waitFor(() => expect(reads).toBe(2));
       expect(await screen.findByTestId("template-new")).toBeInTheDocument();
-      expect(screen.queryByText(/not available|couldn't be read/)).toBeNull();
     } finally {
       vi.useRealTimers();
     }

@@ -8,6 +8,7 @@
       "tests.test_doc_backend_egress",
       "tests.test_egress_retired",
       "tests.test_no_hardcoded_cases",
+      "tests.test_guardrails",
       "tests.test_ui_copy_tics",
       "tests.test_no_write_http_paths",
       "tests.test_objective_family_retired",
@@ -225,7 +226,6 @@
       "operating.tests.test_reconciliation_rules",
       "operating.tests.test_source_units",
       "operating.tests.test_agent_loop",
-      "operating.tests.test_fast_answer",
       "operating.tests.test_session_prefetch",
       "operating.tests.test_plan_answer",
       "operating.tests.test_agent_environment"

@@ -648,6 +648,8 @@ class _GatesMixin:
                     "(SELECT object_id FROM object_versions WHERE l1_handle = ?) AND "
                     "l1_handle = ? AND field_path IN ('row.name', 'row.path')",
                     (view["l1_handle"], view["l1_handle"])).fetchall()
+            if self._call_bound.search:   # this call's other gates of the same version read it once
+                self._call_bound.memo[("projected_names", id(store), view["l1_handle"])] = rows
         for path, value in rows:
             if value is not None and value != held[path]:
                 return True

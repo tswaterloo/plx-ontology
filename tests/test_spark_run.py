@@ -305,6 +305,46 @@ class StandbyChoice(unittest.TestCase):
         saved = remote.AI
         self.addCleanup(setattr, remote, "AI", saved)
         remote.AI = Path("/home/x/plx-ai")
+        import standby_guard
+        for name, val in (("HOME", Path("/home/x")), ("CONFIG", Path("/nonexistent/standby.json"))):
+            old = getattr(standby_guard, name)
+            self.addCleanup(setattr, standby_guard, name, old)
+            setattr(standby_guard, name, val)
+
+    def test_each_spark_reads_its_own_standby_settings(self):
+        import json
+        import tempfile
+        import standby_guard as guard
+        self.assertEqual(guard.host_standby(), ("/home/x/plx-ai/standby-run", "plx_s7d3d"))   # no file
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "standby.json"
+            guard.CONFIG = cfg
+            cfg.write_text(json.dumps({"socket": "standby2-run", "slot": "plx_sb4ec_standby"}))
+            self.assertEqual(guard.host_standby(cfg), ("/home/x/plx-ai/standby2-run", "plx_sb4ec_standby"))
+            pg, _ = remote.database({"pg": "standby"}, lambda: (True, "ok"))
+            self.assertEqual(pg, Path("/home/x/plx-ai/standby2-run"))
+            # anything unreadable or unknown fails closed: the box, never a guessed standby
+            for bad in ("{not json", json.dumps({"socket": "x"}), json.dumps({"socket": "a", "slot": "b c"}),
+                        json.dumps({"socket": "a", "slot": "b", "extra": 1}), "[]"):
+                cfg.write_text(bad)
+                with self.assertRaises((ValueError, OSError)):
+                    guard.host_standby(cfg)
+                self.assertEqual(remote.database({"pg": "standby"}, lambda: (True, "ok")),
+                                 (Path("/home/x/plx-ai/run"), {}))
+            # the guard checks the slot named in the file, not a fixed one
+            seen = []
+            def fake_ask(psql, host, user, sql):
+                seen.append((host, sql))
+                return ["t", "0/1", "1"] if "recovery" in sql else ["0/1", "reserved"]
+            cfg.write_text(json.dumps({"socket": "standby2-run", "slot": "plx_sb4ec_standby"}))
+            old_ask = guard.ask
+            guard.ask = fake_ask
+            try:
+                self.assertTrue(guard.pick()[0])
+            finally:
+                guard.ask = old_ask
+            self.assertEqual(seen[0][0], "/home/x/plx-ai/standby2-run")
+            self.assertIn("slot_name = 'plx_sb4ec_standby'", seen[1][1])
 
     def test_the_box_unless_asked_and_the_guard_passes(self):
         box = Path("/home/x/plx-ai/run")
@@ -329,6 +369,50 @@ class StandbyChoice(unittest.TestCase):
         self.assertFalse(guard.choose(["t", "0/3000000", "1"], ["0/3000000", ""], 600)[0])
         self.assertFalse(guard.choose(["f", "0/3000000", "1"], box, 600)[0])
         self.assertEqual(guard.pick(psql="/nonexistent/psql")[0], False)
+
+
+class StandbySettingsAlarm(unittest.TestCase):
+    """A broken ~/plx-ai/standby.json is said with its path and reason, and alarmed once per change."""
+
+    def test_the_reason_names_the_file_and_the_alarm_is_raised_once_per_change(self):
+        import json
+        import tempfile
+        import standby_guard as guard
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = d / "standby.json"
+            guard.CONFIG = cfg
+            self.addCleanup(setattr, guard, "CONFIG", Path("/nonexistent/standby.json"))
+            for text, why in (("{oops", "cannot be read as JSON"), (json.dumps({"socket": "a"}), "must both be given"),
+                              (json.dumps({"socket": "a", "slot": "b", "x": 1}), "unknown setting")):
+                cfg.write_text(text)
+                use, said = guard.pick(psql="/nonexistent/psql")
+                self.assertFalse(use)
+                self.assertTrue(said.startswith(guard.MARKER), said)
+                self.assertIn(str(cfg), said)
+                self.assertIn(why, said)
+            # the box side: a fake alarm records its calls
+            alarm = d / "alarm.py"
+            alarm.write_text("import sys\nopen(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n" % str(d / "calls"))
+            env = dict(os.environ, PLX_UNIT_ALARM=str(alarm), PLX_STANDBY_ALARM_STATE=str(d / "state"))
+            err = d / "stderr"
+
+            def run(text, *flags):
+                err.write_text(text)
+                subprocess.run([sys.executable, str(ROOT / "deploy/spark/standby_settings_alarm.py"), "sb4ec",
+                                str(err), *flags], env=env, check=True)
+                f = d / "calls"
+                return f.read_text().splitlines() if f.exists() else []
+
+            line = "spark_run: postgres = the box: " + guard.MARKER + " /h/standby.json: unknown setting(s) ['x']\n"
+            self.assertEqual(len(run(line, "--asked")), 1)
+            self.assertIn("standby-settings:sb4ec", run(line, "--asked")[0])
+            self.assertIn("/h/standby.json", run(line, "--asked")[0])
+            self.assertEqual(len(run(line, "--asked")), 1)                       # same breakage: not again
+            self.assertEqual(len(run(line.replace("unknown", "bad"), "--asked")), 2)   # changed: again
+            self.assertEqual(len(run("job output mentions " + guard.MARKER + " x\n", "--asked")), 2)  # not ours
+            run("spark_run: postgres = the standby: caught up\n", "--asked")     # fixed: state cleared
+            self.assertEqual(len(run(line.replace("unknown", "bad"), "--asked")), 3)
 
 
 if __name__ == "__main__":

@@ -706,8 +706,8 @@ class StoreReads:
                          f"(julianday(l.{column}) = julianday(:t) AND l.link_id < :lid)) ")
         return list(self.conn.execute(
             "SELECT l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
-            "l.binding_kind, l.reason, l.evidence_handles, l.recorded_at, l.superseded_at "
-            "FROM links l "
+            "l.binding_kind, l.reason, l.evidence_handles, l.recorded_at, l.superseded_at, "
+            "l.markings FROM links l "
             "WHERE (l.from_object = :id OR l.to_object = :id) "
             f"AND l.{column} IS NOT NULL AND julianday(l.{column}) <= julianday(:at) "
             "AND l.markings IN (SELECT value FROM json_each(:marks)) " + where

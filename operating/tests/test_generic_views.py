@@ -65,7 +65,7 @@ SCHEMA = ot.SchemaView.from_documents([DOMAIN])
 FULL, OPS, NOBODY = tab.FULL, tab.OPS, tab.NOBODY
 # what OPS may never read; what nobody may ever read
 OPS_SECRET = ("Hidden Co", "4444.44", "Mail one", "List row")
-NEVER = ("Freightcom", "GONE-9", "Excluded mail", "Excluded task", "Mail one")
+NEVER = ("GONE-9", "Excluded mail", "Excluded task", "Mail one")
 
 
 def _api(rel, key):
@@ -250,12 +250,12 @@ class Fixture:
 
 
 class GenericViews(Fixture, unittest.TestCase):
-    def test_full_reader_reaches_every_type_but_excluded_gone_and_freightcom(self):
+    def test_full_reader_reaches_every_type_but_excluded_and_gone(self):
         got = dict(self.rows("SELECT type, count(*) FROM records GROUP BY 1"))
         # mail is the comms tables'; the deleted invoice, the excluded person's task and
-        # the Freightcom customer are in no row the AI reads; the list row is not a
+        # (Freightcom's customer is read like any other); the list row is not a
         # business system's and the exclusion decided no version yet (covered_ver 0)
-        self.assertEqual(got, {"Customer": "3", "SalesInvoice": "2", "MCTask": "71"})
+        self.assertEqual(got, {"Customer": "4", "SalesInvoice": "2", "MCTask": "71"})
         listed = json.dumps([self.call({"sql": f"SELECT * FROM {v} LIMIT 500"}) for v in
                              ("records", "record_links")])
         for secret in NEVER:
@@ -268,14 +268,14 @@ class GenericViews(Fixture, unittest.TestCase):
                                  ["12.50", "USD", "2026-11-04", "IN-2"]])
         links = dict(self.rows("SELECT link_type, count(*) FROM record_links GROUP BY 1"))
         self.assertEqual(links, {"Customer.same_record_as": "1", "MCTask.about": "3",
-                                 "SalesInvoice.billed_to": "3"})   # not Freightcom's
+                                 "SalesInvoice.billed_to": "4"})   # Freightcom's too
         self.assertEqual(self.rows("SELECT tier FROM record_links WHERE from_handle = "
                                    "'mc://tasks/t60-59'"), [["corroborated"]])
         # the Freightcom customer is in the table, kept from the AI's view only
         import psycopg
         with psycopg.connect(self.dsn) as c:
             self.assertEqual(c.execute("SELECT ai_ok FROM biz.records WHERE label = "
-                                       "'Freightcom Inc'").fetchall(), [(False,)])
+                                       "'Freightcom Inc'").fetchall(), [(True,)])
 
     def test_each_reader_sees_exactly_what_the_door_allows(self):
         for actor in (FULL, OPS, NOBODY):
@@ -287,7 +287,7 @@ class GenericViews(Fixture, unittest.TestCase):
                 # the door's additions to plx.table's rule, for every reader: nothing
                 # naming Freightcom, never an excluded person's own record; a record with
                 # a field marked beyond the reader's markings is shown, that field withheld
-                hide = {"Freightcom Inc", "Excluded task"}
+                hide = {"Excluded task"}
                 self.assertEqual(ours, [x for x in shown if x not in hide], (otype, actor))
         # staff: a list row of a non-business system is a full reader's alone
         self.assertEqual(self.rows("SELECT count(*) FROM records WHERE type = "
@@ -297,13 +297,13 @@ class GenericViews(Fixture, unittest.TestCase):
                                  for actor in (OPS, NOBODY)])
         for secret in OPS_SECRET + NEVER:
             self.assertNotIn(secret, everything)
-        # a link shows when the reader holds both ends: OPS, both invoices' to the customer
-        # it reads (never to the finance-marked customer or Freightcom)
+        # a link shows when the reader holds both ends: OPS, both invoices' to the customers
+        # it reads (never to the finance-marked customer; Freightcom's like any other)
         self.assertEqual(sorted(self.rows(
             "SELECT from_type, link_type, to_type, from_handle FROM record_links WHERE "
             "from_type = 'SalesInvoice'", OPS)),
             [["SalesInvoice", "SalesInvoice.billed_to", "Customer",
-              _api("portal.sage_oe_invoice_header", h)] for h in ("i1", "i2")])
+              _api("portal.sage_oe_invoice_header", h)] for h in ("i1", "i1", "i2")])
         for view in ("records", "record_links"):
             self.assertEqual(self.rows(f"SELECT count(*) FROM {view}", NOBODY), [["0"]])
 
@@ -378,7 +378,7 @@ class GenericViews(Fixture, unittest.TestCase):
             with self.assertRaises(psycopg.errors.InsufficientPrivilege):
                 pg.execute("SELECT count(*) FROM biz.records")
 
-    def test_cardinality_1_10_60_and_cost_guard(self):
+    def test_cardinality_1_10_60_and_no_refusal_by_size(self):
         got = dict(self.rows("SELECT fields->>'status', count(*) FROM records WHERE type = "
                              "'MCTask' GROUP BY 1"))
         self.assertEqual(got, {"group1": "1", "group10": "10", "group60": "60"})
@@ -388,11 +388,10 @@ class GenericViews(Fixture, unittest.TestCase):
         self.assertEqual(self.rows("SELECT label FROM records WHERE handle = "
                                    "'mc://tasks/t60-5'"), [["Task 60-5"]])
         with mock.patch.object(gv, "MAX_RECORDS", 5):   # 8 links, 78 records
+            # every reader reads as at a psql prompt (owner 11-22): no row-count refusal,
+            # the statement's own time limit (and the costly slots) bound it
             for sql in ("SELECT count(*) FROM records", "SELECT * FROM record_links"):
-                out = self.call({"sql": sql}, OPS)
-                self.assertEqual((out.get("error") or {}).get("code"), "too_broad", (sql, out))
-                self.assertIn("type", out["error"]["hint"])
-            # a full reader reads as at a psql prompt (its statement's time bounds it)
+                self.assertNotIn("error", self.call({"sql": sql}, OPS), sql)
             self.assertNotIn("error", self.call({"sql": "SELECT count(*) FROM records"}))
 
     def test_injection_and_unknown_input_fail_closed(self):
@@ -710,9 +709,11 @@ class RecordsSearch(Fixture, unittest.TestCase):
         decide(self.dsn, None)
         self.addCleanup(decide, self.dsn, 0)   # the class's other tests see the fixture's set
         args = {"query": "IN", "sources": ["records"]}
-        self.assertEqual(self.titles(self.search(args)), ["IN-1", "IN-2"])
+        # "IN" is in "Freightcom Inc" too (read like any other since 11-23)
+        self.assertEqual(self.titles(self.search(args)), ["Freightcom Inc", "IN-1", "IN-2"])
         # IN-1's amount is finance-marked: OPS finds the invoice, never the amount
-        self.assertEqual(self.titles(self.search(args, OPS)), ["IN-1", "IN-2"])
+        self.assertEqual(self.titles(self.search(args, OPS)),
+                         ["Freightcom Inc", "IN-1", "IN-2"])
         self.assertEqual(self.titles(self.search(args, NOBODY)), [])
         for actor in (FULL, OPS, NOBODY):
             for q in ("Freightcom", "GONE", "Excluded task", "Mail one", "Hidden Co",
@@ -721,6 +722,8 @@ class RecordsSearch(Fixture, unittest.TestCase):
                 titles = self.titles(got)
                 if actor is FULL and q in ("Hidden Co", "List row"):
                     self.assertEqual(titles, [q])    # a full reader's own
+                elif actor is not NOBODY and q == "Freightcom":
+                    self.assertEqual(titles, ["Freightcom Inc"])   # like any other
                 else:
                     self.assertEqual(titles, [], (q, actor))
         hit = self.search({"query": "Acme Ltd", "sources": ["records"]})["documents"]
@@ -735,6 +738,11 @@ class RecordsSearch(Fixture, unittest.TestCase):
         each saying so, read through the reader's own door (never a record its word
         search could not show)."""
         import psycopg
+        # the test cluster's template may already carry pg_trgm (the box's 5433 one does):
+        # start from a database without it, so the no-extension case is really tested
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("DROP EXTENSION IF EXISTS pg_trgm CASCADE")
+        decide(self.dsn, None)
         self.assertEqual(self.titles(self.search({"query": "Acmee Ltd",
                                                   "sources": ["records"]})), [])  # no pg_trgm
         with psycopg.connect(self.dsn, autocommit=True) as c:
@@ -756,7 +764,8 @@ class RecordsSearch(Fixture, unittest.TestCase):
         for actor in (OPS, NOBODY):
             self.assertEqual(self.titles(close("Hiden Co", actor)), [], actor)
         for actor in (FULL, OPS, NOBODY):
-            self.assertEqual(self.titles(close("Freightcomm", actor)), [], actor)
+            self.assertEqual(self.titles(close("Freightcomm", actor)),
+                             [] if actor is NOBODY else ["Freightcom Inc"], actor)
             self.assertEqual(self.titles(close("Excluded tasks", actor)), [], actor)
         # every word held: nothing added
         held = close("Acme Ltd")
@@ -787,7 +796,8 @@ class RecordsSearch(Fixture, unittest.TestCase):
             self.assertEqual(self.titles(find("the Hidden", actor)), [], actor)
         for actor in (FULL, OPS, NOBODY):
             self.assertEqual(self.titles(find("the excluded tasks", actor)), [], actor)
-            self.assertEqual(self.titles(find("all Freightcoms", actor)), [], actor)
+            self.assertEqual(self.titles(find("all Freightcoms", actor)),
+                             [] if actor is NOBODY else ["Freightcom Inc"], actor)
         held = find("Acme Ltd")   # every word held: nothing added
         self.assertNotIn("match", held["documents"][0])
         self.assertNotIn("widened", held["searched"])
@@ -865,6 +875,25 @@ class RecordsSearch(Fixture, unittest.TestCase):
             self.assertTrue(want <= set(seen), group)            # none lost
             if n == 60:
                 self.assertEqual(set(seen), want)                # three pages, exactly
+        # pages stop at MAX_OFFSET (was 1,000, now 10,000): the stop is said, never a
+        # silent end of the list
+        from operating.pg import records_search as rs
+        with mock.patch.object(rs, "MAX_OFFSET", 25):
+            first = self.search({"query": "Task 60-", "sources": ["records"], "limit": 25},
+                                OPS)
+            self.assertEqual(first["completeness"]["next_cursor"], "r1:25")
+            self.assertNotIn("depth", first["searched"])
+            last = self.search({"query": "Task 60-", "sources": ["records"], "limit": 25,
+                                "cursor": "r1:25"}, OPS)
+            self.assertEqual(len(last["documents"]), 25)
+            self.assertEqual((last["completeness"]["next_cursor"],
+                              last["completeness"]["reason"]), (None, "depth_cap"))
+            self.assertIn("pages stop at the 25th match", last["searched"]["depth"])
+        self.assertEqual(rs.read_cursor("r1:10000"), 10000)
+        # words past the searched ones are named in the depth, never dropped unsaid
+        many = " ".join(["Task"] + [f"w{i}" for i in range(rs.MAX_TERMS)])
+        out = self.search({"query": many, "sources": ["records"]}, OPS)
+        self.assertIn(f"not searched: w{rs.MAX_TERMS - 1}", out["searched"]["depth"])
         for args in ({"query": "x", "cursor": "r1:99999", "sources": ["records"]},
                      {"query": "IN", "since": "yesterday", "sources": ["records"]},
                      {"query": "%%", "sources": ["records"]},
@@ -961,6 +990,126 @@ class OwnerOnly(Fixture, unittest.TestCase):
         self.assertEqual(self.rows(about, FULL), [["4"]])
 
 
+class RecordDates(Fixture, unittest.TestCase):
+    """The declared day of records built before the declarations (``date_declare apply``) is
+    read through the guarded ``records`` view from ``biz.record_dates``: one row per record
+    whatever the number of side rows (N=1/10/60), only for the version it was read from, and
+    no reader sees a record or a day it could not before."""
+
+    def counts(self, actor):
+        return self.rows("SELECT count(*), count(record_date) FROM records", actor)[0]
+
+    def test_a_side_day_shows_once_for_its_version_to_every_reader_of_the_row(self):
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            self.assertIsNotNone(c.execute("SELECT to_regclass('biz.record_dates')").fetchone()[0])
+            undated = c.execute("SELECT rid, type, ver, record_date IS NULL FROM biz.records "
+                                "ORDER BY rid").fetchall()   # every record: side rows on dated ones too
+        self.assertGreaterEqual(len(undated), 60)
+        base = {a: self.counts(a) for a in (FULL, OPS, NOBODY)}
+        try:
+            for n in (1, 10, 60):
+                with psycopg.connect(self.dsn, autocommit=True) as c:
+                    c.execute("DELETE FROM biz.record_dates")
+                    for rid, t, ver, _none in undated[:n]:
+                        c.execute("INSERT INTO biz.record_dates (type, rid, ver, day, field) "
+                                  "VALUES (%s, %s, %s, '2026-02-03', 'docdate')", (t, rid, ver))
+                for actor in (FULL, OPS, NOBODY):
+                    total, dated = self.counts(actor)
+                    self.assertEqual(total, base[actor][0], (n, "no row lost or doubled"))
+                    self.assertLessEqual(int(dated) - int(base[actor][1]), n)
+                total, dated = self.counts(FULL)
+                self.assertEqual(int(dated) - int(base[FULL][1]),   # the full reader: each new day
+                                 sum(1 for r in undated[:n] if r[3]))
+            with psycopg.connect(self.dsn, autocommit=True) as c:   # a record that changed since
+                c.execute("UPDATE biz.record_dates SET ver = ver + 1")
+            self.assertEqual(self.counts(FULL), base[FULL])
+            # a side day wins over the build's older one for its version, and only for it
+            with psycopg.connect(self.dsn, autocommit=True) as c:
+                rid, t, ver, was = c.execute("SELECT rid, type, ver, record_date FROM biz.records "
+                                             "WHERE record_date IS NOT NULL LIMIT 1").fetchone()
+                handle = c.execute("SELECT handle FROM biz.records WHERE rid = %s", (rid,)).fetchone()[0]
+                c.execute("INSERT INTO biz.record_dates VALUES (%s, %s, %s, '2001-02-03', 'x')",
+                          (t, rid, ver))
+            q = f"SELECT record_date FROM records WHERE handle = '{handle}'"
+            self.assertEqual(self.rows(q), [["2001-02-03"]])
+            with psycopg.connect(self.dsn, autocommit=True) as c:
+                c.execute("UPDATE biz.record_dates SET ver = ver + 1")
+            self.assertEqual(self.rows(q), [[was]])
+        finally:
+            with psycopg.connect(self.dsn, autocommit=True) as c:
+                c.execute("DELETE FROM biz.record_dates")
+
+    def test_a_side_dated_record_matches_a_since_until_search_on_every_path(self):
+        """The candidate statements read the store's table, so they read the side day too: a
+        record whose only day is in ``biz.record_dates`` is found by since/until, by the label
+        words, by the stems and by the close spelling, and by none outside its days."""
+        import psycopg
+        from operating.pg import records_search as rs
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            rid, t, ver, handle, label = c.execute(
+                "SELECT rid, type, ver, handle, label FROM biz.records WHERE "
+                "label = 'Acme Ltd' ORDER BY rid LIMIT 1").fetchone()
+            words = ["acme", "ltd"]
+            c.execute("INSERT INTO biz.record_dates VALUES (%s, %s, %s, '2031-05-06', 'x')",
+                      (t, rid, ver))
+            self.addCleanup(lambda: psycopg.connect(self.dsn, autocommit=True).execute(
+                "DELETE FROM biz.record_dates"))
+            inside = {"since": "2031-01-01", "until": "2031-12-31", "cap": 100, "q": label,
+                      **{f"w{i}": rs._like(w) for i, w in enumerate(words)},
+                      "stq": c.execute("SELECT plainto_tsquery('english', %s)::text",
+                                       (label,)).fetchone()[0]}
+            inside.update({f"s{i}": p for i, p in enumerate(rs.stems(inside["stq"]))})
+            outside = {**inside, "since": "2032-01-01", "until": "2032-12-31"}
+            stmts = [rs.candidates_sql([0, 1], biz="biz", since=True, until=True),
+                     rs.stem_candidates_sql(len(rs.stems(inside["stq"])), biz="biz", since=True, until=True)]
+            if c.execute("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'").fetchone():
+                schema = c.execute("SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON "
+                                   "n.oid = e.extnamespace WHERE e.extname = 'pg_trgm'").fetchone()[0]
+                c.execute("SET pg_trgm.similarity_threshold = 0.4")
+                stmts.append(rs.close_candidates_sql(biz="biz", trgm=schema, since=True, until=True))
+            for sql in stmts:
+                self.assertIn(handle, [r[0] for r in c.execute(sql, inside).fetchall()], sql)
+                self.assertNotIn(handle, [r[0] for r in c.execute(sql, outside).fetchall()], sql)
+        # and through the tool: the reader's own door, the same record
+        out = self.search({"query": label, "sources": ["records"], "since": "2031-01-01",
+                           "until": "2031-12-31"})
+        self.assertIn(handle, [d["citation"] for d in out["documents"]])
+        self.assertEqual(self.search({"query": label, "sources": ["records"],
+                                      "since": "2032-01-01"})["documents"], [])
+
+    def test_an_empty_side_table_changes_no_label_search_and_the_readers_can_read_it(self):
+        """The table made by migration 0077 (before any apply) is empty: the label search
+        reads it without error and finds the same record; plx_api / plx_eval hold SELECT."""
+        import psycopg
+        from operating.pg import records_search as rs
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            for role in ("plx_api", "plx_eval"):
+                if not c.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+                    c.execute(f"CREATE ROLE {role} NOLOGIN")
+            c.execute("DELETE FROM biz.record_dates")
+            c.execute("REVOKE ALL ON biz.record_dates FROM plx_api, plx_eval")   # the migration grants
+            c.execute((MIGRATIONS_DIR / "0077_record_dates.sql").read_text())
+            c.execute((MIGRATIONS_DIR / "0077_record_dates.sql").read_text())   # idempotent
+            for role in ("plx_api", "plx_eval"):
+                self.assertTrue(c.execute("SELECT has_table_privilege(%s, 'biz.record_dates', "
+                                          "'SELECT')", (role,)).fetchone()[0], role)
+                self.assertFalse(c.execute("SELECT has_table_privilege(%s, 'biz.record_dates', "
+                                           "'INSERT')", (role,)).fetchone()[0], role)
+            self.assertEqual(c.execute("SELECT count(*) FROM biz.record_dates").fetchone()[0], 0)
+            handle, label = c.execute("SELECT handle, label FROM biz.records WHERE "
+                                      "label = 'Acme Ltd' ORDER BY rid LIMIT 1").fetchone()
+            args = {"since": "2000-01-01", "until": "2099-12-31", "cap": 100, "q": label,
+                    "w0": rs._like("acme"), "w1": rs._like("ltd")}
+            sql = rs.candidates_sql([0, 1], biz="biz", since=False, until=False)
+            self.assertIn(handle, [r[0] for r in c.execute(sql, args).fetchall()], sql)
+            dated = rs.candidates_sql([0, 1], biz="biz", since=True, until=True)   # undated: none
+            self.assertEqual([], c.execute(dated, args).fetchall())
+        out = self.search({"query": label, "sources": ["records"]})
+        self.assertIn(handle, [d["citation"] for d in out["documents"]])
+
+
 class Refresh(Fixture, unittest.TestCase):
     def test_refresh_in_place_equals_a_fresh_build(self):
         import psycopg
@@ -976,13 +1125,13 @@ class Refresh(Fixture, unittest.TestCase):
             c.execute("DELETE FROM ontology.link_rows WHERE link_id = 'b4'")
         before = self.rows("SELECT count(*) FROM record_links WHERE link_type = "
                            "'SalesInvoice.billed_to'")
-        self.assertEqual(before, [["3"]])
+        self.assertEqual(before, [["4"]])   # Freightcom's too
         out = gr.refresh(self.dsn)
         # the deleted task goes; the two of the people set stay, the owner's alone
         self.assertEqual(out["dropped"], 1, out)
         ts._DOOR.clear()
         self.assertEqual(self.rows("SELECT count(*) FROM record_links WHERE link_type = "
-                                   "'SalesInvoice.billed_to'"), [["2"]])
+                                   "'SalesInvoice.billed_to'"), [["3"]])
         self.assertEqual(self.rows("SELECT count(*) FROM records WHERE type = 'MCTask'"),
                          [["68"]])
         self.assertEqual(self.rows("SELECT count(*) FROM record_links WHERE link_type = "
@@ -1471,16 +1620,18 @@ class DiskRoom(unittest.TestCase):
         class NoSetting:
             def execute(self, *a, **k):
                 raise RuntimeError("no pg_settings here")
-        frees, slept = [40 * gb, 44 * gb, 60 * gb], []
-        with mock.patch.dict(os.environ, {"PLX_RECORDS_MIN_FREE_GB": ""}):
-            gr.room(NoSetting(), 4, free=lambda p: frees.pop(0), sleep=slept.append, wal=False)
-            self.assertEqual(len(slept), 2)            # 35 + 4 x 3 = 47 GB needed
-            with self.assertRaisesRegex(RuntimeError, "below the 47 GB"):
-                gr.room(NoSetting(), 4, wait=0, free=lambda p: 46 * gb, sleep=slept.append, wal=False)
-            with self.assertRaisesRegex(RuntimeError, "cannot be read"):
-                gr.room(NoSetting(), 1, free=mock.Mock(side_effect=OSError("gone")), wal=False)
-        with mock.patch.dict(os.environ, {"PLX_RECORDS_MIN_FREE_GB": "lots"}), \
-                self.assertRaisesRegex(RuntimeError, "PLX_RECORDS_MIN_FREE_GB"):
+        from operating import disk_budget
+        floor = disk_budget.floor_gb()   # the one floor (12 GB of 4 batches' temp on top)
+        frees, slept = [(floor + 5) * gb, (floor + 9) * gb, (floor + 25) * gb], []
+        gr.room(NoSetting(), 4, free=lambda p: frees.pop(0), sleep=slept.append, wal=False)
+        self.assertEqual(len(slept), 2)
+        with self.assertRaisesRegex(RuntimeError, f"below the {floor + 12:.0f} GB"):
+            gr.room(NoSetting(), 4, wait=0, free=lambda p: (floor + 11) * gb, sleep=slept.append,
+                    wal=False)
+        with self.assertRaisesRegex(RuntimeError, "cannot be read"):
+            gr.room(NoSetting(), 1, free=mock.Mock(side_effect=OSError("gone")), wal=False)
+        with mock.patch.dict(os.environ, {"PLX_DISK_FLOOR_GB_DATA": "lots"}), \
+                self.assertRaisesRegex(RuntimeError, "PLX_DISK_FLOOR_GB_DATA"):
             gr.min_free_bytes()
 
 
@@ -1572,9 +1723,9 @@ class Coverage(Fixture, unittest.TestCase):
         report = cov.check(self.dsn)
         by_type = {r["type"]: r for r in report["types"]}
         # served: what the sources hold (not excluded); reachable: a full reader through
-        # the AI's door (Freightcom's customer is not)
+        # the AI's door (Freightcom's customer too: read like any other since 11-23)
         self.assertEqual({t: (r["served"], r["reachable"]) for t, r in by_type.items()},
-                         {"Customer": (4, 3), "SalesInvoice": (2, 2), "MCTask": (71, 71),
+                         {"Customer": (4, 4), "SalesInvoice": (2, 2), "MCTask": (71, 71),
                           "SharePointListItem": (1, 1), "Email": (1, 0)})
         self.assertEqual(by_type["Email"]["tables"], [])
         kinds = {(f["kind"], f.get("type")) for f in report["findings"]}

@@ -863,6 +863,9 @@ class ExcludedAfterCaptureTest(unittest.TestCase):
             def __init__(self, fail=False, listed=None):
                 self.fail, self.listed = fail, listed
 
+            def get_all_pages(self, url, **kw):
+                return self.get_pages(url, **kw)
+
             def get_pages(self, url, **caps):
                 Directory.calls += 1
                 if self.fail:

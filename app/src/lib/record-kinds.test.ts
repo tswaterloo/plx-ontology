@@ -93,3 +93,18 @@ describe("tailored sections come from the schema", () => {
     expect(peopleIn(JSON.stringify([{ emailAddress: { name: "Z", address: "z@x" } }]))).toEqual(["Z"]);
   });
 });
+
+describe("plain words for a BC field", () => {
+  it("Blocked: All reads as what it blocks, other values and fields stay as they are", async () => {
+    const { blockedWords } = await import("./record");
+    expect(blockedWords("Blocked", "All")).toBe("Blocked for everything");
+    expect(blockedWords("Blocked", "Ship")).toBe("Blocked for shipping");
+    expect(blockedWords("Blocked", "_x0020_")).toBe("_x0020_");
+    expect(blockedWords("Status", "All")).toBe("All");
+  });
+  it("a related list says how many records have no name, in words", () => {
+    const s = kindSections(page("GeneralLedgerEntry", { related: [ref("Receipt", "Receipt"), ref("Receipt", "Receipt")] as never }))!;
+    const values = by(s, "documents").rows.map((r) => r.value);
+    expect(values).toContain("2 more, with no name on record");
+  });
+});

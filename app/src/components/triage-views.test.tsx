@@ -31,6 +31,11 @@ describe("my replies and label changes", () => {
     expect(within(shown).getByText("Order 1 ships [day].")).toBeTruthy();
     expect(within(shown).getByText("To fill in: Which day?")).toBeTruthy();
     expect(within(shown).getByText("Check before sending: x")).toBeTruthy();
+    // the whole draft, never clamped to its first lines: it is read before it is approved
+    const long = Array.from({ length: 12 }, (_, i) => `Line ${i + 1}`).join("\n");
+    rerender(<ReplyList triage={{ as_of: "2026-11-05", total: 1, sent: 0, writes: 0, lines: [{ ...model, draft: { ...draft, body: long } }] }} />);
+    const body = within(screen.getByTestId("reply-draft")).getByText(/Line 12/);
+    expect(body.className).not.toMatch(/line-clamp/);
   });
 
   it("lists an item's label changes with stale and no-approval marks, and hides none", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Turn } from "@/components/answer-card";
-import { applyEvent, conversationOf, historyOf, MAX_HISTORY } from "./thread";
+import { applyEvent, conversationOf, historyOf } from "./thread";
 import type { Answer } from "./types";
 
 const answer: Answer = {
@@ -66,12 +66,12 @@ describe("historyOf", () => {
     expect(conversationOf(turns)).toBe("conv_1");
   });
 
-  it("stays within the API's limits: 12 turns, 4,000 characters each", () => {
-    const many = Array.from({ length: 20 }, (_, i) => ({ ...base, id: String(i), question: `q${i}`, phase: "done" as const, answer }));
+  it("carries the whole conversation: every turn, every character", () => {
+    const many = Array.from({ length: 300 }, (_, i) => ({ ...base, id: String(i), question: `q${i}`, phase: "done" as const, answer }));
     const h = historyOf(many);
-    expect(h).toHaveLength(MAX_HISTORY);
-    expect(h[h.length - 1]).toEqual({ role: "assistant", text: "PO 5280 is late." });
-    expect(historyOf([{ ...base, question: "x".repeat(5000) }])[0].text).toHaveLength(4000);
+    expect(h).toHaveLength(600);
+    expect(h[0]).toEqual({ role: "user", text: "q0" });
+    expect(historyOf([{ ...base, question: "x".repeat(200000) }])[0].text).toHaveLength(200000);
   });
 
   it("ignores a malformed conversation id", () => {

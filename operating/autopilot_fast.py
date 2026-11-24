@@ -97,7 +97,7 @@ from typing import Any, Callable, Mapping
 MARKS = "fast_marks"          # queue meta: where each store was read to
 FAILED = "fast_failed"        # queue meta: the marks of a batch that failed, and its tries
 TRIES = 3                     # a failing batch is tried this often, then left to follow
-MAX_RECORDS = 200             # message versions one cycle projects
+MAX_RECORDS = 600             # message versions one cycle projects
 CYCLE_SECONDS = 60            # one cycle's handling budget (follow: limits.cycle_seconds)
 ROUNDS, ROUNDS_SECONDS = 20, 240   # cycles one start runs while versions wait
 WORK_DIR = "fast-work"

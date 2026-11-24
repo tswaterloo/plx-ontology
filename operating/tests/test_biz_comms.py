@@ -110,6 +110,29 @@ def _cell(value):
     return value["untrusted_text"] if isinstance(value, dict) else value
 
 
+class SearchHitSnippet(unittest.TestCase):
+    def test_a_snippet_says_when_the_mail_goes_on_past_it(self):
+        """Reproduced (11-23): a hit's snippet was a 1,200-character window cut again to
+        500 with nothing said, so a mail read only by its snippet looked whole. It is one
+        window around the first matched word, said cut whenever the text goes on."""
+        import zlib
+        from operating.pg import comms_search as cs
+        long = ("intro " * 400) + "the lavender PO ships Friday " + ("tail " * 400)
+
+        def hit(body):
+            row = ("emails", "graph-mail://u/m1", "Re: PO", "a@b.example",
+                   dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc), "b.example", [],
+                   zlib.compress(body.encode()), 0, "external", 0)
+            return cs.hits([row], words=["lavender"], party_=None)[0]["snippet"]
+        got = hit(long)
+        self.assertIn("lavender PO ships Friday", got["untrusted_text"])
+        self.assertLessEqual(len(got["untrusted_text"]), cs.SNIPPET_CHARS)
+        self.assertTrue(got["truncated"])
+        short = hit("the lavender PO ships Friday")
+        self.assertEqual(short["untrusted_text"], "the lavender PO ships Friday")
+        self.assertNotIn("truncated", short)
+
+
 class EmailsThroughTheDoor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -194,8 +217,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
         for actor in READERS:
             with self.subTest(actor=sorted(actor.principals)):
                 gate = self.gated(runtime, actor)
-                freightcom = {o for o in gate if "Freightcom" in str(self.subjects({o}))}
-                self.assertEqual(len(freightcom), 1)
+                freightcom = set()   # Freightcom is read like any other (owner 11-23)
                 got = self.handles(actor)
                 self.assertTrue(got <= set(oid_of), got - set(oid_of))
                 self.assertEqual({oid_of[h] for h in got}, gate - freightcom,
@@ -361,11 +383,20 @@ class EmailsThroughTheDoor(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PLX_STATE_DIR": str(self.root / "none")}):
                 bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0})
             try:
+                # the owners' addresses an earlier run kept decide the same roles
+                got = self.flags()
+                self.assertEqual({k: v[1:] for k, v in got.items()},
+                                 {k: v[1:] for k, v in before.items()})
+                self.assertIs(got["Spring range"][0], False)   # no envelope: no signal
+                self.assertIs(got["Weekly digest"][0], True)   # the form still says
+                # none kept either: a refresh leaves the roles unknown (never guessed)
+                for schema in {bv.SCHEMA, bv.SERVED_SCHEMA}:
+                    pg.execute(f"DROP TABLE IF EXISTS {schema}.{bc.OWNERS_TABLE}")
+                with mock.patch.dict(os.environ, {"PLX_STATE_DIR": str(self.root / "none")}):
+                    bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0})
                 got = self.flags()
                 self.assertEqual({v[1] for v in got.values()}, {None})   # not known
                 self.assertEqual({v[2] for v in got.values()}, {None})
-                self.assertIs(got["Spring range"][0], False)   # no envelope: no signal
-                self.assertIs(got["Weekly digest"][0], True)   # the form still says
             finally:
                 bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0})
             self.assertEqual(self.flags(), before)
@@ -531,10 +562,13 @@ class EmailsThroughTheDoor(unittest.TestCase):
 
     def test_a_whole_build_is_not_begun_without_room_for_its_peak(self):
         """The disk must hold BUILD_NEED_FACTOR x the live table above the floor before a
-        whole build starts; the default floor sits above the 60 GB slot-guard line."""
+        whole build starts; the default floor is the shared /data one."""
         import psycopg
         from operating.pg.build_pause import BUILD_NEED_FACTOR
-        self.assertGreater(bc.MIN_FREE_GB_DEFAULT, 60)
+        # one floor: the shared /data floor, not a second number of this job's own
+        from operating.disk_floor import mount_floor_bytes
+        with mock.patch.dict(os.environ, {"PLX_BIZ_MIN_FREE_GB": ""}):
+            self.assertEqual(bc._min_free_bytes(), mount_floor_bytes("/data"))
         with psycopg.connect(self.dsn, autocommit=True) as pg:
             live = pg.execute("SELECT pg_total_relation_size(%s::regclass)",
                               (f"{bv.SCHEMA}.emails",)).fetchone()[0]
@@ -591,7 +625,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLX_BIZ_READ_WORKERS": ""}):
             self.assertEqual(bc.read_workers(), max(1, os.cpu_count() or 1))
 
-    def test_the_build_refresh_and_recheck_commands_never_lower_their_priority(self):
+    def test_the_build_and_refresh_commands_never_lower_their_priority(self):
         """A build, refresh or recheck runs at full speed (the unit bounds its
         memory, the build its disk); the commands never renice themselves."""
         def niced(_inc):
@@ -599,10 +633,8 @@ class EmailsThroughTheDoor(unittest.TestCase):
         with mock.patch("os.nice", side_effect=niced), \
                 mock.patch.object(bv, "refresh", return_value={}), \
                 mock.patch.object(bv, "_stop_on_term"), \
-                mock.patch.object(bc, "recheck_all", return_value=[]), \
                 mock.patch("builtins.print"):
             self.assertEqual(bv.main(["refresh", "--dsn", self.dsn]), 0)
-            self.assertEqual(bc.main(["recheck", "--dsn", self.dsn]), 0)
 
     def test_a_reader_failing_stops_the_build_and_leaves_no_stage(self):
         """One reader failing mid-way (here: the disk floor before its range) stops the
@@ -826,9 +858,8 @@ class EmailsThroughTheDoor(unittest.TestCase):
                     actor, "SELECT handle FROM emails WHERE subject ILIKE '%note%'")["rows"]}
                 self.assertEqual(self.found(actor, query="note"), notes)
                 self.assertTrue(self.found(actor, query="note") <= gate)
-                # Freightcom is never found, by subject or by any word of it
-                self.assertEqual(self.found(actor, query="Freightcom"), set())
-                self.assertEqual(self.found(actor, query="pickup"), set())
+                # Freightcom is found like any other word, within the reader's gate
+                self.assertTrue(self.found(actor, query="Freightcom") <= gate)
         self.assertLess(len(self.found(tmp.NARROW, query="agreed")),
                         len(self.found(tmp.OWNER, query="agreed")))
         # a body-only word, and dates as a plain predicate
@@ -848,6 +879,32 @@ class EmailsThroughTheDoor(unittest.TestCase):
         self.assertEqual(self.found(tmp.OWNER, query="samples", since=last), after)
         self.assertEqual(self.found(tmp.OWNER, query="samples", until=last), hits - after)
 
+    def test_a_searchs_data_as_of_is_read_in_the_same_snapshot_as_its_rows(self):
+        """The time a search states is asked on the connection and in the transaction that
+        read the hits (before: a statement of its own afterwards, on any pooled connection)."""
+        from operating.pg import comms_search as cs
+        seen = {}
+
+        def where(pg):
+            return pg.execute("SELECT pg_backend_pid(), txid_current_snapshot()::text, "
+                              "txid_current_if_assigned()").fetchone()[:2]
+        real_walk, real_as_of = cs.walk_rows, ts.data_as_of
+
+        def walk(pg, q):
+            seen.setdefault("rows", []).append(where(pg))   # the other passes read too
+            return real_walk(pg, q)
+
+        def as_of(pg):
+            seen["as_of"] = where(pg)
+            seen["calls"] = seen.get("calls", 0) + 1
+            return real_as_of(pg)
+        with mock.patch.object(cs, "walk_rows", walk), mock.patch.object(ts, "data_as_of", as_of):
+            out = self.search(tmp.OWNER, False, limit=10, query="agreed")
+        self.assertTrue(out["documents"])
+        self.assertEqual(seen["calls"], 1)
+        self.assertIn(seen["as_of"], seen["rows"])   # one of the reading transactions
+        self.assertIn(out["searched"]["data_as_of"]["read_from"], ("primary", "standby"))
+
     def test_a_few_hit_search_widens_to_some_words_and_meaning_through_the_same_door(self):
         """Fewer than WIDEN_BELOW rows holding every word: the rows holding some of the
         words (most first) and the rows a meaning ranking names are added, each read
@@ -864,11 +921,10 @@ class EmailsThroughTheDoor(unittest.TestCase):
         self.assertIsNone(out["completeness"]["next_cursor"])
         # every word held: nothing widened, as before
         self.assertNotIn("match", self.search(tmp.OWNER, query="communicate")["documents"][0])
-        self.assertEqual(self.found(tmp.OWNER, query="Freightcom zzqqnoword"), set())
         with psycopg.connect(self.dsn) as pg:
             oids = [r[0] for r in pg.execute(
                 f"SELECT object_ids[1] FROM {bv.SCHEMA}.emails ORDER BY handle")]
-        # Freightcom mail: a person's own search shows it, the AI's never (meaning or not)
+        # Freightcom mail: found like any other
         freight = self.found(tmp.OWNER, person=True, query="Freightcom")
         self.assertTrue(freight)
         ranked = plug.Ranked([{"object_id": o, "handle": None} for o in oids], "hybrid:x")
@@ -882,7 +938,6 @@ class EmailsThroughTheDoor(unittest.TestCase):
                     got = [h["citation"] for h in docs]
                     self.assertTrue(got)
                     self.assertTrue(set(got) <= mine, set(got) - mine)
-                    self.assertFalse(set(got) & freight)
                     meant = [h["meaning_rank"] for h in docs]
                     self.assertEqual(meant, sorted(meant))
             self.assertLess(len(self.search(tmp.NARROW, query="zzqq yyxx", limit=50)
@@ -993,6 +1048,27 @@ class EmailsThroughTheDoor(unittest.TestCase):
             mixed += bool(first and rest and min(first) < max(rest))
         # the rank changed an order somewhere (an older header match before a newer text one)
         self.assertTrue(mixed)
+
+    def test_a_paged_word_search_counts_every_match_the_reader_may_read(self):
+        """A1a: a first page that a cursor continues says how many matched in all
+        (completeness.total -> plx.search coverage.matched), counted by one statement
+        through the reader's own views: the same number as walking every page, per
+        reader; a page with nothing more needs no count."""
+        for actor in READERS:
+            for word in ("agreed", "note", "samples", "order"):
+                with self.subTest(actor=actor, word=word):
+                    first = self.search(actor, query=word, limit=1,
+                                        sources=["graph_mail", "teams"])
+                    every = self.found(actor, query=word, sources=["graph_mail", "teams"])
+                    widened = {h["citation"] for h in self.search(
+                        actor, query=word, limit=50, sources=["graph_mail", "teams"])[
+                        "documents"] if "match" in h}
+                    done = first["completeness"]
+                    if done["next_cursor"]:
+                        self.assertEqual(done["total"],
+                                         len([h for h in every if h not in widened]))
+                    else:
+                        self.assertNotIn("total", done)
 
     def test_a_search_is_the_same_whatever_rows_the_walk_reads_first(self):
         """The search walks each view's newest rows before it reads the word index's whole
@@ -1225,10 +1301,22 @@ class EmailsThroughTheDoor(unittest.TestCase):
                         mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk):
                     out = self.search(tmp.OWNER, query=q)
                     docs = [h for h in out["documents"] if "attachment" in h.get("match", "")]
-                    self.assertEqual([h["citation"] for h in docs], [plain])
+                    self.assertEqual({h["citation"] for h in docs}, {plain, freight})
                     self.assertIn("zzwidget", docs[0]["snippet"]["untrusted_text"])
                     self.assertEqual(docs[0]["kind"], "email")
                     self.assertIn("attachment", out["searched"]["widened"])
+                    # how deep the attachment pass looked is said: a common word's walk
+                    # covers only the newest mails; a rare word's match is whole
+                    depth = out["searched"].get("depth") or ""
+                    if walk > 1:
+                        self.assertIn(f"only the newest {cs.ATTACH_WALK:,} mails with "
+                                      "attachments", depth)
+                    else:
+                        self.assertNotIn("attachments' text", depth)
+            # words past the searched ones are named, never dropped unsaid
+            many = " ".join(f"zzw{i}" for i in range(cs.MAX_TERMS + 2))
+            self.assertIn(f"not searched: zzw{cs.MAX_TERMS} zzw{cs.MAX_TERMS + 1}",
+                          self.search(tmp.OWNER, query=many)["searched"]["depth"])
             # on the first page only (``found`` fails a hit doubled across pages)
             self.assertIn(plain, self.found(tmp.OWNER, query=q))
             self.assertFalse(self.search(tmp.OWNER, query=q, since="2100-01-01")["documents"])
@@ -1243,20 +1331,22 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 tmp.OWNER, query=q, participant="nobody@nowhere.example")["documents"]})
             self.assertNotIn(plain, {h["citation"] for h in self.search(
                 tmp.NARROW, query=q)["documents"]})
-            # the person's own search: the same rule (Freightcom attachments left out too)
+            # the person's own search: the same rule 
             got = {h["citation"] for h in self.search(tmp.OWNER, person=True, query=q)
                    ["documents"]}
             self.assertIn(plain, got)
-            self.assertFalse({freight, marked, late, gone} & got)
-        # not a full reader: no attachment's text read
+            self.assertIn(freight, got)
+            self.assertFalse({marked, late, gone} & got)
+        # not a full reader: no attachment's text read, and no attachment depth claimed
         with mock.patch.object(people_excluded, "full_reader", lambda base, a: ""):
-            self.assertNotIn(plain, {h["citation"] for h in self.search(
-                tmp.OWNER, query=q)["documents"]})
+            out = self.search(tmp.OWNER, query=q)
+            self.assertNotIn(plain, {h["citation"] for h in out["documents"]})
+            self.assertNotIn("attachments' text", out["searched"].get("depth") or "")
 
-    def test_a_full_readers_search_and_open_run_with_the_longer_limit_same_rows(self):
-        # a full reader's mail/Teams statements get SEARCH_FULL_MS (a common word over
-        # millions of mails ran past 10 s), anyone else's STATEMENT_MS; the rows are the
-        # door's either way (a NameError here once failed every search and open)
+    def test_every_readers_search_and_open_run_with_no_time_limit_same_rows(self):
+        # every reader's mail/Teams statements run with no time limit (owner 11-23: a read
+        # runs to its end); the rows are the door's either way (a NameError here once failed
+        # every search and open)
         hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
         seen = {}
         for full in (False, True):
@@ -1267,7 +1357,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
                 found = self.found(tmp.OWNER, query="agreed")   # every page
                 with mock.patch.object(ts, "_people_tag", return_value=self.tag):
                     opened = self.tool().comms_open({"citation": hit}, tmp.OWNER)
-            want = (ts.SEARCH_FULL_MS if full else ts.STATEMENT_MS) / 1000.0
+            want = 0.0   # statement_timeout 0: none
             self.assertGreaterEqual(len(read.call_args_list), 2)
             self.assertEqual({c.args[3] for c in read.call_args_list}, {want})
             seen[full] = (found, opened["text"]["untrusted_text"])
@@ -1288,16 +1378,12 @@ class EmailsThroughTheDoor(unittest.TestCase):
                              {"not_comms": True})
             fc = [h for o, h in self.emails.items() if "Freightcom" in
                   str(self.subjects({o}))]
-            with self.assertRaises(ts.ToolError) as caught:
-                tool.comms_open({"citation": fc[0]}, tmp.OWNER)
-            self.assertEqual(caught.exception.code, "egress_withheld")
+            self.assertEqual(tool.comms_open({"citation": fc[0]}, tmp.OWNER)["citation"], fc[0])
             # the narrow reader: withheld where the item gate admits them, else no comms row
             gate = {self.emails[o] for o in self.gated(self.runtime(), tmp.NARROW)}
             for h in fc:
                 if h in gate:
-                    with self.assertRaises(ts.ToolError) as caught:
-                        tool.comms_open({"citation": h}, tmp.NARROW)
-                    self.assertEqual(caught.exception.code, "egress_withheld")
+                    self.assertEqual(tool.comms_open({"citation": h}, tmp.NARROW)["citation"], h)
                 else:
                     self.assertEqual(tool.comms_open({"citation": h}, tmp.NARROW),
                                      {"not_comms": True})
@@ -1456,7 +1542,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
         texts = self.texts()
         runtime = self.runtime()
         tool = self.api_tool()
-        fc_all = {h for o, h in self.emails.items() if "Freightcom" in str(self.subjects({o}))}
+        fc_all = set()   # Freightcom is read like any other (owner 11-23)
         everyone = set(self.emails.values())
         with mock.patch.object(ts, "_people_tag", return_value=self.tag):
             for actor in READERS:   # full (owner), staff (two mailboxes), narrow (one)
@@ -1541,64 +1627,6 @@ class EmailsThroughTheDoor(unittest.TestCase):
             self.assertEqual(got["text"]["untrusted_text"], "old path")
             self.assertEqual(len(reads), 1)
 
-    def test_freightcom_is_kept_from_the_ai_path_only_a_person_still_reads_it(self):
-        import psycopg
-        runtime = self.runtime()
-        fc_all = {h for o, h in self.emails.items() if "Freightcom" in str(self.subjects({o}))}
-        tool = self.tool()
-        with psycopg.connect(self.dsn) as pg:
-            not_ai = {r[0] for r in pg.execute(
-                f"SELECT handle FROM {bv.SCHEMA}.emails WHERE ai_ok IS NOT TRUE")}
-        self.assertTrue(fc_all <= not_ai)
-        for actor in READERS:
-            with self.subTest(actor=sorted(actor.principals)):
-                gate = {self.emails[o] for o in self.gated(runtime, actor)}
-                fc = fc_all & gate
-                self.assertTrue(fc)
-                with mock.patch.object(ts, "_people_tag", return_value=self.tag):
-                    person = self.found(actor, person=True, query="pickup")
-                    ai = {h["citation"] for h in tool.comms_search(
-                        {"query": "pickup", "limit": 50}, actor)["documents"]}
-                    # the person's own search: exactly the Freightcom mail they may read
-                    self.assertEqual(person, fc)
-                    self.assertEqual(ai, set())
-                    # every other word: the person sees the AI's rows, and beyond them only
-                    # rows the AI is kept from (ai_ok not true), never one outside the gate
-                    p_agreed = self.found(actor, person=True, query="agreed")
-                    ai_agreed = self.found(actor, query="agreed")
-                    self.assertTrue(p_agreed <= gate)
-                    self.assertTrue(ai_agreed <= p_agreed)
-                    self.assertTrue(p_agreed - ai_agreed <= not_ai, p_agreed - ai_agreed)
-                    hit = sorted(fc)[0]
-                    self.assertEqual(tool.person_open({"citation": hit}, actor)["citation"],
-                                     hit)
-                    with self.assertRaises(ts.ToolError):
-                        tool.comms_open({"citation": hit}, actor)
-        # a person outside the gate reads none of it on the person path either
-        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
-            denied = sorted(self.handles(tmp.OWNER) - self.handles(tmp.NARROW))[0]
-            self.assertEqual(tool.person_open({"citation": denied}, tmp.NARROW),
-                             {"not_comms": True})
-            with mock.patch.object(ts, "_people_tag", return_value=""):
-                self.assertEqual(tool.person_search({"query": "pickup"}, tmp.OWNER)
-                                 ["documents"], [])
-        # the AI's role holds no grant on the person views, and plx.sql cannot name them
-        person = sql_views.person_schema()
-        with psycopg.connect(self.dsn) as pg:
-            self.assertFalse(pg.execute(
-                "SELECT has_schema_privilege(%s, %s, 'USAGE') OR has_table_privilege(%s, %s, "
-                "'SELECT')", (sql_views.ROLE, person, sql_views.ROLE, f"{person}.emails")
-            ).fetchone()[0])
-        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
-            out = self.tool().call("plx.sql", {"sql": f"SELECT handle FROM {person}.emails"},
-                                   tmp.OWNER)
-        self.assertIn("error", out)
-        # and no registered tool reaches them: the AI's tools are plx.sql and the AI views
-        table: dict = {}
-        ts.register(table, self.tool().base)
-        self.assertEqual(sorted(table), sorted([ts.TOOL_NAME, ts.COMMS_SEARCH, ts.COMMS_OPEN,
-                                                ts.RECORDS_SEARCH]))
-
     def test_an_opened_item_is_kept_as_read_text_the_figure_check_binds(self):
         """plx.open of a mail item keeps its text as a plx.read's is kept (whole, or the
         spans served of it, per field as the text index names it): the answer's figure
@@ -1669,200 +1697,6 @@ class EmailsThroughTheDoor(unittest.TestCase):
         (cited, _field, spans), = session.read_texts()
         self.assertEqual((cited, spans), ([hit], [(near["text_offset"],
                                                     near["text_offset"] + 8)]))
-
-    def test_a_body_indexed_late_is_withheld_until_read_then_shown(self):
-        import psycopg
-        table = f"{bv.SCHEMA}.emails"
-        hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
-        with psycopg.connect(self.dsn, autocommit=True) as pg:
-            fields = pg.execute("SELECT * FROM ontology.text_fields WHERE citation = %s",
-                                (hit,)).fetchall()
-            chunks = pg.execute("SELECT c.* FROM ontology.text_chunks c JOIN "
-                                "ontology.text_fields f ON f.field_id = c.field_id WHERE "
-                                "f.citation = %s", (hit,)).fetchall()
-            self.assertTrue(fields and chunks)
-            pg.execute("DELETE FROM ontology.text_chunks c USING ontology.text_fields f WHERE "
-                       "f.field_id = c.field_id AND f.citation = %s", (hit,))
-            pg.execute("DELETE FROM ontology.text_fields WHERE citation = %s", (hit,))
-            got = bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0,
-                                                    "field": self.marks(pg)["field"]})
-            self.assertIsNone(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
-                                         (hit,)).fetchone()[0])
-            self.assertNotIn(hit, self.handles(tmp.OWNER))
-            self.assertEqual(bc.recheck(pg, "emails")["undecided"],
-                             bc.recheck(pg, "emails")["undecided_before"])
-            # the body arrives (new field ids): the next refresh reads it by the text mark
-            top = pg.execute("SELECT coalesce(max(field_id), 0) FROM ontology.text_fields"
-                             ).fetchone()[0]
-            ids = {f[0]: top + 1 + i for i, f in enumerate(fields)}
-            for f in fields:
-                pg.execute("INSERT INTO ontology.text_fields VALUES (" + ", ".join(
-                    ["%s"] * len(f)) + ")", (ids[f[0]], *f[1:]))
-            for c in chunks:
-                pg.execute("INSERT INTO ontology.text_chunks VALUES (" + ", ".join(
-                    ["%s"] * len(c)) + ")", (c[0], ids[c[1]], *c[2:]))
-            got = bc.refresh_changed(pg, "emails", got["marks"])
-            self.assertGreaterEqual(got["read"], 1)
-            self.assertTrue(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
-                                       (hit,)).fetchone()[0])
-        self.assertIn(hit, self.handles(tmp.OWNER))
-        self.assertIn(hit, self.found(tmp.OWNER, query="agreed"))
-
-    def test_a_message_the_source_says_has_no_body_is_decided_by_its_cells(self):
-        """A meeting reply or invitation with no body (Graph's preview empty, no text to
-        index) is decided by its cells: shown to the AI (refresh and the nightly recheck),
-        never left undecided for good; one whose preview has no value, or has words but no
-        text indexed yet, stays withheld."""
-        import psycopg
-        table = f"{bv.SCHEMA}.emails"
-        hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
-        cell = ("FROM ontology.value_sources s, ontology.object_versions v, "
-                "ontology.value_fields f WHERE s.src = c.src AND v.ver = s.ver AND "
-                "f.field = c.field AND f.property = 'body_preview' AND s.superseded_at IS NULL "
-                "AND v.object_id = %s")
-        with psycopg.connect(self.dsn, autocommit=True) as pg:
-            oid = pg.execute(f"SELECT object_ids[1] FROM {table} WHERE handle = %s",
-                             (hit,)).fetchone()[0]
-            preview = pg.execute("SELECT c.src, c.field, c.value "
-                                 + cell.replace("FROM ", "FROM ontology.value_cells c, ", 1),
-                                 (oid,)).fetchall()
-            self.assertEqual(len(preview), 1, preview)
-            self.assertRegex(preview[0][2] or "", r"\S")
-            fields = pg.execute("SELECT * FROM ontology.text_fields WHERE citation = %s",
-                                (hit,)).fetchall()
-            chunks = pg.execute("SELECT c.* FROM ontology.text_chunks c JOIN "
-                                "ontology.text_fields f ON f.field_id = c.field_id WHERE "
-                                "f.citation = %s", (hit,)).fetchall()
-            self.assertTrue(fields and chunks)
-
-            def set_preview(value):
-                pg.execute(f"UPDATE ontology.value_cells c SET value = %s {cell}", (value, oid))
-
-            def refreshed():
-                bc.refresh_changed(pg, "emails", {"ver": 0, "link": 0,
-                                                  "field": self.marks(pg)["field"]})
-                return pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
-                                  (hit,)).fetchone()[0]
-            pg.execute("DELETE FROM ontology.text_chunks c USING ontology.text_fields f WHERE "
-                       "f.field_id = c.field_id AND f.citation = %s", (hit,))
-            pg.execute("DELETE FROM ontology.text_fields WHERE citation = %s", (hit,))
-            try:
-                self.assertIsNone(refreshed())   # words in the preview, no text yet
-                set_preview(" \r\n\t")
-                self.assertIs(refreshed(), True)  # the source says: no body
-                self.assertIn(hit, self.handles(tmp.OWNER))
-                pg.execute(f"UPDATE {table} SET ai_ok = NULL WHERE handle = %s", (hit,))
-                bc.recheck(pg, "emails")   # the nightly re-flag decides it the same way
-                self.assertIs(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
-                                         (hit,)).fetchone()[0], True)
-                set_preview(None)   # no value: nothing says the body is empty
-                pg.execute(f"UPDATE {table} SET ai_ok = NULL WHERE handle = %s", (hit,))
-                self.assertIsNone(refreshed())
-                self.assertNotIn(hit, self.handles(tmp.OWNER))
-            finally:
-                set_preview(preview[0][2])
-                for f in fields:
-                    pg.execute("INSERT INTO ontology.text_fields VALUES (" + ", ".join(
-                        ["%s"] * len(f)) + ")", f)
-                for c in chunks:
-                    pg.execute("INSERT INTO ontology.text_chunks VALUES (" + ", ".join(
-                        ["%s"] * len(c)) + ")", c)
-                self.assertIs(refreshed(), True)
-
-    def test_the_text_check_pages_its_handles_and_decides_the_same(self):
-        """The Freightcom text check holds a page of handles at a time (11-18: the served
-        mail read through one process took the build past its 8 GB): pages of 2, in this
-        process or over a pool whose workers read the text over their own connections (this
-        process then never reads a body), decide every handle as one pass does, none lost or
-        doubled; a handle whose text is not indexed is undecided (NULL), never cleared."""
-        import psycopg
-        table = f"{bv.SCHEMA}.emails"
-
-        class Counting:
-            def __init__(self, pg):
-                self._pg, self.pages, self.texts = pg, 0, 0
-
-            def __getattr__(self, name):
-                return getattr(self._pg, name)
-
-            def execute(self, sql, params=None):
-                self.pages += sql.startswith("SELECT handle, array_agg")
-                self.texts += sql == bc.TEXT_SQL
-                return self._pg.execute(sql, params)
-        with psycopg.connect(self.dsn, autocommit=True) as pg:
-            bare = pg.execute(f"SELECT handle FROM {table} WHERE ai_ok IS NOT FALSE "
-                              "ORDER BY handle LIMIT 1").fetchone()[0]
-            fields = pg.execute("SELECT * FROM ontology.text_fields WHERE version_handle = %s",
-                                (bare,)).fetchall()
-            chunks = pg.execute("SELECT c.* FROM ontology.text_chunks c JOIN "
-                                "ontology.text_fields f ON f.field_id = c.field_id WHERE "
-                                "f.version_handle = %s", (bare,)).fetchall()
-            self.assertTrue(fields and chunks)
-            # committed: the pool's workers read over their own connections
-            pg.execute("DELETE FROM ontology.text_chunks c USING ontology.text_fields f WHERE "
-                       "f.field_id = c.field_id AND f.version_handle = %s", (bare,))
-            pg.execute("DELETE FROM ontology.text_fields WHERE version_handle = %s", (bare,))
-            try:
-                want = pg.execute(f"SELECT count(DISTINCT handle) FROM {table} WHERE ai_ok IS "
-                                  "NOT FALSE").fetchone()[0]
-
-                def verdicts():
-                    rows = pg.execute("SELECT handle, ok FROM cm_ai").fetchall()
-                    self.assertEqual(len(rows), want, "every handle once")
-                    return dict(rows)
-                bc._ai_verdicts(pg, table, "true")
-                one = verdicts()
-                self.assertIsNone(one[bare], "no text indexed: undecided")
-                self.assertIn(True, one.values())
-                for pool_min in (10 ** 9, 0):
-                    probe = Counting(pg)
-                    with self.subTest(pool=pool_min == 0), \
-                            mock.patch.multiple(bc, TEXT_BATCH=2, FLAG_POOL_MIN=pool_min,
-                                                FLAG_WORKERS=2):
-                        bc._ai_verdicts(probe, table, "true")
-                        self.assertEqual(verdicts(), one)
-                        self.assertGreaterEqual(probe.pages, (want + 1) // 2, "paged by 2")
-                        if pool_min == 0:
-                            self.assertEqual(probe.texts, 0, "the workers read the text")
-                        else:
-                            self.assertGreater(probe.texts, 0)
-            finally:
-                for f in fields:
-                    pg.execute("INSERT INTO ontology.text_fields VALUES (" + ", ".join(
-                        ["%s"] * len(f)) + ")", f)
-                for c in chunks:
-                    pg.execute("INSERT INTO ontology.text_chunks VALUES (" + ", ".join(
-                        ["%s"] * len(c)) + ")", c)
-
-    def test_the_nightly_recheck_decides_a_text_written_under_an_older_field(self):
-        """``python3 -m operating.pg.business_comms recheck`` (the nightly unit): a row
-        left undecided whose text sits under a field the refresh's text mark has passed is
-        decided by the recheck; never beside a running refresh (its lock)."""
-        import contextlib
-        import io
-        import psycopg
-        table = f"{bv.SCHEMA}.emails"
-        hit = sorted(self.found(tmp.OWNER, query="agreed"))[0]
-        with psycopg.connect(self.dsn, autocommit=True) as pg:
-            pg.execute(f"UPDATE {table} SET ai_ok = NULL WHERE handle = %s", (hit,))
-            self.assertNotIn(hit, self.handles(tmp.OWNER))
-            with psycopg.connect(self.dsn, autocommit=True) as other:
-                other.execute("SELECT pg_advisory_lock(%s)", (bv.REFRESH_LOCK,))
-                self.assertEqual(bc.recheck_all(self.dsn),
-                                 [{"skipped": "a business views refresh is running"}])
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(bc.main(["recheck", "--dsn", self.dsn]), 0)
-            got = [json.loads(line) for line in out.getvalue().splitlines()]
-            self.assertEqual({g["view"] for g in got}, set(bc.SPECS))
-            # tables this fixture never built are skipped and say so
-            self.assertTrue({"meetings", "meeting_transcripts"} <= {
-                g["view"] for g in got if g.get("skipped") == "not built"}, got)
-            mail = next(g for g in got if g["view"] == "emails")
-            self.assertLess(mail["undecided"], mail["undecided_before"])
-            self.assertTrue(pg.execute(f"SELECT ai_ok FROM {table} WHERE handle = %s",
-                                       (hit,)).fetchone()[0])
-        self.assertIn(hit, self.handles(tmp.OWNER))
 
     def test_plx_own_documents_are_kept_from_every_reader_by_the_table_not_the_setting(self):
         """11-22: PLX's own sales documents held as supplier documents were sent as a 10 MB

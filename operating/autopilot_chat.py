@@ -27,8 +27,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-THREAD = 12            # earlier messages of the chat
-THREAD_CHARS = 600     # of each
+THREAD = 30            # earlier messages of the chat (more: said so, ``shown_list``)
+THREAD_CHARS = 3000    # of each (a cut is said in the text, ``shown``)
 EXAMPLES = 30          # the person's own replies
 EXAMPLE_DAYS = 30
 EXAMPLE_CHARS = (250, 300)   # the message answered, the reply
@@ -83,9 +83,11 @@ def _chat(conn: sqlite3.Connection, unit: str) -> list[dict[str, str]]:
     return out
 
 
-def chat_thread(state: Path, event: Mapping[str, Any], owner: str, reader: str = "") -> list[str]:
-    """The chat's messages before the event's (module doc); [] for a channel post, mail,
-    or anything unreadable."""
+def chat_thread(state: Path, event: Mapping[str, Any], owner: str, reader: str = "",
+                most: int = THREAD) -> list[str]:
+    """The chat's last ``most`` messages before the event's (module doc), after a line
+    saying how many earlier ones are not shown; [] for a channel post, mail, or anything
+    unreadable."""
     unit = str(event.get("conversation_id") or "")
     at = str(event.get("at") or "")
     if event.get("channel") != "teams" or not unit.startswith("teams:chat:") or not at:
@@ -100,13 +102,18 @@ def chat_thread(state: Path, event: Mapping[str, Any], owner: str, reader: str =
     finally:
         conn.close()
     me = str(owner).lower()
-    before = [m for m in msgs if m["at"] < at][-THREAD:]
+    earlier = [m for m in msgs if m["at"] < at]
+    before = earlier[-most:]
     def who(m: Mapping[str, str]) -> str:
         if m["sender"] == me:
             return f"{reader or m['name'] or 'them'} (their own)"
         return m["name"] or "someone"
-    return [f"[{m['at'][:16].replace('T', ' ')}] {who(m)}: {m['text'][:THREAD_CHARS]}"
-            for m in before]
+    from .autopilot_records import shown
+    lines = [f"[{m['at'][:16].replace('T', ' ')}] {who(m)}: {shown(m['text'], THREAD_CHARS)}"
+             for m in before]
+    if len(earlier) > len(before):
+        lines.insert(0, f"[{len(earlier) - len(before)} earlier messages not shown]")
+    return lines
 
 
 def _instant(text: str) -> Optional[datetime]:
@@ -122,7 +129,6 @@ def reply_examples(state: Path, event: Mapping[str, Any], owner: str, people: An
     """The person's own recent chat replies with what each answered (module doc), newest
     last; [] when unreadable. ``held``: a dict kept across calls (the cache)."""
     from .autopilot_drafter import thread_screen
-    from integrations.image_ocr_gpu import touches_freightcom
     at = _instant(str(event.get("at") or ""))
     me = str(owner).lower()
     if at is None or not me:
@@ -161,7 +167,7 @@ def reply_examples(state: Path, event: Mapping[str, Any], owner: str, people: An
         if not since <= when < cut:
             continue          # never the reply itself or anything after the message
         line = f"{name} wrote: {asked}\n  -> {said}"
-        if thread_screen(people, line) or touches_freightcom(line, ""):
+        if thread_screen(people, line):
             continue
         out.append(line)
     return out[-EXAMPLES:]

@@ -13,6 +13,20 @@ describe("chain of custody", () => {
     expect(dayOf("0001-01-01")).toBeNull();
   });
 
+  it("keeps two messages of one day whose titles differ only past their 40th character", () => {
+    const head = "Re: Order 4471 delivery update for the plant";
+    const obj = {
+      object_id: "PurchaseOrder:2", type: "PurchaseOrder", label: "PO 2",
+      freshness: { as_of: "2026-10-29T11:00:00Z" },
+      timeline: [
+        { at: "2026-10-22T10:00:00Z", system: "Teams", title: `${head}: dock 3` },
+        { at: "2026-10-22T12:00:00Z", system: "Teams", title: `${head}: dock 5` },
+      ],
+    } as unknown as ObjectPage;
+    const titles = custodyOf(obj, new Date("2026-10-29T12:00:00Z"))!.events.map((e) => e.title);
+    expect(titles.filter((t) => t.startsWith(head))).toHaveLength(2);
+  });
+
   it("finds the dates a sentence names, in order", () => {
     const [a, b] = datesIn("Promise revised from 17 Oct 2026 to 4 Nov", 2026);
     expect([dayLabel(a), dayLabel(b)]).toEqual(["17 Oct", "4 Nov"]);

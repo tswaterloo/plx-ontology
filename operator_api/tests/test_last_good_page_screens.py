@@ -1,6 +1,7 @@
 """Kept pages of the other screens (``OtherScreens``), split from ``test_last_good_page``."""
 from __future__ import annotations
 
+from operator_api.backend_screens import weekly_key
 import contextlib
 from collections import namedtuple
 import os
@@ -276,11 +277,12 @@ class OtherScreens(unittest.TestCase):
                                   lambda backend, w, week, **k: packs.append(week) or qc):
             self.assertTrue(self.backend.warm(who, force=True))
             for _ in range(200):
-                if (who.key, who.mode, ("weekly", None)) in self.backend._good:
+                if (who.key, who.mode, ("weekly", weekly_key(None))) in self.backend._good:
                     break
                 time.sleep(0.05)
         self.assertIn((who.key, who.mode, ("my_work",)), self.backend._good)
-        self.assertIn((who.key, who.mode, ("weekly", None)), self.backend._good)   # the weekly review
+        # the weekly review, under the key the page's own request (last week's Monday) finds
+        self.assertIn((who.key, who.mode, ("weekly", weekly_key(None))), self.backend._good)
         self.assertEqual(packs, [None])
         self.backend._snap_inputs().clear()      # the live process: found as kept, not current
         self.titles = ["fresh"]
@@ -314,10 +316,14 @@ class OtherScreens(unittest.TestCase):
         again = pool.submit(order.append, "d1", later=True, key="d1")
         last = pool.submit(order.append, "d2", later=True, key="d2")
         pool.submit(order.append, "s1", key="s1")
+        pilot = pool.submit(order.append, "p1", key="p1", first=True)   # a pilot reader's
         self.assertIs(first, again)
         gate.set()
         last.result(timeout=5)
-        self.assertEqual(order, ["s1", "d1", "d2"])
+        pilot.result(timeout=5)
+        # a pilot reader's first, then session readers', then directory employees': an
+        # order only, every queued screen is read
+        self.assertEqual(order, ["p1", "s1", "d1", "d2"])
 
     def test_the_warm_up_process_keeps_todays_screens_under_the_keys_the_app_asks(self):
         """Speed 11-12: after a restart the briefing's first read never finished (104 s,
@@ -392,6 +398,31 @@ class OtherScreens(unittest.TestCase):
         self.assertEqual(old, [])
         self.assertIn("suggestions", read)
         self.assertIn("sql home", read)
+
+    def test_a_team_persons_panel_is_kept_per_person_and_a_panel_without_its_items_is_not(self):
+        """The drill-down was read again on every click (20-35 s when thirty were asked at
+        once): kept per reader and person under the Team screen's own access state; one whose
+        open items could not be read is answered and never kept."""
+        who = reader("grp-a")
+        calls = []
+
+        def person(backend, w, key):
+            calls.append(key)
+            return m.TeamPersonDetail(person=m.TeamPerson(key=key, name="Ana"), items_unread=key == "k2")
+
+        patch = mock.patch.object(be.TeamViewMixin, "team_person", person)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.backend._good.clear()
+        self.backend._refreshing.clear()
+        for _ in range(3):
+            self.backend.team_person(who, "k1")
+        self.assertEqual(calls, ["k1"])                      # read once, then served kept
+        self.backend.team_person(who, "k3")
+        self.assertEqual(calls, ["k1", "k3"])                # another person: its own copy
+        for _ in range(2):
+            self.assertTrue(self.backend.team_person(who, "k2").items_unread)
+        self.assertEqual(calls, ["k1", "k3", "k2", "k2"])    # a degraded panel is read again
 
     def test_a_reader_no_longer_named_for_the_team_screen_is_never_served_its_copy(self):
         """The Team screen names everyone only for the owner and the Team readers named in

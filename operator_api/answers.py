@@ -222,7 +222,7 @@ def _quantities_in_words(found: re.Match) -> str:
 
 def read_shortcut(request: m.AskRequest, reading: Any) -> Optional[str]:
     """The ready answer the front door's model picked for the question (``late_list``,
-    ``at_risk``, ``profit``: ``operating.front_door.RECIPES``): a late list or the orders
+    ``at_risk``, ``profit``; the model-read front door that picked them is gone, so this has no live caller): a late list or the orders
     at risk only for a question about no one record, a profit answer only for none or a
     customer's; None (no reading, another recipe): the fast path and the agent answer. The
     one route to a ready answer: the phrase-rule route (``ask_shortcut``) went with DI-02

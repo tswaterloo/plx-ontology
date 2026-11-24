@@ -1,0 +1,32 @@
+# PLX History tab, the box's side of the resident builder: fetch the files it wrote on the s7d3d
+# Spark and store them in biz.page_items (kind history) for their records only
+# (operating/pg/record_history.py pull: page_items.apply, rows that differ only, under the WAL
+# budget and the one disk budget; refused: said, the files wait). Reads the Spark's folder over the
+# Spark runs' ssh login and writes only schema biz. Not enabled by the build.
+[Unit]
+Description=PLX History tab: store the resident builder's answers
+After=postgresql.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# Reads no business system (SEC-S-05; tests/test_deploy_release.py).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+ExecStart=/data/venv/bin/python3 -m operating.pg.record_history pull --host s7d3d --dir plx-run/files/data/plx-history/out --every 5
+Restart=on-failure
+RestartSec=20
+MemoryMax=4G
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

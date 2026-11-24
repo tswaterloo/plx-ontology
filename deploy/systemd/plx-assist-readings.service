@@ -1,0 +1,44 @@
+# PLX Workbench readings: one run of `python3 -m operating.assist_readings run`, after each
+# business views refresh (plx-business-views.service names this unit in OnSuccess=) and on
+# its own timer (plx-assist-readings.timer, a minute after the last run ended). Reads every
+# mail and Teams message not read yet, newest first, for up to 10 minutes a run (the count
+# not reached is kept in assist.reading_runs and read by the next run), screened before any
+# model call (the people exclusion, pay or HR matter, marked text, bulk mail; Freightcom
+# until the removal train), and keeps one reading per message in assist.readings (contract
+# C4: what it asks of whom, by when, the sender's promise and wait, and its decisions,
+# requests, complaints and praise), with a typed status for every message. plx.sql reads the
+# findings only through biz_sql.comms_findings: a finding shows only with a copy of its
+# message the reader may read. Then links the files new Teams messages share. Writes only
+# schema assist, that view and biz.teams_file_links.
+# The model: claude -p on the Workbench's own access-token config (no tools, no settings);
+# PLX_READINGS_MODEL=off reads nothing. One run at a time (an advisory lock: a second leaves
+# at once). The people exclusion comes from proactive.env (fails closed without it: nothing
+# is read). The user is the business schema's owner (it makes the guarded view).
+[Unit]
+Description=PLX one reading per mail and Teams message (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+# Reads no business system: the credentials that can send, write or reach one are dropped
+# (SEC-S-05; tests/test_deploy_release.py names the units that may keep them).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+Environment=PLX_READINGS_MODEL=haiku
+ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
+# the tables and the guarded findings view exist before anything reads (idempotent: a no-op once made)
+ExecStartPre=/data/venv/bin/python3 -m operating.assist_readings install
+ExecStart=/data/venv/bin/python3 -m operating.assist_readings run --seconds 600
+MemoryHigh=1500M
+MemoryMax=2G
+TimeoutStartSec=20min
+TimeoutStopSec=1min
+UMask=0077

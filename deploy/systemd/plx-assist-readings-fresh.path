@@ -1,0 +1,11 @@
+# Starts plx-assist-readings-fresh.service when a delta cycle publishes (delta/CURRENT.json):
+# new messages are read within a minute of capture. A publish while a run runs starts no second one.
+[Unit]
+Description=Read the newest messages after each delta publish
+
+[Path]
+PathChanged=/data/plx-state/projection/delta/CURRENT.json
+Unit=plx-assist-readings-fresh.service
+
+[Install]
+WantedBy=paths.target

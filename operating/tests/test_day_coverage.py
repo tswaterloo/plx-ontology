@@ -173,6 +173,35 @@ class Shares(unittest.TestCase):
         self.assertEqual((got["prepared"], got["judged"], got["matched"], got["unjudged"]),
                          (1, 0, 0, 1))
 
+    def test_a_keyed_entry_is_credited_by_the_record_the_prepared_item_names(self):
+        """Items of record-scored workflows never match mail; a Sage entry of the same
+        person and workflow that names the item's record, after its trigger and inside the
+        horizon, is covered. Another person's, an earlier, a later or another record's is
+        not. N=1/10/60: every entry credited once, none doubled."""
+        since = datetime(2026, 10, 20, 7, tzinfo=timezone.utc)
+        until = since + timedelta(days=3)
+        made = ap._iso(since + timedelta(hours=1))
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                events = {f"e{i}": {"event_type": "record.due", "object_id": f"Shipment:fx:{i}",
+                                    "object_type": "Shipment", "records": [f"SalesOrder:fx:{i}"]}
+                          for i in range(n)}
+                items = [{"event_id": f"e{i}", "autopilot": "invoice_entry", "owner": "p",
+                          "created_at": made, "body": {}} for i in range(n)]
+                good = [{"person": "p", "system": "sage", "kind": "sage_ar_invoice",
+                         "workflow": "ar_invoice_entry", "at": ap._iso(since + timedelta(hours=5)),
+                         "records": [f"RelSageArIbh:x:{i}", f"SalesOrder:fx:{i}"]} for i in range(n)]
+                bad = [{**good[0], "person": "q"},                              # another person
+                       {**good[0], "at": ap._iso(since - timedelta(days=3))},   # before the trigger
+                       {**good[0], "at": ap._iso(since + timedelta(days=9))},   # past the horizon
+                       {**good[0], "records": ["SalesOrder:fx:other"]},          # another record
+                       {**good[0], "workflow": "finance_journal"}]               # another workflow
+                got: set = set()
+                out = dc.credit_entries(items, events, [*good, *bad], got, horizon=timedelta(days=2))
+                self.assertEqual(out["ar_invoice_entry:items"], n)
+                self.assertEqual(out["ar_invoice_entry:credited"], n)
+                self.assertEqual(got, {id(a) for a in good})
+
     def test_machine_and_scheduled_sends_are_not_a_persons_work(self):
         from operating import autopilot_replay as rp
         day = datetime(2026, 10, 20, 14, 0, tzinfo=timezone.utc)

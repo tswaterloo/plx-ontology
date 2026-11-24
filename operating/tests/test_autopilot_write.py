@@ -140,8 +140,11 @@ class Base(unittest.TestCase):
                  "bc_write": wa.BCAdapter(self.bc, environ=env)}
         found.pop("send_mail")   # a test never reaches the real send path
         found.update(adapters)
+        # the model that reads what an unattended message commits: injected (none found
+        # unless a test says otherwise, ``commits``)
         return aw.Executor(self.state, environ=env, adapters=found,
-                           guard=guard() if g is None else g, rules_path=rules)
+                           guard=guard() if g is None else g, rules_path=rules,
+                           commits=getattr(self, "commits", lambda text: []))
 
     def probe_bc(self, env: dict, names: dict, now: datetime = NOW) -> None:
         """A readiness probe on record that found the BC companies ``names`` (id -> BC's
@@ -730,12 +733,14 @@ class Safety(Base):
         self.assertEqual(ex.run(mc_item(2), NOW)[0]["status"], "duplicate")
 
     def test_entry_then_message_stops_when_entry_fails_and_undo(self):
-        env = self.go_live(("customer_order_intake",))
+        # an order entry carries quantities: only a person's confirmed accept writes it
+        env = {**self.go_live(("customer_order_intake",)), aw.APPROVED_ENV: "bc_write,send_mail"}
+        approve = aw.Approval(by=(OWNER, OWNER_OID), confirmed_live=True)
         mail = Transport()
         sender = _Sender(mail)
         adapters = {"send_mail": wa.MailAdapter(sender, environ=env)}
         self.bc.answers = [(400, {"code": "BadRequest"})]
-        out = self.executor(env, **adapters).run(po_item(), NOW)
+        out = self.executor(env, **adapters).run(po_item(), NOW, approve)
         self.assertEqual([r["kind"] for r in out], ["bc_write"])
         self.assertEqual(out[0]["status"], "failed")
         self.assertEqual(mail.calls, [])
@@ -743,7 +748,7 @@ class Safety(Base):
         item = po_item()
         item["item_id"] = "it_po_2"
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": "W/\"1\""}), (204, {})]
-        out = self.executor(env, **adapters).run(item, NOW)
+        out = self.executor(env, **adapters).run(item, NOW, approve)
         self.assertEqual([(r["kind"], r["status"]) for r in out],
                          [("bc_write", "done"), ("send_mail", "done")])
         self.assertEqual(out[0]["request"]["method"], "POST")
@@ -762,18 +767,20 @@ class Safety(Base):
 
     def test_a_resumed_item_skips_its_done_entry_and_sends_the_rest_once(self):
         """ACT-003: the entry done, the message unavailable (no mail adapter yet): run
-        again with the adapter, only the message goes, once; a third run sends nothing."""
-        env = self.go_live(("customer_order_intake",))
+        again with the adapter, only the message goes, once; a third run sends nothing (a
+        person's confirmed accept: an order entry carries quantities)."""
+        env = {**self.go_live(("customer_order_intake",)), aw.APPROVED_ENV: "bc_write,send_mail"}
+        approve = aw.Approval(by=(OWNER, OWNER_OID), confirmed_live=True)
         mail = Transport()
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": "W/\"1\""})]
-        first = self.executor(env).run(po_item(), NOW)
+        first = self.executor(env).run(po_item(), NOW, approve)
         self.assertEqual([(r["kind"], r["status"]) for r in first],
                          [("bc_write", "done"), ("send_mail", "unavailable")])
         ex = self.executor(env, send_mail=wa.MailAdapter(_Sender(mail), environ=env))
-        again = ex.run(po_item(), NOW)
+        again = ex.run(po_item(), NOW, approve)
         self.assertEqual([(r["kind"], r["status"]) for r in again],
                          [("bc_write", "duplicate"), ("send_mail", "done")])
-        third = ex.run(po_item(), NOW)
+        third = ex.run(po_item(), NOW, approve)
         self.assertEqual([r["status"] for r in third], ["duplicate", "duplicate"])
         self.assertEqual((len(self.bc.calls), len(mail.calls)), (1, 1))
 
@@ -815,7 +822,8 @@ class Safety(Base):
         row (that action is killed, nothing sent)."""
         env = {**self.go_live(("customer_order_intake",)),
                "PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY,
-               "PLX_BC_SANDBOX_ENVIRONMENT": "Sandbox2"}
+               "PLX_BC_SANDBOX_ENVIRONMENT": "Sandbox2", aw.APPROVED_ENV: "bc_write,send_mail"}
+        approve = aw.Approval(by=(OWNER, OWNER_OID), confirmed_live=True)
         mail = Transport()
         state = self.state
 
@@ -827,7 +835,7 @@ class Safety(Base):
         bc = KillOnPost((201, {"id": NEW_ID, "@odata.etag": "W/\"1\""}))
         out = self.executor(env, bc_write=wa.BCAdapter(bc, environ=env),
                             send_mail=wa.MailAdapter(_Sender(mail), environ=env)
-                            ).run(po_item(), NOW)
+                            ).run(po_item(), NOW, approve)
         self.assertEqual([(r["kind"], r["status"]) for r in out],
                          [("bc_write", "done"), ("send_mail", "killed")])
         self.assertEqual(out[1]["reasons"], ["global_kill_switch"])
@@ -844,7 +852,7 @@ class Safety(Base):
         item["item_id"] = "it_po_kill_2"
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": "W/\"1\""})]
         out = self.executor(env, send_mail=KillWhenChecked(_Sender(mail), environ=env)
-                            ).run(item, NOW)
+                            ).run(item, NOW, approve)
         self.assertEqual([(r["kind"], r["status"]) for r in out],
                          [("bc_write", "done"), ("send_mail", "killed")])
         self.assertEqual(out[1]["reasons"], ["workflow_kill_switch"])

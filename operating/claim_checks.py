@@ -263,7 +263,7 @@ from .claim_checks_text import (
     asked_tokens_blanked, cited_pages, _count_nouns, _date_reading, _states, _uncovered)
 from .claim_checks_values import (
     _check_value_claim)
-# operating/fast_answer.py (in flight tonight) still imports these through this module
+# callers (operating/record_reads.py and others) import these through this module
 from .claim_checks_values import returned_evidence  # re-export
 from .claim_checks_wording import (  # re-export
     _claim_key, _id_key, _lower_bound_failures, screen_prose, _typed_claims, wording_check)

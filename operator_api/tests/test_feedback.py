@@ -118,6 +118,22 @@ class FeedbackLoop(unittest.TestCase):
         filtered = self.owner.get("/api/feedback", params={"status": "new"}).json()
         self.assertEqual((filtered["total"], filtered["counts"]["accepted"]), (0, 1))
 
+    def test_a_long_note_and_expected_answer_are_kept_whole_up_to_the_bound(self):
+        """Audit #24: a person's note and right answer are kept to 20,000 characters (was
+        2,000, cut in the app without saying); past the bound the API refuses, never cuts."""
+        whole = ("x " * fb.FEEDBACK_MAX)[:fb.FEEDBACK_MAX - 1] + "z"
+        answer_id = asked(self.ana)
+        sent = self.ana.post("/api/feedback", json={
+            "answer_id": answer_id, "rating": -1, "note": whole, "expected": whole})
+        self.assertEqual(sent.status_code, 200, sent.text)
+        entry = self.ana.get("/api/feedback").json()["entries"][0]
+        self.assertEqual((len(entry["note"]), len(entry["expected"])),
+                         (fb.FEEDBACK_MAX, fb.FEEDBACK_MAX))
+        self.assertEqual(self.ana.post("/api/feedback", json={
+            "answer_id": answer_id, "rating": -1, "note": whole + "y"}).status_code, 422)
+        from operator_api import models as mm
+        mm.TemplateProposeRequest(text="t" * 100000)   # a long draft is proposed from whole
+
     def test_item_feedback_suppresses_for_its_reader_and_owner_wrong_for_everyone(self):
         for client, item, verdict in ((self.ana, "gap-1", "not_useful"),
                                       (self.ben, "gap-2", "wrong"),

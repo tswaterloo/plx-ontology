@@ -11,14 +11,7 @@ to what a search result needs (citation, kind, title, sender, date, snippet, dir
 ``plx.open`` reads a mail or Teams item through the same views by its handle
 (``plx.sql_comms_open``); any other citation through ``plx.read``.
 
-Mail and Teams:
-the guarded views hold back every item whose full text names it (``ai_ok``, decided at
-build; a body not yet indexed is held back too), and a shown field naming it is left out
-here as well. Files and originals: a hit any text of which names Freightcom
-(``image_ocr_gpu.FREIGHTCOM``) is left out and only counted (``egress_withheld``): every field ``plx.documents`` returned for it (mentions and meta
-too, not only the shown ones) and, when the host gives a reader, its full text read by
-``plx.read`` as the same reader (up to ``CHECK_MAX_CHARS``). A hit whose text could not
-be read in time is left out too (``unchecked``): fail closed.
+Freightcom data is read like any other (the owner dropped that rule 11-23).
 An unknown argument, or a result that is neither a hit list nor an error, fails closed."""
 from __future__ import annotations
 
@@ -53,23 +46,37 @@ FALLBACK = frozenset({"not_served", "not_ready"})
 # missing grant: never an out-of-scope row, which the comms path answers as no comms row)
 OPEN_FALLBACK = FALLBACK | {"not_readable"}
 ALL_SOURCES = ("graph_mail", "sharepoint", "original", "teams", RECORDS)
-OPEN_MAX_CHARS = 20000
-# plx.open with ``citations``: how many in one call, each one's window, the call's time
-# for opening (call_limits gives plx.open 30 s; what is left over answers)
-MANY_MAX = 12
-MANY_CHARS = 2500
-MANY_SECONDS = 20.0
+# one item's window: within what the client shows of one result
+# (``mcp_server_evidence.CLIENT_SHOWN_CHARS``, 48,000) even when its text is escaped as
+# JSON at the worst rate measured (a mail of quotes and line breaks: 1.67 characters a
+# character); a longer text is read on from its next offset
+OPEN_MAX_CHARS = 26000
+# plx.open with ``citations``: any number in one call (owner 11-23: no cap); each one's
+# window, the call's time for opening: none. What one response holds is the client's window
+# (``MANY_BYTES``): items past it come back ``not_opened`` BY THE CITATION SENT, without being
+# read, and are opened again in the next call, so every citation is reached.
+MANY_MAX = 40   # the batch the tests and a plain call use; not a limit (see above)
+MANY_MIN_WINDOW = 1000   # a window never shrinks below this for a long list: the list is cut by items instead
+MANY_CHARS = 20000
+# what one several-citation call's text and envelope may come to: each window is cut so
+# the windows together hold at most ``MANY_TEXT`` characters (2,500 each up to 6 items,
+# 1,250 at 12), and items past ``MANY_BYTES`` of encoded result are sent back not opened
+# (open them again) instead of the whole call failing for its size (the host's response
+# holds 48,000 bytes with its freshness note; 11-22: 8 citations at 2,500 each failed whole).
+# Measured as the host sends it: the result's JSON as a JSON string (a mail's line breaks
+# and quotes are escaped twice: 11-22 a 36,000-byte result still failed the 48,000 cap)
+# (11-23: within what the client shows of one result, CLIENT_SHOWN_CHARS)
+MANY_TEXT = 34000
+MANY_BYTES = 42000
 _NEAR_WORD = re.compile(r"[^\W_]+", re.UNICODE)
-CHECK_MAX_CHARS = 200_000  # a hit's full text checked for Freightcom up to this many chars
-CHECK_RESERVE_S = 2.0      # time kept back from the call's limit when checking full texts
 DEFAULT_LIMIT = 20
 MAX_HITS = 50   # the contract's documents maxItems (and limit maximum)
 
 _TOOLS = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
                     .read_text(encoding="utf-8"))["tools"]
 _CONTRACT = _TOOLS[TOOL_NAME]
-# One plx.read window at most (its contract's own bound): the full-text check pages by
-# text_offset up to CHECK_MAX_CHARS. Asked for more in one read, plx.read refuses the call
+# One plx.read window at most (its contract's own bound): a longer read pages by
+# text_offset. Asked for more in one read, plx.read refuses the call
 # (invalid_input), and every hit was left out unchecked (live 11-18: no document at all).
 CHECK_PAGE_CHARS: int = _TOOLS[READ]["input"]["properties"]["max_chars"]["maximum"]
 DESCRIPTION: str = _CONTRACT["description"]
@@ -102,17 +109,6 @@ def _error(code: str, message: str) -> dict[str, Any]:
     return {"error": {"code": code, "message": message}}
 
 
-def _names_freightcom(value: Any) -> bool:
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    if isinstance(value, str):
-        return FREIGHTCOM.search(value) is not None
-    if isinstance(value, Mapping):
-        return any(_names_freightcom(v) for v in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_names_freightcom(v) for v in value)
-    return False
-
-
 def arguments_for_documents(arguments: Any) -> dict[str, Any]:
     """``plx.search``'s arguments as the ``plx.documents`` call they are, or ValueError."""
     if not isinstance(arguments, Mapping):
@@ -136,20 +132,45 @@ def compact(result: Any) -> dict[str, Any]:
     documents = result.get("documents")
     if not isinstance(documents, list):
         return _error("search_failed", "the search gave no hit list")
-    hits, left_out = [], 0
+    hits = []
     for document in documents:
         if not isinstance(document, Mapping):
             continue
         hit = {k: v for k, v in document.items() if k in _HIT}
-        if _names_freightcom(document):
-            left_out += 1
-            continue
         hits.append(hit)
     out = {k: v for k, v in result.items() if k in _KEPT}
     out["documents"] = hits
-    if left_out:
-        out["egress_withheld"] = left_out
     return out
+
+
+class _Leg:
+    """One leg of a search on its own thread (the caller's contextvars carried over: the
+    reader's ceiling and the call's phases), so mail/Teams text and records read together.
+    ``result()`` waits for the leg to finish, however long it takes, and re-raises its error:
+    no leg is cut."""
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        import contextvars
+        import threading
+        self._done = threading.Event()
+        self._value: Any = None
+        self._error: BaseException | None = None
+        ctx = contextvars.copy_context()
+
+        def work() -> None:
+            try:
+                self._value = ctx.run(fn)
+            except BaseException as exc:  # noqa: BLE001 - re-raised by result()
+                self._error = exc
+            finally:
+                self._done.set()
+        threading.Thread(target=work, name="plx-search-leg", daemon=True).start()
+
+    def result(self) -> Any:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._value
 
 
 def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
@@ -157,10 +178,8 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
         call_comms: Callable[[dict[str, Any]], Any] | None = None,
         call_records: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """One ``plx.search``: mail and Teams through ``call_comms`` (the host's internal
-    ``plx.sql_comms_search`` for the session's reader: Freightcom is decided inside the
-    guarded views on the full text, ``ai_ok``), files and originals through
-    ``call_documents`` (its ``plx.documents``; with ``call_read`` each hit's full text is
-    checked for Freightcom before the hit is shown). A participant searches mail only; a
+    ``plx.sql_comms_search`` for the session's reader: the guarded views), files and originals through
+    ``call_documents`` (its ``plx.documents``). A participant searches mail only; a
     cursor continues the list it came from. Without ``call_comms``, or where the host does
     not serve the mail tables (``not_served``), everything goes to ``plx.documents``.
     Records (``call_records``, the host's internal ``plx.sql_records_search``: the
@@ -199,14 +218,18 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
             return _error("invalid_input", "records are searched by query words only")
         docs = sources
     got = []
+    # mail/Teams text and records read together; each is waited for to its end
+    comms_leg = _Leg(lambda: call_comms({**{k: v for k, v in wanted.items() if k != "sources"},
+                                         "sources": comms})) if comms else None
+    records_leg = _Leg(lambda: _records(call_records, wanted)) if records else None
     if comms:
         try:
-            one = call_comms({**{k: v for k, v in wanted.items() if k != "sources"},
-                              "sources": comms})
+            one = comms_leg.result()
         except Exception as exc:  # noqa: BLE001 - one leg failing: a gap when others ran
             if not (docs or records):
                 raise
             one = {"error": {"code": "query_failed", "message": type(exc).__name__}}
+    if comms:
         if isinstance(one, Mapping) and (one.get("error") or {}).get("code") in FALLBACK:
             comms, docs = [], [x for x in sources]
         else:
@@ -231,13 +254,14 @@ def run(call_documents: Callable[[dict[str, Any]], Any], arguments: Any,
     if docs:
         # every non-record source and none named: the documents search's own default
         whole = not wanted.get("sources") and set(docs) == set(ALL_SOURCES) - {RECORDS}
-        one = _documents(call_documents, {k: v for k, v in wanted.items() if k != "sources"}
-                         if whole else {**wanted, "sources": docs}, call_read)
+        asked = ({k: v for k, v in wanted.items() if k != "sources"} if whole
+                 else {**wanted, "sources": docs})
+        one = _documents(call_documents, asked, call_read)
         if "error" in one:
             return one
         got.append(one)
     if records:
-        one = _records(call_records, wanted)
+        one = records_leg.result()
         if "error" in one:
             return one
         got.append(one)
@@ -300,85 +324,7 @@ def _records(call_records: Callable[[dict[str, Any]], Any], wanted: dict[str, An
 
 def _documents(call_documents: Callable[[dict[str, Any]], Any], wanted: dict[str, Any],
                call_read: Callable[[dict[str, Any]], Any] | None) -> dict[str, Any]:
-    out = compact(call_documents(wanted))
-    if call_read is None or "error" in out:
-        return out
-    return _full_text_checked(out, call_read)
-
-
-def _full_text_checked(out: dict[str, Any], call_read: Callable[[dict[str, Any]], Any]
-                       ) -> dict[str, Any]:
-    kept, named, unchecked = [], 0, 0
-    for hit in out["documents"]:
-        citation = hit.get("citation") if isinstance(hit, Mapping) else None
-        verdict = _text_names_freightcom(call_read, citation) \
-            if isinstance(citation, str) else None
-        if verdict is None:
-            unchecked += 1
-        elif verdict:
-            named += 1
-        else:
-            kept.append(hit)
-    out = {**out, "documents": kept}
-    if named:
-        out["egress_withheld"] = int(out.get("egress_withheld") or 0) + named
-    if unchecked:
-        out["unchecked"] = unchecked
-    return out
-
-
-def _text_names_freightcom(call_read: Callable[[dict[str, Any]], Any], citation: str,
-                           field_path: str | None = None) -> bool | None:
-    """Whether ``citation``'s text (with ``field_path``: that one field's, paged as
-    plx.read pages a field: ``field_path`` with ``text_offset``), read by ``call_read``
-    (plx.read as the reader) in windows of ``CHECK_PAGE_CHARS`` from its start up to
-    ``CHECK_MAX_CHARS``, names Freightcom: any field of any window's answer, or the
-    windows' text joined (a name split across two windows is found). None: not known (a
-    read refused, failed or answered no window; the call's time nearly spent): the hit is
-    never shown."""
-    from operating import call_limits
-    pieces: list[str] = []
-    offset = 0
-    while True:
-        left = call_limits.seconds_left()
-        if left is not None and left < CHECK_RESERVE_S:
-            return None
-        wanted: dict[str, Any] = {"citation": citation, "max_chars": CHECK_PAGE_CHARS}
-        if field_path is not None:
-            wanted["field_path"] = field_path
-        if offset or field_path is not None:
-            wanted["text_offset"] = offset
-        try:
-            got = call_read(wanted)
-        except Exception:  # noqa: BLE001 - an unread text is never shown
-            return None
-        if not isinstance(got, Mapping) or "error" in got:
-            return None
-        if _names_freightcom(got):
-            return True
-        window = got.get("text_window")
-        if field_path is None:
-            shown = got.get("content")
-        else:
-            fields = got.get("fields")
-            shown = fields.get(field_path) if isinstance(fields, Mapping) else None
-        text = shown.get("untrusted_text") if isinstance(shown, Mapping) else None
-        if field_path is not None and (not isinstance(window, Mapping)
-                                       or not isinstance(text, str)):
-            return None   # a field's window asked for and none answered: not known
-        if isinstance(text, str):
-            pieces.append(text)
-        following = window.get("next_offset") if isinstance(window, Mapping) else None
-        if offset and not isinstance(window, Mapping):
-            return None   # a window asked for and none answered: not known
-        if (field_path is not None and isinstance(following, int)
-                and not isinstance(following, bool) and following >= CHECK_MAX_CHARS):
-            return None   # a field longer than the check reads: its rest is not known
-        if (not isinstance(following, int) or isinstance(following, bool)
-                or following <= offset or following >= CHECK_MAX_CHARS):
-            break
-        offset = following
-    return len(pieces) > 1 and _names_freightcom("".join(pieces))
+    return compact(call_documents(wanted))
 
 
 def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -397,8 +343,17 @@ def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
     widened = [w for r in results for w in [(r.get("searched") or {}).get("widened")] if w]
     if widened:
         searched["widened"] = "; ".join(dict.fromkeys(widened))[:300]
+    depth = [w for r in results for w in [(r.get("searched") or {}).get("depth")] if w]
+    searched.pop("depth", None)
+    if depth:
+        searched["depth"] = "; ".join(dict.fromkeys(depth))[:600]
     cut = [r["completeness"] for r in results
            if (r.get("completeness") or {}).get("truncated")]
+    # how many matched in all: each leg's own count, or its hits when it read every match
+    each = [(r.get("completeness") or {}).get("total") if isinstance(
+        (r.get("completeness") or {}).get("total"), int) else
+        len(r["documents"]) if not (r.get("completeness") or {}).get("truncated") else None
+        for r in results]
     out: dict[str, Any] = {
         "documents": documents, "searched": searched,
         "gaps": [g for r in results for g in r.get("gaps") or ()][:20],
@@ -406,6 +361,16 @@ def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
             (r.get("completeness") or {}).get("complete", True) for r in results),
             "truncated": bool(cut), "returned": len(documents),
             "next_cursor": cut[0].get("next_cursor") if cut else None}}
+    # every cut list's own cursor, with the sources it continues: a search whose legs are
+    # each cut is read to the end leg by leg (the single ``next_cursor`` is the first's)
+    more = [{"sources": list((r.get("searched") or {}).get("sources") or ()),
+             "cursor": (r.get("completeness") or {}).get("next_cursor")}
+            for r in results if (r.get("completeness") or {}).get("truncated")
+            and (r.get("completeness") or {}).get("next_cursor")]
+    if len(more) > 1:
+        out["completeness"]["continue"] = more
+    if cut and None not in each:
+        out["completeness"]["total"] = sum(each)
     if not out["completeness"]["complete"]:
         out["completeness"]["reason"] = (cut[0].get("reason") if cut else None) or next(
             ((r.get("completeness") or {}).get("reason") for r in results
@@ -417,40 +382,134 @@ def _merged(results: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def with_coverage(result: Any, arguments: Any) -> Any:
+    """``result`` (``fitted``'s) with its ``coverage`` (Ask plan A1a): how many items the
+    search found (``matched``), how many are shown, the sources and dates it covered and
+    how deep it read (``searched.depth``). ``matched`` is exact when the search read every
+    match (its hits, those that did not fit one response, those kept from the model); when
+    a next page continues the list it is not counted (null, ``matched_basis`` says so and
+    the cursor reaches the rest)."""
+    if not isinstance(result, dict) or "error" in result:
+        return result
+    searched = result.get("searched") or {}
+    done = result.get("completeness") or {}
+    shown = len(result.get("documents") or ())
+    asked = arguments if isinstance(arguments, Mapping) else {}
+    cover: dict[str, Any] = {
+        "shown": shown, "sources": list(searched.get("sources") or ()),
+        "since": searched.get("since") or asked.get("since"),
+        "until": searched.get("until") or asked.get("until"),
+        "depth": searched.get("depth")}
+    total = done.get("total") if isinstance(done.get("total"), int) else None
+    if total is None and (done.get("next_cursor") or done.get("truncated")):
+        cover.update(matched=None, matched_basis="not counted: more items match than this "
+                     "page lists; its cursor continues them")
+    else:
+        cover.update(matched=(shown if total is None else total)
+                     + int(result.get("egress_withheld") or 0)
+                     + int(result.get("unchecked") or 0), matched_basis="every match read")
+    return {**result, "coverage": cover}
+
+
+SNIPPETS_CUT = ("snippets were shortened to fit one response; plx.open on a hit's citation "
+                "(or its ref) gives the whole text")
+
+
+def with_cut_note(result: dict[str, Any]) -> dict[str, Any]:
+    """``result`` saying, once, at its top level (a gap, the contract's place for it) that
+    its snippets were shortened and ``plx.open`` gives the whole text; where the gap list
+    already holds its 20, the same words join ``searched.depth``. Said once, never twice."""
+    if not any(isinstance(d, dict) and any(
+            isinstance(d.get(f), dict) and d[f].get("truncated") for f in ("snippet", "title"))
+            for d in result.get("documents") or ()):
+        return result
+    gaps = list(result.get("gaps") or [])
+    if any(g.get("reason") == "snippets_shortened" for g in gaps) \
+            or SNIPPETS_CUT in str((result.get("searched") or {}).get("depth") or ""):
+        return result
+    if len(gaps) < 20:
+        return {**result, "gaps": gaps + [{
+            "state": "unknown", "reason": "snippets_shortened", "subject": "snippets",
+            "detail": SNIPPETS_CUT}]}
+    searched = dict(result.get("searched") or {})
+    searched["depth"] = ((searched.get("depth") + "; ") if searched.get("depth") else "") \
+        + SNIPPETS_CUT
+    return {**result, "searched": searched}
+
+
 def fitted(result: Any, fits: Callable[[dict[str, Any]], bool]) -> Any:
-    """``result`` (``run``'s) with as many of its hits, in order, as fit one response
-    (``fits``): live, an all-sources search of 20 hits a leg (mail, Teams, files and
-    records together) was refused whole as too large after 18 s; at most ``MAX_HITS``
-    (the contract's, as many as a leg's ``limit``: the legs' lists merged can hold
-    three times that). The hits left out are
-    said (``completeness.reason`` "result_budget" and a gap counting them), never
-    continued by a cursor: the list's own cursor would start past them, so it is
-    dropped."""
-    if not isinstance(result, dict) or "error" in result or (
-            len(result.get("documents") or ()) <= MAX_HITS and fits(result)):
+    """``result`` (``run``'s) as it is: a result that does not fit one response is read
+    again as a smaller page by ``paged`` (its legs' own cursors continue the rest), never
+    cut shorter (the 400 / 200 character snippet stages are gone: a snippet is shown whole
+    until one hit alone does not fit, ``_last_resort``)."""
+    return result
+
+
+def over(result: Any, fits: Callable[[dict[str, Any]], bool]) -> bool:
+    """Whether a search answer is too large for one response: more hits than the
+    contract's ``MAX_HITS``, or not ``fits``."""
+    if not isinstance(result, dict) or "error" in result:
+        return False
+    return len(result.get("documents") or ()) > MAX_HITS or not fits(result)
+
+
+def paged(search: Callable[[dict[str, Any]], Any], arguments: Any,
+          fits: Callable[[dict[str, Any]], bool]) -> Any:
+    """``search(arguments)`` (``run`` then ``fitted``) as one page that fits one response.
+    A result too large is never refused or cut without a way on: the search is read again
+    with a smaller ``limit`` (each leg's own page and cursor, ``completeness.next_cursor`` or
+    ``continue``), the limit scaled to the hits that would fit, then halved until the page
+    fits or one hit a leg is left. Whole pages only: what the next page holds is the cursor's
+    own rows, so no hit is lost between pages."""
+    asked = dict(arguments) if isinstance(arguments, Mapping) else arguments
+    result = search(asked)
+    if not isinstance(asked, dict) or not over(result, fits):
+        return result
+    limit = asked.get("limit") if isinstance(asked.get("limit"), int) else DEFAULT_LIMIT
+    while limit > 1 and over(result, fits):
+        shown = max(1, len(result.get("documents") or ()))
+        scaled = int(limit * min(MAX_HITS, shown) / shown * 0.9) if shown > MAX_HITS else limit // 2
+        limit = max(1, min(limit - 1, scaled))
+        result = search({**asked, "limit": limit})
+    return _last_resort(result, fits)
+
+
+# what a hit's snippet and title are cut to, longest first, when a page of one hit (or one
+# per leg) still does not fit: the rest of its text is read with plx.open (text_offset), so
+# the hit is shown in parts, never refused
+LAST_RESORT = (100, 50, 20, 0)
+
+
+def _last_resort(result: Any, fits: Callable[[dict[str, Any]], bool]) -> Any:
+    if not over(result, fits) or not isinstance(result, dict):
         return result
     documents = list(result.get("documents") or [])
-    if not documents:   # nothing to leave out: the response bound refuses it as it is
-        return result
+    for most in LAST_RESORT:
+        cut = [_short_snippet(_short_title(d, most), most) for d in documents]
+        trial = with_cut_note({**result, "documents": cut})
+        if fits(trial):
+            return trial
+    return result
 
-    def cut(n: int) -> dict[str, Any]:
-        done = dict(result.get("completeness") or {})
-        done.update({"complete": False, "truncated": True, "returned": n,
-                     "next_cursor": None, "reason": "result_budget"})
-        gap = {"state": "unknown", "reason": "result_budget", "subject": "search hits",
-               "detail": f"{len(documents) - n} more hits found did not fit one response "
-                         "(no cursor continues them): search again with a smaller limit, "
-                         "fewer sources or narrower words"}
-        return {**result, "documents": documents[:n], "completeness": done,
-                "gaps": [*(result.get("gaps") or [])[:19], gap]}
-    # cut(low) fits or low == 0; cut(high) does not fit (or is past MAX_HITS)
-    low, high = 0, min(len(documents), MAX_HITS + 1)
-    if fits(cut(high - 1)):
-        return cut(high - 1)
-    while high - low > 1:
-        mid = (low + high) // 2
-        low, high = (mid, high) if fits(cut(mid)) else (low, mid)
-    return cut(low)
+
+def _short_title(hit: Any, most: int) -> Any:
+    """``hit`` with its title's text cut to ``most`` characters (said ``truncated``)."""
+    title = hit.get("title") if isinstance(hit, dict) else None
+    if not (isinstance(title, dict) and isinstance(title.get("untrusted_text"), str)
+            and len(title["untrusted_text"]) > most):
+        return hit
+    return {**hit, "title": {**title, "untrusted_text": title["untrusted_text"][:most],
+                             "truncated": True}}
+
+
+def _short_snippet(hit: Any, most: int) -> Any:
+    """``hit`` with its snippet's text cut to ``most`` characters (said ``truncated``)."""
+    snip = hit.get("snippet") if isinstance(hit, dict) else None
+    if not (isinstance(snip, dict) and isinstance(snip.get("untrusted_text"), str)
+            and len(snip["untrusted_text"]) > most):
+        return hit
+    return {**hit, "snippet": {**snip, "untrusted_text": snip["untrusted_text"][:most],
+                               "truncated": True}}
 
 
 def _near_words(value: Any) -> list[str] | None:
@@ -469,14 +528,13 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
     """One ``plx.open``: a mail or Teams item through ``call_comms`` (the host's internal
     ``plx.sql_comms_open``: the same guarded views as the search); any other citation, or
     a host not serving the mail tables, through ``call_read`` (the host's own ``plx.read``
-    for the session's reader: its gates decide). A result naming Freightcom anywhere is
-    never shown (``egress_withheld``). Unknown arguments fail closed.
+    for the session's reader: its gates decide). Unknown arguments fail closed.
 
     ``citations`` (several, ``MANY_MAX``): each is opened exactly as one ``citation`` is
     (``resolve`` turns a session ref into its handle; None: not shown this session, that
     item is not found), in a ``MANY_CHARS`` window, the results in the order sent under
     ``opened``; one item's refusal or error is that item's, never the others'. Past
-    ``MANY_SECONDS`` no further item is opened (each says so). ``near`` words: a mail or
+    ``near`` words: a mail or
     Teams window starts just before the first of them its text holds (11-21: Ask listed
     35 of a supplier's mails and concluded without opening one; one call now reads the
     part of each that holds the date or amount asked about)."""
@@ -495,27 +553,36 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
         if "citation" in arguments or "text_offset" in arguments:
             return _error("invalid_input", "send citation (one, text_offset to read on) or "
                                            "citations (several), not both")
-        if not isinstance(many, list) or not 0 < len(many) <= MANY_MAX or not all(
+        if not isinstance(many, list) or not many or not all(
                 isinstance(c, str) and c.strip() for c in many) or len(set(many)) != len(many):
-            return _error("invalid_input", f"citations: 1 to {MANY_MAX} different citations")
-        start, out = clock(), []
-        for asked in many:
-            if clock() - start > MANY_SECONDS:
-                out.append({"citation": asked, "error": {
-                    "code": "not_opened", "message": "not opened in this call's time: "
-                                                     "open it again"}})
-                continue
+            return _error("invalid_input", "citations: different citations, at least one")
+        out: list[dict[str, Any]] = []
+        window = min(MANY_CHARS, max(MANY_MIN_WINDOW, MANY_TEXT // len(many)))
+        used, rest = 0, []
+        for at, asked in enumerate(many):
+            # one response holds ``MANY_BYTES``: the citations that do not fit yet are not read
+            # now, they come back whole in ``next_citations`` to send again (every citation is
+            # read, a page of them per call; the first of a page always is)
+            if out and used + int(window * 1.7) + 2000 > MANY_BYTES:
+                rest = list(many[at:])
+                break
             full = resolve(asked)
             if not isinstance(full, str):
                 out.append({"citation": asked, "error": {
                     "code": "not_found", "message": "no result of this session showed it"}})
                 continue
-            got = _open_single(call_read, call_comms, full, None, near, MANY_CHARS)
+            got = _open_single(call_read, call_comms, full, None, near, window)
             # each says which it is: an error by the citation as sent, a result by its own
             # (else the handle opened)
             out.append({"citation": asked, **got} if "error" in got
                        else got if "citation" in got else {"citation": full, **got})
-        return {"opened": out, "window_chars": MANY_CHARS}
+            used += _encoded(out[-1])
+        result: dict[str, Any] = {"opened": out, "window_chars": window}
+        if rest:
+            result["next_citations"] = rest
+            result["note"] = (f"{len(out)} of {len(many)} opened; the other {len(rest)} are in "
+                              "next_citations: send them as citations to open them")
+        return result
     citation = arguments.get("citation")
     if not isinstance(citation, str) or not citation.strip():
         return _error("invalid_input", "send citation: a plx.search hit's citation")
@@ -531,10 +598,49 @@ def open_one(call_read: Callable[[dict[str, Any]], Any], arguments: Any,
     return _open_single(call_read, call_comms, full, offset, near, OPEN_MAX_CHARS)
 
 
+def _encoded(value: Any) -> int:
+    """Bytes ``value`` takes in the host's response: its JSON text, sent as a JSON string."""
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+
+
 def _open_single(call_read: Callable[[dict[str, Any]], Any],
                  call_comms: Callable[[dict[str, Any]], Any] | None, citation: str,
                  offset: int | None, near: list[str] | None, most: int) -> dict[str, Any]:
+    """One item's open (``_opened_one``) with the host's ``coverage`` line (plan A1a): the
+    item's whole text length and the characters shown, ``{"chars": total, "shown":
+    [start, end]}``, taken from the result's own window fields (a mail's ``text_offset`` /
+    ``text_chars`` / ``next_offset``, a read's ``text_window``). A result with no text
+    window (a record, an error) gets none: nothing is said that the result does not hold."""
+    got = _opened_one(call_read, call_comms, citation, offset, near, most)
+    if not isinstance(got, dict) or "error" in got or "coverage" in got:
+        return got
+    covered = open_coverage(got)
+    return {**got, "coverage": covered} if covered else got
+
+
+def open_coverage(got: Mapping[str, Any]) -> dict[str, Any] | None:
+    """``{"chars": total, "shown": [start, end]}`` of one opened text, or None."""
+    def whole(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+    window = got.get("text_window")
+    if isinstance(window, Mapping) and whole(window.get("total_chars")) \
+            and whole(window.get("offset")):
+        total, start = window["total_chars"], window["offset"]
+        end = window.get("next_offset")
+        return {"chars": total, "shown": [start, end if whole(end) else total]}
+    if whole(got.get("text_chars")) and whole(got.get("text_offset")):
+        total, start, end = got["text_chars"], got["text_offset"], got.get("next_offset")
+        return {"chars": total, "shown": [start, end if whole(end) else total]}
+    return None
+
+
+def _opened_one(call_read: Callable[[dict[str, Any]], Any],
+                 call_comms: Callable[[dict[str, Any]], Any] | None, citation: str,
+                 offset: int | None, near: list[str] | None, most: int) -> dict[str, Any]:
     """One item's open (``open_one``), its gates whole."""
+    # one plx.read holds at most CHECK_PAGE_CHARS (its contract's bound): a longer window
+    # is read in pages once the whole text has passed the gates (``_widened``)
     wanted: dict[str, Any] = {"citation": citation, "max_chars": most}
     if offset is not None:
         wanted["text_offset"] = offset
@@ -547,7 +653,7 @@ def _open_single(call_read: Callable[[dict[str, Any]], Any],
     via_comms = isinstance(got, Mapping) and not got.get("not_comms") and (
         got.get("error") or {}).get("code") not in OPEN_FALLBACK
     if not via_comms:
-        got = call_read(wanted)
+        got = call_read({**wanted, "max_chars": min(most, CHECK_PAGE_CHARS)})
         if moment is not None and isinstance(got, Mapping) and "error" not in got \
                 and not _known_before(got, moment):
             # under a replay's ceiling the host's own read shows only what carries a
@@ -555,41 +661,46 @@ def _open_single(call_read: Callable[[dict[str, Any]], Any],
             return _error("not_found", "nothing to open before the replayed moment")
     if not isinstance(got, Mapping):
         return _error("open_failed", "the read gave no result")
-    if _names_freightcom(got):
-        return {"error": {"code": "egress_withheld",
-                          "message": "this item is never shown to the assistant"}}
     if via_comms:
-        # a mail or Teams row of the guarded views: Freightcom was decided on its
-        # whole text at build (``ai_ok``; a text not yet read is held back), so a long
-        # mail's window (its ``text`` cut, ``next_offset``) is shown, never read again
+        # a mail or Teams row of the guarded views: a long mail's window (its ``text``
+        # cut, ``next_offset``) is shown as is
         return dict(got)
-    cut = _cut_fields(got)
-    if cut is None:
-        # a text cut where no field read can page it: past the cut it cannot be checked
-        return {"error": {"code": "egress_unchecked", "message": UNCHECKED}}
-    for path in cut:
-        # a field longer than one read holds (a meeting's transcript, a long Teams or
-        # list item text): its whole text is paged and checked before its head is shown
-        verdict = _text_names_freightcom(call_read, citation, path)
-        if verdict:
-            return {"error": {"code": "egress_withheld",
-                              "message": "this item is never shown to the assistant"}}
-        if verdict is None:
-            return {"error": {"code": "egress_unchecked", "message": UNCHECKED}}
     if offset or _content_cut(got):
-        # the item's whole text, not only the window shown, is checked as plx.search
-        # checks a hit's (from its start up to CHECK_MAX_CHARS); not known: not shown
-        verdict = _text_names_freightcom(call_read, citation)
-        if verdict:
-            return {"error": {"code": "egress_withheld",
-                              "message": "this item is never shown to the assistant"}}
-        if verdict is None:
-            return {"error": {"code": "egress_unchecked", "message": UNCHECKED}}
+        # the item's text is longer than the window shown: read on
+        return _widened(call_read, citation, dict(got), most)
     return dict(got)
 
 
-UNCHECKED = ("this item's whole text could not be checked for a party the assistant may "
-             "not read, so it is not shown")
+def _widened(call_read: Callable[[dict[str, Any]], Any], citation: str,
+             got: dict[str, Any], most: int) -> dict[str, Any]:
+    """``got`` (one plx.read window of a text its gates passed whole) with the windows that
+    follow it read on, up to ``most`` characters in all: one window as the model sees it,
+    its ``text_window.next_offset`` where the text still goes on (a read that fails or
+    shows no more ends it there, said as before)."""
+    content, window = got.get("content"), got.get("text_window")
+    if not (isinstance(content, Mapping) and isinstance(content.get("untrusted_text"), str)
+            and isinstance(window, Mapping)):
+        return got
+    text, following = content["untrusted_text"], window.get("next_offset")
+    while isinstance(following, int) and not isinstance(following, bool) \
+            and len(text) < most:
+        more = call_read({"citation": citation, "text_offset": following,
+                          "max_chars": min(most - len(text), CHECK_PAGE_CHARS)})
+        page = more.get("content") if isinstance(more, Mapping) else None
+        if not (isinstance(page, Mapping) and isinstance(page.get("untrusted_text"), str)
+                and page["untrusted_text"]) or "error" in more:
+            break
+        text += page["untrusted_text"]
+        step = more.get("text_window") if isinstance(more.get("text_window"), Mapping) else {}
+        following = step.get("next_offset")
+    shown = {k: v for k, v in content.items() if k != "truncated"}
+    shown["untrusted_text"] = text
+    if isinstance(following, int) and not isinstance(following, bool):
+        shown["truncated"] = True
+    edge = {k: v for k, v in window.items() if k not in ("next_offset", "sha256")}
+    if isinstance(following, int) and not isinstance(following, bool):
+        edge["next_offset"] = following
+    return {**got, "content": shown, "text_window": edge}
 
 
 def _content_cut(got: Mapping[str, Any]) -> bool:
@@ -599,40 +710,6 @@ def _content_cut(got: Mapping[str, Any]) -> bool:
     content = got.get("content")
     return (isinstance(following, int) and not isinstance(following, bool)) or (
         isinstance(content, Mapping) and bool(content.get("truncated")))
-
-
-def _cut_fields(got: Mapping[str, Any]) -> list[str] | None:
-    """The paths of ``got``'s ``fields`` whose text was cut (an envelope saying
-    ``truncated``), each readable whole by plx.read's ``field_path`` with ``text_offset``.
-    None: a cut text elsewhere than its ``content`` or one such field (no read pages it)."""
-    from operating import ontology_tools as ot
-    cut: list[str] = []
-    for key, value in got.items():
-        if key == "content":
-            continue
-        if key == "fields" and isinstance(value, Mapping):
-            for path, field in value.items():
-                if isinstance(field, Mapping) and field.get("truncated") is True \
-                        and "untrusted_text" in field:
-                    if not (isinstance(path, str) and ot._FIELD_PATH.match(path)):
-                        return None
-                    cut.append(path)
-                elif _cut_text(field):
-                    return None
-        elif _cut_text(value):
-            return None
-    return cut
-
-
-def _cut_text(value: Any) -> bool:
-    """Whether any text in ``value`` was cut (an envelope saying ``truncated``)."""
-    if isinstance(value, Mapping):
-        if value.get("truncated") is True and "untrusted_text" in value:
-            return True
-        return any(_cut_text(v) for v in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_cut_text(v) for v in value)
-    return False
 
 
 __all__ = ["OPEN_NAME", "OPEN_TOOL", "open_one", "TOOL", "TOOL_NAME", "TOOL_NAMES", "arguments_for_documents", "compact", "run"]

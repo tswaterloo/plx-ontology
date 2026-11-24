@@ -67,12 +67,16 @@ LIMITS = {
     "plx.query": 60.0,
     "plx.table": 25.0,
     "plx.business": 25.0,
-    "plx.sql": 65.0,      # 10 s statements (a full reader's 60 s); a swap's refusal is asked again for 20 s
-    "plx.open": 30.0,     # plx.read under it (operating/ontology_tools_search.py)
-    "plx.search": 40.0,   # plx.documents under it (operating/ontology_tools_search.py)
 }
-DEFAULT_LIMIT = 45.0
-EXEMPT = frozenset({"plx.case_get"})       # the answer gate: never limited
+# a tool not listed in LIMITS has none (owner 11-23: the Ask's tools - plx.sql, plx.search, plx.open,
+# plx.read_document, plx.legs, plx.insight, the write tools - never had a listed limit and a
+# default of 45 s stopped them; the limits stay only for the older agents' tools above)
+# never limited: the answer gate, and the Ask's evidence reads (no cut-offs: a read the Ask sends runs to its end and returns what it found). plx.open and
+# plx.search call plx.read / plx.documents in process and the host's internal comms and
+# records reads under them: those internal names are exempt too (plx.read, plx.documents and
+# plx.find, which other agents call themselves, keep their limits).
+EXEMPT = frozenset({"plx.case_get", "plx.sql", "plx.search", "plx.open",
+                    "plx.sql_comms_search", "plx.sql_comms_open", "plx.sql_records_search"})
 # plx.investigate's own budget stops between primitives: room left for its last one.
 INVESTIGATE_MARGIN = 8.0
 # Below this many seconds a call is not started (it could not finish usefully).
@@ -96,7 +100,9 @@ def limit_for(name: Any, environ: Mapping[str, str] | None = None,
     environ = environ if environ is not None else os.environ
     if not enabled(environ) or name in EXEMPT:
         return None
-    limit = LIMITS.get(str(name), DEFAULT_LIMIT)
+    limit = LIMITS.get(str(name))
+    if limit is None:
+        return None
     given = environ.get(DEADLINE_ENV)
     if not given and environ.get(DEADLINE_FILE_ENV):
         try:

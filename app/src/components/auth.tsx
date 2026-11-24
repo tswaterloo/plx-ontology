@@ -2,13 +2,13 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getAuthConfig, getMe, logout, setTokenProvider } from "@/lib/api";
+import { beginAuthCheck, getAuthConfig, getMe, logout, setBundlePrincipal, setTokenProvider, settleAuth } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
 import { safeNext } from "@/lib/format";
 import { clearPending } from "@/lib/pending";
 import { clearSavedFor, setSavedUser } from "@/lib/saved";
 import { resetSessionCaches } from "@/lib/session-cache";
-import { captureTicket } from "@/lib/ticket";
+import { captureTicket, ticketComing } from "@/lib/ticket";
 import type { AuthConfig, Me } from "@/lib/types";
 
 export type AuthState =
@@ -53,6 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(() => {
     const c = new AbortController();
+    beginAuthCheck();
     (async () => {
       let config = configRef.current;
       try {
@@ -62,6 +63,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         if (config.mode === "entra") {
           if (!config.entra) {
+            settleAuth();
             setState({ status: "error", config, message: plainError(new ApiError(503, "not_served")) });
             return;
           }
@@ -70,6 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (start.next) setRedirectNext(safeNext(start.next));
           if (!start.account) {
             setTokenProvider(null);
+            settleAuth();
             setState({ status: "signed-out", config });
             return;
           }
@@ -77,15 +80,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } else {
           setTokenProvider(null);
         }
+        settleAuth();
         const me = await getMe(c.signal);
         // another person in this tab (an access link or dev sign-in over a session):
         // nothing read for the last one is kept
         if (principalRef.current !== null && principalRef.current !== me.principal) resetSessionCaches();
+        // what this tab kept for anyone else (also across a reload) is dropped before Home reads
+        setBundlePrincipal(me.principal);
         setState({ status: "signed-in", config, me });
       } catch (e) {
+        settleAuth();
         if (c.signal.aborted) return;
+        setBundlePrincipal(null);   // nobody is known: nothing kept for anyone is shown
         if (e instanceof ApiError && e.status === 401 && config) {
           if (principalRef.current !== null) resetSessionCaches();   // the session ended
+          setBundlePrincipal(null);
           setState({ status: "signed-out", config });
         } else if (e instanceof ApiError && e.status === 403 && config) {
           // Signed in, but no Workbench access: say so plainly, offer sign-out.
@@ -114,6 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setTokenProvider(null);
     resetSessionCaches();
+    setBundlePrincipal(null);
     clearSavedFor(principalRef.current);
     clearPending();
     if (config?.mode === "entra") {
@@ -128,10 +138,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => refresh(), [refresh]);
   // Keyed by who is signed in: a different person remounts every page, so no component
   // keeps state or an in-flight read from the last one.
+  // The first sign-in of a tab does NOT remount: the page already started its reads at first
+  // render (they carry the cookie; the sign-in check runs beside them). Anything that changes
+  // who is signed in after that (another person, a sign-out) bumps the key and remounts.
   const who = state.status === "signed-in" ? state.me.principal : "";
+  const seen = useRef("");
+  const gen = useRef(0);
+  if (who !== seen.current) {
+    if (seen.current) gen.current += 1;
+    seen.current = who;
+  }
   return (
     <Ctx.Provider value={{ state, refresh, signOut, signOutError, redirectNext }}>
-      <Fragment key={who}>{children}</Fragment>
+      <Fragment key={gen.current}>{children}</Fragment>
     </Ctx.Provider>
   );
 }
@@ -151,6 +170,8 @@ export function RequireAuth({ children, fallback }: { children: React.ReactNode;
       router.replace(`/signin?next=${encodeURIComponent(next)}`);
     }
   }, [state.status, router, path]);
-  if (state.status === "signed-in") return <>{children}</>;
+  // Loading renders the page at once so its reads start with the sign-in check, not after it;
+  // a refused check (signed-out) replaces it with the fallback and goes to sign-in.
+  if (state.status === "signed-in" || (state.status === "loading" && !ticketComing())) return <>{children}</>;
   return <>{fallback}</>;
 }

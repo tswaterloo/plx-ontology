@@ -28,12 +28,25 @@ describe("Ask resuming a conversation", () => {
     api.getWorkThread.mockResolvedValueOnce({ resume: { turns: [{ question: "Show PO 106001", answer: null, withheld: null }] } });
     render(<AskRoute />);
     const notice = await screen.findByRole("alert");
-    expect(notice).toHaveTextContent("This conversation couldn't be opened just now.");
+    expect(notice).toHaveTextContent("This conversation couldn't be opened. The Workbench server failed on this request.");
     expect(thread.seed).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: /Try again/ }));
     await vi.waitFor(() => expect(thread.seed).toHaveBeenCalledTimes(1));
     expect(api.getWorkThread).toHaveBeenCalledTimes(2);
     expect(api.getWorkThread.mock.calls[1][0]).toBe("ask:559a23fcd1231cb2");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says a conversation that is gone or not the reader's, with no Try again that cannot help", async () => {
+    for (const code of ["not_found", "forbidden"]) {
+      api.getWorkThread.mockReset();
+      api.getWorkThread.mockRejectedValue({ code, message: code });
+      const view = render(<AskRoute />);
+      const notice = await screen.findByRole("alert");
+      expect(notice.textContent).toMatch(/^This conversation couldn't be opened\. \S/);
+      expect(notice).not.toHaveTextContent("just now");
+      expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
+      view.unmount();
+    }
   });
 });

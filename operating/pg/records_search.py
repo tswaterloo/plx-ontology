@@ -21,8 +21,10 @@ SOURCE = "records"
 KIND = "record"
 MAX_TERMS = 8
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
-_CURSOR = re.compile(r"^r1:([0-9]{1,4})$")
-MAX_OFFSET = 1000
+_CURSOR = re.compile(r"^r1:([0-9]{1,5})$")
+# the deepest match a cursor pages to (was 1,000); past it the search says it stopped
+# (``depth_said``, reason "depth_cap"): narrower words or dates reach the rest
+MAX_OFFSET = 10000
 COLS = ("handle", "type", "system", "record_id", "label", "record_date")
 
 
@@ -72,10 +74,22 @@ def indexed(words: Sequence[str]) -> list[int]:
     return [i for i, w in enumerate(words) if len(w) >= INDEXED_LETTERS]
 
 
-def order_sql() -> str:
+def order_sql(label: str = "label", day: str = "record_date", handle: str = "handle") -> str:
     """The one order of every hit: the label that is exactly the query first, then the
     newest record date, then the handle (the candidates' and the hits' own)."""
-    return ("lower(label) = lower(%(q)s) DESC, record_date DESC NULLS LAST, handle")
+    return f"lower({label}) = lower(%(q)s) DESC, {day} DESC NULLS LAST, {handle}"
+
+
+# The candidates read the store's own table, which holds only the date the build wrote; the
+# declared day of a record built before the declarations is in ``<biz>.record_dates`` (the
+# guarded view shows ``COALESCE(day, record_date)``): the candidates read the same day, or a
+# since/until search (and the newest-first cut of the candidates) would miss those records.
+DAY = "COALESCE(d.day, r.record_date)"
+
+
+def dated_from(biz: str) -> str:
+    return (f"{biz}.records r LEFT JOIN {biz}.record_dates d ON d.type = r.type AND "
+            "d.rid = r.rid AND d.ver = r.ver")
 
 
 def candidates(off: int, k: int) -> int:
@@ -95,15 +109,16 @@ def candidates_sql(positions: Sequence[int], *, biz: str, since: bool, until: bo
         raise SearchInputError("no word the label index finds")
     if not re.fullmatch(r"[a-z_][a-z0-9_]*", biz):
         raise SearchInputError("not a schema name")
-    where = [f"label ILIKE %(w{i})s ESCAPE '\\'" for i in positions]
+    where = [f"r.label ILIKE %(w{i})s ESCAPE '\\'" for i in positions]
     if whole:   # each word also whole (``whole``: the patterns ``r0..``)
-        where += [f"lower(label) ~ %(r{i})s" for i in positions]
+        where += [f"lower(r.label) ~ %(r{i})s" for i in positions]
     if since:
-        where.append("record_date >= %(since)s")
+        where.append(f"{DAY} >= %(since)s")
     if until:
-        where.append("record_date <= %(until)s")
-    return (f"SELECT handle FROM {biz}.records WHERE " + " AND ".join(where)
-            + " AND handle IS NOT NULL ORDER BY " + order_sql() + " LIMIT %(cap)s")
+        where.append(f"{DAY} <= %(until)s")
+    return (f"SELECT r.handle FROM {dated_from(biz)} WHERE " + " AND ".join(where)
+            + " AND r.handle IS NOT NULL ORDER BY " + order_sql("r.label", DAY, "r.handle")
+            + " LIMIT %(cap)s")
 
 
 def search_sql(n_words: int, *, since: bool, until: bool, among: bool = False) -> str:
@@ -141,13 +156,13 @@ def close_candidates_sql(*, biz: str, trgm: str, since: bool, until: bool) -> st
     installed in."""
     if not (re.fullmatch(r"[a-z_][a-z0-9_]*", biz) and re.fullmatch(r"[a-z_][a-z0-9_]*", trgm)):
         raise SearchInputError("not a schema name")
-    where = [f"label OPERATOR({trgm}.%%) %(q)s", "handle IS NOT NULL"]
+    where = [f"r.label OPERATOR({trgm}.%%) %(q)s", "r.handle IS NOT NULL"]
     if since:
-        where.append("record_date >= %(since)s")
+        where.append(f"{DAY} >= %(since)s")
     if until:
-        where.append("record_date <= %(until)s")
-    return (f"SELECT handle FROM {biz}.records WHERE " + " AND ".join(where)
-            + f" ORDER BY {trgm}.similarity(label, %(q)s) DESC, handle LIMIT %(cap)s")
+        where.append(f"{DAY} <= %(until)s")
+    return (f"SELECT r.handle FROM {dated_from(biz)} WHERE " + " AND ".join(where)
+            + f" ORDER BY {trgm}.similarity(r.label, %(q)s) DESC, r.handle LIMIT %(cap)s")
 
 
 # A record whose label holds every word of the query by its stem (English stemming, the
@@ -250,17 +265,17 @@ def stem_candidates_sql(n_stems: int, *, biz: str, since: bool, until: bool,
         raise SearchInputError("no stem the label index finds")
     if not re.fullmatch(r"[a-z_][a-z0-9_]*", biz):
         raise SearchInputError("not a schema name")
-    where = [f"label ILIKE %(s{i})s ESCAPE '\\'" for i in range(n_stems)]
-    where += ["to_tsvector('english'::regconfig, label) @@ %(stq)s::tsquery",
-              "handle IS NOT NULL"]
+    where = [f"r.label ILIKE %(s{i})s ESCAPE '\\'" for i in range(n_stems)]
+    where += ["to_tsvector('english'::regconfig, r.label) @@ %(stq)s::tsquery",
+              "r.handle IS NOT NULL"]
     if typed:   # only records of the types ``%(types)s`` (``named_types``)
-        where.append("type = ANY(%(types)s::text[])")
+        where.append("r.type = ANY(%(types)s::text[])")
     if since:
-        where.append("record_date >= %(since)s")
+        where.append(f"{DAY} >= %(since)s")
     if until:
-        where.append("record_date <= %(until)s")
-    return (f"SELECT handle FROM {biz}.records WHERE " + " AND ".join(where)
-            + " ORDER BY " + order_sql() + " LIMIT %(cap)s")
+        where.append(f"{DAY} <= %(until)s")
+    return (f"SELECT r.handle FROM {dated_from(biz)} WHERE " + " AND ".join(where)
+            + " ORDER BY " + order_sql("r.label", DAY, "r.handle") + " LIMIT %(cap)s")
 
 
 def among_sql(*, since: bool, until: bool) -> str:
@@ -303,13 +318,32 @@ def hits(rows: Sequence[Sequence[Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def searched(args: Mapping[str, Any], words: Sequence[str]) -> dict[str, Any]:
+def searched(args: Mapping[str, Any], words: Sequence[str], *, capped: bool = False
+             ) -> dict[str, Any]:
     out: dict[str, Any] = {"sources": [SOURCE], "queries": [" ".join(words)[:200]]}
     for key in ("since", "until"):
         if args.get(key):
             out[key] = args[key]
+    depth = depth_said(args.get("query"), capped=capped)
+    if depth:
+        out["depth"] = depth
     return out
 
 
+def depth_said(query: Any, *, capped: bool) -> str | None:
+    """Where a records search did not read every match, said (``searched.depth``): the
+    words past ``MAX_TERMS`` (not searched) and, ``capped``, pages stopping at the
+    ``MAX_OFFSET``-th match. None when it read everything it was asked for."""
+    parts = []
+    rest = _WORD.findall(query if isinstance(query, str) else "")[MAX_TERMS:]
+    if rest:
+        parts.append(f"records: only the first {MAX_TERMS} words were searched; not "
+                     "searched: " + " ".join(rest))
+    if capped:
+        parts.append(f"records: pages stop at the {MAX_OFFSET:,}th match; more words or "
+                     "since/until reach the rest")
+    return "; ".join(parts)[:600] or None
+
+
 __all__ = ["CLOSE_CAP", "by_number", "CLOSE_SIMILARITY", "KIND", "SOURCE", "SearchInputError", "among_sql",
-           "candidates", "candidates_sql", "close_candidates_sql", "day", "hits", "indexed", "numbers", "whole", "params", "read_cursor", "search_sql", "searched", "stem_candidates_sql", "lexemes", "named_types", "stems", "terms"]
+           "candidates", "candidates_sql", "depth_said", "close_candidates_sql", "day", "hits", "indexed", "numbers", "whole", "params", "read_cursor", "search_sql", "searched", "stem_candidates_sql", "lexemes", "named_types", "stems", "terms"]

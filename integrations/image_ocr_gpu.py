@@ -16,9 +16,8 @@ those readings; it never changes the capture:
   it passes: a mailbox the people exclusion does not withhold, every sender and
   recipient on the tenant's mail domains decided and not excluded (the capture's recorded
   directory and tenant listing attached; the list re-read during the run), no address
-  the capture's purge left undecided, and no Freightcom in the file name, the whole
-  message record, the whole body or any OCR text stored of it (its data never goes
-  through an AI model). Any doubt refuses (fail closed; counted, never sent). The
+  the capture's purge left undecided, (Freightcom data is read like any other: the owner dropped
+  that rule 11-23). Any doubt refuses (fail closed; counted, never sent). The
   answers are stored by content hash under the engine's key (model, revision, prompt,
   bounds): resumable, an image read twice is stored once.
 
@@ -53,7 +52,6 @@ from .address_forms import normalize_address, split_addresses
 
 DB_NAME = "image-ocr-gpu.sqlite"
 OCR_READ = ("extracted_ocr", "ocr_no_text")
-from .freightcom_rule import FREIGHTCOM, names as _names_freightcom  # noqa: E402  the one rule
 # the message fields whose addresses the exclusion decides
 _ADDRESSED = ("from", "sender", "toRecipients", "ccRecipients", "bccRecipients", "to", "cc",
               "bcc", "replyTo")
@@ -176,13 +174,6 @@ def _addresses(value: Any, *, name: bool = False) -> Iterable[tuple[str, bool]]:
         yield value, name
 
 
-def touches_freightcom(*texts: Any) -> bool:
-    """Whether any of ``texts`` (a file name, a whole message record, a body, an OCR
-    text) names Freightcom (``freightcom_rule``). Over-matching ("Freight Comments")
-    refuses: fail closed."""
-    return _names_freightcom(*texts)
-
-
 class Refused(Exception):
     """An image may not leave the box; ``code`` says why (no name, no address)."""
 
@@ -250,8 +241,7 @@ class Gate:
     (as ``ontology.project._UndecidedWithheld``), and so does any address the capture's
     last purge left undecided (``undecided_addresses``) and every carrier in a mailbox the
     exclusion withholds. No usable guard or no known tenant domain refuses every image.
-    Freightcom: the file name, the whole message record, the whole body and every OCR
-    text the store holds of the attachment (current and earlier versions) are read."""
+"""
 
     def __init__(self, exclusion: Any, mail: Any, *, ttl: float = 300.0,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -264,7 +254,6 @@ class Gate:
         self.domains: frozenset[str] = frozenset()
         self.withheld: set[str] | None = None
         self.undecided: set[str] = set()
-        self._bodies: dict[str, bool] = {}
         self.refresh()
 
     @classmethod
@@ -331,25 +320,15 @@ class Gate:
     def _check(self, mail_db: sqlite3.Connection, sha: str) -> None:
         guard = self._require()
         rows = mail_db.execute(
-            "SELECT a.mailbox_id, a.metadata, a.l1_handle, a.text_sha256, a.message_handle "
+            "SELECT a.mailbox_id, a.metadata, a.message_handle "
             "FROM attachments a WHERE a.content_sha256 = ?", (sha,)).fetchall()
         if not rows:
             raise Refused("no_carrier")
-        for mailbox, meta, handle, text_sha, message in rows:
+        for mailbox, meta, message in rows:
             try:
-                name = (json.loads(meta) or {}).get("name")
+                (json.loads(meta) or {}).get("name")
             except (ValueError, TypeError, AttributeError):
                 raise Refused("record_unreadable") from None
-            if touches_freightcom(name):
-                raise Refused("freightcom")
-            texts = {text_sha} if text_sha else set()
-            if handle:
-                texts.update(t for (t,) in mail_db.execute(
-                    "SELECT text_sha256 FROM attachment_text_versions WHERE l1_handle=? AND "
-                    "text_sha256 IS NOT NULL", (handle,)))
-            for text in sorted(texts):
-                if touches_freightcom(self._text(text)):
-                    raise Refused("freightcom")
             self.check_message(mail_db, mailbox, message, guard)
 
     def check_message(self, mail_db: sqlite3.Connection, mailbox: Any, message: Any,
@@ -377,15 +356,11 @@ class Gate:
                 raise Refused("record_unreadable") from None
             if not isinstance(rec, Mapping):
                 raise Refused("record_unreadable")
-            if touches_freightcom(rec):
-                raise Refused("freightcom")
             # a copy withheld in another mailbox (an excluded person sent or got it, e.g.
             # as Bcc): this copy waits for the capture's purge and is never sent meanwhile
             if self._mail.is_withheld(rec.get("internet_message_id")
                                       or rec.get("internetMessageId")):
                 raise Refused("people_withheld")
-            if body and self._body_freightcom(body):
-                raise Refused("freightcom")
             self._people(rec, guard)
 
     def _tenant_domain(self, domain: str) -> bool:
@@ -459,23 +434,6 @@ class Gate:
             raise Refused("exclusion_undecided") from None
         if excluded:
             raise Refused("excluded_person")
-
-    def _text(self, digest: str) -> str:
-        try:
-            return self._mail.blob(digest).decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001 - an OCR text it cannot read: unknown content
-            raise Refused("text_unreadable") from None
-
-    def _body_freightcom(self, digest: str) -> bool:
-        if digest not in self._bodies:
-            if len(self._bodies) > 200_000:
-                self._bodies.clear()
-            try:
-                body = self._mail.blob(digest).decode("utf-8", "replace")
-            except Exception:  # noqa: BLE001 - a body it cannot read: unknown content
-                raise Refused("body_unreadable") from None
-            self._bodies[digest] = touches_freightcom(body)
-        return self._bodies[digest]
 
 
 # --- the hosts ------------------------------------------------------------------------

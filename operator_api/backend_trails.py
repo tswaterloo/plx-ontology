@@ -45,16 +45,6 @@ def _person(reader: Any) -> Optional[str]:
     return email.strip().lower() if isinstance(email, str) and "@" in email else None
 
 
-FAST_ANSWER_ENV = "PLX_FAST_ANSWER"
-
-
-def fast_off(environ: Mapping[str, str]) -> bool:
-    """The phrase-rule path (``operating.fast_answer``) is switched off for this process
-    (``PLX_FAST_ANSWER=off``): every question it would take goes to the agent. The IN-11
-    comparison's off arm (``evals/fast_answer_compare.py``); on by default."""
-    return str(environ.get(FAST_ANSWER_ENV) or "").strip().lower() == "off"
-
-
 def quicker_answer(answer: m.AnswerPayload, reason: str) -> m.AnswerPayload:
     """``answer`` (the objective box's, given when the agent's full check did not run) as
     the quicker answer: ``assistant_unavailable`` names ``reason`` either way, so no

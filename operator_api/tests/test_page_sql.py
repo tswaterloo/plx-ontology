@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import threading
 import time
 import unittest
@@ -38,12 +39,21 @@ def build():
     return s
 
 
+from operating.measures import where_sql  # noqa: E402
+
+
 class PageDoor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from operating.tests import pg_store_mode
         import psycopg
         from operating.pg.migrate import MIGRATIONS_DIR
+        # the builders' writes reserve through the one disk budget: a state file of the test's
+        # own, never the host's live reservations
+        import tempfile
+        budget = mock.patch.dict(os.environ, {"PLX_STATE_DIR": tempfile.mkdtemp()})
+        budget.start()
+        cls.addClassCleanup(budget.stop)
         cls.store = build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
@@ -91,10 +101,10 @@ class PageDoor(unittest.TestCase):
     # ---- truth: every number equals the SQL truth for each reader ----------------------
 
     def test_counts_equal_the_sql_truth_for_full_restricted_and_no_reader(self):
-        late_all = self.truth("SELECT count(*) FROM {biz}.purchase_orders "
-                              "WHERE verdict = 'late'")[0][0]
-        orders_all = self.truth("SELECT count(*) FROM {biz}.sales_orders "
-                                "WHERE status = 'open' AND days_late > 0")[0][0]
+        late_all = self.truth("SELECT count(DISTINCT handle) FROM {biz}.purchase_orders "
+                              "WHERE " + where_sql("late_purchase_orders"))[0][0]
+        orders_all = self.truth("SELECT count(DISTINCT handle) FROM {biz}.sales_orders "
+                                "WHERE " + where_sql("late_orders"))[0][0]
         marked = len(range(0, MORE, FINANCE_EVERY)) + 1          # + the fixture's PO-FIN
         self.assertGreaterEqual(late_all, MORE + 2)
         self.assertGreaterEqual(orders_all, 1)
@@ -111,10 +121,10 @@ class PageDoor(unittest.TestCase):
                 if orders is not None:
                     self.assertEqual(got["late_order_count"], orders)
                 # the same number plx.sql gives this reader (the same door)
-                for name, sql in (("late_po_count", "SELECT count(*) AS n FROM purchase_orders "
-                                   "WHERE verdict = 'late'"),
-                                  ("late_order_count", "SELECT count(*) AS n FROM sales_orders "
-                                   "WHERE status = 'open' AND days_late > 0")):
+                for name, sql in (("late_po_count", "SELECT count(DISTINCT handle) AS n FROM purchase_orders "
+                                   "WHERE " + where_sql("late_purchase_orders")),
+                                  ("late_order_count", "SELECT count(DISTINCT handle) AS n "
+                                   "FROM sales_orders WHERE " + where_sql("late_orders"))):
                     if actor is NOBODY:
                         continue
                     sql_out = self.plx_sql(sql, actor)
@@ -508,6 +518,118 @@ class PageDoor(unittest.TestCase):
                     self.assertTrue(side.late_suppliers)   # the fixture's own suppliers
             one = screens.late_list(reader, offset=0, limit=25).items[0]
             self.assertTrue(one.amount is None or one.amount.currency)
+
+    def test_a_number_several_rows_hold_lists_one_choice_per_row_for_its_reader(self):
+        """A PO number several records hold (two suppliers' orders; 11-22: 308 numbers live)
+        lists one choice per door row: copies of one order are one choice, each labelled by
+        its number and opening its row's page; a row the reader may not read is left out
+        (its handle never shown), and none readable is not found."""
+        from operator_api import errors
+        q = ("SELECT p.handle, l.object_ids FROM {biz}.purchase_orders p JOIN {biz}.lineage "
+             "l ON l.view = 'purchase_orders' AND l.handle = p.handle WHERE p.po_number = %s")
+        (mh, mids), (h, ids) = self.truth(q, ("PO-L00",))[0], self.truth(q, ("PO-L01",))[0]
+        every = [*mids, *ids, *ids]   # each copy, one of them twice
+        with mock.patch.dict("os.environ", {"PLX_PAGES_DOOR": "1"}):
+            screens, reader = self.screens(FULL)
+            got = ps.choices(screens, reader, every)
+            self.assertEqual(sorted(c.open_url for c in got),
+                             sorted([ps.account_url("purchase_order", mh),
+                                     ps.account_url("purchase_order", h)]))
+            self.assertEqual(sorted(c.label.split(" ")[0] for c in got), ["PO-L00", "PO-L01"])
+            ops_screens, ops_reader = self.screens(OPS)
+            mine = ps.choices(ops_screens, ops_reader, every)
+            self.assertEqual([c.open_url for c in mine], [ps.account_url("purchase_order", h)])
+            self.assertNotIn(mh, repr(mine))
+            page = ps.choices_page(ops_screens, ops_reader, "purchase_order", "PO-L0", every)
+            self.assertEqual((page.status.state, len(page.choices)), ("choose", 1))
+            with self.assertRaises(errors.RecordNotFound):
+                ps.choices_page(ops_screens, ops_reader, "purchase_order", "PO-L00", mids)
+
+    def doors_screens(self, actor, held):
+        """``screens(actor)`` with the reader's door held ahead (``backend.doors``) and a worker
+        that fails the test if it is asked anything (speed specs 9.3 V1)."""
+        screens, reader = self.screens(actor)
+        test = self
+
+        class NoWorker:
+            def run(self, *a, **k):
+                test.fail("a page read with a door ahead asked the worker")
+        screens.access_worker = NoWorker()
+        screens.doors = SimpleNamespace(get=lambda r: held, decide_now=lambda r: held)
+        return screens, reader
+
+    def test_a_door_ahead_reads_every_page_as_the_worker_did_for_each_reader(self):
+        """V1: ``page_sql`` reads with the reader's door held ahead, on the request's thread:
+        every purchase order, sales order, customer and supplier page and every record id's
+        resolve equal the worker's for FULL, OPS and NOBODY (no more, no less), and OPS's
+        pages through its own door differ from FULL's where the door hides rows."""
+        kinds = (("purchase_order", "purchase_orders"), ("sales_order", "sales_orders"),
+                 ("customer", "customers"), ("supplier", "suppliers"))
+        seen = {}
+        for name, actor in (("FULL", FULL), ("OPS", OPS), ("NOBODY", NOBODY)):
+            old, reader = self.screens(actor)
+            new, _ = self.doors_screens(actor, (door.reader_door(self.base(), actor), self.dsn,
+                                                None))
+            for kind, view in kinds:
+                rows = self.truth(f"SELECT p.handle, l.object_ids[1] FROM {{biz}}.{view} p "
+                                  f"JOIN {{biz}}.lineage l ON l.view = '{view}' AND "
+                                  "l.handle = p.handle ORDER BY p.handle")
+                self.assertGreaterEqual(len(rows), 1, view)
+                for handle, oid in rows:
+                    got = []
+                    for screens in (old, new):
+                        try:
+                            at = ps.resolve(screens, reader, kind, oid)
+                        except ps.NotFound:
+                            at = None
+                        try:
+                            page = (ps.order(screens, reader, kind, handle)
+                                    if kind in ("purchase_order", "sales_order")
+                                    else ps.account(screens, reader, kind, handle=handle))
+                            page = page.model_dump(mode="json")
+                            page.pop("took_ms")   # the read's own time, not the page
+                        except ps.NotFound:
+                            page = "not_found"
+                        got.append((at, page))
+                    self.assertEqual(got[0], got[1], (name, kind, handle))
+                    seen[(name, kind, handle)] = got[1][1]
+        for kind, view in kinds:
+            full = {k[2]: v for k, v in seen.items() if k[:2] == ("FULL", kind)}
+            nobody = {k[2]: v for k, v in seen.items() if k[:2] == ("NOBODY", kind)}
+            self.assertTrue(any(v != "not_found" for v in full.values()), kind)
+            self.assertNotEqual(full, nobody, kind)
+        ops = {k: v for k, v in seen.items() if k[0] == "OPS"}
+        self.assertNotEqual(ops, {("OPS", *k[1:]): v for k, v in seen.items() if k[0] == "FULL"})
+
+    def test_a_reader_whose_door_cannot_be_decided_is_refused_never_read(self):
+        screens, reader = self.doors_screens(FULL, None)
+        h = self.truth("SELECT handle FROM {biz}.purchase_orders ORDER BY handle LIMIT 1")[0][0]
+        for call in (lambda: ps.order(screens, reader, "purchase_order", h),
+                     lambda: ps.resolve(screens, reader, "purchase_order", "x"),
+                     lambda: ps.late_pos(screens, reader)):
+            with self.assertRaises(ps.PageDoorUnavailable) as got:
+                call()
+            self.assertEqual(got.exception.code, "not_ready")
+
+    def test_a_door_ahead_without_its_store_is_refused(self):
+        out = pr.PageReads(None).call({"reads": [{"name": "late_po_list", "params": {
+            "limit": 1, "offset": 0}}]}, None, door=door.reader_door(self.base(), FULL))
+        self.assertEqual(out["error"]["code"], "invalid_request")
+        out = pr.PageReads(None).call({"decide_door": True}, None, door=door.reader_door(
+            self.base(), FULL), dsn=self.dsn)
+        self.assertEqual(out["error"]["code"], "invalid_request")
+
+    def test_an_undated_open_po_says_so_and_a_zero_total_is_never_a_dollar_amount(self):
+        row = self.truth("SELECT handle, status, requested_date, promised_date, total "
+                         "FROM {biz}.purchase_orders WHERE po_number = %s", ("PO-L01",))[0]
+        handle, status, requested, promised, total = row
+        screens, reader = self.screens(FULL)
+        page = ps.order(screens, reader, "purchase_order", handle)
+        labels = {f.label: f.value.text for f in page.facts}
+        undated = status == "open" and requested is None and promised is None
+        self.assertEqual("No date on record" in (labels.get("Needed by") or ""), undated)
+        if total is not None and total == 0:
+            self.assertIn("Not on record", labels.get("Total", ""))
 
     def test_a_record_id_opens_its_rows_page_only_for_a_reader_who_may_read_it(self):
         """A link naming a record (the old record page's id) opens the page of the door's
@@ -1238,6 +1360,32 @@ class AlertRunsAsScreenInput(unittest.TestCase):
             self.assertNotEqual(after, before)
             self.assertIn(("po_late", False), after)
 
+    def test_an_old_held_value_is_read_again_off_the_request_and_never_served_past_its_age(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        ok = [now]
+        reads = []
+        backend = SimpleNamespace(pg_dsn="x")
+        backend.pg = lambda: self.pool(lambda: reads.append(1) or [(r, ok[0]) for r in RULES])
+        with mock.patch.object(ps, "_paged", lambda name: True):
+            before = ps.runs_fresh(backend)
+            ok[0] = now - dt.timedelta(hours=3)          # the rules stopped running
+            at, held = backend.__dict__["_runs_fresh"]
+            # past RUNS_AHEAD_SECONDS, under RUNS_SECONDS: the held value at once, the read
+            # started off the request (exactly one, however many ask)
+            backend.__dict__["_runs_fresh"] = (at - ps.RUNS_AHEAD_SECONDS - 1, held)
+            self.assertEqual(ps.runs_fresh(backend), before)
+            ps.runs_fresh(backend)
+            deadline = time.monotonic() + 5
+            while backend.__dict__.get("_runs_ahead") and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(len(reads), 2)              # the first read, the one ahead
+            self.assertNotEqual(ps.runs_fresh(backend), before)
+            # at RUNS_SECONDS the request reads for itself: never a value older than that
+            ok[0] = now
+            at, held = backend.__dict__["_runs_fresh"]
+            backend.__dict__["_runs_fresh"] = (at - ps.RUNS_SECONDS - 1, held)
+            self.assertIn(("po_late", True), ps.runs_fresh(backend))
+
     def test_an_unreadable_table_is_one_constant_never_a_failure(self):
         backend = SimpleNamespace(pg_dsn="x", pg=lambda: 1 / 0)
         self.assertEqual(ps.runs_fresh(backend), "unread")
@@ -1295,3 +1443,33 @@ class HomeRefreshingTypes(unittest.TestCase):
             # a paged type not current still does
             rows["alert_runs"] = [r for r in ok if r["rule"] != "lot_on_hold"]
             self.assertEqual(ps.alert_home(None, None, limit=5)[4], {"lot_on_hold": None})
+
+
+class HomeAtRiskTotal(unittest.TestCase):
+    """Home lists the first ``limit`` open alerts of its types and says how many there are
+    in all (live 11-22: 12 listed, no total, a limit of 25)."""
+
+    def test_the_total_is_every_open_alert_the_reader_may_read_not_the_listed_ones(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        ok = [{"rule": r, "ok_at": now} for r in RULES]
+        listed = [{"rule": "price_below_cost", "kind": "margin_loss", "record_table": "x",
+                   "handle": f"h{i}", "topic": "", "why": "w", "since": now, "first_seen": now,
+                   "subject": "S"} for i in range(5)]
+        rows = {"alerts_late_po_count": [{"late": 0}], "alerts_late_po_list": [],
+                "alert_runs": ok, "alerts_open": listed,
+                "alerts_count": [{"rule": "price_below_cost", "open": 67, "oldest": now},
+                                 {"rule": "lot_on_hold", "open": 4, "oldest": now}]}
+        scope = SimpleNamespace(enabled=(), routing=None)
+        with mock.patch.object(ps, "reader_scope", lambda *a: scope), \
+                mock.patch.object(ps, "alert_types",
+                                  lambda *a, **k: ["price_below_cost", "lot_on_hold", "po_late"]), \
+                mock.patch.object(ps, "routed", lambda *a: True), \
+                mock.patch.object(ps, "read", lambda *a, **k: (rows, {})):
+            got = ps.alert_home(None, None, limit=5)
+        self.assertEqual((len(got[3]), got[5]), (5, 71))
+        rows["alerts_count"] = []                 # nothing counted: never fewer than listed
+        with mock.patch.object(ps, "reader_scope", lambda *a: scope), \
+                mock.patch.object(ps, "alert_types", lambda *a, **k: ["price_below_cost", "po_late"]), \
+                mock.patch.object(ps, "routed", lambda *a: True), \
+                mock.patch.object(ps, "read", lambda *a, **k: (rows, {})):
+            self.assertEqual(ps.alert_home(None, None, limit=5)[5], 5)

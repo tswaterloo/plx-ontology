@@ -139,9 +139,11 @@ function Limits({ c, onArea }: { c: AutopilotDraftChoice; onArea: (a: Area) => v
 
 function DraftRow({ c, busy, onSet, onArea, owner = false }: { c: AutopilotDraftChoice; busy: boolean; onSet: (mode: Mode) => void; onArea: (a: Area) => void; owner?: boolean }) {
   const on = c.partly ? "Partly on" : "On";
-  // the owner reads their own choices: "set by the owner" is said only to the people they set it for
-  const state = !c.on ? "Off" : c.by_owner && !owner ? `${on}, set by the owner` : c.since && !c.partly ? `On since ${formatDateTime(c.since)}` : on;
   const auto = c.mode === "auto";
+  // the owner reads their own choices: "set by the owner" is said only to the people they set it for
+  const who = c.by_owner && !owner ? ", set by the owner" : c.since && !c.partly ? ` since ${formatDateTime(c.since)}` : "";
+  // what the state means, in a sentence: prepared and waiting, or sent by itself
+  const state = !c.on ? "Off. Nothing is prepared for you." : `${on}${who}. ${auto ? "Goes out by itself, within your limits." : "Prepared for you; waits for your confirm."}`;
   return (
     <li className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-2" data-testid="draft-choice">
       <div className="min-w-0 space-y-0.5">
@@ -153,11 +155,11 @@ function DraftRow({ c, busy, onSet, onArea, owner = false }: { c: AutopilotDraft
           <div className="flex flex-wrap items-center gap-3 pt-1 text-[12px]" role="radiogroup" aria-label={`${c.label}: how it goes out`} data-testid="draft-choice-mode">
             <label className="flex items-center gap-1">
               <input type="radio" name={`mode-${c.choice}`} checked={!auto} disabled={busy} onChange={() => onSet("confirm")} />
-              I confirm each one
+              Wait for my confirm
             </label>
             <label className={cn("flex items-center gap-1", !c.auto_ok && !auto && "text-muted")} title={c.auto_ok ? undefined : "Auto opens once past days replayed score high enough for you."}>
               <input type="radio" name={`mode-${c.choice}`} checked={auto} disabled={busy || (!c.auto_ok && !auto)} onChange={() => onSet("auto")} />
-              Auto
+              Auto: send by itself
             </label>
           </div>
         )}

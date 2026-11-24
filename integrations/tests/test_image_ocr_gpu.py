@@ -228,7 +228,7 @@ class GpuOcrPassTests(unittest.TestCase):
                 self.assertEqual(again["sent"], 0)
                 self.assertEqual(len(self.sent()), n)
 
-    def test_withheld_excluded_freightcom_and_undecidable_images_never_leave_the_box(self):
+    def test_withheld_excluded_and_undecidable_images_never_leave_the_box_and_freightcom_is_read(self):
         ok = self.mail.add(png(201))
         external = self.mail.add(png(210), sender="ap@vendor.example", to="a@petra.example")
         held = self.mail.add(png(202), mailbox=MB_X)
@@ -247,7 +247,8 @@ class GpuOcrPassTests(unittest.TestCase):
                                      "Booked through Freight com today.")
         freight_ocr = self.mail.add(png(215), ocr="FREIGHTCOM INC  BILL OF LADING")
         freight_field = self.mail.add(png(216), uniqueBody={"content": "via freightcom"})
-        # the current OCR text is clean; an earlier version of it names Freightcom
+        # Freightcom is read like any other (owner, 11-23): its images go to the reader too
+        # an earlier OCR version naming Freightcom no longer withholds the image
         old_ocr = self.mail.add(png(217), ocr="PACKING SLIP", handle="old-ocr")
         self.mail.db.execute("INSERT INTO attachment_text_versions VALUES (?,1,'x',?,'')", (
             "att:old-ocr", self.mail.put_blob(b"freightcom terms of service")))
@@ -260,17 +261,17 @@ class GpuOcrPassTests(unittest.TestCase):
                              "FROM attachments WHERE content_sha256 = ?)", (orphan,))
         self.mail.db.commit()
         out = self.run_pass([self.host()])
-        self.assertEqual(sorted(self.sent()), sorted([ok, external]))
-        self.assertEqual(sorted(self.readings()), sorted([ok, external]))
+        read = [ok, external, freight, freight_name, freight_body, freight_ocr, freight_field,
+                old_ocr]
+        self.assertEqual(sorted(self.sent()), sorted(read))
+        self.assertEqual(sorted(self.readings()), sorted(read))
         sha_shared = hashlib.sha256(shared).hexdigest()
         reasons = dict(self.store.db.execute("SELECT content_sha256, reason FROM refused"))
         self.assertEqual(reasons, {
             held: "withheld_mailbox", person: "excluded_person", cc_person: "excluded_person",
             unknown: "exclusion_undecided", undecided: "exclusion_undecided",
-            freight: "freightcom", freight_name: "freightcom", freight_body: "freightcom",
-            freight_ocr: "freightcom", freight_field: "freightcom", old_ocr: "freightcom",
             sha_shared: "withheld_mailbox", orphan: "message_missing"})
-        self.assertEqual(out["refused"], 13)
+        self.assertEqual(out["refused"], 7)
 
     def test_a_person_added_to_the_list_during_the_run_is_refused_from_then_on(self):
         sha = self.mail.add(png(201), sender="b@petra.example", to="orders@petra.example")
@@ -292,6 +293,9 @@ class GpuOcrPassTests(unittest.TestCase):
         x500_at = x500_a + "@vendor.example"   # an X.500 identity ending in "@<word>"
 
         class Directory:   # GET /users, every page: what the capture binds with
+            def get_all_pages(self, url, **kw):
+                return self.get_pages(url, **kw)
+
             def get_pages(self, url, **_):
                 return [{"id": OID_A, "userPrincipalName": "a@petra.example",
                          "mail": "a@petra.example",

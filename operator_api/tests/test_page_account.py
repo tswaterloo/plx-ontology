@@ -36,6 +36,7 @@ class Pages(unittest.TestCase):
         cls.store = tbv.build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
+            c.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")   # the near-spelling search (installed by migration 0001 live)
             for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
                          "0041_business_views.sql"):
                 c.execute((MIGRATIONS_DIR / name).read_text())
@@ -147,6 +148,12 @@ class Pages(unittest.TestCase):
         # same name is its own account, found as such)
         self.assertEqual([x for x in top("croda") if x[0] == "Supplier"],
                          [("Supplier", "Croda Canada"), ("Supplier", "CRODA CANADA (EFT)")])
+        # a name mistyped finds the close spelling, marked as one; a string that is close to
+        # nothing finds nothing (never the nearest name for any text)
+        near = self.find("Crodda")
+        self.assertEqual([(s.type, s.label, s.match) for s in near if s.type == "Supplier"][:1],
+                         [("Supplier", "Croda Canada", "fuzzy")])
+        self.assertEqual(self.find("zzqxjv"), [])
         # a number opens its record: the PO, first, exact; its page is the order page
         po = self.find("PO-1")
         self.assertEqual((po[0].type, po[0].label, po[0].match),
@@ -192,6 +199,37 @@ class Pages(unittest.TestCase):
                     f"true, true, '{{}}'::jsonb, 1, true FROM {bv.SCHEMA}.records",
                     (f"numbered:{i}", type_, system, f"api://numbered/{i}", label, cls[po]))
 
+    def test_the_search_statement_may_run_its_branches_in_parallel(self):
+        # the typed text is the statement's own parameter, never a one-row CTE joined to
+        # every branch: a CTE read by every branch is a CTE scan, which keeps the whole
+        # statement in one process (live 11-22: 345 ms a keystroke; 150-200 ms parallel)
+        import psycopg
+        with psycopg.connect(self.dsn) as c:
+            c.execute(f"SET search_path = {bv.SCHEMA}, pg_catalog")
+            c.execute("SET max_parallel_workers_per_gather = 4")
+            plan = "\n".join(r[0] for r in c.execute(
+                "EXPLAIN " + pr.FIND_SQL, {"q": "acme", "limit": 18}).fetchall())
+            self.assertNotIn("CTE", plan)
+            # under two characters: nothing (the search box asks for none either)
+            self.assertEqual(c.execute(pr.FIND_SQL, {"q": " a ", "limit": 18}).fetchall(), [])
+            self.assertTrue(c.execute(pr.FIND_SQL, {"q": "acme", "limit": 18}).fetchall())
+
+    def test_a_read_capped_in_parallel_workers_runs_so_and_the_next_read_does_not(self):
+        from unittest import mock
+        probe = "SELECT current_setting('max_parallel_workers_per_gather') AS w"
+        reads = {"before": pr.Query(probe), "capped": pr.Query(probe, workers=1),
+                 "after": pr.Query(probe)}
+        with mock.patch.dict(pr.QUERIES, reads):
+            out = pr.PageReads(self.base()).call({"reads": [
+                {"name": "before"}, {"name": "capped"}, {"name": "find", "params": {
+                    "q": "acme", "limit": 18}}, {"name": "after"}]}, FULL)
+        self.assertNotIn("error", out, out)
+        got = {k: v["rows"] for k, v in out["reads"].items()}
+        self.assertEqual(got["capped"], [["1"]])
+        self.assertEqual(got["after"], got["before"])   # the server's own again
+        self.assertTrue(got["find"])
+        self.assertEqual(pr.QUERIES["find"].workers, 2)   # the search's measured cap
+
     def test_search_finds_each_numbered_kind_exact_first_and_pilot_after_record(self):
         self.add_numbered()
 
@@ -233,6 +271,138 @@ class Pages(unittest.TestCase):
             self.assertFalse([s for s in self.find(q, OPS) if "HIDDEN" in s.label
                               or "FIN" in s.label], q)
 
+    # numbers spelt as no plain upper/lower form: mixed case, the Kelvin sign and the dotted
+    # capital I (``lower()`` makes them 'k', 'i'), a non-ASCII first letter
+    ODD_NUMBERS = (("order_number", "\u212aSO-77"), ("order_number", "\u0130N-5"),
+                   ("order_number", "\u00c9SO-1"), ("customer_po", "Mixed-Po9"),
+                   ("order_number", "sO-Lower8"))
+
+    def add_odd_orders(self):
+        """Copies of a readable sales order under ``ODD_NUMBERS``; removed again by the
+        caller's ``drop_odd_orders``."""
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            for i, (col, value) in enumerate(self.ODD_NUMBERS):
+                c.execute(
+                    f"INSERT INTO {bv.SCHEMA}.sales_orders SELECT (jsonb_populate_record("
+                    f"NULL::{bv.SCHEMA}.sales_orders, to_jsonb(t) || jsonb_build_object("
+                    "'handle', %s::text, %s::text, %s::text))).* FROM "
+                    f"{bv.SCHEMA}.sales_orders t WHERE t.order_number = 'SO-1' LIMIT 1",
+                    (f"odd-{i}", col, value))
+
+    def drop_odd_orders(self):
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute(f"DELETE FROM {bv.SCHEMA}.sales_orders WHERE handle LIKE 'odd-%%'")
+
+    def test_number_search_ranges_keep_every_reader_s_rows_at_every_limit(self):
+        # the number legs' index ranges (``_narrow``) and the name legs' first test (``_may``)
+        # only narrow: each reader gets exactly the rows of the plain ``lower()`` tests, at
+        # every case spelling, at limits 1 / 10 / 60
+        from unittest import mock
+        with mock.patch.object(pr, "_narrow", lambda *cols: "true"), \
+                mock.patch.object(pr, "_may", lambda prefix, name: "true"):
+            plain = pr._find_sql()
+        self.assertNotEqual(plain, pr.FIND_SQL)
+        self.add_numbered()
+        self.add_odd_orders()
+        self.addCleanup(self.drop_odd_orders)
+        asked = ("kso-77", "KSO-77", "\u212aso-77", "\u212aSO", "in-5", "\u0130N-5", "\u0131n-5",
+                 "\u00e9so-1", "\u00c9SO", "mixed-po9", "MIXED-PO9", "mIxEd", "so-lower8",
+                 "SO-", "so-1", "s", "S2", "s220001", "PO-1", "po-", "IN-", "in-1", "V-INV-1",
+                 "v-inv", "acme", "take 5", "beta", "1", "  po-1 ", "SH1000000001", "rcp1",
+                 "\u017fo-1", "-", "%", "\U0010ffff1", "\ud7ffx",
+                 # spelt close (the find has no similarity rank: it finds what it found)
+                 "Acmee Ltd", "acm ltd", "Take5", "tak 5", "Betta", "SO1", "P0-1")
+
+        def rows(sql, q, limit, actor):
+            with mock.patch.dict(pr.QUERIES, {"find": pr.Query(sql, ("q", "limit"), 60,
+                                                               workers=2)}):
+                out = pr.PageReads(self.base()).call({"reads": [{"name": "find", "params": {
+                    "q": q, "limit": limit}}]}, actor)
+            self.assertNotIn("error", out, (q, out))
+            return out["reads"]["find"]["rows"]
+        seen = 0
+        for actor in (FULL, OPS, NOBODY):
+            for q in asked:
+                for limit in (1, 10, 60):
+                    with self.subTest(actor=actor, q=q, limit=limit):
+                        got = rows(pr.FIND_SQL, q, limit, actor)
+                        self.assertEqual(got, rows(plain, q, limit, actor))
+                        seen += bool(got)
+        self.assertGreater(seen, 60)
+        # the odd spellings are found where the store's lower() says they match
+        import psycopg
+        with psycopg.connect(self.dsn) as c:
+            for q, title in (("kso-77", "\u212aSO-77"), ("in-5", "\u0130N-5"),
+                             ("\u00e9so-1", "\u00c9SO-1"), ("so-lower8", "sO-Lower8")):
+                match = c.execute("SELECT lower(%s) = %s", (title, q)).fetchone()[0]
+                titles = [r[2] for r in rows(pr.FIND_SQL, q, 10, FULL)]
+                self.assertEqual(title in titles, match, (q, titles))
+        self.assertIn("SO-1", [r[2] for r in rows(pr.FIND_SQL, "mixed-po9", 10, FULL)])
+
+    def test_number_search_reaches_each_number_index_through_the_page_door(self):
+        # every built table indexes its number columns bytewise, and the find statement's
+        # number legs reach those indexes through the guarded person-only views (a leakproof
+        # range; ``lower(col) = q`` alone read every row: 73-82k rows a leg, live 11-22)
+        import psycopg
+        from operating.pg.door import CLASSES, reader_scope
+        # a refresh with nothing stale makes them on the tables in place, once
+        first = bv.refresh(self.dsn, as_of=tbv.AS_OF).get("number_indexes") or []
+        self.assertIn("sales_orders_order_number_pattern", first + [
+            n for (n,) in self.truth("SELECT indexname FROM pg_indexes WHERE schemaname = %s",
+                                     (bv.SCHEMA,))])
+        self.assertNotIn("number_indexes", bv.refresh(self.dsn, as_of=tbv.AS_OF))
+        with psycopg.connect(self.dsn, autocommit=True) as c:
+            indexed = {(t, d) for t, d in c.execute(
+                "SELECT tablename, indexdef FROM pg_indexes WHERE schemaname = %s",
+                (bv.SCHEMA,))}
+            for table, col in (("sales_orders", "order_number"), ("sales_orders", "customer_po"),
+                               ("purchase_orders", "po_number"), ("batches", "batch_code"),
+                               ("sales_invoices", "invoice_number"), ("products", "item_code")):
+                with self.subTest(table=table, col=col):
+                    self.assertTrue([d for t, d in indexed if t == table and
+                                     f"({col} text_pattern_ops)" in d], table)
+            masked = {t: c.execute("SELECT pg_get_viewdef(%s::regclass)", (
+                f"{sql_views.page_schema(bv.SCHEMA)}.{t}",)).fetchone()[0].replace("\n", " ")
+                for t in pr.NUMBER_LEGS}
+            keys = sorted({k for (ks,) in c.execute(
+                f"SELECT audience_keys FROM {bv.SCHEMA}.{CLASSES}") for k in ks})
+            scope = reader_scope(c, bv.SCHEMA, audience_keys=keys, marking_sets=(), held=(),
+                                 holds_every_doc=False)
+            with c.transaction():
+                for k, val in scope["settings"].items():
+                    c.execute("SELECT set_config(%s, %s, true)", (k, val))
+                c.execute(f"SET LOCAL search_path = {sql_views.page_schema(bv.SCHEMA)}, "
+                          "pg_catalog")
+                c.execute(f"SET LOCAL ROLE {sql_views.PAGE_ROLE}")
+                c.execute("SET LOCAL enable_seqscan = off")
+                plan = c.execute("EXPLAIN (FORMAT JSON) " + pr.FIND_SQL,
+                                 {"q": "SO-1", "limit": 18}).fetchone()[0][0]["Plan"]
+        conds: dict = {}
+
+        def walk(node, rel=None):
+            rel = node.get("Relation Name") or rel
+            for key in ("Index Cond", "Recheck Cond"):
+                if node.get(key) and rel:
+                    conds.setdefault(rel, []).append(node[key])
+            for kid in node.get("Plans", ()):
+                walk(kid, rel)
+        walk(plan)
+        reached = []
+        for table, cols in pr.NUMBER_LEGS.items():
+            # a column the view masks per cell (``CASE ... END AS col``) is no index's, and
+            # an OR with it none either: such a leg reads every row, its rows still the plain
+            # test's (the test above)
+            if any(f"END AS {col}," in masked[table] for col in cols):
+                continue
+            reached.append(table)
+            for col in cols:
+                with self.subTest(table=table, col=col):
+                    self.assertTrue([x for x in conds.get(table, ())
+                                     if col in x and "~>=~" in x], conds.get(table))
+        self.assertTrue(reached, masked)
+
     def test_search_fails_closed_and_is_never_a_pattern(self):
         for q in ("", "a", " ", "%%", "__", "%", "P%", "\\"):
             with self.subTest(q=q):
@@ -261,8 +431,9 @@ class Pages(unittest.TestCase):
         page = self.page("customer", handle=h)
         self.assertEqual(page.title, "Acme Ltd")
         facts = {f.label: f.value.text for f in page.facts}
-        self.assertIn("Sage ACME", facts["Codes"])
-        self.assertIn("Portal ACME", facts["Codes"])
+        self.assertTrue(facts["Codes"].startswith("ACME. Same code in "), facts["Codes"])
+        self.assertIn("Sage", facts["Codes"])
+        self.assertIn("Portal", facts["Codes"])
         truth = {cur: (Decimal(str(amt)).quantize(Decimal("0.01")), n) for cur, amt, n in self.truth(
             "SELECT amount_due_currency, sum(amount_due), count(*) FROM {biz}.customer_balances "
             "WHERE customer_handle = %s GROUP BY 1", (h,))}
@@ -351,14 +522,14 @@ class Pages(unittest.TestCase):
         with self.assertRaises(ps.NotFound):
             ps.batch(self.backend(FULL), None, "no-such-handle")
 
-    def test_the_production_list_filters_pages_and_loses_no_batch_at_1_10_60(self):
+    def test_a_list_filters_sorts_pages_and_loses_no_row_at_1_10_60(self):
         everything = self.truth("SELECT count(*) FROM {biz}.batches")[0][0]
-        got = ps.record_list(self.backend(FULL), None, "production", limit=100)
+        got = ps.record_list(self.backend(FULL), None, "batches", limit=100)
         self.assertEqual(got.total, everything)
         # every batch exactly once across pages of 7, in the one order
         seen, offset = [], 0
         while True:
-            page = ps.record_list(self.backend(FULL), None, "production", offset=offset, limit=7)
+            page = ps.record_list(self.backend(FULL), None, "batches", offset=offset, limit=7)
             seen += [r[0].href or r[0].text for r in page.table.rows]
             offset = page.next_offset
             if not page.more:
@@ -366,20 +537,60 @@ class Pages(unittest.TestCase):
         self.assertEqual(len(seen), everything)
         self.assertEqual(len(set(seen)), len(seen))
         # a filter is the SQL truth
-        held = self.truth("SELECT count(*) FROM {biz}.batches WHERE on_hold IS TRUE")[0][0]
-        self.assertEqual(ps.record_list(self.backend(FULL), None, "production", hold="yes").total, held)
-        self.assertEqual(ps.record_list(self.backend(FULL), None, "production", hold="yes").table.rows[0][4].text, "On-Hold")
-        by_text = ps.record_list(self.backend(FULL), None, "production", q="bc-1a")
+        # the hold filter is the batches_on_hold measure (a cancelled batch is on no hold)
+        from operating.measures import where_sql
+        held = self.truth("SELECT count(*) FROM {biz}.batches WHERE " + where_sql("batches_on_hold"))[0][0]
+        on_hold = ps.record_list(self.backend(FULL), None, "batches", filters={"on_hold": "yes"})
+        self.assertEqual(on_hold.total, held)
+        not_held = ps.record_list(self.backend(FULL), None, "batches", filters={"on_hold": "no"})
+        everything = self.truth("SELECT count(*) FROM {biz}.batches")[0][0]
+        self.assertEqual(on_hold.total + not_held.total, everything)
+        by_text = ps.record_list(self.backend(FULL), None, "batches", q="bc-1a")
         self.assertIn("BC-1A", [r[0].text for r in by_text.table.rows])
         # a pattern is text, never a pattern
-        self.assertEqual(ps.record_list(self.backend(FULL), None, "production", q="%").total, 0)
+        self.assertEqual(ps.record_list(self.backend(FULL), None, "batches", q="%").total, 0)
         # a reader sees only the batches its door shows
-        self.assertLessEqual(ps.record_list(self.backend(NOBODY), None, "production").total, everything)
+        self.assertLessEqual(ps.record_list(self.backend(NOBODY), None, "batches").total, everything)
+        # a sort is the SQL truth, either way, and a later page leaves the choices out
+        up = ps.record_list(self.backend(FULL), None, "batches", sort="batch_code", direction="asc", limit=100)
+        codes = [r[0].text for r in up.table.rows if r[0].text]
+        self.assertEqual(codes, sorted(codes))
+        down = ps.record_list(self.backend(FULL), None, "batches", sort="batch_code", direction="desc", limit=100, with_filters=False)
+        self.assertEqual(down.filters, [])
         self.assertEqual(sorted(o.value for o in got.filters[0].options)[0], "")
-        # unknown view and filter values fail closed
-        for bad in (dict(view="quotes"), dict(view="production", hold="maybe")):
+        # every business view the door serves lists, whatever its columns
+        from operating import record_lists
+        for view in record_lists.specs():
+            page = ps.record_list(self.backend(FULL), None, view, limit=5)
+            self.assertEqual(len(page.table.columns), len(page.column_keys))
+            self.assertTrue(all(len(r) == len(page.table.columns) for r in page.table.rows))
+        # unknown views, columns, filters and values fail closed
+        for bad in (dict(view="quotes"), dict(view="batches", sort="nope"),
+                    dict(view="batches", direction="up"), dict(view="batches", filters={"nope": "x"}),
+                    dict(view="batches", filters={"on_hold": "maybe"}),
+                    dict(view="emails"), dict(view="batches", q="x" * 81)):
             with self.assertRaises(ps.NotFound):
                 ps.record_list(self.backend(FULL), None, bad.pop("view"), **bad)
+
+    def test_supplier_invoice_page_is_the_view_row_with_its_supplier_and_amounts(self):
+        rows = self.truth("SELECT handle, document_number, original_amount, "
+                          "original_amount_currency, amount_due, supplier_handle FROM "
+                          "{biz}.supplier_invoices WHERE original_amount IS NOT NULL "
+                          "ORDER BY handle LIMIT 5")
+        self.assertTrue(rows)
+        for handle, number, amount, currency, due, supplier in rows:
+            page = ps.supplier_invoice(self.backend(FULL), None, handle)
+            self.assertEqual((page.kind, page.subtitle), ("supplier_invoice", "Supplier invoice"))
+            self.assertIn(str(number), page.title)
+            facts = {f.label: f.value for f in page.facts}
+            self.assertEqual(Decimal(facts["Amount"].money.amount), Decimal(amount))
+            self.assertEqual(facts["Amount"].money.currency, currency)
+            if supplier:
+                self.assertTrue(facts["Supplier"].href.startswith("/account?kind=supplier&h="))
+        with self.assertRaises(ps.NotFound):
+            ps.supplier_invoice(self.backend(FULL), None, "no-such-handle")
+        with self.assertRaises(ps.NotFound):
+            ps.supplier_invoice(self.backend(FULL), None, "")
 
     def test_chain_page_rolls_up_its_stores(self):
         page = self.page("chain", chain="TAKE 5")
@@ -497,11 +708,11 @@ class Pages(unittest.TestCase):
 
     # ---- Freightcom: a person sees it, the AI's path never does ------------------------
 
-    def test_freightcom_is_on_the_persons_page_and_never_reaches_plx_sql(self):
+    def test_freightcom_is_read_like_any_supplier_and_the_person_views_stay_person_only(self):
         import psycopg
         h = self.handle("suppliers", "name", "FreightCom Inc")
         self.assertEqual(self.truth("SELECT ai_ok FROM {biz}.suppliers WHERE handle = %s",
-                                    (h,)), [(False,)])
+                                    (h,)), [(True,)])
         # the person: the account page and the one search box both have it
         page = self.page("supplier", handle=h)
         self.assertEqual(page.title, "FreightCom Inc")
@@ -509,13 +720,13 @@ class Pages(unittest.TestCase):
         self.assertTrue([s for s in self.find("FC1") if "FreightCom" in s.label])
         # a reader not holding the row's class still does not (the rest of the door holds)
         self.assertFalse([s for s in self.find("FreightCom", NOBODY)])
-        # the model's path: plx.sql never returns it, by name or by handle
+        # the model's path: plx.sql returns it like any supplier (owner 11-23)
         names = [r[0].get("untrusted_text") if isinstance(r[0], dict) else r[0]
                  for r in self.sql("SELECT name FROM suppliers", FULL)]
         self.assertIn("Croda Canada", names)
-        self.assertNotIn("FreightCom Inc", names)
+        self.assertIn("FreightCom Inc", names)
         self.assertEqual(int(self.sql(f"SELECT count(*) FROM suppliers WHERE handle = "
-                                      f"'{h}'", FULL)[0][0]), 0)
+                                      f"'{h}'", FULL)[0][0]), 1)
         out = sqlt.SqlTool(self.base()).call("plx.sql", {
             "sql": f"SELECT name FROM {sql_views.page_schema()}.suppliers"}, FULL)
         self.assertIn("error", out)
@@ -614,6 +825,17 @@ class Pages(unittest.TestCase):
                                handle=self.handle("purchase_orders", "po_number", f"PO-B{n}"))
                 self.assertEqual(len(po.sections[0].rows), n)
                 self.assertEqual(po.sections[0].total, n)
+
+
+
+
+class CodesText(unittest.TestCase):
+    def test_one_primary_code_then_the_same_code_elsewhere_then_the_other_systems(self):
+        self.assertEqual(ps.codes_text("sage:C1, portal:C1, bc:X9", "C1"),
+                         "C1. Same code in Portal, Sage. Other systems: BC X9")
+        self.assertEqual(ps.codes_text("bc:X9", "C1"), "C1. Other systems: BC X9")
+        self.assertEqual(ps.codes_text("sage:A, portal:A"), "Portal A, Sage A")
+        self.assertIsNone(ps.codes_text("", "C1"))
 
 
 if __name__ == "__main__":

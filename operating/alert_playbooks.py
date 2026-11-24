@@ -175,6 +175,15 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "change": {"text": "Set the promised shipment date on order {n} to the date agreed "
                            "with the customer.", "field": "Promised Delivery Date",
                    "value": None}},
+    "customer_order_slower_than_usual": {
+        "about": "subject",
+        "ask": "Order {n} is past its required date {required}. We will confirm a new "
+               "shipment date.",
+        "owner": "Order {n} is past its required date {required}: agree a new date with the "
+                 "customer.",
+        "change": {"text": "Set the promised shipment date on order {n} to the date agreed "
+                           "with the customer.", "field": "Promised Delivery Date",
+                   "value": None}},
     "stock_out_risk": {
         "about": "inbound",
         "ask": "We need purchase order {n} sooner: please confirm whether it can arrive by "

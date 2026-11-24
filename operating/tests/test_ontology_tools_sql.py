@@ -98,6 +98,53 @@ class SqlDoor(unittest.TestCase):
     def sql(self, statement, actor=FULL, base=None):
         return sqlt.SqlTool(base or self.base()).call("plx.sql", {"sql": statement}, actor)
 
+    def test_source_systems_is_shown_as_the_list_it_is(self):
+        """A row's systems ("bc,portal" in the view, a LIKE filters it) reach the model as a
+        list: 'bc,portal' read as one value was said "only in BC" (HARD20 h09, 11-23);
+        a NULL stays NULL, another column holding commas stays text."""
+        out = self.sql("SELECT handle, source_systems, name || ',x' AS joined FROM customers")
+        self.assertNotIn("error", out, out)
+        stored = dict(self.plain_rows(f"SELECT handle, source_systems FROM {bv.SCHEMA}.customers"))
+        shown = {r["cells"][0] for r in out["rows"]}
+        self.assertTrue(shown and shown <= set(stored), shown)
+        self.assertTrue(any("," in (stored[h] or "") for h in shown), stored)
+        for row in out["rows"]:
+            handle, systems, joined = row["cells"]
+            want = stored[handle]
+            self.assertEqual(systems, want.split(",") if want is not None else None, handle)
+            self.assertNotIsInstance(joined, list)
+        # the filter the catalog gives still works on the stored text
+        both = self.sql("SELECT count(*) FROM customers WHERE source_systems LIKE '%portal%'")
+        both_seen = self.sql("SELECT handle FROM customers WHERE source_systems LIKE "
+                             "'%portal%'")
+        self.assertEqual(sorted(self.column(both_seen)),
+                         sorted(h for h in shown if "portal" in (stored[h] or "")))
+        self.assertEqual(self.column(both), [str(len(self.column(both_seen)))])
+
+    def test_names_runs_on_the_real_views_and_counts_what_a_name_names(self):
+        """``{"names": ...}`` (``operating.name_finder``) read as the door reads any statement:
+        the state columns it groups by are text in the views (the first version took them for
+        booleans and failed on every real call), the statement runs on real Postgres, and the
+        customers the word matches are counted by the view's own words for blocked."""
+        from operating import name_finder as nf
+        for _kind, view, _labels, status, blocked, active in nf.ENTITIES:
+            for col in (*status, *blocked, *active):
+                self.assertEqual(bv.VIEWS[view].col(col).kind, "text", (view, col))
+        word = sorted(self.names())[0].split()[0]
+        out = sqlt.SqlTool(self.base()).call("plx.sql", {"names": word}, FULL)
+        self.assertNotIn("error", out, out)
+        self.assertEqual(out["columns"], ["kind", "status", "blocked", "active", "n", "example"])
+        mine = [r["cells"] for r in out["rows"] if r["cells"][0] == "customer"]
+        want = self.sql(f"SELECT count(*) FROM customers WHERE name ILIKE '%{word.lower()}%' "
+                        f"OR customer_code ILIKE '%{word.lower()}%' OR codes ILIKE '%{word.lower()}%'")
+        self.assertEqual(str(sum(int(c[4]) for c in mine)), self.column(want)[0])
+        self.assertTrue(out["scope"])
+
+    def plain_rows(self, statement):
+        import psycopg
+        with psycopg.connect(self.dsn) as c:
+            return c.execute(statement).fetchall()
+
     def column(self, out, i=0):
         self.assertNotIn("error", out, out)
         return [_cell(r["cells"][i]) for r in out["rows"]]
@@ -281,7 +328,8 @@ class SqlDoor(unittest.TestCase):
             out = sqlt.SqlTool(self.base()).call("plx.sql", args, FULL)
             self.assertIn("error", out, args)
         self.assertEqual(self.sql("SELECT count(*) FROM customers"), {
-            **before, "result": mock.ANY, "rows": mock.ANY, "seconds": mock.ANY})
+            **before, "result": mock.ANY, "rows": mock.ANY, "seconds": mock.ANY,
+            "data_as_of": mock.ANY})   # read on the primary: as of the moment of the read
         self.assertEqual(before["rows"][0]["cells"],
                          self.sql("SELECT count(*) FROM customers")["rows"][0]["cells"])
 
@@ -474,33 +522,149 @@ class SqlDoor(unittest.TestCase):
         """Reproduced: the host sends a result twice (text and structured content) within
         MAX_RESULT_BYTES, so a 200-row result of ~28 KB, and the view list, were refused
         whole (result_too_large, nothing shown); rows are cut at MAX_BYTES instead and the
-        list names each view's columns, its meanings one describe away."""
+        list names each view's columns, its meanings one describe away. Both are shown
+        whole by the client (``CLIENT_SHOWN_CHARS``)."""
         from operating import mcp_server
-        from operating.mcp_server_evidence import MAX_RESULT_BYTES
+        from operating.mcp_server_evidence import ASK_RESULT_BYTES as MAX_RESULT_BYTES
         client, tool = mcp_server._TO_CLIENT.set(True), mcp_server._TOOL.set("plx.sql")
+        n = 200   # every customer n times: far past the 200 rows and the byte budget one page shows
         try:
             for statement in ("SELECT format('%300s', c.name) AS wide, g FROM customers c "
-                              "CROSS JOIN generate_series(1, 400) g",
+                              f"CROSS JOIN generate_series(1, {n}) g",
                               "SELECT c.name, g FROM customers c CROSS JOIN "
-                              "generate_series(1, 400) g"):
+                              f"generate_series(1, {n}) g"):
                 out = self.sql(statement)
                 self.assertNotIn("error", out, out)
                 self.assertTrue(out["truncated"] and out["rows"], out.get("row_count"))
                 self.assertLessEqual(mcp_server._envelope_bytes(out), MAX_RESULT_BYTES)
+                # and the client shows it whole: Claude Code saves a longer result to a
+                # file the Ask cannot open (11-23: 8 of 151 HARD20 reads lost so)
+                self.assertTrue(mcp_server.value_shown_fits(out, "plx.sql"))
             out = sqlt.SqlTool(self.base()).call("plx.sql", {"describe": True}, FULL)
             self.assertIn(" status, ", out["views"]["purchase_orders"])
             self.assertIn("team_responsiveness", out["insights"])    # the tiles, ready to reuse
             self.assertLessEqual(mcp_server._envelope_bytes(out), MAX_RESULT_BYTES)
+            self.assertTrue(mcp_server.value_shown_fits(out, "plx.sql"))
         finally:
             mcp_server._TOOL.reset(tool)
             mcp_server._TO_CLIENT.reset(client)
 
+    def test_a_cut_result_says_how_many_rows_it_did_not_show(self):
+        """Reproduced (h02, 11-22): a newest-first mail read cut by the byte budget at its
+        28th of 176 rows said only 'the first 28 rows are shown', and the answer called a
+        thread open whose reply was row 33. A cut result states the rows found (exact when
+        only the shown bytes cut it, 'more than N' when a cap stopped the read)."""
+        one = "(SELECT 1 FROM customers LIMIT 1) c CROSS JOIN generate_series(1, {n}) g"
+        # sized to the bounds: rows wider than the byte budget holds, under the row cap
+        wide = 3 * sqlt.MAX_BYTES // 390
+        self.assertGreater(wide * 390, sqlt.MAX_BYTES)
+        out = self.sql("SELECT format('%390s', g) AS wide, g FROM " + one.format(n=wide))
+        self.assertNotIn("error", out, out)
+        self.assertTrue(out["truncated"])
+        self.assertLess(out["row_count"], wide)
+        self.assertEqual(out["rows_found"], wide)
+        self.assertIn(f"first {out['row_count']} of {wide} rows", out["note"])
+        most = sqlt.HELD_ROWS
+        out = self.sql("SELECT g FROM " + one.format(n=2 * most))
+        # no cap stopped the read: the page shows 200 rows, the host holds all 2 * most and
+        # its profile counted them exactly (A1)
+        self.assertLessEqual(out["row_count"], sqlt.SHOWN_ROWS)
+        self.assertEqual(out["rows_found"], 2 * most)
+        self.assertIn(f"of {2 * most} rows", out["note"])
+        out = self.sql("SELECT g FROM " + one.format(n=5))
+        self.assertFalse(out["truncated"])
+        self.assertNotIn("rows_found", out)
+
+    def test_the_profile_counts_and_sums_the_whole_result_and_the_rest_pages(self):
+        """A1 (HARD20 C1: 108 vs 109 counted by eye, five counts read off a 48-row list,
+        a share summed from rounded rows): every result carries the host's exact count and
+        per-column NULLs, distinct values and sums over ALL its rows (one aggregate
+        statement when the rows are past the caps), and the held rows page by id."""
+        from operating import result_profile
+        one = "(SELECT 1 FROM customers LIMIT 1) c CROSS JOIN generate_series(1, {n}) g"
+        for n in (1, 10, 60, 3 * sqlt.HELD_ROWS):
+            out = self.sql(f"SELECT g, g % 7 AS r, CASE WHEN g % 5 = 0 THEN NULL ELSE g END "
+                           f"AS h FROM " + one.format(n=n))
+            self.assertNotIn("error", out, out)
+            prof = out["profile"]
+            self.assertEqual((prof["rows"], prof["exact"]), (n, True), n)
+            self.assertEqual(result_profile.column(prof, "g")["sum"], str(n * (n + 1) // 2))
+            self.assertEqual(result_profile.column(prof, "h")["nulls"], n // 5)
+            self.assertEqual(result_profile.column(prof, "r")["distinct"], min(n, 7))
+            self.assertEqual(prof["shown"], len(out["rows"]))
+        # the last row of the biggest result (on disk, past 9,999 rows) is read and cited
+        last = 3 * sqlt.HELD_ROWS
+        tool = sqlt.SqlTool(self.base())
+        page = tool.call("plx.sql", {"page": out["result"], "offset": last - 1}, FULL)
+        self.assertNotIn("error", page, page)
+        self.assertEqual(page["rows"][0]["cite"], f"{out['result']}#row={last - 1}")
+        self.assertEqual(page["rows"][0]["cells"][0], str(last))
+        # paging: the next held rows, cited by their row number in the whole result
+        out = self.sql("SELECT g FROM " + one.format(n=600))
+        self.assertIn('"offset": ' + str(len(out["rows"])), out["profile"]["page"])
+        tool = sqlt.SqlTool(self.base())
+        page = tool.call("plx.sql", {"page": out["result"], "offset": len(out["rows"])}, FULL)
+        self.assertNotIn("error", page, page)
+        self.assertEqual(page["rows"][0]["cite"], f"{out['result']}#row={len(out['rows'])}")
+        self.assertEqual(page["rows"][0]["cells"][0], str(len(out["rows"]) + 1))
+        self.assertEqual(page["profile"]["rows"], 600)
+        # another reader cannot page it; an unknown id or a bad offset is refused, said
+        for args, actor in (({"page": out["result"], "offset": 1}, OPS),
+                            ({"page": "sql://" + "0" * 20}, FULL),
+                            ({"page": out["result"], "offset": 600}, FULL),
+                            ({"sql": "SELECT 1", "offset": 3}, FULL)):
+            self.assertIn("error", tool.call("plx.sql", args, actor), args)
+
+    def test_a_failed_count_of_a_cut_result_is_said_and_the_read_stands(self):
+        """A1, no silent failure: when the aggregate that counts a result past the caps
+        fails (here: a statement the server refuses), the rows still come back and the
+        profile says its counts cover only the rows held, with the reason."""
+        from operating import result_profile
+        with mock.patch.object(result_profile, "aggregate_sql",
+                               return_value=("SELECT * FROM no_such_table_plx", None)):
+            out = self.sql("SELECT g FROM (SELECT 1 FROM customers LIMIT 1) c CROSS JOIN "
+                           f"generate_series(1, {2 * sqlt.HELD_ROWS}) g")
+        self.assertNotIn("error", out, out)
+        self.assertTrue(out["rows"])
+        prof = out["profile"]
+        self.assertEqual((prof["rows"], prof["exact"]), (None, False))
+        self.assertIn("could not be taken", prof["note"])
+        self.assertEqual(prof["rows_held"], sqlt.HELD_ROWS)
+        # every row is held and counted anyway: the cut is only the profile's sums
+        self.assertEqual(out["rows_found"], 2 * sqlt.HELD_ROWS)
+
+    def test_money_sums_per_its_own_currency_by_the_columns_provenance(self):
+        """A1: a money column is summed per value of its own currency column, read from the
+        database's column provenance (aliases and subqueries included); without its
+        currency column in the result it is not summed, and the profile says why."""
+        truth = self.sql("SELECT total_currency, sum(total) FROM sales_invoices "
+                         "GROUP BY 1 ORDER BY 1")
+        want = {r["cells"][0] or "none": r["cells"][1] for r in truth["rows"]
+                if r["cells"][1] is not None}
+        self.assertTrue(want)
+        out = self.sql("SELECT t, c FROM (SELECT total AS t, total_currency AS c "
+                       "FROM sales_invoices) x")
+        from operating import result_profile
+        got = {x["currency"]: Decimal(x["sum"])
+               for x in result_profile.column(out["profile"], "t")["sum"]}
+        self.assertEqual(got, {k: Decimal(v) for k, v in want.items()})
+        # the host's figures reach the model bare (typed by the contract), never as
+        # source-text envelopes
+        from operating import mcp_server_results
+        walled = mcp_server_results._firewall(out, "plx.sql")
+        walled_t = result_profile.column(walled["profile"], "t")
+        self.assertIsInstance(walled_t["sum"][0]["sum"], str)
+        self.assertIsInstance(walled_t["sum"][0]["currency"], str)
+        alone = result_profile.column(self.sql("SELECT total FROM sales_invoices")["profile"],
+                                      "total")
+        self.assertIsNone(alone["sum"])
+        self.assertIn("total_currency", alone["note"])
+
     def test_a_refusal_while_the_tables_are_swapped_is_asked_again(self):
         """A psql session waits on a swap's lock; plx.sql asks again inside the call, so a
         refusal that ends within the wait returns the rows, one that does not end is still
-        refused with no rows, and a call with no room for another statement does not wait."""
+        refused with no rows."""
         import psycopg
-        from operating import call_limits
         from operating.pg import door
         real, fails = door.check, [1]
 
@@ -520,19 +684,20 @@ class SqlDoor(unittest.TestCase):
             self.assertEqual(out.get("error", {}).get("code"), "not_ready", out)
             self.assertNotIn("rows", out)
             self.assertGreaterEqual(time.monotonic() - started, 4.9)
+            # a refusal that ends within the wait is asked again and returns the rows (no
+            # deadline of the call shortens the wait: owner 11-23)
             fails[0] = 1
-            with call_limits.sql_deadline(time.monotonic() + 8.0):
-                started = time.monotonic()
-                out = self.sql("SELECT name FROM customers")
-            self.assertEqual(out.get("error", {}).get("code"), "not_ready", out)
-            self.assertLess(time.monotonic() - started, 2.0)
+            out = self.sql("SELECT name FROM customers")
+            self.assertNotIn("error", out, out)
+            self.assertTrue(out["rows"])
             self.assertEqual(fails[0], 0)
 
     def test_a_statement_meeting_a_swap_is_asked_again(self):
         """A refresh swapping a table under a running statement (the plan's table dropped:
         "could not open relation with OID", or its lock held past lock_timeout) is asked
-        again inside the call and returns the rows; one that never ends is not_ready with
-        no rows; any other internal error is refused at once."""
+        again inside the call and returns the rows, as is a standby's recovery conflict; one
+        that never ends is not_ready with no rows; any other internal error is refused at
+        once."""
         import psycopg
         real, fails = sqlt.scoped_read, [0, "could not open relation with OID 288176778"]
 
@@ -541,13 +706,16 @@ class SqlDoor(unittest.TestCase):
                 if fails[0]:
                     fails[0] -= 1
                     raise (psycopg.errors.LockNotAvailable if fails[1] == "lock"
+                           else psycopg.errors.SerializationFailure if fails[1] == "recovery"
                            else psycopg.errors.InternalError_)(fails[1])
                 return work(conn)
             return real(pg, door_, once, *a, **k)
         with mock.patch.object(sqlt, "BUSY_WAIT_SECONDS", 3.0), \
                 mock.patch.object(sqlt, "BUSY_POLL_SECONDS", 0.05), \
                 mock.patch.object(sqlt, "scoped_read", flaky):
-            for why in ("could not open relation with OID 288176778", "lock"):
+            # "recovery": a standby cancelling the statement for its replay ("conflict
+            # with recovery", 40001), which a read-only snapshot never raises otherwise
+            for why in ("could not open relation with OID 288176778", "lock", "recovery"):
                 fails[:] = [2, why]
                 self.assertIn("Acme Ltd", self.names(), why)
                 self.assertEqual(fails[0], 0)
@@ -598,10 +766,10 @@ class SqlDoor(unittest.TestCase):
                     (door.ranges(held),)).fetchall()}
                 self.assertEqual(got, held, door.ranges(held))
 
-    def test_a_full_reader_reads_as_at_a_psql_prompt_and_no_one_else_does(self):
-        # the ceiling run 11-18 (plain Claude, 60 s psql): a full reader's statement has
-        # no plan-cost cap and 60 s; every other reader keeps the cap and 10 s; the rows
-        # are the guarded views' either way (exclusion and Freightcom inside them)
+    def test_every_reader_reads_as_at_a_psql_prompt_through_its_own_door(self):
+        # the ceiling run 11-18 (plain Claude, 60 s psql) and the owner 11-22: every
+        # reader's statement has no plan-cost refusal and the full reader's time; the rows
+        # are each reader's guarded views' (exclusion, Freightcom and markings inside them)
         statement = ("SELECT corr(amount_due, amount_due) c, count(*) n "
                      "FROM customer_balances")
         from operating.pg import people_excluded
@@ -610,12 +778,15 @@ class SqlDoor(unittest.TestCase):
         with mock.patch.object(sqlt, "MAX_COST", 1.0), as_full:
             full = self.sql(statement, FULL)
             ops = self.sql(statement, OPS)
+            nobody = self.sql("SELECT count(*) n FROM customer_balances", NOBODY)
         self.assertNotIn("error", full, full)
-        self.assertEqual(ops["error"]["code"], "too_costly")
+        self.assertNotIn("error", ops, ops)
+        self.assertNotIn("error", nobody, nobody)
+        # the door still decides the rows: a reader with nothing reads nothing
+        self.assertEqual(self.column(nobody), ["0"])
         tool = sqlt.SqlTool(self.base())
-        self.assertEqual(tool._seconds(True), sqlt.FULL_STATEMENT_MS / 1000.0)
-        self.assertEqual(tool._seconds(), sqlt.STATEMENT_MS / 1000.0)
-        self.assertEqual(tool._seconds(sqlt.SEARCH_FULL_MS), sqlt.SEARCH_FULL_MS / 1000.0)
+        # no statement time limit for anyone (owner 11-23): statement_timeout 0
+        self.assertEqual((tool._seconds(True), tool._seconds()), (0.0, 0.0))
         # undecidable fullness is no full reader (fail closed)
         with mock.patch.object(people_excluded, "full_reader", side_effect=RuntimeError):
             self.assertFalse(tool._full(FULL))
@@ -629,18 +800,21 @@ class SqlDoor(unittest.TestCase):
         as_full = mock.patch.object(people_excluded, "full_reader",
                                     lambda base, a: "tag" if a is FULL else "")
         costly = mock.patch.object(sqlt, "MAX_COST", 1.0)
-        short = mock.patch.object(sqlt, "FULL_COSTLY_WAIT_SECONDS", 1.0)
         holders = [psycopg.connect(self.dsn, autocommit=True)
                    for _ in range(sqlt.FULL_COSTLY_SLOTS)]
         try:
             for slot, other in enumerate(holders):   # other processes' long statements
                 other.execute("SELECT pg_advisory_lock(%s, %s)",
                               (sqlt.FULL_COSTLY_LOCK, slot))
-            with as_full, costly, short:
+            with as_full, costly:
                 import threading
                 started, got = time.monotonic(), {}
                 ask = threading.Thread(target=lambda: got.update(busy=self.sql(statement)))
                 ask.start()
+                # a third waits for a slot however long, and runs when one frees (owner 11-23:
+                # queued, never refused): another process ends its statement after a second
+                threading.Timer(1.0, lambda: holders[0].execute(
+                    "SELECT pg_advisory_unlock(%s, 0)", (sqlt.FULL_COSTLY_LOCK,))).start()
                 # while it waits for a slot it holds no connection in a transaction
                 waiting = []
                 while ask.is_alive() and len(waiting) < 8:
@@ -649,16 +823,15 @@ class SqlDoor(unittest.TestCase):
                         "SELECT count(*) FROM pg_stat_activity WHERE datname = "
                         "current_database() AND state LIKE 'idle in transaction%%'"
                         ).fetchone()[0])
-                ask.join(10)
-                busy = got["busy"]
+                ask.join(30)
+                ran = got["busy"]
                 self.assertGreaterEqual(time.monotonic() - started, 0.9)
-            self.assertEqual(busy["error"]["code"], "busy", busy)
+            self.assertNotIn("error", ran, ran)             # waited its turn, never refused
             self.assertGreaterEqual(len(waiting), 5, waiting)
             self.assertLessEqual(sum(1 for n in waiting if n), 1, waiting)
             with as_full:   # under the cost every reader is held to: no slot needed
                 self.assertNotIn("error", self.sql(statement))
-            holders[0].execute("SELECT pg_advisory_unlock(%s, 0)", (sqlt.FULL_COSTLY_LOCK,))
-            with as_full, costly, short:
+            with as_full, costly:
                 self.assertNotIn("error", self.sql(statement))
             # the slot was the call's transaction's: free again once it ended
             self.assertTrue(holders[0].execute("SELECT pg_try_advisory_lock(%s, 0)",
@@ -667,7 +840,7 @@ class SqlDoor(unittest.TestCase):
             for other in holders:
                 other.close()
 
-    def test_hidden_excluded_and_freightcom_rows_are_out_for_everyone(self):
+    def test_hidden_and_excluded_rows_are_out_for_everyone(self):
         import psycopg
         from operating.pg import door
         self.assertIn("Acme Ltd", self.names())
@@ -1096,36 +1269,85 @@ class SqlDoor(unittest.TestCase):
                 c.execute(f"UPDATE {s}.door_state SET excluded_at = %s",
                           (door.exclusion_stamp(c),))
 
-    def test_a_padded_or_doubled_string_never_reaches_the_api_whole(self):
-        """Cells are cut by the statement and rows stream until the byte cap: a query
-        building 5 MB cells returns cut cells, never the whole text."""
-        import psycopg
-        fetched = []
-        real = psycopg.ServerCursor.fetchmany
-
-        def counting(cur, size=0):
-            got = real(cur, size)
-            fetched.extend(got)
-            return got
-
-        with mock.patch.object(psycopg.ServerCursor, "fetchmany", counting):
-            out = self.sql("SELECT format('%5000000s', name) AS a, "
-                           "replace(format('%5000000s', name), ' ', 'xx') AS b, "
-                           "ARRAY[format('%5000000s', name)] AS c, g AS n "
-                           "FROM customers, generate_series(1, 300) g")
+    def test_a_5_mb_cell_is_held_whole_shown_in_pieces_and_profiled_fast(self):
+        """Owner 11-23, no limits: a query building 5 MB cells keeps every character (in
+        the host's store, on disk past its memory budget), shows a 20,000-character piece
+        of each long cell (saying ``chars``), and the rest is read in pieces
+        ({page, offset, column, from}) until the text is whole. The profile is exact and
+        quick: distinct counts of wide text are taken on its md5 (the first version sorted the
+        whole values and ran over 14 minutes). An array too long to show is read the same."""
+        import time
+        n = 12
+        started = time.monotonic()
+        out = self.sql("SELECT format('%5000000s', g % 3) AS a, "
+                       "ARRAY[format('%5000000s', g % 5), 'x'] AS c, g AS n "
+                       f"FROM generate_series(1, {n}) g")
+        took = time.monotonic() - started
         self.assertNotIn("error", out, out)
-        self.assertTrue(out["truncated"])
-        # every text, and every element of an array, cut by the statement
-        self.assertLessEqual(max(len(str(e)) for r in fetched for x in r
-                                 for e in (x if isinstance(x, list) else [x])),
-                             sqlt.MAX_CELL + 1)
-        self.assertLessEqual(len(fetched), sqlt.MAX_ROWS + 1)
-        self.assertLessEqual(sum(len(str(x)) for r in fetched for x in r),
-                             sqlt.FETCH_BYTES + sqlt.FETCH_BATCH * 4 * (sqlt.MAX_CELL + 60))
-        a, b, c, n = out["rows"][0]["cells"]
-        self.assertTrue(a.get("truncated") and b.get("truncated"), (a, b))
-        self.assertIsInstance(c, list)
-        self.assertEqual(n, str(int(n)))   # a number stays a number
+        self.assertLess(took, 120, "a profile of 12 x 5 MB cells took far too long")
+        prof = out["profile"]
+        self.assertEqual((prof["rows"], prof["exact"]), (n, True))
+        from operating import result_profile
+        self.assertEqual(result_profile.column(prof, "a")["distinct"], 3)
+        self.assertEqual(result_profile.column(prof, "c")["distinct"], 5)
+        self.assertIn("md5", prof["note"])
+        # the store holds every character; the page shows a piece and says how long the cell is
+        kept = sqlt.RESULTS.get(out["result"].split("//", 1)[-1])
+        self.assertEqual(len(kept["rows"]), n)
+        self.assertEqual(len(kept["rows"][0][0]), 5_000_000)
+        self.assertTrue(kept["rows"].spilled())
+        a, c, num = out["rows"][0]["cells"]
+        self.assertTrue(a["truncated"], a)
+        # a page shows a piece of each long cell (fewer characters when the row is wide)
+        self.assertTrue(0 < len(a["untrusted_text"]) <= sqlt.CELL_PAGE, len(a["untrusted_text"]))
+        self.assertEqual(a["chars"], 5_000_000)
+        self.assertTrue(c["truncated"] and c["chars"] > 5_000_000, c)
+        self.assertEqual(num, "1")   # a number stays a number
+        # read the whole of row 0's column a, piece by piece
+        tool = sqlt.SqlTool(self.base())
+        got, at, pieces = [], 0, 0
+        while at is not None:
+            page = tool.call("plx.sql", {"page": out["result"], "offset": 0, "column": "a",
+                                         "from": at}, FULL)
+            self.assertNotIn("error", page, page)
+            got.append(page["cell"]["untrusted_text"])
+            at, pieces = page["next"], pieces + 1
+        self.assertEqual("".join(got), kept["rows"][0][0])
+        self.assertEqual(pieces, 5_000_000 // sqlt.CELL_PAGE)
+        # an array cell reads on as its JSON text, to the end
+        page = tool.call("plx.sql", {"page": out["result"], "offset": 3, "column": 1,
+                                     "from": 5_000_000}, FULL)
+        self.assertNotIn("error", page, page)
+        self.assertEqual(page["chars"], c["chars"])
+        for args in ({"page": out["result"], "from": 3}, {"page": out["result"], "column": 9},
+                     {"page": out["result"], "column": 0, "from": 6_000_000},
+                     {"sql": "SELECT 1", "column": 0}):
+            self.assertIn("error", tool.call("plx.sql", args, FULL), args)
+
+    def test_a_long_statement_runs(self):
+        """No statement length limit (was 8,000 characters): a 60,000-character IN list runs."""
+        values = ", ".join(str(i) for i in range(12000))
+        out = self.sql(f"SELECT count(*) FROM generate_series(1, 20000) g WHERE g IN ({values})")
+        self.assertNotIn("error", out, out)
+        self.assertEqual(out["rows"][0]["cells"], ["11999"])
+
+    def test_every_row_of_a_big_result_is_checked_for_its_sources(self):
+        """The lineage check reads every handle of the result, not the first 5,000 rows."""
+        import types
+        from operating.ontology_tools_sql_rows import _cell
+        asked = []
+
+        class Pg:
+            def execute(self, sql, args):
+                asked.append(list(args[0]))
+                return types.SimpleNamespace(fetchall=lambda: [(h,) for h in args[0]])
+
+        rows = [[f"h{i:06d}"] for i in range(12_000)]
+        with mock.patch.object(sqlt.bv, "VIEWS", {"customers": object()}):
+            seen = sqlt._visible(Pg(), ["customers"], ["handle"], rows)
+        self.assertEqual(len(seen["customers"]), 12_000)
+        self.assertEqual(sum(len(a) for a in asked), 12_000)
+        self.assertIn(_cell("x" * 25_000)[0]["chars"], (25_000,))
 
     def test_cte_and_from_alias_column_lists_are_accepted(self):
         out = self.sql("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r "
@@ -1370,8 +1592,9 @@ class SqlDoorV2(SqlDoor):
         full = self.names()
         self.assertIn("Acme Ltd", full)
         self.assertIn("Marked Doc Co", full)   # the full reader holds the document's marking
-        for gone in ("Nullkey Co", "Freightcom Logistics", "Excluded Co", "Own Issued Co"):
+        for gone in ("Nullkey Co", "Excluded Co", "Own Issued Co"):
             self.assertNotIn(gone, full)
+        self.assertIn("Freightcom Logistics", full)   # read like any other (owner 11-23)
         self.assertNotIn("Marked Doc Co", self.names(OPS))
 
 

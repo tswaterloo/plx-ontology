@@ -1,0 +1,34 @@
+# PLX plan sections, the box's side of the resident runner: fetch the files the runner wrote on the
+# s7d3d Spark and put their answers in place in biz.plan_section_items (operating/pg/
+# plan_sections_pull.py: rows replaced one record at a time, never swapped whole; a row computed
+# from an older state never replaces a newer one). Reads the Spark's folder over the Spark runs' ssh
+# login and writes only schema biz. Not enabled by the build.
+[Unit]
+Description=PLX plan sections: put the resident runner's answers in place
+After=postgresql.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# Reads no business system (SEC-S-05; tests/test_deploy_release.py).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGAPPNAME=%N
+Environment=PLX_ONTOLOGY_PG=only
+ExecStart=/data/venv/bin/python3 -m operating.pg.plan_sections_pull --dir plx-run/files/data/plx-plan/out --every 5
+# a failure (no link-marks round for 60 s: hub rows read live from 90 s) restarts it, and past the
+# start limit the unit stays failed: the host's alarm (OnFailure of every plx- unit) says so
+Restart=on-failure
+RestartSec=20
+MemoryMax=1G
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

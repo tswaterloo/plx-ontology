@@ -28,18 +28,15 @@ of the audit log):
    never one written for them; off by default) and has not paused everything
    (``set_paused``), the host's master switch ``MASTER_ENV=1`` is on, and the owner
    opened the action's system with its flag file ``live-<system>`` in the control
-   directory (``control_dir``, ``live_systems``; dry run per system until the file exists,
-   and only a person creates it). An opt-in does
-   not outlive its gate: when the workflow no longer passes for the person it is
-   suspended (``suspend_lapsed``, an ``opt_in_suspended`` row saying why) and stays off
-   until they switch it on again. Nobody else can switch a person's workflow on, the owner
-   included; the owner is told of a first pass once (``notices``), which turns nothing
-   on. Otherwise the action is recorded as a ``dry_run`` with the exact request it would
-   send.
-   A person's approval of the exact item (``Approval``) stands in for this gate: then the
-   owner's per-kind switch (``APPROVED_ENV``) decides, money or a judgment call (step 5)
-   runs only when the person acknowledged each reason, and the approver must be the item's
-   owner, cleared by the people exclusion.
+   directory (``control_dir``, ``live_systems``; dry run per system until a person creates
+   it). Unattended, an action that commits money, a quantity or a date
+   (``autopilot_commitments``) stays a dry run. An opt-in does not outlive its gate
+   (``suspend_lapsed``: off until they switch it on again); nobody else can switch a
+   person's workflow on, the owner included (told of a first pass once, ``notices``).
+   Otherwise the action is a ``dry_run`` with the exact request it would send.
+   A person's approval of the exact item (``Approval``) stands in for this gate: the owner's
+   per-kind switch (``APPROVED_ENV``) decides, money or a judgment call (step 5) only with
+   each reason acknowledged, the approver the item's owner, cleared by the exclusion.
 7. **Rate limit** per workflow (hour and day, live attempts in the audit log):
    ``rate_limited``.
 8. **Idempotency**: the key is the digest of the item, kind, target and exact payload; a
@@ -82,11 +79,13 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from operating import autopilot as ap
 from operating import autopilot_engine
 from operating import autopilot_queue
+from operating import autopilot_commitments as ac
+from operating.autopilot_commitments import _keys, _strings
 from operating import autopilot_write_adapters as wa
 from operating.card_actions import Journal
 
@@ -101,9 +100,6 @@ UNDO_FILE = "autopilot-writes/undo-store.jsonl"   # an undo's words the audit ke
 UNDO_BLOBS = "autopilot-writes/undo-blobs"
 UNDO_KEEP = timedelta(days=30)
 MASTER_ENV = "PLX_AUTOPILOT_WRITES"              # "1": the owner's master switch
-# retired 2026-11-13 (owner: each person switches their own workflows on): the owner's
-# per-role live flags PLX_AUTOPILOT_WRITES_LIVE and autopilot-writes-live.json are read by
-# nothing; a host that still sets them turns nothing on
 OPT_IN_EVENTS = ("opt_in", "opt_in_paused", "opt_in_suspended")
 KILL_ENV = "PLX_AUTOPILOT_WRITES_OFF"
 KILL_FILE = "autopilot-writes.off"
@@ -417,28 +413,9 @@ def idempotency_key(item: Mapping[str, Any], action: Mapping[str, Any]) -> str:
 
 # ------------------------------------------------------------------ routine
 
-def _strings(value: Any) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
-        for k, v in value.items():
-            yield str(k)
-            yield from _strings(v)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            yield from _strings(v)
-    elif value is not None:
-        yield str(value)
-
-
-def _keys(value: Any) -> Iterable[str]:
-    if isinstance(value, Mapping):
-        for k, v in value.items():
-            yield str(k)
-            yield from _keys(v)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            yield from _keys(v)
+def _known(domains: Iterable[str], happened: Mapping[str, Any]) -> set[str]:
+    sender = str(happened.get("sender") or "").lower()
+    return {d.lower() for d in domains} | ({sender.rsplit("@", 1)[1]} if "@" in sender else set())
 
 
 def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[str, Any],
@@ -490,10 +467,7 @@ def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[s
         if spec.get("known_domains_only"):
             # a counterpart already in the conversation or a tenant domain; a new one is a
             # judgment call
-            known = {d.lower() for d in known_domains}
-            sender = str(happened.get("sender") or "")
-            if "@" in sender:
-                known.add(sender.rsplit("@", 1)[1].lower())
+            known = _known(known_domains, happened)
             new = [a for a in [*(payload.get("to") or ()), *(payload.get("cc") or ())]
                    if "@" not in str(a) or str(a).rsplit("@", 1)[1].lower() not in known]
             if new or action.get("unknown_domains"):
@@ -512,10 +486,7 @@ def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[s
                 why.append(f"lines:{len(lines)}")
             if op.get("known_domains_only"):
                 # an address outside the tenant and the conversation is a judgment call
-                known = {d.lower() for d in known_domains}
-                sender = str(happened.get("sender") or "")
-                if "@" in sender:
-                    known.add(sender.rsplit("@", 1)[1].lower())
+                known = _known(known_domains, happened)
                 found = _EMAIL.findall("\n".join(_strings(action.get("payload"))))
                 if any(a.rsplit("@", 1)[1].lower() not in known for a in found):
                     why.append("unknown_domain")
@@ -1169,6 +1140,9 @@ DRAFT_CHOICES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # the work a message left the person beyond a reply (``autopilot_message_work``): its
     # own switch, off for everyone until they turn it on (in no Draft file)
     ("message_todos", "To-dos a message left me", ("message_todos",)),
+    # my own mail still unanswered past my usual wait (``autopilot_waits``): its own switch,
+    # off for everyone until they turn it on (in no Draft file)
+    ("follow_ups", "Follow-ups on my mail nobody answered", ("follow_ups",)),
 )
 
 
@@ -1444,8 +1418,9 @@ class Executor:
     def __init__(self, state: Path, *, environ: Mapping[str, str] | None = None,
                  adapters: Mapping[str, wa.Adapter] | None = None, guard: Any = None,
                  rules_path: Path | None = None, registry: Mapping[str, Any] | None = None,
-                 internal_domains: Iterable[str] = ()) -> None:
+                 internal_domains: Iterable[str] = (), commits: Callable | None = None) -> None:
         self.state = Path(state)
+        self.commits = commits or ac.model_commitments   # what a message commits
         from operating import autopilot_write_readiness as readiness
         # credentials placed later (an env file under /etc/plx) and the owner's go-live
         # files are read at every construction: a new executor sees them, no restart
@@ -1590,6 +1565,7 @@ class Executor:
         if approval is None:
             # performed by itself: the person's own switch conditions (sender, days,
             # hours, their bar) must hold too, else it waits for their click
+
             from . import assist_switches
             gate = WriteGate(self.state / WRITE_GATE_FILE, rules, aliases=self._aliases)
             held_back = assist_switches.reasons(
@@ -1598,6 +1574,10 @@ class Executor:
             if held_back:
                 return self._record({**row, "status": "not_routine", "reasons": held_back},
                                     now)
+        # unattended: never money, a quantity or a date (read before the journal lock)
+        committed = [] if approval is not None else ac.unattended(
+            action, self.commits, self.environ.get(MASTER_ENV) == "1" and FLAG_SYSTEM.get(
+                kind) in live_systems(self.state, self.environ), ac.known_text(item))
         if adapter is None:
             return self._record({**row, "status": "unavailable",
                                  "reasons": ["no_adapter"]}, now)
@@ -1643,6 +1623,24 @@ class Executor:
                 # approve + confirm, no sandbox; a confirmed accept of a
                 # gate-live item is that approval, PLX_APPROVED_WRITES not required)
                 mode, missing, row["live_by"] = "dry_run", ["bc_production_needs_approval"], None
+            if mode == "live" and approval is None and committed:
+                mode, missing, row["live_by"] = "dry_run", list(committed), None
+            if mode == "live" and approval is None:
+                # nothing but a class A write goes by itself (ASSIST specs 2.10, C8): money,
+                # quantities and dates (B) and the systems with no write path (C) wait for a
+                # named person; an operation with no class is refused
+                from operating.prepared_writes import Refused
+                from operating.write_classes import write_class
+                try:
+                    klass = write_class(action, item=item, rules=rules,
+                                        workflow=str(base["workflow"]),
+                                        known_domains=self._known_domains())
+                except Refused as error:
+                    mode, missing, row["live_by"] = "dry_run", list(error.problems), None
+                else:
+                    if klass != "A":
+                        mode, missing, row["live_by"] = (
+                            "dry_run", [f"class_{klass}_needs_a_person"], None)
             if mode != "live":
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "dry_run", "status": "dry_run",

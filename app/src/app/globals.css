@@ -122,3 +122,29 @@
   font-family: var(--font-mark);
   font-variant-numeric: tabular-nums;
 }
+
+/* A chart is drawn 640 units wide and shrunk to the phone's width (about 0.55): its 10-11 unit
+   tick labels came out near 6 px. On a phone they are drawn larger in the chart's own units,
+   so they read at about 9 px; chart text meant to be large is left as drawn. */
+@media (max-width: 639px) {
+  svg[data-chart-svg] text[font-size="10"],
+  svg[data-chart-svg] text[font-size="11"] {
+    font-size: 16px;
+  }
+}
+
+/* W7: sections and rows far below the fold are laid out and painted when they come near
+   (content-visibility). Every one still exists in the DOM, is found by the browser's find and
+   scrolls into view; nothing is cut. The size given is only the placeholder height before then. */
+.cv-auto {
+  content-visibility: auto;
+}
+.cv-row {
+  contain-intrinsic-size: auto 64px;
+  /* paint containment clips at the box: the row's 1px lift and 2px focus ring are drawn inside it */
+  padding: 3px;
+  margin: -3px;
+}
+.cv-tile {
+  contain-intrinsic-size: auto 280px;
+}

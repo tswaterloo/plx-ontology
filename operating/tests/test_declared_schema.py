@@ -30,6 +30,11 @@ NOT_DECLARED = {
     "ontology/finish_parallel.py", "ontology/mentions.py", "ontology/project.py",
     "ontology/project_incremental.py", "ontology/delta.py", "ontology/reviews.py",
     "ontology/schema_migrate.py", "ontology/step_migrate.py", "ontology/store_ddl.py",
+    # the precomputed record pages: a build table swapped in beside the served one, like
+    # generic_records' (the tables of the generic door)
+    "operating/pg/record_pages.py",
+    # the stored plan sections: the same, one small table swapped in beside the served one
+    "operating/pg/plan_sections.py",
     "operating/ai_watcher.py", "operating/proactive_engine.py", "operating/pg/migrate.py",
     # the proactive engine's Postgres read attach (``_attach_postgres``), split out of it
     "operating/proactive_engine_inbox.py",
@@ -60,6 +65,9 @@ NOT_DECLARED = {
     # list and state, and the alert rows and runs; each also uses session TEMP tables.
     # Postgres tables made by their own build, never a SQLite store
     "operating/pg/business_comms.py", "operating/pg/business_views_access.py",
+    # the mailbox owners' addresses the comms flags keep (biz.mailbox_owners): a Postgres
+    # table of the comms build, never a SQLite store
+    "operating/pg/mail_owners.py",
     # the chunk vectors' per-kind partitions (migration 0052 declares the parent, its
     # default partition and HNSW): each kind's table is built standalone LIKE the parent by
     # ``chunk_vectors build``, indexed, then attached; never a SQLite store
@@ -68,7 +76,9 @@ NOT_DECLARED = {
     # build copy by ``reader_bits stage`` and dropped after the fill; Postgres, never SQLite
     "operating/pg/reader_bits.py",
     "operating/pg/generic_records.py", "operating/pg/generic_views.py",
-    "operating/pg/comms_findings.py", "operating/pg/door.py", "operating/pg/alerts.py",
+    "operating/pg/door.py", "operating/pg/alerts.py",
+    # the one reading per message (contract C4): Postgres tables of migration 0060
+    "operating/assist_readings.py",
     # the capture backup's pack check: a throwaway SQLite file of one pack's names, made
     # and deleted in one run; never a store the Workbench opens
     "deploy/backup/capture_backup.py",

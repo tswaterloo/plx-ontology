@@ -2319,42 +2319,124 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
         aud, marks = _reader_view(conn, may_read, held)
         params = {"aud": aud, "marks": marks, "kinds": json.dumps(list(kinds))}
         served = _served_digest(conn, store)
-        current, _ = _current_since(conn, served[0] if served else None)
-        # a gap of older data than the store served is shown to no one (``read_inbox``):
-        # it is not counted as one hidden from this reader either
+        current, behind = _current_since(conn, served[0] if served else None)
+        # a gap of a rule not yet rerun over the data served now is listed, marked as not
+        # rechecked (``_carried``), so it is counted too (a count of 0 for such a rule was
+        # "None" on Data health while its listing held the findings)
         # a person's own mail (``OWNER_KINDS``) is nobody else's: never counted as hidden
         total = Counter(row["kind"] for row in conn.execute(
             "SELECT kind, detector, last_seen FROM gaps WHERE state = 'open' AND kind IN "
-            "(SELECT value FROM json_each(:kinds))", params) if _of_served(row, current)
-            and row["kind"] not in _OWNER_KINDS)
+            "(SELECT value FROM json_each(:kinds))", params) if (_of_served(row, current)
+            or row["detector"] in behind) and row["kind"] not in _OWNER_KINDS)
         rows = [row for row in conn.execute(
             "SELECT g.* FROM gaps g WHERE g.state = 'open' AND g.kind IN (SELECT value FROM "
             "json_each(:kinds)) AND " + _OBJECT_VISIBLE.format(o="g.object_id"),
-            params).fetchall() if _of_served(row, current)]
+            params).fetchall() if _of_served(row, current)
+            or row["detector"] in behind]
         seen = Counter(row["kind"] for row, _ in _visible(conn, rows, params, decide)
                        if row["kind"] not in _OWNER_KINDS)
     return {kind: total[kind] - seen[kind] for kind in sorted(total)
             if total[kind] - seen[kind] > 0}
 
 
+# The counts and run times kept for the data-health first read: one entry per (inbox, the
+# data served, the kinds asked). Computed once when the inbox or the data changes, not on
+# each request (live 11-23: p50 5.1 s, each read attached the inbox and walked every gap).
+_KEPT_COUNTS: dict[tuple, Any] = {}
+_KEPT_MAX = 16
+
+
+def _inbox_stamp(path: Path, store: Any) -> tuple | None:
+    """What a kept count of ``path`` rests on: the inbox file's own change (time, size, and its -wal file's) and
+    the data it is compared with (Postgres's change stamp, else the store file's time and
+    size). None when either cannot be read (nothing is kept then)."""
+    try:
+        st = path.stat()
+        from operating.pg import ontology_reader
+        if ontology_reader.serves(store):
+            data: Any = ontology_reader.change_stamp()
+            if data is None:
+                return None
+        else:
+            ss = Path(store).stat()
+            data = (ss.st_mtime_ns, ss.st_size)
+        # the inbox is in WAL mode: a commit sits in the -wal file until a checkpoint, so
+        # the stamp holds that file's time and size too (absent: none)
+        try:
+            w = path.with_name(path.name + "-wal").stat()
+            wal: Any = (w.st_mtime_ns, w.st_size)
+        except FileNotFoundError:
+            wal = None
+        return (st.st_mtime_ns, st.st_size, wal, data)
+    except Exception:  # noqa: BLE001 - unreadable: counted fresh each time, never kept
+        return None
+
+
+def _kept(name: str, path: Path, store: Any, kinds: Sequence[str], compute: Callable[[], Any]
+          ) -> Any:
+    stamp = _inbox_stamp(path, store)
+    if stamp is None:
+        return compute()
+    key = (name, str(path), tuple(sorted(kinds)), tuple(sorted(alert_kinds.off_gap_kinds())))
+    held = _KEPT_COUNTS.get(key)
+    if held is not None and held[0] == stamp:
+        return held[1]
+    value = compute()
+    # kept under the stamp as it is after counting, and only when nothing moved while counting
+    # (opening a WAL database may itself create its -wal file: that alone is not a change)
+    after = _inbox_stamp(path, store)
+    moved = after is None or after[:2] != stamp[:2] or after[3] != stamp[3] \
+        or (stamp[2] is not None and after[2] != stamp[2])
+    if value is not None and not moved and (key in _KEPT_COUNTS or len(_KEPT_COUNTS) < _KEPT_MAX):
+        _KEPT_COUNTS[key] = (after, value)
+    return value
+
+
 def open_counts(inbox: Any, store: Any, *, kinds: Sequence[str]) -> dict[str, int] | None:
     """Per kind, every open gap of the store as it was served (what a reader sees plus what
     is hidden from them: the sum ``hidden_counts`` and the trimmed read split), one cheap
     count with no per-item decision. A person's own mail kinds are not counted (nobody's but
-    its owner's), nor an off type. None: no inbox (nothing known, never zeros)."""
-    off = alert_kinds.off_gap_kinds()
-    kinds = [k for k in kinds if k not in off]
+    its owner's), nor an off type. None: no inbox (nothing known, never zeros). Kept while
+    neither the inbox nor the data served changes (``_inbox_stamp``)."""
     path = Path(inbox)
     if not path.is_file():
         return None
+    got = _kept("counts", path, store, kinds, lambda: _open_counts(path, store, kinds))
+    return None if got is None else dict(got)
+
+
+def _open_counts(path: Path, store: Any, kinds: Sequence[str]) -> dict[str, int] | None:
+    off = alert_kinds.off_gap_kinds()
+    kinds = [k for k in kinds if k not in off]
     with closing(_attach(path, Path(store))) as conn:
         served = _served_digest(conn, store)
-        current, _ = _current_since(conn, served[0] if served else None)
+        current, behind = _current_since(conn, served[0] if served else None)
         total = Counter(row["kind"] for row in conn.execute(
             "SELECT kind, detector, last_seen FROM gaps WHERE state = 'open' AND kind IN "
             "(SELECT value FROM json_each(:kinds))", {"kinds": json.dumps(list(kinds))})
-            if _of_served(row, current) and row["kind"] not in _OWNER_KINDS)
+            if (_of_served(row, current) or row["detector"] in behind)
+            and row["kind"] not in _OWNER_KINDS)
     return {k: total[k] for k in kinds}
+
+
+def last_checked(inbox: Any, *, kinds: Sequence[str], store: Any = None
+                 ) -> dict[str, str | None]:
+    """Per kind, when its rule last ran (ISO, the newest of the rules that file findings
+    of it); None when none of them has a recorded run (never checked: a count of 0 is then
+    no answer). No inbox: every kind None."""
+    path = Path(inbox)
+    out: dict[str, str | None] = {k: None for k in kinds}
+    if not path.is_file():
+        return out
+    if store is not None:
+        return dict(_kept("checked", path, store, kinds,
+                          lambda: last_checked(inbox, kinds=kinds)) or out)
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)) as conn:
+        ran = dict(conn.execute("SELECT detector, run_at FROM detector_runs").fetchall())
+        for kind, detector in conn.execute("SELECT DISTINCT kind, detector FROM gaps").fetchall():
+            if kind in out and detector in ran and (out[kind] is None or ran[detector] > out[kind]):
+                out[kind] = ran[detector]
+    return out
 
 
 def unjudged_records(inbox: Any, store: Any, *, rule: str, reason: str | None = None,

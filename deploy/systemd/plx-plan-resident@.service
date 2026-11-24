@@ -1,0 +1,28 @@
+# PLX resident plan runner, one shard (instance "0-of-4" = shard 0 of 4): the record pages' late and
+# people sections kept current per record (operator_api/plan_resident.py). The process runs on the
+# s7d3d Spark, in spark_run's sandbox against the Spark's hot standby; this unit holds its ssh and
+# starts it again when it ends (it ends itself when the people exclusion changes, so the new list
+# reaches it on ssh's stdin; and after a fixed number of answers, for a fresh engine).
+# Not enabled by the build: the shards are enabled by hand once the Spark's memory is checked
+# (deploy/spark/plan_resident.sh; settings in /etc/plx/plan-resident.env, non-secret).
+[Unit]
+Description=PLX resident plan runner (a Spark process), shard %i
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=40
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+Environment=PGAPPNAME=%N
+ExecStart=@PLX_CURRENT@/deploy/spark/plan_resident.sh run --shard %i
+Restart=always
+RestartSec=30
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

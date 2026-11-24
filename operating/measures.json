@@ -5,165 +5,351 @@
    "id": "revenue",
    "name": "Revenue invoiced",
    "owner": "Finance",
+   "version": "vf6ccff47",
+   "defined_on": "2026-11-23",
    "unit": "money",
-   "definition": "Net line revenue on posted sales invoices (item and miscellaneous lines, before tax), by invoice date. BC pilot invoices are left out (Sage is the system of record).",
+   "definition": "Net line revenue on posted sales invoices (item and miscellaneous lines, before tax), by invoice date.",
    "view": "sales_invoice_lines",
    "value": "sum(revenue)",
    "per": "revenue_currency",
    "date": "invoice_date",
-   "where": "NOT pilot",
+   "where": "",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "item_code",
     "item_name",
     "line_type"
    ],
    "days": 30,
-   "ask": "Why did revenue change last month? Which customers drove it?"
+   "ask": "Why did revenue change last month? Which customers drove it?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "revenue",
+     "min_fill": 0.5
+    },
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "revenue_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "gross_margin",
    "name": "Gross margin",
    "owner": "Finance",
+   "version": "v731f2777",
+   "defined_on": "2026-11-23",
    "unit": "money",
-   "definition": "Line revenue less line cost on posted sales invoices, by invoice date. Lines without a cost are not counted, nor lines whose cost looks wrong (cost more than 5 times the line's revenue: see cost_looks_wrong). BC pilot invoices are left out (Sage is the system of record). A line whose margin the reader may not read counts in unread_cells. Read with its revenue: a margin answer gives the amount, the revenue it is on and the margin as a percent of that revenue, per currency.",
+   "definition": "Line revenue less line cost on posted sales invoices, by invoice date. Lines without a cost are not counted, nor lines whose cost looks wrong (cost more than 5 times the line's revenue: see cost_looks_wrong). A line whose margin the reader may not read counts in unread_cells.",
    "view": "sales_invoice_lines",
    "value": "sum(margin)",
    "per": "margin_currency",
    "date": "invoice_date",
-   "where": "margin_basis IS DISTINCT FROM 'cost_unknown' AND NOT pilot AND coalesce(NOT (revenue > 0 AND margin < -4 * revenue), true)",
+   "where": "margin_basis IS DISTINCT FROM 'cost_unknown' AND coalesce(NOT (revenue > 0 AND margin < -4 * revenue), true)",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "item_code",
     "item_name"
    ],
    "days": 30,
-   "ask": "What was our gross margin percent each month this year, per currency?"
+   "ask": "What was our gross margin percent each month this year, per currency?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "margin",
+     "min_fill": 0.5
+    },
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "margin_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "units_sold",
    "name": "Units sold",
    "owner": "Sales",
+   "version": "v95509cf7",
+   "defined_on": "2026-11-23",
    "unit": "quantity",
-   "definition": "Quantity on item lines of posted sales invoices, by invoice date, per unit of measure. BC pilot invoices are left out (Sage is the system of record).",
+   "definition": "Quantity on item lines of posted sales invoices, by invoice date, per unit of measure.",
    "view": "sales_invoice_lines",
    "value": "sum(quantity)",
    "per": "quantity_unit",
    "date": "invoice_date",
-   "where": "line_type = 'item' AND NOT pilot",
+   "where": "line_type = 'item'",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "item_code",
     "item_name"
    ],
    "days": 30,
-   "ask": "Which products sold the most units in the last 90 days?"
+   "ask": "Which products sold the most units in the last 90 days?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "quantity",
+     "min_fill": 0.5
+    },
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "quantity_unit",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "invoices_issued",
    "name": "Sales invoices issued",
    "owner": "Finance",
+   "version": "v8b83589b",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Distinct sales invoices by invoice date. BC pilot invoices are left out (Sage is the system of record).",
+   "definition": "Sales invoices by invoice date, one per invoice record.",
    "view": "sales_invoices",
-   "value": "count(DISTINCT invoice_number)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "invoice_date",
-   "where": "NOT pilot",
+   "where": "",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "status"
    ],
    "days": 30,
-   "ask": "How many invoices did we issue each week this quarter?"
+   "ask": "How many invoices did we issue each week this quarter?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "orders_booked",
    "name": "Sales orders booked",
    "owner": "Sales",
+   "version": "vc070e594",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Distinct sales orders by order date, every status (a quote is an order type). Orders Sage holds only (Sage is the system of record for orders; FileMaker, Portal-only and BC pilot copies are left out).",
+   "definition": "Distinct sales orders by order date, every status (a quote is an order type), one per order record.",
    "view": "sales_orders",
-   "value": "count(DISTINCT order_number)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "order_date",
-   "where": "of_record",
+   "where": "",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "salesperson",
     "order_type",
     "status"
    ],
    "days": 30,
-   "ask": "How many orders did each salesperson book last month against the month before?"
+   "ask": "How many orders did each salesperson book last month against the month before?",
+   "parameters": [
+    {
+     "id": "not_in_sage",
+     "default": false,
+     "excludes_where": "of_record IS NOT TRUE",
+     "says": "orders held only in FileMaker, the Portal or Business Central (no Sage order)"
+    }
+   ],
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "order_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "order_value_booked",
    "name": "Sales order value booked",
    "owner": "Sales",
+   "version": "v1022b38e",
+   "defined_on": "2026-11-23",
    "unit": "money",
-   "definition": "Value of sales orders (not quotes) by order date. Orders Sage holds only (Sage is the system of record for orders; FileMaker, Portal-only and BC pilot copies are left out).",
+   "definition": "Value of sales orders (not quotes) by order date.",
    "view": "sales_orders",
    "value": "sum(value)",
    "per": "value_currency",
    "date": "order_date",
-   "where": "order_type IS DISTINCT FROM 'quote' AND of_record",
+   "where": "order_type IS DISTINCT FROM 'quote'",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "salesperson",
     "status"
    ],
    "days": 30,
-   "ask": "What will order value booked look like over the next 3 months?"
+   "ask": "What will order value booked look like over the next 3 months?",
+   "parameters": [
+    {
+     "id": "not_in_sage",
+     "default": false,
+     "excludes_where": "of_record IS NOT TRUE",
+     "says": "orders held only in FileMaker, the Portal or Business Central (no Sage order)"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "value",
+     "min_fill": 0.5
+    },
+    {
+     "column": "order_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "value_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "open_orders",
    "name": "Open sales orders",
    "owner": "Customer Service",
+   "version": "v402f79d6",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Sales orders open now (not shipped and invoiced in full, not quotes). Orders Sage holds only (Sage is the system of record for orders; FileMaker, Portal-only and BC pilot copies are left out).",
+   "definition": "Sales orders open now (not shipped and invoiced in full, not quotes). Orders held only in FileMaker, the Portal or BC count like any other.",
    "view": "sales_orders",
-   "value": "count(DISTINCT order_number)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "",
-   "where": "status = 'open' AND order_type IS DISTINCT FROM 'quote' AND of_record",
+   "where": "status = 'open' AND order_type IS DISTINCT FROM 'quote' AND of_record IS NOT NULL",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "salesperson",
     "order_type"
    ],
-   "ask": "How many open orders does each customer have right now?"
+   "ask": "How many open orders does each customer have right now?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    }
+   ],
+   "parameters": [
+    {
+     "id": "copy_of_record",
+     "default": false,
+     "excludes_where": "coalesce(to_jsonb(sales_orders) ->> 'open_state', '') = 'copy_of_record'",
+     "says": "copies of an order of record (same customer and customer PO): the copy is that order"
+    }
+   ]
   },
   {
    "id": "late_orders",
    "name": "Late sales orders",
    "owner": "Customer Service",
+   "version": "v5e3da856",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Open sales orders past their required date now. Orders Sage holds only (Sage is the system of record for orders; FileMaker, Portal-only and BC pilot copies are left out).",
+   "definition": "Open sales orders past their required date now, not quotes. Orders held only in FileMaker, the Portal or BC count like any other.",
    "view": "sales_orders",
-   "value": "count(DISTINCT order_number)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "",
-   "where": "status = 'open' AND days_late > 0 AND of_record",
+   "where": "status = 'open' AND days_late > 0 AND order_type IS DISTINCT FROM 'quote' AND of_record IS NOT NULL",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "salesperson",
     "order_type"
    ],
-   "ask": "Which customers have the most late orders right now?"
+   "ask": "Which customers have the most late orders right now?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    }
+   ],
+   "parameters": [
+    {
+     "id": "not_live",
+     "default": false,
+     "excludes_where": "coalesce(to_jsonb(sales_orders) ->> 'open_state', 'live') <> 'live'",
+     "says": "open on the books but not live: nothing left to deliver, or nobody has ordered or invoiced for longer than closed orders take"
+    }
+   ]
   },
   {
    "id": "receivables_open",
    "name": "Receivables open",
    "owner": "Finance",
+   "version": "v312e777c",
+   "defined_on": "2026-11-22",
    "unit": "money",
    "definition": "What each customer account owes now: the sum of every open ledger document on the account, net. Unpaid invoices count positive; unapplied payments (receipts), prepayments and credit notes on the same account count negative and are part of the balance, not a separate figure. An account whose net is negative is owed money by us. Never net one account against another, even for the same parent company.",
    "view": "customer_balances",
@@ -173,18 +359,32 @@
    "where": "",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "aging_bucket",
     "document_type"
    ],
-   "ask": "How much do customers owe us in each currency, by aging bucket?"
+   "ask": "How much do customers owe us in each currency, by aging bucket?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
-   "id": "receivables_overdue",
-   "name": "Receivables overdue",
+   "id": "receivables_overdue_net",
+   "name": "Receivables overdue, net",
    "owner": "Finance",
+   "version": "vce71270e",
+   "defined_on": "2026-11-23",
    "unit": "money",
-   "definition": "What each customer account owes now on documents past their due date, net: overdue invoices positive, the account's unapplied payments, prepayments and credit notes negative (they carry days_overdue too). Never net one account against another.",
+   "definition": "What each customer account owes now on documents past their due date, net: overdue invoices positive, the account's unapplied payments, prepayments and credit notes negative (they carry days_overdue too).",
    "view": "customer_balances",
    "value": "sum(amount_due)",
    "per": "amount_due_currency",
@@ -192,18 +392,65 @@
    "where": "days_overdue > 0",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "aging_bucket",
     "document_type"
    ],
-   "ask": "Who should we chase first for overdue payments?"
+   "ask": "Who should we chase first for overdue payments?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "receivables_overdue_gross",
+   "name": "Receivables overdue, invoices",
+   "owner": "Finance",
+   "version": "v42c2c379",
+   "defined_on": "2026-11-23",
+   "unit": "money",
+   "definition": "What customers owe now on invoices past their due date (credits, receipts and prepayments not netted).",
+   "view": "customer_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "days_overdue > 0 AND document_type = 'invoice'",
+   "dimensions": [
+    "customer",
+    "customer_party",
+    "customer_chain",
+    "aging_bucket",
+    "document_type"
+   ],
+   "ask": "Who should we chase first for overdue payments?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "payables_open",
    "name": "Payables open",
    "owner": "Finance",
+   "version": "v5bcbf794",
+   "defined_on": "2026-11-23",
    "unit": "money",
-   "definition": "Amount PLX owes on open Sage AP ledger documents: every payee, not only trade suppliers (card issuers such as AMEX and Visa, the tax body, payroll payees and individuals' expenses are payees too). Sage states no trade / non-trade flag: its vendor group (vendor_group: DEF, USD, PAY, PAYACH, CONTU) is how a vendor is booked and paid, so it separates payroll (PAY) but not trade from non-trade; split the trade suppliers by supplier name.",
+   "definition": "Amount PLX owes on open Sage AP ledger documents: every payee, not only trade suppliers (card issuers, the tax body, payroll and individuals' expenses are payees too). payee_class says who it is owed to by the GL account Sage posts the vendor's invoices to: trade (inventory and cost of sales suppliers: raw materials, packaging, freight in, product testing), expense (services, freight out, rent, IT, consulting), capital, tax_payroll, finance (cards, lenders) or unknown (no default account in Sage). vendor_group (DEF, USD, PAY ...) is how Sage pays the vendor.",
    "view": "supplier_balances",
    "value": "sum(amount_due)",
    "per": "amount_due_currency",
@@ -212,14 +459,28 @@
    "dimensions": [
     "supplier",
     "aging_bucket",
-    "document_type"
+    "document_type",
+    "payee_class"
    ],
-   "ask": "What do we owe suppliers right now, by aging bucket?"
+   "ask": "What do we owe suppliers right now, by aging bucket?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "purchases_ordered",
    "name": "Purchase order value",
    "owner": "Purchasing",
+   "version": "vbe5d24a3",
+   "defined_on": "2026-11-19",
    "unit": "money",
    "definition": "Total of purchase orders by order date, drafts left out.",
    "view": "purchase_orders",
@@ -234,16 +495,33 @@
     "verdict"
    ],
    "days": 30,
-   "ask": "Why did purchase order spend change last month? Which suppliers drove it?"
+   "ask": "Why did purchase order spend change last month? Which suppliers drove it?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "total",
+     "min_fill": 0.5
+    },
+    {
+     "column": "order_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "total_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "purchase_orders_placed",
    "name": "Purchase orders placed",
    "owner": "Purchasing",
+   "version": "vdbd55721",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Distinct purchase orders by order date, drafts left out.",
+   "definition": "Purchase orders by order date, one per purchase order record (two suppliers' orders that share a number count as two), drafts left out.",
    "view": "purchase_orders",
-   "value": "count(DISTINCT po_number)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "order_date",
    "where": "status IS DISTINCT FROM 'draft'",
@@ -254,16 +532,64 @@
     "verdict"
    ],
    "days": 30,
-   "ask": "How many POs did each buyer place this quarter?"
+   "ask": "How many POs did each buyer place this quarter?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "order_date",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "late_purchase_orders",
+   "name": "Late purchase orders",
+   "owner": "Purchasing",
+   "version": "vc85a9d55",
+   "defined_on": "2026-11-23",
+   "unit": "count",
+   "definition": "Purchase orders past their promised or requested date now (the order view's verdict is late).",
+   "view": "purchase_orders",
+   "value": "count(DISTINCT handle)",
+   "per": "",
+   "date": "",
+   "where": "verdict = 'late'",
+   "dimensions": [
+    "supplier",
+    "purchaser",
+    "status"
+   ],
+   "ask": "Which suppliers have the most late purchase orders right now?",
+   "parameters": [
+    {
+     "id": "bc_only",
+     "default": false,
+     "excludes_where": "coalesce(source_systems, '') = 'bc'",
+     "says": "held only in Business Central"
+    }
+   ],
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "batches_produced",
    "name": "Batches produced",
    "owner": "Production",
+   "version": "vf671cd7f",
+   "defined_on": "2026-11-23",
    "unit": "count",
    "definition": "Production batches realized (made), by the date they were realized.",
    "view": "batches",
-   "value": "count(DISTINCT batch_code)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "realized_date",
    "where": "status = 'Realized'",
@@ -274,31 +600,61 @@
     "quality_status"
    ],
    "days": 30,
-   "ask": "How many batches did each production line make per month this year?"
+   "ask": "How many batches did each production line make per month this year?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "realized_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "batches_on_hold",
    "name": "Batches on quality hold",
    "owner": "QA/QC",
+   "version": "v5ab34f45",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Batches not cancelled whose quality status is On-Hold now.",
+   "definition": "Batches made (status Realized) whose quality status is On-Hold now. Unmade batches carry On-Hold by default and are not counted.",
    "view": "batches",
-   "value": "count(DISTINCT batch_code)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "",
-   "where": "quality_status = 'On-Hold' AND status IS DISTINCT FROM 'Cancelled'",
+   "where": "status = 'Realized' AND quality_status = 'On-Hold'",
    "dimensions": [
     "product",
     "item_code",
     "production_line",
     "status"
    ],
-   "ask": "Which products have batches on quality hold right now?"
+   "ask": "Which products have batches on quality hold right now?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    }
+   ],
+   "parameters": [
+    {
+     "id": "held_over_a_year",
+     "default": false,
+     "excludes_where": "realized_date < (now() AT TIME ZONE 'America/New_York')::date - 365",
+     "says": "made over a year ago and still marked On-Hold (holds the old systems never cleared)"
+    }
+   ]
   },
   {
    "id": "stock_on_hand",
    "name": "Stock on hand",
    "owner": "Warehouse",
+   "version": "vaed7a278",
+   "defined_on": "2026-11-19",
    "unit": "quantity",
    "definition": "Quantity on hand now per item, per unit of measure.",
    "view": "stock",
@@ -312,30 +668,64 @@
     "item_type",
     "category"
    ],
-   "ask": "Which finished goods are short against open orders?"
+   "ask": "Which finished goods are short against open orders?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "on_hand",
+     "min_fill": 0.5
+    },
+    {
+     "column": "on_hand_unit",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "mail_received",
    "name": "Mail received from outside",
    "owner": "Customer Service",
+   "version": "v2fae10e7",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Distinct non-bulk emails from a domain no PLX staff address uses, addressed (to or cc) to a PLX mailbox, by received date (a message is counted once, however many mailboxes hold it).",
+   "definition": "Distinct emails from a domain no PLX staff address uses, addressed (to or cc) to a PLX mailbox, by received date (a message is counted once, however many mailboxes hold it).",
    "view": "emails",
    "value": "count(DISTINCT message_id)",
    "per": "",
    "date": "received_at",
-   "where": "NOT is_bulk AND owner_role IN ('to', 'cc') AND sender_domain NOT IN (SELECT split_part(email, '@', 2) FROM staff WHERE email IS NOT NULL)",
+   "where": "owner_role IN ('to', 'cc') AND sender_domain NOT IN (SELECT split_part(email, '@', 2) FROM staff WHERE email IS NOT NULL)",
    "dimensions": [
     "sender_domain",
     "owner_role"
    ],
    "days": 30,
-   "ask": "Is incoming mail unusual this week against the usual week?"
+   "ask": "Is incoming mail unusual this week against the usual week?",
+   "grain": "message_id",
+   "requires": [
+    {
+     "column": "message_id",
+     "min_fill": 0.5
+    },
+    {
+     "column": "received_at",
+     "min_fill": 0.5
+    }
+   ],
+   "parameters": [
+    {
+     "id": "bulk",
+     "default": false,
+     "excludes_where": "is_bulk",
+     "says": "bulk mail (newsletters, notices, mailings)"
+    }
+   ]
   },
   {
    "id": "complaints_count",
    "name": "Complaints said in mail and Teams",
    "owner": "Customer Service",
+   "version": "vd434a165",
+   "defined_on": "2026-11-19",
    "unit": "count",
    "definition": "Complaints a model found in mail and Teams messages (comms_findings, each checked against a quote of its message), by the time it was said.",
    "view": "comms_findings",
@@ -350,12 +740,21 @@
     "source"
    ],
    "days": 30,
-   "ask": "What are customers complaining about most in the last 30 days?"
+   "ask": "What are customers complaining about most in the last 30 days?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "said_at",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "requests_count",
    "name": "Requests said in mail and Teams",
    "owner": "Customer Service",
+   "version": "v5f2ef77b",
+   "defined_on": "2026-11-19",
    "unit": "count",
    "definition": "Requests a model found in mail and Teams messages (comms_findings), by the time they were said.",
    "view": "comms_findings",
@@ -370,12 +769,21 @@
     "source"
    ],
    "days": 30,
-   "ask": "What are customers asking us for most this month?"
+   "ask": "What are customers asking us for most this month?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "said_at",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "decisions_count",
    "name": "Decisions said in mail and Teams",
    "owner": "Operations",
+   "version": "v1522c758",
+   "defined_on": "2026-11-19",
    "unit": "count",
    "definition": "Decisions a model found in mail and Teams messages (comms_findings), by the time they were said.",
    "view": "comms_findings",
@@ -390,73 +798,147 @@
     "source"
    ],
    "days": 30,
-   "ask": "How many decisions were made per week lately, and by whom?"
+   "ask": "How many decisions were made per week lately, and by whom?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "said_at",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "loss_below_cost",
    "name": "Loss on lines sold below cost",
    "owner": "Finance",
+   "version": "v3e18cc10",
+   "defined_on": "2026-11-23",
    "unit": "money",
-   "definition": "Line revenue less line cost on posted sales invoice lines sold for more than 0 whose cost is above their revenue (a negative margin), by invoice date: what selling below cost lost. Not counted: lines without a cost, credit or discount lines (revenue 0 or less), and lines whose cost looks wrong (more than 5 times the line's revenue: cost_looks_wrong lists them). BC pilot invoices are left out (Sage is the system of record). A line whose margin the reader may not read counts in unread_cells, never as no loss.",
+   "definition": "Line revenue less line cost on posted sales invoice lines sold for more than 0 whose cost is above their revenue (a negative margin), by invoice date: what selling below cost lost. Not counted: lines without a cost, credit or discount lines (revenue 0 or less), and lines whose cost looks wrong (more than 5 times the line's revenue: cost_looks_wrong lists them). A line whose margin the reader may not read counts in unread_cells, never as no loss.",
    "view": "sales_invoice_lines",
    "value": "sum(margin)",
    "per": "margin_currency",
    "date": "invoice_date",
-   "where": "margin_basis IS DISTINCT FROM 'cost_unknown' AND NOT pilot AND coalesce(revenue > 0, true) AND (margin IS NULL OR (margin < 0 AND coalesce(margin >= -4 * revenue, true)))",
+   "where": "margin_basis IS DISTINCT FROM 'cost_unknown' AND coalesce(revenue > 0, true) AND (margin IS NULL OR (margin < 0 AND coalesce(margin >= -4 * revenue, true)))",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "item_code",
     "item_name"
    ],
    "days": 30,
-   "ask": "Which customers did we sell to below cost last month?"
+   "ask": "Which customers did we sell to below cost last month?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "margin",
+     "min_fill": 0.5
+    },
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "margin_currency",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "cost_looks_wrong",
    "name": "Invoice lines whose cost looks wrong",
    "owner": "Finance",
+   "version": "v23d7d577",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Posted sales invoice lines sold for more than 0 whose cost is more than 5 times their revenue (a cost that far off the price is most likely a wrong unit cost in Sage, such as a case cost on an each line), by invoice date. They are left out of gross_margin and loss_below_cost and listed here to be checked. BC pilot invoices are left out.",
+   "definition": "Posted sales invoice lines sold for more than 0 whose cost is more than 5 times their revenue (a cost that far off the price is most likely a wrong unit cost in Sage, such as a case cost on an each line), by invoice date. They are left out of gross_margin and loss_below_cost and listed here to be checked.",
    "view": "sales_invoice_lines",
    "value": "count(*)",
    "per": "",
    "date": "invoice_date",
-   "where": "NOT pilot AND revenue > 0 AND margin < -4 * revenue",
+   "where": "revenue > 0 AND margin < -4 * revenue",
    "dimensions": [
     "customer",
+    "customer_party",
     "item_code",
     "item_name"
    ],
    "days": 365,
-   "ask": "Which invoice lines have a cost that looks wrong?"
+   "ask": "Which invoice lines have a cost that looks wrong?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "customers_invoiced",
    "name": "Customers invoiced",
    "owner": "Sales",
+   "version": "v7289e7bd",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Distinct customers with a posted sales invoice, by invoice date (the customers who bought in a period). BC pilot invoices are left out (Sage is the system of record).",
+   "definition": "Customers with a posted sales invoice, by invoice date, one per customer record (two accounts with one name count as two).",
    "view": "sales_invoices",
-   "value": "count(DISTINCT customer)",
+   "value": "count(DISTINCT customer_handle)",
    "per": "",
    "date": "invoice_date",
-   "where": "NOT pilot",
+   "where": "",
    "dimensions": [
     "customer_chain",
     "status"
    ],
    "days": 30,
-   "ask": "Which customers have gone quiet in the last 90 days?"
+   "ask": "Which customers have gone quiet in the last 90 days?",
+   "parameters": [
+    {
+     "id": "bc_pilot",
+     "default": false,
+     "excludes_where": "pilot",
+     "says": "invoices held only in Business Central"
+    }
+   ],
+   "grain": "customer_handle",
+   "requires": [
+    {
+     "column": "customer_handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "invoice_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "batches_rejected",
    "name": "Batches rejected by QC",
    "owner": "QA/QC",
+   "version": "v4dc16e7b",
+   "defined_on": "2026-11-23",
    "unit": "count",
    "definition": "Realized (made) batches whose quality status is Rejected, by the date they were realized.",
    "view": "batches",
-   "value": "count(DISTINCT batch_code)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "realized_date",
    "where": "status = 'Realized' AND quality_status = 'Rejected'",
@@ -466,33 +948,67 @@
     "production_line"
    ],
    "days": 30,
-   "ask": "How many batches were rejected this year, by product?"
+   "ask": "How many batches were rejected this year, by product?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "realized_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "mail_sent",
    "name": "Mail sent by our people",
    "owner": "Operations",
+   "version": "v0f43998c",
+   "defined_on": "2026-11-23",
    "unit": "count",
-   "definition": "Distinct non-bulk emails sent from a PLX staff address domain, by sent date (a message is counted once, however many mailboxes hold it); by sender for each person's mail workload.",
+   "definition": "Distinct emails sent from a PLX staff address domain, by sent date (a message is counted once, however many mailboxes hold it); by sender for each person's mail workload.",
    "view": "emails",
    "value": "count(DISTINCT message_id)",
    "per": "",
    "date": "sent_at",
-   "where": "NOT is_bulk AND sender_domain IN (SELECT split_part(email, '@', 2) FROM staff WHERE email IS NOT NULL)",
+   "where": "sender_domain IN (SELECT split_part(email, '@', 2) FROM staff WHERE email IS NOT NULL)",
    "dimensions": [
     "sender"
    ],
    "days": 30,
-   "ask": "Who sent the most mail last month against the month before?"
+   "ask": "Who sent the most mail last month against the month before?",
+   "grain": "message_id",
+   "requires": [
+    {
+     "column": "message_id",
+     "min_fill": 0.5
+    },
+    {
+     "column": "sent_at",
+     "min_fill": 0.5
+    }
+   ],
+   "parameters": [
+    {
+     "id": "bulk",
+     "default": false,
+     "excludes_where": "is_bulk",
+     "says": "bulk mail (newsletters, notices, mailings)"
+    }
+   ]
   },
   {
    "id": "batch_reject_rate",
    "name": "Batch reject rate",
    "owner": "Quality",
+   "version": "v62851654",
+   "defined_on": "2026-11-23",
    "unit": "percent",
    "definition": "Of the batches made (status Realized), by the day they were made, the percent whose quality status is Rejected (numerator: rejected batches; denominator: batches made). Unmade batches carry On-Hold by default and are left out.",
    "view": "batches",
-   "value": "count(DISTINCT batch_code)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "realized_date",
    "where": "status = 'Realized'",
@@ -503,16 +1019,29 @@
     "production_line"
    ],
    "days": 90,
-   "ask": "What is our batch reject rate this year by production line?"
+   "ask": "What is our batch reject rate this year by production line?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "realized_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "batch_hold_rate",
    "name": "Batch QC hold rate",
    "owner": "Quality",
+   "version": "v12337fe8",
+   "defined_on": "2026-11-23",
    "unit": "percent",
    "definition": "Of the batches made (status Realized), by the day they were made, the percent still on quality hold (quality status On-Hold). Unmade batches carry On-Hold by default and are left out.",
    "view": "batches",
-   "value": "count(DISTINCT batch_code)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "realized_date",
    "where": "status = 'Realized'",
@@ -523,12 +1052,25 @@
     "production_line"
    ],
    "days": 90,
-   "ask": "What share of batches made this quarter is still on hold?"
+   "ask": "What share of batches made this quarter is still on hold?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "realized_date",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "batch_yield",
    "name": "Batch yield",
    "owner": "Production",
+   "version": "vbccd5920",
+   "defined_on": "2026-11-21",
    "unit": "percent",
    "definition": "Produced quantity over planned quantity, in percent, of the batches made (status Realized) that state both (planned above 0), by the day they were made: over 100 means more was made than planned.",
    "view": "batches",
@@ -543,32 +1085,88 @@
     "production_line"
    ],
    "days": 90,
-   "ask": "What is our batch yield by production line this quarter?"
+   "ask": "What is our batch yield by production line this quarter?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "planned_quantity",
+     "min_fill": 0.5
+    },
+    {
+     "column": "produced_quantity",
+     "min_fill": 0.5
+    },
+    {
+     "column": "realized_date",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "open_orders_not_live",
+   "name": "Open orders nobody is working",
+   "owner": "Customer Service",
+   "version": "vbead016c",
+   "defined_on": "2026-11-23",
+   "unit": "count",
+   "definition": "Orders the books still show open that are not live: every line states nothing left to ship, or the order is past its required date by more than closed orders take to finish with nothing ordered or invoiced in that time. Never counted as late. Reads 0 until the order view's first refresh after this rule shipped (the column does not exist before it).",
+   "view": "sales_orders",
+   "value": "count(DISTINCT handle)",
+   "per": "",
+   "date": "",
+   "where": "status = 'open' AND to_jsonb(sales_orders) ->> 'open_state' IN ('stale', 'nothing_outstanding') AND order_type IS DISTINCT FROM 'quote' AND of_record IS NOT NULL",
+   "dimensions": [
+    "customer",
+    "customer_party",
+    "customer_chain",
+    "salesperson",
+    "order_type"
+   ],
+   "ask": "How many open orders are stale, with nothing owed or nobody working them?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "late_order_share",
    "name": "Share of open orders that are late",
    "owner": "Operations",
+   "version": "v139f5b93",
+   "defined_on": "2026-11-23",
    "unit": "percent",
-   "definition": "Of the open customer orders of record (quotes left out), the percent past their required date (days_late above 0), as they stand now.",
+   "definition": "Of the open customer orders that are still going (quotes left out; not those that owe nothing or that nobody has worked for longer than closed orders take), the percent past their required date (days_late above 0), as they stand now.",
    "view": "sales_orders",
-   "value": "count(DISTINCT order_number)",
+   "value": "count(DISTINCT handle)",
    "per": "",
    "date": "",
-   "where": "status = 'open' AND order_type IS DISTINCT FROM 'quote' AND of_record",
+   "where": "status = 'open' AND coalesce(to_jsonb(sales_orders) ->> 'open_state', 'live') = 'live' AND order_type IS DISTINCT FROM 'quote' AND of_record IS NOT NULL",
    "rate_where": "days_late > 0",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "salesperson",
     "order_type"
    ],
-   "ask": "What share of open orders is late right now, per salesperson?"
+   "ask": "What share of open orders is late right now, per salesperson?",
+   "grain": "handle",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    }
+   ]
   },
   {
    "id": "receivables_overdue_share",
    "name": "Share of receivables overdue",
    "owner": "Finance",
+   "version": "v9b88bc26",
+   "defined_on": "2026-11-21",
    "unit": "percent",
    "definition": "Of what customers owe (open receivable documents, net of credits), the percent past due (days_overdue above 0), per currency, as it stands now.",
    "view": "customer_balances",
@@ -579,10 +1177,62 @@
    "rate_where": "days_overdue > 0",
    "dimensions": [
     "customer",
+    "customer_party",
     "customer_chain",
     "document_type"
    ],
-   "ask": "What share of our receivables is overdue in each currency?"
+   "ask": "What share of our receivables is overdue in each currency?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "payables_overdue",
+   "name": "Payables overdue",
+   "owner": "Finance",
+   "version": "v2fe97554",
+   "defined_on": "2026-11-23",
+   "unit": "money",
+   "definition": "What PLX owes now on supplier documents past their due date, gross: invoices only. Credit notes, prepayments and other non-invoice documents are not netted unless the credits parameter counts them in. payee_class says who it is owed to by the GL account Sage posts the vendor's invoices to (trade, expense, capital, tax_payroll, finance or unknown).",
+   "view": "supplier_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "days_overdue > 0",
+   "parameters": [
+    {
+     "id": "credits",
+     "default": false,
+     "excludes_where": "document_type <> 'invoice'",
+     "says": "credit notes, prepayments and other non-invoice documents past due, which reduce the figure"
+    }
+   ],
+   "dimensions": [
+    "supplier",
+    "aging_bucket",
+    "document_type",
+    "payee_class"
+   ],
+   "ask": "What do we owe suppliers past due, by payee class?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ]
   }
  ]
 }

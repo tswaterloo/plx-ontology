@@ -357,9 +357,13 @@ class GuardedToolReadsTests(_OnPostgres):
                                                                           ["bc", "mail"]),
                                                   tools._party_contacts(scope, [PERSON])))
         reads = [(sql, out) for sql, out in seen
-                 if plg.guard(sql) != sql and sql.lstrip()[:6].upper() in ("SELECT", "WITH")]
+                 if plg.guard(sql) != sql and sql.lstrip().split(None, 1)[0].upper() in (
+                     "SELECT", "WITH")]
         self.assertTrue(reads)
         self.assertTrue(any(" END" in sql for sql, _ in reads))
+        # the link read that takes the links out of ``links`` first (a WITH, then joins them
+        # to their ends) is among those rewritten, never skipped
+        self.assertTrue(any(sql.lstrip().upper().startswith("WITH PAGE_LINKS") for sql, _ in reads))
         for sql, out in reads:
             self.assertNotEqual(out, sql, sql[:300])
 

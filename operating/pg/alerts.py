@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from operating.measures import where_sql as measure_where
 from operating.pg import business_views as bv
 from operating.po_pilot import bc_pilot_po_sql
 from operating.pg.people_excluded import internal_domains
@@ -75,6 +76,9 @@ class Rule:
     # another table (same table: ``shows``)
     record_shows: tuple[str, ...] = ()
     params: Mapping[str, Any] = field(default_factory=dict)
+    # the measure whose rows the alert is (operating/measures.json): its where is the rule's,
+    # never a copy (master plan AL1); "" for a rule not ported to a measure yet
+    measure: str = ""
     comms: bool = False                   # its SELECT also yields ``units`` (COMMS_COLS)
     skips: str = ""                       # SELECT (reason, count): judged, left out, why
     # relations outside the business tables the SELECT reads ({s} = the schema): the
@@ -157,8 +161,11 @@ STATE_MINIMUM = 10                     # source_defaults.MINIMUM
 # was never cleared in its old system (batches made in 2017-2019 still read On-Hold), and
 # nobody decides a release for stock that old. It stays readable on the batch itself.
 HOLD_STALE_DAYS = 365
-REPLY_DAYS = 30                        # proactive_commitments.REPLY_DAYS
-MAX_TO = 5                             # inbox_triage.MAX_TO
+# 11-23 (limits audit #37): a reply owed stays listed 60 days (was 30: older ones vanished
+# unanswered); no cap on the To list ("more than 5 is a mailing") and none on the records a
+# message names ("more than 4 is a report"): the bulk and automated-sender tests carry that
+# judgement, a count of people does not.
+REPLY_DAYS = 60                        # was proactive_commitments.REPLY_DAYS 30
 MARGIN_DAYS = 30                       # proactive_events.MARGIN_DAYS
 REVISION_DAYS = 14                     # proactive_events.REVISION_DAYS
 REVISED_DATES = ("expected_date", "bc_expected_receipt_date")   # proactive_events.REVISED_DATES
@@ -166,7 +173,6 @@ BULK_DATE_SHARE = "0.10"               # source_defaults.DATE_SHARE
 FIRM_TIERS = ("verified", "reviewed", "corroborated")   # impact_chain's firm links
 NO_REPLY_DAYS = 7                      # proactive_events.NO_REPLY_DAYS
 NO_REPLY_WINDOW_DAYS = 90              # proactive_events.NO_REPLY_WINDOW_DAYS
-MAX_NAMED_RECORDS = 4                  # proactive_events.MAX_NAMED_RECORDS
 # vendor_terms._ASKS / _REQUEST_WORDS and proactive_events._ETA_WORDS, as Postgres regexes
 _TERM_RE = (r"\m(quot(e|es|ation|ations)|rfq|pric(e|es|ing)|confirm(ation)?|"
             r"lead[ \t-]*time|moq|availability|proforma)\M")
@@ -200,12 +206,13 @@ LATE_PO = Rule(
     "'is', r.days_late, CASE WHEN r.days_late = 1 THEN 'day' ELSE 'days' END, "
     "'past its requested date of', to_char(r.requested_date, 'Mon DD, YYYY') || '.'), "
     "(r.requested_date + 1)::timestamptz, " + ONE + " "
-    "FROM {s}.purchase_orders r WHERE r.verdict = 'late' AND r.days_late > {p[grace]} "
-    "AND NOT " + bc_pilot_po_sql("r"),
+    "FROM {s}.purchase_orders r WHERE " + measure_where("late_purchase_orders")
+    + " AND r.days_late > {p[grace]}",
     "the PO is received, closed or cancelled, or its date moves (its verdict is no longer late)",
-    "proactive_purchasing late_or_unconfirmed_po (po_late)",
+    "measure late_purchase_orders (operating/measures.json; its stated exclusion: held only "
+    "in Business Central)",
     shows=("po_number", "supplier", "days_late", "requested_date"),
-    params={"grace": LATE_GRACE_DAYS})
+    params={"grace": LATE_GRACE_DAYS}, measure="late_purchase_orders")
 
 # Due today, not confirmed (the old late list's ``po_due``: a late-rule PO with no days late
 # yet): an open PO whose requested-by date is the day judged, no supplier-promised date on
@@ -369,8 +376,7 @@ ETA_SLIPPED = Rule(
     side=("{s}.lineage", "ontology.object_values"))
 
 # Our request to a vendor with no answer (the old engine's ``vendor_no_reply``): the mail
-# thread naming an open PO (a message naming more than MAX_NAMED_RECORDS records is a report,
-# naming none in particular), our last message in it to an outside address (a sender in one of
+# thread naming an open PO (any number of records a message names counts, 11-23), our last message in it to an outside address (a sender in one of
 # our domains; recipients when projected, else when the outside wrote before it), sent
 # NO_REPLY_DAYS to NO_REPLY_WINDOW_DAYS before the day judged, asking (a term or ETA word and a
 # request word in one sentence of its preview or, if it is no reply, its subject), with no
@@ -390,7 +396,7 @@ VENDOR_NO_REPLY = Rule(
     "purchase_orders", ("purchase_orders", "emails"),
     "WITH named AS (SELECT DISTINCT p.handle AS po, e.thread FROM {s}.emails e "
     "JOIN {s}.purchase_orders p ON p.handle = ANY(e.records) "
-    "WHERE p.status = 'open' AND e.thread IS NOT NULL AND cardinality(e.records) <= {p[named]} "
+    "WHERE p.status = 'open' AND e.thread IS NOT NULL "
     "AND e.excluded IS NOT TRUE), "
     "m AS (SELECT n.po, e.handle, e.unit, e.ai_ok, e.object_ids, e.subject, e.thread, "
     "coalesce(e.sent_at, e.received_at) AS t, "
@@ -428,7 +434,7 @@ VENDOR_NO_REPLY = Rule(
     "leaves the 90-day window",
     "proactive_events vendor_no_reply (F28)",
     shows=("po_number", "supplier"), comms=True,
-    params={"named": MAX_NAMED_RECORDS, "wait": NO_REPLY_DAYS, "window": NO_REPLY_WINDOW_DAYS,
+    params={"wait": NO_REPLY_DAYS, "window": NO_REPLY_WINDOW_DAYS,
             "domains": list(internal_domains()), "term": _TERM_RE, "eta": _ETA_RE,
             "request": _REQUEST_RE, "forward": _FORWARD_RE, "reply": _REPLY_RE})
 
@@ -600,8 +606,11 @@ _SLACK = (
     "CASE WHEN cu.n >= {p[min_orders]} THEN r.needs || cc.classes ELSE r.needs END "
     "AS all_needs FROM j r LEFT JOIN cu ON cu.cust = r.customer_handle "
     "LEFT JOIN cc ON cc.cust = r.customer_handle, al WHERE r.skip IS NULL) ")
-LATE_ORDER = Rule(
-    "customer_order_late", "customer_order_late",
+# "Late customer order" has ONE meaning everywhere (measure ``late_orders``): open and past its
+# required date, of record. This is a different signal: past it by MORE than the customer's
+# orders usually are. It is never called late: its own type and kind.
+SLOWER_ORDER = Rule(
+    "customer_order_slower_than_usual", "customer_order_slower",
     "An open customer order later than its customer's orders usually are: past its required "
     "date by more days than 75% of the customer's dated orders of the last two years were "
     "at their first invoice (with fewer than 10, every customer's), and never under 3 days; "
@@ -623,7 +632,7 @@ LATE_ORDER = Rule(
     "ARRAY[r.col_class]::smallint[], ARRAY[r.handle]::text[] FROM k r WHERE r.slack IS NOT NULL AND r.days_late > r.allowed",
     "the order ships, closes or is cancelled, its required date moves, or it goes 180 days "
     "with no date or invoice",
-    "late_customer_order (customer_order_late) with active_population.inactive_reason",
+    "late_customer_order (customer_order_late) with active_population.inactive_reason, judged against this customer's usual slack",
     shows=("order_number", "customer", "days_late", "required_date"),
     params={"grace": LATE_GRACE_DAYS, **_ORDER_PARAMS, "share": SLACK_SHARE,
             "history": USUAL_HISTORY_DAYS, "min_orders": USUAL_MIN_ORDERS,
@@ -632,6 +641,26 @@ LATE_ORDER = Rule(
     "GROUP BY 1 UNION ALL SELECT CASE WHEN slack IS NULL THEN 'no_slack_history' ELSE "
     "'within_usual_slack' END, count(*) FROM k WHERE slack IS NULL OR days_late <= allowed "
     "GROUP BY 1")
+
+LATE_ORDER = Rule(
+    "customer_order_late", "customer_order_late",
+    "An open customer order past its required date and still going: exactly the orders the "
+    "measure late_orders counts (its where, never a copy of it).",
+    "sales_orders", ("sales_orders",),
+    "SELECT r.handle, '', coalesce(r.salesperson, ''), false, NULL::text, "
+    "concat_ws(' ', 'Order', coalesce(r.order_number, 'with no order number'), 'for', "
+    "coalesce(r.customer, 'an unnamed customer'), 'is', r.days_late, "
+    "CASE WHEN r.days_late = 1 THEN 'day' ELSE 'days' END, 'past its required date of', "
+    "to_char(r.required_date, 'Mon DD, YYYY') || '.'), "
+    "(r.required_date + 1)::timestamptz, r.access_class, "
+    "ARRAY(SELECT DISTINCT c FROM unnest(ARRAY[r.access_class]) c WHERE c IS NOT NULL), "
+    "r.ai_ok, ARRAY[r.col_class]::smallint[], ARRAY[r.handle]::text[] "
+    "FROM {s}.sales_orders r WHERE " + measure_where("late_orders").replace(
+        "to_jsonb(sales_orders)", "to_jsonb(r)"),
+    "the order ships, closes or is cancelled, its required date moves, or it stops being live "
+    "(nothing left to ship, or no work on it for longer than closed orders take)",
+    "measure late_orders (operating/measures.json)",
+    shows=("order_number", "customer", "days_late", "required_date"), measure="late_orders")
 
 # Open longer than usual: an order with no promised date is never "late", so an ASAP order
 # is not silently dropped: past the customer's own usual order-to-first-invoice time (its
@@ -662,7 +691,7 @@ _USUAL = (
     "LEFT JOIN cc ON cc.cust = r.customer_handle, al "
     "WHERE r.skip IS NULL AND r.order_date IS NOT NULL) ")
 OPEN_LONG = Rule(
-    "customer_order_open_long", "customer_order_late",
+    "customer_order_open_long", "customer_order_slower",
     "An open customer order with no promised date (none given, or only the order's own day, "
     "the entry default), still live, open longer than the customer's usual time from order "
     "to first invoice (90% of its orders of the last two years shipped sooner; with fewer "
@@ -929,7 +958,7 @@ DEMAND_DROP = Rule(
 # message since the owner last wrote in it that is not bulk (``is_bulk``: automated, list or
 # marketing mail, decided at the emails build), comes from someone else (``from_owner``
 # false) with an address, names the owner on To (``owner_role``: over ALL the person's
-# addresses, not only the mailbox's), has at most MAX_TO To addresses, sits in the person's
+# addresses, not only the mailbox's), has at least one To address, sits in the person's
 # own mailbox (a shared mailbox is a team queue, not a person waiting) and arrived inside
 # REPLY_DAYS. It shows from arrival (no waiting period: the page orders by age) and resolves
 # the moment the owner writes in the thread (``owner_replied_at`` after it). No text test,
@@ -943,7 +972,7 @@ OWED_TESTS: tuple[tuple[str, str], ...] = (
     ("from someone else", "e.from_owner IS FALSE AND e.sender ~ '.@.'"),
     ("bulk", "e.is_bulk IS FALSE"),
     ("on To", "e.owner_role = 'to'"),
-    ("To list", "cardinality(e.to_addresses) BETWEEN 1 AND {p[max_to]}"),
+    ("To list", "cardinality(e.to_addresses) >= 1"),
     ("known to you", "e.wrote_to_at < e.received_at OR e.wrote_in_at < e.received_at"),
 )
 OWED = " AND ".join(f"({sql})" for _, sql in OWED_TESTS)
@@ -996,7 +1025,7 @@ _WAITING = (
 NEEDS_MY_REPLY = Rule(
     "needs_my_reply", "reply_owed",
     "A message to you (on To) from someone you have written to before (or in a thread you "
-    "wrote in), not bulk, in your own mailbox in the last 30 days, with no reply from you "
+    "wrote in), not bulk, in your own mailbox in the last 60 days, with no reply from you "
     "in its thread since it came.",
     "emails", ("emails",),
     "SELECT x.handle, '', x.mailbox, true, x.mailbox, "
@@ -1006,12 +1035,12 @@ NEEDS_MY_REPLY = Rule(
     "(x.waiting - 1) || ' more since,' ELSE '' END, 'with no reply from you in the "
     "thread yet.'), x.received_at, NULL::smallint, '{{}}'::smallint[], x.all_ai, "
     "'{{}}'::smallint[], '{{}}'::text[], x.units FROM (" + _WAITING + ") x WHERE x.nth = 1",
-    "the mailbox owner writes in the thread, or the message leaves the 30-day window",
+    "the mailbox owner writes in the thread, or the message leaves the 60-day window",
     "inbox_triage needs_my_reply (proactive_commitments reply_owed)",
-    params={"days": REPLY_DAYS, "max_to": MAX_TO}, comms=True)
+    params={"days": REPLY_DAYS}, comms=True)
 
 RULES: dict[str, Rule] = {r.name: r for r in (
-    LATE_PO, DUE_PO, UNDATED_PO, NEGATIVE_MARGIN, ETA_SLIPPED, VENDOR_NO_REPLY, AT_RISK, LATE_ORDER, OPEN_LONG, LOT_ON_HOLD, PRICE_BELOW_COST,
+    LATE_PO, DUE_PO, UNDATED_PO, NEGATIVE_MARGIN, ETA_SLIPPED, VENDOR_NO_REPLY, AT_RISK, LATE_ORDER, SLOWER_ORDER, OPEN_LONG, LOT_ON_HOLD, PRICE_BELOW_COST,
     PRICE_BELOW_TYPICAL,
     CUSTOMER_PRICE_DROP, DEMAND_DROP, NEEDS_MY_REPLY)}
 

@@ -41,6 +41,9 @@ class _Api:
                        "userPrincipalName": u["userPrincipalName"],
                        "proxyAddresses": u["proxyAddresses"]} for u in graph.users.values()]
 
+    def get_all_pages(self, url, **kw):
+        return self.get_pages(url, **kw)
+
     def get_pages(self, url, **_kw):
         return list(self.users), {"complete": True}
 

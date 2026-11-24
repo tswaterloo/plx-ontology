@@ -523,7 +523,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "at": _iso(datetime.now(timezone.utc)),
                          "by": sorted(self._apa_me(reader))[0],
                          "ids": sorted(self._apa_me(reader))})
-        return self._prepared_read(reader)   # after a write: read now, never kept
+        from .assist_routes import matters_list   # after a write: read now, never kept
+        return matters_list(self, reader, fresh=True)
 
     @staticmethod
     def _apa_auto_would(state: Optional[Path], me: set[str]) -> Callable[[Mapping[str, Any]], str]:
@@ -608,7 +609,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "by_name": viewing.name_among(me),
                          "at": _iso(datetime.now(timezone.utc)),
                          "note": (body.note or "").strip()[:500] or None})
-        return self._prepared_read(reader)   # after a write: read now, never kept
+        from .assist_routes import matters_list   # after a write: read now, never kept
+        return matters_list(self, reader, fresh=True)
 
     def _apa_exclusion(self, env: Mapping[str, str] | None = None) -> Any:
         """The people exclusion the writer's screens read; None when it cannot be loaded."""
@@ -666,7 +668,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         with Journal(state / TAKE_FILE).locked() as held:
             held.append({"event": "item_take", "item_id": item_id, "pool": found["pooled"],
                          "by": me[0], "at": _iso(datetime.now(timezone.utc))})
-        return self._prepared_read(reader)   # after a write: read now, never kept
+        from .assist_routes import matters_list   # after a write: read now, never kept
+        return matters_list(self, reader, fresh=True)
 
     def _apa_roles(self) -> dict[str, list[str]]:
         """The roles file's members (``autopilot._roles``) beside the queue."""
@@ -1173,6 +1176,9 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         taken) is not here."""
         state = self._apa_state()
         hands, mine_ids = self._apa_handed(state), self._apa_me(reader)
+        # every queue trigger's own cards stay here until L1 deletes the triggers (ASSIST specs 5;
+        # open-assist3-l1-draft-executor): a draft already prepared is never taken off the list.
+        # A matter made from a queue item is listed as that item (``assist_routes``)
         items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
             reader, also=self._apa_to_me(hands, mine_ids), pools=self._apa_pools(reader)) or ()
             if i["mine"] or i.get("handed") or i.get("pooled")]
@@ -1964,7 +1970,6 @@ LINE_REFUSED = {
     "empty_line": "Say what you want to reply first.",
     "not_cleared": "This message can't go to the model (the people screen).",
     "pay_or_hr": "This message is about pay or HR, so no reply is written for it.",
-    "freightcom": "Freightcom material never goes to the model, so no reply is written.",
     "copy_tics": "The reply read like a template, so it is not shown. Write it yourself, "
                  "or put more of your own words in the line.",
     "rate_limited": "That is 20 replies written in the last hour. Try again later.",

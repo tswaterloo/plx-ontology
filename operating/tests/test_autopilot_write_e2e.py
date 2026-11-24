@@ -71,6 +71,13 @@ class Wired(Base):
         rd.record(self.state, found, env or self.env)
         return found
 
+    def confirmed(self) -> aw.Approval:
+        """A person's confirmed accept of the exact item, every kind opened to it: the only
+        way an entry carrying a quantity, an amount or a date is written (owner: never an
+        autopilot by itself)."""
+        self.env = {**self.env, aw.APPROVED_ENV: ",".join(sorted(aw.KINDS))}
+        return aw.Approval(by=(OWNER,), confirmed_live=True)
+
     def executor_e2e(self, env=None) -> aw.Executor:
         """The executor with the real guarded transports over the fakes, built from the
         environment the executor itself opened (go-live files, the recorded probe)."""
@@ -92,7 +99,8 @@ class Wired(Base):
                     "calendar_write": wa.CalendarAdapter(graph("calendar"), environ=opened),
                     "sharepoint_write": wa.SharePointAdapter(graph("sharepoint"), environ=opened),
                     "mc_task": wa.MCTaskAdapter(mc, environ=opened)}
-        return aw.Executor(self.state, environ=env, adapters=adapters, guard=people())
+        return aw.Executor(self.state, environ=env, adapters=adapters, guard=people(),
+                           commits=lambda text: [])
 
     def all_live(self) -> None:
         self.probe()
@@ -103,11 +111,12 @@ class EndToEnd(Wired):
     # ------------------------------------------------------------ the path
     def test_every_system_writes_audits_and_undoes_against_its_fake(self):
         self.all_live()
+        yes = self.confirmed()
         when = iter(NOW + timedelta(hours=h) for h in range(40))   # under the hourly limit
         ex = self.executor_e2e()
 
         # BC (Sandbox2, company PLX): a new sales order, then its header edited, both undone
-        created = ex.run(po_item(draft=False), next(when))[0]
+        created = ex.run(po_item(draft=False), next(when), yes)[0]
         self.assertEqual((created["status"], created["mode"]), ("done", "live"), created)
         doc_id = next(iter(self.fake.docs))
         self.assertEqual(self.fake.docs[doc_id]["customerNumber"], "C-1")
@@ -120,7 +129,7 @@ class EndToEnd(Wired):
             "payload": {"requestedDeliveryDate": "2026-11-20"},
             "precondition": {"etag": etag, "status": "Draft",
                              "prior": {"requestedDeliveryDate": "2026-11-18"}}})
-        edited = ex.run(edit, next(when))[0]
+        edited = ex.run(edit, next(when), yes)[0]
         self.assertEqual(edited["status"], "done", edited)
         self.assertEqual(self.fake.docs[doc_id]["requestedDeliveryDate"], "2026-11-20")
         self.assertEqual(ex.undo(edited["key"], next(when))["status"], "done")
@@ -134,7 +143,7 @@ class EndToEnd(Wired):
         second = po_item(draft=False)
         second["item_id"] = "it_po_2"
         second["body"]["prepared"]["write"]["payload"]["externalDocumentNumber"] = "P-2"
-        again = ex.run(second, next(when))[0]
+        again = ex.run(second, next(when), yes)[0]
         self.assertEqual(again["status"], "done", again)
         self.assertEqual(len(self.fake.docs), 2)
         self.assertEqual(ex.undo(again["key"], next(when))["status"], "done")
@@ -144,14 +153,14 @@ class EndToEnd(Wired):
         for name, store in (("planner_create", "tasks"), ("calendar_create", "events"),
                             ("sp_item_create", "items")):
             with self.subTest(name):
-                row = ex.run(item(name, **CASE[name]), next(when))[0]
+                row = ex.run(item(name, **CASE[name]), next(when), yes)[0]
                 self.assertEqual((row["status"], row["mode"]), ("done", "live"), row)
                 self.assertEqual(len(getattr(self.fake, store)), 1)
                 self.assertEqual(ex.undo(row["key"], next(when))["status"], "done")
                 self.assertEqual(getattr(self.fake, store), {})
 
         # MC: a routine note through the MCP door, authorized by the person's own opt-in
-        note = ex.run(item("mc", **CASE["mc_note"]), next(when))[0]
+        note = ex.run(item("mc", **CASE["mc_note"]), next(when), yes)[0]
         self.assertEqual(note["status"], "done", note)
         self.assertEqual(self.mc_fake.comments,
                          [{"taskId": "TASK-7", "notes": "Shipping docs filed in the job folder."}])
@@ -191,17 +200,19 @@ class EndToEnd(Wired):
                          ["system_not_live:live-bc"])
         self.assertEqual(len(self.fake.requests), 1)
         self.assertEqual(self.mc_fake.requests, [])
-        # the flag placed later counts at the next executor (no restart)
+        # the flag placed later counts at the next executor (no restart); an event commits
+        # a date, so by itself it stays a dry run, now for that reason alone
         self.flag("calendar")
-        self.assertEqual(self.executor_e2e().run(item("c2", **CASE["calendar_create"]), NOW
-                                                 )[0]["status"], "done")
+        row = self.executor_e2e().run(item("c2", **CASE["calendar_create"]), NOW)[0]
+        self.assertEqual((row["status"], row["reasons"]), ("dry_run", ["commits:figure"]))
 
     def test_bc_opens_only_for_a_verified_allowed_sandbox_company(self):
         self.go_live(("customer_order_intake",))
+        yes = self.confirmed()
         # no probe recorded: BC stays closed even with its go-live file
         ex = self.executor_e2e()
         self.assertNotIn("bc", guard.writes_enabled(ex.environ))
-        self.assertEqual(ex.run(po_item(draft=False), NOW)[0]["status"], "unavailable")
+        self.assertEqual(ex.run(po_item(draft=False), NOW, yes)[0]["status"], "unavailable")
         # PHSI Group configured (Vince 11-18: every company): verified like any other
         phsi = {**self.env, "PLX_AUTOPILOT_BC_COMPANY_ID": PHSI}
         found = self.probe(phsi)["systems"]["bc"]
@@ -226,7 +237,7 @@ class EndToEnd(Wired):
             env = {**self.env, **changed}
             ex = self.executor_e2e(env)
             self.assertNotIn("bc", guard.writes_enabled(ex.environ))
-            self.assertEqual(ex.run(po_item(draft=False), NOW)[0]["status"], "unavailable")
+            self.assertEqual(ex.run(po_item(draft=False), NOW, yes)[0]["status"], "unavailable")
         # the host's own BC switch (the desk's) does not open it here either
         host = {**self.env, "PLX_AUTOPILOT_BC_COMPANY_ID": PHSI,
                 guard.WRITES_FLAG: "bc,planner", "PLX_WRITES_SANDBOX_LIVE": "1",
@@ -590,6 +601,7 @@ class BcCompanies(Wired):
 
     def test_plx_and_petra_soap_open_phsi_never_and_each_action_names_its_company(self):
         self.go_live(("customer_order_intake",))
+        yes = self.confirmed()
         found = self.probe()["systems"]["bc"]
         self.assertEqual(found["status"], "ready-live", found)
         self.assertEqual(found["company_ids"], [self.MYCO, self.DIST])
@@ -598,13 +610,13 @@ class BcCompanies(Wired):
         self.assertEqual(record.stat().st_mode & 0o777, 0o640)
         when = iter(NOW + timedelta(hours=h) for h in range(10))
         ex = self.executor_e2e()
-        default = ex.run(po_item(draft=False), next(when))[0]
+        default = ex.run(po_item(draft=False), next(when), yes)[0]
         self.assertEqual(default["status"], "done", default)
         self.assertIn(f"/companies({self.MYCO})/salesOrders", self.fake.requests[-1]["url"])
         named = po_item(draft=False)
         named["item_id"] = "it_po_dist"
         named["body"]["prepared"]["write"]["target"] = {"company_id": self.DIST.upper()}
-        done = ex.run(named, next(when))[0]
+        done = ex.run(named, next(when), yes)[0]
         self.assertEqual(done["status"], "done", done)
         self.assertIn(f"/companies({self.DIST})/salesOrders", self.fake.requests[-1]["url"])
         sent = len(self.fake.requests)
@@ -614,7 +626,7 @@ class BcCompanies(Wired):
             bad = po_item(draft=False)
             bad["item_id"] = f"it_po_{other}"
             bad["body"]["prepared"]["write"]["target"] = {"company_id": other}
-            got = ex.run(bad, next(when))[0]
+            got = ex.run(bad, next(when), yes)[0]
             self.assertEqual(got["status"], "refused", got)
         self.assertEqual(len(self.fake.requests), sent)
         # a probe verifies the configured list as a whole: one id dropped or added after

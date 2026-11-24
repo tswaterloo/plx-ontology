@@ -376,17 +376,51 @@ def serving() -> bool:
     return os.environ.get(ENV) in ("1", "only")
 
 
+def _exclusion_stamp(environ: Mapping[str, str]) -> Any:
+    """What the list is read from, as it stands: the two settings and each file's identity
+    (the committed config and the named file), as ``ReloadingExclusion`` decides it moved."""
+    from pathlib import Path
+
+    from integrations import people_exclusion as pe
+    stamps: list[Any] = [environ.get(pe.ENV_IDS), environ.get(pe.ENV_FILE)]
+    for path in (environ.get(pe.ENV_FILE), str(pe.CONFIG)):
+        try:
+            info = Path(path).expanduser().stat() if path else None
+        except OSError:
+            info = None
+        stamps.append(None if info is None else (info.st_ino, info.st_size, info.st_mtime_ns))
+    return tuple(stamps)
+
+
+_TAG: tuple[Any, str | None] | None = None   # (the sources' stamp, the tag read under it)
+_TAG_LOCK = threading.Lock()
+
+
 def current_exclusion(environ: Mapping[str, str] | None = None) -> str | None:
     """The one-way tag of the exclusion list this process holds, or None when the guard is
-    unavailable (no list, an invalid entry: nothing can be cleared)."""
+    unavailable (no list, an invalid entry: nothing can be cleared). Read again whenever
+    the list's settings or files move (every kept page's check asks this per request: the
+    list was parsed again each time, ~10 ms of a Home bundle); the process's own
+    environment only, any other mapping is read every time."""
+    global _TAG
     from integrations.people_exclusion import PeopleExclusion
+    own = environ is None or environ is os.environ
+    env = os.environ if environ is None else environ
+    stamp = _exclusion_stamp(env) if own else None
+    if own:
+        with _TAG_LOCK:
+            held = _TAG
+        if held is not None and held[0] == stamp:
+            return held[1]
     try:
-        guard = PeopleExclusion.from_env(os.environ if environ is None else environ)
+        guard = PeopleExclusion.from_env(env)
     except Exception:  # noqa: BLE001 - an unreadable list decides nothing
-        return None
-    if getattr(guard, "unavailable", "unknown"):
-        return None
-    return guard.members_checked_digest()
+        return None   # never remembered: the next ask reads again
+    tag = None if getattr(guard, "unavailable", "unknown") else guard.members_checked_digest()
+    if own:
+        with _TAG_LOCK:
+            _TAG = (stamp, tag)
+    return tag
 
 
 class _Kept:

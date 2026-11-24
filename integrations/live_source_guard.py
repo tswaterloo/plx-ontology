@@ -2516,6 +2516,46 @@ class SourceApi:
             raise nextlink_refused(f"{self.source} nextLink escaped the collection")
         return items, next_url
 
+    def get_all_pages(self, url: str, *, headers: Mapping[str, str] | None = None
+                      ) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+        """Follow every same-collection ``@odata.nextLink`` until the source sends none.
+
+        No page or item bound (owner 11-23: a capture reads until the source says there is
+        no more). The only stops are a hung connection (``get_json``'s own timeout, a
+        ``SourceUnavailable``) and a source that sends a page it already sent: a repeated
+        nextLink is ``nextlink_refused`` (typed, loud), never an endless read. A
+        ``SourceUnavailable`` mid-read carries ``pages_read`` and ``items_read``."""
+        items: list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        pages = 0
+        next_url: str | None = url
+        try:
+            while next_url is not None:
+                if next_url in seen:
+                    raise nextlink_refused(f"{self.source} pagination loop (a nextLink "
+                                           "repeated a page)")
+                seen.add(next_url)
+                page = self.get_json(next_url, headers=headers)
+                pages += 1
+                if not isinstance(page, Mapping) or not isinstance(page.get("value"), list):
+                    raise SourceUnavailable(f"{self.source} listing lacks value list")
+                for item in page["value"]:
+                    if not isinstance(item, Mapping):
+                        raise SourceUnavailable(f"{self.source} listing item invalid")
+                    items.append(item)
+                continuation = page.get("@odata.nextLink")
+                if continuation is None:
+                    next_url = None
+                    break
+                next_url = self.continuation_url(url, continuation)
+                if next_url is None:
+                    raise nextlink_refused(f"{self.source} nextLink escaped the collection")
+        except SourceUnavailable as exc:
+            exc.pages_read, exc.items_read = pages, len(items)
+            raise
+        return items, {"complete": True, "truncated": False, "truncation_reason": None,
+                       "pages_read": pages, "items_read": len(items)}
+
     def get_pages(self, url: str, *, max_pages: int, max_items: int,
                   headers: Mapping[str, str] | None = None) -> tuple[list[Mapping[str, Any]],
                                                                      dict[str, Any]]:

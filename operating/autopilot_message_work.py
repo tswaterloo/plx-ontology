@@ -29,6 +29,7 @@ from . import autopilot_records
 
 WORK_CHARS = 120     # the model's words, as ``chat_ask_model.WORK_CHARS``
 RECORDS = 6
+SUMMARY_CHARS = 1000   # the to-do card's summary line (was 300)
 
 
 def h_message_work(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -38,7 +39,7 @@ def h_message_work(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     if not work:
         return {"skip": "no_work_named"}
     subject = str(event.get("subject") or "")
-    own = body_text(ctx, event).split("\nFrom:")[0][:4000]
+    own = body_text(ctx, event).split("\nFrom:")[0]
     named = autopilot_handlers._records_named(ctx, {"subject": subject, "text": own,
                                                     "records": event.get("records") or []})
     pos = [o for o in [*(event.get("records") or ()),
@@ -56,7 +57,7 @@ def h_message_work(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     # written); not ``kind`` job, so the job session's proposals replace it when it is on
     # and it stands when the session proposes nothing (``autopilot.STANDING_WHEN``)
     return {"kind": "todo", "summary": " ".join([f"{work[:1].upper()}{work[1:]} (from {who}).",
-                                                *lines])[:300],
+                                                *lines])[:SUMMARY_CHARS],
             "todos": [{"system": "", "record": "", "what": work}],
             "records": [{"object_id": o} for o in records],
             "links": [{"label": "Open the message",

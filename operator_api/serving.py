@@ -37,7 +37,8 @@ SAME_NAME_ROWS = 20   # records of one name a customer page looks through
 LATE_LABEL_LIMIT = 500   # "show all" names this many late orders once per reader
 MAX_SOURCES_PER_FACT = 4
 MAX_ANSWERS_KEPT = 2000
-ASK_TIMEOUT_SECONDS = 600
+# an Ask's wait ends only for a hung session
+ASK_TIMEOUT_SECONDS = 6 * 3600
 ASK_WORKERS = 2
 # An Ask worker at its peak: its runtime, its session's host and helpers
 # (``agent_session.HOST_HELPERS``) and the model CLI; more workers than the memory
@@ -367,6 +368,10 @@ ACCESS_WORKERS = 2
 # (11-19 cold round: "access check queued 1.0-1.2 s, ran 0.1 s"), past the 3 s a page
 # waits for its check on a loaded box, then the page was read again in full.
 CHECK_WORKERS = 2
+# The weekly-review workers (7-12 min builds), on their own queue so no page read waits behind
+# one: the API's, and the warm-up process's (its screens read side by side).
+WEEKLY_WORKERS = 1
+WEEKLY_WORKERS_WARM = 2
 SECTION_START_SECONDS = 300   # how long the API waits for the pool before it serves
 PREWARM_SECONDS = 60          # the known readers' policies decided before it serves
 # The readers' kept pages on disk (``page_store``) and the attachment page counts, in the
@@ -467,10 +472,7 @@ def others_app_data(data_dir: Optional[Path]) -> Optional[int]:
 KNOWN_READERS = 40
 RECENT_USER_SECONDS = 7 * 24 * 3600   # who used the app this recently has their late orders' trails read ahead
 GENERATION_POLL_SECONDS = 10   # a delta layer, generation or inbox change read ahead
-# A recent reader's page door is decided again this often (``_keep_doors``), inside the
-# door's own age limit (``ontology_tools_sql.DOOR_MAX_AGE_SECONDS``, 120 s), for readers
-# seen within DOOR_KEEP_RECENT_SECONDS: their next page never waits on deciding it.
-DOOR_KEEP_SECONDS = 90
+# Readers seen within this long have their page door decided ahead (``operator_api.doors``).
 DOOR_KEEP_RECENT_SECONDS = 8 * 3600
 FLIGHT_SECONDS = 120   # how long a read waits for the same read in progress elsewhere
 ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
@@ -975,19 +977,22 @@ class Worker:
         return submit(self.jobs, self.stopped, reader, job, priority, deadline, cancel,
                       long=long)
 
-    def run(self, reader: Reader, job: Callable[[Any], Any], timeout: float = 120,
+    def run(self, reader: Reader, job: Callable[[Any], Any], timeout: Optional[float] = 120,
             priority: int = 0, long: bool = False) -> Any:
-        """The job's result within ``timeout`` seconds, else ``workbench_busy``. A job
+        """The job's result within ``timeout`` seconds, else ``workbench_busy``; ``timeout``
+        None: no time limit (a read that must be whole, such as the weekly review: no
+        deadline on the job or on the wait; a closed request connection still cancels it). A job
         still running then ends at its next store statement (it is interrupted at that
         deadline), so the worker is free for the next reader's job instead of finishing
         a read nobody waits for."""
         from operating.call_limits import SQL_GRACE, current_cancel
-        timeout = read_budget(timeout)
+        timeout = None if timeout is None else read_budget(timeout)
         # the request waiting (``call_limits.Cancel``, set when its connection closes):
         # a job still queued then is dropped, one running has its statements cut
         cancel = current_cancel()
         future = self.submit(reader, job, priority=priority,
-                             deadline=time.monotonic() + timeout + SQL_GRACE, cancel=cancel,
+                             deadline=None if timeout is None
+                             else time.monotonic() + timeout + SQL_GRACE, cancel=cancel,
                              long=long)
         token = cancel.add(future.cancel) if cancel is not None else None
         try:

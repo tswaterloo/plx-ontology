@@ -203,9 +203,10 @@ class InstallOnLiveStore(unittest.TestCase):
         """The findings view reads the guarded mail and Teams views: a changed comms view
         is made again with the findings view dropped first and made again after (a bare
         DROP fails on the dependent view), and the findings view reads the new one."""
+        from operating import assist_readings
         from operating.pg import comms_findings
         with self.connect() as c:
-            comms_findings.ensure(c)
+            assist_readings.ensure(c)
             comms = comms_findings.present(c, self.dst)
         self.assertTrue(comms, "the fixture builds no guarded mail/Teams view")
         self._install()

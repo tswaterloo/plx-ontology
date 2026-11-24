@@ -38,6 +38,28 @@ describe("Today's detail of a late PO", () => {
   });
 });
 
+describe("the evidence trail is asked for only once a record is looked at", () => {
+  it("moving down the list reads no trail; the one left on does", async () => {
+    vi.useFakeTimers();
+    try {
+      api.bizPage.mockReset().mockRejectedValue(new ApiError(404, "pages_off"));
+      api.getObject.mockReset().mockResolvedValue(quick);
+      api.getObjectSection.mockReset().mockReturnValue(new Promise(() => undefined));
+      const other: QueueRow = { ...row, key: "po-9", objectId: "PurchaseOrder:x:9", title: "PO 106009" };
+      const { rerender } = render(<TodayDetail row={row} onDone={() => undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      rerender(<TodayDetail row={other} onDone={() => undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(api.getObjectSection).not.toHaveBeenCalled();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(api.getObjectSection).toHaveBeenCalledTimes(1);
+      expect(api.getObjectSection.mock.calls[0][2]).toBe("PurchaseOrder:x:9");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("Today's detail through the pages door", () => {
   const door = {
     kind: "purchase_order", title: "PO100045", subtitle: "Purchase order", sources: "", took_ms: 40,

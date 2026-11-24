@@ -140,6 +140,125 @@ def own_shown(objects: Optional[Iterable[str]], read_at: Optional[float]) -> boo
     return read_at is None or seen > read_at - OWN_READ_MARGIN_SECONDS
 
 
+class AccessState(tuple):
+    """A reader's access state (``WorkspaceBackend._access_job``) with ``legacy``: the same
+    state with the document-marks part as code before 11-22 kept it (``_marks_stamp`` with
+    the PLX-issued documents' digest), or None when that is the same. A page kept under
+    that older form is the reader's while the withheld set and the PLX-issued set are both
+    the ones it was read under (``same_access``), so a deploy that moved the part's format
+    refuses no kept page (11-22: every record page was refused and read again cold)."""
+
+    legacy: Optional[tuple] = None
+
+    def __reduce__(self) -> tuple:
+        # kept on disk as a plain tuple (any code version reads it)
+        return (tuple, (tuple(self),))
+
+
+# The policy parts (``permissions.policy_parts``) that also describe other readers: the whole
+# audience map (every pattern and who holds it) and its pattern names. A new mailbox or meeting
+# key of someone else moved both on each delta, so a non-full reader's kept pages were refused
+# after every deploy (11-22 live: 89 of 296 refusals, policy parts ["audiences",
+# "audiences_keys"] alone). They are left out only beside ``audiences_reach``: every entry that
+# can decide a key one of the reader's own patterns matches (a deny or another person's entry
+# inside a held wildcard moves it), compared with ``audiences_held``.
+OTHERS_PARTS = frozenset({"audiences", "audiences_keys"})
+REACH_PART = "audiences_reach"
+
+
+def _parts_of(state: Any) -> Optional[dict]:
+    if not isinstance(state, tuple) or not state or not isinstance(state[0], tuple):
+        return None
+    if not all(isinstance(p, tuple) and len(p) == 2 for p in state[0]):
+        return None
+    return dict(state[0])
+
+
+def _without(state: tuple, names: frozenset) -> tuple:
+    return (tuple(p for p in state[0] if p[0] not in names),) + tuple(state[1:])
+
+
+def _reader_match(now: Any, held: Any) -> bool:
+    """Whether two access states are the same for this reader: equal with the parts of
+    other readers left out when both hold the reader's own reach of the audience map
+    (``REACH_PART``) and its held patterns; a state kept before that part existed is
+    compared whole, the part left out of the newer one."""
+    a, b = _parts_of(now), _parts_of(held)
+    if a is None or b is None:
+        return now == held
+    if REACH_PART in a and REACH_PART in b and "audiences_held" in a \
+            and "audiences_held" in b:
+        return _without(now, OTHERS_PARTS) == _without(held, OTHERS_PARTS)
+    reach = frozenset({REACH_PART})
+    return _without(now, reach) == _without(held, reach)
+
+
+EXCLUSION_PART = 2   # (the exclusion's rule stamp, the precomputed set's version or None)
+
+
+def _set_version(state: Any) -> tuple[bool, Any]:
+    """(whether ``state`` holds the exclusion part as (rule, set version), that version)."""
+    part = state[EXCLUSION_PART] if isinstance(state, tuple) \
+        and len(state) > EXCLUSION_PART else None
+    if isinstance(part, tuple) and len(part) == 2:
+        return True, part[1]
+    return False, None
+
+
+def _rule_only(state: Any) -> Any:
+    """``state`` with the exclusion set's version left out of its exclusion part (the rule
+    stays); any other shape as it is."""
+    if not _set_version(state)[0]:
+        return state
+    return tuple(state[:EXCLUSION_PART]) + ((state[EXCLUSION_PART][0], None),) \
+        + tuple(state[EXCLUSION_PART + 1:])
+
+
+def exclusion_set_moved(held: Any) -> bool:
+    """Whether a kept page's access state ``held`` was read under another version of the
+    precomputed exclusion set than this process holds now (``permissions.
+    exclusion_set_version``). Only a full reader's state holds one (staff: None, their
+    gates decide). Such a page is the reader's only once every record it shows is
+    decided again (``_held_good``): the set gains rows for newer versions only, so the
+    version moved says nothing about what the page shows until that is checked."""
+    from operating.pg.permissions import exclusion_set_version
+    shaped, version = _set_version(held)
+    if not shaped or version is None:
+        return False
+    try:
+        now = exclusion_set_version()
+    except Exception:  # noqa: BLE001 - undecidable: treated as moved (checked again)
+        return True
+    return now != version
+
+
+def same_access(now: Any, held: Any) -> bool:
+    """Whether a kept page's access state ``held`` is the reader's state ``now``: equal, or
+    equal to ``now``'s older form (``AccessState.legacy``), each as ``_reader_match``
+    compares them (the parts that only describe other readers left out), the exclusion
+    set's version left out (``exclusion_set_moved``: a page under another one is served
+    only after its records are decided again)."""
+    if now == held:
+        return True
+    legacy = getattr(now, "legacy", None)
+    now, held = _rule_only(now), _rule_only(held)
+    if now == held or _reader_match(now, held):
+        return True
+    return legacy is not None and _reader_match(_rule_only(legacy), held)
+
+
+def same_answer_access(now: Any, held: Any) -> bool:
+    """``same_access`` for an answer kept with (access state, the PLX-issued documents'
+    digest) (``InsightsMixin._insight_access``): equal, or ``held`` the state alone as
+    code before 11-22 kept it (its marks part then held that digest: ``same_access``)."""
+    if now == held:
+        return True
+    # an answer names no records to decide again: the exclusion set's version must be
+    # the one it was read under (``same_access`` alone leaves it to ``_held_good``)
+    return isinstance(now, tuple) and len(now) == 2 and same_access(now[0], held) \
+        and _set_version(now[0]) == _set_version(held)
+
+
 class _ReadByOtherCode(tuple):
     """A last good page (when read, the page, the access state) read by another code
     version (``_held_good``), with ``objects``: every record id it shows, each decided for

@@ -136,7 +136,7 @@ class DerivationCodeTests(unittest.TestCase):
                 return project._derivation_digest(copy)
             finally:
                 path.write_bytes(original)
-        for unrelated in ("operating/fast_answer.py", "operating/ontology_tools_traverse.py",
+        for unrelated in ("operating/record_reads.py", "operating/ontology_tools_traverse.py",
                           "operating/host.py", "operating/build_steps.py",
                           "operator_api/workspace/__init__.py", "ontology/project_incremental.py",
                           "integrations/capture_mail.py",
@@ -151,8 +151,8 @@ class DerivationCodeTests(unittest.TestCase):
         # An import added to a derivation module is followed (fail closed).
         target = copy / "ontology" / "units.py"
         target.write_text(target.read_text() + "\ndef _later():\n"
-                          "    from operating import fast_answer\n")
-        self.assertIn("operating.fast_answer", project.derivation_modules(copy))
+                          "    from operating import record_reads\n")
+        self.assertIn("operating.record_reads", project.derivation_modules(copy))
 
 
 if __name__ == "__main__":

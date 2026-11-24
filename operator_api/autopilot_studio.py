@@ -42,6 +42,7 @@ TRIGGER_WORDS = {
     "qc.result": "A QC result is recorded",
     "question.asked": "Someone asks a question",
     "assistant.look": "At the day's start and each working hour",
+    "message.waiting": "An email you sent gets no answer in time",
     "schedule": "On a schedule",
 }
 CONDITION_WORDS = {
@@ -60,6 +61,9 @@ CONDITION_WORDS = {
     "answers_sender": "The person usually answers this sender",
     "usual_answerer": "The person is the one who usually answers this sender in the chat",
     "any_of": "One of these holds",
+    "triage_none": "The assistant did not read it as",
+    "triage_work_in": "The assistant read the work it leaves as",
+    "triage_work_none": "The assistant did not read the work it leaves as",
 }
 # conditions whose words run straight into their value ("The record is a purchase order")
 PLAIN_JOIN = frozenset({"object_type_in", "status_in", "quality_in"})
@@ -79,6 +83,7 @@ ACTION_WORDS = {
     "meeting_followup": "Draft the follow-ups and action items", "question_prepare":
     "Prepare the answer to an agent's question", "rd_status_update": "Draft the R&D "
     "project's status update to the customer",
+    "chase": "Draft a follow-up to the people who have not answered",
 }
 
 

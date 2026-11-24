@@ -66,17 +66,22 @@ import subprocess
 import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from .autopilot_records import shown
+
 MODEL_ENV = "PLX_AUTOPILOT_DRAFT_MODEL"
 SECONDS_ENV = "PLX_AUTOPILOT_DRAFT_SECONDS"
 PER_CYCLE_ENV = "PLX_AUTOPILOT_DRAFT_PER_CYCLE"
 SECONDS = 90.0
-PER_CYCLE = 12        # calls started a cycle (the rest wait for the next: ``busy``)
+PER_CYCLE = 24        # calls started a cycle (the rest wait for the next: ``busy``)
 PARALLEL_ENV = "PLX_AUTOPILOT_DRAFT_PARALLEL"
 PARALLEL = 4          # calls at once (each a model process, and a reader host with tools)
 FEATURE = "autopilot_draft"
-MESSAGE_CHARS = 6000
-ACCOUNT_ROWS = 8          # open orders, open invoices and recent mails, each
-LINKED_READ = 400         # linked records read to find the open ones (bounded)
+# what the drafter reads (a cut is said in
+# the text, ``autopilot_records.shown``)
+MESSAGE_CHARS = 30000
+RESOLVE_CHARS = 60000     # of the message read to find its customer and records
+ACCOUNT_ROWS = 100        # open orders, open invoices and recent mails, each
+LINKED_READ = 2000        # linked records read to find the open ones (bounded)
 ACCOUNT_DAYS = 365        # an order still "open" but older than this is a record left open
 BACKING_DAYS = 90         # "recent" for a record named only by a bare or linked number
 
@@ -310,7 +315,7 @@ def _fields(m: Material) -> dict[str, Any]:
         account="\n".join(f"- {a}" for a in [*m.lines, *m.account]) or "- (none found)",
         sender=m.sender or "someone",
         subject=f", subject “{m.subject}”" if m.subject else "",
-        text=m.text[:MESSAGE_CHARS], tools="", and_reads=" and the notes",
+        text=shown(m.text, MESSAGE_CHARS), tools="", and_reads=" and the notes",
         thread=("Earlier in this chat (oldest first; lines marked (their own) are "
                 f"{name}'s):\n<<<\n" + "\n".join(m.thread) + "\n>>>\n\n") if m.thread else "",
         examples=(f"\n{name}'s own recent chat replies, each under the message it answered "
@@ -439,7 +444,7 @@ _HOLLOW = re.compile(r"^\W*(?:hi|hello|hey|dear)?[^.\n]*[,.\n]*\s*(?:thanks?|tha
 
 
 KINDS = ("reply", "your_call", "none")
-FACTS = 5
+FACTS = 20
 OPTIONS = 3
 # a facts line that only says nothing was found tells the person nothing (grade 11-18)
 _NOTHING_FOUND = re.compile(r"(?i)\b(?:no|none|not|nothing|couldn't|could not|unable)\b"
@@ -477,9 +482,9 @@ def parse(result: Any) -> Optional[dict[str, Any]]:
     followed = got.get("followed", [])
     followed = sorted({int(x) for x in followed if type(x) is int and x > 0}) \
         if isinstance(followed, list) else []
-    return {"kind": kind, "reply": reply, "ask": got.get("ask", "").strip()[:300],
+    return {"kind": kind, "reply": reply, "ask": got.get("ask", "").strip()[:1000],
             "followed": followed,
-            "facts": [str(f).strip()[:300] for f in got.get("facts", [])
+            "facts": [str(f).strip()[:1000] for f in got.get("facts", [])
                       if isinstance(f, (str, int, float)) and str(f).strip()
                       and not _NOTHING_FOUND.search(str(f))][:FACTS],
             "options": options, "why": str(got.get("why") or "")[:200]}
@@ -555,15 +560,12 @@ def screened(event: Mapping[str, Any], people: Any, owner: str, prompt: str,
     account lines, the memory, the person's line: ``thread_screen``) and Freightcom
     anywhere in the prompt."""
     from .chat_ask_model import screened as message_screened
-    from integrations.image_ocr_gpu import touches_freightcom
     why = message_screened(event, people, owner)
     if why:
         return why
     why = thread_screen(people, f"{event.get('subject') or ''}\n{text or prompt}")
     if why:
         return why
-    if touches_freightcom(prompt, text):
-        return "freightcom"
     return None
 
 
@@ -599,6 +601,7 @@ class Writer:
         self.run = call or subprocess.run
         self.lookup = lookup
         self.calls = 0
+        self.retried = 0           # calls tried a second time (a crash or an unreadable answer)
         self._pool: Any = None
         self._running: dict[str, Any] = {}
 
@@ -630,12 +633,15 @@ class Writer:
         from . import model_ledger
         session = None
         if tools and self.lookup is not None:
-            try:
-                session = self.lookup.run(owner, tools_prompt)
-            except Exception as exc:  # noqa: BLE001 - no session: the plain call, no tools
-                model_ledger.record(FEATURE, prompt=tools_prompt, ok=False, seconds=0.0,
-                                    reason=f"lookup_{type(exc).__name__}")
-                session = None
+            for attempt in (1, 2):      # a crashed session is tried once more
+                try:
+                    session = self.lookup.run(owner, tools_prompt)
+                    break
+                except Exception as exc:  # noqa: BLE001 - no session: the plain call, no tools
+                    model_ledger.record(FEATURE, prompt=tools_prompt, ok=False, seconds=0.0,
+                                        reason=f"lookup_{type(exc).__name__}")
+                    session = None
+                    self.retried += attempt == 1
         if session is not None:
             final, looked = session
             got = parse(final)
@@ -649,6 +655,17 @@ class Writer:
         return got, why, []
 
     def _plain(self, prompt: str) -> tuple[Optional[dict[str, Any]], str]:
+        """One call, and one more when it failed (a crashed or timed-out call, an
+        unreadable answer: ASSIST plan piece 2, 3 of 17 held-out drafts were lost to a
+        crashed session); a second failure is the typed ``draft_failed`` the cycle counts
+        and tries again later, never an empty "prepared nothing"."""
+        got, why = self._plain_once(prompt)
+        if got is None and why == "draft_failed":
+            self.retried += 1
+            got, why = self._plain_once(prompt)
+        return got, why
+
+    def _plain_once(self, prompt: str) -> tuple[Optional[dict[str, Any]], str]:
         from . import model_ledger
         from .agent_environment import agent_environment
         argv = [self.binary, "-p", "--setting-sources", "", "--tools", "",
@@ -724,13 +741,10 @@ class Writer:
         if looked:
             # what the tools returned is screened as the prompt is (an excluded person's
             # address or name, pay or HR, Freightcom): a hit withholds the draft
-            from integrations.image_ocr_gpu import touches_freightcom
             seen = "\n".join(looked)
             hit = thread_screen(people, seen)
             if hit:
                 return None, hit
-            if touches_freightcom(seen):
-                return None, "freightcom"
             material = Material(**{**material.__dict__, "looked_up": list(looked)})
         followed = [i for i in got.get("followed") or () if i in preference_ids(material.style)]
         if got["kind"] == "your_call":
@@ -814,7 +828,7 @@ def _party(ctx: Any, event: Mapping[str, Any], text: str) -> tuple[str, list[str
     from .autopilot_work import resolve_customer
     if event.get("channel") == "teams" or event.get("side") == "internal":
         return "", [], ""          # a colleague has no account of their own
-    customer = resolve_customer(ctx, event, text[:20000])
+    customer = resolve_customer(ctx, event, text[:RESOLVE_CHARS])
     if customer.get("number"):
         return "customer", list(customer.get("records") or ()), str(customer.get("name") or "")
     sender = str(event.get("sender") or "").lower()
@@ -936,7 +950,7 @@ def _backed(ctx: Any, event: Mapping[str, Any], text: str,
     keep: list[str] = []
     bare: list[str] = []
     for tok, oid in matched:
-        if tok and (not tok.isdigit() or _word_before(tok, subject, text[:20000])):
+        if tok and (not tok.isdigit() or _word_before(tok, subject, text[:RESOLVE_CHARS])):
             keep.append(oid)
         else:
             bare.append(oid)
@@ -973,7 +987,7 @@ def _readers_own(ctx: Any, event: Mapping[str, Any], text: str,
     from .autopilot_handlers import senders_own
     if not records:
         return []
-    scoped = {**event, "text": text[:20000]}
+    scoped = {**event, "text": text[:RESOLVE_CHARS]}
     customer = [o for o in records if not o.startswith("PurchaseOrder:")]
     keep = set(senders_own(ctx, scoped, customer) or ()) if customer else set()
     pos = [o for o in records if o.startswith("PurchaseOrder:")]
@@ -999,7 +1013,7 @@ def named_lines(ctx: Any, event: Mapping[str, Any], text: str) -> list[str]:
     subject = str(event.get("subject") or "")
     linked = list(dict.fromkeys(o for o in event.get("records") or ()
                                 if o.split(":", 1)[0] in NAMED_PROPS))[:LINKED_READ]
-    matched = [(t, o) for t, o in identified_tokens(ctx, subject, text[:20000])
+    matched = [(t, o) for t, o in identified_tokens(ctx, subject, text[:RESOLVE_CHARS])
                if o.split(":", 1)[0] in NAMED_PROPS]
     # a linked record stands on the same terms: the link is the pipeline's reading of the
     # message, not the message writing the number
@@ -1009,7 +1023,7 @@ def named_lines(ctx: Any, event: Mapping[str, Any], text: str) -> list[str]:
         if mine:
             prop = NAMED_PROPS[otype][0]
             numbers.update({o: _v(r, prop) for o, r in ctx.read(mine, (prop,)).items()})
-    written = f"{subject}\n{text[:20000]}"
+    written = f"{subject}\n{text[:RESOLVE_CHARS]}"
     for oid in linked:
         number = numbers.get(oid) or ""
         said = number and re.search(r"(?<![\w-])" + re.escape(number) + r"(?![\w-])",
@@ -1056,4 +1070,4 @@ def material_of(ctx: Any, event: Mapping[str, Any], work: Mapping[str, Any],
         except Exception as exc:  # noqa: BLE001 - nothing read: the message alone
             if type(exc).__name__ == "HandlerTimeout" or "interrupt" in str(exc):
                 raise
-    return {"text": text[:MESSAGE_CHARS], "account": out}
+    return {"text": shown(text, MESSAGE_CHARS), "account": out}

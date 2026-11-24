@@ -164,6 +164,11 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "exclusion_leak": "People exclusion leak scan",
           "maintenance_window": "Planned maintenance", _coverage.NAME: _coverage.LABEL,
           **_backup_stores.LABELS}
+# systemd's own result words, said plainly in the alarm line
+_RESULT_WORDS = {"exit-code": "it ended with an error", "timeout": "it ran out of time",
+                 "signal": "it was cut off", "core-dump": "it crashed",
+                 "oom-kill": "it ran out of memory", "start-limit-hit": "it kept failing at start",
+                 "resources": "the machine had no room to start it"}
 PREFIX_LABELS = (("credential_expiry:", "Credential expiry"),
                  ("disk_forecast:", "Disk forecast"),
                  ("exclusion_unavailable:", "People exclusion"),
@@ -416,7 +421,7 @@ def backup_checks(units: Optional[Sequence[Mapping[str, str]]], now: datetime,
             age = _hours(now, u.get("ExecMainExitTimestamp", ""))
         if u.get("ActiveState") == "failed" or u.get("Result", "success") != "success":
             out.append(_check(name, age, bound, True, "h",
-                              f"last run failed ({u.get('Result') or 'unknown'})" + stopped))
+                              f"last run failed ({_RESULT_WORDS.get(str(u.get('Result') or ''), u.get('Result') or 'no reason given')})" + stopped))
         elif not ok_record:
             out.append(_check(name, age, bound, True, "h",
                               f"{what} failed ({ops_health._et(when, now)})" + stopped))
@@ -1451,6 +1456,9 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
         checks += guarded("backup_stores", lambda: _backup_stores.backup_store_checks(
             now, t, backup_root, environ))
     checks += guarded("postgres", lambda: pg_checks(dsn, t, probes))
+    if dsn and probes.pg_follow:   # each business view: failing, quarantined or behind
+        from operating.pg import view_state
+        checks += guarded("view_state", lambda: view_state.alarm_checks(dsn))
     checks += guarded("jobq", lambda: jobq_checks(state, now))
     checks += guarded("autopilot", lambda: autopilot_checks(state, now))
     checks += guarded("entry_holds", lambda: entry_holds_checks(state, now))

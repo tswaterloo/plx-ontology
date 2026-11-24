@@ -36,8 +36,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from operating.pg import business_views as bv
-from operating.pg import swap_lock
+from operating.pg import mail_owners, mail_said, swap_lock
+from operating.pg.mail_owners import capture_db, mailbox_addresses  # noqa: F401 (callers)
 from operating.pg.build_pause import before_build, check_write
+
+OWNERS_TABLE = mail_owners.TABLE   # the kept owners' addresses (``mail_owners``)
 
 CHUNK = 200_000   # versions per insert statement (bounded statement and memory)
 WRITE_CHUNK = 250_000   # stage rows per statement of the build's write of its table
@@ -119,7 +122,7 @@ EMAIL = Spec(
     f"{_ts('p.received_at')}, {_day('p.received_at')}, {_ts('p.sent_at')}, p.subject, "
     "lower(btrim(p.sender)), split_part(lower(btrim(p.sender)), '@', 2), "
     f"{_addresses('p.to_addresses')}, {_addresses('p.cc_addresses')}, p.conversation_id, "
-    "p.internet_message_id, lower(btrim(p.mailbox))",
+    f"p.internet_message_id, lower(btrim(p.mailbox)), {mail_said.said_sql('p.body_preview')}",
     ("sent_by_customer", "mentions_customer", "sent_by_supplier", "mentions_supplier"),
     attachments=True, mail=True, text_in_fields=True,
     header="subject, sender, array_to_string(to_addresses, ' '), "
@@ -137,6 +140,7 @@ EMAIL_COLS = (
     ("message_id", "text", "the Internet Message-ID: copies of one message in several "
                            "mailboxes share it (count distinct message_id for messages)"),
     ("mailbox", "text", "the mailbox's owner id (one row per mailbox copy)"),
+    mail_said.SAID_COL,
 )
 
 
@@ -221,14 +225,14 @@ def build_view(v: Any, write: Any, *, as_of: dt.date, digest: str | None = None
 
 def _register(spec: Spec, doc: str, cols: Sequence[tuple[str, str, str]]) -> None:
     common = (
-        ("mailbox_shared", "boolean", "true: a shared mailbox (sales@, orders@ ...), "
-                                      "false: a person's own; null: not known"),
+        ("mailbox_shared", "boolean", "whether the mailbox is a shared one (sales@, orders@ "
+                                      "...); not filled yet: false on every row (23 Nov), so "
+                                      "it does not tell a shared mailbox from a person's"),
         ("bulk_sender", "boolean", "true: an automated or bulk sender (no-reply, "
-                                   "notifications, newsletters): never a person waiting"),
+                                   "notifications, newsletters)"),
         ("is_bulk", "boolean", "true: mail a mailing platform or an automated system sent "
                                "(its sender, its form, or the sending platform its stored "
-                               "envelope names): owed no reply; our own people's mail only "
-                               "by its sender"),
+                               "envelope names); our own people's mail only by its sender"),
         ("owner_role", "text", "the mailbox owner's place on this copy, by every address "
                                "they have: 'to' (in To), 'cc' (only in Cc), 'none'; null: "
                                "the mailbox's addresses are not known"),
@@ -259,8 +263,8 @@ def _register(spec: Spec, doc: str, cols: Sequence[tuple[str, str, str]]) -> Non
 _register(EMAIL, "Every captured email, one row per mailbox copy (count distinct message_id "
           "for messages): when, who (from/to/cc addresses and domains), the mailbox and "
           "whether it is shared, the thread, attachments, whether the sender is automated "
-          "or bulk, and the customers, suppliers and business records it is from or names "
-          "(their handles). The body is not here: open the handle to read it.", EMAIL_COLS)
+          "or bulk, the customers, suppliers and business records it is from or names (their "
+          "handles), what it itself says (said); open the handle for the body.", EMAIL_COLS)
 
 
 TEAMS = Spec(
@@ -277,7 +281,7 @@ TEAMS_COLS = (
     ("sender", "text", "who posted it, as captured"),
     ("chat", "text", "the chat's id: messages of one chat share it"),
     ("subject", "text", "the subject, when one was set (untrusted text)"),
-    ("message_type", "text", "the kind of message (message, systemEventMessage ...)"),
+    ("message_type", "text", "the kind of message (message, unknownFutureValue)"),
     ("reply_to", "text", "the id of the message it replies to, if any"),
 )
 _register(TEAMS, "Every captured Teams chat message you may read (deleted ones left out): "
@@ -443,9 +447,7 @@ ATTACHMENT_COLS = (
 _register(ATTACHMENT, "Every captured mail attachment, one row per mailbox copy: its name, "
           "extension, type, size and the mailbox it came to, and the customers, suppliers and "
           "records it names. Count or list by type, size or mailbox; open the file or its text "
-          "with its handle (plx.open, plx.read_document). A count or list here leaves out "
-          "attachments whose text is not read yet (images, scans): when you give a count, say "
-          "it does not include those.", ATTACHMENT_COLS)
+          "with its handle (plx.open, plx.read_document).", ATTACHMENT_COLS)
 
 
 # --------------------------------------------------------------------------- build
@@ -655,12 +657,9 @@ def _rows_sql(spec: Spec, table: str, where: str, units: bool, text: str = "cm_t
     text = (f", tx AS (INSERT INTO {text} (object_id, sender, subject, preview) SELECT "
             "p.object_id, lower(btrim(p.sender)), p.subject, p.body_preview FROM p)"
             if spec.mail else "")
-    from operating.pg.sql_views import _literal
-    from integrations.freightcom_rule import sql_match
-    fc_cell = sql_match("c.value", _literal)
-    # Freightcom: a cell of the version names it; the document text of ``text_in_fields``
-    # types (the mail body, the Teams message) is read after the insert (``_text_ai``)
-    ai_ok = "NOT p.fc"
+    # ``ai_ok`` is true for every row (Freightcom is read like any other data, 11-23); the
+    # column stays so the views' layout and every reader of it are unchanged
+    ai_ok = "true"
     return (
         f"WITH r AS MATERIALIZED (SELECT o.object_id, o.audience_key, v.ver, v.l1_handle, "
         "v.markings FROM object_versions v JOIN objects o ON o.object_id = v.object_id "
@@ -669,7 +668,7 @@ def _rows_sql(spec: Spec, table: str, where: str, units: bool, text: str = "cm_t
         "AND NOT EXISTS (SELECT 1 FROM cm_gone g WHERE g.object_id = o.object_id)), "
         f"p AS (SELECT r.object_id, {pivot}, array_agg(DISTINCT k.markings) FILTER "
         f"(WHERE f.property IN ({props}) AND k.markings IS NOT NULL AND k.markings <> '[]') "
-        f"AS cell_marks, coalesce(bool_or({fc_cell}), false) AS fc "
+        f"AS cell_marks "
         "FROM r JOIN value_sources s ON s.ver = r.ver AND s.superseded_at IS NULL "
         "CROSS JOIN LATERAL (SELECT c.value, c.field, c.kind FROM value_cells c "
         "WHERE c.src = s.src OFFSET 0) c JOIN value_fields f ON f.field = c.field "
@@ -683,7 +682,7 @@ def _rows_sql(spec: Spec, table: str, where: str, units: bool, text: str = "cm_t
         "ARRAY(SELECT DISTINCT m FROM unnest(ARRAY['[]', coalesce(r.markings, '[]')] || "
         "coalesce(p.cell_marks, '{}')) m ORDER BY m), '{}'::jsonb, '{}'::jsonb, r.ver, "
         f"NULL::integer, {ai_ok}, NULL::boolean, NULL::tsvector"
-        + (", NOT p.fc" if spec.cells_ok else "")
+        + (", true" if spec.cells_ok else "")
         + " FROM r JOIN p ON p.object_id = r.object_id LEFT JOIN lk ON lk.oid = "
         f"r.object_id LEFT JOIN cm_attach at ON at.oid = r.object_id WHERE {spec.keep}")
 
@@ -707,7 +706,7 @@ def _words(spec: Spec) -> str:
 
 
 # over the row ``{s}`` and its verdicts: ``sv`` (cm_senders), ``f`` (cm_flag), ``u``
-# (comms_units), ``a`` (cm_ai)
+# (comms_units)
 BULK_SENDER = "sv.bulk"
 FLAG_COLS = (("is_bulk", "CASE WHEN f.mine THEN f.is_bulk ELSE {s}.is_bulk END"),
              ("owner_role", "CASE WHEN f.mine THEN f.owner_role ELSE {s}.owner_role END"),
@@ -716,7 +715,6 @@ FLAG_COLS = (("is_bulk", "CASE WHEN f.mine THEN f.is_bulk ELSE {s}.is_bulk END")
 UNIT = "u.unit"
 UNIT_JOIN = ("u.audience_key = {s}.audience_keys[1] AND u.marks = {s}.rec_marks AND "
              "cardinality({s}.audience_keys) = 1")
-AI_OK = "CASE WHEN {s}.ai_ok IS NOT FALSE AND a.handle IS NOT NULL THEN a.ok ELSE {s}.ai_ok END"
 
 
 def _senders(write: Any, table: str, where: str = "true") -> None:
@@ -756,48 +754,6 @@ def _finish(write: Any, table: str, where: str = "true") -> None:
 FLAG_BATCH = 2_000     # rows per bulk-rule batch (one envelope read per batch)
 FLAG_POOL_MIN = 20_000  # fewer rows than this: read in this process
 FLAG_WORKERS = 8
-
-
-def capture_db() -> Any:
-    """The mail capture the flags read (``PLX_STATE_DIR``, the host's state directory)."""
-    import os
-    from pathlib import Path
-    return Path(os.environ.get("PLX_STATE_DIR") or "/data/plx-state") / "mail-capture" \
-        / "capture.db"
-
-
-def mailbox_addresses(db: Any) -> dict[str, list[str]] | None:
-    """Per mailbox id (lower-case) every address of its owner (UPN and proxy addresses,
-    lower-case), read-only from the mail capture ``db``; None when it cannot be read (the
-    owner's place and replies are then unknown: null, never guessed)."""
-    import sqlite3
-    from pathlib import Path
-    if not Path(db).is_file():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30)
-    except sqlite3.Error:
-        return None
-    out: dict[str, set[str]] = {}
-    try:
-        for box, upn, identities in conn.execute(
-                "SELECT mailbox_id, upn, identities FROM mailboxes"):
-            try:
-                listed = json.loads(identities or "[]")
-            except (TypeError, ValueError):
-                listed = []
-            for a in [upn, *(listed if isinstance(listed, list) else [])]:
-                if not isinstance(a, str):
-                    continue
-                a = a.strip().lower()
-                a = a[5:] if a.startswith("smtp:") else a
-                if "@" in a and ":" not in a and box:
-                    out.setdefault(str(box).strip().lower(), set()).add(a)
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
-    return {k: sorted(v) for k, v in out.items()}
 
 
 def _bulk_batch(db: str, rows: Sequence[tuple[str, str, str, str]]
@@ -899,7 +855,8 @@ def _flags(write: Any, table: str, threads: str | None = None, *,
     build's readers commit theirs beside the stage). Returns what the flags were read from."""
     t = table if stage else f"{bv.SCHEMA}.{table}"
     db = capture_db()
-    boxes = mailbox_addresses(db)
+    # the capture's owners, else the ones a run kept; none: unknown (a required build stops)
+    boxes, owners = mail_owners.owners(write, db, build=stage)
     domains = sorted({a.rsplit("@", 1)[1] for v in (boxes or {}).values() for a in v})
     write.execute("DROP TABLE IF EXISTS pg_temp.cm_owner")
     write.execute("CREATE TEMP TABLE cm_owner (mailbox text PRIMARY KEY, addrs text[])")
@@ -994,7 +951,7 @@ def _flags(write: Any, table: str, threads: str | None = None, *,
             f"UPDATE {t} t SET "
             + ", ".join(f"{c} = {e.format(s='t')}" for c, e in FLAG_COLS)
             + " FROM cm_flag f WHERE f.oid = t.object_ids[1]")
-    return {"capture": boxes is not None, "mailboxes": len(boxes or {})}
+    return {"capture": owners == "capture", "owners": owners, "mailboxes": len(boxes or {})}
 
 
 def _internal_pattern(domains: Sequence[str]) -> str | None:
@@ -1042,19 +999,24 @@ def marks(write: Any) -> dict[str, int]:
 
 
 # The build stops (its transaction rolled back: ``<view>_next`` and the stage dropped,
-# the served table kept) when the database's disk would fall below this many GB free
-# (11-18: a build that rewrote its table ten times took /data down 1.7 GB a minute). 25:
-# above the host's own disk guard (20 GB), checked per chunk and before the table write
-# with its size; 45 was set while that build rewrote its table, and with /data at 44.6 GB
-# free it refused even the meetings tables (a few thousand rows) on every refresh, 11-18.
-MIN_FREE_GB_DEFAULT = 65.0   # above the 60 GB slot-guard line (``build_pause``)
+# the served table kept) when the database's disk would fall below the ONE disk floor
+# (``operating.disk_floor``: /data 40 GB, ``PLX_DISK_FLOOR_GB_DATA``) after the bytes the
+# step declares it needs (``need``: a whole build's write is its table's size; a refresh
+# chunk declares its own). 11-23: four floors (a 70 GB unit condition, 78 in the unit's
+# environment, 65 here, 75 for writes) skipped or failed every refresh while /data held
+# 69 GB with a 25 GB peak: the page said "data as of 12:15 PM" at 6 PM. ``PLX_BIZ_MIN_FREE_GB``
+# stays as an explicit override of this one number (tests set it to 0).
+MIN_FREE_GB_DEFAULT = None   # the shared floor, not a second one
 
 
 def _min_free_bytes() -> int:
     import os
     raw = os.environ.get("PLX_BIZ_MIN_FREE_GB", "").strip()
+    if not raw:
+        from operating.disk_floor import mount_floor_bytes
+        return mount_floor_bytes("/data")
     try:
-        gb = float(raw) if raw else MIN_FREE_GB_DEFAULT
+        gb = float(raw)
     except ValueError:
         raise RuntimeError(f"PLX_BIZ_MIN_FREE_GB must be a number of GB, not {raw!r}")
     if not gb >= 0:
@@ -1245,7 +1207,7 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         side.close()
     _read_rows(spec, write, table, int(got["ver"]), disk, _units(write), connect)
     write.execute("SET LOCAL search_path = ontology, public")
-    # the Freightcom text check reads, the flags and the write join the stage by these
+    # the flags and the write join the stage by these
     write.execute(f"CREATE INDEX ON {stage} (handle)")
     write.execute(f"CREATE INDEX ON {stage} (sn)")
     write.execute(f"ANALYZE {stage}")
@@ -1257,9 +1219,6 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
     write.execute(f"INSERT INTO {bv.SCHEMA}.comms_units (audience_key, marks) SELECT DISTINCT "
                   f"audience_keys[1], rec_marks FROM {stage} WHERE cardinality(audience_keys) "
                   "= 1 AND audience_keys[1] <> '' ON CONFLICT DO NOTHING")
-    if spec.text_in_fields:
-        _disk_guard(write, disk, "the Freightcom text check")
-        _ai_verdicts(write, stage, "true")
     got["people"] = people_stamp(write)
     if got["people"] is not None:   # the people set, deduplicated once (1.4M served)
         write.execute("DROP TABLE IF EXISTS pg_temp.cm_people")
@@ -1307,8 +1266,21 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         if any(c.name == col for c in bv.VIEWS[spec.view].cols):
             write.execute(f"CREATE INDEX ON {t} USING gin ({col})")
     write.execute(f"CREATE INDEX ON {t} USING gin (words)")
+    from operating.pg import comms_indexes
+    for method, key in comms_indexes.for_table(spec.view):
+        if "gin_trgm_ops" in key and not _trgm(write):
+            got.setdefault("indexes_skipped", []).append(f"{spec.view} ({key}): pg_trgm absent")
+            continue
+        write.execute(f"CREATE INDEX ON {t} USING {method} ({key})")
     write.execute(f"ANALYZE {t}")
     return got
+
+
+def _trgm(conn: Any) -> bool:
+    """The trigram operator class is installed (pg_trgm); a database without it builds the
+    other indexes (the search then reads without these, only slower)."""
+    return conn.execute("SELECT 1 FROM pg_opclass WHERE opcname = 'gin_trgm_ops'"
+                        ).fetchone() is not None
 
 
 def _compose(spec: Spec, stage: str, table: str, *, people: bool,
@@ -1328,9 +1300,6 @@ def _compose(spec: Spec, stage: str, table: str, *, people: bool,
         derived.update((c, e.format(s="s")) for c, e in FLAG_COLS)
         joins += ["LEFT JOIN cm_senders sv ON sv.sender = s.sender",
                   "LEFT JOIN cm_flag f ON f.sn = s.sn"]
-    if spec.text_in_fields:
-        derived["ai_ok"] = AI_OK.format(s="s")
-        joins.append("LEFT JOIN cm_ai a ON a.handle = s.handle")
     if people:   # in the set as it stands (deduplicated: one row per row)
         derived["excluded"] = "pe.object_id IS NOT NULL"
         joins.append("LEFT JOIN cm_people pe ON pe.object_id = s.object_ids[1]")
@@ -1460,8 +1429,6 @@ def _classify(write: Any, spec: Spec, table: str, where: str,
     write.execute(f"UPDATE {t} SET unit = {UNIT} FROM {bv.SCHEMA}.comms_units u WHERE "
                   f"{UNIT_JOIN.format(s=t)} AND ({where})")
     write.execute(f"UPDATE {t} SET words = {_words(spec)} WHERE ({where})")
-    if spec.text_in_fields:
-        _text_ai(write, t, where)
     if spec.participants:
         _participants(write, t, where)
     stamp = people_stamp(write)
@@ -1483,15 +1450,6 @@ def _classify(write: Any, spec: Spec, table: str, where: str,
 
 
 TEXT_BATCH = 5_000
-# A row whose message the source says has no body: its record has a current mail body
-# preview and none with a visible character (meeting accept/decline/update notices and
-# invitations with no text; 11-19: 49,775 of the 49,886 undecided live mails, withheld from
-# every model for good while waiting for text that never comes). No preview property, or a
-# preview with words but no text indexed yet, is not bodiless: it stays undecided.
-BODILESS_SQL = ("SELECT v.object_id FROM unnest(%s::text[]) AS o(oid) JOIN ontology.object_values "
-                "v ON v.object_id = o.oid AND v.property = 'body_preview' AND v.superseded_at "
-                "IS NULL GROUP BY v.object_id HAVING bool_and(v.value IS NOT NULL AND v.value "
-                "!~ '[^[:space:]]')")
 ACL_KIND = {"meeting-transcript": "meeting_participants"}
 
 
@@ -1569,155 +1527,6 @@ def _participants(write: Any, table: str, where: str) -> None:
             ([h for h, _ in part], [json.dumps(i) for _, i in part]))
 
 
-def _text_ai(write: Any, table: str, where: str) -> None:
-    """``ai_ok`` of the rows matching ``where`` (a refresh's, the nightly recheck's): the
-    verdicts of ``_ai_verdicts`` set on those rows only (the build joins them instead)."""
-    _ai_verdicts(write, table, where)
-    write.execute(f"UPDATE {table} t SET ai_ok = {AI_OK.format(s='t')} FROM cm_ai a WHERE "
-                  f"a.handle = t.handle AND t.ai_ok IS NOT FALSE AND ({where})")
-
-
-# the document text of (handle, object id) pairs, as the guarded open reads it: by the version
-# handle and the record (only committed ``ontology`` tables: a pool worker's own connection)
-TEXT_SQL = ("SELECT f.version_handle, f.field_id, c.start, c.body FROM unnest(%s::text[], "
-            "%s::text[]) AS t(handle, oid) JOIN ontology.text_fields f ON f.version_handle = "
-            "t.handle AND f.object_id = t.oid JOIN ontology.text_chunks c ON c.field_id = "
-            "f.field_id ORDER BY 1, 2, 3")
-_TEXT_CONN: list[Any] = []   # a pool worker's own connection (``_text_worker``)
-
-
-def _text_verdicts(conn: Any, pairs: Sequence[tuple[str, str]]) -> dict[str, bool]:
-    """Read the text of ``pairs`` and decide it (``_ai_batch``); the results freed as read."""
-    rows = [(h, f, st, bytes(body)) for h, f, st, body in conn.execute(
-        TEXT_SQL, ([h for h, _ in pairs], [o for _, o in pairs]))]
-    _collect(rows)
-    return _ai_batch(rows)
-
-
-def _text_worker(dsn: str, password: str | None, timeout: str) -> None:
-    """A pool worker's start: its own read-only connection to the build's database."""
-    import psycopg
-    conn = psycopg.connect(dsn, autocommit=True, **({"password": password} if password
-                                                   else {}))
-    conn.execute("SELECT set_config('statement_timeout', %s, false), set_config("
-                 "'default_transaction_read_only', 'on', false)", (timeout,))
-    _TEXT_CONN[:] = [conn]
-
-
-def _text_part(pairs: Sequence[tuple[str, str]]) -> dict[str, bool]:
-    return _text_verdicts(_TEXT_CONN[0], pairs)
-
-
-def _ai_verdicts(write: Any, table: str, where: str) -> None:
-    """``cm_ai`` (by handle): Freightcom in the document text of the rows matching ``where``
-    whose cells do not name it (``ai_ok`` not false; the mail body and the Teams message are
-    in no cell): its fields read back from their stored pieces (zlib, so in Python: this
-    database has no inflate) and checked by the shared rule, a page of rows at a time. A row
-    with no document text yet is undecided (``ai_ok`` NULL: withheld from the AI until its
-    text is indexed and read: the refresh after, or ``recheck``).
-
-    Memory is bounded, never the table's: this process pages the (handle, object id) pairs
-    (``TEXT_BATCH``, keyset by the handle index) and writes each page's verdicts as they
-    come; when there are many, the text is read, decompressed and checked in the pool's
-    workers, each over its own read-only connection (every core reads; this process never
-    holds a body). 11-18: the 3.3M served handles' text read through this process held
-    2-3x every byte (psycopg results freed only by the cyclic collector) and the emails
-    build was killed past its 8 GB, twice."""
-    import itertools
-    import os
-    write.execute("DROP TABLE IF EXISTS pg_temp.cm_ai")
-    write.execute("CREATE TEMP TABLE cm_ai (handle text PRIMARY KEY, ok boolean)")
-
-    def pages() -> Any:   # (handle, object id) pairs in handle order (keyset: no offset)
-        after: str | None = None
-        while True:
-            got = write.execute(
-                f"SELECT handle, array_agg(DISTINCT object_ids[1]) FROM {table} WHERE ai_ok "
-                f"IS NOT FALSE AND ({where}) AND handle IS NOT NULL"
-                + (" AND handle > %(after)s" if after is not None else "")
-                + " GROUP BY handle ORDER BY handle LIMIT %(n)s",
-                {"after": after, "n": TEXT_BATCH}).fetchall()
-            if not got:
-                return
-            pairs = [(h, o) for h, oids in got for o in oids if o is not None]
-            empty = {r[0] for r in write.execute(
-                BODILESS_SQL, ([o for _, o in pairs],)).fetchall()}
-            yield pairs, [(h, bool(oids) and all(o in empty for o in oids)) for h, oids in got]
-            if len(got) < TEXT_BATCH:
-                return
-            after = got[-1][0]
-
-    def put(handles: list[tuple[str, bool]], got: Mapping[str, bool]) -> None:
-        # every handle of the page gets a row: one with no text is undecided (NULL), unless
-        # the source says it has no body (``BODILESS_SQL``): then its cells decide it, and a
-        # row reaches here only when they do not name Freightcom (``ai_ok`` not false)
-        with write.cursor().copy("COPY cm_ai (handle, ok) FROM STDIN") as cp:
-            for h, bodiless in handles:
-                ok = got.get(h)
-                cp.write_row((h, True if ok is None and bodiless else ok))
-    # many or few: the first pages tell (at most FLAG_POOL_MIN handles held)
-    parts = pages()
-    head: list[Any] = []
-    held = 0
-    for part in parts:
-        head.append(part)
-        held += len(part[1])
-        if held >= FLAG_POOL_MIN:
-            break
-    todo = itertools.chain(head, parts)
-    if not head:
-        pass
-    elif held < FLAG_POOL_MIN:
-        for pairs, handles in todo:
-            put(handles, _text_verdicts(write, pairs))
-    else:
-        import concurrent.futures as cf
-        from ontology import parent_watch
-        workers = max(1, min(FLAG_WORKERS, os.cpu_count() or 1))
-        info = write.info
-        start = (info.dsn, getattr(info, "password", None),
-                 write.execute("SHOW statement_timeout").fetchone()[0])
-        with cf.ProcessPoolExecutor(workers, **parent_watch.pool_init(_text_worker, start)
-                                    ) as pool:
-            running: dict[Any, list[str]] = {}
-
-            def drain(done: Any) -> None:
-                for f in done:
-                    put(running.pop(f), f.result())
-            for pairs, handles in todo:
-                running[pool.submit(_text_part, pairs)] = handles
-                if len(running) >= 2 * workers:   # bounded pages in flight
-                    drain(cf.wait(list(running), return_when=cf.FIRST_COMPLETED)[0])
-            drain(list(cf.as_completed(list(running))))
-    write.execute("ANALYZE cm_ai")
-
-
-def _ai_batch(rows: Sequence[tuple[str, int, int, bytes]]) -> dict[str, bool]:
-    """Per handle whose document text is in ``rows`` (``(handle, field, start, zlib
-    piece)`` in field and start order): True when no field of it names Freightcom."""
-    import zlib
-    from integrations.image_ocr_gpu import FREIGHTCOM
-    texts: dict[str, dict[int, str]] = {}
-    for handle, field, start, body in rows:
-        fields = texts.setdefault(handle, {})
-        fields[field] = fields.get(field, "")[:start] + zlib.decompress(body).decode("utf-8")
-    return {h: not any(FREIGHTCOM.search(x) for x in f.values()) for h, f in texts.items()}
-
-
-def recheck(write: Any, view: str) -> dict[str, Any]:
-    """The nightly re-flag (one transaction): every row still undecided (``ai_ok`` NULL: its
-    body text was not indexed when it was read) has its text read again; what the refresh's
-    text mark did not bring (a text written under an older field) is decided here."""
-    spec = SPECS[view]
-    t = f"{bv.SCHEMA}.{view}"
-    with write.transaction():
-        before = write.execute(f"SELECT count(*) FROM {t} WHERE ai_ok IS NULL").fetchone()[0]
-        if spec.text_in_fields:
-            _text_ai(write, t, "ai_ok IS NULL")
-        after = write.execute(f"SELECT count(*) FROM {t} WHERE ai_ok IS NULL").fetchone()[0]
-    return {"view": view, "undecided_before": before, "undecided": after}
-
-
 # Whether the installed guarded comms views check PLX's own sales documents in the table
 # (``ontology.own_issued_documents``) themselves. A release's view definitions are applied by
 # ``sql_views.install``, not by the deploy: until then the live views read only
@@ -1774,15 +1583,12 @@ def _literal_text(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
-    """``CREATE VIEW`` of a communications table's guarded view (door v2): the row's unit
-    among the units the reader holds (``comms_units`` whose audience key and record marks
-    the reader holds, one array per statement), Freightcom decided at build (``ai_ok``),
-    the people flag of the set's current stamp and a version the set has decided (a set
-    updated since the flags: its objects are read once per statement until the refresh
-    flags them), no hidden id; Teams also the reader's visible chat history. ``ai`` False:
-    a person's own view (``sql_views.person_schema``), the same rule without ``ai_ok``
-    (Freightcom is kept from the AI only; a person may read it)."""
+def _where(v: Any, src: str, dst: str, *, ai: bool, a: str = "t", base: bool = False
+           ) -> tuple[list[str], str]:
+    """The conditions of a communications view over the row alias ``a`` (the first is the unit
+    clause: the mailbox / chat scope), and the join it needs. One definition: ``view_ddl`` and
+    ``hidden_ddl`` both read it."""
+
     from operating.pg.sql_views import SETTINGS, _setting
     spec = SPECS.get(v.name)
     aud, marks = _setting("plx.reader_audience"), _setting("plx.reader_marks")
@@ -1798,22 +1604,22 @@ def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
     # the reader's own withheld documents (the setting: empty for a full reader) and PLX's own
     # sales documents held as a supplier's (every reader: read from their table by its key,
     # not sent as a 10 MB list with every statement, 11-22)
-    hidden = ("t.object_ids[1] NOT IN (SELECT json_array_elements_text(current_setting("
+    hidden = (f"{a}.object_ids[1] NOT IN (SELECT json_array_elements_text(current_setting("
               "'plx.reader_hidden', true)::json)) AND NOT EXISTS (SELECT 1 FROM "
-              "ontology.own_issued_documents oi WHERE oi.object_id = t.object_ids[1])")
-    # Freightcom: decided on the text; a files row with no text yet, on its cells
-    fc = ("(t.ai_ok OR (t.ai_ok IS NULL AND t.cells_ok))" if spec is not None
-          and spec.cells_ok else "t.ai_ok")
+              f"ontology.own_issued_documents oi WHERE oi.object_id = {a}.object_ids[1])")
+    # ``ai_ok`` is false for no row any more (Freightcom is read like any other data);
+    # the predicate stays so the AI's views and the person's keep their one layout
+    fc = f"{a}.ai_ok IS NOT FALSE"
     # the people set: the owner's alone (The owner's audience
     # holds ``OWNER_KEY``, no other reader's does); for every other reader a row of the set
     # is out, and so is one the set has not decided yet (fail closed)
     from operating.pg.access_classes import OWNER_KEY
     owner = f"(SELECT {_literal_text(OWNER_KEY)} = ANY({aud}))"
-    people = (f"(t.excluded IS FALSE AND t.ver <= {covered} AND (coalesce({current}, false) "
+    people = (f"({a}.excluded IS FALSE AND {a}.ver <= {covered} AND (coalesce({current}, false) "
               "OR NOT EXISTS (SELECT 1 FROM ontology.people_excluded_objects peo WHERE "
-              "peo.object_id = t.object_ids[1])))")
-    where = [f"t.unit = ANY({units})", *([fc] if ai else []), f"({owner} OR {people})",
-             "t.handle IS NOT NULL", hidden,
+              f"peo.object_id = {a}.object_ids[1])))")
+    where = [f"{a}.unit = ANY({units})", *([fc] if ai else []), f"({owner} OR {people})",
+             f"{a}.handle IS NOT NULL", hidden,
              # each setting checked once per statement (an InitPlan): bare, the check ran on
              # every rescan of the view, copying the setting each time (the hidden ids are
              # megabytes for a full reader: ~3 ms per row of a lateral lookup)
@@ -1824,8 +1630,15 @@ def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
         # attachment is its message's plus ``#attachment=...``, so the message's own guarded
         # row (its unit and marks, hidden id, people exclusion and Freightcom decision, as
         # this reader reads them) must be there too, never the attachment's own rule alone
-        where.append(f"EXISTS (SELECT 1 FROM {dst}.emails pm WHERE pm.handle = "
-                     "split_part(t.handle, '#attachment=', 1))")
+        if base:
+            from operating.pg import business_views as _bv
+            rest_pm = _where(_bv.VIEWS["emails"], src, dst, ai=ai, a="pm", base=True)[0][1:]
+            where.append(f"EXISTS (SELECT 1 FROM {src}.emails pm WHERE pm.handle = "
+                         f"split_part({a}.handle, '#attachment=', 1) AND "
+                         + " AND ".join(rest_pm) + ")")
+        else:
+            where.append(f"EXISTS (SELECT 1 FROM {dst}.emails pm WHERE pm.handle = "
+                         f"split_part({a}.handle, '#attachment=', 1))")
     if spec is None or spec.scope not in ("audience", "teams", "participants", "files"):
         where.append("false")   # an unknown rule: nothing (fail closed)
     elif spec.scope == "files":
@@ -1836,18 +1649,52 @@ def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
         # the item rule: a full reader, or one of the reader's identities a participant;
         # an unset or malformed setting reads as neither (fail closed)
         me = "nullif(current_setting('plx.reader_self', true), '')::jsonb"
-        where.append(f"(coalesce(({me}->>'full') = 'true', false) OR t.participants && "
+        where.append(f"(coalesce(({me}->>'full') = 'true', false) OR {a}.participants && "
                      f"ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof({me}->"
                      "'ids') = 'array' THEN " + me + "->'ids' ELSE '[]'::jsonb END)))")
+    elif spec.scope == "teams" and base:
+        pass     # a chat's visible-history window is not the scope: not part of a hidden count
     elif spec.scope == "teams":
         join = (" JOIN (SELECT u.unit, e.value::timestamptz AS vf FROM jsonb_each_text("
                 "current_setting('plx.reader_teams', true)::jsonb) e JOIN "
-                f"{src}.comms_units u ON u.audience_key = e.key) w ON w.unit = t.unit")
-        where.append(f"(w.vf = '-infinity' OR t.{spec.when} >= w.vf)")
+                f"{src}.comms_units u ON u.audience_key = e.key) w ON w.unit = {a}.unit")
+        where.append(f"(w.vf = '-infinity' OR {a}.{spec.when} >= w.vf)")
+    return where, join
+
+
+def view_ddl(v: Any, src: str, dst: str, *, ai: bool = True) -> str:
+    """``CREATE VIEW`` of a communications table's guarded view (door v2): the row's unit
+    among the units the reader holds (``comms_units`` whose audience key and record marks
+    the reader holds, one array per statement), Freightcom decided at build (``ai_ok``),
+    the people flag of the set's current stamp and a version the set has decided (a set
+    updated since the flags: its objects are read once per statement until the refresh
+    flags them), no hidden id; Teams also the reader's visible chat history. ``ai`` False:
+    a person's own view (``sql_views.person_schema``), the same rule without ``ai_ok``
+    (Freightcom is kept from the AI only; a person may read it)."""
+    where, join = _where(v, src, dst, ai=ai)
     shown = ", ".join(f't."{c.name}"' for c in v.cols)
     return (f"CREATE VIEW {dst}.{v.name} WITH (security_barrier) AS SELECT {shown}, t.handle, "
             "t.systems, t.copies, '{}'::text[] AS withheld FROM "
             f"{src}.{v.name} t{join} WHERE " + " AND ".join(where))
+
+
+def hidden_ddl(src: str, person: str, views: Sequence[Any]) -> str:
+    """The COUNT-ONLY view ``person.record_comms_hidden`` (``record_id``, ``comm_view``, ``n``): the
+    messages ``record_comms`` names on a record that the reader's own scope holds back, from the
+    SAME conditions as the guarded ``person.<view>`` (``_where``): the rows failing the unit clause
+    (the mailbox or chat the reader does not hold) and passing every other clause (the people set, the
+    covered version, hidden documents, own-issued, settings present). A partner's or excluded person's
+    message fails the people clause, so it is never counted for a reader who may not read it, and the
+    owner (whose scope holds every unit) counts 0. A number and nothing else."""
+    parts = []
+    for v in views:
+        where, _ = _where(v, src, person, ai=False, base=True)
+        parts.append(f"SELECT rc.record_id, rc.comm_view FROM {src}.record_comms rc JOIN "
+                     f"{src}.{v.name} t ON t.handle = rc.comm_handle WHERE rc.comm_view = "
+                     f"'{v.name}' AND NOT ({where[0]}) AND " + " AND ".join(where[1:]))
+    return (f"CREATE VIEW {person}.record_comms_hidden WITH (security_barrier) AS SELECT "
+            "record_id, comm_view, count(*)::bigint AS n FROM (" + " UNION ALL ".join(parts)
+            + ") x GROUP BY record_id, comm_view")
 
 
 # --------------------------------------------------------------------------- reader scope
@@ -1989,41 +1836,3 @@ def _keep_windows(kept: tuple, out: Mapping[str, str]) -> None:
         while len(_WINDOWS_ORDER) > WINDOWS_KEPT:
             _WINDOWS.pop(_WINDOWS_ORDER.pop(0), None)
 
-
-def recheck_all(dsn: str) -> list[dict[str, Any]]:
-    """The nightly re-flag of every built communications table (``recheck``), under the
-    business views' refresh lock (never beside a refresh: that run is skipped and says
-    so); a table not built yet is skipped."""
-    import psycopg
-    with psycopg.connect(dsn, autocommit=True) as pg:
-        if not pg.execute("SELECT pg_try_advisory_lock(%s)", (bv.REFRESH_LOCK,)).fetchone()[0]:
-            return [{"skipped": "a business views refresh is running"}]
-        try:
-            out = []
-            for view in sorted(SPECS):
-                if pg.execute("SELECT to_regclass(%s)", (f"{bv.SCHEMA}.{view}",)
-                              ).fetchone()[0] is None:
-                    out.append({"view": view, "skipped": "not built"})
-                    continue
-                out.append(recheck(pg, view))
-            return out
-        finally:
-            pg.execute("SELECT pg_advisory_unlock(%s)", (bv.REFRESH_LOCK,))
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    import argparse
-    ap = argparse.ArgumentParser(prog="business_comms")
-    ap.add_argument("command", choices=("recheck",))
-    ap.add_argument("--dsn")
-    args = ap.parse_args(argv)
-    from operating.pg import config
-    for got in recheck_all(args.dsn or config.dsn()):
-        print(json.dumps(got, default=str))
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-    from operating.pg import business_comms as _package   # the one SPECS / VIEWS
-    sys.exit(_package.main())

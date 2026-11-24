@@ -18,13 +18,13 @@ from typing import Any, Mapping, Optional
 # ``unit:<name>``, user scope ``unit:user:<name>``: both are matched); a detector check always.
 # The reason is fixed words, never the alarm's own text (unit names, hours, paths).
 FEEDS: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    "reply_drafts": ("Reply drafts", "Reply drafts are switched off.",
+    "reply_drafts": ("Reply drafts", "Reply drafts have stopped.",
                      ("plx-reply-drafts.timer",)),
-    "autopilot": ("Autopilot entries", "The autopilot's feed is switched off.",
+    "autopilot": ("Autopilot entries", "The autopilot's feed has stopped.",
                   ("plx-autopilot-fast.timer", "plx-autopilot-follow.timer",
                    "plx-autopilot-fast-serve.service")),
-    "comms_findings": ("Findings from mail and Teams", "Findings from mail and Teams are "
-                       "switched off.", ("plx-comms-findings.timer",)),
+    "comms_findings": ("Findings from mail and Teams", "Findings from mail and Teams have "
+                       "stopped.", ("plx-assist-readings.timer",)),
     "late_pos": ("Late purchase orders and alerts", "The late-order and alert checks are "
                  "behind.", ("check:proactive_last_pass", "check:proactive_detectors",
                              "check:delta_last_cycle")),
@@ -33,6 +33,23 @@ FEEDS: dict[str, tuple[str, str, tuple[str, ...]]] = {
 SCOPE_CHECKS = ("units:system", "units:user")
 # a check in any other state than these is not a reading (skipped, not found, unread)
 READ = frozenset({"ok", "breach"})
+
+
+def _stopped_since(checks: list, checked_at: Any) -> str:
+    """When a stopped unit last ran, to the minute: the pass's time minus the hours the check
+    measured (unit ``h``). Empty when the check carries no hours, so no time is invented."""
+    from datetime import datetime, timedelta, timezone
+    hours = [float(c["value"]) for c in checks
+             if c.get("unit") == "h" and isinstance(c.get("value"), (int, float))
+             and not isinstance(c.get("value"), bool)]
+    try:
+        at = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if not hours or at.tzinfo is None:
+        return ""
+    last = (at - timedelta(hours=max(hours))).astimezone(timezone.utc)
+    return last.replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def build(state_dir: Any) -> dict[str, Any]:
@@ -46,6 +63,7 @@ def build(state_dir: Any) -> dict[str, Any]:
     feeds = []
     for key, (label, reason, names) in FEEDS.items():
         state = "running"
+        since = ""
         if not fresh:
             state = "unknown"
         else:
@@ -64,10 +82,11 @@ def build(state_dir: Any) -> dict[str, Any]:
                     continue
                 if any(c.get("state") == "breach" for c in found):
                     state = "not_running"
+                    since = _stopped_since(found, status.get("checked_at"))
                     break
                 if any(c.get("state") not in READ for c in found):
                     state = "unknown"
                     break
         feeds.append({"key": key, "label": label, "state": state,
-                      "why": reason if state == "not_running" else ""})
+                      "why": reason if state == "not_running" else "", "since": since})
     return {"checked_at": status.get("checked_at"), "feeds": feeds}

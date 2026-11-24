@@ -8,15 +8,29 @@
 # store only; writes only schema biz. Does nothing before migration 0041 (skipped); one run
 # at a time (advisory lock); skipped in a migration window (window_lock). Started by
 # plx-business-views.timer. Each successful run starts plx-alerts.service (the alert rules over
-# the views just built) and plx-comms-findings.service (what mail and Teams messages record).
+# the views just built), plx-assist-readings.service (one reading per mail and Teams message) and
+# plx-comms-indexes.service (the search indexes of the communications tables, CONCURRENTLY) and
+# plx-daily-changes.service (what each system changed per day).
 [Unit]
 Description=PLX business views refresh (one run)
 After=postgresql.service
 OnSuccess=plx-alerts.service
-OnSuccess=plx-comms-findings.service
+OnSuccess=plx-assist-readings.service
+OnSuccess=plx-comms-indexes.service
+OnSuccess=plx-daily-changes.service
 
 [Service]
-Type=oneshot
+# notify (speed specs P2): READY once the run holds its advisory lock; then every 30 s the run
+# pings the watchdog only when it moved (one of its sessions started or finished a statement, or
+# a view finished: operating/pg/view_state.py Heartbeat); no progress for WatchdogSec stops it
+# (SIGTERM: the view in progress drops its _next tables) instead of a hung run holding the lock
+# for hours. A view that fails never stops the others: it is recorded in biz.view_state (reason,
+# class, a hold after the same failure twice, an ops alarm) and the run ends 0, so the alerts and
+# findings follow; it exits 1 only when every view it tried failed.
+Type=notify
+NotifyAccess=all
+WatchdogSec=600
+WatchdogSignal=SIGTERM
 User=@PLX_USER@
 Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
@@ -47,7 +61,8 @@ MemoryMax=12G
 # business view commits on its own and a stopped run loses only the view in progress (SIGTERM
 # drops its _next tables; the next run builds what is still missing first). Later runs rebuild
 # only the business views whose inputs moved or whose day changed, and update the comms tables
-# in place: minutes, not hours.
-TimeoutStartSec=3h
+# in place: minutes, not hours. (READY comes at the start, so the 3 h bound is RuntimeMaxSec.)
+TimeoutStartSec=45min
+RuntimeMaxSec=3h
 TimeoutStopSec=5min
 UMask=0077

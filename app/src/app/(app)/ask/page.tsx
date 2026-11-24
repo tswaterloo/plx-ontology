@@ -17,6 +17,7 @@ import { ago, formatDateTime } from "@/lib/format";
 import { takePending } from "@/lib/pending";
 import { askUrlKey, conversationOf, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
+import { FINAL_ERRORS, plainError } from "@/lib/errors";
 import type { Answer, RecentQuestion } from "@/lib/types";
 
 /** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
@@ -114,13 +115,13 @@ function Ask() {
   const resumeId = params.get("c");
   const resumed = useRef<string | null>(null);
   // a conversation that could not be opened says so, with a way to try again (never a blank page)
-  const [resumeFailed, setResumeFailed] = useState(false);
+  const [resumeFailed, setResumeFailed] = useState<string | null>(null);
   const [resumeTry, setResumeTry] = useState(0);
   useEffect(() => {
     const key = `${resumeId}#${resumeTry}`;
     if (!resumeId || q || resumed.current === key) return;
     resumed.current = key;
-    setResumeFailed(false);
+    setResumeFailed(null);
     const c = new AbortController();
     let settled = false;
     getWorkThread(`ask:${resumeId}`, c.signal)
@@ -128,8 +129,9 @@ function Ask() {
         settled = true;
       })
       .then((t) => seed((t.resume.turns ?? []).map((x) => ({ question: x.question, answer: (x.answer ?? null) as unknown as Answer | null, withheld: x.withheld }))))
-      .catch(() => {
-        if (!c.signal.aborted) setResumeFailed(true);
+      .catch((err) => {
+        // say why (gone, not yours, the server failed), never only "couldn't be opened"
+        if (!c.signal.aborted) setResumeFailed(plainError(err));
       });
     return () => {
       c.abort();
@@ -200,7 +202,7 @@ function Ask() {
               <div className={cn(FRAME, "flex min-h-full max-w-[920px] flex-col justify-center pt-6 pb-[max(48px,8vh)]")}>
                 <h1 className="sr-only">Ask</h1>
                 {resumeFailed && resumeId && !q && (
-                  <ErrorNotice className="mb-6" message="This conversation couldn't be opened just now." onRetry={() => setResumeTry((n) => n + 1)} />
+                  <ErrorNotice className="mb-6" message={`This conversation couldn't be opened. ${resumeFailed}`} onRetry={FINAL_ERRORS.has(resumeFailed) ? undefined : () => setResumeTry((n) => n + 1)} />
                 )}
                 <PageIntro path="/ask" className="mb-3 px-0 pt-0 lg:px-0" />
                 {composer}

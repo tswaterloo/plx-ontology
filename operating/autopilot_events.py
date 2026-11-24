@@ -11,6 +11,7 @@ import sqlite3
 from typing import Any, Iterable, Mapping, Sequence
 
 from .autopilot_records import (
+    shown,
     _addresses,
     _digest,
     _instant,
@@ -201,7 +202,9 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
                 outbound.append({
                     "owner": mailbox, "conversation": _v(row, "conversation_id"),
                     "message_id": _v(row, "internet_message_id") or oid, "to": to,
-                    "at": _v(row, "sent_at") or _v(row, "received_at"),
+                    "at": _v(row, "sent_at") or _v(row, "received_at"), "object_id": oid,
+                    # what ``autopilot_waits`` keeps of a mail that may wait on an answer
+                    "subject": _v(row, "subject"), "text": pt._own(_v(row, "body_preview")),
                     **routine_note(_v(row, "subject"), _v(row, "body_preview"), sender, to,
                                    mine, domains, oid)})
             continue
@@ -231,7 +234,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             "channel": "mail", "at": at, "mailbox": mailbox, "audience": aud,
             "sender": sender, "to": to, "cc": cc, "to_me": bool(mine & set(to)),
             "named_me": named_in(text, mine),
-            "subject": subject[:200], "text": text[:TEXT_CHARS],
+            "subject": subject[:200], "text": shown(text, TEXT_CHARS),
             "conversation_id": _v(row, "conversation_id"), "message_id": message_id,
             "intents": intents_of(subject, text), "side": side, "records": records[:MAX_RECORDS],
             # the cheap rules' certain asks; a mail put to the reader that they find none
@@ -391,7 +394,7 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                 "sender": sender, **({"sender_name": sender_name} if sender_name else {}),
                 "to": [owner], "cc": [], "to_me": owner in owners,
                 **({} if owner in owners else {"unaddressed": True}), "subject": "",
-                "text": text[:TEXT_CHARS], "conversation_id": conversation, "message_id": oid,
+                "text": shown(text, TEXT_CHARS), "conversation_id": conversation, "message_id": oid,
                 "intents": intents_of("", text), "side": "internal", "outside": outside,
                 "records": records[:MAX_RECORDS], "group": group, "cleared": cleared,
                 # a message whose text is not read yet (the store's text index

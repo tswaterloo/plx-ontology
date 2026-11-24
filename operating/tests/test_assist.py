@@ -287,43 +287,21 @@ class WhoElseTests(unittest.TestCase):
 
 
 class AnswersTests(unittest.TestCase):
-    def test_the_agent_answers_whatever_the_fast_path_left(self):
+    def test_the_agent_answers_each_record_and_a_record_it_settles_none_of_is_said(self):
         it = assist.parse("email Pat: PO8741 and OR1000120001")
         ran = []
 
-        def fast(q):
-            return ("PO8741 is open.", None) if "PO8741" in q else ("", "none")
-
         def agent(q):
             ran.append(q)
-            return ""
-        answers, settled = assist.answers_for(it, fast, agent)
-        self.assertEqual(ran, ["status of OR1000120001"])
-        self.assertEqual(settled, ["fast", "none"])
-        self.assertEqual([a["found"] for a in answers], [None, "none"])
+            return "PO8741 is open." if "PO8741" in q else ""
+        answers, settled = assist.answers_for(it, agent)
+        self.assertEqual(ran, ["status of PO8741", "status of OR1000120001"])
+        self.assertEqual(settled, ["agent", "none"])
         made = assist.draft(it, assist.Recipients(to=["pat@plx.test"]), answers)
-        self.assertEqual([c["outcome"] for c in made["checks"]], ["fact", "not_found"])
-
-
-    def test_a_topic_the_agent_answers_is_asked_as_worded(self):
-        """A line whose topic is a question the fast path no longer answers (shipped, on
-        hand, balance due, a PO's status: ``fast_answer.ROUTED_TO_AGENT``) asks the agent
-        that fact, not the record's status, and the fast path settles none of it."""
-        from operating import fast_answer
-        it = assist.parse("email Acme: when did SO-1234 ship")
-        self.assertFalse(fast_answer.serves(it.topic))
-        self.assertEqual(assist.questions(it), ["when did SO-1234 ship"])
-        ran = []
-
-        def agent(q):
-            ran.append(q)
-            return "SO-1234 shipped on 2026-11-02."
-        answers, settled = assist.answers_for(it, lambda q: ("", None), agent)
-        self.assertEqual((ran, settled), (["when did SO-1234 ship"], ["agent"]))
-        self.assertEqual(answers[0]["facts"][0]["text"], "SO-1234 shipped on 2026-11-02.")
-        # an unknown topic still asks each record's status
-        self.assertEqual(assist.questions(assist.parse("email Acme: SO-1234 thanks")),
-                         ["status of SO-1234"])
+        # nothing read shows the second record absent: unsettled, never "not found"
+        self.assertEqual([c["outcome"] for c in made["checks"]], ["fact", "unsettled"])
+        # no agent (out of budget): nothing settled, nothing made up
+        self.assertEqual(assist.answers_for(it)[1], ["none", "none"])
 
 
 class RecordChecksTests(unittest.TestCase):

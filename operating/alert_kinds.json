@@ -48,6 +48,11 @@
    "surface": "alert"
   },
   {
+   "kind": "customer_order_slower",
+   "label": "Customer order slower than usual",
+   "surface": "alert"
+  },
+  {
    "kind": "shortage",
    "label": "Shortage",
    "surface": "alert"
@@ -319,11 +324,26 @@
    "type": "customer_order_late",
    "kind": "customer_order_late",
    "label": "Customer order past its required date",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "ACCTMGMT",
+    "SALES",
+    "OPS"
+   ],
+   "unmeasured": "not measurable yet: redefined 2026-11-23 as the measure late_orders (open, past its required date, of record); page_truth checks its count against the measure, no hand-checked sample yet"
+  },
+  {
+   "type": "customer_order_slower_than_usual",
+   "kind": "customer_order_slower",
+   "label": "Customer order later than this customer's orders usually are",
    "precision": {
     "value": 0.21,
     "checked": 59,
     "on": "2026-11-08",
-    "source": "capability-audit.md:17,105: proven correct 21% after correct-1",
+    "source": "capability-audit.md:17,105: proven correct 21% after correct-1 (measured on this rule when it was still called customer_order_late)",
     "note": "off until migration-2 applies SalesOrder.erp_order and a re-check reaches 90%"
    },
    "actionable": true,
@@ -337,7 +357,7 @@
   },
   {
    "type": "customer_order_open_long",
-   "kind": "customer_order_late",
+   "kind": "customer_order_slower",
    "label": "Customer order open longer than usual (no promised date)",
    "precision": null,
    "actionable": true,

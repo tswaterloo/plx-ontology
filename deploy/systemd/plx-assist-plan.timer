@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Assist plan tier 5 minutes after the last run ended
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

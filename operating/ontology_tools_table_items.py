@@ -23,14 +23,10 @@ functions:
   distinct strings the rows naming an undecided one are ``withheld`` (the answer partial);
 * Bcc is not projected: a message that may carry one (any sender but an external address;
   Graph keeps Bcc on the sender's copy only) is looked up in the capture by its handle (the
-  gate's latest version), its Bcc decided as To/Cc, its whole record checked for Freightcom;
+  gate's latest version), its Bcc decided as To/Cc;
   past ``BCC_MAX`` such messages, or past the time a bounded call leaves its second
   pass, the rest are ``withheld``. A handle the capture does not
-  hold is not there (the gate reads nothing for it either). A message
-  any projected value of which names Freightcom (``image_ocr_gpu.FREIGHTCOM``, the OCR
-  refusal's own pattern), or whose captured record does (``touches_freightcom``, read for
-  the messages looked up above), is never in a group or row: it is counted ``withheld``.
-
+  hold is not there (the gate reads nothing for it either);
 Attachments, the types derived from mail, SharePoint, Teams channels and files stay
 refused: their permissions (carried-mail verdicts, item ACLs) are not held in Postgres."""
 
@@ -66,13 +62,6 @@ def _sqlite_fold(value: str) -> str:
 
 
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-
-
-def freightcom_match(expr: str, q: Any) -> str:
-    """SQL true when the text ``expr`` names Freightcom: the one rule
-    (``integrations.freightcom_rule``), in SQL."""
-    from integrations.freightcom_rule import sql_match
-    return sql_match(expr, q.bind)
 
 
 class MailRules:
@@ -200,7 +189,6 @@ class MailRules:
         self._decide_bcc(handles, until)
 
     def _decide_bcc(self, handles: list[str], until: float | None = None) -> None:
-        from integrations.image_ocr_gpu import touches_freightcom
         from operating.excluded_people import strings
         wanted = [h for h in handles if h not in self.bcc_ok and h not in self.bcc_deny]
         if not wanted:
@@ -229,20 +217,11 @@ class MailRules:
             if not isinstance(rec, Mapping):
                 self.bcc_deny.add(handle)   # not held (or unreadable): the gate serves nothing
                 continue
-            if touches_freightcom(rec):
-                self.freightcom.add(handle)
             bcc = [s for s in strings(rec.get("bcc")) if isinstance(s, str)]
             if any(self.category(s) == DENY for s in bcc):
                 self.bcc_deny.add(handle)
             else:
                 self.bcc_ok.add(handle)
-
-    @property
-    def freightcom(self) -> set[str]:
-        got = getattr(self, "_freightcom", None)
-        if got is None:
-            got = self._freightcom = set()
-        return got
 
     def by_category(self, category: str) -> list[str]:
         return sorted(raw for raw, cat in self.decided.items() if cat == category)
@@ -253,8 +232,7 @@ class MailRules:
         """A lateral join ``ml`` over the record's projected sender and To/Cc: ``deny``
         (the gate serves it to nobody: an undecided address, a participant not cleared,
         no sender identity), ``pend`` (the strings not decided yet), ``bad`` (a list that
-        is no JSON array of strings: never decided here), ``mb`` (it may carry a Bcc) and
-        ``fc`` (a projected value names Freightcom)."""
+        is no JSON array of strings: never decided here), and ``mb`` (it may carry a Bcc)."""
         und = q.bind(self.undecided)
         box_all, box_ok = q.bind(self.box_all), q.bind(self.box_ok)
         doms = q.bind(self.domains)
@@ -299,7 +277,6 @@ class MailRules:
                  f"AND NOT {array}")
         parts = (f"SELECT 'from'::text AS role, c.value AS s, c.value IS NULL AS bad {src} "
                  f"WHERE {own} AND {sender} UNION ALL {lists}")
-        cells = f"{src} WHERE {own}"
         return (
             "LEFT JOIN LATERAL (SELECT "
             "COALESCE(bool_or(t.cat = 'deny'), false) "
@@ -307,8 +284,7 @@ class MailRules:
             "OR COALESCE(count(*) FILTER (WHERE t.role = 'from'), 0) <> 1 AS deny, "
             "COALESCE(array_agg(DISTINCT t.s) FILTER (WHERE t.cat = 'pend'), '{}') AS pend, "
             "COALESCE(bool_or(t.bad), false) AS bad, "
-            "NOT COALESCE(bool_or(t.role = 'from' AND t.ext), false) AS mb, "
-            f"EXISTS (SELECT 1 {cells} AND {freightcom_match('c.value', q)}) AS fc "
+            "NOT COALESCE(bool_or(t.role = 'from' AND t.ext), false) AS mb "
             f"FROM (SELECT p.role, p.s, p.bad, CASE WHEN p.s IS NULL THEN 'ignore' ELSE {cat} "
             f"END AS cat, COALESCE({external}, false) AS ext FROM ({parts}) p) t) ml ON true")
 
@@ -318,10 +294,9 @@ class MailRules:
                 "::text[])))")
 
     def ok_sql(self, q: Any, handle: str = "r._h") -> str:
-        """True for a kept record every rule decided served and that names no Freightcom:
-        any other is counted ``withheld``."""
-        return (f"(cardinality(r._mpend) = 0 AND NOT r._mbad AND NOT r._mfc AND NOT ("
-                f"{handle} = ANY({q.bind(sorted(self.freightcom))}::text[])) AND "
+        """True for a kept record every rule decided served: any other is counted
+        ``withheld``."""
+        return (f"(cardinality(r._mpend) = 0 AND NOT r._mbad AND "
                 f"(NOT r._mmb OR {handle} = ANY({q.bind(sorted(self.bcc_ok))}::text[])))")
 
     def gaps(self) -> list[str]:
@@ -339,8 +314,8 @@ class MailRules:
     # ------------------------------------------------------------------ the table's hooks
 
     scheme = MAIL_SCHEME
-    columns = ", ml.pend AS _mpend, ml.bad AS _mbad, ml.mb AS _mmb, ml.fc AS _mfc"
-    withheld_note = ("one whose data the owner's egress rule keeps from any model, or one "
+    columns = ", ml.pend AS _mpend, ml.bad AS _mbad, ml.mb AS _mmb"
+    withheld_note = ("one "
                      "whose participants or Bcc could not be decided in this call")
 
     def audience_sql(self, alias: str, q: Any) -> str:
@@ -384,17 +359,12 @@ class TeamsRules:
       is decided by that function and bound for the second pass. A message the gate
       refuses is not there (never counted, never withheld); one not decided (past the cap,
       or past the time the call leaves its second pass) is ``withheld``;
-    * Freightcom: a message any projected value of which names Freightcom
-      (``image_ocr_gpu.FREIGHTCOM``), or whose captured record does
-      (``touches_freightcom``), is never in a group or row: it is counted ``withheld``.
-
     Raises ``ToolError`` when the gate's parts are not there (no runtime, no live audience,
     no Teams capture) or the people guard is not usable: nothing is counted from Teams."""
 
     scheme = TEAMS_SCHEME
-    columns = ", ml.fc AS _mfc"
-    withheld_note = ("one whose data the owner's egress rule keeps from any model, or one "
-                     "this call could not decide")
+    columns = ""
+    withheld_note = "one this call could not decide"
 
     def __init__(self, base: Any, actor: Any) -> None:
         runtime = getattr(getattr(base, "item_gate", None), "runtime", None)
@@ -417,13 +387,11 @@ class TeamsRules:
         self.keys = sorted(runtime.teams_chat_units(actor))
         self.ok: set[str] = set()
         self.deny: set[str] = set()
-        self.freightcom: set[str] = set()
         self.capped = False
 
     def learn(self, probe: Mapping[str, Any], until: float | None = None) -> None:
         """Decide the handles a first pass returned (``probe['teams']``) with the gate's
         function; those not decided by ``until`` stay undecided (withheld)."""
-        from integrations.image_ocr_gpu import touches_freightcom
         handles = [h for h in probe.get("teams") or () if isinstance(h, str)
                    and h not in self.ok and h not in self.deny]
         if len(handles) > TEAMS_MAX:
@@ -440,8 +408,6 @@ class TeamsRules:
                 self.deny.add(handle)
                 continue
             self.ok.add(handle)
-            if touches_freightcom(result):
-                self.freightcom.add(handle)
 
     @staticmethod
     def needs_second(got: Mapping[str, Any]) -> bool:
@@ -451,19 +417,16 @@ class TeamsRules:
         return f"{alias}.audience_key = ANY({q.bind(self.keys)}::text[])"
 
     def join(self, q: Any, ver: str = "v.ver") -> str:
-        """A lateral join ``ml``: ``fc``, whether a projected value names Freightcom."""
-        return ("LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM value_sources s JOIN "
-                f"value_cells c ON c.src = s.src WHERE s.ver = {ver} AND s.superseded_at "
-                f"IS NULL AND {freightcom_match('c.value', q)}) AS fc) ml ON true")
+        """Teams messages need no lateral join."""
+        return ""
 
     def deny_sql(self, q: Any, handle: str = "v.l1_handle") -> str:
         """True for a message the gate refuses this reader (not there)."""
         return f"({handle} = ANY({q.bind(sorted(self.deny))}::text[]))"
 
     def ok_sql(self, q: Any, handle: str = "r._h") -> str:
-        """True for a kept message the gate serves and that names no Freightcom."""
-        return (f"(NOT r._mfc AND {handle} = ANY({q.bind(sorted(self.ok - self.freightcom))}"
-                "::text[]))")
+        """True for a kept message the gate serves."""
+        return f"({handle} = ANY({q.bind(sorted(self.ok))}::text[]))"
 
     def extras_sql(self, matched: str, q: Any) -> str:
         """The matching messages not decided yet, and how many the rules withheld."""
@@ -492,4 +455,4 @@ def item_rules(family: str, base: Any, actor: Any) -> Any:
 
 
 __all__ = ["MAIL_TYPES", "TEAMS_TYPES", "MailRules", "TeamsRules", "item_family",
-           "item_rules", "freightcom_match"]
+           "item_rules"]

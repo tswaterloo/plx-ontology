@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import datetime
 import os
 from pathlib import Path
+import logging
 import re
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -14,6 +15,8 @@ from .citation_schemes import HANDLE_PREFIX
 
 from .autopilot_records import _iso
 from .autopilot_queue import CARD_PREFIX, POOL_PREFIX, Queue
+
+LOG = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------------- reading side
@@ -43,21 +46,12 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
     held = set(held)
 
     def readable(item: Mapping[str, Any]) -> bool:
+        cited = item_handles(item)
         try:
-            if not all(may_read(a) for a in item["audiences"]):
-                return False
-            if not set(item["markings"]) <= held:
-                return False
-            cited = item_handles(item)
-            if cited:
-                refused = decide(cited)
-                # every handle decided readable, or the item is not shown (fail closed)
-                if not isinstance(refused, Mapping) or \
-                        any(h not in refused or refused[h] is not None for h in cited):
-                    return False
+            refused = decide(cited) if cited else {}
         except Exception:  # noqa: BLE001 - an undecidable item is not shown
             return False
-        return True
+        return may_show(item, may_read=may_read, held=held, refused=refused, cited=cited)
     out = []
     for item in queue.items(owners, states):
         if readable(item):
@@ -72,6 +66,23 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
             item.update(mine=False, handed=True)
             out.append(item)
     return out
+
+
+def may_show(item: Mapping[str, Any], *, may_read: Callable[[str], bool], held: Iterable[str],
+             refused: Any, cited: Sequence[str]) -> bool:
+    """The door for one item (a queue item or an Assist matter): every audience readable,
+    every marking held, and every cited handle decided readable (``refused`` maps each
+    handle to None); anything else, or anything undecidable, is not shown (fail closed)."""
+    try:
+        if not all(may_read(a) for a in item["audiences"]):
+            return False
+        if not set(item["markings"]) <= set(held):
+            return False
+        return not cited or (isinstance(refused, Mapping) and all(
+            h in refused and refused[h] is None for h in cited))
+    except Exception:  # noqa: BLE001 - an undecidable item is not shown, said in the log
+        LOG.warning("an item's door could not be decided: not shown", exc_info=True)
+        return False
 
 
 _CITED = re.compile(HANDLE_PREFIX)

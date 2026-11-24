@@ -1235,7 +1235,6 @@ operating/claim_checks.py: [union-attr] Item "None" of "dict[str, Any] | None" h
 operating/claim_checks.py: [union-attr] Item "None" of "dict[str, Any] | None" has no attribute "get"
 operating/claim_checks.py: [union-attr] Item "None" of "dict[str, Any] | None" has no attribute "get"
 operating/claim_checks.py: [union-attr] Item "timedelta" of "date | timedelta" has no attribute "isoformat"
-operating/clarify.py: [misc] List comprehension has incompatible type List[str | None]; expected List[str]
 operating/commercial_chain.py: [assignment] Incompatible types in assignment (expression has type "list[Any]", target has type "str")
 operating/composition_lines.py: [arg-type] Argument 1 to "_agrees" has incompatible type "Decimal | None"; expected "Decimal"
 operating/composition_lines.py: [arg-type] Argument 1 to "_agrees" has incompatible type "Decimal | None"; expected "Decimal"
@@ -1482,77 +1481,6 @@ operating/evidence_trail.py: [union-attr] Item "None" of "Mapping[str, Any] | No
 operating/evidence_trail.py: [union-attr] Item "None" of "Mapping[str, Any] | None" has no attribute "get"
 operating/evidence_trail.py: [var-annotated] Need type annotation for "stage"
 operating/explanations.py: [return-value] Incompatible return value type (got "Mapping[str, Any]", expected "dict[str, Any]")
-operating/fast_answer.py: [arg-type] Argument "key" to "sorted" has incompatible type "Callable[[Mapping[str, Any]], Any | int | None]"; expected "Callable[[Mapping[str, Any]], SupportsDunderLT[Any] | SupportsDunderGT[Any]]"
-operating/fast_answer.py: [arg-type] Argument 1 to "row" of "Reads" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 3 to "_members_said" has incompatible type "list[dict[str, Any | None]]"; expected "Sequence[Mapping[str, str]]"
-operating/fast_answer.py: [arg-type] Argument 3 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
-operating/fast_answer.py: [assignment] Incompatible types in assignment (expression has type "Mapping[str, Any]", variable has type "dict[str, Any]")
-operating/fast_answer.py: [assignment] Incompatible types in assignment (expression has type "Mapping[str, Any]", variable has type "dict[str, Any]")
-operating/fast_answer.py: [assignment] Incompatible types in assignment (expression has type "Mapping[str, Any]", variable has type "list[Any]")
-operating/fast_answer.py: [assignment] Incompatible types in assignment (expression has type "set[str]", variable has type "set[Any | None]")
-operating/fast_answer.py: [assignment] Incompatible types in assignment (expression has type "str", variable has type "list[dict[str, Any]]")
-operating/fast_answer.py: [attr-defined] "Reads" has no attribute "question"
-operating/fast_answer.py: [attr-defined] "Reads" has no attribute "shared_others"
-operating/fast_answer.py: [attr-defined] "Reads" has no attribute "shared_others"
-operating/fast_answer.py: [attr-defined] "list[Any]" has no attribute "get"
-operating/fast_answer.py: [attr-defined] "list[Any]" has no attribute "get"
-operating/fast_answer.py: [call-overload] No overload variant of "__getitem__" of "list" matches argument type "str"
-operating/fast_answer.py: [call-overload] No overload variant of "__getitem__" of "list" matches argument type "str"
-operating/fast_answer.py: [dict-item] Dict entry 0 has incompatible type "str": "Any | None"; expected "str": "str"
-operating/fast_answer.py: [has-type] Cannot determine type of "RECIPES"
-operating/fast_answer.py: [misc] Generator has incompatible item type "Any | int | None"; expected "bool"
-operating/fast_answer.py: [misc] List comprehension has incompatible type List[Mapping[str, Any]]; expected List[dict[str, Any]]
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [misc] Tuple index out of range
-operating/fast_answer.py: [return-value] Incompatible return value type (got "Any | int | None", expected "SupportsDunderLT[Any] | SupportsDunderGT[Any]")
-operating/fast_answer.py: [return-value] Incompatible return value type (got "Mapping[str, Any]", expected "dict[str, Any] | Choices")
-operating/fast_answer.py: [return-value] Incompatible return value type (got "list[tuple[Any, Any, Any | None]]", expected "list[tuple[Any, str, str]]")
-operating/fast_answer.py: [return-value] Incompatible return value type (got "tuple[int, list[Any | None]]", expected "tuple[int, list[str]]")
-operating/fast_answer.py: [type-var] Value of type variable "SupportsRichComparisonT" of "max" cannot be "datetime | None"
-operating/fast_answer.py: [union-attr] Item "None" of "Any | None" has no attribute "get"
-operating/fast_answer.py: [union-attr] Item "None" of "Any | None" has no attribute "get"
-operating/fast_answer.py: [union-attr] Item "None" of "Match[str] | None" has no attribute "group"
-operating/fast_answer.py: [union-attr] Item "None" of "dict[str, Any] | None" has no attribute "get"
-operating/fast_answer.py: [union-attr] Item "None" of "dict[str, Any] | None" has no attribute "get"
-operating/fast_answer.py: [union-attr] Item "None" of "dict[str, Any] | None" has no attribute "get"
-operating/fast_answer.py: [union-attr] Item "None" of "dict[str, Any] | None" has no attribute "get"
-operating/fast_answer.py: [var-annotated] Need type annotation for "edges" (hint: "edges: list[<type>] = ...")
-operating/fast_answer.py: [var-annotated] Need type annotation for "listed" (hint: "listed: list[<type>] = ...")
-operating/fast_answer.py: [var-annotated] Need type annotation for "parts" (hint: "parts: list[<type>] = ...")
-operating/fast_answer.py: [var-annotated] Need type annotation for "totals" (hint: "totals: dict[<type>, <type>] = ...")
-operating/fast_chain.py: [arg-type] Argument "key" to "sort" of "list" has incompatible type "Callable[[tuple[datetime | None, Mapping[str, Any]]], datetime | None]"; expected "Callable[[tuple[datetime | None, Mapping[str, Any]]], SupportsDunderLT[Any] | SupportsDunderGT[Any]]"
-operating/fast_chain.py: [arg-type] Argument "key" to "sorted" has incompatible type "Callable[[tuple[datetime | None, Mapping[str, Any]]], datetime | None]"; expected "Callable[[tuple[datetime | None, Mapping[str, Any]]], SupportsDunderLT[Any] | SupportsDunderGT[Any]]"
-operating/fast_chain.py: [index] Value of type "tuple[str | None, str, str, str] | None" is not indexable
-operating/fast_chain.py: [index] Value of type "tuple[str | None, str, str, str] | None" is not indexable
-operating/fast_chain.py: [index] Value of type "tuple[str | None, str, str, str] | None" is not indexable
-operating/fast_chain.py: [index] Value of type "tuple[str | None, str, str, str] | None" is not indexable
-operating/fast_chain.py: [operator] Unsupported left operand type for > ("None")
-operating/fast_chain.py: [operator] Unsupported operand types for < ("datetime" and "None")
-operating/fast_chain.py: [operator] Unsupported operand types for > ("datetime" and "None")
-operating/fast_chain.py: [return-value] Incompatible return value type (got "datetime | None", expected "SupportsDunderLT[Any] | SupportsDunderGT[Any]")
-operating/fast_chain.py: [return-value] Incompatible return value type (got "datetime | None", expected "SupportsDunderLT[Any] | SupportsDunderGT[Any]")
-operating/fast_chain.py: [type-var] Value of type variable "SupportsRichComparisonT" of "min" cannot be "datetime | None"
-operating/fast_record.py: [arg-type] Argument 1 to "append" of "list" has incompatible type "tuple[str | Any, str | Any]"; expected "tuple[str, None]"
-operating/fast_record.py: [arg-type] Argument 1 to "setdefault" of "MutableMapping" has incompatible type "Any | None"; expected "str"
-operating/fast_record.py: [arg-type] Argument 4 to "value" of "Draft" has incompatible type "Any | None"; expected "str"
 operating/feedback_signals.py: [misc] Cannot infer type of lambda
 operating/file_clearance_check.py: [var-annotated] Need type annotation for "failures"
 operating/file_clearance_check.py: [var-annotated] Need type annotation for "page_failures"

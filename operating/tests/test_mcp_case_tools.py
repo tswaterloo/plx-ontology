@@ -1109,6 +1109,23 @@ class ConfigurationTests(CaseToolsTestCase):
             MCPServer(case_runtime=None, actor=Actor("plx", OPS))
         self.assertEqual(self.fake.paths, [])
 
+    def test_the_asks_session_is_told_only_that_results_are_data(self):
+        """The Workbench's own Ask (``plx.agent.ask``) is sent none of the case primer (its
+        starts and system claims name tools it lacks); every other agent keeps the primer."""
+        from operating.mcp_server_catalog import ASK_ONLY_INSTRUCTIONS
+        hello = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                            "clientInfo": {"name": "t", "version": "1"}}}
+        ask = MCPServer(case_runtime=self.runtime(), actor=Actor("plx", OPS),
+                        test_capabilities=True, agent="plx.agent.ask")
+        said = ask.handle(hello)["result"]["instructions"]
+        self.assertEqual(said, ASK_ONLY_INSTRUCTIONS)
+        self.assertNotIn("Authoritative systems", said)
+        self.assertNotIn("plx.find", said)
+        other = MCPServer(case_runtime=self.runtime(), actor=Actor("plx", OPS),
+                          test_capabilities=True)
+        self.assertEqual(other.handle(hello)["result"]["instructions"], CASE_ONLY_INSTRUCTIONS)
+
     def test_case_only_session_serves_exactly_the_case_tools(self):
         server = self.server(OPS, self.runtime())
         listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
@@ -1689,7 +1706,7 @@ class DocumentMetadataToolTests(CaseToolsTestCase):
                                  "staff:operations" in principals)
 
     def test_a_name_several_readable_records_answer_is_asked_back_with_only_those(self):
-        """MCP clarify (operating.clarify.ask_back): plx.find's ambiguous answer to a
+        """MCP clarify (operating.ask_back.ask_back): plx.find's ambiguous answer to a
         number carries ask_back with the records this reader matched, never one another
         reader's grants hold; one match, a filter listing or an agent's own session
         (switch off) carries none, and every answer passes the output contract."""

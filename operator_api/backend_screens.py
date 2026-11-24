@@ -17,6 +17,8 @@ from . import errors, models as m
 from .errors import RecordNotFound, source_refused
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
+from types import SimpleNamespace
+
 from .briefs import BriefsMixin
 from .team_view import TeamViewMixin
 from .auth import Reader
@@ -25,6 +27,10 @@ from .serving import (
     _iso_now, access_label, HOST_READ_SCHEMES, LATE_LIST_LIMIT, object_url, READ_TIMEOUT_SECONDS,
     SAME_NAME_ROWS, WARM_LATE_PAGES
 )
+
+# the slow sections of a late purchase order's page read ahead after its trail, in page order
+LATE_SECTIONS_AHEAD = ("late", "people", "landed_cost")
+WARM_OPEN_PAGES = 12   # open orders beyond the late ones whose slow sections are read ahead
 from .answers import (LATE_RULE, aged_to_today, attention_items, late_rule_behind, normalize,
                       without_tests)
 from .suggest import projection_suggest, sublabel_tell
@@ -42,8 +48,19 @@ class _Unread(errors.UserFacing):
     as a last good page (a ``UserFacing`` refusal ``_serving`` passes through)."""
 
     def __init__(self, page: m.DocList) -> None:
-        super().__init__("list_unread", page.error or "", 200)
+        super().__init__("list_unread", getattr(page, "error", None) or "", 200)
         self.page = page
+
+
+def weekly_key(week: Optional[date], today: Optional[date] = None) -> str:
+    """The Monday of the week a weekly review is of, as its kept copy is keyed: the page asks
+    for last week's Monday by date and the warm-up for "last week" (no date), one review. A day
+    inside a week is that week's. (Keyed apart they were never one copy: every visit read the
+    review cold, 46 s p50 over 6 h.)"""
+    from datetime import timedelta
+    from operating import briefs as br
+    today = today or date.today()
+    return (br.week_of(week) if week else br.week_of(today) - timedelta(days=7)).isoformat()
 
 
 class ScreensMixin:
@@ -85,6 +102,23 @@ class ScreensMixin:
         # snapshot and the gap inbox's open rows its inputs
         return self._serving(reader, ("team",), lambda: TeamViewMixin.team_view(
             self, reader), self._screen_inputs(files=(self._team_file,)))
+
+    def team_person(self, reader: Reader, key: str) -> m.TeamPersonDetail:
+        """A person's drill-down, kept per reader and person as the Team list is (it was read
+        again on every click: 0.5-1.4 s alone, 20-35 s when thirty were asked at once, each
+        one a whole-inbox read on the old engine). The Team screen's access state decides
+        it (``_screen_access``: the name ``team``), the activity snapshot and the gap
+        inbox's open rows are its inputs. A key the reader may not open is a 404, never kept."""
+        def read() -> m.TeamPersonDetail:
+            got = TeamViewMixin.team_person(self, reader, key)
+            if got.items_unread:
+                raise _Unread(got)     # a panel without its open items is answered, never kept
+            return got
+        try:
+            return self._serving(reader, ("team", "person", key), read,
+                                 self._screen_inputs(files=(self._team_file,)))
+        except _Unread as unread:
+            return unread.page
 
     def answer_bank(self, reader: Reader, question: Optional[str] = None) -> m.DocList:
         """The Templates page's answer bank (``BriefsMixin.answer_bank``: a whole-company
@@ -148,10 +182,11 @@ class ScreensMixin:
     def weekly_review(self, reader: Reader, week: Optional[date], *,
                       ahead: bool = False) -> m.Brief:
         from .briefs import WEEKLY_FILE
-        return self._serving(reader, ("weekly", week.isoformat() if week else None),
+        return self._serving(reader, ("weekly", weekly_key(week)),
                              lambda: BriefsMixin.weekly_review(self, reader, week, ahead=ahead),
                              self._screen_inputs(files=(
-                                 self.data_dir / WEEKLY_FILE if self.data_dir else None,)))
+                                 self.data_dir / WEEKLY_FILE if self.data_dir else None,)),
+                             reading=lambda: BriefsMixin.weekly_reading(self, reader))
 
     def home(self, reader: Reader) -> m.Home:
         from . import page_sql
@@ -209,18 +244,21 @@ class ScreensMixin:
                          examples=list(HOME_EXAMPLES),
                          needs_attention=m.NeedsAttention(status="unavailable"),
                          recent_questions=recent, freshness=self.freshness())
+        # a kept page that is being served stale keeps the data stamp it was read with:
+        # never old numbers under a fresh "as of"
         return got.model_copy(update={"recent_questions": recent,
-                                      "freshness": self.freshness()})
+                                      "freshness": got.freshness if got.stale_since
+                                      else self.freshness()})
 
     def _home_alerts_read(self, reader: Reader) -> m.Home:
         """``_home_alerts``' read through the door (raises when unreadable: never kept)."""
         from . import page_sql
-        total, late, as_of, risk, stale = page_sql.alert_home(self, reader,
-                                                              limit=LATE_LIST_LIMIT)
+        total, late, as_of, risk, stale, risk_total = page_sql.alert_home(
+            self, reader, limit=LATE_LIST_LIMIT)
         # a home type whose check is not current: left out, said (refreshing, since)
         attention = m.NeedsAttention(status="read", late_pos=late, at_risk=risk,
                                      late_total=total, as_of=as_of, refreshing=bool(stale),
-                                     checked_on=page_sql._oldest(stale))
+                                     at_risk_total=risk_total, checked_on=page_sql._oldest(stale))
         return m.Home(greeting_name=reader.display_name.split(" ")[0],
                       examples=list(HOME_EXAMPLES), needs_attention=attention,
                       recent_questions=[], freshness=self.freshness())
@@ -378,8 +416,11 @@ class ScreensMixin:
         except (page_sql.PageDoorUnavailable, errors.UserFacing, TimeoutError):
             # not read now and nothing kept: no count, never "none late"
             got = m.Sidebar()
+        # a kept page that is being served stale keeps the data stamp it was read with:
+        # never old numbers under a fresh "as of"
         return got.model_copy(update={"recent_questions": recent,
-                                      "freshness": self.freshness()})
+                                      "freshness": got.freshness if got.stale_since
+                                      else self.freshness()})
 
     def _late_trails_ahead(self, reader: Reader) -> int:
         """Read ahead (the warm-up) the evidence trail of the longest late purchase orders
@@ -392,23 +433,33 @@ class ScreensMixin:
             return 0
         pos = page_sql.alert_late_pos if page_sql.alerts_on() else page_sql.late_pos
         _total, late, _as_of = pos(self, reader, offset=0, limit=WARM_LATE_PAGES)
+        # then the other open orders (late first, then newest): the sections only, so the
+        # first open of any recent order is kept too
+        try:
+            more = [p for p in page_sql.open_po_ids(self, reader, WARM_LATE_PAGES + WARM_OPEN_PAGES)
+                    if p not in {po.object_id for po in late}][:WARM_OPEN_PAGES]
+        except Exception:  # noqa: BLE001 - the late ones are read; these when opened
+            more = []
         read = 0
-        for po in late:
+        for po in [*late, *(SimpleNamespace(object_id=o, open_url="", more=True) for o in more)]:
             otype = po.object_id.split(":", 1)[0]
             if otype != "PurchaseOrder":
                 continue   # not a record the old engine has a trail for (a bare handle)
             try:
-                self.object_section(reader, otype, po.object_id, "trail")
+                if not getattr(po, "more", False):   # the lateness trail: late orders only
+                    self.object_section(reader, otype, po.object_id, "trail")
                 read += 1
             except Exception:  # noqa: BLE001 - read when opened
                 continue
-            try:   # the order's page Home's detail pane opens (kept: ``biz_page``)
-                from urllib.parse import parse_qs, urlparse
-                handle = (parse_qs(urlparse(po.open_url).query).get("h") or [""])[0]
-                if handle:
-                    self.biz_page(reader, "purchase_order", handle)
-            except Exception:  # noqa: BLE001 - read when opened
-                continue
+            # the page's slow sections too, in the page's order (each plan once: a later
+            # section rests on the plans before it): a late order's first open took 9.6 s, 8.4 s
+            # and 5.3 s for late, people and landed cost cold (11-23 walk), under 150 ms kept
+            for section in LATE_SECTIONS_AHEAD:
+                try:
+                    self.object_section(reader, otype, po.object_id, section)
+                except Exception:  # noqa: BLE001 - read when opened
+                    break
+            # (the order's page itself is one door read on open: ``served.biz_page``)
         return read
 
     def _sidebar_door(self, reader: Reader) -> m.Sidebar:

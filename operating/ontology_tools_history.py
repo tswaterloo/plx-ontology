@@ -104,6 +104,11 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
 
     at = tools._as_known_at(arguments)
     scope = tools._scope(actor, at)
+    # the served History builder (``operator_api.history_batch``, ``marks``): every change of the
+    # record in one answer, every value of every change, every link: none of the page's display
+    # bounds (``PAGE``, ``MAX_CHANGES``, ``MAX_SIDE``, ``LINK_SCAN_CAP``, the byte budget) applies,
+    # and each change says what a reader must hold to see it (``marks``, ``cites``, ``corr``)
+    whole = arguments.get("marks") is True
     store_meta = tools._store_meta()
     object_id = arguments["object_id"]
     version = tools._visible_versions(scope, [object_id]).get(object_id)
@@ -128,6 +133,13 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
     by_start: dict[dt.datetime, Mapping[str, Any]] = {}
     first: dt.datetime | None = None
     unreadable = False
+    if whole:
+        from .ontology_tools_policy import _ITEM_ACL_SCHEMES
+        gated = sorted(v["l1_handle"] for v in versions
+                       if str(v["l1_handle"]).split("://", 1)[0] in _ITEM_ACL_SCHEMES)
+        if gated:   # a per-reader item gate on the record's own versions: not a stored class
+            raise ValueError(f"{object_id}: {len(gated)} item-gated versions; its history is "
+                             "not stored")
     tools.prefetch_items(actor, [v["l1_handle"] for v in versions])
     for row in versions:
         start = _parse_time(row["recorded_at"])
@@ -198,7 +210,7 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
             outs = []
             for side in (before, now):
                 listed = []
-                for r in side[:MAX_SIDE]:
+                for r in (side if whole else side[:MAX_SIDE]):
                     value, problem = _value_out(r, object_type, limit)
                     if value is not None:
                         listed.append(value)
@@ -206,7 +218,13 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
                         gaps.append(problem)   # uncitable or ill-typed: said, never shown
                 outs.append(listed)
             change = {"property": prop, "before": outs[0], "after": outs[1]}
-            if len(before) > MAX_SIDE or len(now) > MAX_SIDE:
+            if arguments.get("marks") is True:
+                # the markings a reader must hold to see this change (the rule above: every row
+                # before and after, and the property's latest): the served History store's column
+                # class (``operating.pg.record_history``); asked by that builder alone
+                change["marks"] = sorted({m for r in before + now for m in _markings(r["markings"])}
+                                         | set(latest))
+            if not whole and (len(before) > MAX_SIDE or len(now) > MAX_SIDE):
                 change["more_values"] = True
             changes_at.setdefault(moment, []).append(change)
 
@@ -234,10 +252,12 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
                    "system": _source_of(cited["l1_handle"], cited["lineage"])}
         text = _format_time(moment)
         event: dict[str, Any] = {"at": text, "kind": kind,
-                                 "changes": listed[:MAX_CHANGES]}
+                                 "changes": listed if whole else listed[:MAX_CHANGES]}
         if src is not None:
             event["source"] = {k: v for k, v in src.items() if v is not None}
-        if len(listed) > MAX_CHANGES:
+        if arguments.get("marks") is True and ver is not None:
+            event["marks"] = sorted(_markings(ver["markings"]))   # the version's own markings
+        if not whole and len(listed) > MAX_CHANGES:
             event["more_changes"] = True
         events.append((_Position(moment, text, RANK[kind], ""), event))
 
@@ -262,7 +282,7 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
             withheld.add("marking")   # a link row marked beyond the reader: said, not listed
         for kind in ("link_added", "link_removed"):
             got, frontier = _links(tools, scope, object_id, kind, after, withheld,
-                                   _parse_time, _format_time)
+                                   _parse_time, _format_time, whole=whole)
             events.extend(got)
             if frontier is not None:
                 frontiers.append(frontier)
@@ -271,8 +291,8 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
     floor = max((f.order() for f in frontiers), default=None)
     # a stream's frontier row itself was read: what is at or above it is complete
     ready = [e for e in events if floor is None or e[0].order() >= floor]
-    more = len(ready) > PAGE or floor is not None
-    page = ready[:PAGE]
+    more = (len(ready) > PAGE or floor is not None) and not whole
+    page = ready if whole else ready[:PAGE]
     if unreadable:
         gaps.append(_gap("unknown", "unreadable_store_time", object_id,
                          "a stored row's capture time could not be read; it was left out"))
@@ -301,6 +321,8 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
                                             "page", cursor)
         return out
 
+    if whole:   # the builder's answer: never cut to a response's size
+        return answer(len(page))
     # bytes kept free for the host's labels, as plx.changes keeps them
     from .ontology_tools_changes import BUDGET_RESERVE
     budget = tools.limits["max_result_bytes"] - BUDGET_RESERVE
@@ -323,12 +345,30 @@ def object_history(tools: Any, arguments: Mapping[str, Any], actor: Any) -> dict
     return result
 
 
+def _held_by(version: Mapping[str, Any], gated) -> dict[str, Any]:
+    """What a reader must hold to read an object (``_visible_versions``' rule): its audience key,
+    its current version's markings and, when that version's handle is item-gated, the handle."""
+    return {"id": version["object_id"], "key": version["audience_key"],
+            "marks": sorted(set(json.loads(version["markings"] or "[]"))),
+            "cite": version["l1_handle"] if gated(version["l1_handle"]) else None}
+
+
 def _links(tools: Any, scope: Any, object_id: str, kind: str, after: _Position | None,
-           withheld: set[str], parse, fmt) -> tuple[list[tuple[_Position, dict]],
-                                                    _Position | None]:
+           withheld: set[str], parse, fmt, *, whole: bool = False
+           ) -> tuple[list[tuple[_Position, dict]], _Position | None]:
     """The link changes of ``kind`` before ``after`` this reader may see, up to a page
     (``PAGE`` + 1), and the frontier: the position of the last row read when rows remain
-    unread (None when every row before ``after`` was read)."""
+    unread (None when every row before ``after`` was read). ``whole`` (the served History
+    builder): every row, and each link says what a reader must hold to see it: ``marks`` (the
+    link row's markings), ``cites`` (the item-gated handles it rests on: its evidence and the
+    other end's version, each re-checked per reader by the item gate), ``other_marks`` /
+    ``other_key`` (the other end's own markings and audience key), and for a corroborated link
+    ``corr`` (the objects its corroboration cites: a reader who may not read all of them sees
+    the lead its mention is, ``mentions.reader_view``)."""
+    from .ontology_tools_policy import _ITEM_ACL_SCHEMES
+
+    def gated(handle: Any) -> bool:
+        return isinstance(handle, str) and handle.split("://", 1)[0] in _ITEM_ACL_SCHEMES
     rank = RANK[kind]
     column = "recorded_at" if kind == "link_added" else "superseded_at"
     got: list[tuple[_Position, dict]] = []
@@ -350,6 +390,15 @@ def _links(tools: Any, scope: Any, object_id: str, kind: str, after: _Position |
                 if isinstance(listed, list) else []
         tools.prefetch_items(scope.actor, handles_ahead)
         displays = tools._displays(scope, sorted(visible)) if visible else {}
+        # the builder: the markings of the values a shown display text may be read from (every
+        # display property's rows: the union is never less than the one shown; fail closed)
+        shown_marks: dict[str, set[str]] = {}
+        if whole and visible:
+            props = tools.schema.display() if tools.schema else {}
+            for value in tools.store.values(sorted(visible)):
+                if value["property"] in props.get(value["object_id"].split(":", 1)[0], ()):
+                    shown_marks.setdefault(value["object_id"], set()).update(
+                        json.loads(value["markings"] or "[]"))
         handles: dict[str, Any] = {}
         last = None
         for row in rows:
@@ -381,17 +430,31 @@ def _links(tools: Any, scope: Any, object_id: str, kind: str, after: _Position |
                 cited = corroboration_objects(tools.store.conn, reason, handles)
                 tier = reader_view(tier, reason, [], cited is not None and cited <= set(
                     tools._visible_versions(scope, cited)))[0]
+            if whole:
+                cited = corroboration_objects(tools.store.conn, json.loads(row["reason"]), handles) \
+                    if row["tier"] == "corroborated" else set()
             link = {"link_type": row["link_type"],
                     "direction": "forward" if forward else "reverse", "tier": tier,
                     "basis": row["binding_kind"],
                     "other": {"object_id": other, "object_type": other.split(":", 1)[0],
                               "display": displays.get(other),
                               "lineage": visible[other]["lineage"]}}
+            if whole:
+                corr = [] if cited is None else [_held_by(v, gated) for _, v in sorted(
+                    tools._visible_versions(scope, cited).items())]
+                if cited is None or len(corr) != len(cited):
+                    # a corroboration naming no stored record, or one even this reader may not
+                    # read: no reader reads it (``never``: the lead it is, for everyone)
+                    corr.append({"never": True})
+                link["need"] = {"marks": json.loads(row["markings"] or "[]"),
+                                "display_marks": sorted(shown_marks.get(other, ())),
+                                "evidence": sorted({h for h in evidence if gated(h)}),
+                                "other": _held_by(visible[other], gated), "corr": corr}
             got.append((_Position(moment, row[column], rank, row["link_id"]),
                         {"at": text, "kind": kind, "link": link}))
         if last is not None:
             position = last
         if len(rows) < LINK_BATCH:
             return got, None
-        if len(got) > PAGE or scanned >= LINK_SCAN_CAP:
+        if not whole and (len(got) > PAGE or scanned >= LINK_SCAN_CAP):
             return got, position

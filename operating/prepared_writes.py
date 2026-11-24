@@ -26,7 +26,6 @@ What ``prepare`` refuses (nothing stored, the reasons returned to the model):
   readiness probe found it: the name is resolved to the id here and the card shows both,
   so the company shown is the company written (never the default for a name it does not
   know); a target key the write does not use (``Adapter.TARGET_KEYS``) is refused too;
-* anything that names Freightcom (never to the model, never acted on);
 * a person the people exclusion does not clear (the preparer or anyone the write
   reaches); an unavailable exclusion list refuses everything (fail closed);
 * a write the person could not make themselves (``may``: the caller's per-system check
@@ -143,11 +142,6 @@ def _strings(value: Any) -> Iterable[str]:
     elif isinstance(value, (list, tuple)):
         for v in value:
             yield from _strings(v)
-
-
-def _freightcom(value: Any) -> bool:
-    from integrations.image_ocr_gpu import touches_freightcom
-    return any(touches_freightcom(s) for s in _strings(value) if s)
 
 
 def _only(request: Mapping[str, Any], allowed: Mapping[str, set], what: str) -> None:
@@ -417,8 +411,6 @@ class Desk:
         system = str(request.get("system") or "").strip().lower()
         if system in NEVER:
             raise Refused([NEVER[system]])
-        if _freightcom([request, list(citations)]):
-            raise Refused(["That carrier is never acted on through the Workbench (its data stays out)."])
         executor = self.executor()
         seed = _canonical({"owner": owner, "origin": origin, "request": request})
         asked = dict(request)            # as Ask said it (kept: a retry reads anew)
@@ -482,9 +474,6 @@ class Desk:
         if not owner or not person.owns(str(item.get("owner") or "")):
             raise Refused(["That item is not yours."], 404)
         whole = {str(k): v for k, v in item.items() if k != "mine"}
-        if _freightcom([whole.get("title"), whole.get("body")]):
-            raise Refused(["That carrier is never acted on through the Workbench (its data "
-                           "stays out)."])
         actions = aw.actions_of(whole)
         if not actions or any(a.get("kind") not in aw.KINDS for a in actions):
             raise Refused(["This item holds nothing the Workbench can write."])
@@ -583,9 +572,6 @@ class Desk:
                                     "(or cannot check): nothing is prepared.")
             problems += self._before(action, got, diff is not None, rows)
             shown.append(shown_action(action, got, company))
-        if _freightcom([shown, rows, diff or []]):
-            problems.append("That carrier is never acted on through the Workbench (its data "
-                            "stays out).")
         if problems:
             raise Refused(list(dict.fromkeys(problems)))
         with self.journal.locked() as held:

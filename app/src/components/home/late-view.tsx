@@ -22,7 +22,7 @@ import type { ActionResult, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const PAGE = 100;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MOST = 1000; // the list reads at most this many orders, then says how many it left out
+const MOST = 20000; // the list reads every order up to this many (the server's count bound), then says how many it left out
 
 function hrefOf(po: LatePo): string {
   return safeHref(po.open_url) ?? objectHref("PurchaseOrder", po.object_id);

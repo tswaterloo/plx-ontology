@@ -132,48 +132,12 @@ class FixtureBackend(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return events(response.text)
 
-    def test_ask_maps_the_gate_kept_claims_to_cited_facts(self):
+    def test_an_ask_without_the_agent_path_says_so(self):
+        """One Ask path (owner 11-22): a server that runs no agent for the reader (this
+        fixture) answers no question by another route; it says Ask is not available."""
         seen = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")
-        names = [n for n, _ in seen]
-        self.assertEqual(names[0], "status")
-        self.assertIn("understanding", names)
-        self.assertEqual(names[-1], "answer")
-        for name, data in seen:
-            m.ASK_EVENTS[name].model_validate(data)
-        answer = seen[-1][1]
-        self.assertIn(answer["outcome"], ("answered", "partial"))
-        self.assertTrue(answer["facts"])
-        gated = [f for f in answer["facts"] if f["check"] == "passed"]
-        self.assertTrue(gated, answer["facts"])
-        source = gated[0]["sources"][0]
-        self.assertEqual(source["system"], "Portal")
-        self.assertTrue(source["fields"])           # the value the gate checked
-        self.assertTrue(source["open_url"].startswith("/source?handle="))
-        self.assertTrue(any("why it is late" in n["what"] for n in answer["not_found"]))
-        self.assertEqual(answer["subjects"][0]["type"], "PurchaseOrder")
-        # the cited source opens for this reader through /api/source
-        handle = source["handle"]
-        opened = self.ops.client.get("/api/source", params={"handle": handle})
-        self.assertEqual(opened.status_code, 200, opened.text)
-        self.assertEqual(opened.json()["handle"], handle)
-        # feedback on one's own answer is logged; recent questions show it
-        fb = self.ops.client.post("/api/feedback", json={
-            "answer_id": answer["answer_id"], "rating": -1, "note": "wrong date"})
-        self.assertEqual(fb.status_code, 200, fb.text)
-        self.assertEqual(fb.json()["stored_in"], ["feedback_log", "feedback_store"])
-        kept = self.ops.client.get("/api/feedback").json()["entries"][0]
-        self.assertEqual((kept["question"], kept["note"]), (answer["question"], "wrong date"))
-        self.assertTrue(kept["claims"])               # the answer's claims, attached
-        logged = (self.tmp / "ops-app" / "feedback.jsonl").read_text().splitlines()
-        self.assertEqual(json.loads(logged[-1])["note"], "wrong date")
-        self.assertEqual(oct((self.tmp / "ops-app" / "feedback.jsonl").stat().st_mode & 0o777),
-                         "0o600")
-        home = self.ops.client.get("/api/home").json()
-        self.assertEqual(home["recent_questions"][0]["answer_id"], answer["answer_id"])
-        # another reader cannot rate (or learn of) it
-        other = self.outsider.client.post("/api/feedback", json={
-            "answer_id": answer["answer_id"], "rating": 1})
-        self.assertEqual(other.status_code, 404)
+        self.assertEqual([n for n, _ in seen], ["status", "error"])
+        self.assertIn("ask_no_agent", json.dumps(seen[-1][1]))
 
     def test_after_a_deploy_a_kept_page_is_served_only_while_the_new_code_reads_its_records(
             self):
@@ -290,7 +254,7 @@ class FixtureBackend(unittest.TestCase):
             f"/api/object-section/secrets/PurchaseOrder/{case_fixtures.PO_NUMBER}"
         ).status_code, 422)
 
-    def test_a_po_page_and_answer_carry_its_trail_each_step_opening_for_the_reader(self):
+    def test_a_po_page_carries_its_trail_each_step_opening_for_the_reader(self):
         # the first page read of the class can be refused busy on a loaded machine (the
         # app retries a 503 calmly); only that refusal is asked again
         for _ in range(3):
@@ -316,10 +280,6 @@ class FixtureBackend(unittest.TestCase):
             opened = self.ops.client.get("/api/source",
                                          params={"handle": step["source"]["handle"]})
             self.assertEqual(opened.status_code, 200 if step["source"]["open_url"] else 404)
-        answer = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")[-1][1]
-        self.assertEqual([t["subject"]["object_id"] for t in answer["trail"]["trails"]],
-                         [body["object_id"]])
-        self.assertEqual(answer["trail"]["trails"][0]["steps"], po["steps"])
 
     def test_a_bare_code_resolves_from_the_identifier_table_for_its_reader_only(self):
         """``/purchase_order/<number>``: the identifier table names the record (no whole
@@ -343,6 +303,44 @@ class FixtureBackend(unittest.TestCase):
             self.assertNotIn(page.json()["object_id"], hidden.text)
             self.assertTrue(seen)
             self.assertTrue(all(not got for _actor, _code, got in seen), seen)
+
+    def test_a_number_two_records_hold_opens_as_a_choice_for_its_reader_only(self):
+        """Reproduced (11-22): a PO number two suppliers' orders share (the Portal's and
+        BC's number series overlap) answered not found: several records were 'no page'. The
+        record page lists them to choose from, each with a label and a link that opens; the
+        choices are read through the reader's door (an outsider, the identifier table naming
+        both records, is told not found and shown neither); other record routes stay not
+        found for it."""
+        ops = self.ops.client
+        first = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}")
+        second = ops.get("/api/object/PurchaseOrder/PO5448")
+        self.assertEqual((first.status_code, second.status_code), (200, 200), second.text)
+        both = frozenset({first.json()["object_id"], second.json()["object_id"]})
+        self.assertEqual(len(both), 2)
+        shared = "PO7770001"
+        real = objects.HostAccess.identifier_records
+
+        def two(access, code, object_type):
+            # the table names both records, before any reader's door
+            return both if code.upper() == shared else real(access, code, object_type)
+        with mock.patch.object(objects.HostAccess, "identifier_records", two):
+            page = ops.get(f"/api/object/PurchaseOrder/{shared}", params={"quick": 1})
+            self.assertEqual(page.status_code, 200, page.text)
+            body = m.ObjectPage.model_validate(page.json())
+            self.assertEqual(body.status.state, "choose")
+            self.assertEqual({c.object_id for c in body.choices}, set(both))
+            for choice in body.choices:
+                self.assertTrue(choice.label and choice.label != choice.object_id, choice)
+                opened = ops.get(choice.open_url.replace("/object/", "/api/object/", 1),
+                                 params={"quick": 1})
+                self.assertEqual(opened.status_code, 200, (choice, opened.text))
+            section = ops.get(f"/api/object-section/{m.PAGE_SECTIONS[0]}/PurchaseOrder/"
+                              f"{shared}")
+            self.assertEqual(section.status_code, 404, section.text)
+            hidden = self.outsider.client.get(f"/api/object/PurchaseOrder/{shared}")
+            self.assertEqual(hidden.status_code, 404, hidden.text)
+            for oid in both:
+                self.assertNotIn(oid, hidden.text)
 
     def test_a_source_lists_the_records_citing_it_for_its_reader_only(self):
         ops = self.ops.client
@@ -403,8 +401,8 @@ class FixtureBackend(unittest.TestCase):
             for secret in secrets_:
                 self.assertNotIn(json.dumps(secret)[1:-1], body, body[:300])
                 self.assertNotIn(secret, body, body[:300])
-        answer = json.loads(bodies[0])[-1][1]
-        self.assertEqual(answer["facts"], [])
+        # the Ask (bodies[0]) refuses for want of an agent here, holding none of the above
+        self.assertIn("ask_no_agent", bodies[0])
 
     def test_core_read_is_the_card_alone_and_says_nothing_the_walk_decides(self):
         """C1 (owner 11-17): a record page's core read (?core=1) is served from the card
@@ -550,7 +548,20 @@ class FixtureBackend(unittest.TestCase):
             else:   # a source the reader may open but nothing cites: an empty list
                 self.assertEqual((absent_ops.status_code, absent_ops.json()["records"]),
                                  (200, []))
-        answer = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")[-1][1]
+        # an answer kept for the first reader (the Ask needs a model here: a stub answers)
+        from types import SimpleNamespace
+        from unittest import mock
+
+        def stub_ask(backend, reader, request, conversation, ms, files=None):
+            return m.AnswerPayload(
+                answer_id="d" * 24, question=request.question, outcome="answered",
+                direct_answer="Yes.", hidden=m.Hidden(count=0), freshness=m.Freshness(),
+                conversation_id=conversation, latency_ms=ms())
+            yield
+        with mock.patch.object(self.ops.app.state.backend, "agent_ask",
+                               SimpleNamespace(serves=lambda session: True)), \
+                mock.patch("operator_api.simple_ask.ask", stub_ask):
+            answer = self.ask(self.ops, f"is {case_fixtures.PO_NUMBER} late?")[-1][1]
         others = out.post("/api/feedback", json={"answer_id": answer["answer_id"],
                                                  "rating": 1})
         none = out.post("/api/feedback", json={"answer_id": "no-such-answer", "rating": 1})
@@ -586,12 +597,30 @@ class FixtureBackend(unittest.TestCase):
             for path, params in routes:   # cold costs are not what this measures
                 client.get(path, params=params)
         HOLD.clear()
+        HELD.clear()
         streamed: list = []
+        from types import SimpleNamespace
+        from unittest import mock
+
+        def held_ask(backend, reader, request, conversation, ms, files=None):
+            HELD.set()          # an Ask is now running in the pool...
+            HOLD.wait(60)       # ...until the test lets it finish
+            return m.AnswerPayload(
+                answer_id="c" * 24, question=request.question, outcome="answered",
+                direct_answer="Held.", hidden=m.Hidden(count=0), freshness=m.Freshness(),
+                conversation_id=conversation, latency_ms=ms())
+            yield
+        serving = mock.patch.object(self.ops.app.state.backend, "agent_ask",
+                                    SimpleNamespace(serves=lambda session: True))
+        stub = mock.patch("operator_api.simple_ask.ask", held_ask)
+        serving.start(), stub.start()
+        self.addCleanup(serving.stop)
+        self.addCleanup(stub.stop)
         asker = threading.Thread(target=lambda: streamed.append(self.ops.client.post(
             "/api/ask", json={"question": f"HOLD is {case_fixtures.PO_NUMBER} late?"})),
             daemon=True)
         asker.start()
-        self.assertTrue(HELD.wait(60), "the Ask never reached its planner")
+        self.assertTrue(HELD.wait(60), "the Ask never started")
         try:
             # Another reader, and the same reader, both answer while the Ask is still held
             # (it waits on HOLD until the end): a route queued behind it would answer only
@@ -1198,63 +1227,6 @@ class SuggestPermissionFilter(unittest.TestCase):
         self.assertTrue(asked and all(ids == [chat] for ids in asked), asked)
 
 
-class UnderstandingReaderPolicyTests(unittest.TestCase):
-    """UNDERSTAND-001: the optional understanding (PLX_APP_UNDERSTANDING=1) runs under
-    the reader's own read policy and never erases a record the reader's ``plx.find``
-    already resolved; a record the reader cannot open never leaves it. Evidence label
-    ``isolated-fixture``."""
-
-    def view(self, policy, denied=()):
-        gated = SimpleNamespace(name="gated")
-        return SimpleNamespace(
-            actor=SimpleNamespace(name="reader"),
-            access=SimpleNamespace(reader_policy=lambda: (gated, policy),
-                                   visible_objects=lambda ids: frozenset()),
-            _call=lambda tool, arguments: {"error": "not_found"}
-            if arguments.get("object_id") in denied else {"object_id": arguments["object_id"]}
-        ), gated
-
-    def decide(self, understand, view, found):
-        from operator_api import models as m
-        backend = SimpleNamespace(understand=understand,
-                                  _found_understanding=be.WorkspaceBackend._found_understanding)
-        return be.WorkspaceBackend._understanding(
-            backend, view, m.AskRequest(question="Did PO12345 and PO99999 arrive?"), found)
-
-    def test_the_reader_s_policy_reaches_understanding_and_found_roots_stay(self):
-        from operating.query_understanding import understand
-        policy = object()
-        view, gated = self.view(policy, denied={"PurchaseOrder:99999"})
-        found = {"roots": [{"object_id": "PurchaseOrder:12345", "mention": "PO12345",
-                            "object_type": "PurchaseOrder"}]}
-        calls = []
-
-        def recording(question, **kwargs):
-            calls.append(kwargs)
-            return {"intent": "status", "entities": [
-                {"text": "PO12345", "resolved": None, "candidates": []},
-                {"text": "PO99999", "resolved": "PurchaseOrder:99999",
-                 "candidates": [{"object_id": "PurchaseOrder:99999",
-                                 "type": "PurchaseOrder", "label": "PO99999"}]}]}
-        got = self.decide(recording, view, found)
-        self.assertIs(calls[0]["policy"], policy)
-        self.assertIs(calls[0]["actor"], gated)
-        # IN-13: item-gated names are checked by this reader's own read
-        self.assertIs(calls[0]["item_check"], view.access.visible_objects)
-        resolved = [e.resolved.object_id for e in got.entities if e.resolved is not None]
-        self.assertEqual(resolved, ["PurchaseOrder:12345"])   # found kept, denied dropped
-        self.assertNotIn("PurchaseOrder:99999", json.dumps(got.model_dump()))
-        self.assertEqual([e.text for e in got.entities if e.text == "PO12345"], ["PO12345"])
-        # the real interpreter given no policy resolves nothing: the found root still stands
-        view, _ = self.view(None)
-        got = self.decide(lambda question, **kw: understand(
-            question, **{**kw, "policy": None}, llm=False), view, found)
-        self.assertEqual([e.resolved.object_id for e in got.entities if e.resolved],
-                         ["PurchaseOrder:12345"])
-        # switched off: the grammar's roots alone
-        got = self.decide(None, view, found)
-        self.assertEqual([e.resolved.object_id for e in got.entities if e.resolved],
-                         ["PurchaseOrder:12345"])
 
 
 if __name__ == "__main__":
@@ -1662,28 +1634,6 @@ class LateWhileTheCheckReruns(unittest.TestCase):
         return {"object_id": oid, "object_type": "PurchaseOrder", "kind": "late_order",
                 "days_late": days, "summary": "Past its need date", "citations": [handle]}
 
-    def ask(self, fake):
-        got = be.WorkspaceBackend._late_ask(fake, None, m.AskRequest(question="is anything late"),
-                                            "c1", lambda: 0)
-        try:
-            while True:
-                next(got)
-        except StopIteration as done:
-            return done.value
-
-    def test_a_late_read_queued_past_its_limit_goes_to_the_agent_not_busy(self):
-        """CAP-L297 (11-13 W9: four asks at once): the late-list read queued behind other
-        readers' reads past READ_TIMEOUT_SECONDS refused the whole Ask busy at 65 s; it
-        now goes on to the agent path (None), as the at-risk and profit shortcuts do."""
-        fake, _ = self.backend([])
-
-        def queued(reader, job, timeout=None):
-            raise TimeoutError("workbench_busy")
-
-        fake.reads = SimpleNamespace(run=queued)
-        fake._late_from_page = lambda reader, request, conversation, ms: None
-        self.assertIsNone(self.ask(fake))
-
     def test_the_late_list_never_says_none_is_late_when_no_findings_were_read(self):
         """UX walk 11-13: /late said "No late POs" while the alert run had not run on the
         server (the reader's gap inbox not read). It answers alerts_not_read (404)."""
@@ -1702,52 +1652,16 @@ class LateWhileTheCheckReruns(unittest.TestCase):
         page = late_list(None)
         self.assertEqual((page.total, page.items), (0, []))
 
-    def test_a_late_read_past_its_limit_answers_from_the_late_pages_list(self):
-        """UX walk 11-13: "which purchase orders are late?" went to the agent after the
-        late read's limit and timed out at 128 s while /late showed the list. The Late
-        page's own first page as it is served to this reader (kept for them, never read
-        here) answers, each source decided for them again; a page being read or empty
-        leaves it to the agent."""
-        from types import MethodType
-        fake, view = self.backend([])
 
-        def queued(reader, job, timeout=None):
-            raise TimeoutError("workbench_busy")
-        fake.reads = SimpleNamespace(run=queued)
-        item = m.LatePo(object_id=self.PO, label="PO 1001", days_late=30, open_url="/po/1001",
-                        reason="Past its need date")
-        pages = {"page": m.LateList(total=1, offset=0, items=[item], next_offset=1,
-                                    as_of="2026-11-13T08:00:00Z")}
-        fake._kept_late = lambda reader: pages["page"]
-        fake._ask_run = lambda reader, job: job(view)
-        fake._late_from_page = MethodType(be.WorkspaceBackend._late_from_page, fake)
-        answer = self.ask(fake)
-        self.assertEqual(answer.outcome, "answered")
-        self.assertEqual([s.object_id for s in answer.subjects], [self.PO])
-        for page in (m.LateList(total=0, offset=0, next_offset=0, reading=True),
-                     m.LateList(total=0, offset=0, next_offset=0), None):
-            pages["page"] = page
-            self.assertIsNone(self.ask(fake))
-
-    def test_the_last_completed_result_answers_with_an_as_of_line(self):
+    def test_the_last_completed_result_lists_only_orders_the_reader_may_see(self):
         held = [self.gap(self.PO, "bc://x/purchaseOrders/p1@1", 30),
                 self.gap(self.HIDDEN, "bc://x/purchaseOrders/p2@1", 20),
                 self.gap("PurchaseOrder:bc.purchase_orders:p3", "mystery://p3@1", 10)]
-        fake, _ = self.backend(held, refused={"bc://x/purchaseOrders/p2@1"})
-        answer = self.ask(fake)
-        self.assertEqual(answer.outcome, "answered")
-        self.assertNotIn("can't", answer.direct_answer)
-        self.assertTrue(answer.direct_answer.startswith(
-            "1 purchase order you can see is late at the last completed late-order check "
-            "(2026-11-10)."), answer.direct_answer)
-        self.assertIn("re-running on newer data", answer.direct_answer)
+        fake, view = self.backend(held, refused={"bc://x/purchaseOrders/p2@1"})
+        late, total = fake._late_fallback(view)
         # the refused and the undecided order are never named or counted
-        self.assertEqual([s.object_id for s in answer.subjects], [self.PO])
-        self.assertNotIn("1002", answer.model_dump_json())
-
-    def test_no_completed_result_goes_on_to_a_live_read(self):
-        fake, _ = self.backend([])
-        self.assertIsNone(self.ask(fake))
+        self.assertEqual((total, [p.object_id for p in late]), (1, [self.PO]))
+        self.assertNotIn("1002", json.dumps([p.model_dump() for p in late]))
 
     def test_an_order_that_cites_nothing_is_not_shown(self):
         # All() over no citations let an uncited order through

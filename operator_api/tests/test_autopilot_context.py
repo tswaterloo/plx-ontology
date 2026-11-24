@@ -456,6 +456,59 @@ class EnvAllowlist(unittest.TestCase):
             self.assertEqual(ac.allowed_env({}), {})
 
 
+class SharedPrompt(unittest.TestCase):
+    """The autopilot sessions run on the Ask's prompt (``simple_ask.system_prompt``): they
+    get plx.legs, their tools print the session's {{...}} references before acting, and
+    their final text is printed from the session's own results (one prompt, one renderer)."""
+
+    def test_a_draft_session_prints_its_references_and_its_tools_see_results(self):
+        from types import SimpleNamespace
+        from operating import agent_session, chat_ask_model as cm
+        from operating.agent_session import LocalTool
+        rid = "sql://" + "c" * 20
+        result = {"result": rid, "columns": ["n"], "profile": {"rows": 3, "exact": True},
+                  "rows": [{"cite": f"{rid}#row=0", "cells": ["3"]}]}
+        made = {}
+
+        class Agent:
+            def __init__(self, **kw):
+                self.local_tools = {}
+                made["agent"] = self
+
+            def run(self, prompt, host):
+                return SimpleNamespace(final_text=f"You have {{{{count({rid})}}}} open; "
+                                       f"{{{{count(sql://{'d' * 20})}}}}", usage={},
+                                       events=[{"type": "tool_call", "name": "plx.sql",
+                                                "result": json.dumps(result)}])
+        proposal = LocalTool(spec={"name": "plx.prepare_write"}, call=lambda a: a)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "host.json"
+            cfg.write_text("{}", encoding="utf-8")
+            look = ac.Lookup.__new__(ac.Lookup)
+            look.secret, look.config, look.state = "s", cfg, Path(tmp)
+            look.readers_path, look.model, look.binary, look.home, look.graph = "r", "m", "b", tmp, {}
+            with mock.patch.object(ac, "readers", return_value={"ana@x": {"sub": "1"}}), \
+                    mock.patch.object(cm, "credential_path_safe", return_value=True), \
+                    mock.patch.object(agent_session, "ReaderHost", lambda *a, **k: SimpleNamespace()), \
+                    mock.patch.object(agent_session, "ClaudeCodeAgent", Agent), \
+                    self.assertLogs("operator_api.autopilot", "WARNING") as logs:
+                text, _looked = look.run("ana@x", "draft it", tools=[proposal], job=True)
+        # a reference that does not resolve refuses the text (no draft with a hole)
+        self.assertEqual(text, "")
+        self.assertIn("session_refs_unresolved", "".join(logs.output))
+        tools = made["agent"].local_tools
+        self.assertIn("plx.legs", tools)
+        self.assertTrue(tools["plx.prepare_write"].sees_results)
+        self.assertEqual(tools["plx.prepare_write"].call(
+            {"note": f"{{{{count({rid})}}}} open"}, [{"type": "tool_call", "name": "plx.sql",
+                                                     "result": json.dumps(result)}]),
+            {"note": "3 open"})
+        # every reference resolved: the text is printed
+        events = [{"type": "tool_call", "name": "plx.sql", "result": json.dumps(result)}]
+        self.assertEqual(ac.session_text(SimpleNamespace(
+            final_text=f"You have {{{{count({rid})}}}} open.", events=events)), "You have 3 open.")
+
+
 if __name__ == "__main__":
     unittest.main()
 

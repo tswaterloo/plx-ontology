@@ -57,7 +57,7 @@ RULES = {
     "receivables": {"record": ("SalesInvoice", "SalesOrder"),
                     "link": ("Email.mentions_sales_invoice", "Email.mentions_sales_order"),
                     "workflows": AR_WORKFLOWS},
-    "payables": {"record": "PurchaseInvoice", "link": "Email.mentions_purchase_invoice"},
+    "payables": {"record": "SupplierInvoice", "link": "Email.mentions_supplier_invoice"},
 }
 # Roles no record kind names: a person is in one when the conversations they write in (mail
 # they sent, their Teams chat messages; ``workflows.classify`` of each message) are about the
@@ -76,7 +76,7 @@ ACTIVITY_RULES = {
 ACTIVITY_FOCUS = 0.3
 ROLE_NAMES = frozenset(RULES) | frozenset(ACTIVITY_RULES)
 CHUNK = 2000
-MAX_MEMBERS = 15
+MAX_MEMBERS = 30
 
 
 def _window_mail(st: Any, since: str, until: str) -> list[str]:

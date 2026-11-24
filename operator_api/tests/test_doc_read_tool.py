@@ -104,7 +104,7 @@ class ReadDocument(Base):
         the text the capture extracted; plx.read_document answered not_readable for all of
         them. It now reads that text through the same host gate and says so; a reader the
         host does not open it for still gets nothing; text withheld by the egress check
-        (Freightcom) is still withheld."""
+        is still withheld."""
         read = self.tools(self.ana)["plx.read_document"]
         coa = "Certificate of Analysis\nLot Number:\n26233A\nBulk Lot Number: BC-26181D\n"
         opened = {self.ana.key}
@@ -125,9 +125,6 @@ class ReadDocument(Base):
         # no text kept either: the plain refusal, never an empty read
         self.b.prepared_doc_text = lambda r, c: None
         self.assertEqual(read.call({"citation": SP})["error"]["code"], "not_readable")
-        # the same egress check as any read
-        self.b.prepared_doc_text = lambda r, c: ("COA.pdf", coa + "Freightcom freight bill", "v1")
-        self.assertEqual(read.call({"citation": SP})["error"]["code"], "egress_withheld")
 
     def test_a_mail_attachment_is_read_whole_or_from_its_captured_text(self):
         """A byte-pinned mail-attachment citation reads like a file the host opens: its
@@ -166,8 +163,8 @@ class ReadDocument(Base):
                     {"citation": mine, "offset": -1}, {"citation": mine, "sum": "Price"}):
             with self.subTest(bad=bad):
                 self.assertEqual(read.call(bad)["error"]["code"], "invalid_input")
-        # Freightcom or an excluded person named far past the first page: nothing at all
-        for tail in ("IT-9,1,Freightcom pickup", f"IT-9,1,ask {HIDDEN[0]}"):
+        # an excluded person named far past the first page: nothing at all
+        for tail in (f"IT-9,1,ask {HIDDEN[0]}",):
             cite = self.own_file(self.ana, csv_bytes(6000, tail))
             for args in ({}, {"offset": 0}, {"find": "IT-00001"}, {"where": []}):
                 with self.subTest(tail=tail[:12], args=args):
@@ -205,15 +202,13 @@ class Attachments(Base):
             return b._attached(m.AskRequest(question="check it", attachments=[
                 {"name": n, "data": base64.b64encode(d).decode()} for n, d in files]),
                 self.ana)
-        big, late = csv_bytes(4000), csv_bytes(4000, "IT-9,1,Freightcom pickup")
-        kept, withheld = ask(("orders.csv", big), ("late.csv", late)).files
+        big = csv_bytes(12000)
+        [kept] = ask(("orders.csv", big)).files
         self.assertTrue(kept.cut)
         self.assertIsNone(kept.data)
         cite = re.search(r'"citation": "(file:f_[0-9a-f]+)"', kept.text.split("\n", 1)[0])
         self.assertTrue(cite, kept.text[:300])
         self.assertIsNone(kept.kept)   # a CSV is read on, not edited
-        self.assertEqual(withheld.unread, ask_attachments.WITHHELD)
-        self.assertEqual(withheld.text, "")
         read = self.tools(self.ana)["plx.read_document"]
         last = read.call({"citation": cite.group(1), "find": "IT-03999"})
         self.assertEqual(len(last["matches"]), 1)
@@ -324,7 +319,7 @@ class LongScans(Base):
         write(clean)
         self.assertEqual(sorted(ocr_background.known(desk, file_id)), list(range(1, 13)))
         self.assertNotIn("ocr_pending_pages", read.call({"citation": cite}))
-        for late in (f"ask {HIDDEN[0]}", "Freightcom pickup at 9"):
+        for late in (f"ask {HIDDEN[0]}",):
             with self.subTest(late=late[:12]):
                 write({**clean, 12: late})
                 got = read.call({"citation": cite})
@@ -523,14 +518,16 @@ class Tables(Base):
             fake.drift = True
             self.assertIn("changed while", self.make(self.ana)["refused"])
             fake.drift = False
-            self.assertIn("refused", self.make(self.ana, kind="pptx"))   # 121 rows on a slide
+            # no Workbench row limit: a long table goes on continued slides; only a file
+            # kind's own limit refuses (here Excel's, made small)
+            self.assertNotIn("refused", self.make(self.ana, kind="pptx"))
             with mock.patch("operating.instruct_files.MAX_TABLE_ROWS",
-                            {"xlsx": 100, "csv": 100, "docx": 100, "pdf": 100, "pptx": 30}):
-                self.assertIn("more than the 100", self.make(self.ana)["refused"])
+                            {"xlsx": 100, "csv": None, "docx": None, "pdf": None, "pptx": None}):
+                self.assertIn("refused", self.make(self.ana))
             self.assertIn("refused", self.tools(self.ana)["plx.make_document"].call(
                 {"name": "x", "kind": "xlsx", "content": "[table 1]",
                  "tables": [{"sql": self.SQL, "where": "1=1"}]}))
-        self.assertEqual(len(self.b._uploads()._rows()), 0)   # nothing made for a refusal
+        self.assertEqual(len(self.b._uploads()._rows()), 1)   # only the long deck was made; no refusal made a file
 
     def test_cut_cells_and_an_oversized_row_are_said(self):
         long = {"untrusted_text": "x" * 400, "truncated": True}

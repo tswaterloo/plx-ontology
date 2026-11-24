@@ -1,9 +1,9 @@
 """The HTTP API as a non-owner with the real access layer: the reader's policy is the one the
 object workspace's host decides (``HostAccess.reader_policy``: the fixture world's source
 audiences, per request), not a stand-in. ``/api/suggest`` reads a scratch Postgres
-(``search.entities``) through that policy; ``/api/object`` and ``/api/ask`` read the same
-world's ontology store through it. A reader outside a source's audience gets no suggestion,
-page, fact or cited value of it, whatever the request claims, and an excluded person's
+(``search.entities``) through that policy; ``/api/object`` reads the same
+world's ontology store through it (the one Ask path reads the business views: its own tests). A reader outside a source's audience gets no suggestion,
+page or value of it, whatever the request claims, and an excluded person's
 record is never suggested. Evidence: isolated fixture + scratch Postgres; no network."""
 from __future__ import annotations
 
@@ -44,50 +44,6 @@ ENTITIES = [
 ]
 
 
-# What the planner (the model) was shown: every tool result of every step, in order. A
-# record outside the reader's audience must never be in it: a model shown it could say it,
-# whatever later gate drops the answer's facts.
-SHOWN: list = []
-
-
-def planner_for(po_number):
-    """The Ask planner: finds the purchase order by its number, reads it, and answers
-    only from what that read returned (a model reads what it was shown)."""
-    def shown(result):
-        return result["shown"] if isinstance(result, dict) and "omitted" in result \
-            and isinstance(result.get("shown"), dict) else result
-
-    def planner(request):
-        done = request["transcript"]
-        if done:
-            SHOWN.extend(o.get("result") for o in done[-1].get("observations") or ())
-        if not done:
-            return {"action": "call", "calls": [{"tool": "plx.find", "arguments": {
-                "query": po_number, "identifier_kind": "petra_po"}}]}, None
-        found = shown(done[0]["observations"][0]["result"])
-        cands = found.get("candidates") or []
-        if not cands:
-            return {"action": "answer", "text": "Nothing was found for that order.",
-                    "claims": [], "unknowns": ["the order is not available to you"]}, None
-        if len(done) == 1:
-            return {"action": "call", "calls": [{"tool": "plx.object", "arguments": {
-                "object_id": cands[0]["object"]["object_id"]}}]}, None
-        values = shown(done[1]["observations"][0]["result"]).get("values") or []
-        value = next((v for v in values if v.get("citation") and v.get("value") is not None),
-                     None)
-        if value is None:
-            return {"action": "answer", "text": "Nothing could be read.", "claims": [],
-                    "unknowns": ["no value"]}, None
-        plain = value["value"]
-        plain = plain["untrusted_text"] if isinstance(plain, dict) else plain
-        return {"action": "answer", "text": "The order is on record as {po}.",
-                "claims": [{"id": "po", "value": plain,
-                            "citation": value["citation"]["l1_handle"],
-                            "field": value["citation"]["field_path"]}],
-                "unknowns": []}, None
-    return planner
-
-
 @unittest.skipIf(psycopg is None, "psycopg or fastapi not installed")
 class RealAccessOverHttp(unittest.TestCase):
     @classmethod
@@ -119,7 +75,7 @@ class RealAccessOverHttp(unittest.TestCase):
             cls.runtimes.append(runtime)
             return case_console.object_workspace_for(
                 runtime, cls.store, session.actor, state_dir=cls.state,
-                planner=planner_for(case_fixtures.PO_NUMBER), session=session,
+                session=session,
                 evidence=case_console.evidence_for(case_fixtures.marker(cls.state)))
         cls.backend = be.WorkspaceBackend(objects_for, data_label="t", pg_dsn=cls.dsn,
                                           store_path=cls.store, state_dir=cls.state)
@@ -187,41 +143,6 @@ class RealAccessOverHttp(unittest.TestCase):
                 self.assertNotIn(case_fixtures.PO_NUMBER, found.text)
         self.assertEqual(self.client(OPS, login=False).get(
             f"/api/object/PurchaseOrder/{quote(self.po_id, safe='')}").status_code, 401)
-
-    # ---- Ask ----------------------------------------------------------------------------
-
-    def asked(self, principal: str) -> tuple[dict, str]:
-        """The answer payload and the whole stream of a question that names no record (the
-        planner looks the order up itself, as the reader); ``SHOWN`` holds what the
-        planner was shown for it."""
-        SHOWN.clear()
-        with self.client(principal).stream("POST", "/api/ask", json={
-                "question": "Which purchase order should I look at?"}) as response:
-            self.assertEqual(response.status_code, 200)
-            text = "".join(response.iter_text())
-        answers = [json.loads(line[6:]) for block in text.split("\n\n")
-                   for line in block.split("\n") if line.startswith("data: ")
-                   and block.startswith("event: answer")]
-        self.assertEqual(len(answers), 1, text[:600])
-        return answers[0], text
-
-    def test_ask_answers_from_the_readers_own_sources_only(self) -> None:
-        mine, _text = self.asked(OPS)
-        self.assertTrue(mine["facts"], mine)                      # the reader's own source
-        self.assertIn(case_fixtures.PO_NUMBER, json.dumps(mine))
-        # the planner found and read the order for its reader (the gate's other side)
-        self.assertIn("po-synth", json.dumps(SHOWN, default=str))
-        for principal in (QUALITY, OUTSIDER):
-            answer, text = self.asked(principal)
-            self.assertEqual(answer["facts"], [], principal)
-            self.assertNotEqual(answer["outcome"], "answered", principal)
-            for secret in (case_fixtures.PO_NUMBER, self.po_id):
-                self.assertNotIn(secret, text, principal)
-            # nothing of the order reached the model: no candidate, no read, no value
-            self.assertTrue(SHOWN, principal)   # the planner did look it up
-            seen = json.dumps(SHOWN, default=str)
-            self.assertNotIn(self.po_id, seen, principal)
-            self.assertNotIn("po-synth", seen, principal)
 
 
 if __name__ == "__main__":

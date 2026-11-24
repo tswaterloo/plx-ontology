@@ -2,25 +2,21 @@
 again as the person through their own door (``insights.read_sql``: ``plx.sql`` as them, its
 views' row and cell scoping, its Freightcom and people rules), never rows the model wrote.
 
-``plx.sql`` answers at most a page of rows (``ontology_tools_sql.MAX_ROWS`` and its byte
-cap). A statement whose rows fit is taken as it answered. A longer one is counted
+``plx.sql`` shows a page of rows at a time (200 and its byte budget). A statement whose rows fit is taken as it answered. A longer one is counted
 (``SELECT count(*)`` over it) and read in pages of one total order: the statement's own
 top-level ``ORDER BY`` when each key is a column it returns (a name or a position), then
 the whole row's text, so pages never overlap or skip (identical rows are interchangeable);
 a key that is no returned column (an expression) orders by the row's text alone, said in
 ``ordered``. A cell the person may not read is blank as plx.sql answers it (NULL) and the
 table says ``partial``. The rows read must be exactly the count (else the rows changed while read:
-refused, never a short table). Past ``MAX_ROWS`` rows or ``SECONDS`` the table is refused
-with what to do; nothing partial is ever made into a file."""
+refused, never a short table). No row count or time bounds it (owner 11-23); nothing partial is
+ever made into a file."""
 from __future__ import annotations
 
 import re
 import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-MAX_ROWS = 50_000
-SECONDS = 150.0
-MAX_TABLES = 8
 
 
 class TableRefused(ValueError):
@@ -136,12 +132,10 @@ def _span(sql: str) -> str:
     return re.sub(r";\s*$", "", sql.strip())
 
 
-def read_all(read: Callable[[str], Mapping[str, Any]], sql: str, *,
-             max_rows: int = MAX_ROWS, seconds: float = SECONDS,
-             clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+def read_all(read: Callable[[str], Mapping[str, Any]], sql: str
+             ) -> dict[str, Any]:
     """{"columns", "rows", "ordered", "pages"} of every row of ``sql``, ``read`` being one
     ``plx.sql`` read as the person (``insights.read_sql`` bound to them)."""
-    started = clock()
     sql = _span(sql)
     first = read(sql)
     columns = [str(c) for c in first.get("columns") or ()]
@@ -154,9 +148,6 @@ def read_all(read: Callable[[str], Mapping[str, Any]], sql: str, *,
         total = int(_rows(counted)[0][0])
     except (IndexError, TypeError, ValueError):
         raise TableRefused("Its rows could not be counted.") from None
-    if total > max_rows:
-        raise TableRefused(f"It has {total:,} rows, more than the {max_rows:,} a file "
-                           "holds: filter or group it first.")
     keys = order_keys(sql, columns)
     ordered = "as written" if keys else ("by the rows' text (its order is an expression)"
                                          if keys is None else "by the rows' text")
@@ -164,10 +155,6 @@ def read_all(read: Callable[[str], Mapping[str, Any]], sql: str, *,
     rows: list[list[Any]] = []
     pages, cut = 0, 0
     while len(rows) < total:
-        if clock() - started > seconds:
-            raise TableRefused(f"Reading its {total:,} rows took longer than "
-                               f"{seconds:.0f} s (read {len(rows):,}): filter it or pick "
-                               "fewer columns.")
         got = read(f"SELECT * FROM (\n{sql}\n) AS plx_t ORDER BY {order} "
                    f"LIMIT 200 OFFSET {len(rows)}")
         page = _rows(got)

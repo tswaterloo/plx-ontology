@@ -139,7 +139,7 @@ def plain(text: str) -> str:
     return "".join(t for t, m in runs(text) if "del" not in m)
 
 
-# the chat answer's mark of a figure it could not trace to a record (``ask_gate``): it
+# the chat answer's mark of a figure it could not trace to a record (``ask_refs``: none since A2): it
 # belongs in the answer, never in a file made or edited for the person
 _DOUBT = re.compile(r"[ \t]*\((?:unverified|not verified)\)", re.I)
 

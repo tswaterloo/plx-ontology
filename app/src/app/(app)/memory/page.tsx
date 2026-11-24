@@ -16,6 +16,7 @@ import { forgetMemory, getMemory, saveMemory } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { eastern, objectHref } from "@/lib/format";
 import type { MemoryItem, MemoryItems, MemoryKind } from "@/lib/types";
+import { ShowAll } from "@/components/show-all";
 
 const KINDS: { kind: MemoryKind; title: string; hint: string; example: string }[] = [
   { kind: "instruction", title: "Standing instructions", hint: "How every answer and draft of yours should go. A sign-off, a greeting or a sentence to leave out applies to your next drafts; who the Autopilot drafts nothing for, and who it copies, apply to its next drafts.", example: "Sign off with Thanks, Ana. Stop drafting replies to news@supplier.com. Always cc ana@company.com on supplier emails." },
@@ -135,14 +136,13 @@ function Row({ item, onChanged }: { item: MemoryItem; onChanged: () => void }) {
           {item.due && <span className={item.due < todayET() ? "font-medium text-late" : "text-fg"}>{dueLine(item.due, todayET())}</span>}
           <span>{SOURCE_LABEL[item.source] ?? "Remembered"}</span>
           <span>{eastern(item.at)}</span>
-          {(item.records ?? []).slice(0, 4).map((id) => {
-            const type = id.split(":", 1)[0];
-            return id.includes(":") ? (
-              <Link key={id} href={objectHref(type, id)} className="hover:underline">
-                {recordName({ object_id: id, type })}
+          <ShowAll items={(item.records ?? []).filter((id) => id.includes(":"))} first={4} noun="records">
+            {(id) => (
+              <Link href={objectHref(id.split(":", 1)[0], id)} className="hover:underline">
+                {recordName({ object_id: id, type: id.split(":", 1)[0] })}
               </Link>
-            ) : null;
-          })}
+            )}
+          </ShowAll>
         </p>
         {problem && <p className="mt-1 text-[12px] text-muted" role="alert">{problem}</p>}
       </div>
@@ -200,7 +200,7 @@ function Memory() {
           <>
             {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
             {!list && !problem && <Pending label="Reading your memory" />}
-            {list && !list.available && <EmptyState title="Memory can't be read right now." line="The list of people it must leave out isn't loaded yet. Try again in a minute." />}
+            {list && !list.available && <EmptyState title="Memory can't be read right now." line="Nothing is lost. Try again in a few minutes." />}
             {list?.available && (
               <>
                 <section className="mb-7 rounded-md bg-bg px-4 py-3.5" aria-labelledby="memory-new">

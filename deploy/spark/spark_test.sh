@@ -4,6 +4,8 @@
 #   spark_test.sh --status        the slot queue: held/free slots, what runs, who waits (no wait)
 #   --affected <base>: also the modules tools/affected_tests.py selects for <sha> against <base>, computed
 #     once per (tree, base) for every caller (tools/run_cache.py affected; "ALL" runs every test module).
+#   --app [typecheck|test]: run the app's `npm run typecheck` and vitest for <sha> on one Spark (SPARK_HOST, default
+#     sb4ec), node_modules cached per package-lock.json (spark_app_remote.sh); exit 0 green, 1 a failure, 96-98 setup.
 #   --ids <file>: ready-made job ids (one per line) run verbatim (the lander's list, smoke included).
 #   --no-wait (or SPARK_NO_WAIT=1): no slot free -> print the queue and exit 75 instead of waiting.
 #   The lander runs it on every landing.
@@ -26,8 +28,9 @@ here=$(dirname "$(readlink -f "$0")")
 cache_py="$here/../../tools/run_cache.py"
 [ -f "$cache_py" ] || { echo "spark_test.sh runs from a repository checkout or release (no tools/run_cache.py beside it)" >&2; exit 2; }
 slot_dir=${SPARK_SLOT_DIR:-/data/scratch}
-sha="" extra=() ids="" affected="" nowait=${SPARK_NO_WAIT:-0}
+sha="" extra=() ids="" affected="" nowait=${SPARK_NO_WAIT:-0} app="" appwhat=both
 while [ $# -gt 0 ]; do case "$1" in
+  --app) app=1; if [ "${2:-}" = typecheck ] || [ "${2:-}" = test ]; then appwhat=$2; shift; fi; shift ;;
   -t) extra+=("$2"); shift 2 ;; --ids) ids=$2; shift 2 ;; --affected) affected=$2; shift 2 ;; --no-wait) nowait=1; shift ;;
   --status) exec python3 "$cache_py" slots ;;
   -h|--help) sed -n 2,21p "$0"; exit 2 ;; *) if [ -z "$sha" ]; then sha=$1; else extra+=("$1"); fi; shift ;; esac; done  # 11-14: bare names after <sha> = -t
@@ -41,6 +44,16 @@ sha=$(git -C "$repo" rev-parse --verify -q "$sha^{commit}") || { echo "unknown c
 tree=$(git -C "$repo" rev-parse --verify -q "$sha^{tree}")
 log="$logs/${sha:0:10}-$(date +%Y%m%d-%H%M%S).log"
 ssh_cfg=${PLX_SPARK_SSH_CONFIG:-/data/plx-state/ts-petra/ssh_config}
+if [ -n "$app" ]; then   # the app's typecheck + vitest on a Spark: nothing runs on this box
+  h=${SPARK_HOST:-sb4ec}; [ "$h" != both ] || h=sb4ec; [[ "$h" == s7d3d || "$h" == sb4ec ]] || { echo "SPARK_HOST must be s7d3d|sb4ec" >&2; exit 2; }
+  R="ssh -F $ssh_cfg -o ConnectTimeout=8 -o BatchMode=yes $h"
+  $R true 2>/dev/null || { echo "spark_test --app ${sha:0:10} exit 96: $h unreachable"; exit 96; }
+  GIT_SSH_COMMAND="ssh -F $ssh_cfg" git -C "$repo" push -q -f $h:plx-tests/repo.git "$sha:refs/plx/$sha" || { echo "push to $h failed" >&2; exit 96; }
+  f="$here/spark_app_remote.sh"; rh=$(sha256sum "$f" | cut -c1-12)
+  scp -q -F $ssh_cfg "$f" $h:plx-tests/.spark_app_remote.$rh.$$ && $R "mv -f ~/plx-tests/.spark_app_remote.$rh.$$ ~/plx-tests/spark_app_remote.$rh.sh" || { echo "copy to $h failed" >&2; exit 96; }
+  $R "pin=; systemd-run --user --scope -q true >/dev/null 2>&1 && pin='systemd-run --user --scope -q -p CPUWeight=100 -p MemoryMax=8G --'; \$pin bash ~/plx-tests/spark_app_remote.$rh.sh $sha $appwhat 2>&1" | tee "$log"
+  exit "${PIPESTATUS[0]}"
+fi
 tmpd=$(mktemp -d); run_file=""
 trap 'rm -rf "$tmpd"; [ -z "$run_file" ] || rm -f "$run_file"' EXIT
 if [ -n "$affected" ]; then

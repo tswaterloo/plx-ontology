@@ -223,9 +223,8 @@ def _shaped(read: Callable[[str], Any], url: str) -> Any:
 # per company with a pinned name (``BcCapture._capture_references``).
 REFERENCE_SET = "purchaseOrderReferences"
 REFERENCE_PARENT_SET = "purchaseOrders"
-# ``SourceApi.get_pages``'s own item bound; live 2026-10-21: 355 orders in My Company. A
-# company with more is read truncated (the unit partial), never silently whole.
-REFERENCE_MAX_ITEMS = 5000
+# The reference read follows every page BC sends (``SourceApi.get_all_pages``): no item
+# bound; live 2026-10-21: 355 orders in My Company.
 # Page 50 rows per page (``Prefer: odata.maxpagesize``): three short fields a row, so the
 # reference traversal takes BC's page ceiling whatever the record page size of the call.
 REFERENCE_PAGE_SIZE = 1000
@@ -246,9 +245,8 @@ NAMED_COMPANIES_STATE = "bc:named_companies"
 LOT_SET = "itemLedgerEntryLots"
 LOT_PARENT_SET = "itemLedgerEntries"
 LOT_PAGE_SIZE = 1000
-# Pages one lot read follows (1,000 entries each); a longer listing is read truncated (the
-# unit partial, resumed whole next run), never silently whole.
-LOT_MAX_PAGES = 200
+# One lot read follows every page BC sends (1,000 entries each); a repeated nextLink is
+# ``nextlink_refused``, the only stop besides a hung connection.
 LOT_DROPPED = ("no_entry_number", "ambiguous_api_record", "duplicate_entry", "item_mismatch")
 LOT_COUNTS = (*LOT_DROPPED, "no_api_record", "stored")
 # A complete lot listing with no row while the item ledger holds entries (``_capture_lots``).
@@ -264,8 +262,7 @@ LOT_NO_ROWS = "no_lot_rows"
 # customer and a vendor is two records.
 PARTY_CONTACT_SET = "contactsInformation"
 PARTY_CONTACT_PAGE_SIZE = 500
-# Party pages one read follows; a longer listing is read truncated (the unit partial).
-PARTY_CONTACT_MAX_PAGES = 200
+# A party read follows every page BC sends (a repeated nextLink is ``nextlink_refused``).
 # BC ``relatedType`` (enum contactBusinessRelationLinkToTable) of each party set.
 PARTY_RELATED_TYPE = {"customers": "Customer", "vendors": "Vendor"}
 PARTY_CONTACT_DROPPED = ("bad_relation", "other_party", "duplicate_relation")
@@ -381,9 +378,8 @@ class BusinessCentralReader:
         if isinstance(page_size, bool) or not isinstance(page_size, int) \
                 or not 1 <= page_size <= 1000:
             raise ValueError("page_size must be 1..1000")
-        raws, completeness = _shaped(lambda u: self._api.get_pages(
-            u, max_pages=max_pages, max_items=max_items,
-            headers={"Prefer": f"odata.maxpagesize={page_size}"}), url)
+        raws, completeness = _shaped(lambda u: self._api.get_all_pages(
+            u, headers={"Prefer": f"odata.maxpagesize={page_size}"}), url)
         records, withheld, dropped = [], 0, 0
         parent_field = grammar.BC_LINE_PARENT_FIELD.get(entity_set, "documentId")
         for raw in raws:
@@ -425,8 +421,7 @@ class BusinessCentralReader:
                           page_size=page_size, max_pages=max_pages, max_items=max_items)
 
     def purchase_order_references(self, actor: Actor, company_id: str, company_name: str, *,
-                                  page_size: int = 500, max_pages: int = 50,
-                                  max_items: int = REFERENCE_MAX_ITEMS) -> dict[str, Any]:
+                                  page_size: int = 500) -> dict[str, Any]:
         """The ``Your_Reference`` (FileMaker PO number) of every purchase order of one
         company, read from the ODataV4 web-service page ``PurchaseOrder`` (Page 50): API
         v2.0 ``purchaseOrders`` does not expose it. The one request shape is
@@ -446,9 +441,8 @@ class BusinessCentralReader:
         self._audience.require(actor, resource)
         url = grammar.url("bc.odata_purchase_orders", grammar.bc_odata_purchase_order_query(),
                           company=company_name, **self._where)
-        raws, completeness = _shaped(lambda u: self._api.get_pages(
-            u, max_pages=max_pages, max_items=max_items,
-            headers={"Prefer": f"odata.maxpagesize={page_size}"}), url)
+        raws, completeness = _shaped(lambda u: self._api.get_all_pages(
+            u, headers={"Prefer": f"odata.maxpagesize={page_size}"}), url)
         items, withheld, no_number = [], 0, 0
         for raw in raws:
             fields = {name: raw.get(name) for name in grammar.BC_ODATA_PO_FIELDS}
@@ -469,7 +463,7 @@ class BusinessCentralReader:
                 "company_id": company_id, "items": items, "completeness": completeness}
 
     def item_ledger_lots(self, actor: Actor, company_id: str, company_name: str, *,
-                         page_size: int = LOT_PAGE_SIZE, max_pages: int = LOT_MAX_PAGES
+                         page_size: int = LOT_PAGE_SIZE
                          ) -> dict[str, Any]:
         """The lot of every item ledger entry of one company that carries one, read from the
         ODataV4 web service ``ItemLedgerEntries`` (Page 38): API v2.0 ``itemLedgerEntries``
@@ -480,8 +474,8 @@ class BusinessCentralReader:
         fields of the company's item ledger, so the audience resource is
         ``itemLedgerEntries``'. Items: ``{"entry", "fields", "etag"}`` (a row with no etag
         is versioned by the digest of its fields); a row without an entry number is
-        counted ``no_entry_number``. Paged by nextLink within ``max_pages`` pages: a longer
-        listing is ``truncation_reason`` ``page_cap``, never complete."""
+        counted ``no_entry_number``. Paged by nextLink until BC sends none (no page bound); a
+        nextLink that repeats a page is ``nextlink_refused``."""
         company_id = _guid(company_id, "company id")
         if isinstance(page_size, bool) or not isinstance(page_size, int) \
                 or not 1 <= page_size <= 1000:
@@ -493,7 +487,7 @@ class BusinessCentralReader:
                                       company=company_name, **self._where)
         raws: list[Mapping[str, Any]] = []
         pages, seen = 0, set()
-        while url is not None and pages < max_pages:
+        while url is not None:
             if url in seen:
                 raise nextlink_refused("business-central pagination loop (a nextLink "
                                        "repeated a page)")
@@ -517,8 +511,7 @@ class BusinessCentralReader:
                 etag = "sha256:" + canonical_sha256(fields)
             items.append({"entry": entry, "fields": fields, "etag": etag})
         completeness = completeness_with_withheld(
-            {"complete": url is None, "pages_read": pages, "items_read": len(raws),
-             **({} if url is None else {"truncation_reason": "page_cap"})}, withheld)
+            {"complete": True, "pages_read": pages, "items_read": len(raws)}, withheld)
         completeness["no_entry_number"] = unnumbered
         return {"source": "business-central", "environment": self.environment,
                 "company_id": company_id, "items": items, "completeness": completeness}
@@ -561,8 +554,7 @@ class BusinessCentralReader:
         return listing
 
     def party_contacts(self, actor: Actor, company_id: str, party_set: str, *,
-                       page_size: int = PARTY_CONTACT_PAGE_SIZE,
-                       max_pages: int = PARTY_CONTACT_MAX_PAGES) -> dict[str, Any]:
+                       page_size: int = PARTY_CONTACT_PAGE_SIZE) -> dict[str, Any]:
         """The contact relations of every customer (``party_set`` ``customers``) or vendor
         (``vendors``) of one company: the party listing with each party's
         ``contactsInformation`` expanded (``grammar.bc_party_contacts_query``: the party's
@@ -573,7 +565,7 @@ class BusinessCentralReader:
         party (no contact GUID, ``relatedId`` another party, ``relatedType`` not the
         party's kind) is dropped and counted; a party whose expansion BC did not return
         whole (no list, or paged by a nested nextLink) is counted ``parties_unread`` and
-        the listing is not complete. Paged within ``max_pages``: longer is ``page_cap``."""
+        the listing is not complete. Paged until BC sends no nextLink (no page bound)."""
         if party_set not in grammar.BC_PARTY_CONTACTS:
             raise ValueError("entity set has no contact relations")
         company_id = _guid(company_id, "company id")
@@ -590,7 +582,7 @@ class BusinessCentralReader:
         url: str | None = None
         pages, parties, unread, withheld = 0, 0, 0, 0
         sent: set[str] = set()
-        while pages < max_pages:
+        while True:
             key = url or self.collection_url(company_id, party_set, query)
             if key in sent:
                 raise nextlink_refused("business-central pagination loop (a nextLink "
@@ -639,12 +631,11 @@ class BusinessCentralReader:
                     items.append({"id": record_id, "fields": fields, "etag": etag})
             if url is None:
                 break
-        complete = url is None and not unread
+        complete = not unread
         completeness = completeness_with_withheld(
             {"complete": complete, "pages_read": pages, "parties_read": parties,
              "items_read": len(items) + withheld,
-             **({} if complete else {"truncation_reason": "page_cap" if url is not None
-                                     else "expansion_unread"})}, withheld)
+             **({} if complete else {"truncation_reason": "expansion_unread"})}, withheld)
         completeness.update(parties_unread=unread, **counts)
         return {"source": "business-central", "environment": self.environment,
                 "company_id": company_id, "party_set": party_set, "items": items,

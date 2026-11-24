@@ -63,6 +63,7 @@ from operating.file_modes import keep_private, keep_shared, make_absent
 
 from .errors import RecordNotFound
 
+FEEDBACK_MAX = 20000   # a note or expected answer, as stored (the memory keeps its own 8,000)
 KINDS = ("answer", "alert", "page", "record", "list", "ui", "general")
 STATUSES = ("new", "accepted", "fixed", "wont_fix")
 VERDICTS = ("useful", "not_useful", "wrong")
@@ -772,9 +773,9 @@ def record_answer(store: FeedbackStore, backend: Any, reader: Any, request: Any,
     flagged = sorted({i for i in (request.claims or []) if 0 <= i < len(claims)})
     who = _who(reader, guard)
     question = clean(kept.get("question"), guard) or ""
-    expected = clean(request.expected, guard, 2000) if request.rating == -1 else None
+    expected = clean(request.expected, guard, FEEDBACK_MAX) if request.rating == -1 else None
     answer = clean(kept.get("answer"), guard)
-    note = clean(request.note, guard, 2000)
+    note = clean(request.note, guard, FEEDBACK_MAX)
     # the sensitive markings the answer was served under, kept with it when served, and
     # any the reader holds now (a narrowed grant never relabels an old answer as less
     # sensitive; unknown either way: None, read as all)
@@ -816,7 +817,7 @@ def record_item(store: FeedbackStore, backend: Any, reader: Any, request: Any
                "item_kind": request.item_kind, "event_type": request.event_type}
     return _add(store, who, {
         "kind": "alert", "verdict": request.verdict,
-        "note": clean(request.note, guard, 2000), "page": clean(request.page, guard, 300),
+        "note": clean(request.note, guard, FEEDBACK_MAX), "page": clean(request.page, guard, 300),
         "item_id": request.item_id, "object_type": request.object_type,
         "object_id": clean(request.object_id, guard, 200),
         "label": clean(request.label, guard, 300), "context": context})
@@ -830,7 +831,7 @@ def record_note(store: FeedbackStore, backend: Any, reader: Any, request: Any
     who = _who(reader, guard)
     context = _context_common(backend, reader, request.app_version, who["_hidden"])
     return _add(store, who, {
-        "kind": request.kind, "note": clean(request.note, guard, 2000),
+        "kind": request.kind, "note": clean(request.note, guard, FEEDBACK_MAX),
         "page": clean(request.page, guard, 300), "object_type": request.object_type,
         "object_id": clean(request.object_id, guard, 200),
         "label": clean(request.label, guard, 300), "context": context})

@@ -30,7 +30,6 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-MAX_TEXT = 1000          # the Ask box's own limit (models.AskRequest)
 MAX_MATERIAL = 6000       # characters of one material in the prompt
 MAX_MATERIALS = 12
 MAX_CANDIDATES = 3
@@ -121,13 +120,10 @@ class Outcome:
 
 
 def clean_text(text: Any) -> str:
-    """One instruction or answer as typed: words, at most ``MAX_TEXT`` characters; else
-    refused."""
+    """One instruction or answer as typed: its words, whole (no length limit)."""
     if not isinstance(text, str) or not text.strip():
         raise InstructRefused("empty")
     text = " ".join(text.split())
-    if len(text) > MAX_TEXT:
-        raise InstructRefused("too_long")
     return text
 
 
@@ -172,100 +168,6 @@ def recurring(text: str) -> Optional[dict[str, Any]]:
     words = "Every working day" if unit == "weekday" else "Every day"
     return {"kind": "schedule.daily", "words": words,
             "params": {"weekdays_only": unit == "weekday"}}
-
-
-# ---- the router -------------------------------------------------------------------------
-
-# A line asks for something done only on an imperative to produce or change something (the
-# verb first, after "please", "can you" and the like). A line asking for information is
-# answered from the records, even when it opens with "can you": "can you tell me when PO
-# 1234 ships?", "update me on PO 1234". "tell", "update", "remind", "send" and "email" do
-# only when aimed at someone or something other than the person ("tell Pat", "update the
-# date"); aimed at "me" they ask ("tell me", "update me on").
-_DO = (r"reply|respond|draft|write|send|email|e-mail|mail|chase|nudge|tell|ping|message|"
-       r"notify|remind|set|update|change|move|push|add|create|make|prepare|file|upload|"
-       r"save|schedule|book|forward|assign|cancel|put|fill|generate|log|record|note|"
-       r"approve|decline|reject|pay|post|share|invite|mark|close|reschedule|order more|complete|"
-       r"answer (?:this|that|him|her|them|the (?:email|message|mail))|follow up|set up")
-_POLITE = (r"^(?:(?:please|pls|kindly|ok|okay|now|then|and|hey|hi)[,\s]+)*"
-           r"(?P<lead>(?:(?:can|could|would|will) you|(?:are|would) you able to|"
-           r"i (?:want|need|would like|'d like) you to|go ahead and)\s+(?:please\s+)?)?")
-# "me" lines: information for the person, never a thing done (bar "remind me to ...")
-_FOR_ME = re.compile(
-    _POLITE + r"(?:(?:tell|show|give|update|brief|fill) me\b(?! (?:to|every|each)\b)|"
-    r"let me know\b|remind me\b(?! to\b)|walk me through\b|catch me up\b|"
-    r"get me\b|find me\b|pull up\b|look up\b|look into\b|check\b|explain\b|"
-    r"summari[sz]e\b|list\b|compare\b|find\b|show\b|(?:what|who|when|where|why|how|"
-    r"which)\b)",
-    re.I)
-_DOING = re.compile(_POLITE + r"(?P<verb>" + _DO + r")\b(?P<rest>.*)$", re.I)
-# "use my quote template for ...": a saved template filled (``operator_api.templates``)
-_TEMPLATE = re.compile(r"^(?:please\s+)?(?:use|apply|start from)\s+(?:my|our|the)\s+"
-                       r"[^?{}]{1,80}?\s+template\b[^?]*$", re.I)
-# a question's own shape: an interrogative or auxiliary first
-_QUESTION = re.compile(
-    r"^(?:(?:please|ok|okay|so|and|hey|hi)[,\s]+)*(?:what|who|whom|whose|when|where|why|"
-    r"how|which|is|are|was|were|does|did|has|have|had|do (?:we|you|i|they)|will (?:it|we|"
-    r"they|the)|may|might|any|is there|are there)\b", re.I)
-_SELF_DOUBT = re.compile(r"^(?:should|shall|can|could|do|would|must) (?:i|we)\b", re.I)
-# a second clause that does something: "tell me when it ships and draft a chase"
-_AND_DO = re.compile(r"(?:\band|\bthen|\balso|[,;])\s+(?:please\s+)?(?:" + _DO
-                     + r")\b(?! me\b)", re.I)
-_SOMEWHERE = re.compile(r"\b(?:" + _DO + r")\b", re.I)
-ROUTES = ("do", "ask", "unsure")
-
-
-def verb(text: str) -> Optional[str]:
-    """The do-verb a line leads with ("reply", "draft", "forward", ...), lower case; None
-    when it leads with none (``_DOING``)."""
-    found = _DOING.match(" ".join(str(text or "").split()))
-    return found.group("verb").lower() if found else None
-
-
-def route(text: str, *, mode: Optional[str] = None, continuing: bool = False) -> str:
-    """Whether the box's line asks for something done (``do``: the instruction engine),
-    asked (``ask``: the cited answer path, as before) or cannot be told apart
-    (``unsure``: the box asks which). The person's own pick (``mode``) and a continued
-    instruction decide first. A line asking for information is ``ask`` whatever its lead;
-    ``do`` only on an imperative to produce or change something (or a recurring line
-    holding no question); a question that also says to do something is ``unsure``."""
-    if continuing or mode == "do":
-        return "do"
-    if mode == "ask":
-        return "ask"
-    if _TEMPLATE.match(" ".join(str(text or "").split())):
-        return "do"                               # "use my quote template for SO 1234"
-
-    text = " ".join(str(text or "").split())
-    if not text:
-        return "ask"
-    from .entry_assist import create_kind
-    if create_kind(text):
-        return "do"                               # "create an order from this PO"
-    asked = text.endswith("?")
-    then_do = bool(_AND_DO.search(text))
-    if _FOR_ME.match(text) or _QUESTION.match(text):
-        if _SELF_DOUBT.match(text) and _SOMEWHERE.search(text):
-            return "unsure"                       # "should I reply to this?"
-        # a schedule word alone ("monthly revenue by customer") is a measure, not an
-        # instruction: unsure only with something to do in it, as the last branch asks
-        return "unsure" if then_do or (recurring(text) and not asked
-                                       and _SOMEWHERE.search(text)) else "ask"
-    if _SELF_DOUBT.match(text):
-        return "unsure" if _SOMEWHERE.search(text) else "ask"
-    doing = _DOING.match(text)
-    if doing:
-        verb, rest = doing.group("verb").lower(), doing.group("rest")
-        if verb in ("send", "email", "e-mail", "mail", "message", "ping") and re.match(
-                r"\s+me\b", rest, re.I):
-            # "send me the PO": the record shown, or a mail to themselves
-            return "unsure"
-        if not asked or doing.group("lead"):
-            return "do"                           # "draft ...", "can you draft ...?"
-        return "unsure"                           # "reply to this?"
-    if recurring(text) and not asked and _SOMEWHERE.search(text):
-        return "do"                               # "every Monday, chase late POs"
-    return "ask"
 
 
 # ---- the prompt -------------------------------------------------------------------------
@@ -645,6 +547,6 @@ def meeting_material(key: str, record: Mapping[str, Any]) -> Material:
 
 
 __all__ = ["CONTEXT_KINDS", "Candidate", "Drafted", "Folder", "InstructRefused", "Material",
-           "Outcome", "ROUTES", "WriteTarget", "route", "stated",
+           "Outcome", "WriteTarget", "stated",
            "clean_text", "given_text", "ground", "ground_outcome", "meeting_material",
            "prompt", "rank_meetings", "read_reply", "recurring"]

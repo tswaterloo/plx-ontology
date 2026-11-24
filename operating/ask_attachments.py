@@ -10,13 +10,15 @@ WebP: shown to the model as an image). Anything else, an encrypted PDF, a scan O
 read, or a file over its limit is not read, and the answer says which and why
 (``Unread``). Fail closed: an error while reading is an unread file, never a guess.
 
-**Limits.** ``MAX_FILES`` files, each up to ``MAX_BYTES`` (an image up to
-``MAX_IMAGE_BYTES``, the model's own limit), together up to ``MAX_TOTAL``; an Office
-package unpacked only up to ``MAX_UNZIPPED`` (no zip bomb); ``MAX_TEXT`` characters of a
-file's text and ``MAX_TEXT_TOTAL`` together go into the question. A file whose text goes
-on past that keeps its whole text (``Attached.whole``) for the screens and its bytes for
-the caller to keep as the person's own file, which ``plx.read_document`` reads to the end
-(``operator_api.doc_read_tool``).
+**Limits.** Any number of files of any size (a file arrives streamed to
+disk by ``operating.ask_uploads``, its path in the item, or inline as base64); an image over the
+model's own limit (``MAX_IMAGE_BYTES``) is scaled down to fit; an Office package is unpacked
+only up to ``MAX_UNZIPPED`` (the zip-bomb bound, a security bound that stays). The question
+holds the files' text up to the model's context window (``context_window.PROMPT_FILES_CHARS``
+together): a file whose text goes on past that is shown to its end of that share and keeps its
+whole text (``Attached.whole``) and its bytes for the caller to keep as the person's own file,
+which ``plx.read_document`` reads to the end, page by page (``operator_api.doc_read_tool``),
+and the answer says so.
 
 **What is kept.** The text lives only for the question's own answer: no cache or log
 holds it, and the saved Ask keeps ``Attached.meta`` (name, kind, size, a digest, whether it
@@ -38,6 +40,8 @@ import binascii
 from dataclasses import dataclass, field
 import hashlib
 import io
+import logging
+import os
 import re
 from typing import Any, Iterable, Mapping, Optional, Sequence
 import zipfile
@@ -45,14 +49,8 @@ from xml.etree import ElementTree
 
 from operating.msg_reader import CFB_MAGIC
 
-MAX_FILES = 5
-MAX_BYTES = 8 * 1024 * 1024
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
-MAX_TOTAL = 10 * 1024 * 1024
-MAX_ROWS = 2000
-MAX_UNZIPPED = 60 * 1024 * 1024
-MAX_TEXT = 60_000
-MAX_TEXT_TOTAL = 120_000
+MAX_IMAGE_BYTES = 5 * 1024 * 1024   # the model's own limit on a picture: a larger one is scaled down
+MAX_UNZIPPED = 60 * 1024 * 1024   # the zip-bomb bound (security)
 
 IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "image/png", b"\xff\xd8\xff": "image/jpeg",
                b"GIF87a": "image/gif", b"GIF89a": "image/gif"}
@@ -86,7 +84,7 @@ class Attached:
     # a .docx/.xlsx/.pptx's own bytes (any file's when its text was cut), for the caller to
     # keep as the person's file (never in ``meta``, never shown); ``kept``: that file's
     # ``file:`` citation once kept (an editable one's); ``whole``: a cut file's whole text,
-    # for the screens only (Freightcom, the people exclusion), never shown
+    # for the people-exclusion screen only, never shown
     data: Optional[bytes] = field(default=None, repr=False, compare=False)
     kept: Optional[str] = None
     whole: Optional[str] = field(default=None, repr=False, compare=False)
@@ -159,16 +157,16 @@ def kind_of(data: bytes) -> tuple[Optional[str], Optional[str]]:
 
 
 def _clip(text: str) -> tuple[str, bool]:
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return (text, False) if len(text) <= MAX_TEXT else (text[:MAX_TEXT], True)
+    """``text`` with its line ends made one; never cut (the share of the prompt it may take
+    is ``decode``'s: a file's whole text is kept to read on)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n"), False
 
 
 def _whole(name: str, data: bytes, kind: str
            ) -> tuple[str, bool, Optional[str], str, tuple[int, int]]:
     """A PDF, workbook or old binary Office file read whole (``operating.doc_read``: every
     page, a scanned page by local OCR when the server has it; every sheet and row, dates
-    as dates): (the text the question shows, cut at ``MAX_TEXT``; whether it was cut or
-    parts were not read; the whole text when cut; its kind; (scanned pages OCR left for
+    as dates): (the text, whole; whether parts were not read; the whole text when cut; its kind; (scanned pages OCR left for
     later, scanned pages in all): OCR reads at most ``doc_read.REQUEST_OCR_PAGES`` here)."""
     from operating import doc_read
     try:
@@ -191,12 +189,11 @@ def _whole(name: str, data: bytes, kind: str
                     "of the pages instead.")
         raise _Unread(said) from None
     text = reading.text.replace("\r\n", "\n")
-    shown = text if len(text) <= MAX_TEXT else text[:MAX_TEXT]
+    shown = text
     kind = {"pdf": "pdf", "spreadsheet": "spreadsheet"}.get(reading.kind, "text")
-    cut = len(shown) < len(text)
     if reading.unread:
-        shown += "\n[not read: " + "; ".join(reading.unread)[:400] + "]"
-    return (shown, cut or bool(reading.unread), text if cut else None, kind,
+        shown += "\n[not read: " + "; ".join(reading.unread) + "]"
+    return (shown, bool(reading.unread), None, kind,
             (len(reading.ocr_pending), reading.ocr_total))
 
 
@@ -286,25 +283,106 @@ class _Unread(Exception):
     """A file not read, with the words the answer says about it."""
 
 
+def fit_image(data: bytes, limit: int = 0) -> Optional[tuple[bytes, str]]:
+    """``data`` (a PNG, JPEG, GIF or WebP) scaled down until it is at most ``limit`` bytes
+    (default ``MAX_IMAGE_BYTES``): half the side each time, re-saved as PNG, or as JPEG when it
+    has no transparency and PNG stays too large. (bytes, media type); None when Pillow is not
+    installed or the picture cannot be read."""
+    limit = limit or MAX_IMAGE_BYTES
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as exc:  # noqa: BLE001 - an unreadable picture is said (the caller), not raised
+        logging.getLogger("operating.ask_attachments").warning(
+            "a picture could not be opened to scale it: %s", type(exc).__name__)
+        return None
+    scale = 1.0
+    for _ in range(12):
+        side = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+        small = image if scale == 1.0 else image.resize(side)
+        flat = small.mode in ("RGB", "L") or "transparency" not in small.info and small.mode != "RGBA"
+        for fmt, media in (("PNG", "image/png"),) + ((("JPEG", "image/jpeg"),) if flat else ()):
+            out = io.BytesIO()
+            try:
+                (small.convert("RGB") if fmt == "JPEG" else small).save(out, fmt)
+            except Exception as exc:  # noqa: BLE001 - try the next format
+                logging.getLogger("operating.ask_attachments").warning(
+                    "a picture could not be saved as %s: %s", fmt, type(exc).__name__)
+                continue
+            if len(out.getvalue()) <= limit:
+                return out.getvalue(), media
+        scale *= 0.7
+    return None
+
+
+READ_MEMORY_FACTOR = 3   # a file's bytes, the parser's copy and its text
+
+
+def _memory_available() -> Optional[int]:
+    """Bytes of memory free for new use (``MemAvailable``), None where it cannot be read."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError) as exc:
+        logging.getLogger("operating.ask_attachments").warning(
+            "free memory unreadable: %s", type(exc).__name__)
+    return None
+
+
+def _bytes(item: Mapping[str, Any]) -> tuple[bytes, Optional[str]]:
+    """The item's bytes (``path``: a file streamed to disk; ``data``: base64) and why there
+    are none, in words."""
+    if item.get("missing"):
+        return b"", ("It is no longer held here (an upload is kept for a week, or until you "
+                     "remove it): attach it again.")
+    path = item.get("path")
+    if path:
+        try:
+            size = os.path.getsize(path)
+            # the parsers of a PDF or an Office file hold the document in memory (a copy and
+            # its parse): said and refused when this host's free memory cannot, never an OOM
+            # that takes the API down with it
+            need, have = size * READ_MEMORY_FACTOR, _memory_available()
+            if have is not None and need > have:
+                return b"", (f"It is {size / 1024 ** 3:.1f} GB: reading it needs about "
+                             f"{need / 1024 ** 3:.1f} GB of memory and the server has "
+                             f"{have / 1024 ** 3:.1f} GB free right now. Ask again when it "
+                             "is quieter, or send it in parts.")
+            with open(path, "rb") as f:
+                return f.read(), None
+        except OSError as exc:
+            logging.getLogger("operating.ask_attachments").warning(
+                "an upload could not be read: %s", type(exc).__name__)
+            return b"", "It could not be read from where it was uploaded: attach it again."
+    try:
+        return base64.b64decode(str(item.get("data") or ""), validate=True), None
+    except (binascii.Error, ValueError) as exc:
+        logging.getLogger("operating.ask_attachments").warning(
+            "an inline attachment was not base64: %s", type(exc).__name__)
+        return b"", None   # decode() says "arrived empty or damaged"
+
+
 def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
-    """Each ``{"name", "data" (base64)}`` read under the limits (module doc), in order;
-    the files past ``MAX_FILES`` or past ``MAX_TOTAL`` are listed as not read."""
+    """Each ``{"name", "path" | "data" (base64)}`` read (module doc), in order; no file is
+    left out for how many or how large they are together."""
+    from operating.context_window import PROMPT_FILES_CHARS
     batch, total, text_total = Batch(), 0, 0
     for index, item in enumerate(items):
         name = _name(item.get("name"))
-        try:
-            data = base64.b64decode(str(item.get("data") or ""), validate=True)
-        except (binascii.Error, ValueError):
-            data = b""
+        data, gone = _bytes(item)
         digest = hashlib.sha256(data).hexdigest()[:16]
 
         def unread(why: str, kind: Optional[str] = None) -> Attached:
             return Attached(name, kind, len(data), digest, unread=why)
-        if index >= MAX_FILES:
-            batch.files.append(unread(f"Only the first {MAX_FILES} attachments are read."))
-            continue
         if not data:
-            batch.files.append(unread("It arrived empty or damaged: attach it again."))
+            batch.files.append(unread(gone or "It arrived empty or damaged: attach it again."))
             continue
         kind, media = kind_of(data)
         if kind is None:
@@ -312,14 +390,16 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
                                       "(.docx) and PowerPoint (.pptx) files, text and images "
                                       "(PNG, JPEG, GIF, WebP); save it as one of those."))
             continue
-        limit = MAX_IMAGE_BYTES if kind == "image" else MAX_BYTES
-        if len(data) > limit:
-            batch.files.append(unread(f"It is larger than {limit // (1024 * 1024)} MB.", kind))
-            continue
-        if total + len(data) > MAX_TOTAL:
-            batch.files.append(unread(f"The attachments together are larger than "
-                                      f"{MAX_TOTAL // (1024 * 1024)} MB.", kind))
-            continue
+        if kind == "image" and len(data) > MAX_IMAGE_BYTES:
+            # the model's own image limit: a larger picture is made smaller to fit, never
+            # refused (the original is not kept; the answer says it was scaled down)
+            fitted = fit_image(data)
+            if fitted is None:
+                batch.files.append(unread("The picture is larger than the model reads "
+                                          f"({MAX_IMAGE_BYTES // (1024 * 1024)} MB) and could "
+                                          "not be scaled down here.", kind))
+                continue
+            data, media = fitted
         total += len(data)
         if kind == "image":
             batch.files.append(Attached(name, kind, len(data), digest, media_type=media,
@@ -340,12 +420,10 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
             batch.files.append(unread("It could not be read: attach it again, or save it "
                                       "as a PDF.", None if kind == "legacy" else kind))
             continue
-        room = MAX_TEXT_TOTAL - text_total
-        if room <= 0:
-            batch.files.append(unread("The attachments hold more text than the Ask reads "
-                                      "at once.", kind))
-            continue
+        room = max(0, PROMPT_FILES_CHARS - text_total)
         if len(text) > room:
+            # past the share of the prompt the files may take: the start is shown, the whole
+            # text and the bytes are kept to read on (``plx.read_document``, offset pages on)
             whole = whole if whole is not None else text
             text, cut = text[:room], True
         text_total += len(text)
@@ -357,56 +435,10 @@ def decode(items: Iterable[Mapping[str, Any]]) -> Batch:
     return batch
 
 
-WITHHELD = ("Its text is not given to the assistant: it names a party whose material the "
-            "assistant may not read.")
-
-
-def image_words(image: Optional[str]) -> str:
-    """The words an image file carries beside its pixels, for the Freightcom screen: every
-    run of 4+ printable ASCII or UTF-16LE characters in its bytes (EXIF, XMP, PNG text,
-    comments, an embedded file name) and the text of PNG's compressed text chunks. Pixel
-    data's chance runs are noise the rule never matches by accident ("freight" + "com")."""
-    import zlib
-    raw = base64.b64decode(image or "", validate=False)
-    words = [m.decode("ascii") for m in re.findall(rb"[\x20-\x7e]{4,}", raw)]
-    words += [m.decode("utf-16-le") for m in re.findall(rb"(?:[\x20-\x7e]\x00){4,}", raw)]
-    at = 8 if raw.startswith(b"\x89PNG\r\n\x1a\n") else len(raw)
-    while at + 8 <= len(raw):
-        size = int.from_bytes(raw[at:at + 4], "big")
-        kind, body = raw[at + 4:at + 8], raw[at + 8:at + 8 + size]
-        at += 12 + size
-        packed = None
-        if kind == b"zTXt" and b"\x00" in body:
-            packed = body.split(b"\x00", 1)[1][1:]
-        elif kind == b"iTXt" and body.count(b"\x00") >= 1:
-            key, rest = body.split(b"\x00", 1)
-            if rest[:1] == b"\x01":
-                packed = rest[2:].split(b"\x00", 2)[-1]
-        if packed is not None:
-            words.append(zlib.decompressobj().decompress(packed, 1 << 20)
-                         .decode("utf-8", "replace"))
-    return "\n".join(words)
-
-
 def screened(files: Sequence[Attached]) -> list[Attached]:
-    """``files`` with the owner's no-AI rule applied: a read file whose name or text, or
-    an image whose name or carried words (``image_words``), names Freightcom
-    (``image_ocr_gpu.touches_freightcom``, the detection every read uses; over-matching
-    withholds) keeps no text, image or bytes and says why (``WITHHELD``); an error while
-    deciding withholds too. What an image SHOWS is not read here (no OCR before the model
-    sees it): a photo of a Freightcom label passes as the person's own upload."""
-    import dataclasses
-    from integrations.image_ocr_gpu import touches_freightcom
-    out = []
-    for f in files:
-        try:
-            named = touches_freightcom(f.name or "", f.whole or f.text or "",
-                                       image_words(f.image) if f.image else "")
-        except Exception:  # noqa: BLE001 - undecidable: withheld
-            named = True
-        out.append(dataclasses.replace(f, text="", image=None, data=None, whole=None,
-                                       unread=WITHHELD) if named else f)
-    return out
+    """``files`` as they are: no file is withheld for its content (the owner dropped the
+    Freightcom rule 11-23); kept as the one call point the app and the instruct path use."""
+    return list(files)
 
 
 def prompt_block(files: Sequence[Attached]) -> str:
@@ -421,5 +453,5 @@ def prompt_block(files: Sequence[Attached]) -> str:
     return "\n\n".join(out)
 
 
-__all__ = ["Attached", "Batch", "EDITABLE", "KINDS", "WITHHELD", "MAX_BYTES", "MAX_FILES", "MAX_IMAGE_BYTES",
-           "MAX_TOTAL", "decode", "kind_of", "prompt_block", "screened"]
+__all__ = ["Attached", "Batch", "EDITABLE", "KINDS", "MAX_IMAGE_BYTES",
+           "decode", "kind_of", "prompt_block", "screened"]

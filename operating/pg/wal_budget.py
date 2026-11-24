@@ -42,7 +42,6 @@ from typing import Any, Callable, Mapping, Sequence
 GB = 1024 ** 3
 PAUSE_GB_DEFAULT = 8.0
 RESUME_GB_DEFAULT = 2.0
-MIN_FREE_GB_DEFAULT = 75.0
 CHECK_SECONDS = 10.0
 ABORT_GB_FALLBACK = 30.0
 
@@ -97,7 +96,9 @@ def thresholds(environ: Mapping[str, str] = os.environ) -> tuple[int, int]:
 
 
 def min_free_bytes(environ: Mapping[str, str] = os.environ) -> int:
-    return int(_gb_env("PLX_WRITE_MIN_FREE_GB", MIN_FREE_GB_DEFAULT, environ) * GB)
+    """The one disk floor (``operating.disk_budget``), never a second number here."""
+    from operating import disk_budget
+    return int(disk_budget.floor_gb(environ) * GB)
 
 
 def expected_slots(environ: Mapping[str, str] = os.environ) -> list[str]:

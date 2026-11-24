@@ -78,6 +78,26 @@ class HistoryTests(ContractMixin, unittest.TestCase):
         self.assertIn(INV, links)
         self.assertNotIn("withheld", page)
 
+    def test_marks_are_reported_only_when_the_served_history_builder_asks(self):
+        s = build()
+        s.conn.execute("UPDATE object_values SET markings = '[\"finance\"]' "
+                       "WHERE object_id = ? AND property = 'order_number' AND l1_handle = ?",
+                       (SO, SO_V2))
+        s.conn.commit()
+        t = tools(s)
+        plain = oth.object_history(t, {"object_id": SO, "history": True}, FULL)
+        self.assertNotIn("marks", json.dumps(plain["history"]))
+        marked = oth.object_history(t, {"object_id": SO, "history": True, "marks": True}, FULL)
+        changes = [c for e in marked["history"] for c in e.get("changes", ())]
+        order = [c for c in changes if c["property"] == "order_number"]
+        self.assertTrue(order)
+        # a change whose rows (before, after, or the property's latest) carry a marking says so,
+        # so its stored item is withheld from a reader who lacks it, then and since
+        self.assertTrue(all("finance" in c["marks"] for c in order))
+        self.assertTrue(all("marks" in c for c in changes))
+        self.assertTrue(all(isinstance(e["marks"], list) for e in marked["history"]
+                            if e["kind"] in ("first_recorded", "changed")))
+
     def test_a_restricted_reader_sees_no_value_or_link_it_may_not_read_then_or_since(self):
         s = build()
         # order_number: plain when first recorded, marked finance on a later capture

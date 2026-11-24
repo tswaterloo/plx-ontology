@@ -89,13 +89,6 @@ class RecipientsOutcomeTest(unittest.TestCase):
         got = self.judge(dict(draft, cc=["z@plx.test"]), after)
         self.assertEqual(got["cc"], "wrong")
 
-    def test_a_block_that_is_not_an_object_says_nothing_found(self):
-        class Ran:
-            found = {}
-            agent_text = "x\n```json\n[1, 2]\n```"
-        self.assertIsNone(assist.found_of(Ran(), []))
-        self.assertEqual(assist.found_of(None, ["not_resolved"]), "none")
-
 
 if __name__ == "__main__":
     unittest.main()

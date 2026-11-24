@@ -156,6 +156,12 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                             "label": "Customer order past its required date",
                             "departments": ("ACCTMGMT", "SALES", "OPS"),
                             "check": ("late_customer_order",)},
+    # NOT late: past the required date by more than this customer's orders usually are (a
+    # sub-population of the late ones judged against the customer's history; the SQL rule
+    # ``customer_order_slower_than_usual``): its own type, never counted as the late orders
+    "customer_order_slower_than_usual": {
+        "kinds": (), "label": "Customer order slower than this customer's orders usually are",
+        "departments": ("ACCTMGMT", "SALES", "OPS"), "check": ("late_customer_order",)},
     # the business alerts (``operating.proactive_business``); the receivable and the cost
     # jump rest on finance-marked figures, so only a reader holding finance opens them
     "stock_out_risk": {"kinds": ("stock_out_risk",), "label": "Stock cannot cover open orders",
@@ -599,6 +605,10 @@ NEXT_ACTIONS = {
     "customer_order_late": ("Check whether the order shipped; if it did, close it in the "
                             "system that still shows it open, else agree a new date with "
                             "the customer.", "late_order_ship_or_close"),
+    "customer_order_slower_than_usual": ("Check whether the order shipped; if it did, close "
+                                         "it in the system that still shows it open, else "
+                                         "agree a new date with the customer.",
+                                         "slower_order_ship_or_close"),
     "watcher_attention": ("Open the cited sources and decide whether anyone needs to act "
                           "(nothing is sent).", "watcher_review"),
     "mc_task_stuck": ("Ask the task's owner what blocks it; move, reassign or cancel it in "
@@ -1620,6 +1630,9 @@ TODAY_WORDS = {
                                "now at risk from late POs", "at risk from late POs"),
     "customer_order_late": ("customer order", "customer orders", "went past its required date",
                             "past their required date"),
+    "customer_order_slower_than_usual": ("customer order", "customer orders",
+                                         "went later than its customer's orders usually are",
+                                         "later than their customer's orders usually are"),
     "watcher_attention": ("change", "changes", "flagged for attention",
                           "flagged for attention"),
     "stock_out_risk": ("item", "items", "fell short of open orders",

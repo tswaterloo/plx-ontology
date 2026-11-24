@@ -19,8 +19,10 @@ well under a second. Per person (an Entra object id, the key; never shown):
   Teams chat), counts only.
 
 People first, fail closed (``integrations.people_exclusion``): with the guard unavailable
-nothing is built (``status`` ``blocked``). A mail that names an excluded colleague, or an
-address at one of our own domains the directory cannot decide, is read for nobody; an
+nothing is built (``status`` ``blocked``). A mail that names an excluded colleague, or is sent from an
+address at one of our own domains the directory cannot decide, is read for nobody; one that
+merely has such an undecidable recipient counts for its readable sender and recipients and
+names that address in no one's counts (``withheld.mail_names``, never served); an
 excluded person's mailbox is not read; a Teams chat with an excluded or undecidable member
 counts for nobody; the excluded appear nowhere, in no ``with`` list. The API re-checks the
 exclusion when it serves the file and applies who may see whom (``operator_api.team_view``).
@@ -279,7 +281,8 @@ def reply_weeks(replies: Sequence[tuple[date, float]], until: date
 def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[str, Counter],
          directory: sa.Directory, groups: Iterable[str], excluded: Callable[[str], bool],
          system: Optional[Mapping[str, Any]], roles: Mapping[str, list[str]],
-         depts: Mapping[str, str], until: date, automated: Callable[[str], bool]
+         depts: Mapping[str, str], until: date, automated: Callable[[str], bool],
+         bulk: frozenset = frozenset()
          ) -> dict[str, Any]:
     """The snapshot (module docstring) from the rows the readers gave."""
     start = until - timedelta(days=WINDOW_DAYS - 1)
@@ -294,41 +297,60 @@ def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[st
     def local(at: datetime) -> datetime:
         return at.astimezone(TZ)
 
-    def staff(address: str) -> tuple[Optional[str], bool]:
-        """(colleague's object id or None, readable): an excluded colleague, or an address at
-        our own domains that is no listed person or group, makes the mail unreadable."""
+    def staff(address: str) -> tuple[Optional[str], str]:
+        """(colleague's object id or None, "ok" | "excluded" | "undecidable"): an excluded
+        colleague, or an address at our own domains that is no listed person or group (the
+        directory cannot decide it)."""
         oid = directory.addresses.get(address)
         if oid is not None:
-            return oid, not excluded(oid)
+            return oid, "excluded" if excluded(oid) else "ok"
         domain = address.rsplit("@", 1)[-1]
         if own and domain in own and address not in groups:
-            return None, False
-        return None, True
+            return None, "undecidable"
+        return None, "ok"
 
     # mail: one message counted once, whichever mailboxes hold it
     sent_seen: set[str] = set()
+    named_seen: set[str] = set()
     got_seen: set[tuple[str, str]] = set()
     threads: dict[tuple[str, str], list[tuple[datetime, str]]] = defaultdict(list)
     for mailbox, mid, conv, at_text, sender, to, cc in mail:
         if not _OID.match(mailbox) or excluded(mailbox):
             withheld["mail_mailbox"] += 1
             continue
-        people, ok = {}, True
-        for a in {sender, *to, *cc} - {None}:
-            oid, readable = staff(a)
-            ok = ok and readable
-            if oid:
-                people[a] = oid
-        if not ok:
+        # One definition of "mail sent": every message a readable colleague sent counts for
+        # them. A message that names an excluded colleague (as sender or recipient), or whose
+        # SENDER is an address the directory cannot decide, is read for nobody (nothing
+        # about it, not even a count, can show who is excluded). A recipient that is only
+        # undecidable is left out of the people it names (no received count for them, in no
+        # ``with`` list) and the message counted in ``withheld["mail_names"]``.
+        people: dict[str, str] = {}
+        left_out = False
+        verdicts = {a: staff(a) for a in {sender, *to, *cc} - {None}}
+        if any(v[1] == "excluded" or (v[1] == "undecidable" and a == sender)
+               for a, v in verdicts.items()):
             withheld["mail"] += 1
             continue
+        for a, (oid, status) in verdicts.items():
+            if status == "ok" and oid:
+                people[a] = oid
+            elif status == "undecidable":
+                left_out = True
         at = local(datetime.fromisoformat(at_text))
         day = at.date()
         if not start <= day <= until:
             continue
+        if left_out and mid not in named_seen:
+            named_seen.add(mid)
+            withheld["mail_names"] += 1
         who = people.get(sender) if sender else None
         targets = {people[a] for a in (*to, *cc) if a in people} - {who}
-        if who and mid not in sent_seen:
+        if who and mid in bulk:
+            # one definition of "mail sent" (measure mail_sent): a message the business tables
+            # call bulk (no copy of it is not) is not a person's sent mail
+            withheld["mail_bulk"] += mid not in sent_seen
+            sent_seen.add(mid)
+        elif who and mid not in sent_seen:
             sent_seen.add(mid)
             days[who][day.isoformat()]["mail_sent"] += 1
             if day >= recent:
@@ -458,15 +480,27 @@ def fold(*, mail: Iterable[tuple], teams: Iterable[tuple], cal_names: Mapping[st
             "domains": sorted(own)}
 
 
+def bulk_message_ids(dsn: str, since: datetime) -> frozenset:
+    """The messages sent since ``since`` of which no copy is not bulk (``biz.emails.is_bulk``):
+    the ones the measure ``mail_sent`` leaves out. Raises when the tables cannot be read: a
+    count that cannot follow the measure is not built."""
+    import psycopg
+    with psycopg.connect(dsn) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        return frozenset(r[0] for r in conn.execute(
+            "SELECT message_id FROM biz.emails WHERE sent_at >= %s AND message_id IS NOT NULL "
+            "GROUP BY message_id HAVING bool_and(is_bulk)", (since,)))
+
+
 def build(state: Path, *, until: date, system: Optional[Mapping[str, Any]],
-          roles: Mapping[str, list[str]], people: Any, workers: Optional[int] = None
-          ) -> dict[str, Any]:
+          roles: Mapping[str, list[str]], people: Any, workers: Optional[int] = None,
+          bulk: Optional[frozenset] = None) -> dict[str, Any]:
     """Read the captures under ``state`` (read-only) and fold them; ``people`` is the
     exclusion guard (None or unavailable: ``blocked``, nothing read)."""
     from integrations.capture_mail import automated_sender
     from integrations.people_exclusion import mail_capture_listing
     from .inbox_triage import excluded_by
-    if people is None or getattr(people, "unavailable", None):
+    if people is None or getattr(people, "unavailable", None) or bulk is None:
         return {"schema": SCHEMA, "status": "blocked",
                 "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "people": {}}
@@ -477,7 +511,19 @@ def build(state: Path, *, until: date, system: Optional[Mapping[str, Any]],
                 cal_names=calendar_names(state), directory=directory, groups=groups,
                 excluded=excluded_by(people), system=system, roles=roles,
                 depts=departments(state), until=until,
-                automated=lambda a: bool(automated_sender(a)))
+                automated=lambda a: bool(automated_sender(a)), bulk=bulk)
+
+
+def stale_of(previous: Any) -> Optional[dict[str, Any]]:
+    """The previous built snapshot, unchanged but for a stale mark (its own time stays, plus a
+    note that it could not be refreshed), when the bulk flags could not be read; None when
+    there is no built snapshot of this schema to keep."""
+    if not isinstance(previous, dict) or previous.get("schema") != SCHEMA \
+            or previous.get("status") != "built":
+        return None
+    return {**previous, "stale": True,
+            "stale_note": "couldn't refresh: the business tables' bulk flags could not be read; "
+                          "these are the counts as of the time shown"}
 
 
 def load(path: Optional[Path]) -> Optional[dict[str, Any]]:
@@ -510,8 +556,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     named = os.environ.get("PLX_AUTOPILOT_ROLES_FILE")
     roles = load_roles(args.roles or [Path(named) if named else None,
                                       args.state_dir / "work-graph" / "roles-derived.json"])
-    snap = build(args.state_dir, until=datetime.now(TZ).date(),
-                 system=sa.load_snapshot(args.system_activity), roles=roles, people=people)
+    until = datetime.now(TZ).date()
+    try:
+        from operating.pg import config
+        bulk = bulk_message_ids(config.dsn(), datetime.combine(
+            until - timedelta(days=WINDOW_DAYS), datetime.min.time(), TZ))
+    except Exception:  # noqa: BLE001 - no flags, no count that follows the measure: blocked
+        bulk = None
+    snap = build(args.state_dir, until=until,
+                 system=sa.load_snapshot(args.system_activity), roles=roles, people=people,
+                 bulk=bulk)
+    if snap["status"] == "blocked" and bulk is None and people is not None \
+            and not getattr(people, "unavailable", None):
+        snap = stale_of(sa.load_snapshot(args.out)) or snap
     args.out.parent.mkdir(parents=True, exist_ok=True)
     tmp = args.out.with_suffix(".tmp")
     tmp.write_text(json.dumps(snap, sort_keys=True))
@@ -520,7 +577,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     tmp.replace(args.out)
     print(json.dumps({"status": snap["status"], "people": len(snap["people"]),
                       "withheld": snap.get("withheld", {})}, sort_keys=True))
-    return 0 if snap["status"] == "built" else 1
+    return 0 if snap["status"] == "built" and not snap.get("stale") else 1
 
 
 if __name__ == "__main__":

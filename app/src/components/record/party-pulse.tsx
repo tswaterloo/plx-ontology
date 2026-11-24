@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 import { formatDate, safeHref } from "@/lib/format";
 import type { ObjectPage, UpcomingMeeting } from "@/lib/types";
 import { SectionTitle } from "./parts";
+import { ShowAll } from "@/components/show-all";
 
 type ActionItem = {
   id: string;
@@ -57,7 +58,7 @@ export function PartyPulse({ obj }: { obj: ObjectPage }) {
         <section data-testid="party-meetings">
           <SectionTitle>Upcoming meetings</SectionTitle>
           <ul className="divide-y divide-border">
-            {meetings.slice(0, 4).map((m) => {
+            <ShowAll items={meetings} first={4} as="li" noun="meetings">{(m) => {
               const s = startOf(m);
               const people = peopleLine(m);
               return (
@@ -86,7 +87,7 @@ export function PartyPulse({ obj }: { obj: ObjectPage }) {
                   </Link>
                 </li>
               );
-            })}
+            }}</ShowAll>
           </ul>
         </section>
       )}
@@ -94,7 +95,7 @@ export function PartyPulse({ obj }: { obj: ObjectPage }) {
         <section data-testid="party-items">
           <SectionTitle>Still open from meetings</SectionTitle>
           <ul className="divide-y divide-border">
-            {items.slice(0, 5).map((i) => (
+            <ShowAll items={items} first={5} as="li">{(i) => (
               <li key={i.id} className="flex items-start gap-3 py-2 text-[13px]">
                 <ListChecks className={cn("mt-0.5 size-[15px] shrink-0", i.status === "overdue" ? "text-late" : "text-muted")} strokeWidth={1.8} aria-hidden />
                 <span className="min-w-0 flex-1">
@@ -104,7 +105,7 @@ export function PartyPulse({ obj }: { obj: ObjectPage }) {
                   </span>
                 </span>
               </li>
-            ))}
+            )}</ShowAll>
           </ul>
         </section>
       )}

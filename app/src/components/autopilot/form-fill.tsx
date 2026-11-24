@@ -7,13 +7,14 @@
 import { Paperclip } from "lucide-react";
 import { useRef, useState } from "react";
 import { fillForm } from "@/lib/api";
-import { MAX_BYTES } from "@/lib/attachments";
 import type { InstructFill } from "@/lib/types";
 import { FillReview } from "../fill-review";
 import { errorWords } from "../upload-draft";
 import { Button } from "../ui/button";
 
 const FORMS = ".docx,.xlsx,.pdf";
+// the form desk reads a file sent in its JSON body (not the Ask's streamed upload): its own size
+const MAX_BYTES = 25 * 1024 * 1024;
 
 function base64Of(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

@@ -5,7 +5,7 @@ import { Activity, BellRing, BookMarked, Bookmark, CalendarClock, ChartColumn, C
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { afterPageReads, getHome, getLateList, getOpsAlarms, getSidebar, prefetchRecord, type OpsAlarms, type OpsCheck } from "@/lib/api";
+import { getHome, getLateList, getOpsAlarms, getOpsProblemOpen, getSidebar, prefetchRecord, type OpsAlarms, type OpsCheck } from "@/lib/api";
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
@@ -13,7 +13,7 @@ import { eastern, plainServerNote, SYSTEM_LABEL } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
-import { useSaved } from "@/lib/saved";
+import { setSavedNotice, useSaved, useSavedNotice } from "@/lib/saved";
 import { usePins, type PinnedPage, type PinReader } from "@/lib/pins";
 import { readAllLate } from "@/lib/late";
 import { readAheadRoute } from "@/lib/route-reads";
@@ -21,6 +21,7 @@ import { onSessionReset } from "@/lib/session-cache";
 import type { HomeResponse, LatePo, SidebarResponse } from "@/lib/types";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { RequireAuth, useAuth } from "./auth";
+import { afterReady, resetReady, watchReady } from "@/lib/ready";
 import { ThemeToggle } from "./theme";
 import { Pending } from "./ui/skeleton";
 import { ViewAsBar } from "./view-as";
@@ -29,6 +30,7 @@ import { ViewAsBar } from "./view-as";
 const ViewAsPicker = lazy(() => import("./view-as-picker"));
 import { ErrorNotice } from "./ui/notice";
 import { ApiError } from "@/lib/errors";
+import { ShowAll } from "@/components/show-all";
 
 /**
  * The cube mark: a block with one corner cut away, in the app's three accents (cyan top,
@@ -91,15 +93,16 @@ function useBanner() {
  * How this session signed in, said once in the sidebar. A demo (mock or fixture data, or a
  * test identity): "Demo sign-in", with the full-read label under it when the reader holds
  * the grant; the data label (e.g. FIXTURE) is its tooltip and screen-reader text. A console
- * access link: "Signed in with your access link". Microsoft sign-in says nothing here.
+ * access link says nothing of the link, only the reader's access label. Microsoft sign-in says nothing here.
  */
 export function DevBanner({ className, compact }: { className?: string; compact?: boolean }) {
   const { dev, link, me, access } = useBanner();
   if (link) {
+    if (!access) return null;
     return (
-      <div role="note" title="Signed in with your access link" className={cn("text-meta text-muted", className)} data-testid="link-banner">
-        <span className={compact ? "text-faint" : undefined}>{compact ? "Signed in by link" : "Signed in with your access link"}</span>
-        {compact && <span className="sr-only">: signed in with your access link</span>}
+      // how the session signed in is never said (a person needs no sign-in mechanism named);
+      // only what the reader may see, when that is wider than their own
+      <div role="note" className={cn("text-meta text-muted", className)} data-testid="link-banner">
         {access && (
           <span className={compact ? "sr-only" : "block"} data-testid="access-banner">
             <span className="sr-only">. </span>
@@ -142,7 +145,7 @@ export function AccessBanner({ className }: { className?: string }) {
 }
 
 /** Home reads at most this many late orders; the rest are on the Late orders page. */
-export const HOME_LATE_MOST = 300;
+export const HOME_LATE_MOST = 1000;
 export interface LateRead {
   items: LatePo[];
   /** The server's count of every late order this reader may see (can exceed items). */
@@ -269,26 +272,17 @@ export function loadSidebar(fresh = false): Promise<SidebarResponse> {
   return sidebarOnce;
 }
 
-/** How long the sidebar yields to the page's own reads (it follows them, never waits on a slow one). */
-const SIDEBAR_YIELD_MS = 300;
-
-/** The sidebar's numbers once the person is known and the page's own reads are answered
- * or SIDEBAR_YIELD_MS have passed (`afterPageReads`, Home's too). */
+/** The sidebar's numbers, read as the page's own reads start (W4: nothing waits for the sign-in
+ * check or for the page's reads; the sidebar's answer is small and kept per reader). */
 function useSidebar(): SidebarResponse | null {
   const [side, setSide] = useState<SidebarResponse | null>(null);
-  const signedIn = useAuth().state.status === "signed-in";
   useEffect(() => {
-    // wait until the person is known, so the page's own reads are under way (between the
-    // sign-in check's two requests nothing is in flight yet)
-    if (!signedIn) return;
     let live = true;
-    afterPageReads(SIDEBAR_YIELD_MS)
-      .then(() => (live ? loadSidebar() : Promise.reject(new Error("left"))))
-      .then((s) => live && setSide(s), () => undefined);
+    loadSidebar().then((s) => live && setSide(s), () => undefined);
     return () => {
       live = false;
     };
-  }, [signedIn]);
+  }, []);
   return side;
 }
 
@@ -579,17 +573,23 @@ export function useOpsProblem(ops: boolean, every = 60_000): boolean {
     let live = true;
     const ctl = new AbortController();
     const load = () =>
-      getOpsAlarms(ctl.signal).then(
-        (a) => live && setOpen(!!a?.configured && (a.open ?? []).length > 0),
+      getOpsProblemOpen(ctl.signal).then(
+        (o) => live && setOpen(o),
         (e) => {
           if (live && e instanceof ApiError && (e.status === 401 || e.status === 403)) clearInterval(id);
         },
       );
-    load();
-    const id: ReturnType<typeof setInterval> = setInterval(load, every);
+    // the dot is not the page's content: the first read waits for the page to be ready and the
+    // browser idle
+    let id: ReturnType<typeof setInterval> | undefined;
+    const cancel = afterReady(() => {
+      load();
+      id = setInterval(load, every);
+    });
     return () => {
       live = false;
       ctl.abort();
+      cancel();
       clearInterval(id);
     };
   }, [ops, every]);
@@ -773,7 +773,7 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
     let live = true;
     const ctl = new AbortController();
     const load = () =>
-      getOpsAlarms(ctl.signal).then(
+      getOpsAlarms(ctl.signal, true).then(
         (a) => {
           if (live) setAlarms(a);
         },
@@ -783,11 +783,15 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
           if (live && e instanceof ApiError && (e.status === 401 || e.status === 403)) clearInterval(id);
         },
       );
-    load();
-    const id: ReturnType<typeof setInterval> = setInterval(load, every);
+    let id: ReturnType<typeof setInterval> | undefined;
+    const cancel = afterReady(() => {
+      load();
+      id = setInterval(load, every);
+    });
     return () => {
       live = false;
       ctl.abort();
+      cancel();
       clearInterval(id);
     };
   }, [owner, every]);
@@ -946,14 +950,14 @@ function PinnedNav({ me }: { me: (PinReader & NonNullable<NavReader>) | null }) 
   return (
     <SidebarSection title={defaults ? "Pinned for your role" : "Pinned"}>
       <div className="space-y-px" data-testid="nav-pinned">
-        {pins.slice(0, 8).map((p) => (
+        <ShowAll items={pins} first={8} noun="pinned">{(p) => (
           <Link key={p.href} href={p.href} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-fg/90 hover:bg-hover">
             <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
               <Pin className="size-3.5 text-muted" strokeWidth={2} />
             </span>
             <span className="truncate">{p.label}</span>
           </Link>
-        ))}
+        )}</ShowAll>
       </div>
     </SidebarSection>
   );
@@ -1022,6 +1026,20 @@ function SidebarSection({ title, children }: { title: string; children: React.Re
   );
 }
 
+/** Why the last save or pin did not happen (the list is full), until closed or the next save. */
+function SavedNotice() {
+  const notice = useSavedNotice();
+  if (!notice) return null;
+  return (
+    <p role="status" data-testid="saved-notice" className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded border border-border bg-bg px-3 py-2 text-[13px] shadow-sm">
+      {notice}
+      <button type="button" className="cursor-pointer text-muted hover:text-fg" onClick={() => setSavedNotice(null)}>
+        Close
+      </button>
+    </p>
+  );
+}
+
 function Sidebar() {
   const home = useHomeRead();
   const side = useSidebar();
@@ -1069,21 +1087,21 @@ function Sidebar() {
         {savedOnly.length > 0 && (
           <SidebarSection title="Saved">
             <div className="space-y-px">
-              {savedOnly.slice(0, 6).map((s) => (
+              <ShowAll items={savedOnly} first={6} noun="saved">{(s) => (
                 <Link key={s.key} href={s.href} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-fg/90 hover:bg-hover">
                   <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
                     <Bookmark className="size-3.5 text-muted" strokeWidth={2} />
                   </span>
                   <span className="truncate">{s.label}</span>
                 </Link>
-              ))}
+              )}</ShowAll>
             </div>
           </SidebarSection>
         )}
         {recent.length > 0 && (
           <SidebarSection title="Recent questions">
             <div className="space-y-px">
-              {recent.slice(0, 4).map((r) => (
+              <ShowAll items={recent} first={4}>{(r) => (
                 <button
                   key={r.answer_id ?? r.question}
                   type="button"
@@ -1096,7 +1114,7 @@ function Sidebar() {
                 >
                   <span className="truncate first-letter:uppercase">{r.question}</span>
                 </button>
-              ))}
+              )}</ShowAll>
             </div>
           </SidebarSection>
         )}
@@ -1383,6 +1401,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       document.removeEventListener("focusin", ahead);
     };
   }, []);
+  // the page-complete flag (W6): a new page is not ready until its own reads and placeholders have come and gone
+  const readyPath = usePathname();
+  useEffect(() => watchReady(), []);
+  useEffect(() => resetReady(), [readyPath]);
   return (
     <CommandPaletteProvider>
       <FeedbackProvider>
@@ -1395,6 +1417,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           Skip to content
         </a>
         <Sidebar />
+        <SavedNotice />
         <main id="main" className="relative flex min-w-0 flex-1 flex-col overflow-y-auto max-lg:[&>*:not([data-own-scroll])]:basis-auto max-lg:[&>*:not([data-own-scroll])]:shrink-0 pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
           <MobileTitleBar />
           <ViewAsBar />

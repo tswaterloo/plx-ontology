@@ -385,7 +385,7 @@ class PoolTimeout(RuntimeError):
 
 
 class Pool:
-    def __init__(self, dsn: str | None = None, *, max_size: int = 8, timeout: float = 10.0,
+    def __init__(self, dsn: str | None = None, *, max_size: int = 8, timeout: float | None = 10.0,
                  configure: Callable[[psycopg.Connection], None] | None = None,
                  connect_timeout: int | None = None,
                  statement_timeout_ms: int | None = None,
@@ -451,7 +451,7 @@ class Pool:
 
     def _take(self) -> psycopg.Connection | None:
         """An idle connection, or None after reserving a slot for a new one."""
-        deadline = time.monotonic() + self.timeout
+        deadline = None if self.timeout is None else time.monotonic() + self.timeout
         with self._cond:
             while True:
                 if self._closed:
@@ -470,6 +470,9 @@ class Pool:
                 if self._open < self.max_size:
                     self._open += 1
                     return None
+                if deadline is None:
+                    self._cond.wait()    # a pool made with timeout=None queues without end
+                    continue
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise PoolTimeout("pool_timeout")

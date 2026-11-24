@@ -68,6 +68,16 @@ class DataHealthPage(unittest.TestCase):
         # counts that could not be read are unread, never zeros
         self.assertEqual(dh.summary(StubView({}, {"status": "unavailable", "counts": {}})).status, "unread")
 
+    def test_a_rule_that_never_ran_is_not_checked_not_zero(self):
+        view = StubView({}, {"status": "read", "counts": {"order_without_customer_po": 0,
+                                                          "duplicate_party_candidate": 0},
+                             "checked": {"duplicate_party_candidate": "2026-11-22T22:29:33+00:00"}})
+        got = {c.type: c for c in dh.summary(view).checks if c.on}
+        self.assertIsNone(got["order_without_customer_po"].open)       # never ran: no count
+        self.assertIsNone(got["order_without_customer_po"].checked_at)
+        self.assertEqual(got["duplicate_party_candidate"].open, 0)     # ran, found none
+        self.assertEqual(got["duplicate_party_candidate"].checked_at, "2026-11-22T22:29:33+00:00")
+
     def test_one_check_is_read_alone_with_its_open_total(self):
         gaps = [gap("order_without_customer_po", i) for i in range(4)] + [gap("duplicate_party_candidate", 9)]
         view = StubView({"status": "read", "gaps": gaps, "hidden": {"order_without_customer_po": 3}})

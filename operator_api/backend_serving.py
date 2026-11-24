@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import errors, models as m
 from .auth import Reader
@@ -21,7 +21,9 @@ from .suggest import (
 from .page_parts import shown_objects
 
 from .backend_common import UNSERVABLE_STATUSES
-from .backend_pages import _kept_good_model, _portable_model, _ReadByOtherCode
+from .backend_pages import (
+    _kept_good_model, _portable_model, _ReadByOtherCode, exclusion_set_moved
+)
 
 
 
@@ -33,6 +35,19 @@ def own_issued_kept(rows: list[tuple]) -> list[tuple]:
     hidden = hidden_ids()
     return [r for r in rows if r[1] not in hidden] if hidden else rows
 
+
+
+def _under_set_now(held: tuple) -> Optional[tuple]:
+    """``held`` as it may be served under the exclusion set this process holds now: kept
+    under another version of it (``exclusion_set_moved``), it is served only once every
+    record it shows is decided again for the reader (as a page read by other code:
+    ``_ReadByOtherCode``); one whose records cannot all be named is a miss."""
+    if isinstance(held, _ReadByOtherCode) or not exclusion_set_moved(held[2]):
+        return held
+    objects = shown_objects(held[1])
+    if objects is None:
+        return None
+    return _ReadByOtherCode(held, objects)
 
 class ServingMixin:
     """Serving screens: suggestions, kept copies, access checks and refresh."""
@@ -243,7 +258,12 @@ class ServingMixin:
             # unreadable door falls back to the record search below (never "no match")
             try:
                 found = page_sql.search(self, reader, q, limit)
-            except page_sql.PageDoorUnavailable:
+            except page_sql.PageDoorUnavailable as exc:
+                if exc.code in ("timeout", "busy"):
+                    # the door ran out of time or connections: said so, never the record
+                    # search run after it (that one waited up to 60 s: a no-match took 30 s)
+                    raise errors.UserFacing("search_busy", "The search is taking too long. "
+                                            "Try again in a moment.", 503) from None
                 found = None
             if found is not None:
                 return m.SuggestResponse(query=q, suggestions=found, source="business",
@@ -259,53 +279,33 @@ class ServingMixin:
 
     def biz_page(self, reader: Reader, kind: str, handle: str = "", chain: str = "",
                  record: str = "") -> m.BizPage:
-        """An account page (customer, chain, supplier) or an order page (PO, sales order)
-        from the business tables through the reader's door (switch ``PLX_PAGES_DOOR``).
-        ``record``: a record id instead of the handle (the page its row opens)."""
+        """An account or record page through the reader's door, read on every request
+        (``served.biz_page``: one door read, no kept copy)."""
+        from . import served
+        return served.biz_page(self, reader, kind, handle=handle, chain=chain, record=record)
+
+    def records_views(self, reader: Reader) -> list[m.RecordView]:
+        """Every list Records offers (``page_sql.record_views``; the views' metadata, no
+        read)."""
         from . import page_sql
-        if not page_sql.on(kind):
-            raise errors.UserFacing("pages_off", "These record pages aren't switched on on "
-                                    "this server yet.", 404)
+        return page_sql.record_views()
 
-        def read() -> m.BizPage:
-            try:
-                at = page_sql.resolve(self, reader, kind, record) \
-                    if record and not handle and kind != "chain" else handle
-                if kind in ("purchase_order", "sales_order"):
-                    return page_sql.order(self, reader, kind, at)
-                if kind == "product":
-                    return page_sql.item(self, reader, at)
-                if kind == "batch":
-                    return page_sql.batch(self, reader, at)
-                return page_sql.account(self, reader, kind, handle=at, chain=chain)
-            except page_sql.NotFound:
-                raise errors.UserFacing("not_found", "No such record that you can open.",
-                                        404) from None
-            except page_sql.PageDoorUnavailable as exc:
-                why = ("took too long" if exc.code == "timeout" else
-                       "is busy" if exc.code == "busy" else
-                       "isn't built yet" if exc.code == "not_ready" else "couldn't be read")
-                raise errors.UserFacing("page_unavailable", f"The record's figures {why}; "
-                                        "try again in a minute.", 503) from None
-
-        # kept per reader as every screen is: the door's read took 1.5-1.7 s on each open of
-        # the order Home's detail pane shows (11-19 cold round), after a restart too
-        return self._serving(reader, ("biz_page", kind, handle, chain, record), read,
-                             self._screen_inputs())
-
-    def records_list(self, reader: Reader, view: str, status: str = "", hold: str = "",
-                     q: str = "", offset: int = 0, limit: int = 25) -> m.RecordList:
+    def records_list(self, reader: Reader, view: str, filters: Optional[Mapping[str, str]] = None,
+                     q: str = "", sort: str = "", direction: str = "", offset: int = 0,
+                     limit: int = 25, facets: bool = True) -> m.RecordList:
         """A Records list (``page_sql.record_list``) through the reader's door, kept per
         reader and filter as every screen is."""
         from . import page_sql
         if not page_sql.on("batch"):
             raise errors.UserFacing("pages_off", "These lists aren't switched on on this "
                                     "server yet.", 404)
+        chosen = {k: v for k, v in (filters or {}).items() if v}
 
         def read() -> m.RecordList:
             try:
-                return page_sql.record_list(self, reader, view, status=status, hold=hold, q=q,
-                                            offset=offset, limit=limit)
+                return page_sql.record_list(self, reader, view, filters=chosen, q=q, sort=sort,
+                                            direction=direction, offset=offset, limit=limit,
+                                            with_filters=facets)
             except page_sql.NotFound:
                 raise errors.UserFacing("not_found", "No such list.", 404) from None
             except page_sql.PageDoorUnavailable as exc:
@@ -313,7 +313,8 @@ class ServingMixin:
                        "is busy" if exc.code == "busy" else "couldn't be read")
                 raise errors.UserFacing("page_unavailable", f"The list {why}; try again in a "
                                         "minute.", 503) from None
-        return self._serving(reader, ("records_list", view, status, hold, q, offset, limit),
+        return self._serving(reader, ("records_list", view, tuple(sorted(chosen.items())), q,
+                                      sort, direction, offset, limit, facets),
                              read, self._screen_inputs())
 
     def test_named(self) -> frozenset[str]:
@@ -477,7 +478,7 @@ class ServingMixin:
         with self._lock:
             held = self._good.get(key)
         if held is not None:
-            return held
+            return _under_set_now(held)
         store = getattr(getattr(self, "page_cache", None), "store", None)
         if store is None:
             return None
@@ -501,7 +502,7 @@ class ServingMixin:
             if key not in self._good:
                 self._bound_good()
             held = self._good.setdefault(key, held)
-        return held
+        return _under_set_now(held)
 
     @staticmethod
     def _state_of(answer: Optional[tuple]) -> Optional[tuple]:
@@ -529,10 +530,15 @@ class ServingMixin:
         if isinstance(status, str) and status in UNSERVABLE_STATUSES:
             return   # API-012: a page that could not be read is no last good page
         store = getattr(getattr(self, "page_cache", None), "store", None)
+        from .backend_pages import same_access
+        kept = before is not None and after is not None and same_access(after, before)
+        # the copy before the lock: a record page's deep copy took the backend's one lock
+        # for as long as it ran, and every request that takes it (``/api/me``'s warm-up
+        # check among them) waited behind it
+        copy = value.model_copy(deep=True) if kept else None
         with self._lock:
             self._good.pop(key, None)
             self._snap_inputs().pop(key, None)
-            kept = before is not None and before == after
         if not kept:   # the page may not match any one access state: never served stale
             if store is not None:   # nor its disk copy, not left there for 12 h
                 from .page_store import kept_code
@@ -540,7 +546,7 @@ class ServingMixin:
             return
         with self._lock:
             self._bound_good()
-            held = self._good[key] = (time.time(), value.model_copy(deep=True), before)
+            held = self._good[key] = (time.time(), copy, before)
             if inputs is not None:
                 self._snap_inputs()[key] = inputs
         if store is not None:   # on disk too: a restart or a deploy starts from it

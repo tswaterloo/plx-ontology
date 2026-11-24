@@ -91,6 +91,7 @@ BRIEFING_QUESTIONS = {
     "quote_accepted_no_order": "Why was this decided, and how do we know?",
     "customer_order_at_risk": "Why did this order change, and how do we know?",
     "customer_order_late": "Why is this order still open, and how do we know?",
+    "customer_order_slower_than_usual": "Why is this order still open, and how do we know?",
 }
 
 

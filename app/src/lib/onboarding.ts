@@ -156,7 +156,7 @@ export type Step = { id: string; label: string; hint: string; href?: string };
 export function checklistFor(role: GuideRole | null): Step[] {
   const g = role ? guideFor(role) : null;
   return [
-    { id: "sign_in", label: "Sign in with Microsoft", hint: "Use your usual PLX account. There is no separate password." },
+    { id: "sign_in", label: "Sign in", hint: "Done: you are signed in. Sign in the same way next time." },
     { id: "my_work", label: "Read today's Home", hint: "Open an item to see why it is listed.", href: "/" },
     { id: "look_up", label: "Look up a record", hint: `Type ${g ? g.lookUp : "an order, PO, lot or invoice number"} into Search.` },
     { id: "ask", label: "Ask one question", hint: g ? `For example: ${g.asks[0]}` : "Ask in your own words. The answer lists its sources.", href: "/ask" },

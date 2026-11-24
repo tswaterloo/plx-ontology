@@ -37,12 +37,16 @@ from typing import Any
 
 HOLD_DIR = "/run/plx-api"     # hold-<name> here: open that port or socket only once warm
 HOLD_MAX_AGE_SECONDS = 900    # an older hold file is a deploy's leftover: not obeyed
-HOLD_MAX_SECONDS = 600        # held longer (the deploy gives up at 660 s): open it anyway
+HOLD_MAX_SECONDS = 180        # held longer (the deploy gives up at 240 s): open it anyway
+# (the first pass is cut at ``warm_process.FIRST_PASS_SECONDS``, 25 s: this is the backstop)
 GRACE_SECONDS = 180           # SIGTERM: the longest the requests under way may still run
 # (an Ask answer streams on its request for up to minutes: p90 ~70 s; 60 s cut the long ones
 # at every deploy, while the other API already took the new requests)
 HOLD_POLL_SECONDS = 0.5
 HOLD_SAY_SECONDS = 60         # while held, a line this often
+# once warm and before the held port opens, the kept pages' checks and the insights' copies get
+# at most this long each (they go on in the background past it): the deploy's minute holds them
+AFTER_WARM_SECONDS = 8.0
 
 
 def hold_name(port: int, unix_socket: Optional[str]) -> str:
@@ -62,16 +66,19 @@ def held(name: str, now: Optional[float] = None) -> bool:
     return age <= HOLD_MAX_AGE_SECONDS
 
 
-def _insight_copies(backend: Any) -> None:
+def _insight_copies(backend: Any, seconds: Optional[float] = None) -> None:
     """Insights' shared copies made at start (``insights_fast``), before the port opens when
     it is held."""
     make = getattr(backend, "prewarm_insight_copies", None)
     if callable(make):
         try:
-            made = make()
+            made = make(seconds) if seconds is not None else make()
             logging.getLogger("operator_api").info("insights copies made at start: %s", made)
         except Exception:  # noqa: BLE001 - the first visit makes them
             logging.getLogger("operator_api").exception("insights copies failed")
+
+
+NAMES_WAIT_SECONDS = 60.0   # at most this long for the first read of the excluded names (the Graph listing)
 
 
 def hold_until_ready(backend: Any, stop: Any = None, poll: float = HOLD_POLL_SECONDS,
@@ -87,6 +94,19 @@ def hold_until_ready(backend: Any, stop: Any = None, poll: float = HOLD_POLL_SEC
     begin = getattr(backend, "start_warm_now", None)
     if callable(begin):
         begin()
+    # the excluded people's names (the Graph directory listing every memory, template and work-log
+    # read is closed without) are read now, in the background, so the first reader does not meet a
+    # "not available yet" and wait for the page to ask again (scoreboard 11-23: templates 4.3 s)
+    names = getattr(getattr(backend, "memory", None), "names", None)
+    if callable(names):
+        try:
+            settle = getattr(names, "settle", None)
+            if callable(settle):
+                settle(NAMES_WAIT_SECONDS)   # the port opens after the first read, so the first answer is final
+            else:
+                names()
+        except Exception as error:  # noqa: BLE001 - the names are then read by the first use
+            log.warning("excluded names warm-up failed: %s", type(error).__name__)
     check = getattr(backend, "ready", None)
     started = time.monotonic()
     log.info("holding the port until warm (deploy)")
@@ -223,10 +243,10 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
                 after = getattr(backend, "prewarm_checks_after_warm", None)
                 if callable(after):
                     try:
-                        after()
+                        after(AFTER_WARM_SECONDS)
                     except Exception:  # noqa: BLE001 - the port opens; each visit decides
                         logging.getLogger("operator_api").exception("kept checks failed")
-                _insight_copies(backend)
+                _insight_copies(backend, AFTER_WARM_SECONDS)
         else:
             threading.Thread(target=_insight_copies, args=(backend,), daemon=True,
                              name="insights-prewarm").start()

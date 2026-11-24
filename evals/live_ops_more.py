@@ -491,13 +491,31 @@ def teams_po_discussion(world: lk.World) -> list[lk.Candidate]:
     return out
 
 
+# a file name that says it is a lot's document (the key's rule; the product's phrase-rule
+# answer that shared it was retired 11-23)
+LOT_DOCUMENT_WORDS = re.compile(
+    r"(?<![A-Za-z])(?:lot|lots|batch|coa|cofa|c\s*of\s*a|certificates?|analysis|assay|"
+    r"tests?|results|spec|specs|specifications?|sds|msds|tds|waiver|receiving|received|"
+    r"receipt|packing\s*slip|bol)(?![A-Za-z])", re.IGNORECASE)
+
+
+def lot_document_name(name: Any, lot: str) -> bool:
+    """Whether a file named ``name`` is a document of lot ``lot``: the name holds the lot
+    number as a word and says it is a lot document (``LOT_DOCUMENT_WORDS``, outside the
+    lot number itself)."""
+    text = str(name or "")
+    tokens = re.findall(r"[A-Z0-9-]+", text.upper())
+    if not lot or lot.upper() not in tokens:
+        return False
+    return bool(LOT_DOCUMENT_WORDS.search(text.replace(lot, " ")))
+
+
 def sharepoint_lot_file(world: lk.World) -> list[lk.Candidate]:
     """The one SharePoint file whose name holds the number of a lot still holding stock and says it is a
-    document of that lot (``operating.fast_answer.lot_document_name``: a COA, a
+    document of that lot (``lot_document_name``: a COA, a
     receiving document), never a file that only shares the number."""
     lots = {lot for lot, _day, _c in lk._stock_lots(world)
             if len(lot) >= 6 and not re.fullmatch(r"(?:19|20)\d{6}", lot)}
-    from operating.fast_answer import lot_document_name
     by_lot: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in world.sharepoint:
         name = str(item.get("name") or "")

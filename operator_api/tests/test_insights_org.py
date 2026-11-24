@@ -67,7 +67,10 @@ class OrgTiles(unittest.TestCase):
                        "person_id text, manager_email text, reports_count integer)")
             pg.execute(f"CREATE TABLE {S}.emails (message_id text, mailbox text, sender text, "
                        "received_at timestamptz, owner_role text, is_bulk boolean, "
-                       "owner_replied_at timestamptz, thread text)")
+                       "owner_replied_at timestamptz, thread text, "
+                       # the emails view's own sent date and sender domain (the mail_sent measure's columns)
+                       "sent_at timestamptz GENERATED ALWAYS AS (received_at) STORED, "
+                       "sender_domain text GENERATED ALWAYS AS (split_part(sender, '@', 2)) STORED)")
             pg.execute(f"CREATE TABLE {S}.teams_messages (sender text, created_at timestamptz, "
                        "chat text, message_type text)")
             pg.execute(f"CREATE TABLE {S}.records (type text, fields jsonb)")

@@ -64,7 +64,7 @@ STALE_MOST_SECONDS = 30 * 60.0   # a policy change moves neither reader key nor 
 # with the time it was read; nothing older, and never after a refusal about access
 LAST_GOOD_SECONDS = 30 * 60.0
 UNFINISHED = frozenset({"insight_too_slow", "insight_not_ready", "insight_unreadable", "busy"})
-AHEAD_SECONDS = 120.0     # one read ahead or in the background (no person waits on it)
+AHEAD_SECONDS = 1800.0    # one read ahead or in the background: a hung read only (no person waits on it)
 
 
 def fresh_seconds(environ: Mapping[str, str] = os.environ) -> float:
@@ -358,6 +358,12 @@ class Keeper:
         self.kept, self.read, self.clock = kept, read, clock
         self._pool = pool
         self._seen: "OrderedDict[tuple, tuple[Any, set[str], float]]" = OrderedDict()
+        # the last background read of a (reader key, statement) that failed, until one succeeds:
+        # a stored-only request says why nothing is stored instead of waiting for ever
+        self.failed: dict[tuple, Exception] = {}
+        # (reader key, statement) reads queued or running here: a poll of a cold tile asks again
+        # every few seconds and must never queue a second read behind the first
+        self._pending: set[tuple] = set()
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         if kept.later is None:
@@ -376,7 +382,27 @@ class Keeper:
         with self.kept._lock:
             if key in self.kept._flight:
                 return None
-        return self.pool().submit(self._quiet, got[0], key[0], key[1])
+        return self._submit(got[0], key[0], key[1])
+
+    def _submit(self, reader: Any, key: tuple, sql: str) -> Optional[Future]:
+        """Queue one read of (key, sql) unless one is queued or running already (None)."""
+        slot = (key, sql)
+        with self._lock:
+            if slot in self._pending:
+                return None
+            self._pending.add(slot)
+        try:
+            fut = self.pool().submit(self._quiet, reader, key, sql)
+        except BaseException:
+            with self._lock:
+                self._pending.discard(slot)
+            raise
+        fut.add_done_callback(lambda _f: self._done(slot))
+        return fut
+
+    def _done(self, slot: tuple) -> None:
+        with self._lock:
+            self._pending.discard(slot)
 
     def pool(self) -> ThreadPoolExecutor:
         if self._pool is None:
@@ -408,14 +434,18 @@ class Keeper:
             age = self.kept.age((key, sql))
             if age is not None and age < self.kept.fresh * 0.8:
                 continue
-            out.append(self.pool().submit(self._quiet, reader, key, sql))
+            fut = self._submit(reader, key, sql)
+            if fut is not None:
+                out.append(fut)
         return out
 
     def _quiet(self, reader: Any, key: tuple, sql: str) -> None:
         try:
             # read again (joining one in flight): a kept answer this old is replaced
             self.kept.get((key, sql), lambda: self.read(reader, sql), again=True)
-        except Exception as exc:  # noqa: BLE001 - the tile's own request reads it and says why
+            self.failed.pop((key, sql), None)
+        except Exception as exc:  # noqa: BLE001 - kept in ``failed``: the tile's request says why
+            self.failed[(key, sql)] = exc
             # a read that now fails because the reader's access narrowed leaves no old
             # answer to be served again from memory or disk; one that could not finish
             # keeps the last good one (``Kept.last_good``)
@@ -430,6 +460,8 @@ class Keeper:
             for key in [k for k, (_, _, at) in self._seen.items()
                         if now - at > ACTIVE_SECONDS]:
                 self._seen.pop(key, None)
+                for slot in [f for f in self.failed if f[0] == key]:
+                    self.failed.pop(slot, None)   # a reader gone quiet keeps no old failures
             seen = [(k, r, set(s)) for k, (r, s, _) in self._seen.items()]
         out = []
         for key, reader, sqls in seen:
@@ -442,7 +474,9 @@ class Keeper:
             for sql in sqls:
                 age = self.kept.age((key, sql))
                 if age is None or age >= self.kept.fresh * 0.6:
-                    out.append(self.pool().submit(self._quiet, reader, key, sql))
+                    fut = self._submit(reader, key, sql)
+                    if fut is not None:
+                        out.append(fut)
         return out
 
     def start(self) -> None:

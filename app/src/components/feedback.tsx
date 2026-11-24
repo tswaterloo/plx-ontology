@@ -7,6 +7,9 @@ import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import type { FeedbackRequest } from "@/lib/types";
 
+/** The longest note or expected answer kept (the API's bound). */
+export const FEEDBACK_MAX = 20000;
+
 const REASONS = ["Wrong number", "Wrong item or order", "Missing a source", "Out of date", "Didn't answer the question"];
 
 type State = "idle" | "up-sent" | "down-open" | "down-sent" | "sending";
@@ -14,14 +17,14 @@ type State = "idle" | "up-sent" | "down-open" | "down-sent" | "sending";
 /** The API's note field: chosen reasons first, then the person's words. */
 export function feedbackNote(reasons: string[], note: string): string | undefined {
   const parts = [reasons.length ? `[${reasons.join("; ")}]` : "", note.trim()].filter(Boolean);
-  return parts.length ? parts.join(" ").slice(0, 2000) : undefined;
+  return parts.length ? parts.join(" ").slice(0, FEEDBACK_MAX) : undefined;
 }
 
 /** The thumbs-down body: reasons and words, the claims marked wrong, the right answer. */
 export function downBody(answerId: string, reasons: string[], note: string, claims: number[], expected: string): FeedbackRequest {
   const body: FeedbackRequest = { answer_id: answerId, rating: -1, note: feedbackNote(reasons, note) };
   if (claims.length) body.claims = [...claims].sort((a, b) => a - b);
-  if (expected.trim()) body.expected = expected.trim().slice(0, 2000);
+  if (expected.trim()) body.expected = expected.trim().slice(0, FEEDBACK_MAX);
   return body;
 }
 
@@ -143,7 +146,7 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
               value={note}
               onChange={(e) => setNote(e.target.value)}
               rows={2}
-              maxLength={2000}
+              maxLength={FEEDBACK_MAX}
               placeholder="What was wrong, or what did you expect? (optional)"
               className="w-full resize-none rounded-lg bg-surface px-3 py-2 text-[13px] leading-5 placeholder:text-faint focus:outline-2 focus:outline-ring"
             />
@@ -156,7 +159,7 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
               id={expectedId}
               value={expected}
               onChange={(e) => setExpected(e.target.value)}
-              maxLength={2000}
+              maxLength={FEEDBACK_MAX}
               placeholder="e.g. 12 Nov, or $4,820"
               className="h-8 w-full rounded-lg bg-surface px-3 text-[13px] placeholder:text-faint focus:outline-2 focus:outline-ring"
             />

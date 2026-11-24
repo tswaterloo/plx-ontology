@@ -1,0 +1,9 @@
+[Unit]
+Description=PLX Assist scoreboard for yesterday, every morning at 4:30 AM US Eastern
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target

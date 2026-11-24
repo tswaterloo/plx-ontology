@@ -43,7 +43,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import psycopg
 
@@ -263,6 +263,22 @@ def exclusion_stamp(environ: Mapping[str, str] | None = None) -> str:
     state, and whether its guard can decide): the same in every process and across
     restarts while the exclusion is the same, so a result kept under it outlives the
     process (a page kept on disk) and a change of the exclusion is a new key."""
+    return _exclusion_digest(environ, exclusion_set_stamp())
+
+
+def exclusion_rule_stamp(environ: Mapping[str, str] | None = None) -> str:
+    """``exclusion_stamp`` without the set's ``covered_ver``: the exclusion's settings,
+    file state, guard and the list tag the precomputed set was built for, never the
+    newest version it decided. The set only gains rows for versions above its old
+    ``covered_ver`` (``people_excluded.update``); a list change rebuilds it under a new
+    tag, which moves this stamp. A result kept under an older ``covered_ver`` is the
+    reader's again once every record it shows is decided under the set now (a kept
+    page: ``backend_serving._held_good``); the version moves with every delta cycle."""
+    got = exclusion_set_stamp()
+    return _exclusion_digest(environ, None if got is None else got[:1])
+
+
+def _exclusion_digest(environ: Mapping[str, str] | None, set_part: Any) -> str:
     environ = os.environ if environ is None else environ
     guard = load_exclusion(environ)
     path = environ.get("PLX_EXCLUDED_PEOPLE_FILE") or ""
@@ -271,8 +287,33 @@ def exclusion_stamp(environ: Mapping[str, str] | None = None) -> str:
     except OSError:
         mtime = -1
     body = json.dumps([environ.get("PLX_EXCLUDED_PEOPLE_OIDS"), path, mtime,
-                       getattr(guard, "unavailable", None)])
+                       getattr(guard, "unavailable", None), set_part])
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+def exclusion_set_version() -> Any:
+    """The precomputed set's ``covered_ver`` this process holds (None: no set in use;
+    "unreadable": the set could not be read, never equal to a version)."""
+    got = exclusion_set_stamp()
+    if got is None:
+        return None
+    return "unreadable" if got == ["unreadable"] else got[1]
+
+
+def exclusion_set_stamp() -> list[Any] | None:
+    """The precomputed people-exclusion set as this process holds it (``people_excluded``:
+    the list tag its rows were computed for and the newest version they decided,
+    ``covered_ver``); None when no set is in use. The set grows with each update: a
+    result kept under one stamp (a page's counts or aggregates built over the set's
+    rows) is never found again under a later one."""
+    from . import people_excluded
+    try:
+        got = people_excluded.excluded()
+    except Exception:  # noqa: BLE001 - an unreadable set: a key of its own, never a hit
+        return ["unreadable"]
+    if got is None:
+        return None
+    return [got.exclusion, got.covered_ver]
 
 
 # (id(policy), actor) -> (the policy, its fingerprint): one policy object is fingerprinted
@@ -317,6 +358,15 @@ def policy_parts(policy: ReadPolicy, actor: Actor) -> tuple[tuple[str, str], ...
     held = set(actor.principals)
     body["audiences_held"] = sorted(p for p, v in body["audiences"].items() if held & set(v))
     body["audiences_keys"] = sorted(body["audiences"])
+    # every entry (pattern and who holds it) that can decide a key one of the reader's own
+    # patterns matches: any key the reader may read is decided by its most specific matching
+    # entry, which then shares a key with a held pattern (``_overlap``). An entry outside it
+    # (another person's slice elsewhere) decides nothing the reader may read, so a state may
+    # leave ``audiences`` / ``audiences_keys`` out while this part is compared
+    # (``operator_api.backend_pages.same_access``): a deny or another person's entry inside
+    # a held wildcard moves it
+    reaches = _reach_test(body["audiences_held"])
+    body["audiences_reach"] = sorted([p, v] for p, v in body["audiences"].items() if reaches(p))
     out = tuple((name, hashlib.sha256(json.dumps(part, sort_keys=True).encode()).hexdigest())
                 for name, part in sorted(body.items()))
     with _FINGERPRINTS_LOCK:
@@ -326,11 +376,53 @@ def policy_parts(policy: ReadPolicy, actor: Actor) -> tuple[tuple[str, str], ...
     return out
 
 
+def _reach_test(held: list[str]) -> Callable[[str], bool]:
+    """``pattern -> any(_overlap(pattern, h) for h in held)`` in a few lookups: the held
+    wildcards' stems by length (a stem that starts the pattern's text) and every held
+    pattern's text sorted (one that starts with a wildcard pattern's stem)."""
+    import bisect
+    stems = {h[:-1] for h in held if h.endswith("*")}
+    lengths = sorted({len(x) for x in stems})
+    texts = sorted(h[:-1] if h.endswith("*") else h for h in held)
+    exact = {h for h in held if not h.endswith("*")}
+
+    def reaches(pattern: str) -> bool:
+        wild = pattern.endswith("*")
+        stem = pattern[:-1] if wild else pattern
+        if not wild and pattern in exact:
+            return True
+        if any(stem[:n] in stems for n in lengths if n <= len(stem)):
+            return True   # a held wildcard covers the pattern (or its stem)
+        if wild:   # a held pattern within this wildcard
+            at = bisect.bisect_left(texts, stem)
+            return at < len(texts) and texts[at].startswith(stem)
+        return False
+    return reaches
+
+
+def _overlap(a: str, b: str) -> bool:
+    """Whether two audience patterns (an exact key, or a prefix ending ``*``, as
+    ``ReadPolicy._principals`` reads them) match at least one key in common."""
+    wild_a, wild_b = a.endswith("*"), b.endswith("*")
+    stem_a, stem_b = (a[:-1] if wild_a else a), (b[:-1] if wild_b else b)
+    if wild_a and wild_b:
+        return stem_a.startswith(stem_b) or stem_b.startswith(stem_a)
+    if wild_a:
+        return b.startswith(stem_a)
+    if wild_b:
+        return a.startswith(stem_b)
+    return a == b
+
+
 def _body(policy: ReadPolicy, actor: Actor) -> dict[str, Any]:
     return {"tenant": policy.tenant,
             "audiences": {p: sorted(v) for p, v in sorted(policy.audiences.items())},
             "markings": {m: sorted(v) for m, v in sorted(policy.markings.items())},
             "units": {f: list(k) for f, k in sorted(policy.units.items())},
+            # the owner mark decides what the people exclusion withholds (the owner sees
+            # the partners' rows, nobody else): setting or clearing it is a new key
+            "owner": getattr(policy, "owner", False) is True,
+            "unrestricted": getattr(policy, "unrestricted", False) is True,
             "actor": [actor.tenant, sorted(actor.principals), actor.clearance]}
 
 
@@ -378,7 +470,8 @@ class ScopeCache:
             listing = (audience_keys_in(conn), units_in(conn))
             self.listings += 1
             self._put(("listing", db, generation), listing)
-        key = ("scope", db, generation, _fingerprint(policy, actor))
+        # the exclusion set's stamp too: a scope decided before the set grew is not reused
+        key = ("scope", db, generation, _fingerprint(policy, actor), exclusion_set_stamp())
         scope = self._get(key, exclusion)
         if scope is None:
             scope = scope_for(policy, actor, listing[0], units=listing[1], exclusion=exclusion)

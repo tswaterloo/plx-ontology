@@ -201,7 +201,7 @@ describe("messages and documents", () => {
   it("leaves out a mail's inline pictures and keeps real attachments", () => {
     const src = { system: "Email", handle: "h", label: "Email", open_url: "" };
     const items = ["image006.png", "Outlook-x1y2.jpg", "EUCAROL TDS.pdf", "image of label v2.png"].map((label) => ({ kind: "document", label, source: src })) as LinkedItem[];
-    expect(groupLinked(items).map((t) => t.subject).sort()).toEqual(["EUCAROL TDS.pdf", "image of label v2.png"]);
+    expect(groupLinked(items).map((t) => t.subject).sort()).toEqual(["EUCAROL TDS", "image of label v2"]);
   });
 });
 
@@ -330,5 +330,21 @@ describe("identifiers read as written", () => {
     const { recordLabel } = await import("./format");
     expect(recordLabel("PurchaseOrder", "PO")).toBe("PO (no number on record)");
     expect(recordLabel("PurchaseOrder", "PO100095")).toBe("PO 100095");
+  });
+});
+
+describe("linked documents read by what they are", () => {
+  it("a file name is said plainly and the same file saved twice is one row with a count", async () => {
+    const { groupLinked, fileTitle } = await import("./record");
+    expect(fileTitle("Invoice_106093_final.pdf")).toBe("Invoice 106093 final");
+    expect(fileTitle("Re: Quote")).toBe("Re: Quote");
+    expect(fileTitle("20261104221657521.pdf")).toMatch(/^Scan of .*2026.*, 22:16$/);
+    expect(fileTitle("20261104225342999_0000.pdf")).toMatch(/^Scan of .*, 22:53$/);
+    expect(fileTitle("2026110422.pdf")).toBe("2026110422");   // not a timestamp: as it is
+    const doc = (label: string, at: string) => ({ kind: "document", label, at, source: { system: "SharePoint", handle: "h", label, fields: {} } }) as never;
+    const t = groupLinked([doc("Invoice_106093.pdf", "2026-11-01T10:00:00Z"), doc("Invoice_106093 (1).pdf", "2026-11-02T10:00:00Z")]);
+    expect(t.length).toBe(1);
+    expect(t[0].count).toBe(2);
+    expect(t[0].subject).toBe("Invoice 106093");
   });
 });

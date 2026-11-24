@@ -43,6 +43,7 @@ import threading
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from operating.file_modes import keep_shared
+from . import team_accounts as ta_accounts
 from operating import briefs as br
 from . import models as m
 from .auth import Reader
@@ -51,7 +52,6 @@ from .errors import UserFacing
 READERS_ENV = "PLX_TEAM_VIEW_READERS"
 HIDDEN_ENV = "PLX_TEAM_HIDDEN_PEOPLE"
 FILE_ENV = "PLX_TEAM_ACTIVITY_FILE"
-CLOSED_DAYS = 28
 # what counts as work done in the tracker: every channel but mail they received
 DONE_CHANNELS = frozenset(("mail_sent", "teams", "meetings", "mc_approvals", "mc_questions",
                            "mc_tasks", "planner", "sharepoint", "bc", "portal", "sage"))
@@ -206,14 +206,14 @@ LIST_WEEKS = 2   # tracker weeks per person in the Team list (the drill-down has
 
 
 def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[str],
-               open_: Mapping[str, int], is_self: bool) -> dict[str, Any]:
+               open_: Mapping[str, int], is_self: bool, shared: bool = False) -> dict[str, Any]:
     from operating import team_activity as ta
     days = row.get("days") or {}
     trend = [sum(int(v) for v in (days.get((until - timedelta(days=i)).isoformat()) or {}
                                   ).values()) for i in range(27, -1, -1)]
     roles = [ta.ROLE_LABELS[r] for r in row.get("roles") or () if r in ta.ROLE_LABELS]
     reply, n = row.get("reply") or {}, row.get("reply_n") or {}
-    return {"key": key_of(oid), "name": str(row.get("name")), "self": is_self,
+    return {"key": key_of(oid), "name": str(row.get("name")), "self": is_self, "shared": shared,
             "team": team or row.get("department"),   # a derived role is a role, never a team
             "roles": roles,
             "d7": _sum(days, until - timedelta(days=6), until),
@@ -408,7 +408,7 @@ class TeamViewMixin:
         snap = snapshot(self._team_file())
         store = getattr(self, "store_path", None)
         inbox = pe.inbox_path(store) if store else None
-        since = (date.today() - timedelta(days=CLOSED_DAYS)).isoformat()
+        since = ""   # every resolved alert, not the last 28 days (owner no-limits rule 11-23)
         counts = open_counts(it.open_rows(inbox) if inbox else (),
                              it.closed_rows(inbox, since) if inbox else (), OWNER_KINDS)
         grants = self._workload_grants()   # type: ignore[attr-defined]
@@ -430,7 +430,9 @@ class TeamViewMixin:
         # whole four-week tracker comes with the person's own drill-down (``team_person``)
         rows = [m.TeamPerson(**{**row, "weeks": row["weeks"][-LIST_WEEKS:]})
                 for row in (person_row(oid, people[oid], until=until, team=teams.get(oid),
-                                       open_=counts.get(oid, {}), is_self=oid in me)
+                                       open_=counts.get(oid, {}), is_self=oid in me,
+                                       shared=ta_accounts.is_shared(oid, people[oid],
+                                                                    getattr(self, "state_dir", None)))
                             for oid in sorted(shown, key=lambda o: str(people[o].get("name")).lower()))]
         return m.TeamView(scope="everyone" if everyone else "self", state="ready",
                           as_of=snap.get("generated_at"), window_to=snap["window"]["to"],
@@ -449,7 +451,8 @@ class TeamViewMixin:
             raise UserFacing("not_found", "No such person.", 404)
         row = people[oid]
         until = date.fromisoformat(snap["window"]["to"])
-        person = person_row(oid, row, until=until, team=teams.get(oid),
+        person = person_row(oid, row, until=until, team=teams.get(oid), shared=ta_accounts.is_shared(
+            oid, row, getattr(self, "state_dir", None)),
                             open_=counts.get(oid, {}), is_self=oid in me)
         days = row.get("days") or {}
         timeline = [m.TeamDay(day=d, counts={k: int(v) for k, v in
@@ -484,8 +487,14 @@ class TeamViewMixin:
             if not isinstance(found, Mapping) or found.get("status") != "read":
                 return None
             return found.get("gaps") or ()
-        gaps = None if not known else () if not kinds else \
-            self._brief_run(reader, job)   # type: ignore[attr-defined]
+        unread = False
+        try:
+            gaps = None if not known else () if not kinds else \
+                self._brief_run(reader, job)   # type: ignore[attr-defined]
+        except (UserFacing, TimeoutError):
+            # a busy or slow old-engine read must not fail the panel: its counts, days and
+            # partners stand, and the open items say they could not be read just now
+            gaps, unread = None, True
         items: list[dict[str, Any]] = []
         for bucket in it.BUCKETS:
             for member in sorted(mine):
@@ -502,8 +511,8 @@ class TeamViewMixin:
         return m.TeamPersonDetail(
             person=m.TeamPerson(**person), timeline=timeline, partners=partners,
             items=[m.TeamItem(**x) for x in items[:it.DRILL_MAX]],
-            withheld=max(counted - len(items), 0) if gaps is not None else counted,
-            truncated=len(items) > it.DRILL_MAX)
+            withheld=0 if unread else max(counted - len(items), 0) if gaps is not None else counted,
+            truncated=len(items) > it.DRILL_MAX, items_unread=unread)
 
 
 def br_max() -> int:

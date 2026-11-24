@@ -862,12 +862,12 @@ def subject_records(call: Callable[[str, dict[str, Any]], Any],
                     named: Sequence[tuple[str, str, Optional[str]]], terms: df.Terms
                     ) -> tuple[list[str], list[str], Optional[str]]:
     """The records the form's strongest identifiers name exactly (``plx.find`` read by the
-    one identifier rule, ``fast_answer.by_identifier``): at most one of each record type,
+    one identifier rule, ``record_reads.by_identifier``): at most one of each record type,
     or the records of one business record its systems hold (``one_business_record``).
     An identifier naming two records otherwise, or two identifiers naming two different
     records of one type, is ambiguous: none of that type is used. Returns the record ids,
     notes, and the form field whose value named the first record (a key, never filled)."""
-    from operating import fast_answer as fa
+    from operating import record_reads as fa
     keys = key_fields(terms)
     by_type: dict[str, set[str]] = {}
     groups: list[frozenset[str]] = []

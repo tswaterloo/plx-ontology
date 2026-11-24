@@ -39,6 +39,23 @@ describe("record history tab", () => {
     expect(screen.queryByTestId("history-older")).toBeNull();
   });
 
+  it("reads a purchase order's tab from the served store, and its older pages by cursor", async () => {
+    const f = serve((url) =>
+      url.includes("/api/page/history/") && url.includes("cursor=s3")
+        ? json(page({ entries: [{ at: "2099-01-01T00:00:00Z", kind: "first_recorded", title: "First recorded from Portal purchase order", source: "Portal purchase order", changes: [], more_changes: false, link: null, link_label: null }] }))
+        : url.includes("/api/page/history/")
+          ? json(page({ entries: [changed("2099-01-05T00:00:00Z", "Status", ["open"], ["closed"])], next_cursor: "s3" }))
+          : json({}, 404),
+    );
+    render(<RecordHistory type="PurchaseOrder" id="PurchaseOrder:p:1" />);
+    await screen.findByTestId("history-change");
+    fireEvent.click(screen.getByTestId("history-older"));
+    await screen.findByText("First recorded from Portal purchase order");
+    const urls = f.mock.calls.map(([u]) => String(u));
+    expect(urls.every((u) => u.includes("/api/page/history/PurchaseOrder%3Ap%3A1"))).toBe(true);
+    expect(urls.some((u) => u.includes("/api/history/"))).toBe(false);
+  });
+
   it("says some changes are hidden without a number", async () => {
     serve(() => json(page({ entries: [changed("2099-01-05T00:00:00Z", "Customer PO", [], ["x"])], partial: true })));
     render(<RecordHistory type="SalesOrder" id="so1" />);
@@ -59,5 +76,30 @@ describe("record history tab", () => {
     const result = await screen.findByTestId("as-of-result");
     expect(result.textContent).toContain("old");
     await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes("/api/as-of/SalesOrder/so1?at=2099-01-03"))).toBe(true));
+  });
+
+  it("asks again while the server says the history is being prepared, then shows it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let calls = 0;
+      serve((url) => {
+        if (!url.includes("/api/page/history/")) return json({}, 404);
+        calls += 1;
+        return calls < 3
+          ? json({ error: { code: "page_unavailable", message: "This record's history is being prepared; try again in a moment." } }, 503)
+          : json(page({ entries: [changed("2099-01-05T00:00:00Z", "Status", ["open"], ["closed"])], message: "This history was stored 3:05 PM ET; newer changes are being prepared." }));
+      });
+      render(<RecordHistory type="PurchaseOrder" id="PurchaseOrder:p:1" />);
+      await screen.findByText(/is being prepared; it will appear here/);
+      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(3000);
+      const row = await screen.findByTestId("history-change");
+      expect(row.textContent).toContain("closed");
+      expect(calls).toBe(3);
+      expect(screen.getByText(/stored 3:05 PM ET; newer changes are being prepared/)).toBeTruthy();   // the stale tab says its age
+      expect(screen.queryByTestId("history-error")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

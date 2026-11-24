@@ -50,6 +50,50 @@ _VALUE = re.compile(r"^(sum|count|avg|min|max)\((DISTINCT )?([a-z_]+|\*)\)$")
 _NAME = re.compile(r"^[a-z_]+$")
 
 
+def where_sql(name: str) -> str:
+    """The one definition of which rows a measure counts (its ``where``), for every reader
+    of the fact: a page's count and list, an alert's rows, an Insights tile and Ask all
+    select with this text, never a copy of it."""
+    m = measures().get(name)
+    if m is None or not effective_where(m):
+        raise KeyError(f"no measure {name!r} with a where")
+    return f"({effective_where(m)})"
+
+
+def parameters_of(m: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The measure's stated exclusions (``parameters``: id, default, excludes_where, says):
+    rows its definition leaves out unless the reader counts them in, always said beside
+    the figure (S2: never a hidden filter)."""
+    return [p for p in m.get("parameters") or () if isinstance(p, Mapping)]
+
+
+def effective_where(m: Mapping[str, Any], on: Mapping[str, Any] = {},
+                    only: Optional[str] = None) -> str:
+    """The rows the measure counts: its ``where`` and, for each parameter not switched on
+    (``on``: id -> true counts its rows in), NOT its ``excludes_where``. ``only``: the rows
+    that one parameter leaves out (its excluded count), nothing else."""
+    parts = [f"({m['where']})"] if m.get("where") else []
+    for p in parameters_of(m):
+        if only is not None:
+            if p["id"] == only:
+                parts.append(f"({p['excludes_where']})")
+            elif not on.get(p["id"], p.get("default", False)):
+                parts.append(f"NOT ({p['excludes_where']})")
+        elif not on.get(p["id"], p.get("default", False)):
+            parts.append(f"NOT ({p['excludes_where']})")
+    return " AND ".join(parts)
+
+
+_WHERE_REF = re.compile(r"\{where:([a-z_]+)\}")
+
+
+def fill(sql: str) -> str:
+    """A tile's statement with its placeholders filled: the company's time zone
+    (``{business_tz}``) and a measure's own row definition (``{where:<measure>}``)."""
+    from operating.pg.business_views import BUSINESS_TZ
+    return _WHERE_REF.sub(lambda m: where_sql(m.group(1)), sql.replace("{business_tz}", BUSINESS_TZ))
+
+
 @lru_cache(maxsize=1)
 def measures() -> dict[str, dict[str, Any]]:
     data = json.loads(CATALOGUE.read_text(encoding="utf-8"))["measures"]
@@ -66,6 +110,37 @@ def measures() -> dict[str, dict[str, Any]]:
     return out
 
 
+# the fields that decide what a measure counts: its version changes when any of them does
+DEFINING = ("view", "value", "per", "date", "where", "rate_value", "rate_where",
+            "definition")
+
+
+def version(m: Mapping[str, Any]) -> str:
+    """The measure's definition version: ``v`` and 8 hex characters of its defining fields
+    (``DEFINING``), the same for the same definition wherever it is read. The catalogue
+    records it beside the date that definition was set (``version``, ``defined_on``): a
+    change to what a measure counts must restate both, or the catalogue's test fails, so
+    the date an answer shows is never the date of an older definition."""
+    import hashlib
+    # a statement's working copy holds its parameters' where; the version is the entry's
+    said = json.dumps({k: m.get("_where", m.get(k)) if k == "where" else m.get(k)
+                       for k in DEFINING}, sort_keys=True, default=str)
+    return "v" + hashlib.sha256(said.encode("utf-8")).hexdigest()[:8]
+
+
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def defined_on(m: Mapping[str, Any]) -> str:
+    """The day the measure's definition was set, as the catalogue records it beside its
+    version; "" when the recorded version is not the version of what it counts now (an
+    edit that did not restate both) or the day is not an ISO date: never the day of an
+    older definition."""
+    day = m.get("defined_on")
+    return day if m.get("version") == version(m) and isinstance(day, str) \
+        and _DAY.match(day) else ""
+
+
 @lru_cache(maxsize=1)
 def reports() -> dict[str, dict[str, Any]]:
     try:
@@ -74,11 +149,9 @@ def reports() -> dict[str, dict[str, Any]]:
         return {}
     # only the company-wide ones: a people view's rows are cut per viewer by the Insights
     # Team rule after the door (``operator_api.insights``), which plx.sql does not apply
-    from operating.pg.business_views import BUSINESS_TZ
-
-    # a tile's day and week edges are the company's ({business_tz}), as Insights runs it
-    data = [{**r, "sql": r["sql"].replace("{business_tz}", BUSINESS_TZ)} if r.get("sql")
-            else r for r in data]
+    # a tile's day and week edges are the company's ({business_tz}) and a counted fact is the
+    # measure's own definition ({where:...}), as Insights runs it
+    data = [{**r, "sql": fill(r["sql"])} if r.get("sql") else r for r in data]
     return {r["id"]: r for r in data if r.get("id") not in measures() and r.get("sql")
             and r.get("scope") in ("everyone", "full") and not r.get("person")
             and not r.get("rollup")}
@@ -103,7 +176,10 @@ def listing(full: bool = False) -> dict[str, Any]:
                 "\"<dimension>\" (or week/month), \"days\": N (the last N days) or \"period\": "
                 + PERIOD_FORMS + ", and \"compare\": true (this period against the one "
                 "before, each part's share of the change; with a period, \"against\": "
-                "another named period, else the same kind of period just before)."),
+                "another named period or \"same_period_last_year\", else the same kind of period just "
+                "before; a period not over is set against the same days of the earlier one, "
+                "the whole earlier period beside it; \"by\": \"month\" with compare gives one "
+                "row per month against its pair; \"by\": [\"<dimension>\", \"month\"] two at once)."),
     }
 
 
@@ -146,12 +222,19 @@ _MONTH = re.compile(r"^(\d{4})-(\d{2})$")
 _QUARTER = re.compile(r"^(\d{4})-Q([1-4])$")
 _YEAR = re.compile(r"^(\d{4})$")
 _RANGE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\.\.(\d{4}-\d{2}-\d{2}))?$")
+FISCAL_START_MONTH = 1   # the company's fiscal year starts in this month (1 = the calendar year;
+#                          no other start is declared anywhere: change it here once it is)
+_FISCAL = re.compile(r"^FY(\d{4})(?:-Q([1-4]))?$", re.I)
+_SINCE = "since:"
 PERIOD_FORMS = ('"2026-09" (a month), "2026-Q3" (a quarter), "2026" (a year), '
                 '"2026-08-04..2026-08-17" (days, both ends included), or one that moves with '
                 'the date (a pinned chart of it stays current): "this_month", "last_month", '
                 '"this_week", "last_week", "this_quarter", "last_quarter", "this_year", '
                 '"last_year", "year_to_date", "last_12_months" (the 12 full months before '
-                'this one)')
+                'this one), "last_N_months" / "last_N_quarters" / "last_N_years" (the N full '
+                'ones before this one), "since:<any form above>" (from its first day to today), '
+                '"FY2026" / "FY2026-Q3" (fiscal year and quarter: the fiscal year starts in '
+                'month ' + str(FISCAL_START_MONTH) + ', as the company has declared)')
 # A period that moves with the date: (calendar unit, periods back from the current one).
 # Its edges are statements on now() in the company's time zone, never the dates of the day
 # it was asked, so a pinned chart of "this month" reads this month whenever it is opened.
@@ -218,6 +301,42 @@ def _relative(t: str) -> Optional[Period]:
             (first, f"{first} + interval '{months} months'"))
 
 
+def _fiscal(year: int, quarter: Optional[int]) -> Period:
+    """A fiscal year (named by the calendar year it starts in) or one of its quarters."""
+    start = dt.date(year, FISCAL_START_MONTH, 1)
+    if quarter is None:
+        return start, _months_on(start, 12), "month", 12, None
+    first = _months_on(start, 3 * (quarter - 1))
+    return first, _months_on(first, 3), "month", 3, None
+
+
+def _last_n(n: int, unit: str) -> Period:
+    """The ``n`` full months, quarters or years before the current one (moving)."""
+    if n < 1:
+        raise _bad("last_N_... needs N of 1 or more")
+    months = n * _UNIT_MONTHS[unit]
+    today, now = business_today(), _LOCAL_NOW
+    here = dt.date(today.year, today.month, 1)
+    if unit != "month":
+        step = _UNIT_MONTHS[unit]
+        here = _months_on(here, -((here.month - 1) % step))
+    trunc = unit if unit != "month" else "month"
+    first = f"date_trunc('{trunc}', {now}) - interval '{months} months'"
+    after = f"date_trunc('{trunc}', {now})"
+    return (_months_on(here, -months), here, "month", months, (first, after))
+
+
+def _since(inner: str, field: str) -> Period:
+    """From the first day of any other period to today (its end moves with the date)."""
+    first = _period(inner, field)
+    today, now = business_today(), _LOCAL_NOW
+    f_expr = first[4][0] if first[4] is not None else None
+    start = first[0]
+    lit = f"'{start.isoformat()}'::timestamp"
+    return (start, today + dt.timedelta(days=1), "day", (today - start).days + 1,
+            (f_expr or lit, f"date_trunc('day', {now}) + interval '1 day'"))
+
+
 def _period(text: Any, field: str) -> Period:
     """(first day, the day after the last, kind, length in months or days, moving edges)
     of a named calendar period or one that moves with the date (``RELATIVE``); anything
@@ -228,7 +347,15 @@ def _period(text: Any, field: str) -> Period:
     moving = _relative(t)
     if moving is not None:
         return moving
+    if t.lower().startswith(_SINCE):
+        return _since(t[len(_SINCE):].strip(), field)
+    parts = re.sub(r"[\s-]+", "_", t.lower()).split("_")
+    if len(parts) == 3 and parts[0] == "last" and parts[1].isdigit() \
+            and parts[2].rstrip("s") in ("month", "quarter", "year") and len(parts[1]) <= 3:
+        return _last_n(int(parts[1]), parts[2].rstrip("s"))
     try:
+        if m := _FISCAL.match(t):
+            return _fiscal(int(m.group(1)), int(m.group(2)) if m.group(2) else None)
         if m := _MONTH.match(t):
             start = dt.date(int(m.group(1)), int(m.group(2)), 1)
             return start, _months_on(start, 1), "month", 1, None
@@ -266,6 +393,40 @@ def _before(period: Period) -> Period:
         step = f"interval '{n} days'"
     return (*back, kind, n,
             None if moving is None else (f"({moving[0]}) - {step}", moving[0]))
+
+
+SAME_LAST_YEAR = "same_period_last_year"
+
+
+def _year_before(period: Period) -> Period:
+    """The same dates a year earlier (a moving period's edges move a year back too)."""
+    start, end, kind, n, moving = period
+    return (_shift_year(start, -1), _shift_year(end, -1), kind, n,
+            None if moving is None else tuple(f"({e}) - interval '12 months'" for e in moving))
+
+
+def _elapsed_days(named: Period) -> Optional[int]:
+    """Days of ``named`` gone by today when today falls inside it (it is not over); else None."""
+    today = business_today()
+    if named[0] <= today < named[1]:
+        return (today - named[0]).days + 1
+    return None
+
+
+def _aligned(named: Period, earlier: Period) -> tuple[Period, Optional[Period]]:
+    """(the earlier period cut to the days of ``named`` gone by, the full earlier period or
+    None when nothing is cut): a period still running is never set against a whole one (this
+    quarter's 54 days against last year's 92 read as a collapse)."""
+    gone = _elapsed_days(named)
+    if gone is None or (earlier[1] - earlier[0]).days <= gone:
+        return earlier, None
+    cut = earlier[0] + dt.timedelta(days=gone)
+    if earlier[4] is None:
+        return (earlier[0], cut, "day", gone, None), earlier
+    first = earlier[4][0]
+    elapsed = (f"(date_trunc('day', {_LOCAL_NOW}) + interval '1 day' - ({named[4][0]}))"
+               if named[4] is not None else f"interval '{gone} days'")
+    return (earlier[0], cut, "day", gone, (first, f"({first}) + {elapsed}")), earlier
 
 
 ZONE = "America/New_York"
@@ -446,9 +607,11 @@ def _unusual(m: Mapping[str, Any], by: Optional[str], n: int,
              sliced: Sequence[str]) -> tuple[str, dict[str, Any]]:
     sql = (f"SELECT * FROM ({_unusual_body(m, by, n, sliced)}) u "
            f"ORDER BY abs(unusual) DESC NULLS LAST"
-           + (f", {by}" if by else "") + f" LIMIT {TOP}")
+           + (f", {by}" if by else ""))
     return sql, {"id": m["id"], "name": m["name"], "kind": "measure",
-                 "definition": m["definition"], "owner": m["owner"], "unit": m["unit"],
+                 "definition": m["definition"], "owner": m["owner"], "version": version(m),
+                 "defined_on": defined_on(m),
+                 "unit": m["unit"],
                  "source": m["view"], "period": _unusual_said(n), "by": by,
                  **(_rate_note(m) if is_rate(m) else {}), "sql": sql}
 
@@ -473,7 +636,7 @@ def _scan(n: int, without: frozenset = frozenset()) -> tuple[str, dict[str, Any]
         words = set(re.findall(r"[a-z_]+", " ".join(
             " ".join(str(m.get(k) or "") for k in ("value", "where", "per", "date",
                                                     "rate_value", "rate_where"))
-            for m in mine)))
+            + " " + effective_where(m) for m in mine)))
         cols = sorted(words & known[v]) if v in known else ["*"]
         window = " OR ".join(sorted({f"({m['date']}>now()-{span} AND {m['date']}<=now())"
                                      for m in mine}))
@@ -484,7 +647,8 @@ def _scan(n: int, without: frozenset = frozenset()) -> tuple[str, dict[str, Any]
         d = m["date"]
         # the view's read is already its one date's window; a view read on two dates
         # (mail received and sent) keeps each measure to its own
-        where = " AND ".join(([f"({m['where']})"] if m["where"] else [])
+        # the rows the measure counts: its where and its stated exclusions at their defaults
+        where = " AND ".join(([f"({effective_where(m)})"] if effective_where(m) else [])
                              + ([f"{d}>now()-{span}", f"{d}<=now()"]
                                 if len(dates[m["view"]]) > 1 else [])) or "true"
         per = f"{m['per']}::text" if m["per"] else "NULL"
@@ -522,10 +686,44 @@ def _scan(n: int, without: frozenset = frozenset()) -> tuple[str, dict[str, Any]
                  "by": None, "sql": sql}
 
 
+def excluded_statements(name: str, days: Any = None, period: Any = None, filter: Any = None,
+                        parameters: Any = None) -> list[tuple[dict[str, Any], str]]:
+    """(parameter, statement) for each stated exclusion (S2) of measure ``name`` that
+    ``parameters`` leaves switched off: the measure's own statement over exactly the rows
+    that parameter leaves out, over the same period and filter, ungrouped: one row, its
+    ``value`` over them and ``row_count`` = how many records it leaves out. The one
+    definition of an excluded count (a measure read and a measure tile both use it)."""
+    m = measures().get(name)
+    on = parameters if isinstance(parameters, Mapping) else {}
+    out = []
+    for p in parameters_of(m or {}):
+        if on.get(p["id"], p.get("default", False)):
+            continue
+        sql, _entry = statement(name, None, days, False, period, None, filter, False,
+                                parameters=on, excluded=p["id"])
+        out.append((p, sql))
+    return out
+
+
+def excluded_of(p: Mapping[str, Any], columns: Sequence[str], rows: Sequence[Sequence[Any]]
+                ) -> dict[str, Any]:
+    """An ``excluded_statements`` read as said beside the figure: {parameter, says, n,
+    value}; n and value None (never 0) when the read gave no single row."""
+    one = rows[0] if len(rows) == 1 else None
+    def cell(col: str) -> Any:
+        return one[list(columns).index(col)] if one is not None and col in columns else None
+    n = cell("row_count")
+    n = n.get("value") if isinstance(n, Mapping) else n     # a typed cell's own value
+    return {"parameter": p["id"], "says": p.get("says", ""),
+            "n": int(n) if not isinstance(n, bool) and str(n).strip().isdigit() else None,
+            "value": cell("value")}
+
+
 def statement(name: Any, by: Any = None, days: Any = None,
               compare: Any = False, period: Any = None,
               against: Any = None, filter: Any = None,
-              unusual: Any = False, without: Any = ()) -> tuple[str, dict[str, Any]]:
+              unusual: Any = False, without: Any = (), parameters: Any = None,
+              excluded: Optional[str] = None, why: Any = False) -> tuple[str, dict[str, Any]]:
     """(the SELECT for one catalogue entry, what to cite with it). Refuses (``ToolError``)
     a name, dimension, filter or period the entry does not hold.
 
@@ -537,8 +735,15 @@ def statement(name: Any, by: Any = None, days: Any = None,
     (``_unusual``); ``name`` ``"*"`` with it scans every dated measure at once."""
     if not isinstance(name, str):
         raise _bad("measure names one entry of the catalogue")
-    if not isinstance(compare, bool) or not isinstance(unusual, bool):
-        raise _bad("compare and unusual are true or false")
+    if not isinstance(compare, bool) or not isinstance(unusual, bool) \
+            or not isinstance(why, bool):
+        raise _bad("compare, unusual and why are true or false")
+    if why:
+        # why a figure changed: which dimension holds the change (``_why``); it is the
+        # every-dimension comparison read as a ranking of the dimensions
+        if by is not None or unusual or filter is not None:
+            raise _bad("why ranks every dimension of the change: no by, unusual or filter with it")
+        by, compare = EVERY, True
     if unusual:
         if compare or period is not None or against is not None:
             raise _bad("unusual judges the latest days against the periods before them: "
@@ -554,11 +759,20 @@ def statement(name: Any, by: Any = None, days: Any = None,
         raise _bad("against goes with period: the period to set it against")
     if against is not None:
         compare = True
+    second = None
+    if isinstance(by, (list, tuple)):
+        # two breakdowns at once (a customer by month, a pivot): the second is the series
+        if len(by) != 2 or not all(isinstance(x, str) for x in by) or by[0] == by[1]:
+            raise _bad("by takes one dimension, or a list of two different ones")
+        if compare or unusual:
+            raise _bad("two breakdowns at once read one period: no compare or unusual with it")
+        by, second = by[0], by[1]
     m = measures().get(name)
     if m is None:
         r = reports().get(name)
         if r is None:
-            raise _bad(f"no measure or report named {name[:64]!r}")
+            raise _bad(f"no measure or report named {name[:64]!r}").uncovered(
+                "measure", name)
         if by is not None or days is not None or compare or period is not None \
                 or filter is not None or unusual:
             raise _bad(f"{name} is a report: it runs as saved, with no by, days, period, "
@@ -567,41 +781,62 @@ def statement(name: Any, by: Any = None, days: Any = None,
                           "scope": r["scope"],
                           "definition": r.get("about", ""), "owner": r.get("group", ""),
                           "sql": r["sql"]}
+    # stated exclusions (S2): the rows each parameter leaves out are left out unless it is
+    # switched on; ``excluded`` reads only the rows one parameter leaves out
+    on = parameters if isinstance(parameters, Mapping) else {}
+    known = {p["id"] for p in parameters_of(m)}
+    if parameters is not None and (not isinstance(parameters, Mapping) or set(on) - known
+                                   or not all(isinstance(v, bool) for v in on.values())):
+        raise _bad(f"{name} takes parameters " + (", ".join(sorted(known)) or "none")
+                   + " (true counts the rows it leaves out)")
+    if excluded is not None and excluded not in known:
+        raise _bad(f"{name} has no parameter {excluded!r}")
+    m = {**m, "where": effective_where(m, on, excluded), "_where": m.get("where")}
     dated = bool(m["date"])
     every = by == EVERY
     if every and (not compare or unusual):
         raise _bad("every dimension at once (by \"*\") goes with compare: the drivers of a "
                    "change")
-    if by is not None and not every and (not isinstance(by, str)
-                           or by not in m["dimensions"] + (list(TIME_DIMENSIONS) if dated else [])):
+    allowed = m["dimensions"] + (list(TIME_DIMENSIONS) if dated else [])
+    if second is not None and (second not in allowed or sum(
+            x in TIME_DIMENSIONS for x in (by, second)) > 1):
+        raise _bad(f"{name} breaks down by {', '.join(allowed)} (at most one of week or month)")
+    if by is not None and not every and (not isinstance(by, str) or by not in allowed):
         raise _bad(f"{name} breaks down by {', '.join(m['dimensions'])}"
                    + (", week or month" if dated else "") + " only")
     if not dated and (days is not None or compare or period is not None or unusual):
         raise _bad(f"{name} is a snapshot as it stands now: it has no period to choose, "
                    "compare or judge as unusual")
-    trend = by in TIME_DIMENSIONS
+    trend = by in TIME_DIMENSIONS or second in TIME_DIMENSIONS
     sliced = _filters(m, filter)
     if unusual:
         if trend:
             raise _bad("unusual already reads the measure period by period: break it down "
                        "by a dimension, not by week or month")
         return _unusual(m, by, _days(days, UNUSUAL_DAYS), sliced)
-    if trend and compare:
-        raise _bad("a breakdown by week or month already compares periods")
     n = _days(days, TREND_DAYS if trend else int(m.get("days", 30)))
     named = _period(period, "period") if period is not None else None
-    earlier = None
+    if trend and compare and (named is None or by not in TIME_DIMENSIONS or is_rate(m)):
+        raise _bad("a month-by-month or week-by-week comparison names its period (and an "
+                   "earlier one, or the one just before it) and is not a rate")
+    earlier = full_earlier = None
     if named and compare:
-        earlier = _period(against, "against") if against is not None else _before(named)
+        if against == SAME_LAST_YEAR:
+            earlier = _year_before(named)
+        else:
+            earlier = _period(against, "against") if against is not None else _before(named)
         if earlier[0] < named[1] and named[0] < earlier[1]:
             raise _bad("period and against overlap: name two separate periods")
+        earlier, full_earlier = _aligned(named, earlier)
     value, per, view = m["value"], m["per"], m["view"]
     rate = is_rate(m)
     where = ([f"({m['where']})"] if m["where"] else []) + sliced
     keys = []
     dims = m["dimensions"]
-    if trend:
-        keys.append(f"date_trunc('{by}', {m['date']})::date AS {by}")
+    def _key(x: str) -> str:
+        return f"date_trunc('{x}', {m['date']})::date AS {x}" if x in TIME_DIMENSIONS else x
+    if trend and compare:
+        pass       # the steps of the period are the rows (``_trend_compare``)
     elif every:
         # one pass over the rows grouped by each dimension in turn (with the currency or
         # unit): which dimension a row is of and its part, read from GROUPING
@@ -610,7 +845,9 @@ def statement(name: Any, by: Any = None, days: Any = None,
         keys.append("CASE " + " ".join(f"WHEN GROUPING({x}) = 0 THEN {x}::text" for x in dims)
                     + " END AS part")
     elif by:
-        keys.append(by)
+        keys.append(_key(by))
+        if second:
+            keys.append(_key(second))
     if per:
         keys.append(per)
     names = [k.split(" AS ")[-1] for k in keys]
@@ -623,12 +860,14 @@ def statement(name: Any, by: Any = None, days: Any = None,
                 first, after = _edges(p, view, d)
                 return f"{d} >= {first} AND {d} < {after}"
             cur, prev = within(named), within(earlier)
-            where.append(f"(({cur}) OR ({prev}))")
+            prev_full = within(full_earlier) if full_earlier is not None else prev
+            where.append(f"(({cur}) OR ({prev_full}))")
             if named[4] is None and earlier[4] is None:
                 start = _edge(min(named[0], earlier[0]))
             else:
                 start = (f"LEAST({_edges(named, view, d)[0]}, "
                          f"{_edges(earlier, view, d)[0]})")
+
         else:
             where.append(f"{d} >= now() - interval '{2 * n} days'")
             cur, prev = f"{d} >= {since}", f"{d} < {since}"
@@ -643,9 +882,12 @@ def statement(name: Any, by: Any = None, days: Any = None,
         # reads every row, ~20 s for mail; the first record is read only when it matters)
         covered = f"EXISTS (SELECT 1 FROM {view} WHERE {m['date']} <= {start})"
         first = f"(SELECT min({m['date']}) FROM {view} WHERE {m['date']} > {start})"
+        # the earlier period cut to the days gone by: the whole earlier period beside it
+        beside = (f"CASE WHEN {covered} THEN {_agg(m, prev_full)} END AS previous_full, "
+                  if named and full_earlier is not None else "")
         inner = (f"SELECT {', '.join(keys + [''])}"
                  f"{_agg(m, cur)} AS current, "
-                 f"CASE WHEN {covered} THEN {_agg(m, prev)} END AS previous, "
+                 f"CASE WHEN {covered} THEN {_agg(m, prev)} END AS previous, {beside}"
                  f"count(*) FILTER (WHERE {cur}) AS current_rows, "
                  f"count(*) FILTER (WHERE {prev}) AS previous_rows, "
                  f"{unread} AS unread_cells, "
@@ -664,9 +906,22 @@ def statement(name: Any, by: Any = None, days: Any = None,
         # a rate's parts do not add up to the whole rate: no share of its change
         share = ("NULL::numeric" if rate else
                  f"round(100.0 * ({change}) / nullif(sum({change}){part}, 0), 1)")
+        # a part's rows with no readable value have no readable currency or unit either
+        # (per NULL): they may belong to any of the part's currencies, so every row of that
+        # part is incomplete, never a clean 0 for a period that had rows (an order booked
+        # with no value yet beside last year's priced ones is no drop to 0)
+        apart = [x for x in names if x != per]
+        unknown = (f" OR bool_or(unread_cells > 0 AND {per} IS NULL) OVER ("
+                   + (f"PARTITION BY {', '.join(apart)}" if apart else "") + ")"
+                   if per else "")
         shown = (f"SELECT p.*, {change} AS change, {share} "
-                 f"AS share_of_change_pct, unread_cells > 0 OR NOT covered AS incomplete")
-        if every:
+                 f"AS share_of_change_pct, unread_cells > 0 OR NOT covered{unknown} "
+                 f"AS incomplete")
+        if trend:
+            sql = _trend_compare(m, by, named, earlier, where, cur, prev, covered, per)
+        elif every and why:
+            sql = _why(inner, shown, change, per)
+        elif every:
             # per dimension (and currency or unit) its EACH largest changes and, for a sum
             # or count, one "All others (n)" row: each dimension's rows add up to the whole
             # change; a rate's parts are its own rates, never summed
@@ -688,33 +943,12 @@ def statement(name: Any, by: Any = None, days: Any = None,
                       f"GROUP BY {', '.join(within)}")
             sql = (ranked + f"SELECT {', '.join(cols)} FROM ({top}{others}) u "
                    f"ORDER BY {', '.join(within)}, rank")
-        elif by and rate:
-            # the largest changes in points, each part's own rate: never summed into an
-            # "All others" rate
-            sql = (f"WITH p AS ({inner}) {shown} FROM p ORDER BY abs({change}) DESC "
-                   f"NULLS FIRST, {by} LIMIT {TOP}")
         elif by:
-            # past the TOP largest changes the parts are one "All others (n)" row per
-            # currency or unit, so the rows always add up to the whole change (a waterfall's
-            # total, a bar chart of the parts); one unknown change among them leaves its
-            # sum unknown, never read as 0
-            cols = [by, *([per] if per else []), "current", "previous", "current_rows",
-                    "previous_rows", "unread_cells", "data_from", "covered", "change",
-                    "share_of_change_pct", "incomplete"]
-            rest = ("CASE WHEN count(change) < count(*) THEN NULL ELSE sum(change) END")
-            sql = (f"WITH p AS ({inner}), c AS ({shown}, sum({change}){part} AS whole, "
-                   f"row_number() OVER (ORDER BY abs({change}) DESC NULLS FIRST, {by}) AS rank "
-                   f"FROM p) SELECT {', '.join(cols)} FROM ("
-                   f"SELECT {by}::text AS {by}, "
-                   + ", ".join(cols[1:]) + ", rank FROM c WHERE rank <= " + str(TOP)
-                   + f" UNION ALL SELECT 'All others (' || count(*) || ')', "
-                   + (f"{per}, " if per else "")
-                   + "sum(current), sum(previous), sum(current_rows), sum(previous_rows), "
-                   "sum(unread_cells), min(data_from), bool_and(covered), " + rest + ", "
-                   "round(100.0 * (" + rest + ") / nullif(max(whole), 0), 1), "
-                   "bool_or(incomplete), " + str(TOP + 1) + " FROM c WHERE rank > " + str(TOP)
-                   + (f" GROUP BY {per}" if per else " HAVING count(*) > 0")
-                   + ") u ORDER BY rank, abs(change) DESC NULLS FIRST")
+            # every part, the largest change first (rate parts are each their own rate, never
+            # summed); the rows add up to the whole change, shares computed over all of them;
+            # a long list is paged by the reader ("show all"), never cut here
+            sql = (f"WITH p AS ({inner}) {shown} FROM p ORDER BY abs({change}) DESC "
+                   f"NULLS FIRST, {by}")
         else:
             sql = f"WITH p AS ({inner}) {shown} FROM p"
         said = (f"{period} ({_said(named)}) against "
@@ -724,6 +958,13 @@ def statement(name: Any, by: Any = None, days: Any = None,
                    else f"the {earlier[3]} {earlier[2]}{'s' if earlier[3] > 1 else ''} just "
                    f"before ({_said(earlier)})") + f", by {m['date']}"
                 if named else f"last {n} days against the {n} days before, by {m['date']}")
+        if full_earlier is not None:
+            said += (f"; the earlier period is cut to the same {earlier[3]} days "
+                     f"({_said(earlier)}) because this one is not over (the whole earlier "
+                     f"period, {_said(full_earlier)}, is in previous_full)")
+        if trend:
+            said += (f"; one row per {by} of the period, each set against the same {by} of "
+                     f"the earlier one (step 0 is the first)")
         period = (f"{said}; "
                   + (f"per dimension ({', '.join(dims)}), its {EACH} largest changes"
                      + ("" if rate else ", the rest one 'All others (n)' row (each "
@@ -734,7 +975,16 @@ def statement(name: Any, by: Any = None, days: Any = None,
                      "change); " if by else "") + f"a row whose "
                   f"data_from (the source's first record, shown when it is after the earlier period "
                   f"starts) has that period not covered: previous and change are unknown (NULL), "
-                  f"never 0, and the row is incomplete")
+                  f"never 0, and the row is incomplete; a row is incomplete too when some of its "
+                  f"part's rows hold no readable value (unread_cells; their currency or unit "
+                  f"is blank too, so they may be any of the part's): its current, previous "
+                  f"and change count only the read rows, so say how many rows were unread "
+                  f"and never state its value as the part's whole (no 0 for a period with rows)")
+        if why:
+            period = ("which dimension holds the change, each dimension ranked by how few of "
+                      "its parts make up half of its movement (parts_for_half, concentration_pct), "
+                      "with its largest part and that part's share of the whole change; "
+                      + period)
     else:
         if named:
             first, after = _edges(named, view, d)
@@ -753,12 +1003,11 @@ def statement(name: Any, by: Any = None, days: Any = None,
         if by and not trend and rate:
             # a part's rate beside what it is a rate of, the largest parts first (a rate
             # of 1 in 1 is no headline)
-            sql = f"{body} ORDER BY denominator DESC NULLS LAST, {by} LIMIT {TOP}"
+            sql = f"{body} ORDER BY denominator DESC NULLS LAST, {by}"
         elif by and not trend:
             part = f" OVER (PARTITION BY {per})" if per else " OVER ()"
             sql = (f"WITH p AS ({body}) SELECT p.*, round(100.0 * value / nullif(sum(value)"
-                   f"{part}, 0), 1) AS share_pct FROM p ORDER BY value DESC NULLS LAST "
-                   f"LIMIT {TOP}")
+                   f"{part}, 0), 1) AS share_pct FROM p ORDER BY value DESC NULLS LAST")
         else:
             sql = body + (f" ORDER BY {', '.join(names)}" if names else "")
         period = ((f"{period} ({_said(named)})" if named else f"last {n} days")
@@ -766,7 +1015,9 @@ def statement(name: Any, by: Any = None, days: Any = None,
                   if dated else "now (a snapshot)") + (
                       "; the first and last are partial" if trend and not named else "")
     return sql, {"id": name, "name": m["name"], "kind": "measure",
-                 "definition": m["definition"], "owner": m["owner"], "unit": m["unit"],
+                 "definition": m["definition"], "owner": m["owner"], "version": version(m),
+                 "defined_on": defined_on(m),
+                 "unit": m["unit"],
                  "source": view, "period": period, "by": by,
                  **_cited_filter(filter), **(_rate_note(m) if rate else {}), "sql": sql}
 
@@ -781,6 +1032,75 @@ def _period_start(day: dt.date, bucket: str) -> dt.date:
     if bucket == "month":
         return day.replace(day=1)
     return day - dt.timedelta(days=day.weekday())   # weeks start on Mondays, as date_trunc
+
+
+def _why(inner: str, shown: str, change: str, per: Optional[str]) -> str:
+    """Which dimension holds the change: per dimension (and currency or unit) the parts it
+    has, the fewest parts whose changes make up half of the dimension's movement (the
+    fewer, the more the change sits in a few members: that dimension explains it), the
+    largest part and its share of the whole change, and how many parts have no readable
+    change. One pass over the same grouping as the comparison, so the numbers are the
+    comparison's own and each dimension's parts add up to the same whole change."""
+    keys = "dimension" + (f", {per}" if per else "")
+    win = f"PARTITION BY {keys}"
+    return (f"WITH p AS ({inner}), c AS ({shown} FROM p), "
+            f"d AS (SELECT {keys}, part, change, "
+            f"sum(abs(change)) OVER ({win}) AS moved, "
+            f"sum(abs(change)) OVER ({win} ORDER BY abs(change) DESC NULLS LAST, part) AS run, "
+            f"row_number() OVER ({win} ORDER BY abs(change) DESC NULLS LAST, part) AS rn, "
+            f"count(*) OVER ({win}) AS parts, "
+            f"sum(change) OVER ({win}) AS whole_change FROM c) "
+            f"SELECT {keys}, max(parts) AS parts, "
+            f"min(rn) FILTER (WHERE change IS NOT NULL AND run * 2 >= moved) AS parts_for_half, "
+            f"round(100.0 * min(rn) FILTER (WHERE change IS NOT NULL AND run * 2 >= moved) "
+            f"/ nullif(max(parts), 0), 1) AS concentration_pct, "
+            f"(array_agg(part ORDER BY rn))[1] AS top_part, "
+            f"(array_agg(change ORDER BY rn))[1] AS top_change, "
+            f"max(whole_change) AS whole_change, "
+            f"round(100.0 * (array_agg(change ORDER BY rn))[1] / nullif(max(whole_change), 0), 1) "
+            f"AS top_share_of_change_pct, "
+            f"count(*) FILTER (WHERE change IS NULL) AS unknown_parts "
+            f"FROM d GROUP BY {keys} "
+            f"ORDER BY concentration_pct ASC NULLS LAST, dimension" + (f", {per}" if per else ""))
+
+
+def _trend_compare(m: Mapping[str, Any], by: str, named: Period, earlier: Period,
+                   where: Sequence[str], cur: str, prev: str, covered: str,
+                   per: Optional[str]) -> str:
+    """A period against an earlier one, one row per month (or week) of it: step 0 is the first
+    month of each, with the label of the current month and of the earlier one beside the two
+    values and their change (a year over year by month)."""
+    view, d = m["view"], m["date"]
+    local = d if _is_day_column(view, d) else f"({d} AT TIME ZONE '{ZONE}')"
+
+    def first(p: Period) -> str:      # the period's first day, as a date
+        return f"({p[4][0]})::date" if p[4] is not None else f"DATE '{p[0].isoformat()}'"
+    cf, pf = first(named), first(earlier)
+    if by == "month":
+        def mi(x: str) -> str:
+            return f"(extract(year from {x})*12 + extract(month from {x}))::int"
+        step = f"({mi(local)} - {mi(f'CASE WHEN {cur} THEN {cf} ELSE {pf} END')})"
+        label = lambda f: f"to_char({f} + {{s}} * interval '1 month', 'YYYY-MM')"   # noqa: E731
+    else:
+        step = (f"((date_trunc('week', {local})::date - date_trunc('week', CASE WHEN {cur} "
+                f"THEN {cf} ELSE {pf} END)::date) / 7)")
+        label = lambda f: f"to_char({f} + {{s}} * 7, 'YYYY-MM-DD')"   # noqa: E731
+    pre = f"{per}, " if per else ""
+    grp = f"{step}" + (f", {per}" if per else "")
+    cond = " AND ".join(where)
+    inner = (f"SELECT {step} AS step, {pre}{_agg(m, cur)} AS current, "
+             f"CASE WHEN {covered} THEN {_agg(m, prev)} END AS previous, "
+             f"count(*) FILTER (WHERE {cur}) AS current_rows, "
+             f"count(*) FILTER (WHERE {prev}) AS previous_rows, "
+             f"{covered} AS covered FROM {view} WHERE {cond} GROUP BY {grp}")
+    change = ("CASE WHEN NOT covered OR (current IS NULL AND current_rows > 0) OR "
+              "(previous IS NULL AND previous_rows > 0) THEN NULL "
+              "ELSE coalesce(current, 0) - coalesce(previous, 0) END")
+    cur_label = label(cf).format(s="step")
+    prev_label = label(pf).format(s="step")
+    return (f"WITH p AS ({inner}) SELECT {cur_label} AS {by}, {prev_label} AS previous_{by}, "
+            f"{pre}current, previous, current_rows, previous_rows, {change} AS change "
+            f"FROM p ORDER BY step" + (f", {per}" if per else ""))
 
 
 def forecast_statement(name: Any, horizon: Any, by: Any = None, filter: Any = None,

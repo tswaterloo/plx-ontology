@@ -23,9 +23,9 @@ role only. The message and file tables are never updated for a link.
 
     python3 -m operating.pg.teams_file_links run [--new] [--dsn D] [--capture DB]
 
-After each comms refresh ``operating.pg.comms_findings`` (the unit the business-views refresh
+After each comms refresh ``operating.assist_readings`` (the unit the business-views refresh
 starts) calls ``run(new=True)`` whatever its own model status: no timer of its own; a failure
-there is logged and never fails the findings run.
+there is logged and never fails the reading run.
 """
 from __future__ import annotations
 
@@ -144,6 +144,16 @@ def write_links(conn: Any, links: Mapping[tuple, tuple], *, chunk: int = 20000,
     if conn.execute("SELECT to_regclass(%s)", (LINKS,)).fetchone()[0] is None:
         raise RuntimeError(f"{LINKS} is missing: apply migration 0055_teams_file_links "
                            "(python3 -m operating.pg migrate)")
+    if keep and not links:
+        return 0          # nothing new to link: no stage, no scan of the message and file tables
+    if keep:
+        # a scoped run writes only the links of new messages: its stage is unlogged and its insert is
+        # a few rows, so it never waits for the standby to catch up (the fresh reading unit, started
+        # after every capture delta, waited here until its start timeout on 11-24 while the standby
+        # lagged). The disk floor still applies. A full pass writes in bulk and waits, and says so.
+        guard_kw.setdefault("pause_gb", float("inf"))
+    else:
+        guard_kw.setdefault("log", lambda msg: print(f"teams file links: {msg}", file=sys.stderr))
     stage = "biz.teams_file_links_stage"
     conn.execute(f"DROP TABLE IF EXISTS {stage}")
     conn.execute(f"CREATE UNLOGGED TABLE {stage} (message_oid text, file_oid text, url text, "

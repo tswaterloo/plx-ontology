@@ -75,14 +75,16 @@ from .mcp_server_evidence import (
     _drop_changed, _evidence_items, _evidence_scope, _ItemPermissions, _one_generation,
     _UNKEPT_NOTE_BYTES, _unkept_reason, CALLS_PER_MINUTE, DEFAULT_ORIGINAL_TEXT_CHARS,
     EVIDENCE_META_KEY, MAX_LINE_BYTES, MAX_ORIGINAL_TEXT_CHARS, MAX_RESULT_BYTES,
+    ASK_RESULT_BYTES, ASK_RESULT_TOOLS, CLIENT_SHOWN_CHARS,
     MAX_RETURNED_COUNTS, MAX_RETURNED_CURRENCIES, MAX_RETURNED_HANDLES, MAX_ROW_COLUMNS,
     PERMISSION_READ_FLOOR, PERMISSION_READ_TIMEOUT, PROTOCOL_VERSION, RECENT_REQUEST_IDS)
 from .mcp_server_catalog import (
     _no_record_named, ACTION_TOOLS, AGENDA_TOOL_SPECS, AGENDA_TOOLS, CAPTURED_RECORD_SCHEMES,
-    CASE_ONLY_INSTRUCTIONS, CASE_RUNTIME_TOOLS, CASE_TOOL_RETIREMENTS, HOME_LIMIT, HOST_READS,
+    ASK_AGENT, ASK_ONLY_INSTRUCTIONS, CASE_ONLY_INSTRUCTIONS, CASE_RUNTIME_TOOLS,
+    CASE_TOOL_RETIREMENTS, HOME_LIMIT, HOST_READS,
     LATE_PO_KINDS, MAX_ASKED_QUESTION_CHARS, NARROWED_READ, PLAYBOOK_TOOL_SPECS, PLAYBOOK_TOOLS,
     RETURNING_TOOLS, TOOLS)
-# operating/fast_answer.py (in flight tonight) still imports these through this module
+# callers (operating/record_reads.py and others) import these through this module
 from .mcp_server_catalog import home_kinds  # re-export
 from .mcp_server_home import (
     _FIND_OUTPUT, _home_gap, _home_rules, _inbox_age, _INBOX_GAPS, _inbox_stale, _now, _rule_clean)
@@ -401,6 +403,27 @@ def _envelope_bytes(value: dict[str, Any]) -> int:
         + META_RESERVE_BYTES
 
 
+def result_bound(tool: str) -> int:
+    """The bytes one ``tool`` result may take as the host sends it: the Ask's read tools
+    ``ASK_RESULT_BYTES``, every other tool the case tools' ``MAX_RESULT_BYTES``."""
+    return ASK_RESULT_BYTES if tool in ASK_RESULT_TOOLS else MAX_RESULT_BYTES
+
+
+def shown_fits(tool: str, text: str) -> bool:
+    """Whether one ``tool`` result's JSON text is shown to the model whole by the client:
+    an Ask read tool's within ``CLIENT_SHOWN_CHARS``; every other tool has its byte bound
+    alone (``result_bound``)."""
+    return tool not in ASK_RESULT_TOOLS or len(text) <= CLIENT_SHOWN_CHARS
+
+
+def value_shown_fits(value: dict[str, Any], tool: str) -> bool:
+    """``shown_fits`` for a value as ``MCPServer.handle`` would send it (wrapped when it
+    goes to a client, ``_firewall``)."""
+    if _TO_CLIENT.get():
+        value = _firewall(value, _TOOL.get() or tool)
+    return shown_fits(tool, json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
 def _fit_page(items: list[Any], offset: int, limit: int, build: Any, shrink: Any,
               marker_keys: tuple[str, ...]) -> dict[str, Any]:
     """Largest prefix of ``items[offset:offset+limit]`` whose result fits one response.
@@ -681,8 +704,8 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     evidence handles (``seen``), counts and currencies (``returned``) its tool results
     returned: ``(result, gated, repairing)``, ``result`` as ``plx.case_get``'s answer mode
     returns it. ``repairs_left``: the repaired submissions the session may still make
-    before this one. ``MCPServer._answer`` (an MCP client's submission) and the fast answer
-    (``operating.fast_answer``, code's own reads) both decide through it."""
+    before this one. ``MCPServer._answer`` (an MCP client's submission) and code's own reads
+    decide through it."""
     # The client's prose is checked as stated (``check_text``), never used as the
     # Ask's ``{id}`` templates.
     claims_only = {key: value for key, value in answer.items()
@@ -1106,7 +1129,9 @@ class MCPServer(CallsMixin, CaseMixin):
             return _result(request_id, {"protocolVersion": negotiated,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "plx-agent-workbench", "version": "0.1.0"},
-                "instructions": CASE_ONLY_INSTRUCTIONS})
+                "instructions": ASK_ONLY_INSTRUCTIONS
+                if getattr(self.agent_run.definition, "id", None) == ASK_AGENT
+                else CASE_ONLY_INSTRUCTIONS})
         if not self.ready:
             return _error(request_id, -32002, "Server not initialized")
         if method == "tools/list":
@@ -1185,7 +1210,7 @@ class MCPServer(CallsMixin, CaseMixin):
                     # without the options.
                     payload["_meta"] = {FRESHNESS_META_KEY: meta,
                                         AGENT_META_KEY: run.meta(escalation)}
-                    if _envelope_size(payload) + _UNKEPT_NOTE_BYTES > MAX_RESULT_BYTES:
+                    if _envelope_size(payload) + _UNKEPT_NOTE_BYTES > result_bound(name):
                         value = {k: v for k, v in value.items() if k != "ask_back"}
                         encoded = json.dumps(value, ensure_ascii=False,
                                              separators=(",", ":"))
@@ -1209,7 +1234,8 @@ class MCPServer(CallsMixin, CaseMixin):
                     # unreadable (``_bind``): room for that note is left.
                     spare = _UNKEPT_NOTE_BYTES if self._unkept is None \
                         and name in RETURNING_TOOLS else 0
-                    if _envelope_size(payload) + spare <= MAX_RESULT_BYTES:
+                    if _envelope_size(payload) + spare <= result_bound(name) \
+                            and shown_fits(name, encoded):
                         self._note_returned(name, arguments, built,
                                             None if host_code else value)
                         if not host_code and name != "plx.case_get" \

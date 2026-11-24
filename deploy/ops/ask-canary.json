@@ -1,6 +1,6 @@
 {
- "question": "Where is TASK-1436 at?",
- "expect": ["TASK-1436", "merged"],
+ "question": "Which supplier is purchase order PO10005609 with?",
+ "truth": "SELECT supplier FROM biz.purchase_orders WHERE po_number = 'PO10005609' AND order_date < DATE '2026-06-01'",
  "max_seconds": 90,
- "why": "Retrieval of one stable record: a Mission Control task merged on 2026-10-09 whose stage was recorded once and never changed (read-only check of ontology.object_values on 11-15), owned by the owner, naming no excluded person, in no eval item. Fast path task_status (no model step): 4.5 s median, 14.9 s p90 in the 11-15 router eval; a live agent Ask is 110 s median, so 90 s passes the fast path and flags a fall-through. Replace the file in /etc/plx to change it; install never overwrites it."
+ "why": "A value read from a record, checked exactly. The expected supplier is READ from the business model at each run (one read-only row), never typed here and never in the question: a closed purchase order of 2026-05-27 whose number is unique. The answer must contain the supplier's whole name. A source change shows as a different expected value, an unreadable or ambiguous record as truth_unreadable (an alarm, never a pass). The Ask is the model path (tools plx.sql/plx.search); about 30 s. Replace the file in /etc/plx to change it; install never overwrites it."
 }

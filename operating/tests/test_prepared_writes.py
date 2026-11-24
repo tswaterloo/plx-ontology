@@ -138,7 +138,6 @@ class Desk(Base):
             "bad value": ({**planner(), "change": {"planId": PLAN, "title": ""}}, "title"),
             "filemaker": ({**planner(), "system": "filemaker"}, "read-only"),
             "sage": ({**planner(), "system": "sage"}, "no write path"),
-            "freightcom": (planner("Book the Freightcom pickup"), "carrier is never acted on"),
             "excluded person": ({"system": "mail", "operation": "send_email", "target": {},
                                  "change": {"to": [HIDDEN], "subject": "Hi", "body": "x"},
                                  "reason": "r"}, "keeps out"),
@@ -191,7 +190,6 @@ class Desk(Base):
         self.assertEqual(self.fake.calls, [])
         self.assertIn("refused", tool.call({**planner(), "confirm": True}))
         self.assertIn("refused", tool.call({**planner(), "system": "filemaker"}))
-        self.assertNotIn("Freightcom", json.dumps(tool.call(planner("Freightcom quote"))))
         # the model's words for a field ("due", "expected date") are refused naming the
         # system's own fields, and the tool lists every operation's fields up front
         wrong = {**planner("Due Friday")}

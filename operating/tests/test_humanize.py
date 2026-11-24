@@ -308,6 +308,35 @@ class Polish(unittest.TestCase):
         for call in (boom, lambda p: None, lambda p: ""):
             self.assertEqual(text, humanize.polish(text, rewrite=call).text)
 
+    def test_the_rewrite_call_carries_only_its_prompt_and_runs_on_the_model_asked_for(self):
+        """11-23 cost: no project memory (a neutral working directory), Claude Code's coding
+        system prompt replaced by one line, the cheap model by default, the feature named
+        in the ledger; the call's own prompt travels on stdin."""
+        import subprocess
+        seen = {}
+
+        def run(argv, **kw):
+            seen.update(argv=argv, **kw)
+            return subprocess.CompletedProcess(argv, 0, '{"result": "Done."}', "")
+        with mock.patch.object(humanize.subprocess, "run", run), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(humanize.MODEL_ENV, None)
+            self.assertEqual("Done.", humanize.rewriter()("Rewrite: It is late."))
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--model") + 1], "haiku")
+        self.assertEqual(argv[argv.index("--system-prompt") + 1], humanize.NEUTRAL_SYSTEM)
+        self.assertIn("--exclude-dynamic-system-prompt-sections", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertEqual(seen["input"], "Rewrite: It is late.")
+        cwd = seen["cwd"]
+        self.assertTrue(os.path.isdir(cwd))
+        self.assertEqual(os.listdir(cwd), [])                    # nothing to discover there
+        self.assertNotIn(os.path.realpath(os.getcwd()), os.path.realpath(cwd) + os.sep)
+        # a caller names its model
+        with mock.patch.object(humanize.subprocess, "run", run):
+            humanize.rewriter(model="claude-sonnet-5-5")("x")
+        self.assertEqual(seen["argv"][seen["argv"].index("--model") + 1], "claude-sonnet-5-5")
+
     def test_no_model_call_unless_the_unit_enables_it(self):
         self.assertIsNone(humanize.default_rewriter())
         with mock.patch.dict(os.environ, {humanize.MODE_ENV: "rewrite"}):

@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const auth = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
 vi.mock("./auth", () => ({
@@ -14,6 +14,12 @@ const api = vi.hoisted(() => ({ ops: null as unknown, alarms: null as unknown, a
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getOpsHealth: () => Promise.resolve(api.ops),
+  getOpsProblemOpen: () => {
+    api.asked += 1;
+    if (api.alarms instanceof Error) return Promise.reject(api.alarms);
+    const a = api.alarms as { configured?: boolean; open?: unknown[] } | null;
+    return Promise.resolve(!!a?.configured && (a.open ?? []).length > 0);
+  },
   getOpsAlarms: () => {
     api.asked += 1;
     return api.alarms instanceof Error ? Promise.reject(api.alarms) : Promise.resolve(api.alarms);
@@ -63,13 +69,11 @@ describe("page banners", () => {
     expect(screen.getAllByText("Viewing with full-read access")).toHaveLength(1);
   });
 
-  it("an access-link sign-in says so, with no Demo or not-for-staff wording", () => {
+  it("an access-link sign-in names no link and no Demo or not-for-staff wording", () => {
     auth.state = { ...me({ sign_in: "access_link", data_label: "source-mirror captures" }), config: { mode: "dev", sign_in: "access_link" } };
     render(<Banners />);
     expect(screen.queryByTestId("dev-banner")).toBeNull();
-    const link = screen.getByTestId("link-banner");
-    expect(link).toHaveTextContent("Signed in with your access link");
-    expect(document.body.innerHTML).not.toMatch(/demo|not for staff/i);
+    expect(document.body.innerHTML).not.toMatch(/demo|not for staff|access link|by link/i);
   });
 
   it("a demo server keeps the Demo line even when it says access_link for a fixture", () => {
@@ -107,6 +111,8 @@ describe("page banners", () => {
 });
 
 describe("data as of: one quiet line, amber only for a source the page reads", () => {
+  // the idle reads (the nav dot, the banner) start once the page says it is ready
+  beforeEach(() => void (document.body.dataset.ready = "1"));
   afterEach(() => {
     nav.path = "/";
     auth.state = {};
@@ -192,6 +198,8 @@ describe("data as of: one quiet line, amber only for a source the page reads", (
 });
 
 describe("reliability banner on every page", () => {
+  // the idle reads (the nav dot, the banner) start once the page says it is ready
+  beforeEach(() => void (document.body.dataset.ready = "1"));
   afterEach(() => {
     auth.state = {};
     api.alarms = null;

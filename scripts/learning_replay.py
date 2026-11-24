@@ -245,7 +245,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--horizon-hours", type=float, default=72)
     p.add_argument("--any-train-day", action="store_true")
     p.add_argument("--out", type=Path, default=None)
+    # threshold sweep: override the module's learned-behaviour thresholds for this run only
+    p.add_argument("--apply-at", type=float, default=None)
+    p.add_argument("--skip-at", type=float, default=None)
+    p.add_argument("--skip-min", type=float, default=None)
     a = p.parse_args(argv)
+    for flag, name in ((a.apply_at, "APPLY_AT"), (a.skip_at, "SKIP_AT"), (a.skip_min, "SKIP_MIN")):
+        if flag is not None:
+            setattr(L, name, flag)
     held = []
     for spec in a.held:
         lo, hi = spec.split(":")
@@ -284,7 +291,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return found[key] if key in found else ls.reply_in_thread(
             st, key[0], key[1], set(key[2]), days=days)
 
-    out = {"queues": len(queues), "items": len(items), "results": []}
+    out = {"queues": len(queues), "items": len(items), "results": [],
+           "thresholds": {"APPLY_AT": L.APPLY_AT, "SKIP_AT": L.SKIP_AT, "SKIP_MIN": L.SKIP_MIN}}
     try:
         for window in held:
             out["results"].append(measure(

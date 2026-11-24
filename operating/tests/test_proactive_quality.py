@@ -67,6 +67,25 @@ class QualityAlerts(Engine):
     def kinds(self, kind: str, **read) -> list[dict]:
         return self.read(kinds=[kind], limit=1000, **read)["gaps"]
 
+    def test_a_same_named_pair_in_one_system_is_told_apart(self):
+        w = World()
+        for code in ("C10442", "C20917"):
+            party(w, "Customer", "bc.customer", "TAKE 5 -Montgomery", code=code,
+                  bc_email="ap@take5.example")
+        self.run_rules(w, [q.DUP_RULE])
+        gaps = self.kinds(q.DUPLICATE)
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("TAKE 5 -Montgomery in Business Central (no. C10442) and TAKE 5 "
+                      "-Montgomery in Business Central (no. C20917)", gaps[0]["summary"])
+        w = World()
+        for _ in range(2):
+            party(w, "Customer", "bc.customer", "Local Oil Field Supply",
+                  bc_email="ap@lofs.example")
+        self.run_rules(w, [q.DUP_RULE])
+        said = self.kinds(q.DUPLICATE)[0]["summary"]
+        self.assertIn("(first of the two) and Local Oil Field Supply in Business Central "
+                      "(second of the two)", said)
+
     def test_duplicates_are_scored_review_proposals_counted_per_system_pair(self):
         w = World()
         bc = party(w, "Customer", "bc.customer", "SYNTH Foods Inc.",

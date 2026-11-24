@@ -6,9 +6,7 @@ a one-line intent derived from the subject and the first recipient's name ("emai
 <subject>"), never the body; ``operating.assist`` drafts it with the sender's own sent mail
 before that day as recipient history and the Ask for facts, read as the sender (their own
 identity with their role's grant, ``ROLE_GRANTS``; the operator's own mail on the
-operator's owner host) and as of the send instant (a record card is read as the store knew
-it then, ``fast_record``; other fast answers read now); a record question the fast path
-does not settle goes to the Ask's agent, at most ``AGENT_PER_ROLE`` per role (model calls on
+operator's owner host) and as of the send instant; each record question goes to the Ask's agent, at most ``AGENT_PER_ROLE`` per role (model calls on
 the operator's login; ``--no-agent``: none). ``run`` drafts the first ``PER_ROLE_RUN`` of
 each role's sample. The draft is then scored against the real mail:
 
@@ -310,17 +308,6 @@ def sender_host(out: Path, t: Mapping[str, Any], people: Any, owner: Mapping[str
     return where / "host.json", claims
 
 
-def _gated_values(ran: Any) -> int:
-    """The values a fast answer's block states (each one its gate passed), 0 for prose with
-    none (a not-found or a choice)."""
-    block = re.search(r"```json\s*(\{.*\})\s*```", str(getattr(ran, "agent_text", "") or ""),
-                      re.S)
-    try:
-        return len(json.loads(block.group(1)).get("values") or ()) if block else 0
-    except ValueError:
-        return 0
-
-
 def _agent_answer(state: Path, config: Path, claims: Mapping[str, str], secret: str,
                   question: str) -> tuple[str, str]:
     """The Ask's agent path for one question as the sender (``operator_api.agent_ask``:
@@ -361,7 +348,7 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
     with a record left unsettled and no agent is drafted again with it (the last line of a
     mail is its draft)."""
     import secrets
-    from operating import assist, case_tools_host, fast_answer
+    from operating import assist, case_tools_host, record_reads
     from scripts import eval_real_agent as real
     # a batch reader, as the proactive engine's (``warm=False``): no background SharePoint
     # warm-up per session host; a read that needs the file index builds it when asked
@@ -418,7 +405,7 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                 wrote += 1
                 continue
             try:
-                reads = fast_answer.Reads.of_server(server)
+                reads = record_reads.Reads.of_server(server)
                 intent = assist.parse(t["intent"])
                 own = {a for a, o in people.directory.items() if o.lower() == t["sender"]}
                 sent = assist.capture_history(state, t["sender"], own, until=t["at"][:10])
@@ -427,19 +414,6 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                     intent, me=t["sender"], people=people, sent=sent, roles={},
                     party=lambda name, side: assist.party_addresses(reads, name, side))
                 agent_calls, as_of_reads, agent_why = 0, [], []
-
-                def fast(q: str) -> tuple[str, Optional[str]]:
-                    asked = fast_answer.Reads.of_server(server)
-                    asked.as_of = t["at"]
-                    declined: list[str] = []
-                    ran = fast_answer.answer(q, asked, declined)
-                    as_of_reads.extend(asked.as_of_reads)
-                    # a fast answer is facts only when the gate passed a value of it: a
-                    # "can't find that order" settles nothing (the agent may find it) and
-                    # never goes into a message as a cited fact
-                    if ran and _gated_values(ran):
-                        return ran.final_text.split("```")[0].strip(), None
-                    return "", assist.found_of(ran, declined)
 
                 def by_agent(q: str) -> Optional[str]:
                     nonlocal agent_calls
@@ -451,7 +425,7 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                     agent_why.append(why)
                     return text
 
-                answers, settled = assist.answers_for(intent, fast, by_agent)
+                answers, settled = assist.answers_for(intent, by_agent)
                 if agent_calls:
                     agents_used[t["role"]] += 1
                 made = assist.draft(intent, recipients, answers, outside=recipients.outside)

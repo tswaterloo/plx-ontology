@@ -4,16 +4,18 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Toolbar } from "@/components/ui/toolbar";
+import { useCommandPalette } from "@/components/command-palette";
+import { Button } from "@/components/ui/button";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { bizPage } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
-import { formatDate, money, safeHref } from "@/lib/format";
+import { formatDate, formatNumber, money, safeHref } from "@/lib/format";
 import { rememberOpened } from "@/lib/saved";
 import type { BizCell, BizKind, BizPage as Page, BizTable } from "@/lib/types";
 
 /** The record type each page of the business tables shows (Records' tabs file it by it). */
-const TYPE_OF_KIND: Record<BizKind, string> = { purchase_order: "PurchaseOrder", sales_order: "SalesOrder", customer: "Customer", supplier: "Supplier", chain: "Chain", product: "Product", batch: "Batch" };
+const TYPE_OF_KIND: Record<BizKind, string> = { purchase_order: "PurchaseOrder", sales_order: "SalesOrder", customer: "Customer", supplier: "Supplier", chain: "Chain", product: "Product", batch: "Batch", supplier_invoice: "SupplierInvoice" };
 
 const KINDS: readonly BizKind[] = ["customer", "chain", "supplier", "purchase_order", "sales_order"];
 
@@ -22,9 +24,9 @@ export function kindFrom(raw: string | null, allowed: readonly BizKind[]): BizKi
   return raw && (allowed as readonly string[]).includes(raw) && (KINDS as readonly string[]).includes(raw) ? (raw as BizKind) : null;
 }
 
-function Cell({ c, numeric }: { c: BizCell; numeric?: boolean }) {
+export function Cell({ c, numeric }: { c: BizCell; numeric?: boolean }) {
   if (c.hidden) return <span className="text-muted" title="You don't have access to this value">Restricted</span>;
-  const text = c.money ? money(c.money) : c.day ? formatDate(c.day, { short: true }) : c.number ?? c.text ?? "";
+  const text = c.money ? money(c.money) : c.day ? formatDate(c.day, { short: true }) : c.number != null ? formatNumber(c.number) : c.text ?? "";
   const href = safeHref(c.href);
   const body = href ? (
     <Link href={href} className="text-accent hover:underline">
@@ -117,10 +119,11 @@ export function BizRecordPage({ allowed, fallbackTitle }: { allowed: readonly Bi
   }, [kind, page?.title]);
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
-      <Toolbar heading title={title} />
+      {/* nothing to pin while no record is open (no record named, or it could not be read) */}
+      <Toolbar heading title={title} pin={page ? undefined : false} />
       <div className="w-full max-w-[960px] overflow-y-auto px-6 py-5">
         {!kind ? (
-          <p className="text-[13px] text-muted">This link doesn&apos;t name a record. Find it under Records.</p>
+          <NoRecordNamed what={fallbackTitle.toLowerCase()} />
         ) : problem ? (
           <LoadProblem message={problemText(problem)} busy={problem instanceof ApiError && problem.code === "busy"} onRetry={retry} />
         ) : !page ? (
@@ -157,5 +160,24 @@ export function BizArticle({ page }: { page: Page }) {
         {page.sources}
       </p>
     </article>
+  );
+}
+
+/** A record page opened with no record in its address: say what it shows and where to go. */
+function NoRecordNamed({ what }: { what: string }) {
+  const { open } = useCommandPalette();
+  return (
+    <div data-testid="no-record-named">
+      <p className="text-row text-fg">This page shows one {what}, and this address names none.</p>
+      <p className="mt-0.5 text-meta text-muted">Search for it by name or number, or pick it from Records.</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" type="button" onClick={open}>
+          Search
+        </Button>
+        <Button size="sm" variant="secondary" asChild>
+          <Link href="/records">Open Records</Link>
+        </Button>
+      </div>
+    </div>
   );
 }
