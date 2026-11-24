@@ -34,6 +34,7 @@ class RefreshIsolation(unittest.TestCase):
         from operating.pg.migrate import MIGRATIONS_DIR
         with psycopg.connect(cls.dsn, autocommit=True) as c:
             c.execute((MIGRATIONS_DIR / "0060_view_state.sql").read_text())
+            c.execute((MIGRATIONS_DIR / "0079_column_health_facts.sql").read_text())
 
     def state(self):
         import psycopg
@@ -194,6 +195,29 @@ class RefreshIsolation(unittest.TestCase):
             for key in marked:
                 if key in by:
                     self.assertIsNone(by[key]["top_values"], key)
+            # range facts (G8): a date or number column no marking hides has its smallest and
+            # largest value and the commonest value's share (the exact SQL answer), a column a
+            # marking hides has no min or max, a text column none
+            checked = 0
+            for (v, col), r in by.items():
+                if v not in names:
+                    continue
+                kind = ch.kind_of(next(t for cn, t in ch._columns(c, "biz", v) if cn == col))
+                if kind in ("date", "number") and (v, col) not in marked and r["fill"]:
+                    lo, hi = c.execute(f'SELECT min("{col}")::text, max("{col}")::text FROM '
+                                       f"biz.{v}").fetchone()
+                    share = c.execute(
+                        f'SELECT max(n)::float8 / sum(n) FROM (SELECT count(*) n FROM biz.{v} '
+                        f'WHERE "{col}" IS NOT NULL GROUP BY "{col}") g').fetchone()[0]
+                    self.assertEqual((r["kind"], r["min_value"], r["max_value"]),
+                                     (kind, lo, hi), (v, col))
+                    self.assertAlmostEqual(r["top_share"], share, places=9, msg=(v, col))
+                    checked += 1
+                elif kind == "text":
+                    self.assertIsNone(r["min_value"], (v, col))
+                if (v, col) in marked:
+                    self.assertIsNone(r["min_value"], (v, col))
+            self.assertTrue(checked, "no date or number column was checked")
             # a comms view: sampled, never values
             comms = [n for n, v in bv.VIEWS.items() if v.fill is not None][:1]
             ch.measure(c, "biz", comms, comms)

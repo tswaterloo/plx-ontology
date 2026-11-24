@@ -10,7 +10,7 @@ import { WhyDidItChange } from "@/components/insights/why";
 import { Pending } from "@/components/ui/skeleton";
 import { deleteInsight, getInsight, readInsightFiltered, setInsightSchedule } from "@/lib/api";
 import { ApiError, noticeKind, plainError, tileError } from "@/lib/errors";
-import { ago, formatDate, formatDateTime } from "@/lib/format";
+import { ago, formatDate, isBeforeToday } from "@/lib/format";
 import { full, human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
@@ -317,8 +317,9 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
             {filtered && <span data-testid={`filtered-${item.id}`}>Your filters (not saved)</span>}
             <span>
               {data.drawn && !all && topOf(data.drawn) !== data.drawn ? `Top ${TOP} of ${data.drawn.labels.length}` : data.truncated ? (data.total_rows ? `First ${data.row_count} of ${data.total_rows} rows` : `First ${data.row_count} rows (more not counted)`) : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`}
-              {data.drawn?.as_of ? "" : data.as_of ? `, data as of ${formatDate(data.as_of)}` : `, read ${formatDateTime(data.read_at)}`}
-              {data.read_at ? `, value read ${ago(data.read_at)}` : ""}{refreshing ? ", refreshing" : round > 0 ? ", refreshed" : ""}
+              {isBeforeToday(data.drawn?.as_of ?? data.as_of) ? `, data as of ${formatDate(data.drawn?.as_of ?? data.as_of)}` : ""}
+              {data.read_at && (data.truncated || isBeforeToday(data.drawn?.as_of ?? data.as_of)) ? `, value read ${ago(data.read_at)}` : ""}
+              {refreshing ? ", updating" : round > 0 && error ? ", refresh failed" : ""}
             </span>
             {data.drawn && topOf(data.drawn) !== data.drawn && (
               <button type="button" className={quiet} onClick={() => setAll((a) => !a)}>{all ? `Show top ${TOP}` : `Show all ${data.drawn.labels.length}`}</button>

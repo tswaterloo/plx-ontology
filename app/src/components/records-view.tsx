@@ -21,7 +21,7 @@ import type { RecordViews, SuggestResponse } from "@/lib/types";
 
 /** Every record ("All", the first tab), then the four kinds people look for and the record types each one holds. */
 const RECORD_KINDS = [
-  { key: "all", label: "All", types: [], hint: "a name or any number: customer, supplier, order, PO, invoice, shipment, receipt, credit note, lot, item or batch" },
+  { key: "all", label: "All", types: [], hint: "a name or number" },
   { key: "customers", label: "Customers", types: ["Customer", "customer", "Chain"], hint: "a customer's name or number", list: "customers" },
   { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number", list: "purchase_orders", sort: { key: "days_late", direction: "desc" } },
   { key: "suppliers", label: "Suppliers", types: ["Supplier", "Vendor", "supplier"], hint: "a supplier's name or number", list: "suppliers" },
@@ -148,7 +148,7 @@ function Records({ place }: { place?: Place }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
-      <Toolbar heading title={place ? PLACE_TITLE[place] : "Records"} pin={`${place ? PLACE_TITLE[place] : "Records"}: ${kind.label}`} />
+      <Toolbar heading title={place ? PLACE_TITLE[place] : "Data"} pin={`${place ? PLACE_TITLE[place] : "Data"}: ${kind.label}`} />
       <PageIntro path={place ? `/${place}` : "/records"} />
       <div className={cn("w-full overflow-y-auto px-6 py-5", "list" in kind || kind.key === "lists" ? "max-w-[1280px]" : "max-w-[880px]")}>
         {(!place || place === "more") && <div role="tablist" aria-label="Kind of record" className="flex h-9 gap-5 overflow-x-auto whitespace-nowrap border-b border-border">
@@ -213,11 +213,6 @@ function Records({ place }: { place?: Place }) {
             )
           ) : (
             <>
-            {!recent.length && !mine.length && !("list" in kind) && (
-              <p className="mb-6 text-[13px] text-muted" data-testid="records-empty-help">
-                Type a name or a number above. A customer or supplier by name, an order, PO, invoice or batch by its number; a close spelling is found too. Records you open show up here.
-              </p>
-            )}
             {recent.length > 0 && (
               <section aria-labelledby="records-recent" className="mb-6">
                 <h2 id="records-recent" className="text-[13px] font-semibold">

@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { JobCard } from "@/components/autopilot/job";
+import { PreparedFeedback } from "@/components/autopilot/prepared-feedback";
 import { ItemActions, type MenuEntry } from "@/components/autopilot/item-actions";
 
 export { tomorrowMorning } from "@/components/autopilot/item-actions";
@@ -30,6 +31,9 @@ export function scoreOf(c: { accepted: number; edited: number; rejected: number 
   const kept = c.accepted + c.edited;
   return { settled, kept, off: settled >= 10 && kept * 5 < settled };
 }
+
+/** The same words, whatever the spacing or case: a title that is its body is said once. */
+const sameWords = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
 function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged: () => void }) {
   const [text, setText] = useState(item.body);
@@ -91,7 +95,7 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
     <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-item">
       <div className="flex flex-wrap items-baseline gap-x-3">
         <span className="text-[13px] font-medium">{item.sender || "Someone"}</span>
-        {item.subject && <span className="text-[12px] text-muted">{item.subject}</span>}
+        {item.subject && !sameWords(item.subject, item.message) && <span className="text-[12px] text-muted">{item.subject}</span>}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
       {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[13px] text-muted">{countedWords(item.message)}</p>}
@@ -197,22 +201,47 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   );
 }
 
+/** Cards drawn at first: the list is all there (its count, every item one click away). Drawing
+ * all of an owner's ~1,100 at once made Home 15,000 elements and a 0.75 s block. */
+export const FIRST_CARDS = 40;
+
 export function PreparedView({ items, empty, linked, onGone, onChanged }: { items: PreparedItem[]; empty: string; linked?: string | null; onGone: (id: string) => void; onChanged: () => void }) {
+  const [shown, setShown] = useState(FIRST_CARDS);
   if (items.length === 0) return <p className="py-6 text-[13px] text-muted" data-testid="prepared-empty">{empty}</p>;
+  // a linked item (a deep link, a notification) is always drawn, wherever it sits in the list
+  const at = linked ? items.findIndex((i) => i.item_id === linked) : -1;
+  const count = Math.max(shown, at + 1);
+  const drawn = items.length > count ? items.slice(0, count) : items;
   return (
-    <ul className="divide-y divide-border" aria-label="Prepared for me">
-      {items.map((i) =>
-        i.kind === "job" ? (
-          <JobCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
-        ) : i.kind === "todo" ? (
-          <TodoCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} />
-        ) : i.kind === "alert" ? (
-          <AlertCard key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
-        ) : (
-          <Card key={i.item_id} item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
-        ),
+    <>
+      <ul className="divide-y divide-border" aria-label="Prepared for me">
+        {drawn.map((i) => (
+          <Fragment key={i.item_id}>
+          {i.kind === "job" ? (
+            <JobCard item={i} linked={i.item_id === linked} onGone={onGone} />
+          ) : i.kind === "todo" ? (
+            <TodoCard item={i} linked={i.item_id === linked} onGone={onGone} />
+          ) : i.kind === "alert" ? (
+            <AlertCard item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
+          ) : (
+            <Card item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
+          )}
+          <li className="-mt-2 pb-3 !border-t-0" data-testid="prepared-feedback-row"><PreparedFeedback item={i} /></li>
+          </Fragment>
+        ))}
+      </ul>
+      {drawn.length < items.length && (
+        <p className="flex items-center gap-2 py-2 text-[12px] text-muted" data-testid="more-cards">
+          {items.length - drawn.length} more
+          <Button size="sm" variant="ghost" onClick={() => setShown(drawn.length + 100)}>
+            Show 100 more
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setShown(items.length)}>
+            Show all
+          </Button>
+        </p>
       )}
-    </ul>
+    </>
   );
 }
 

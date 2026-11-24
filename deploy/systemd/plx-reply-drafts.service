@@ -67,5 +67,5 @@ IOSchedulingPriority=7
 MemoryHigh=4G
 MemoryMax=6G
 MemorySwapMax=512M
-TimeoutStartSec=30min
+TimeoutStartSec=2h
 UMask=0077

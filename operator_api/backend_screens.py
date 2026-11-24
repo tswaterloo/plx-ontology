@@ -253,11 +253,11 @@ class ScreensMixin:
     def _home_alerts_read(self, reader: Reader) -> m.Home:
         """``_home_alerts``' read through the door (raises when unreadable: never kept)."""
         from . import page_sql
-        total, late, as_of, risk, stale, risk_total = page_sql.alert_home(
+        total, late, as_of, risk, stale, risk_total, stale_total = page_sql.alert_home(
             self, reader, limit=LATE_LIST_LIMIT)
         # a home type whose check is not current: left out, said (refreshing, since)
         attention = m.NeedsAttention(status="read", late_pos=late, at_risk=risk,
-                                     late_total=total, as_of=as_of, refreshing=bool(stale),
+                                     late_total=total, stale_total=stale_total, as_of=as_of, refreshing=bool(stale),
                                      at_risk_total=risk_total, checked_on=page_sql._oldest(stale))
         return m.Home(greeting_name=reader.display_name.split(" ")[0],
                       examples=list(HOME_EXAMPLES), needs_attention=attention,
@@ -346,7 +346,8 @@ class ScreensMixin:
             checks.extend(x for x in got.checks if x.type == c.type)
         return first.model_copy(update={"checks": checks})
 
-    def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
+    def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25,
+                  stale: bool = False) -> m.LateList:
         from . import page_sql
         if page_sql.alerts_on() or page_sql.on("purchase_order"):
             # the read door (``page_sql``): count and page in one transaction (the po_late
@@ -355,20 +356,27 @@ class ScreensMixin:
 
             def read_door() -> m.LateList:
                 try:
-                    total, items, as_of = pos(self, reader, offset=offset, limit=limit)
+                    total, items, as_of = (pos(self, reader, offset=offset, limit=limit, stale=True)
+                                           if stale else
+                                           pos(self, reader, offset=offset, limit=limit))
+                    # the other group's size, said on every page, never hidden
+                    other = pos(self, reader, offset=0, limit=1, stale=not stale)[0]
                 except page_sql.PageDoorUnavailable:
                     from .briefs import alerts_not_read
                     raise alerts_not_read() from None
                 after = offset + len(items)
                 return m.LateList(total=total, offset=offset, items=items, more=after < total,
-                                  next_offset=after, as_of=self.freshness().as_of or as_of)
+                                  next_offset=after, as_of=self.freshness().as_of or as_of,
+                                  stale_total=None if stale else other)
             # kept per reader as Home and the sidebar are (``_serving``): served at once after
             # a restart or a visit while the reader's access and the alert rules are the same,
             # read again behind it (the door's read took 1.8-4.6 s on every visit)
-            return self._serving(reader, ("late", offset, limit), read_door,
+            return self._serving(reader, ("late", offset, limit) + (("stale",) if stale else ()), read_door,
                                  self._screen_inputs(alerts=page_sql.alerts_on()),
                                  reading=lambda: m.LateList(total=0, offset=offset,
                                                             next_offset=offset, reading=True))
+        if stale:   # the old engine has no 'no sign of life' read: none, said as an empty group
+            return m.LateList(total=0, offset=offset, next_offset=offset)
         return self._serving(reader, ("late", offset, limit), lambda: self._late_list(
             reader, offset=offset, limit=limit), reading=lambda: m.LateList(
                 total=0, offset=offset, next_offset=offset, reading=True))

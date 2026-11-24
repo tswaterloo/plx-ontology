@@ -1507,6 +1507,14 @@
             },
             "title": "Untraced",
             "type": "array"
+          },
+          "working": {
+            "description": "Each figure the host computed for the answer, as 'expression = value, from <the result>', so it can be checked by hand (Ask plan 16 M6).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Working",
+            "type": "array"
           }
         },
         "required": [
@@ -15166,6 +15174,18 @@
             "description": "Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.",
             "title": "Stale Since"
           },
+          "stale_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many more late orders are in the 'probably closed or missed in the data' group (asked with stale=true); never hidden.",
+            "title": "Stale Total"
+          },
           "total": {
             "minimum": 0.0,
             "title": "Total",
@@ -15278,6 +15298,11 @@
             },
             "title": "Sources",
             "type": "array"
+          },
+          "stale": {
+            "description": "True for an order in the 'probably closed or missed in the data' group: very late and nothing shows it alive since its needed-by date.",
+            "title": "Stale",
+            "type": "boolean"
           },
           "supplier": {
             "anyOf": [
@@ -16826,6 +16851,18 @@
             "title": "Refreshing",
             "type": "boolean"
           },
+          "stale_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Late orders in the 'probably closed or missed in the data' group; not in late_total or late_pos (the late list shows them).",
+            "title": "Stale Total"
+          },
           "status": {
             "enum": [
               "read",
@@ -18134,6 +18171,105 @@
           "status"
         ],
         "title": "PlaybookTeams",
+        "type": "object"
+      },
+      "PoCloseRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The order's handle (a late list row's first source), or its object_id instead.",
+            "title": "Handle"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The order's object id (its page).",
+            "title": "Object Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why: received, cancelled, wrong data, or your own words.",
+            "title": "Reason"
+          }
+        },
+        "title": "PoCloseRequest",
+        "type": "object"
+      },
+      "PoClosure": {
+        "additionalProperties": false,
+        "description": "Whether a person closed this purchase order in the Workbench (never in the source system),\nwho, when and why, and what showed up after (it never reopens by itself).",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By"
+          },
+          "closed": {
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "new_since": {
+            "description": "Plain words for each new receipt or message after the close.",
+            "items": {
+              "type": "string"
+            },
+            "title": "New Since",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "closed"
+        ],
+        "title": "PoClosure",
         "type": "object"
       },
       "PoTrail": {
@@ -32760,7 +32896,7 @@
     },
     "/api/late": {
       "get": {
-        "description": "Every late purchase order you may see, a page at a time, longest late first\n(Home shows the first ones: \"show all\").",
+        "description": "Every late purchase order you may see that is neither closed nor probably closed, a\npage at a time, longest late first (Home shows the first ones: \"show all\").\n``stale=true``: the very late ones that show no sign of life instead (probably closed\nor missed in the data).",
         "operationId": "late_list_api_late_get",
         "parameters": [
           {
@@ -32785,6 +32921,16 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stale",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Stale",
+              "type": "boolean"
             }
           }
         ],
@@ -34406,6 +34552,218 @@
           }
         },
         "summary": "Prepared Undo",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/purchase-orders/close": {
+      "post": {
+        "description": "Close a purchase order you may see, for everyone, in the Workbench only (nothing is\nwritten to Business Central, the Portal or Sage). It leaves every late list and count;\nundo it with ``/api/purchase-orders/reopen``.",
+        "operationId": "po_close_api_purchase_orders_close_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoCloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoClosure"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Po Close",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/purchase-orders/closure": {
+      "get": {
+        "description": "Whether a person closed this purchase order in the Workbench, who, when and why, and\nany receipt or message that arrived after.",
+        "operationId": "po_closure_api_purchase_orders_closure_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "handle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 700,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Handle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "object_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 700,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Object Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoClosure"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Po Closure",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/purchase-orders/reopen": {
+      "post": {
+        "description": "Undo a close: the order is back in the late lists if it is still late.",
+        "operationId": "po_reopen_api_purchase_orders_reopen_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoCloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoClosure"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Po Reopen",
         "tags": [
           "actions"
         ]

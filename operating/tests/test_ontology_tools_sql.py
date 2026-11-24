@@ -121,6 +121,24 @@ class SqlDoor(unittest.TestCase):
                          sorted(h for h in shown if "portal" in (stored[h] or "")))
         self.assertEqual(self.column(both), [str(len(self.column(both_seen)))])
 
+    def test_a_columns_meaning_comes_with_its_first_result_then_not_again(self):
+        """Column meanings (A19): the result says what each column read from a view means,
+        from the view's own documentation (what describe gives), once to a reader in a
+        window; the next result of the same columns omits them, another reader is told, a
+        computed column has no meaning shown, and the window passing tells again."""
+        sqlt.SqlTool._told.clear()
+        first = self.sql("SELECT name, count(*) AS n FROM customers GROUP BY name")
+        self.assertNotIn("error", first, first)
+        doc = sqlt._dictionary()["customers"]["columns"]
+        self.assertEqual(first["meanings"], {"name": doc["name"]})   # n is computed: none
+        again = self.sql("SELECT name FROM customers")
+        self.assertNotIn("meanings", again)
+        other = sqlt.SqlTool(self.base()).call("plx.sql", {"sql": "SELECT name FROM customers"},
+                                               OPS)
+        self.assertEqual(other["meanings"], {"name": doc["name"]})
+        with mock.patch.object(sqlt.SqlTool, "MEANING_WINDOW", -1):
+            self.assertIn("meanings", self.sql("SELECT name FROM customers"))
+
     def test_names_runs_on_the_real_views_and_counts_what_a_name_names(self):
         """``{"names": ...}`` (``operating.name_finder``) read as the door reads any statement:
         the state columns it groups by are text in the views (the first version took them for

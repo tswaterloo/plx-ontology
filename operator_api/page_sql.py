@@ -171,7 +171,8 @@ def _money(amount: Any, currency: Any) -> Optional[m.Money]:
     return m.Money(amount=text, currency=currency)
 
 
-def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]) -> m.LatePo:
+def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], *, stale: bool = False
+            ) -> m.LatePo:
     """One late purchase order of ``late_po_list`` as the late list shows it."""
     handle = row.get("handle")
     rec = ids.get(handle) if isinstance(handle, str) else None
@@ -187,24 +188,28 @@ def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]]) -> m.L
     return m.LatePo(
         object_id=oid, label=f"PO {row.get('po_number') or '?'}",
         supplier=row.get("supplier") if isinstance(row.get("supplier"), str) else None,
-        due_date=due, days_late=int(days) if isinstance(days, int) else None,
+        due_date=due, days_late=int(days) if isinstance(days, int) else None, stale=stale,
         amount=_money(row.get("total"), row.get("total_currency")), reason=reason,
         open_url=url, sources=[m.Source(system=system_of(handle), handle=handle,
                                         label=record_words(handle), open_url=open_url(handle))]
         if isinstance(handle, str) else [])
 
 
-def late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 25
+def late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 25, stale: bool = False
              ) -> tuple[int, list[m.LatePo], Optional[str]]:
-    """(every late PO the reader may see, the page of them from ``offset``, the views'
-    as-of), all from one transaction."""
+    """(every late PO the reader may see that is neither closed nor probably closed, the page of
+    them from ``offset``, the views' as-of), all from one transaction. ``stale``: the late orders
+    that show no sign of life instead (``operating.page_reads``: the two are complements)."""
+    from . import po_closing
+    pre = "late_po_stale" if stale else "late_po"
+    gone = po_closing.params(backend, reader)
     rows, ids = read(backend, reader, [
-        {"name": "late_po_count"},
-        {"name": "late_po_list", "params": {"limit": limit, "offset": offset}},
+        {"name": f"{pre}_count", "params": gone},
+        {"name": f"{pre}_list", "params": {**gone, "limit": limit, "offset": offset}},
         {"name": "views_as_of"}], ids=True)
-    total = int(rows["late_po_count"][0]["late"])
+    total = int(rows[f"{pre}_count"][0]["late"])
     built = [r.get("built_at") for r in rows["views_as_of"] if r.get("view") == "purchase_orders"]
-    return total, [late_po(r, ids) for r in rows["late_po_list"]], (
+    return total, [late_po(r, ids, stale=stale) for r in rows[f"{pre}_list"]], (
         _iso(built[0]) if built else None)
 
 
@@ -500,43 +505,53 @@ def open_po_ids(backend: Any, reader: Any, limit: int) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def alert_late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 25
-                   ) -> tuple[int, list[m.LatePo], Optional[str]]:
+def alert_late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 25,
+                   stale: bool = False) -> tuple[int, list[m.LatePo], Optional[str]]:
     """``late_pos`` from the po_late alerts: the alert joined to its order's guarded row;
     as of the rule's last finished run. Its rule not run within two refresh cycles:
-    ``alerts_stale`` (raised), never the old list."""
+    ``alerts_stale`` (raised), never the old list. Closed orders are in neither list;
+    ``stale``: the ones that show no sign of life (``late_pos``)."""
+    from . import po_closing
+    pre = "alerts_late_po_stale" if stale else "alerts_late_po"
+    gone = po_closing.params(backend, reader)
     rows, ids = read(backend, reader, [
-        {"name": "alerts_late_po_count"},
-        {"name": "alerts_late_po_list", "params": {"limit": limit, "offset": offset}},
+        {"name": f"{pre}_count", "params": gone},
+        {"name": f"{pre}_list", "params": {**gone, "limit": limit, "offset": offset}},
         {"name": "alert_runs"}], ids=True)
     fresh, ok = runs_state(rows["alert_runs"]).get("po_late", (False, None))
     if not fresh:
         raise alerts_stale("Late purchase orders", ok)
-    total = int(rows["alerts_late_po_count"][0]["late"])
-    return total, [late_po(r, ids) for r in rows["alerts_late_po_list"]], _iso(ok)
+    total = int(rows[f"{pre}_count"][0]["late"])
+    return total, [late_po(r, ids, stale=stale) for r in rows[f"{pre}_list"]], _iso(ok)
 
 
 def alert_home(backend: Any, reader: Any, *, limit: int = 25
                ) -> tuple[int, list[m.LatePo], Optional[str], list[m.AtRisk],
-                          dict[str, Optional[datetime]], int]:
+                          dict[str, Optional[datetime]], int, int]:
     """Home's late POs (``alert_late_pos``) and its at-risk list (the open alerts of the
     home types other than late POs routed to the reader) in ONE
     read through the door (one transaction) after the reader's scope: two door reads
     queued one after the other on the access workers cost Home 0.3-0.8 s each warm (11-18
     walk). (late total, the first ``limit`` late, as of, at risk, the stale home types, how many
     open alerts of the at-risk types the reader may read in all: the list is its first
-    ``limit``).
+    ``limit``, and how many late orders show no sign of life: counted here, listed on the late
+    list).
     The late POs' rule not current: ``alerts_stale`` (raised), never the old list."""
     scope = reader_scope(backend, reader)
     types = [t for t in alert_types(scope.enabled, home=True)
              if t != "po_late" and routed(t, scope.routing)]
+    from . import po_closing
+    gone = po_closing.params(backend, reader)
     reads: list[dict[str, Any]] = [
-        {"name": "alerts_late_po_count"},
-        {"name": "alerts_late_po_list", "params": {"limit": limit, "offset": 0}},
+        {"name": "alerts_late_po_count", "params": gone},
+        {"name": "alerts_late_po_list", "params": {**gone, "limit": limit, "offset": 0}},
+        {"name": "alerts_late_po_stale_count", "params": gone},
         {"name": "alert_runs"}]
     if types:
-        reads += [{"name": "alerts_count", "params": {"rules": ",".join(types)}},
+        reads += [{"name": "alerts_count", "params": {"rules": ",".join(types),
+                                                      "closed": gone["closed"]}},
                   {"name": "alerts_open", "params": {"rules": ",".join(types),
+                                                     "closed": gone["closed"],
                                                      "limit": limit, "offset": 0}}]
     rows, ids = read(backend, reader, reads, ids=True)
     runs = runs_state(rows["alert_runs"])
@@ -556,7 +571,8 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
     stale = {t: runs.get(t, (False, None))[1] for t in types
              if _paged(t) and not runs.get(t, (False, None))[0]}
     risk_total = sum(int(r["open"]) for r in rows.get("alerts_count", ()))
-    return total, late, _iso(ok), risk, stale, max(risk_total, len(risk))
+    return (total, late, _iso(ok), risk, stale, max(risk_total, len(risk)),
+            int(rows["alerts_late_po_stale_count"][0]["late"]))
 
 
 def late_suppliers(backend: Any, reader: Any, *, limit: int = 10
@@ -568,8 +584,10 @@ def late_suppliers(backend: Any, reader: Any, *, limit: int = 10
     alerts = alerts_on()
     count, by = (("alerts_late_po_count", "alerts_late_po_suppliers") if alerts
                  else ("late_po_count", "late_po_suppliers"))
-    reads: list[dict[str, Any]] = [{"name": count},
-                                   {"name": by, "params": {"limit": limit}}]
+    from . import po_closing
+    gone = po_closing.params(backend, reader)
+    reads: list[dict[str, Any]] = [{"name": count, "params": gone},
+                                   {"name": by, "params": {**gone, "limit": limit}}]
     if alerts:
         reads.append({"name": "alert_runs"})
     rows, _ids = read(backend, reader, reads)
@@ -640,12 +658,16 @@ def alerts_read_with_impact(backend: Any, reader: Any, types: Sequence[str], *, 
                                        list[dict[str, Any]]]:
     """``alerts_read`` and, in the same transaction, the ``impact`` types' biggest
     ``impact_rows`` open alerts each (money impact first: ``alerts_impact_top``)."""
+    from . import po_closing
+    closed = po_closing.closed_param(backend)
     reads: list[dict[str, Any]] = [{"name": "alert_runs"}]
     every = list(dict.fromkeys([*types, *counted, *impact]))
     if every:
-        reads.append({"name": "alerts_count", "params": {"rules": ",".join(every)}})
+        reads.append({"name": "alerts_count", "params": {"rules": ",".join(every),
+                                                         "closed": closed}})
     if types:
         reads.append({"name": "alerts_open", "params": {"rules": ",".join(types),
+                                                        "closed": closed,
                                                         "limit": limit, "offset": offset}})
     if impact:
         reads.append({"name": "alerts_impact_top", "params": {"rules": ",".join(impact),

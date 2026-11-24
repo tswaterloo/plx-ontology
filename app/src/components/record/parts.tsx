@@ -154,9 +154,10 @@ const short = (t: number) => formatDate(new Date(t).toISOString().slice(0, 10), 
 
 /**
  * The order's life on one line: ordered, needed, today. The days past the needed-by date are
- * hatched; with no needed-by date the line after the order is left open.
+ * hatched; with no needed-by date the line after the order is left open. `saidAbove`: the page
+ * header already says how late, so the label is read aloud only, never drawn a second time.
  */
-export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today" }: { ordered: number | null; needed: number | null; daysLate?: number | null; end?: string }) {
+export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today", saidAbove = false }: { ordered: number | null; needed: number | null; daysLate?: number | null; end?: string; saidAbove?: boolean }) {
   const now = Date.now();
   if (ordered == null && needed == null) return null;
   const start = ordered ?? needed!;
@@ -170,7 +171,7 @@ export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today" }
     <div className="pt-1" data-testid="order-line">
       <div className="relative h-[18px]">
         {late && neededAt != null && (
-          <span className={cn("absolute top-0 -translate-x-1/2 text-[12px] leading-4 font-medium whitespace-nowrap", lateFigure(lateDays))} style={{ left: `${Math.min(88, Math.max(neededAt + (100 - neededAt) / 2, 12))}%` }}>
+          <span className={cn("absolute top-0 -translate-x-1/2 text-[12px] leading-4 font-medium whitespace-nowrap", lateFigure(lateDays), saidAbove && "sr-only")} style={{ left: `${Math.min(88, Math.max(neededAt + (100 - neededAt) / 2, 12))}%` }}>
             {lateDays} days late
           </span>
         )}

@@ -23,7 +23,7 @@ export const KIND_ICON: Record<WorkLogKind, LucideIcon> = {
 export const KIND_LABEL: Record<WorkLogKind, string> = {
   ask: "Ask",
   alert: "Alerts",
-  autopilot: "Autopilot",
+  autopilot: "Assist",
   action: "Messages and tasks",
   write: "Approvals",
   watch: "Watching",
@@ -158,7 +158,7 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
         <div className="mt-0.5 flex flex-wrap gap-x-2 text-[12px] leading-4 text-muted">
           <span className="text-faint">{e.kind === "action" && e.verb === "prepared" ? "Not sent" : (KIND_LABEL[e.kind] ?? e.kind)}</span>
           {showWho && e.reader_name && <span>{e.reader_name}</span>}
-          <ShowAll items={e.records ?? []} first={3} noun="records">
+          <ShowAll items={(e.records ?? []).filter((r) => r.type || (r.label && r.label !== r.object_id))} first={3} noun="records">
             {(r) =>
               r.type ? (
                 <Link href={objectHref(r.type, r.object_id)} className="hover:underline">

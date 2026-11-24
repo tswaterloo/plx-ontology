@@ -472,3 +472,45 @@ describe("the queue on Home and its Switches tab", () => {
     expect(mailtoOf({ ...reply, cc: ["a@x.co"] }, "Hi")).toBe("mailto:dana%40customer.example?cc=a%40x.co&subject=RE%3A%20PO%207&body=Hi");
   });
 });
+
+describe("a long list draws its first cards and every other one is one click away", () => {
+  const many = (n: number): PreparedItem[] => Array.from({ length: n }, (_, k) => ({ ...reply, item_id: `ap_${k}`, subject: `Subject ${k}` }));
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    nav.params = "";
+  });
+  afterEach(() => cleanup());
+
+  it("draws 40 of 130, 100 more on a click and all of them on 'Show all'; the count is the whole list", async () => {
+    fetchMock({ "/api/autopilot/drafts": () => ({ items: many(130) }) });
+    render(<AssistQueue />);
+    await screen.findByText("Subject 0");
+    expect(screen.getAllByText(/^Subject \d+$/)).toHaveLength(40);
+    expect(screen.getByTestId("more-cards").textContent).toContain("90 more");
+    expect(screen.getByRole("heading", { name: /Prepared for you/ }).textContent).toContain("130");
+    await userEvent.click(screen.getByRole("button", { name: "Show 100 more" }));
+    expect(screen.getAllByText(/^Subject \d+$/)).toHaveLength(130);
+    expect(screen.queryByTestId("more-cards")).toBeNull();
+  });
+
+  it("'Show all' draws every item; a linked item beyond the first cards is drawn at once", async () => {
+    nav.params = "item=ap_120";
+    fetchMock({ "/api/autopilot/drafts": () => ({ items: many(130) }) });
+    render(<AssistQueue />);
+    await screen.findByText("Subject 120");
+    expect(screen.getAllByText(/^Subject \d+$/)).toHaveLength(121);
+    await userEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(screen.getAllByText(/^Subject \d+$/)).toHaveLength(130);
+  });
+
+  it("a list of 40 or fewer has no control and loses nothing (N=1, 10, 40)", async () => {
+    for (const n of [1, 10, 40]) {
+      cleanup();
+      fetchMock({ "/api/autopilot/drafts": () => ({ items: many(n) }) });
+      render(<AssistQueue />);
+      await screen.findByText("Subject 0");
+      expect(screen.getAllByText(/^Subject \d+$/)).toHaveLength(n);
+      expect(screen.queryByTestId("more-cards")).toBeNull();
+    }
+  });
+});

@@ -398,7 +398,7 @@ class Matters(unittest.TestCase):
         owner = am.as_items(self.pg, [], shown=False, owner_view=True, everyone=True,
                             door=self.everything, now=NOW)
         self.assertEqual(len(owner["items"]), 2)
-        self.assertTrue(all("not shown to staff" in i["note"] for i in owner["items"]))
+        self.assertTrue(all("Only you can see this" in i["note"] for i in owner["items"]))
         # the door's default is nothing
         self.assertEqual(am.as_items(self.pg, [ANN], shown=True, now=NOW)["items"], [])
 

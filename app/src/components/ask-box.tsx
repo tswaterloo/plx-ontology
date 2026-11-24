@@ -185,7 +185,7 @@ export function AskBox({
   dropUp?: boolean;
 }) {
   const router = useRouter();
-  const [empty, setEmpty] = useState("");
+  const [queued, setQueued] = useState<{ q: string; pins: Pin[]; files: Attachment[] } | null>(null);
   const [value, setValue] = useState(initial);
   const [pins, setPins] = useState<Pin[]>([]);
   const [items, setItems] = useState<(Suggestion & { systems?: string[]; facts?: string; shared?: number })[]>([]);
@@ -193,7 +193,7 @@ export function AskBox({
   const [active, setActive] = useState(-1);
   const [frag, setFrag] = useState({ start: 0, end: 0, text: "" });
   const [up, setUp] = useState(dropUp);
-  const [searching, setSearching] = useState(false);
+  const [, setSearching] = useState(false);
   const [files, setFiles] = useState<Attachment[]>([]);
   const [fileNote, setFileNote] = useState("");
   // reads in flight (a slow file): a question waits for them, and a read that finishes after
@@ -255,7 +255,6 @@ export function AskBox({
     (text: string, caret: number) => {
       const f = phraseAt(text, caret);
       setFrag(f);
-      setEmpty("");
       if (timer.current) clearTimeout(timer.current);
       ctrl.current?.abort();
       const q = f.text.trim();
@@ -272,8 +271,6 @@ export function AskBox({
         setItems(hit);
         setOpen(hit.length > 0);
         setActive(-1);
-        const lastWord = q.split(/\s+/).pop() ?? "";
-        setEmpty(hit.length === 0 && lastWord.length >= 4 ? lastWord : "");
         return;
       }
       timer.current = setTimeout(async () => {
@@ -288,9 +285,6 @@ export function AskBox({
           setItems(list);
           setOpen(list.length > 0);
           setActive(-1);
-          // a word of four letters or more that names no record says so (then ask)
-          const lastWord = q.split(/\s+/).pop() ?? "";
-          setEmpty(list.length === 0 && lastWord.length >= 4 ? lastWord : "");
         } catch {
           // Suggestions are a convenience: a failed lookup just shows none.
           if (!c.signal.aborted) close();
@@ -352,9 +346,11 @@ export function AskBox({
   function submit() {
     // a question with only files asks what they show
     const q = value.trim() || (files.length ? "What does this show?" : "");
-    if (!q || disabled || busy || reading > 0) return;
+    if (!q || disabled || reading > 0) return;
     const live = pins.filter((p) => q.includes(p.label));
-    onSubmit(q, live, files);
+    // while an answer is being written the question waits and is asked the moment it ends
+    if (busy) setQueued({ q, pins: live, files });
+    else onSubmit(q, live, files);
     generation.current += 1;
     filesRef.current = [];
     setValue("");
@@ -402,6 +398,13 @@ export function AskBox({
       submit();
     }
   }
+
+  useEffect(() => {
+    if (busy || disabled || !queued) return;
+    const next = queued;
+    setQueued(null);
+    onSubmit(next.q, next.pins, next.files);
+  }, [busy, disabled, queued, onSubmit]);
 
   const big = size === "lg";
   const sm = size === "sm";
@@ -523,7 +526,7 @@ export function AskBox({
               </button>
             </>
           )}
-          {busy && onStop ? (
+          {busy && onStop && !value.trim() && files.length === 0 ? (
             <button
               type="button"
               onClick={onStop}
@@ -538,8 +541,8 @@ export function AskBox({
               type="submit"
               aria-label="Ask"
               title="Ask (Enter)"
-              disabled={(!value.trim() && files.length === 0) || disabled || busy || reading > 0}
-              aria-disabled={(!value.trim() && files.length === 0) || disabled || busy || reading > 0}
+              disabled={(!value.trim() && files.length === 0) || disabled || reading > 0}
+              aria-disabled={(!value.trim() && files.length === 0) || disabled || reading > 0}
               className={cn(
                 "flex shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm hover:brightness-110 disabled:bg-surface-2 disabled:text-faint disabled:shadow-none cursor-pointer disabled:cursor-default",
                 sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8",
@@ -629,14 +632,12 @@ export function AskBox({
           {fileNote}
         </p>
       )}
-      {searching && !open && (
-        <p className={cn(pop, "px-3.5 py-2.5 text-[12px] text-muted", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
-          Searching
-        </p>
-      )}
-      {empty && !open && (
-        <p className={cn(pop, "px-3.5 py-2.5 text-[12px] text-muted", up ? "bottom-full mb-2" : "top-full mt-2")} role="status" data-testid="no-record">
-          No record is named “{empty}”. Press Enter to ask anyway.
+      {queued && (
+        <p className="flex items-center gap-2 px-2 pt-1.5 text-[12px] text-muted" role="status" data-testid="ask-queued">
+          <span className="min-w-0 truncate">Next, after this answer: {queued.q}</span>
+          <button type="button" onClick={() => setQueued(null)} className="shrink-0 text-fg underline-offset-2 hover:underline cursor-pointer">
+            Cancel
+          </button>
         </p>
       )}
     </div>

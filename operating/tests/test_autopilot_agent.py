@@ -299,6 +299,22 @@ class ScreenedReads(unittest.TestCase):
                              PAYSTUB[:40]):
                     self.assertNotIn(gone, check.prompts[0])
 
+    def test_the_reads_that_pass_are_used_in_the_retry_and_the_barred_one_is_named_unread(self):
+        from operating import session_trace
+        fine = "PO 77 is due Nov 20 per the record"
+        session = Reads([fine, self.SEEN], [final(reply="Plan B ships Friday."),
+                                            final(reply="PO 77 is due Nov 20.")])
+        session_trace.begin()
+        got, why = run(assistant(session, Check()), people=self.BARRED)
+        trace = session_trace.end()
+        self.assertEqual((why, got.reply, got.looked), ("", "PO 77 is due Nov 20.", [fine]))
+        again = session.runs[1][1]
+        self.assertIn(fine, again)                          # the read that stands is used, not lost
+        self.assertNotIn("cos@plx.example", again)          # the barred one never reaches the retry
+        self.assertNotIn("secret plan B", again)
+        self.assertIn("1 other read(s) could not be used (excluded_in_thread)", again)
+        self.assertEqual([h["why"] for h in trace["withheld"]], ["excluded_in_thread"])
+
     def test_the_retry_is_screened_and_runs_once(self):
         # the retry's own text names the barred person: dropped, no third run
         session = Reads([self.SEEN], [final(reply="ok"),
@@ -884,7 +900,8 @@ class OutsideReaders(ta.Fixture):
                 self.assertEqual(body["draft"]["body"] if body.get("draft") else "", draft)
                 got = body.get("your_call")
                 self.assertEqual([o["label"] for o in got["options"]] if got else None, card)
-        self.assertIn('"blank"', ag.TASK)
+        self.assertIn('"blank"', ag.task('P', 'now', 'x'))
+        self.assertNotIn('"blank"', ag.task('P', 'now', 'x', prepared=True))    # a finished item has no blank
         self.assertIn("[B]", ck.PROMPT)
 
     def test_a_message_to_an_outside_reader_from_an_inside_thread_is_held_back(self):
@@ -1160,3 +1177,117 @@ class RegistryRule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreparedItem(unittest.TestCase):
+    """The prepared session's finished item (``operating.assist_prepared``): real facts and real choices."""
+
+    def test_a_prepared_task_has_no_blank_and_asks_for_real_choices_with_their_evidence(self):
+        live, done = ag.task("P", "now", "x"), ag.task("P", "now", "x", prepared=True)
+        self.assertIn("[placeholder]", live)
+        self.assertNotIn('"blank"', done)
+        self.assertIn("never a [placeholder]", done)
+        self.assertIn('Say "nothing" only when a record you read shows', done)
+
+    def test_a_prepared_questions_facts_and_labels_are_not_cut_and_an_approvals_options_stay(self):
+        question = "Fact. " * 200                    # 1,200 characters of stated facts
+        label = "Refund $650.88: invoice IN1 bills 60 units and the PO shows 40 shipped " * 3
+        final = json.dumps({"ask": {"question": question, "options": [
+            {"label": label, "reply": "ok"}, {"label": "Decline", "reply": "no"}]}})
+        live = ag.parsed(final, [], message=False)
+        self.assertEqual(live.ask["options"], [])                         # the live cycle: unchanged
+        self.assertEqual(ag.parsed(json.dumps({"reply": "Status: X"}), [], message=False).reply, "")
+        self.assertEqual(ag.parsed(json.dumps({"reply": "Status: X"}), [], message=False, prepared=True).reply,
+                         "Status: X")                                     # a task's new message is its draft
+        got = ag.parsed(final, [], message=False, prepared=True)
+        self.assertEqual(got.ask["question"], question.strip())
+        self.assertEqual([o["label"] for o in got.ask["options"]], [label.strip(), "Decline"])
+
+    def test_the_second_check_judges_a_prepared_answer_as_a_choice_open_to_the_person(self):
+        got = ag.Decision(ask={"question": "q", "options": [{"label": "Decline", "reply": "no"}]})
+        self.assertIn("the message itself offers", ck.prompt(got, "m", [], "P", False))
+        said = ck.prompt(got, "m", [], "P", False, prepared=True)
+        self.assertIn("a choice open to P given the message and the records", said)
+        self.assertNotIn("the message itself offers", said)
+
+
+class Answers(Session):
+    """A session that answers from a list (the last one repeats) and takes a prepared session's lead and tools."""
+
+    def __init__(self, answers) -> None:
+        super().__init__()
+        self.said, self.lead, self.more = list(answers), [], []
+
+    def run(self, owner, prompt, *, tools=(), job=False, agent=False, reads=True, lead="", extra_tools=()):
+        self.lead.append(lead)
+        self.more.append(list(extra_tools))
+        self.answer = self.said.pop(0) if len(self.said) > 1 else self.said[0]
+        return super().run(owner, prompt, tools=tools, job=job, agent=agent, reads=reads)
+
+
+class PreparedBlanks(unittest.TestCase):
+    def prep(self, session):
+        return ag.Assistant("opus", lookup=session, binary=BIN, home=HOME, per_cycle=100,
+                            checker=ck.Checker(binary=BIN, home=HOME, call=Check())).run(
+            ASKED, "me", aj.described(ASKED, ASKED.get("text", "")), "me@plx.example", People(),
+            prepared=aj.Prepared(lead="THE PERSON'S BLOCK", tools=["T"]))
+
+    def test_a_reply_with_a_blank_slot_is_asked_again_once_and_the_lead_and_tools_go_to_each_session(self):
+        question = final(ask={"question": "Which day?", "options": [
+            {"label": "Fri 20 Nov (PO 77 is due Nov 20)", "reply": "Friday the 20th works for PO 77."},
+            {"label": "Mon 23 Nov", "reply": "Monday the 23rd works for PO 77."}]})
+        session = Answers([final(reply="Yes, [ship date] works for PO 77."), question])
+        got, why = self.prep(session)
+        self.assertEqual(why, "")
+        self.assertEqual(len(session.runs), 2)
+        self.assertIn("LEFT BLANKS IN SQUARE BRACKETS: [ship date]", session.runs[1][1])
+        self.assertEqual(session.lead, ["THE PERSON'S BLOCK"] * 2)
+        self.assertEqual(session.more, [["T"]] * 2)
+        self.assertEqual(got.reply, "")
+        self.assertEqual(len(got.ask["options"]), 2)
+
+    def test_a_finished_reply_runs_one_session_and_a_second_blank_is_kept_with_its_warning(self):
+        one = Answers([final(reply="Yes, Nov 20 works for PO 77.")])
+        got, _ = self.prep(one)
+        self.assertEqual((len(one.runs), got.reply), (1, "Yes, Nov 20 works for PO 77."))
+        two = Answers([final(reply="Yes, [ship date] works for PO 77.")])
+        got, _ = self.prep(two)
+        self.assertEqual(len(two.runs), 2)                    # once more, never a loop
+
+    def test_a_nothing_names_its_record_on_the_trace_and_a_read_the_screen_bars_is_redone_for_a_task_too(self):
+        from operating import session_trace
+        said = "Stephen's email to Ron Pope sent 17 Nov (emails/x)"
+        session = Answers([final(reply="", nothing=said)])
+        session_trace.begin()
+        got, why = self.prep(session)
+        self.assertEqual((got, why), (None, "nothing_to_do"))
+        self.assertEqual(session_trace.end()["nothing"], said)
+        # a record with no message (an approval, a task): a read the screen bars sends it to the retry
+        # from the reads that stand, as a message's does
+        task = {**ASKED, "event_type": "task.assigned"}
+        barred = Answers([final(ask={"question": "Which?", "options": [
+            {"label": "A", "reply": "do a"}, {"label": "B", "reply": "do b"}]})])
+        barred.looked = ["{'requested_by': 'cos@plx.example'}"]
+        a = ag.Assistant("opus", lookup=barred, binary=BIN, home=HOME, per_cycle=100,
+                         checker=ck.Checker(binary=BIN, home=HOME, call=Check()))
+        a.run(task, "me", aj.described(task, task.get("text", "")), "me@plx.example",
+              People(barred={"cos@plx.example"}), prepared=aj.Prepared(lead="L"))
+        self.assertEqual(len(barred.runs), 2)
+
+    def test_a_reviewed_answer_a_check_flags_stays_with_what_to_check_once(self):
+        from operating import autopilot_agent_io as io
+        class Held:
+            pass
+        options = [{"label": "Decline", "reply": "No."}, {"label": "Yes", "reply": "Thanks, it is 4,242 units."}]
+        m = ag.Decision  # unused
+        from operating import autopilot_drafter as ad
+        material = ad.Material(reader="", channel="mail", sender="s", subject="x", text="no figures here",
+                               address="me@plx.example", relation="", account=[], looked_up=[])
+        kept = io._sendable(options, material, None, [], "", [], True, "Sender")
+        self.assertEqual(len(kept), 2)
+        self.assertIn("check before sending", kept[1]["label"])
+        self.assertEqual(kept[1]["label"].count("check before sending"), 1)
+        again = io._sendable(kept, material, None, [], "", [], True, "Sender")
+        self.assertEqual(again[1]["label"], kept[1]["label"])
+        self.assertEqual(len(io._sendable(options, material, None, [], "", []))
+                         , 1)                              # the live cycle still drops it

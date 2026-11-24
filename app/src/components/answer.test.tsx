@@ -273,6 +273,16 @@ describe("AnswerCard", () => {
     expect(items[5]).not.toMatch(/CAD|USD/);
   });
 
+  it("says the data's age when a source is stale even if it was read today, and stays quiet when nothing is behind", () => {
+    const today = new Date().toISOString();
+    const mk = (stale: boolean) => ({ as_of: today, sources: [{ system: "BC" as const, as_of: today, age_seconds: 60, stale }] });
+    const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, freshness: mk(true) } }} />);
+    expect(screen.getByTestId("freshness")).toHaveTextContent(/^Data as of/);
+    unmount();
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, freshness: mk(false) } }} />);
+    expect(screen.getByTestId("freshness")).not.toHaveTextContent(/Data as of/);
+  });
+
   it("shows data age as one grey line: no capture states, no amber unless a used source is over a week old", () => {
     const fresh = {
       as_of: "2026-10-29T10:34:00Z",
@@ -287,8 +297,9 @@ describe("AnswerCard", () => {
     expect(f).toHaveTextContent(/^Data as of 29 Oct/);
     expect(f).not.toHaveTextContent(/Out of date|capture|continuing/i);
     expect(screen.queryByTestId("freshness-old")).toBeNull();
-    // an old source shows its date under "What I checked", not as a warning
-    expect(screen.getByTestId("checked-list")).toHaveTextContent("Mission Control");
+    // the systems list names only the systems the answer used, never one it did not touch
+    expect(screen.getByTestId("checked-list")).toHaveTextContent("Business Central");
+    expect(screen.getByTestId("checked-list")).not.toHaveTextContent("Mission Control");
   });
 
   it("states the data cut-off and names each source read over a day before it", () => {

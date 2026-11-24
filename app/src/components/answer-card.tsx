@@ -912,7 +912,7 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
           )}
           <SourcesList sources={cited} owners={owners} />
           <section data-testid="what-checked">
-            <SectionTitle>Checked</SectionTitle>
+            <SectionTitle>Systems used</SectionTitle>
             <CheckedList freshness={a.freshness} facts={a.facts} />
           </section>
           {refs.length > 0 && <Related records={refs.map((r) => r.object_id)} label={refs.length === 1 ? recordLabel(refs[0].type, refs[0].label) : null} dense />}

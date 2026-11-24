@@ -935,20 +935,22 @@ def read_attach_cursor(text: str) -> tuple[dt.datetime, str]:
     return at, found.group(2)
 
 
-def meaning_cursor(few: bool, pos: int) -> str:
-    """The cursor of the stream of rows close in meaning past the ones a page showed:
-    ``m1:<few 0|1>:<place>`` (the place in the ranking's order the next page starts from;
-    ``few``: the first page widened a search with fewer than ``WIDEN_BELOW`` word matches,
-    which orders the rows by the words they hold first)."""
-    return f"m1:{1 if few else 0}:{int(pos)}"
+def meaning_cursor(few: bool, pos: int, words_only: bool = False) -> str:
+    """The cursor of the stream of rows past the ones a page showed beyond its word match:
+    ``m1:<few 0|1>:<place>`` for the rows close in meaning (the place in the ranking's
+    order the next page starts from; ``few``: the first page widened a search with fewer
+    than ``WIDEN_BELOW`` word matches, which orders the rows by the words they hold first),
+    ``m1:<few>:<place>:w`` for the rows holding SOME of the words when no ranking was had
+    (newest first; ``few`` is always 1)."""
+    return f"m1:{1 if few else 0}:{int(pos)}" + (":w" if words_only else "")
 
 
-def read_meaning_cursor(text: str) -> tuple[bool, int]:
-    """(few, place) of a ``meaning_cursor``; anything else is refused."""
-    found = re.fullmatch(r"m1:([01]):([0-9]{1,6})", text) if isinstance(text, str) else None
+def read_meaning_cursor(text: str) -> tuple[bool, int, bool]:
+    """(few, place, words only) of a ``meaning_cursor``; anything else is refused."""
+    found = re.fullmatch(r"m1:([01]):([0-9]{1,6})(:w)?", text) if isinstance(text, str) else None
     if found is None:
         raise SearchInputError("not a cursor of this search")
-    return found.group(1) == "1", int(found.group(2))
+    return found.group(1) == "1", int(found.group(2)), bool(found.group(3))
 
 
 # rows a cursor may skip past its returned row (the file rows the item gate refused):

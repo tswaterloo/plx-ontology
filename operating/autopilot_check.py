@@ -61,10 +61,7 @@ state of an order, a delivery or someone's work) is shown by the message, the th
 the assistant read; every promise in it (a time, a price, a step someone will take) is one \
 the message, the thread or the records show someone made or asked for. Restating the \
 message, a plain courtesy line, or saying what {person} is asked is supported. A question to \
-{person} is supported when it asks what the moment needs from them. An answer option's \
-choice must be one the message itself offers or asks between (a yes or a no to its question, \
-one of the times or quantities it names); an option that picks its own time, date, price, \
-quantity or step is unsupported, and so is anything else in its reply that is unshown. A placeholder \
+{person} is supported when it asks what the moment needs from them. {options_rule} A placeholder \
 in square brackets ([ship date]) states nothing.
 - Read every figure, state and who-asked-what against the message and the thread, newest \
 last: a statement they CONTRADICT (another quantity, date or price than they give, a state \
@@ -96,6 +93,19 @@ Answer with one JSON object only: {{"items": [{{"id": "<item id>", "keep": \
 "yes" or "no", "why": "<a few words>", "fixed": "<only for [R], [N], [On] or [B] kept no, or empty>"}}]}} \
 naming every item."""
 
+LIVE_OPTIONS = ("An answer option's choice must be one the message itself offers or asks between (a yes "
+                "or a no to its question, one of the times or quantities it names); an option that picks "
+                "its own time, date, price, quantity or step is unsupported, and so is anything else in "
+                "its reply that is unshown.")
+# a prepared item (``operating.assist_prepared``): its answers are the choices open to the person given
+# the records (approve, decline, ask for the working, a different amount the records support), each
+# resting on shown facts; the message need not offer them
+PREPARED_OPTIONS = ("An answer option is a choice open to {person} given the message and the records "
+                    "(approve, decline, ask for more, an amount or date the records support); the "
+                    "message need not offer it. It is supported when its label and its reply state only "
+                    "facts and promises the message, the thread or what was read show, and a reply "
+                    "promising a step is supported when the choice is the person's to make (they decide "
+                    "before anything is sent).")
 MESSAGE_MOMENT = "A message just arrived for them (below), with the conversation before it."
 LOOK_MOMENT = ("No message arrived: this is a time-driven look. The moment below is the list "
                "of what changed for them, computed from the records as of the look: each line "
@@ -170,12 +180,12 @@ def items_of(got: Any) -> list[tuple[str, str]]:
 
 
 def prompt(got: Any, what: str, looked: Sequence[Any], person: str, look: bool,
-           when: str = "") -> str:
+           when: str = "", prepared: bool = False) -> str:
     """``when``: the moment's time as the person reads it (``autopilot_agent.when_of``); a
     state the records show after it never counts against an item (a replayed moment reads
     today's records)."""
     who = person or "the person"
-    return PROMPT.format(
+    return PROMPT.replace("{options_rule}", (PREPARED_OPTIONS if prepared else LIVE_OPTIONS)).format(
         person=who, moment=LOOK_MOMENT if look else MESSAGE_MOMENT,
         now=(" " + NOW.format(when=when)) if str(when).strip() else "",
         fits=(FITS_LOOK if look else FITS_MESSAGE).format(person=who),
@@ -334,13 +344,13 @@ class Checker:
         return result if isinstance(result, str) else None
 
     def check(self, got: Any, what: str, looked: Sequence[Any], person: str, look: bool,
-              when: str = "") -> tuple[Any, str]:
+              when: str = "", prepared: bool = False) -> tuple[Any, str]:
         """(what stands of ``got``, why nothing does or ""): ``check_failed`` when the check
         gave no usable verdict."""
         if got is None or got.empty:
             return got, ""
         ids = [i for i, _t in items_of(got)]
-        said = self.ask(prompt(got, what, looked, person, look, when))
+        said = self.ask(prompt(got, what, looked, person, look, when, prepared))
         v = verdict(said, ids)
         if v is None:
             return None, "check_failed"

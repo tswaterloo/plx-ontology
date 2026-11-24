@@ -245,6 +245,23 @@ class MeetingBrief(unittest.TestCase):
         return br.meeting_brief(st, frozenset(held), alerts, oid, now=NOW, declared=None,
                                 people=PEOPLE)
 
+    def test_every_party_of_a_meeting_is_read_and_stated_not_the_first_three(self):
+        """W8: a meeting with six customers (and four lead-tier suppliers) names all six
+        parties and all four possible parties, each cited, none read past silently."""
+        st, alerts, _orders = world()
+        more = [f"Customer:bc.customers:synth-cus-x{i}" for i in range(5)]
+        for i, cus in enumerate(more):
+            st.add(cus, f"Extra Foods {i}")
+            st.link(EVENT, "CalendarEvent.with_customer", cus, "corroborated")
+        leads = [f"Supplier:bc.vendors:synth-sup-x{i}" for i in range(3)]
+        for i, sup in enumerate(leads):
+            st.add(sup, f"Lead Pack {i}")
+            st.link(EVENT, "CalendarEvent.with_supplier", sup, "lead")
+        out = self.brief(st, alerts)
+        self.assertEqual([p["object_id"] for p in out["parties"]], [CUS, *more])
+        self.assertEqual({p["object_id"] for p in out["possible_parties"]},
+                         {LEAD_SUP, *leads})
+
     def test_a_derived_order_value_says_how_it_was_derived(self):
         # review of C-01: an order row valued from its invoices (its header reads 0) says
         # so; the amount alone would read as the order's own total

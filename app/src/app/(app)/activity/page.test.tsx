@@ -35,12 +35,12 @@ describe("Activity", () => {
     const summary = await screen.findByTestId("activity-summary");
     const figure = (label: string) => [...summary.querySelectorAll("dt")].find((d) => d.textContent === label)?.nextElementSibling?.textContent;
     expect(figure("Sent")).toBe("2");
-    expect(figure("Not sent (sending off)")).toBe("1");
+    expect(figure("Not sent")).toBe("1");
     expect(figure("Tasks set or done")).toBe("1");
     expect(figure("Put away")).toBe("1");
     expect(figure("People reached")).toBe("4");
     expect(figure("Records")).toBe("2");
-    expect(screen.getByTestId("activity-check")).toHaveTextContent("it failed; send it again from the record");
+    expect(screen.queryByTestId("activity-check")).toBeNull();
   });
 
   it("explains an empty journal in plain rows, no placeholder cards", async () => {

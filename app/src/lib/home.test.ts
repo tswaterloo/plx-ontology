@@ -55,6 +55,10 @@ describe("staleLine", () => {
     expect(staleLine(null, read)).toBe("As of 9:08 PM ET");
     expect(staleLine(read, "2026-11-07T03:00:00Z", at(90))).toBe("Showing the read from 9:08 PM ET · refreshing");
   });
+  it("on return, says nothing for a read a few minutes old and plainly when it is older", () => {
+    expect(staleLine(read, null, at(2), true)).toBeNull();
+    expect(staleLine(read, null, at(10), true)).toBe("Last updated 9:08 PM ET.");
+  });
   it("shows nothing for a fresh page or an unreadable time", () => {
     expect(staleLine(null)).toBeNull();
     expect(staleLine("nonsense")).toBeNull();

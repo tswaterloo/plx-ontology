@@ -172,8 +172,8 @@ function AnswerBank() {
   return (
     <section aria-labelledby="answers-title" className="mt-8" data-testid="answer-bank">
       <h2 id="answers-title" className="text-[15px] font-semibold">Questionnaire answers</h2>
-      <p className="mt-1 max-w-[70ch] text-[13px] leading-5 text-muted">
-        Answers we gave in past questionnaires that any customer may get, each with the questionnaire it came from. One given to a single customer is on that customer&apos;s page.
+      <p className="mt-1 text-[13px] text-muted">
+        Past questionnaire answers any customer may get. One given to a single customer is on that customer&apos;s page.
       </p>
       <form
         className="mt-3 flex max-w-[36rem] gap-2"
@@ -234,7 +234,7 @@ export default function TemplatesPage() {
       />
       <div className="w-full max-w-[60rem] overflow-y-auto px-6 py-5">
         <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-muted">
-          Documents you write often, with blanks where a record&apos;s details go. Using one fills each blank from the record you name and shows where it came from; anything the records don&apos;t settle is marked to check. In the Ask box, type &ldquo;use my order confirmation template for SO 5512&rdquo;, or &ldquo;save a template for supplier follow-ups&rdquo; to make one from your words or from a document you name.
+          Documents you write often, with blanks filled from the record you name. To make one, ask in the Ask box, for example &ldquo;save a template for supplier follow-ups&rdquo;.
         </p>
         <StoredAge at={at} className="mb-3" />
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}

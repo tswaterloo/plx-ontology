@@ -1891,7 +1891,8 @@ _KILLED_DRAIN_SECONDS = 10
 def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
             on_line: Callable[[str], None] | None = None,
             stop: Callable[[str], bool] | None = None,
-            feed: Callable[[], str] | None = None) -> tuple[int | None, str]:
+            feed: Callable[[], str] | None = None,
+            silence: bool = False) -> tuple[int | None, str]:
     """Run one session in its own process group, reading its stream line by line. On
     ``timeout`` the whole group (the session, its gate and the host's MCP server) is
     killed, so no orphaned server keeps a query running into the next session's time, and
@@ -1902,7 +1903,9 @@ def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
     answer is decided). ``feed``: the session's input, written to its stdin once
     ``feed()`` returns (it may wait: the session starts meanwhile), then closed. The task
     in ``argv`` and the fed input go masked: no card number or credential reaches the
-    model (``operating.card_text``)."""
+    model (``operating.card_text``). ``silence``: ``timeout`` is how long the session may
+    write NOTHING to its stream (a hung process), restarted by every line, not a limit on how
+    long it works."""
     import threading
     from operating.card_text import mask_served
     argv = [mask_served(arg) for arg in argv]
@@ -1928,14 +1931,19 @@ def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
     def expire() -> None:
         expired.set()
         _kill_group(child)
-    timer = threading.Timer(timeout, expire)
-    timer.daemon = True
-    timer.start()
+    timers = [threading.Timer(timeout, expire)]
+    timers[0].daemon = True
+    timers[0].start()
     lines: list[str] = []
     ended = False
     try:
         for line in child.stdout:
             lines.append(line)
+            if silence and not expired.is_set():       # a line is life: the silence clock starts again
+                timers[0].cancel()
+                timers[0] = threading.Timer(timeout, expire)
+                timers[0].daemon = True
+                timers[0].start()
             if on_line is not None:
                 try:
                     on_line(line)
@@ -1947,7 +1955,7 @@ def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
                 break
         child.wait()
     finally:
-        timer.cancel()
+        timers[0].cancel()
         if child.poll() is None:
             _kill_group(child)
             child.wait()
@@ -1967,6 +1975,18 @@ def _spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int, *,
 
 
 _spawn.stops = _spawn.feeds = True   # type: ignore[attr-defined]
+
+
+def silence_spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int, *,
+                  stop: Callable[[str], bool] | None = None,
+                  feed: Callable[[], str] | None = None) -> tuple[int | None, str]:
+    """``_spawn`` whose ``timeout`` is the longest SILENCE of the session's stream (a hung
+    process, killed whole and raised as ``subprocess.TimeoutExpired``), never the time it works
+    (owner guardrail 1: no deadline on an Assist read)."""
+    return _stream(argv, cwd, env, timeout, stop=stop, feed=feed, silence=True)
+
+
+silence_spawn.stops = silence_spawn.feeds = True   # type: ignore[attr-defined]
 
 
 def streaming_spawn(on_line: Callable[[str], None]) -> Spawn:

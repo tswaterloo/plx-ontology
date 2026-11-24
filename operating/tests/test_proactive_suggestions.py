@@ -203,7 +203,7 @@ class Ranking(unittest.TestCase):
         self.assertIn("- Line 1: ordered 5 KG, received 0 KG", out["draft"]["body"])
         self.assertEqual({f["fact"] for f in out["draft"]["facts"]},
                          {"ordered_quantity", "received_quantity", "need_date"})
-        self.assertTrue(any("name no item" in m for m in out["missing"]))
+        self.assertTrue(any("name no item" in m for m in out["drafting_notes"]) and not any("name no item" in m for m in out["missing"]))
 
 
 class Cardinality(unittest.TestCase):

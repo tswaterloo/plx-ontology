@@ -180,6 +180,17 @@ Changed:
 - Genie compares every part of a dimension
 - Records opens on Orders, Customers, Suppliers and Products lists with what you opened lately and saved on top
 
+## Update 2026-11-24
+Changed:
+- Assist prepares each matter with the real facts and real choices, each with its evidence, never a blank
+- a matter with nothing to do names the record that shows it done
+- every past case is reachable while the person's own sit ready, so a run costs less
+- a flagged reply stays on the card marked check before sending
+- a matter asked to be drafted shows as drafting
+- ASK18: any-word stream, documents as results, compute by reference, brief parties, column meanings, record card, column value facts (0079)
+- One Data page in the menu holds every kind of record: orders, customers, suppliers, products, invoices, shipments and every other list
+- Home's prepared list opens fast: the reader's access is decided once per read instead of once per item, and the list draws its first 40 cards with Show more and Show all
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

@@ -3,7 +3,7 @@
 import { ChevronRight, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
-import { fieldLabel, formatDate, formatDateTime, formatMoney, mailField, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
+import { fieldLabel, formatDate, formatDateTime, formatMoney, isBeforeToday, mailField, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
 import type { Conflict, Fact, Freshness, Hidden, NotFoundItem, Source } from "@/lib/types";
 import { EvidenceDrawer, SourceChip, SourceChips, sourceName } from "./source-chip";
 import { DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
@@ -460,10 +460,13 @@ export function FreshnessLabel({
   const lag = searchLag(freshness, now);
   return (
     <div className="space-y-1" data-testid="freshness">
-      <p className="text-meta text-muted" title={detail || undefined}>
-        {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
-        {freshness.as_of && behind ? <span data-testid="freshness-behind">; {behind}</span> : null}
-      </p>
+      {/* the age of the data is said only when it is older than today */}
+      {!freshness.as_of || behind || sources.some((s) => s.stale) || isBeforeToday(freshness.as_of, now) ? (
+        <p className="text-meta text-muted" title={detail || undefined}>
+          {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
+          {freshness.as_of && behind ? <span data-testid="freshness-behind">; {behind}</span> : null}
+        </p>
+      ) : null}
       {freshness.capture_alarm?.line ? (
         <p className="flex items-center gap-1.5 text-meta text-fg" data-testid="freshness-capture-alarm">
           <OpenRing size={12} />
@@ -513,10 +516,12 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
   for (const [sys, set] of bySystem)
     if (!(freshness?.sources ?? []).some((s) => s.system === sys))
       rows.push({ code: sys, system: SYSTEM_LABEL[sys as keyof typeof SYSTEM_LABEL] ?? sys, what: `${set.size} cited`, asOf: "", old: false });
-  if (rows.length === 0) return <p className="text-[13px] text-muted">No source list.</p>;
+  // only the systems the answer used: a row per system it never touched says nothing
+  const usedRows = rows.filter((r) => r.what !== "None cited");
+  if (usedRows.length === 0) return <p className="text-[13px] text-muted">No source list.</p>;
   return (
     <dl className="space-y-1" data-testid="checked-list">
-      {rows.map((r) => (
+      {usedRows.map((r) => (
         <div key={r.system} className="grid h-7 grid-cols-[54px_minmax(0,1fr)_auto] items-center gap-x-2 text-[13px]">
           <SystemCode system={r.code} size={18} />
           <div className="flex min-w-0 items-baseline gap-2">
@@ -525,7 +530,7 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
           </div>
           <dd className="inline-flex items-center gap-1 text-[12px] tabular-nums text-muted">
             {r.old && <OpenRing size={11} />}
-            {r.asOf}
+            {r.old ? r.asOf : ""}
           </dd>
         </div>
       ))}

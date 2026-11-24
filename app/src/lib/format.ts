@@ -561,3 +561,12 @@ export function mailField(fields: Record<string, string> | null | undefined, nam
   const v = fields?.[`row.${name}`] ?? fields?.[name];
   return v ? fieldValue(name, v) : "";
 }
+
+/** True when an ISO date or time falls on a day before today (Eastern): the only time a page tells
+ * a person how old its data is. Anything unreadable is not called old. */
+export function isBeforeToday(iso: string | null | undefined, now: Date = new Date()): boolean {
+  if (!iso) return false;
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  return d < now.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}

@@ -74,6 +74,7 @@ export type SidebarResponse = S["Sidebar"];
 export type NeedsAttention = S["NeedsAttention"];
 export type LatePo = S["LatePo"];
 export type LateList = S["LateList"];
+export type PoClosure = S["PoClosure"];
 export type DataHealth = S["DataHealth"];
 export type DataHealthCheck = S["DataHealthCheck"];
 export type CustomerSummary = S["CustomerSummary"];

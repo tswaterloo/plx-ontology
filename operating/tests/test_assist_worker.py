@@ -192,3 +192,15 @@ class Worker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NothingNamesItsRecord(unittest.TestCase):
+    def test_a_prepared_nothing_is_kept_with_the_record_that_shows_it_and_without_one_stays_a_failure(self):
+        matter = {"oid": "o1", "kind": "conversation", "matter_id": "m"}
+        rows = [{"why": "nothing_to_do"}]
+        said = aw.outcome(rows, matter, {"nothing": "SO-1 shipped (handle bc://so/1)", "reads": []})
+        self.assertEqual((said["status"], said["reason"]), ("planned", ""))
+        self.assertEqual(said["plan"]["acts"][0]["act"], "nothing")
+        self.assertEqual(said["plan"]["why"], "SO-1 shipped (handle bc://so/1)")
+        bare = aw.outcome(rows, matter, {"reads": []})
+        self.assertEqual((bare["status"], bare["reason"]), ("failed", "nothing_to_do"))

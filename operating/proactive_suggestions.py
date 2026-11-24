@@ -371,6 +371,8 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
                                            for m in own])
     reasons: list[dict[str, Any]] = []
     missing: list[str] = []
+    # notes about our own drafting or reading: kept in the trace, never on the person's page
+    drafting_notes: list[str] = []
     cited: list[dict[str, Any]] = []
 
     def reason(text: str, source: Any = None) -> None:
@@ -415,8 +417,8 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             missing.append("Mail or files you can't open could hold a later supplier "
                            "message.")
     elif otype == "PurchaseOrder":
-        missing.append("Its confirmations and messages weren't read in time: open the "
-                       "order for them.")
+        drafting_notes.append("Its confirmations and messages weren't read in time: open "
+                              "the order for them.")
     if orders and otype == "PurchaseOrder":
         names = [labels.get(o) or "a customer order" for o in orders[:5]]
         reason(f"It holds up {len(orders)} customer order{'s' if len(orders) != 1 else ''}: "
@@ -496,9 +498,9 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
         if eta and eta["answer"] == "yes" and eta.get("when") and eta.get("source"):
             cite("confirmed_delivery_date", eta["when"], eta["source"]["handle"])
         if not lines:
-            missing.append("The draft names the order, not its open lines.")
+            drafting_notes.append("The draft names the order, not its open lines.")
         elif not any(line.get("line_item") for line in facts["lines"].values()):
-            missing.append("The lines name no item, so the draft lists them by quantity.")
+            drafting_notes.append("The lines name no item, so the draft lists them by quantity.")
         if contact is None:
             missing.append("No supplier contact address on record.")
         draft = vendor_draft(po_number=po_number, supplier=supplier[0] if supplier else None,
@@ -542,6 +544,7 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
                        "suggestion_only": True},
             "draft": draft, "confidence": confidence,
             "missing": list(dict.fromkeys(missing))[:8],
+            "drafting_notes": list(dict.fromkeys(drafting_notes)),
             "acknowledged": all(bool(m.get("acknowledged")) for m in own),
             "new": any(bool(m.get("new_this_generation")) for m in own),
             "finding_ids": [str(m.get("id")) for m in members]}

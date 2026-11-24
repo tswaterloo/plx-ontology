@@ -593,7 +593,7 @@ class NeverServedCold(LastGoodPage.__base__):
 
         def alert_home(*a, **kw):
             calls.append("home")
-            return 2, [], "2026-11-19", [], {}, 0
+            return 2, [], "2026-11-19", [], {}, 0, 0
 
         stopped = errors.UserFacing("alerts_stale", "Late purchase orders are unavailable")
 
@@ -1778,7 +1778,7 @@ class SnapshotFirst(LastGoodPage.__base__):
         who = reader("grp-a")
         reads = []
 
-        def door(backend, w, offset, limit):
+        def door(backend, w, offset, limit, stale=False):
             reads.append((offset, limit))
             return 3, [], "2026-11-19T00:00:00+00:00"
         with mock.patch.object(page_sql, "alerts_on", lambda: True), \

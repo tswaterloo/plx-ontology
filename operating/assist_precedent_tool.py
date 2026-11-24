@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, BinaryIO, Mapping, Optional, Sequence
+from typing import Any, BinaryIO, Callable, Mapping, Optional, Sequence
 
 PAGE_CHARS = 40000          # one reply (a display page; ``next_offset`` continues to the end)
 NAME = "precedents"
@@ -96,6 +96,45 @@ def search(cases: Sequence[Mapping[str, Any]], arguments: Mapping[str, Any]) -> 
         used += min(len(text), PAGE_CHARS)
     return {"held": len(cases), "matching": len(hits), "offset": offset, "returned": len(page),
             "next_offset": nxt, "cases": page}
+
+
+def local_tool(cases: Sequence[Mapping[str, Any]],
+               screen: Optional[Callable[[str], Optional[str]]] = None) -> Any:
+    """The same search as a session's own tool (``plx.precedents``: an ``agent_session.LocalTool`` the
+    prepared session gets beside its read tools). ``screen(text)`` is the drafts' thread screen (pay or
+    HR, a person the exclusion names; None passes): a case that fails it is not shown, and the answer
+    says how many were left out and why (``left_out``), never silently fewer."""
+    from operating.agent_session import LocalTool
+    from operating.card_text import mask_served
+    spec = {"name": "plx.precedents",
+            "description": "Search the past cases of this person that the prompt does not write out "
+                           "(what they did in similar matters: the other side, what was asked, what "
+                           "they did, their words), nearest to this matter first, whole. `find`: words "
+                           "that must all appear; `act`: one act kind; `offset`: the next_offset of the "
+                           "previous page. Read-only.",
+            "inputSchema": SCHEMA, "annotations": {"readOnlyHint": True}}
+
+    def call(arguments: dict[str, Any]) -> Any:
+        out = search(cases, arguments if isinstance(arguments, Mapping) else {})
+        if screen is not None and "text" in out:           # one case read in slices: screened whole
+            one = next((p for p in cases if p.get("action_key") == out.get("action_key")), None)
+            why = screen(text_of(one)) if one is not None else None
+            if why:
+                out = {"error": "left_out", "why": why,
+                       "hint": "this case names a person or a subject that may not go to the model"}
+        if screen is not None and isinstance(out.get("cases"), list):
+            kept, left = [], []
+            whole = {p.get("action_key"): p for p in cases}
+            for c in out["cases"]:       # each case screened whole, never the cut shown in a page
+                why = screen(text_of(whole[c["action_key"]]) if c.get("action_key") in whole
+                             else str(c.get("text") or ""))
+                (left if why else kept).append(why or c)
+            out = {**out, "cases": kept, "returned": len(kept)}
+            if left:
+                out["left_out"] = {"count": len(left), "why": sorted({str(w) for w in left}),
+                                   "note": "these cases name a person or a subject that may not go to the model"}
+        return json.loads(mask_served(json.dumps(out, ensure_ascii=False, default=str)))
+    return LocalTool(spec=spec, call=call)
 
 
 def handle(cases: Sequence[Mapping[str, Any]], message: Any) -> Optional[dict[str, Any]]:

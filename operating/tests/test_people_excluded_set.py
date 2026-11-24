@@ -167,6 +167,46 @@ class GateTests(unittest.TestCase):
         self.assertEqual(item_audiences.reader_key(Base(), "owner"), "full:tag-1")
 
 
+class AListOfHandlesIsDecidedInBatchesTest(unittest.TestCase):
+    """A page build deciding N handles for one reader (Assist's list: ~1,100 matters, each
+    citing mail) reads the set's version numbers and rows in the read ahead, once, and the gate
+    finds them kept: before, the owner's view (built anew per handle) never matched the kept
+    key and every handle did its own two lookups and its own look at the reader (0.8 s a
+    list). The answers are the same ones the gate gives alone."""
+
+    def _run(self, owner: bool, n: int):
+        from operating.case_tools_host_citations import page_build
+        host = _host()
+        host._in_call = True
+        versions = mock.Mock(side_effect=_served)
+        handles = [f"graph-mail://box-ok/msg-{i}" for i in range(n)] + [MAIL_X]
+        gated = mock.Mock(principals=frozenset({"p"}))
+        host.runtime.employee_gate = mock.Mock(return_value=gated)
+        with mock.patch("operating.ontology_tools_evidence.RuntimeCitations"), \
+                mock.patch("operating.employee_permissions.reader_unrestricted", return_value=True), \
+                mock.patch("operating.employee_permissions.reader_owner", return_value=owner), \
+                mock.patch.object(people_excluded, "excluded", return_value=SET), \
+                mock.patch.object(people_excluded, "latest_versions", versions), \
+                mock.patch.object(people_excluded.Excluded, "withheld", _held), \
+                page_build():
+            gate = host._item_gate(None)
+            gate.prefetch("who", handles)
+            out = {h: gate("who", h) for h in handles}
+        return out, versions, host.runtime.employee_gate
+
+    def test_n_handles_cost_one_read_ahead_not_n(self):
+        for n in (1, 10, 60):
+            for owner in (False, True):
+                with self.subTest(n=n, owner=owner):
+                    out, versions, employee_gate = self._run(owner, n)
+                    self.assertEqual(len(out), n + 1)                    # none lost or doubled
+                    self.assertEqual(versions.call_count, 1)             # one batch, no per-handle look-up
+                    self.assertEqual(employee_gate.call_count, 1)        # the reader resolved once
+                    # the people exclusion still holds for everyone but the owner
+                    self.assertEqual(out[MAIL_X], owner)
+                    self.assertTrue(all(v for h, v in out.items() if h != MAIL_X))
+
+
 class SetTests(unittest.TestCase):
     def setUp(self):
         people_excluded.forget()

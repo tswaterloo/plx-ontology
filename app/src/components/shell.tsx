@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, Bot, BellRing, BookMarked, Bookmark, Building2, CalendarClock, ChartColumn, CircleHelp, ClipboardList, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Truck, Users, Package, type LucideIcon } from "lucide-react";
+import { Activity, Bot, BellRing, BookMarked, Bookmark, CalendarClock, ChartColumn, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
@@ -337,7 +337,7 @@ export interface NavSection extends NavPlace {
 /**
  * The sidebar (the owner, 11-17: "items move depending on the page"; 11-18: "simpler tabs"):
  * one fixed list, the same on every page, the current page highlighted: Home, Ask, Insights,
- * Records, Meetings, Team, then Admin last. A page's sub-pages are tabs under its title
+ * Data (every kind of record in one place), Meetings, Team, then Admin last. A page's sub-pages are tabs under its title
  * (SectionTabs), never sidebar rows. Home is the queue (One engine, one queue)
  * with four tabs: what needs you (the prepared items first), the alerts (was Watching), the
  * late POs (was its own page) and the switches (/autopilot, was its own sidebar entry);
@@ -368,11 +368,11 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   { key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: [], group: "main", children: [] },
   { key: "insights", href: "/insights", label: "Insights", place: "/insights", icon: ChartColumn, holds: [], group: "main", children: [] },
-  { key: "orders", href: "/orders", label: "Orders", place: "/orders", icon: ClipboardList, holds: ["/po", "/ao", "/order"], group: "main", children: [] },
-  { key: "customers", href: "/customers", label: "Customers", place: "/customers", icon: Building2, holds: ["/customer", "/account"], group: "main", children: [] },
-  { key: "suppliers", href: "/suppliers", label: "Suppliers", place: "/suppliers", icon: Truck, holds: ["/supplier"], group: "main", children: [] },
-  { key: "products", href: "/products", label: "Products", place: "/products", icon: Package, holds: [], group: "main", children: [] },
-  { key: "more", href: "/more", label: "More", place: "/more", icon: Database, holds: ["/object", "/source", "/records"], group: "main", children: [] },
+  {
+    key: "records", href: "/records", label: "Data", place: "/records", icon: Database,
+    holds: ["/orders", "/customers", "/suppliers", "/products", "/more", "/po", "/ao", "/order", "/customer", "/account", "/supplier", "/object", "/source"],
+    group: "main", children: [],
+  },
   { key: "meetings", href: "/meetings", label: "Meetings", place: "/meetings", icon: CalendarClock, holds: [], group: "main", children: [] },
   { key: "team", href: "/team", label: "Team", place: "/team", icon: Users, holds: [], group: "main", grant: true, children: [] },
   { key: "memory", href: "/memory", label: "Memory", place: "/memory", icon: BookMarked, holds: [], group: "account", children: [] },
@@ -1377,7 +1377,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/assist", "/orders", "/customers", "/suppliers", "/products", "/more", "/account", "/order", "/insights", "/data-health"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/assist", "/orders", "/customers", "/suppliers", "/products", "/more", "/records", "/account", "/order", "/insights", "/data-health"];
 
 /** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
  * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */

@@ -129,7 +129,7 @@ describe("record page reads", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByTestId("stale-page")).toBeInTheDocument();
     expect(screen.getByTestId("object-title")).toHaveTextContent("old");
-    expect(screen.getByTestId("stale-page")).toHaveTextContent("come back to this window");
+    expect(screen.getByTestId("stale-page")).toHaveTextContent("Last updated");
     await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(objectReads(f)).toBe(1);   // no timed re-read
     await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(0); });

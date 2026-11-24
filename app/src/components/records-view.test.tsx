@@ -73,9 +73,10 @@ describe("Records page", () => {
     expect(nav.push).toHaveBeenCalledWith("/account?kind=supplier&handle=sup-1");
   });
 
-  it("an empty search box says what to type, and a kind's tab lists its newest records", async () => {
+  it("an empty search box is labelled with what to type, and a kind's tab lists its newest records", async () => {
     render(<RecordsPage />);
-    expect(screen.getByTestId("records-empty-help")).toHaveTextContent("Type a name or a number above");
+    expect(screen.getByText("Find a name or number")).toBeTruthy();
+    expect(screen.queryByTestId("records-empty-help")).toBeNull();
     nav.params = new URLSearchParams("kind=orders");
     render(<RecordsPage />);
     await waitFor(() => expect(api.list).toHaveBeenCalledWith("purchase_orders", expect.anything(), expect.anything()));

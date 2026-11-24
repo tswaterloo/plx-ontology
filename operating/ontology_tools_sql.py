@@ -87,10 +87,9 @@ MEANING_EXTRA = 5
 ATTACH_EXTRA = 5
 # the attachment passes run beside their word searches (``_comms_search``)
 _ATTACH_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-attach")
-# the meaning ranking's best objects read for it
-MEANING_K = 40
-# the ranking's rows are read ahead for this many of its objects (the gate keeps MEANING_K)
-MEANING_READ_K = 80
+# (no count of the meaning ranking's objects is cut here: every object the ranking names
+# is read and streamed by cursor; the ranking's own pool is ``plug.POOL_K``, said in the
+# result)
 # a plx.search hit list's most (its contract's maxItems)
 HITS_MAX = 50
 # Ask's reads have no time limit (no cut-offs): a statement,
@@ -262,19 +261,21 @@ class SqlTool:
             if "scope" in found:   # one statement per kind joined: the generic line would read as one filter
                 found["scope"] = name_finder.scope(args["names"], found.get("scope"))
             return found
-        modes = [k for k in ("sql", "describe", "measure", "page", "chain") if k in args]
+        modes = [k for k in ("sql", "describe", "measure", "page", "chain", "record") if k in args]
         loose = [k for k in ("by", "days", "compare", "period", "against", "filter",
                              "unusual", "forecast", "parameters", "why") if k in args]
         chained = [k for k in ("hops", "party", "type") if k in args]
         if unknown or len(modes) != 1 or (loose and modes != ["measure"]) \
-                or (chained and modes != ["chain"]) \
+                or (chained and modes not in (["chain"], ["record"])) \
+                or ("hops" in args and modes != ["chain"]) \
                 or (("offset" in args or "column" in args or "from" in args)
                     and modes != ["page"]) or ("from" in args and "column" not in args):
             raise ToolError("invalid_request", "send {\"sql\": \"SELECT ...\"}, "
                             "{\"describe\": true | \"<view>\"}, {\"names\": \"<words>\"} or {\"measure\": true | "
                             "\"<id>\"} or {\"page\": \"sql://<result>\", \"offset\": N} "
                             "(with \"column\": C, \"from\": K for the rest of one long cell) or "
-                            "{\"chain\": \"<record handle or number>\", \"hops\": N} (by, "
+                            "{\"chain\": \"<record handle or number>\", \"hops\": N} or "
+                            "{\"record\": \"<record handle or number>\"} (by, "
                             "days, period, against, compare, filter, unusual and forecast go "
                             "with measure only; hops, party and type with chain only; offset "
                             "with page only)")
@@ -283,6 +284,13 @@ class SqlTool:
                               args.get("column"), args.get("from", 0))
         if "measure" in args:
             return self._measure(args, actor)
+        if "record" in args:
+            if _ceiling() is not None:
+                raise ToolError("not_ready", "a record's card is not read as of a past moment: "
+                                "read it with a statement")
+            from operating import ontology_tools_card
+            conn, scope = self._reader(actor)
+            return ontology_tools_card.card(self, conn, scope, actor, args)
         if "chain" in args:
             if _ceiling() is not None:
                 raise ToolError("not_ready", "a chain is not read as of a past moment: "
@@ -751,7 +759,8 @@ class SqlTool:
                     rest=meaning_rest)
             if "pos" in meaning_rest:
                 # rows close in meaning past the ones shown: their own stream, by cursor
-                meaning_next = cs.meaning_cursor(few, meaning_rest["pos"])
+                meaning_next = cs.meaning_cursor(few, meaning_rest["pos"],
+                                                 meaning_rest.get("words_only", False))
             documents += cs.hits(extra, words=words, party_=who)
             for hit, (held, near) in zip(documents[len(rows):], how or []):
                 hit["match"] = held
@@ -766,6 +775,10 @@ class SqlTool:
                         "match did not list, each with its match")
                 if meaning_next:
                     says += "; the rest of those continue by the cursor in completeness.continue"
+                if ranking is not None:
+                    from operating.search import plug as _plug
+                    says += (f" (the meaning ranking names its {_plug.POOL_K} nearest "
+                             "objects: those are all it holds)")
                 searched["widened"] = "; ".join(filter(None, (searched.get("widened"), says)))
         # a participant's search: the pass needs the party ``search_rows`` resolved, so it
         # runs after the word search (as before the parallel pass), bound to that party
@@ -883,7 +896,7 @@ class SqlTool:
         reader, the dates and the party are the first page's, sent again. A ranking that
         cannot be had now is an error (never an empty page that says the stream ended)."""
         from operating.pg import comms_search as cs
-        few, pos = after
+        few, pos, words_only = after
         if not words:
             raise ToolError("invalid_input", "not a cursor of this search")
         who = None
@@ -894,8 +907,10 @@ class SqlTool:
                 who = self._comms_scoped(conn, settings, bind, actor)
             except cs.SearchInputError as exc:
                 raise ToolError("invalid_input", str(exc)) from None
-        ranking = self._meaning_started(args["query"], actor, wanted)
-        if ranking is None:
+        # a stream of rows holding some of the words (``:w``, the first page had no ranking)
+        # needs none; a stream by meaning needs the ranking again, said when it is not had
+        ranking = None if words_only else self._meaning_started(args["query"], actor, wanted)
+        if ranking is None and not words_only:
             raise ToolError("not_ready", "the meaning ranking is not available now")
 
         def views_of(pg: Any, *_: Any) -> list[str]:
@@ -916,7 +931,8 @@ class SqlTool:
                 "gaps": [],
                 "completeness": {"complete": not more, "truncated": more,
                                  "returned": len(documents),
-                                 "next_cursor": cs.meaning_cursor(few, rest["pos"])
+                                 "next_cursor": cs.meaning_cursor(
+                                     few, rest["pos"], rest.get("words_only", False))
                                  if more else None,
                                  **({"reason": "page_cap"} if more else {})}}
 
@@ -1033,7 +1049,7 @@ class SqlTool:
         raw = ranking.result()
         everyone = [h["object_id"] for h in getattr(raw, "hits", None) or ()
                     if isinstance(h, Mapping) and isinstance(h.get("object_id"), str)]
-        everyone = list(dict.fromkeys(everyone))[:MEANING_READ_K]
+        everyone = list(dict.fromkeys(everyone))   # every object the ranking names
         if not everyone:
             return raw, []
 
@@ -1081,7 +1097,7 @@ class SqlTool:
                 with phase("comms.meaning_wait"):
                     raw, read_ahead = meaning.result()
                 ranked = plug._gated(raw, self.base.policy, actor, self.base._item_allowed)
-                ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
+                ids = [h["object_id"] for h in ranked.hits]
             except Exception:  # noqa: BLE001 - late or failed: the words answer alone
                 meaning.cancel()
                 ranking.cancel()
@@ -1091,29 +1107,41 @@ class SqlTool:
                 with phase("comms.meaning_wait"):
                     raw = ranking.result()
                 ranked = plug._gated(raw, self.base.policy, actor, self.base._item_allowed)
-                ids = [h["object_id"] for h in ranked.hits][:MEANING_K]
+                ids = [h["object_id"] for h in ranked.hits]
             except Exception:  # noqa: BLE001 - late or failed: the words answer alone
                 ranking.cancel()
                 ids = []
         any_q = cs.tsquery_any(query) if few and not ids else None
         if any_q is None and not ids:
             return [], None
-        k = 3 * room + len(seen) + 1
+        n = len(set(w.casefold() for w in words))
 
-        def work(pg: Any) -> list[Any]:
+        def search(pg: Any, qq: str, k: int) -> list[Any]:
+            """The word search's rows for the tsquery ``qq`` through the guarded views."""
+            side = cs.sidecar(pg)
+            sql = cs.search_sql(views, guarded=guarded, biz=bv.SCHEMA, query=True,
+                                party_kind=who.kind if who else None,
+                                since=since is not None, until=until is not None,
+                                cursor=False, side=frozenset(side),
+                                direct=cs.direct_reads(pg, qq, views, side, biz=bv.SCHEMA))
+            return pg.execute(sql, {
+                "q": qq, "party": who.value if who else None, "since": since,
+                "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
+                "walk": cs.walk_rows(pg, qq),
+                **{n: v for one in side.values() for n, v in one.items()}}).fetchall() \
+                if sql else []
+
+        def work(pg: Any, k: int) -> Any:
             some: list[Any] = []
+            listed: set[str] = set()
             if any_q is not None:
-                side = cs.sidecar(pg)
-                sql = cs.search_sql(views, guarded=guarded, biz=bv.SCHEMA, query=True, party_kind=who.kind if who else None,
-                                    since=since is not None, until=until is not None,
-                                    cursor=False, side=frozenset(side),
-                                    direct=cs.direct_reads(pg, any_q, views, side,
-                                                           biz=bv.SCHEMA))
-                some = pg.execute(sql, {
-                    "q": any_q, "party": who.value if who else None, "since": since,
-                    "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
-                    "walk": cs.walk_rows(pg, any_q),
-                    **{n: v for one in side.values() for n, v in one.items()}}).fetchall() if sql else []
+                some = search(pg, any_q, k)
+                # the rows the word list holds (every word as typed), read by SQL as the first
+                # page reads them: they are no row of this stream, on any page (every AND
+                # match of the window is among the k newest of its own read, as it is of this
+                # one). A row holding every word by its STEM is a row of the stream: page 1
+                # may show it too (said, KNOWN-GAPS A18), it is never skipped.
+                listed = {r[1] for r in search(pg, cs.tsquery(query), k)}
             near: list[Any] = []
             if ids and read_ahead is not None:
                 # read ahead for every ranked object; kept: the ones the gate passed
@@ -1127,54 +1155,69 @@ class SqlTool:
                     "q_all": cs.tsquery(query),
                     "party": who.value if who else None, "since": since,
                     "until": until}).fetchall() if sql else []
-            return some, near
-        if any_q is None and read_ahead is not None:
-            some, near = work(None)   # nothing left to read
-        else:
-            with phase("comms.widen_sql"):
-                some, near = self._comms_scoped(conn, settings, work, actor)
+            return some, near, listed
         rank = {i: n for n, i in enumerate(ids, start=1)}
-        found: dict[str, dict[str, Any]] = {}
-        for at, row in enumerate(some):
-            if row[1] not in seen:
-                found.setdefault(row[1], {"row": row, "order": at,
-                                          "held": max(1, cs.words_held(row, words))})
-        for row in near:
-            # a row the word search matches is on this page or a later one: never here
-            # too (a full page's extra came back on the next page)
-            if row[-1] not in rank or row[-2]:
-                continue
-            got = found.setdefault(row[1], {"row": row, "order": len(some),
-                                            "held": cs.words_held(row, words)})
-            got["meaning"] = min(got.get("meaning", 10 ** 6), rank[row[-1]])
-        n = len(set(w.casefold() for w in words))
-        # few: most words held first; else the word match already lists rows holding
-        # every word, so the rows that do not (a synonym, "Oral Rinse") come first
-        ordered = sorted(found.values(), key=lambda f: (
-            (-(f["held"] + (1 if "meaning" in f else 0)) if few else f["held"] >= n),
-            f.get("meaning", 10 ** 6), f["order"]))
-        kept: list[Any] = []
-        how: list[tuple[str, Any]] = []
 
-        def takable(f: dict[str, Any]) -> bool:
-            row = f["row"]
+        def takable(row: Any) -> bool:
             return row[1] not in seen and not (
                 row[0] in cs.SEARCH_ONLY and not self.base._item_allowed(actor, row[1]))
-        for place in range(skip, len(ordered)):
-            f = ordered[place]
-            if len(kept) >= room:
-                # a row the page had no room for: the stream goes on from here
-                if rest is not None and ids and takable(f):
-                    rest["pos"] = place
-                    break
-                continue
-            if not takable(f):
-                continue
-            row = f["row"]
-            kept.append(row)
-            how.append((", ".join(
-                ([f"{min(f['held'], n)} of {n} words"] if f["held"] else [])
-                + (["close in meaning"] if "meaning" in f else [])), f.get("meaning")))
+
+        # The any-word read (no ranking) is a stream NEWEST FIRST that grows with the place
+        # asked for: rows past ``room`` are a continuation (``rest``), never dropped, and the
+        # read widens (k doubles) until ``room`` rows are taken or every view is exhausted.
+        # Rows holding every word as typed (``listed``, by SQL) are the word list's, not this stream's.
+        k = skip + 3 * room + len(seen) + 1
+        while True:
+            if any_q is None and read_ahead is not None:
+                some, near, listed = work(None, k)   # nothing left to read
+            else:
+                with phase("comms.widen_sql"):
+                    some, near, listed = self._comms_scoped(
+                        conn, settings, lambda pg, k=k: work(pg, k), actor)
+            found: dict[str, dict[str, Any]] = {}
+            for at, row in enumerate(some):
+                if row[1] not in listed:   # one list on every page: a place means one row
+                    found.setdefault(row[1], {"row": row, "order": at,
+                                              "held": max(1, cs.words_held(row, words))})
+            for row in near:
+                # a row the word search matches is on this page or a later one: never here
+                # too (a full page's extra came back on the next page)
+                if row[-1] not in rank or row[-2]:
+                    continue
+                got = found.setdefault(row[1], {"row": row, "order": len(some),
+                                                "held": cs.words_held(row, words)})
+                got["meaning"] = min(got.get("meaning", 10 ** 6), rank[row[-1]])
+            # ranked: the word match already lists rows holding every word, so the rows
+            # that do not (a synonym, "Oral Rinse") come first, then the meaning rank; the
+            # any-word read alone: newest first (a stable order the stream can resume in)
+            ordered = sorted(found.values(), key=(lambda f: (
+                (-(f["held"] + (1 if "meaning" in f else 0)) if few else f["held"] >= n),
+                f.get("meaning", 10 ** 6), f["order"])) if ids else (lambda f: f["order"]))
+            kept: list[Any] = []
+            how: list[tuple[str, Any]] = []
+            more_at = None
+            for place in range(skip, len(ordered)):
+                f = ordered[place]
+                if len(kept) >= room:
+                    # a row the page had no room for: the stream goes on from here
+                    if rest is not None and takable(f["row"]):
+                        more_at = place
+                        break
+                    continue
+                if not takable(f["row"]):
+                    continue
+                row = f["row"]
+                kept.append(row)
+                how.append((", ".join(
+                    ([f"{min(f['held'], n)} of {n} words"] if f["held"] else [])
+                    + (["close in meaning"] if "meaning" in f else [])), f.get("meaning")))
+            exhausted = any_q is None or len(some) < k
+            if more_at is not None and rest is not None:
+                rest["pos"] = more_at
+                rest["words_only"] = not ids
+            if more_at is not None or exhausted or (rest is None and len(kept) >= room):
+                break
+            k *= 2   # the read was cut at k and nothing past the page is seen yet: read on
         return kept, how
 
     def _files_reader(self, actor: Any) -> bool:
@@ -1751,6 +1794,9 @@ class SqlTool:
             "partial": bool(withheld), "withheld": withheld,
             # where the rows were read and as of when (the standby's replay time)
             "data_as_of": read_at}
+        told = self._meanings(views, cols, actor)
+        if told:
+            out["meanings"] = told
         if sources:
             out["sources"] = len(sources)
         if truncated:
@@ -1763,6 +1809,39 @@ class SqlTool:
                            "columns or a filter past the last row shown")
         if cut_cells:
             out["cells_cut"] = cut_cells
+        return out
+
+    # a column's meaning is told once to a reader in this window, then left out
+    MEANING_WINDOW = 30 * 60
+    _told: dict[tuple[str, str, str], float] = {}
+    _told_lock = threading.Lock()
+
+    def _meanings(self, views: Sequence[str], cols: Sequence[str], actor: Any) -> dict[str, str]:
+        """What the result's columns mean, from the views' own documentation (the same text
+        ``describe`` gives), for each column the reader was not told lately: a column read
+        from one of ``views`` by its name. Nothing here reads data: a view or column the
+        documentation does not hold has no meaning shown (never a guessed one)."""
+        try:
+            doc = _dictionary()
+        except Exception:  # noqa: BLE001 - documentation unreadable: said, the result stands
+            logging.getLogger(__name__).warning("column meanings unavailable", exc_info=True)
+            return {}
+        who, now, out = _actor_key(actor), time.monotonic(), {}
+        with self._told_lock:
+            for col in cols:
+                for view in views:
+                    text = (doc.get(view) or {}).get("columns", {}).get(col)
+                    if text is None:
+                        continue
+                    key = (who, view, col)
+                    if len(self._told) > 50_000:   # expired entries go (a session window)
+                        for old in [k for k, t in self._told.items()
+                                    if now - t > self.MEANING_WINDOW]:
+                            del self._told[old]
+                    if now - self._told.get(key, -1e9) > self.MEANING_WINDOW:
+                        out.setdefault(col, text)
+                        self._told[key] = now
+                    break
         return out
 
     # ------------------------------------------------------------------ describe
@@ -1856,9 +1935,11 @@ class SqlTool:
         reader's role may not read it. Never a live scan."""
         try:
             with pg.transaction():
+                # the counts view (no business values: 0069, 0079) is what this role may read
                 got = pg.execute(
-                    f'SELECT "column", fill, distinct_n, cut_share, measured_at FROM '
-                    f"{bv.SCHEMA}.column_health WHERE view = %s ORDER BY 1", (view,)).fetchall()
+                    'SELECT "column", fill, distinct_n, cut_share, measured_at, kind, '
+                    f"top_share, range_min, range_max FROM {bv.SCHEMA}.column_health_counts "
+                    "WHERE view = %s ORDER BY 1", (view,)).fetchall()
         except Exception as exc:  # noqa: BLE001 - said in the result, never a live scan
             logging.getLogger("operating.ontology_tools_sql").info(json.dumps(
                 {"describe_health_unavailable": type(exc).__name__}))
@@ -1867,10 +1948,22 @@ class SqlTool:
         if not got:
             return {"columns": [], "note": "how full each column is has not been measured "
                     "for this view yet"}
-        return {"columns": [{"column": c, "fill": None if f is None else round(float(f), 4),
-                             "distinct": d, "cut_share": None if k is None else round(
-                                 float(k), 4), "measured": str(at)[:10]}
-                            for c, f, d, k, at in got],
+
+        def fact(c: str, f: Any, d: Any, k: Any, at: Any, kind: Any, share: Any, lo: Any,
+                 hi: Any) -> dict[str, Any]:
+            out = {"column": c, "fill": None if f is None else round(float(f), 4),
+                   "distinct": d, "cut_share": None if k is None else round(float(k), 4),
+                   "measured": str(at)[:10]}
+            if kind:
+                out["kind"] = kind
+            if share is not None:
+                # the share of filled rows holding the commonest value: near 1 = one value
+                # (a stamp, a default) fills the column
+                out["commonest_share"] = round(float(share), 4)
+            if lo is not None or hi is not None:
+                out["range"] = [lo, hi]   # a date column's earliest and latest
+            return out
+        return {"columns": [fact(*row) for row in got],
                 "note": "measured by the last refresh on a 2% sample of the rows"}
 
     def _describe_type(self, what: str, actor: Any, doc: dict[str, Any]) -> dict[str, Any]:

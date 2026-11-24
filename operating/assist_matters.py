@@ -917,12 +917,14 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False,
     draft = (prepared or {}).get("draft") if isinstance(prepared, Mapping) else None
     act = ACT_WORDS.get(row["next_act"] or "", "")
     note = row["detail"] or act
+    drafting = False
     if row["state"] == "unverified":
         note = f"This {UNVERIFIED_WORDS} ({row['verify_note']})."
     elif (row.get("requested_at") is not None and row["requested_at"] > (
             row.get("plan_at") or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
             and row["plan_status"] in ("none", "deferred", "failed")):
         note = "Drafting. It shows here when it is ready."     # asked for, not yet answered
+        drafting = True
     elif row["plan_status"] == "failed":
         note = (f"The draft could not be prepared ({row['plan_reason'].split(':', 1)[0]}). "
                 "Ask for it again.")
@@ -931,10 +933,10 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False,
     now = now or dt.datetime.now(dt.timezone.utc)
     from operating import assist_activity
     silent = assist_activity.still_open(row["due_at"], row.get("touched_at"), row["basis_at"], now)
-    if silent:            # nothing has happened on it since it was due: the person is asked
+    if silent and not drafting:   # nothing since it was due (a draft just asked for is the person acting)
         note = f"Still open? Nothing has happened on it since it was due {row['due_at']:%Y-%m-%d}. {note}"
     if mark_unshown:
-        note = f"{note} (not shown to staff)"
+        note = f"{note} Only you can see this."
     body = str((draft or {}).get("body") or "") if isinstance(draft, Mapping) else ""
     call = (prepared or {}).get("your_call") if isinstance(prepared, Mapping) else None
     ask = str(call.get("ask") or "") if isinstance(call, Mapping) else ""
@@ -949,7 +951,7 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False,
         # a matter made from a queue item is listed as that item's own card
         "queue_card": bool(row["legacy_item_id"]),
         "state": row["state"], "verified_at": row["verified_at"],
-        "plan_status": "working" if note.startswith("Drafting.") else row["plan_status"],
+        "plan_status": "working" if drafting else row["plan_status"],
         "plan_reason": row["plan_reason"], "basis_at": row["basis_at"], "due_at": row["due_at"],
         "audiences": list(row["audiences"] or []), "markings": list(row["markings"] or []),
         "citations": sorted(set(row["handles"] or [])

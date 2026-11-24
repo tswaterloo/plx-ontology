@@ -112,13 +112,43 @@ describe("AskBox autocomplete", () => {
     expect(push).toHaveBeenCalledTimes(2);
   });
 
-  it("says when a word names no record, and opens the list above a box at the bottom", async () => {
+  it("says nothing when a word names no record (a question is not a record search), and opens the list above a box at the bottom", async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ ...SUGGESTIONS, suggestions: [] }), { status: 200 }));
     render(<AskBox onSubmit={vi.fn()} dropUp />);
-    type(screen.getByRole("combobox"), "did imcd confirm the liponate");
+    type(screen.getByRole("combobox"), "you can see the notes from last time probably in my email");
     await flush();
-    expect(screen.getByTestId("no-record").textContent).toContain("liponate");
+    expect(screen.queryByText(/No record is named/)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByTestId("suggestions").className).toContain("bottom-full");
+  });
+
+  it("a question typed while an answer is being written waits, shows as next, and is asked when the answer ends", async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ ...SUGGESTIONS, suggestions: [] }), { status: 200 }));
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    const { rerender } = render(<AskBox onSubmit={onSubmit} busy onStop={onStop} />);
+    const box = screen.getByRole("combobox") as HTMLTextAreaElement;
+    expect(screen.getByRole("button", { name: "Stop answering" })).toBeInTheDocument();
+    type(box, "and the one before that?");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(box.value).toBe("");
+    expect(screen.getByTestId("ask-queued").textContent).toContain("and the one before that?");
+    rerender(<AskBox onSubmit={onSubmit} busy={false} onStop={onStop} />);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit.mock.calls[0][0]).toBe("and the one before that?");
+    expect(screen.queryByTestId("ask-queued")).toBeNull();
+  });
+
+  it("a waiting question can be cancelled", async () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(<AskBox onSubmit={onSubmit} busy onStop={vi.fn()} />);
+    const box = screen.getByRole("combobox") as HTMLTextAreaElement;
+    type(box, "never mind");
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    rerender(<AskBox onSubmit={onSubmit} busy={false} onStop={vi.fn()} />);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("picks with the keyboard (Tab), inserts the label and sends it as a pinned entity", async () => {

@@ -47,8 +47,8 @@ describe("Team dashboard", () => {
     // every row has as many cells as the header has columns
     const cols = within(table).getAllByRole("columnheader").filter((th) => th.closest("tr") === table.querySelectorAll("thead tr")[1]).length;
     for (const r of screen.getAllByTestId("team-row")) expect(r.querySelectorAll("td")).toHaveLength(cols);
-    // one sentence on what the table is for
-    expect(screen.getByTestId("team-intro").textContent).toMatch(/^What each person sent and did over the period/);
+    // the page title line says what the table is for: the dashboard does not say it again
+    expect(screen.queryByTestId("team-intro")).toBeNull();
     fireEvent.click(within(table).getByText("Person"));
     expect(names()).toEqual(["Avery Lindqvist", "Bea Okafor", "Cal Mendes"]);
     fireEvent.click(within(table).getByText("Median"));

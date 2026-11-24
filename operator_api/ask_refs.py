@@ -36,6 +36,7 @@ from . import ask_patch  # noqa: F401  (patches)
 
 TZ = ZoneInfo("America/New_York")
 SQL_TOOL = "plx.sql"
+DOC_TOOL = "plx.read_document"   # a table:true read is a result too (doc://<id>)
 # tools whose results back a typed figure (their text, cells and profiles)
 EVIDENCE_TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document", "plx.insight",
                   "plx.my_work", "plx.my_open_work")
@@ -43,7 +44,7 @@ EVIDENCE_TOOLS = ("plx.sql", "plx.search", "plx.open", "plx.read_document", "plx
 _REF = re.compile(r"\{\{(.*?)\}\}", re.S)
 _FENCE = re.compile(r"(```.*?(?:```|$))", re.S)
 _OPEN_TAIL = re.compile(r"\{\{(?:(?!\}\}).)*$", re.S)
-_RID = r"sql://[0-9a-f]{20}"
+_RID = r"(?:sql|doc)://[0-9a-f]{20}"
 _COL = r'(?:"[^"]{1,63}"|[A-Za-z0-9_?][A-Za-z0-9_?]{0,62})'
 _TOKEN = re.compile(
     rf"\s*(?:(?P<cell>{_RID}#row=(?P<row>[0-9]{{1,5}})\.(?P<ccol>{_COL}))"
@@ -142,11 +143,13 @@ def results(events: Sequence[Mapping[str, Any]]) -> dict[str, Result]:
     out: dict[str, Result] = {}
     for event in events:
         if event.get("type") != "tool_call" or event.get("is_error") \
-                or str(event.get("name") or "") != SQL_TOOL:
+                or str(event.get("name") or "") not in (SQL_TOOL, DOC_TOOL):
             continue
         got = _parsed(event.get("result"))
         if not isinstance(got, Mapping) or not isinstance(got.get("result"), str) \
                 or got.get("error"):
+            continue
+        if str(event.get("name")) == DOC_TOOL and not got["result"].startswith("doc://"):
             continue
         rid = got["result"]
         kept = out.setdefault(rid, Result(list(got.get("columns") or [])))
@@ -643,6 +646,7 @@ class Rendered:
     text: str
     bad: list[str]       # references that did not resolve, with why
     untraced: list[str]  # typed figures no result or the person's words hold
+    working: list[str] = field(default_factory=list)   # each printed figure and where it came from
 
 
 def render(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] = (),
@@ -651,23 +655,60 @@ def render(text: str, events: Sequence[Mapping[str, Any]], asked: Sequence[str] 
     """``text`` with every reference printed by the host. ``partial`` (a stream still
     being written): an unclosed reference at the end is held back, never shown half."""
     today = today or dt.datetime.now(TZ).date()
-    printed, bad = print_refs(text, events, today, partial=partial)
+    sums: list[str] = []
+    printed, bad = print_refs(text, events, today, partial=partial, working=sums)
     # typed figures are read on the text outside the references (what the host printed
     # is the results' own)
     outside = _REF.sub(" ", text)
     back = back or backing(events, asked, files, today)
-    return Rendered(printed, bad, typed(outside, back))
+    return Rendered(printed, bad, typed(outside, back), sums)
+
+
+def source_of(body: str, found: Mapping[str, "Result"], events: Sequence[Mapping[str, Any]]
+              ) -> str:
+    """What the results a reference reads are: a document table by its document and sheet
+    (``plx.read_document`` table:true), a statement result by its first statement words."""
+    out = []
+    for rid in dict.fromkeys(re.findall(_RID, body)):
+        label = rid
+        for event in events:
+            if event.get("type") != "tool_call" or event.get("is_error"):
+                continue
+            got = _parsed(event.get("result"))
+            if not isinstance(got, Mapping) or got.get("result") != rid:
+                continue
+            doc = got.get("document")
+            if isinstance(doc, Mapping):
+                args = event.get("arguments") if isinstance(event.get("arguments"), Mapping) \
+                    else {}
+                again = {k: v for k, v in args.items() if k in (
+                    "citation", "member", "sheet", "header_row", "where")}
+                label = (f"document {_plain(got.get('name')) or doc.get('citation')}, sheet "
+                         f"{doc.get('sheet')} ({got.get('row_count')} rows; read again with "
+                         f"plx.read_document table:true {json.dumps(again, default=str)})")
+            else:
+                args = event.get("arguments") if isinstance(event.get("arguments"), Mapping) \
+                    else {}
+                sql = " ".join(str(args.get("sql") or "").split())
+                label = f"the statement {sql}" if sql else f"result {rid}"
+            break
+        out.append(label)
+    return "; ".join(out) or "the numbers written in the expression"
 
 
 def print_refs(text: str, events: Sequence[Mapping[str, Any]],
                today: Optional[dt.date] = None, *, partial: bool = False,
                results_only: bool = False,
-               found: Optional[Mapping[str, "Result"]] = None) -> tuple[str, list[str]]:
+               found: Optional[Mapping[str, "Result"]] = None,
+               working: Optional[list[str]] = None) -> tuple[str, list[str]]:
     """(``text`` with every reference printed from the session's results, the references
     that did not resolve with why): the one renderer of every session given the Ask's
     prompt (the Ask, autopilot drafts, jobs and the assistant, made documents).
     ``results_only``: only references to a result (``sql://``) are printed; any other
-    double-brace text is left as written (a template's ``{{po_number}}`` field)."""
+    double-brace text is left as written (a template's ``{{po_number}}`` field).
+    ``working`` (a list the caller keeps): each printed reference as "expression = value,
+    from <what the result is>", so a figure the host computed can be checked by hand
+    (``source_of``), once per distinct expression."""
     today = today or dt.datetime.now(TZ).date()
     found = results(events) if found is None else found   # ``found``: read once by the caller
     if partial:
@@ -680,12 +721,18 @@ def print_refs(text: str, events: Sequence[Mapping[str, Any]],
             continue
         last = 0
         for m in _REF.finditer(part):
-            if results_only and "sql://" not in m.group(1):
+            if results_only and not re.search(r"(?:sql|doc)://", m.group(1)):
                 continue
             pieces.append(part[last:m.start()])
             last = m.end()
             try:
-                pieces.append(evaluate(m.group(1), found, today))
+                shown = evaluate(m.group(1), found, today)
+                pieces.append(shown)
+                if working is not None:
+                    line = f"{' '.join(m.group(1).split())} = {shown}, from " \
+                           + source_of(m.group(1), found, events)
+                    if line not in working:
+                        working.append(line)
             except RefError as exc:
                 bad.append(f"{{{{{m.group(1).strip()}}}}}: {exc}")
                 pieces.append("[?]")

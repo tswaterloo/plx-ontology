@@ -163,7 +163,7 @@ export default function TrustRoute() {
                 <li>{alertsSentence(alerts.on.length, alerts.off.length, alerts.unmeasured.length, (page.alerts ?? []).length)}</li>
                 <li>{autopilotSentence(rows)}</li>
               </ul>
-              <p className="mt-2 text-[12px] text-muted">Checked {eastern(page.checked_at)}. Counts and times only; each figure comes from where it is kept.</p>
+              <p className="mt-2 text-[12px] text-muted">Checked {eastern(page.checked_at)}.</p>
             </div>
 
             <section aria-labelledby="trust-state">
@@ -211,10 +211,10 @@ export default function TrustRoute() {
 
             <section aria-labelledby="trust-answers">
               <h2 id="trust-answers" className="text-[13px] font-semibold">Answer quality</h2>
-              <p className="text-[12px] text-muted">Latest run per question set. Held-out questions were never used to tune the answers.</p>
+              <p className="text-[12px] text-muted">Latest result per question set. Held-out questions were never used to tune the answers.</p>
               {(page.answers ?? []).length === 0 ? (
                 <p className="mt-1 text-[13px] text-muted" data-testid="trust-answers-empty">
-                  Not measured yet: no evaluation run has recorded its score on this server.
+                  Not measured yet.
                 </p>
               ) : (
                 <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-answers">

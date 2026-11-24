@@ -814,6 +814,10 @@ class AnswerPayload(_Model):
         default_factory=list, json_schema_extra=_optional,
         description="Figures, dates or record numbers in the answer that no result of its "
                     "own (nor the person's words) holds (Ask plan A2c).")
+    working: list[str] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Each figure the host computed for the answer, as 'expression = value, "
+                    "from <the result>', so it can be checked by hand (Ask plan 16 M6).")
     check: Optional["AnswerCheck"] = Field(
         None, json_schema_extra=_optional,
         description="The second check of the answer against the database (Ask plan A4).")
@@ -1026,8 +1030,31 @@ class LatePo(_Model):
                     "cannot be tied to this order. confirmed: a settled confirmation is "
                     "linked. Null: the list's entry does not say (the order's page decides "
                     "it).")
+    stale: bool = Field(False, json_schema_extra=_optional, description="True for an order in the 'probably closed or missed "
+                        "in the data' group: very late and nothing shows it alive since its "
+                        "needed-by date.")
     open_url: str
     sources: list[Source] = Field(default_factory=list)
+
+
+class PoClosure(_Model):
+    """Whether a person closed this purchase order in the Workbench (never in the source system),
+    who, when and why, and what showed up after (it never reopens by itself)."""
+    closed: bool
+    reason: Optional[str] = None
+    by: Optional[str] = None
+    at: Optional[str] = None
+    new_since: list[str] = Field(default_factory=list, json_schema_extra=_optional,
+                                 description="Plain words for each new receipt or message "
+                                             "after the close.")
+
+
+class PoCloseRequest(_Model):
+    handle: Optional[str] = Field(None, description="The order's handle (a late list row's "
+                                  "first source), or its object_id instead.")
+    object_id: Optional[str] = Field(None, description="The order's object id (its page).")
+    reason: Optional[str] = Field(None, description="Why: received, cancelled, wrong data, or "
+                                                    "your own words.")
 
 
 class AtRisk(_Model):
@@ -1050,6 +1077,10 @@ class NeedsAttention(_Model):
         None, json_schema_extra=_optional,
         description="Every late purchase order this reader may see; late_pos lists the "
                     "longest late of them.")
+    stale_total: Optional[int] = Field(
+        None, json_schema_extra=_optional,
+        description="Late orders in the 'probably closed or missed in the data' group; not in "
+                    "late_total or late_pos (the late list shows them).")
     at_risk_total: Optional[int] = Field(
         None, json_schema_extra=_optional,
         description="Every open alert of the at-risk types this reader may read; at_risk "
@@ -1075,6 +1106,10 @@ class LateList(_Model):
     more: bool = False
     next_offset: int = Field(0, ge=0, description="Where the next page starts: past every "
                              "order this page read, shown or left out (stable paging).")
+    stale_total: Optional[int] = Field(
+        None, json_schema_extra=_optional,
+        description="How many more late orders are in the 'probably closed or missed in the "
+                    "data' group (asked with stale=true); never hidden.")
     as_of: Optional[str] = None
     stale_since: Optional[str] = Field(
         None, json_schema_extra=_optional,

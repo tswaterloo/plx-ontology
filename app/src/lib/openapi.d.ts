@@ -1824,8 +1824,10 @@ export type paths = {
         };
         /**
          * Late List
-         * @description Every late purchase order you may see, a page at a time, longest late first
-         *     (Home shows the first ones: "show all").
+         * @description Every late purchase order you may see that is neither closed nor probably closed, a
+         *     page at a time, longest late first (Home shows the first ones: "show all").
+         *     ``stale=true``: the very late ones that show no sign of life instead (probably closed
+         *     or missed in the data).
          */
         get: operations["late_list_api_late_get"];
         put?: never;
@@ -2290,6 +2292,69 @@ export type paths = {
          *     ran (refused when the system has none or someone changed it since).
          */
         post: operations["prepared_undo_api_prepared__prepared_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/purchase-orders/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Po Close
+         * @description Close a purchase order you may see, for everyone, in the Workbench only (nothing is
+         *     written to Business Central, the Portal or Sage). It leaves every late list and count;
+         *     undo it with ``/api/purchase-orders/reopen``.
+         */
+        post: operations["po_close_api_purchase_orders_close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/purchase-orders/closure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Po Closure
+         * @description Whether a person closed this purchase order in the Workbench, who, when and why, and
+         *     any receipt or message that arrived after.
+         */
+        get: operations["po_closure_api_purchase_orders_closure_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/purchase-orders/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Po Reopen
+         * @description Undo a close: the order is back in the late lists if it is still late.
+         */
+        post: operations["po_reopen_api_purchase_orders_reopen_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3807,6 +3872,11 @@ export type components = {
              * @description Figures, dates or record numbers in the answer that no result of its own (nor the person's words) holds (Ask plan A2c).
              */
             untraced?: string[];
+            /**
+             * Working
+             * @description Each figure the host computed for the answer, as 'expression = value, from <the result>', so it can be checked by hand (Ask plan 16 M6).
+             */
+            working?: string[];
         };
         /** ApprovalGroup */
         ApprovalGroup: {
@@ -9400,6 +9470,11 @@ export type components = {
              * @description Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.
              */
             stale_since?: string | null;
+            /**
+             * Stale Total
+             * @description How many more late orders are in the 'probably closed or missed in the data' group (asked with stale=true); never hidden.
+             */
+            stale_total?: number | null;
             /** Total */
             total: number;
         };
@@ -9433,6 +9508,11 @@ export type components = {
             reason: string;
             /** Sources */
             sources?: components["schemas"]["Source"][];
+            /**
+             * Stale
+             * @description True for an order in the 'probably closed or missed in the data' group: very late and nothing shows it alive since its needed-by date.
+             */
+            stale?: boolean;
             /** Supplier */
             supplier?: string | null;
         };
@@ -10168,6 +10248,11 @@ export type components = {
              */
             refreshing: boolean;
             /**
+             * Stale Total
+             * @description Late orders in the 'probably closed or missed in the data' group; not in late_total or late_pos (the late list shows them).
+             */
+            stale_total?: number | null;
+            /**
              * Status
              * @enum {string}
              */
@@ -10660,6 +10745,44 @@ export type components = {
             status: "draft_not_sent";
             /** Why No Owner */
             why_no_owner?: string | null;
+        };
+        /** PoCloseRequest */
+        PoCloseRequest: {
+            /**
+             * Handle
+             * @description The order's handle (a late list row's first source), or its object_id instead.
+             */
+            handle?: string | null;
+            /**
+             * Object Id
+             * @description The order's object id (its page).
+             */
+            object_id?: string | null;
+            /**
+             * Reason
+             * @description Why: received, cancelled, wrong data, or your own words.
+             */
+            reason?: string | null;
+        };
+        /**
+         * PoClosure
+         * @description Whether a person closed this purchase order in the Workbench (never in the source system),
+         *     who, when and why, and what showed up after (it never reopens by itself).
+         */
+        PoClosure: {
+            /** At */
+            at?: string | null;
+            /** By */
+            by?: string | null;
+            /** Closed */
+            closed: boolean;
+            /**
+             * New Since
+             * @description Plain words for each new receipt or message after the close.
+             */
+            new_since?: string[];
+            /** Reason */
+            reason?: string | null;
         };
         /** PoTrail */
         PoTrail: {
@@ -18756,6 +18879,7 @@ export interface operations {
             query?: {
                 offset?: number;
                 limit?: number;
+                stale?: boolean;
             };
             header?: never;
             path?: never;
@@ -19919,6 +20043,158 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    po_close_api_purchase_orders_close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoCloseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoClosure"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    po_closure_api_purchase_orders_closure_get: {
+        parameters: {
+            query?: {
+                handle?: string | null;
+                object_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoClosure"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    po_reopen_api_purchase_orders_reopen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoCloseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoClosure"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

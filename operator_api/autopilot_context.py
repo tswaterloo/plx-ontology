@@ -409,10 +409,10 @@ JOB_STEPS = 18
 JOB_TURNS = 30
 # the assistant's one session per moment (``operating.autopilot_agent``): it reads the
 # conversation and the records, then prepares the reply, the question or the changes
-AGENT_SECONDS = 360
-AGENT_BUDGET = 300
-AGENT_STEPS = 24
-AGENT_TURNS = 40
+# No deadline, step or turn limit on the session (owner guardrail 1: only a hung process bounds it).
+# A hung session is one whose stream has been silent this long (``agent_session.silence_spawn``:
+# every line the model or a tool result writes starts the clock again); then its whole process group
+# is killed and the matter's result is the typed timeout, never a guessed answer.
 
 
 def readers(path: Any) -> dict[str, dict[str, str]]:
@@ -463,7 +463,8 @@ class Lookup:
 
     def run(self, owner: str, prompt: str, *, tools: Sequence[Any] = (),
             job: bool = False, agent: bool = False,
-            reads: bool = True) -> Optional[tuple[str, list[str]]]:
+            reads: bool = True, lead: str = "",
+            extra_tools: Sequence[Any] = ()) -> Optional[tuple[str, list[str]]]:
         """(the session's final text, the texts the tools returned) or None: no session
         for ``owner`` (not in the readers file, no secret, no host, an unsafe home).
         ``tools``: local tools the session gets beside the read tools (an autopilot job's
@@ -474,6 +475,7 @@ class Lookup:
         ``tools``."""
         import json
         from operating import agent_session, chat_ask_model as cm, model_ledger
+        from operating.reply_drafts import HUNG_SECONDS      # one definition of a hung read
         from operating.card_text import masked_spawn
         from operating.ontology_tools_traverse import FACTS_KEEPER_ENV
         from . import simple_ask
@@ -494,21 +496,24 @@ class Lookup:
         if not reads:
             host = NoReads(host)
         seconds, budget, steps, turns, said = (
-            (AGENT_SECONDS, AGENT_BUDGET, AGENT_STEPS, AGENT_TURNS, agent_system_prompt())
+            (HUNG_SECONDS, None, None, None, agent_system_prompt())
             if agent else (JOB_SECONDS, JOB_BUDGET, JOB_STEPS, JOB_TURNS, job_system_prompt())
             if job else (LOOKUP_SECONDS, LOOKUP_BUDGET, LOOKUP_STEPS, LOOKUP_TURNS,
                          system_prompt()))
         session = agent_session.ClaudeCodeAgent(
             binary=self.binary, model=self.model, timeout=seconds, max_turns=turns,
-            spawn=masked_spawn(_homed(agent_session._spawn, self.home)),
+            spawn=masked_spawn(_homed(
+                agent_session.silence_spawn if agent else agent_session._spawn, self.home)),
             budget_seconds=budget, max_steps=steps, aliases=False,
             end_at_gate=False, prefetch=False, helpers=0,
-            extra_args=["--system-prompt", said])
+            # ``lead``: a prepared session's person block, appended to the system prompt (the
+            # cached prefix: tools, then this, identical for all of the person's matters)
+            extra_args=["--system-prompt", said + ("\n\n" + lead if lead else "")])
         # the Ask's prompt asks for plx.legs and {{...}} references: the session gets the
         # legs tool, its tools print references before they act, its text is printed
         given = session_tools(tools)
         session.local_tools = {**(getattr(session, "local_tools", None) or {}),
-                               **{t.spec["name"]: t for t in given}}
+                               **{t.spec["name"]: t for t in [*given, *extra_tools]}}
         import time
         started = time.monotonic()
         try:
@@ -533,7 +538,7 @@ class Lookup:
             (ran.usage or {}).get("cost_usd_estimate"),
             [{"tool": e.get("name"), "arguments": e.get("arguments"),
               "failed": bool(e.get("is_error"))}
-             for e in ran.events if e.get("type") == "tool_call"])
+             for e in ran.events if e.get("type") == "tool_call"], ran.usage)
         return session_text(ran), looked
 
 

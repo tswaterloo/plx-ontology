@@ -21,7 +21,7 @@ import type { MemoryItem, MemoryItems, MemoryKind } from "@/lib/types";
 import { ShowAll } from "@/components/show-all";
 
 const KINDS: { kind: MemoryKind; title: string; hint: string; example: string }[] = [
-  { kind: "instruction", title: "Standing instructions", hint: "How every answer and draft of yours should go. A sign-off, a greeting or a sentence to leave out applies to your next drafts; who the Autopilot drafts nothing for, and who it copies, apply to its next drafts.", example: "Sign off with Thanks, Ana. Stop drafting replies to news@supplier.com. Always cc ana@company.com on supplier emails." },
+  { kind: "instruction", title: "Standing instructions", hint: "How your answers and drafts should go: sign-offs, greetings, who to copy, who not to draft for.", example: "Sign off with Thanks, Ana. Stop drafting replies to news@supplier.com. Always cc ana@company.com on supplier emails." },
   { kind: "preference", title: "Preferences", hint: "What you mean by a word, the systems and wording you prefer.", example: "By “the Kestrel order” I mean the Kestrel Foods standing order." },
   { kind: "commitment", title: "Commitments", hint: "What you said you would do, until it is done.", example: "Follow up with Northwind on the label proof by Friday." },
   { kind: "fact", title: "Facts", hint: "Things about your work the records don't say.", example: "Lot codes from the Mississauga line start with M." },
@@ -33,7 +33,7 @@ const SOURCE_LABEL: Record<string, string> = {
   ask: "From a question of yours",
   clarify: "From your answer to a question back",
   assist: "From a draft you worked on",
-  autopilot: "From your autopilot decisions",
+  autopilot: "From what you approved or rejected",
   feedback: "From your rating of an answer",
   action: "From something you did",
   learn: "Learned from your edits and ratings",
@@ -183,9 +183,7 @@ function Memory() {
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar heading title="Memory" />
       <div className="w-full max-w-[60rem] overflow-y-auto px-6 py-5">
-        <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-muted">
-          What the Workbench remembers about how you work, so your answers and drafts fit you. Only you can see it. To add something, type &ldquo;from now on &hellip;&rdquo; or &ldquo;remind me to &hellip;&rdquo; in the Ask box.
-        </p>
+        <p className="mb-4 text-[13px] text-muted">What the Workbench remembers about how you work. Only you can see it.</p>
         {viewing ? (
           <EmptyState title="Memory stays with its person." line="Viewing as someone shows none of what the Workbench remembers about them." />
         ) : (
@@ -208,7 +206,7 @@ function Memory() {
                     </Link>
                   </p>
                 )}
-                {!record && items.length === 0 && <p className="text-[13px] text-muted">Nothing yet. It fills in as you ask, answer its questions, rate answers and edit drafts.</p>}
+                {!record && items.length === 0 && <p className="text-[13px] text-muted">Nothing yet. It fills in as you ask and edit drafts.</p>}
                 {KINDS.map(({ kind, title, hint }) => {
                   const kept = items.filter((i) => i.kind === kind);
                   const rows = kind === "commitment" ? byDue(kept) : kept;

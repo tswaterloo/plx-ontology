@@ -879,6 +879,7 @@ class SimpleRun:
     clarify: Optional[dict[str, Any]] = None       # the question asked back (``ask_blocks``)
     gaps: list[dict[str, str]] = field(default_factory=list)   # what no record holds
     check: Optional[dict[str, Any]] = None   # the checker's verdict (``ask_check``, A4)
+    working: list[str] = field(default_factory=list)   # each printed figure: expression = value, from what
     coverage: list[dict[str, Any]] = field(default_factory=list)   # the parts (A3b-4)
 
     @property
@@ -1095,7 +1096,7 @@ def run(asker: Any, session: Any, question: str, history: Sequence[Any] = (),
                      failure=failure, usage=dict(ran.usage), as_of=_as_of(ran.events),
                      charts=drawn, clarify=asked_back, gaps=gaps,
                      check=verdict.payload() if verdict is not None else None,
-                     coverage=coverage)
+                     coverage=coverage, working=list(got.working))
 
 
 
@@ -1888,6 +1889,7 @@ def answer_payload(ran: SimpleRun, question: str, conversation: str, latency_ms:
         check=m.AnswerCheck(**ran.check) if ran.check else None,
         coverage=[m.AnswerPart(**p) for p in ran.coverage],
         untraced=list(ran.unverified),
+        working=list(ran.working),
         clarify=m.Clarify(question=asked_back["question"], options=[
             m.ClarifyOption(label=o) for o in asked_back["options"]]) if asked_back else None,
         # the model gave the line to the drafting desk (``plx.hand_off``): the app answers

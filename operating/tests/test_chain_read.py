@@ -81,6 +81,40 @@ class ChainRead(Fixture, unittest.TestCase):
         text = lambda v: v["untrusted_text"] if isinstance(v, dict) else v  # noqa: E731
         return [dict(zip(out["columns"], [text(c) for c in r["cells"]])) for r in out["rows"]]
 
+    def test_the_record_card_is_the_chain_at_one_hop_and_says_what_it_could_not_look_up(self):
+        """ASK-GENIE 20 #3: ``{"record": X}`` answers where X is in one read: hop 0 the record
+        with its declared facts, hop 1 its linked records (the chain read at one hop, same
+        rows for the same reader), and ``card`` for the messages naming it, which here (no
+        mail or Teams views in this fixture) is said unavailable, never an empty list; a
+        number that fits unlinked records is not walked and looks up no messages; party and
+        type go with it; hops does not; a reader's door hides what it hides."""
+        card = self.call({"record": "IN-2"}, FULL)
+        self.assertNotIn("error", card, card)
+        want = self.chain({"chain": "IN-2", "hops": 1})
+        self.assertEqual(self.cells(card), self.cells(want))
+        self.assertEqual(card["card"]["records_named"], 1)
+        self.assertIn("messages_unavailable", card["card"])
+        self.assertIn("card.newest", card["note"])
+        twin = self.call({"record": "Twin Co"}, FULL)
+        self.assertTrue(twin["chain"]["ambiguous"])
+        self.assertEqual(twin["card"]["records_named"], 0)
+        self.assertIn("note", twin["card"])
+        picked = self.call({"record": "Twin Co", "party": "Alpha job"}, FULL)
+        self.assertFalse(picked["chain"]["ambiguous"])
+        self.assertEqual(self.call({"record": "IN-2", "hops": 2}, FULL)["error"]["code"],
+                         "invalid_request")
+        self.assertEqual(self.call({"record": "IN-2", "sql": "SELECT 1"}, FULL)["error"]["code"],
+                         "invalid_request")
+        self.assertEqual(self.call({"record": "nothing-by-this-name"}, FULL)["error"]["code"],
+                         "not_found")
+        for actor in (OPS, NOBODY):
+            got = self.call({"record": "IN-2"}, actor)
+            base = self.call({"chain": "IN-2"}, actor)
+            if "error" in base:
+                self.assertEqual(got["error"]["code"], base["error"]["code"])
+            else:
+                self.assertEqual(self.cells(got), self.cells(base))
+
     def test_a_handle_and_a_number_find_the_same_record_and_every_link_is_one_row(self):
         by_handle = self.chain("mc://tasks/t10-9")
         self.assertNotIn("error", by_handle, by_handle)

@@ -15,4 +15,12 @@ describe("an order's line", () => {
     expect(line).toHaveTextContent("Today9 Nov");
     expect(line).not.toHaveTextContent("10 Nov");
   });
+
+  it("draws the days late once on a page whose header already says them (read aloud only)", () => {
+    const props = { ordered: Date.parse("2026-09-26T12:00:00Z"), needed: Date.parse("2026-10-17T12:00:00Z"), daysLate: 12 };
+    const { rerender } = render(<OrderLine {...props} />);
+    expect(screen.getByText("12 days late")).not.toHaveClass("sr-only");
+    rerender(<OrderLine {...props} saidAbove />);
+    expect(screen.getByText("12 days late")).toHaveClass("sr-only");
+  });
 });

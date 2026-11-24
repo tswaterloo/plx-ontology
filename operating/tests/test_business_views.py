@@ -2110,6 +2110,7 @@ class BusinessViews(unittest.TestCase):
         comms = next(n for n, v in bv.VIEWS.items() if v.fill is not None)
         with psycopg.connect(self.dsn, autocommit=True) as c:
             c.execute((MIGRATIONS_DIR / "0060_view_state.sql").read_text())
+            c.execute((MIGRATIONS_DIR / "0079_column_health_facts.sql").read_text())
             c.execute("UPDATE biz.state SET notes = notes || '{\"code\": \"older\"}'::jsonb "
                       "WHERE view = %s", (comms,))
         try:
@@ -2129,7 +2130,7 @@ class BusinessViews(unittest.TestCase):
                 for name, v in bv.VIEWS.items():
                     c.execute("UPDATE biz.state SET notes = notes || jsonb_build_object("
                               "'code', %s::text) WHERE view = %s", (code.fingerprint(v), name))
-                c.execute("DROP TABLE IF EXISTS biz.view_state, biz.column_health")
+                c.execute("DROP TABLE IF EXISTS biz.view_state, biz.column_health CASCADE")
 
     def test_missing_views_are_built_first(self):
         """A run stopped by its time limit never re-spends the next run on the views it

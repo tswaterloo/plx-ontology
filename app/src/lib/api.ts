@@ -10,7 +10,7 @@ import { DOOR_HEADER, forgetAnswer, isSettledAnswer, noteAnswerHeaders, noteOwnW
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, RecordViews, Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, RecordViews, Explore, LabourPage, LateList, PoClosure, RecordAsOf, RecordHistory,
   FilterEdit, StatementRead, InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
@@ -1003,9 +1003,28 @@ export function getFeeds(signal?: AbortSignal): Promise<FeedStates> {
   return getJson<FeedStates>("/api/feeds", signal);
 }
 
-export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
+export function getLateList(offset = 0, signal?: AbortSignal, limit = 25, stale = false): Promise<LateList> {
   const n = Math.min(100, Math.max(1, Math.floor(limit)));
-  return getRead<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
+  return getRead<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}${stale ? "&stale=true" : ""}`, signal);
+}
+
+/** Which purchase order: the handle a late list row carries (its first source), or the page's object id. */
+export type PoKey = { handle?: string | null; object_id?: string | null };
+
+/** Whether a person closed this order in the Workbench (who, when, why, what came after). */
+export async function getPoClosure(key: PoKey, signal?: AbortSignal): Promise<PoClosure> {
+  const q = key.handle ? `handle=${encodeURIComponent(key.handle)}` : `object_id=${encodeURIComponent(key.object_id ?? "")}`;
+  return (await (await call(`/api/purchase-orders/closure?${q}`, { signal })).json()) as PoClosure;
+}
+
+/** Close the order for everyone, in the Workbench only (nothing is written to the source system). */
+export async function closePo(key: PoKey, reason: string | null): Promise<PoClosure> {
+  return (await (await call("/api/purchase-orders/close", { method: "POST", json: { ...key, reason } })).json()) as PoClosure;
+}
+
+/** Undo a close. */
+export async function reopenPo(key: PoKey): Promise<PoClosure> {
+  return (await (await call("/api/purchase-orders/reopen", { method: "POST", json: { ...key } })).json()) as PoClosure;
 }
 
 /** What needs you and what to do: ranked suggestions, each with how we know, a draft and the actions it offers. */

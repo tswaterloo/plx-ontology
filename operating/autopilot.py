@@ -1207,8 +1207,10 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
     return "processed", ",".join(sorted(set(reasons))) or None
 
 
-# how long past the cycle's own time its started drafts are waited for (one tool session's
-# limit: ``operator_api.autopilot_context.LOOKUP_SECONDS``), inside both units' start limits
+# how long past the cycle's own time its started drafts are waited for before their events are
+# deferred (``draft_busy``) and the cycle goes on. This is not a limit on a session: a draft has no
+# deadline (only a stream silent for ``reply_drafts.HUNG_SECONDS`` ends it), and the process still
+# lives until its sessions end (the units' TimeoutStartSec is 2 h, past HUNG_SECONDS)
 DRAFT_WAIT_SECONDS = 160
 
 

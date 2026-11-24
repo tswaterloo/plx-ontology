@@ -204,6 +204,46 @@ class TextDocuments(unittest.TestCase):
         got = doc_read.read("q.docx", out.getvalue())
         self.assertEqual(got.text, "Quote\n| Item 2 | 14.20 |\n\n[footer]\nValid 30 days")
 
+    def test_find_pages_on_past_its_first_lines_and_a_word_table_is_a_table(self):
+        """M4: a find that matches more lines than it shows says where to read on (``skip``)
+        and the lines of every page together are every matching line, none twice; a Word
+        file's tables are tables (rows and cells), its paragraphs ``lines`` with the page
+        or part each came from and how sure the words are (OCR, text layer, typed)."""
+        text = "".join(f"line {i} hit\n" for i in range(150))
+        seen, skip = [], 0
+        while True:
+            got = doc_read.find(text, "hit", limit=60, skip=skip)
+            seen += [m["line"] for m in got["matches"]]
+            self.assertEqual(got["matched_total"], 150)
+            if not got["more"]:
+                break
+            skip = got["next_skip"]
+        self.assertEqual(seen, [f"line {i} hit" for i in range(150)])
+        out = io.BytesIO()
+        p = lambda t: f"<w:p><w:r><w:t>{t}</w:t></w:r></w:p>"   # noqa: E731
+        row = lambda a, b: (f"<w:tr><w:tc>{p(a)}</w:tc><w:tc>{p(b)}</w:tc></w:tr>")   # noqa: E731
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("[Content_Types].xml", '<Types><Override PartName="/word/document.xml" '
+                       'ContentType="application/vnd.openxmlformats-officedocument.'
+                       'wordprocessingml.document.main+xml"/></Types>')
+            z.writestr("word/document.xml", f'<w:document xmlns:w="{W}"><w:body>{p("Quote")}'
+                       f"<w:tbl>{row('Item', 'Price')}{row('A', '14.20')}{row('B', '3.00')}"
+                       f"</w:tbl>{p('Valid 30 days')}</w:body></w:document>")
+        reading = doc_read.read("q.docx", out.getvalue())
+        self.assertEqual([n for n, _ in reading.grids], ["table 1"])
+        priced = doc_read.query("", "table 1", [], ["Price"], None, sheets=reading.grids)
+        self.assertEqual((priced["matched"], priced["sums"]), (2, {"Price": 17.2}))
+        lines = doc_read.line_sheet(reading)[0][1]
+        self.assertEqual(lines[0], (0, ["part", "text", "how_sure"]))
+        self.assertEqual([c[1] for _, c in lines[1:]],
+                         ["Quote", "| Item | Price |", "| A | 14.20 |", "| B | 3.00 |",
+                          "Valid 30 days"])
+        self.assertEqual({c[2] for _, c in lines[1:]}, {"document text"})
+        pdf = doc_read.Reading("pdf", "[page 1]\nTotal 5\n\n[page 2]\nTotal 7", ocr_numbers=[2])
+        got = {c[1]: (c[0], c[2]) for _, c in doc_read.line_sheet(pdf)[0][1][1:]}
+        self.assertEqual(got, {"Total 5": ("page 1", "text layer"),
+                               "Total 7": ("page 2", "ocr")})
+
     def test_pages_cover_the_text_exactly_once(self):
         text = "".join(f"line {i} " + "x" * (i % 97) + "\n" for i in range(5000))
         pages, offset = [], 0

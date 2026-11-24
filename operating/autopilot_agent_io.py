@@ -225,16 +225,35 @@ def outbound_proposals(proposals: Sequence[Mapping[str, Any]], event: Mapping[st
 
 
 def _sendable(options: Sequence[Mapping[str, Any]], m: Any, ctx: Any, readers: Sequence[str],
-              allowed: str, account: Sequence[str]) -> list[dict[str, Any]]:
+              allowed: str, account: Sequence[str], review: bool = False, sender: str = ""
+              ) -> list[dict[str, Any]]:
     """The answers a card may offer: each reply plain (not hollow, no figure outside the
     material, no copy tic), passing the outbound check, and ready to send
-    (``autopilot_check.ready_options``)."""
+    (``autopilot_check.ready_options``). ``review`` (the person reads the item before anything goes:
+    Assist): an answer a check flags stays, its label saying what to check before it is sent, as a
+    reviewed reply stays with its warning, never a card with no answers and no reason."""
     from . import autopilot_drafter as ad
     from .autopilot_check import ready_options
-    def plain(reply: str) -> bool:
-        return not ad._HOLLOW.match(reply) and ad.check(reply, m) is None \
-            and not ad._tics(reply) and not ob.held(ctx, reply, readers, allowed, account)
-    return ready_options([o for o in options if plain(str(o.get("reply") or ""))])
+
+    def why(reply: str) -> str:
+        if ad._HOLLOW.match(reply):
+            return "nothing_useful"
+        stop = ob.held(ctx, reply, readers, allowed, account)
+        if stop:
+            return ob.reason_text(stop, sender)
+        return ad.check(reply, m) or ad._tics(reply) or ""
+    out: list[dict[str, Any]] = []
+    for o in options:
+        if o.get("warning"):          # already flagged by an earlier pass: kept once, not labelled twice
+            out.append(dict(o))
+            continue
+        said = why(str(o.get("reply") or ""))
+        if not said:
+            out.append(dict(o))
+        elif review and said != "nothing_useful":
+            out.append({**o, "label": f"{o.get('label', '')} (check before sending: {said})",
+                        "warning": said})
+    return ready_options(out)
 
 
 def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
@@ -269,7 +288,7 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
         # blank reply (the answer a [placeholder], the question its note) stands in, and is
         # checked below as any reply is
         got.ask["options"] = _sendable(got.ask.get("options") or (), m, ctx, readers,
-                                       allowed, account)
+                                       allowed, account, review, sender)
         blank = str(got.ask.get("blank") or "")
         if len(got.ask["options"]) < 2 and blank and not got.reply:
             got.reply, got.note = blank, str(got.ask.get("question") or "")
@@ -304,7 +323,8 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
             got.reply = ""
     if got.ask:
         got.ask.pop("blank", None)
-        got.ask["options"] = _sendable(got.ask["options"], m, ctx, readers, allowed, account)
+        got.ask["options"] = _sendable(got.ask["options"], m, ctx, readers, allowed, account,
+                                       review, sender)
         if len(got.ask["options"]) == 1:
             # one answer left is a guess at the person's choice (``autopilot_check``)
             got.ask["options"] = []

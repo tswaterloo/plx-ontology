@@ -48,12 +48,6 @@ const config: NextConfig = {
   // a #fragment (/watching#data-health).
   async redirects() {
     return [
-      // Records became Orders, Customers, Suppliers, Products and More; the old address keeps working
-      { source: "/records", has: [{ type: "query", key: "kind", value: "customers" }], destination: "/customers", permanent: false },
-      { source: "/records", has: [{ type: "query", key: "kind", value: "suppliers" }], destination: "/suppliers", permanent: false },
-      { source: "/records", has: [{ type: "query", key: "kind", value: "products" }], destination: "/products", permanent: false },
-      { source: "/records", has: [{ type: "query", key: "kind", value: "(documents|production|lists|all)" }], destination: "/more", permanent: false },
-      { source: "/records", destination: "/orders", permanent: false },
       { source: "/autopilot", has: [{ type: "query", key: "item" }], destination: "/assist", permanent: false },
       { source: "/autopilot", destination: "/assist?show=switches", permanent: false },
       { source: "/watching", destination: "/?show=alerts", permanent: false },

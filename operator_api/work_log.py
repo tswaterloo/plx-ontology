@@ -420,6 +420,9 @@ class WorkLog:
         if record:
             where.append("e.seq IN (SELECT seq FROM event_record WHERE object_id = ?)")
             args.append(record)
+            # a chat its reader deleted leaves the record's list too (it stays in the full log)
+            where.append("NOT (e.kind = 'ask' AND EXISTS (SELECT 1 FROM thread_hidden h "
+                         "WHERE h.reader = e.reader AND h.thread = e.thread))")
         if thread:
             where.append("e.thread = ?")
             args.append(thread)

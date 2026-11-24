@@ -18,22 +18,49 @@ import { cn } from "@/lib/cn";
 export function AlertCard({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged?: () => void }) {
   const [passing, setPassing] = useState(false);
   const card = useProblemSlot();
+  const summary = countedWords(item.summary ?? "");
+  const same = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
+  // the body repeats the title's own words on some items: said once
+  const extra = item.message && !same(item.message, summary) && !same(item.message, item.summary ?? "") ? item.message : "";
+  const mc = item.alert_kind === "mc_approval_pending";
   return (
     <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-alert">
       <div className="flex flex-wrap items-baseline gap-x-3">
         <span className="text-[13px] font-medium">{item.subject || "From the records"}</span>
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
-      <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary ?? "")}</p>
-      {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
-      {item.facts.length > 0 && (
-        <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted">
-          {item.facts.map((f, n) => (
-            <li key={n}>{countedWords(f)}</li>
-          ))}
-        </ul>
+      {mc ? (
+        <>
+          {/* a Mission Control approval is the agents' own text: one plain line, the rest on open */}
+          <p className="max-w-[46rem] truncate text-[13px]" title={summary} data-testid="alert-line">{summary}</p>
+          {(summary.length > 40 || extra || item.facts.length > 0 || item.note) && (
+            <details className="text-[12px] text-muted" data-testid="alert-details">
+              <summary className="cursor-pointer">Details</summary>
+              <div className="mt-1 space-y-1">
+                <p className="max-w-[46rem] whitespace-pre-wrap break-words text-fg">{summary}</p>
+                {extra && <p className="max-w-[46rem] whitespace-pre-wrap break-words">{extra}</p>}
+                {item.facts.map((f, n) => (
+                  <p key={n}>{countedWords(f)}</p>
+                ))}
+                {item.note && <p>{countedWords(item.note)}</p>}
+              </div>
+            </details>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="max-w-[46rem] text-[13px]">{summary}</p>
+          {extra && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{extra}</p>}
+          {item.facts.length > 0 && (
+            <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted">
+              {item.facts.map((f, n) => (
+                <li key={n}>{countedWords(f)}</li>
+              ))}
+            </ul>
+          )}
+          {item.note && <p className="text-[12px] text-muted">{countedWords(item.note)}</p>}
+        </>
       )}
-      {item.note && <p className="text-[12px] text-muted">{countedWords(item.note)}</p>}
       {(item.links ?? []).length > 0 && (
         <div className="flex flex-wrap gap-3 text-[13px]">
           {(item.links ?? []).map((l) => (

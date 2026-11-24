@@ -1794,7 +1794,8 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 raise OSError("screen inputs unreadable")
             if alerts:
                 from . import page_sql
-                own = (own, page_sql.runs_fresh(self))
+                from . import po_closing
+                own = (own, page_sql.runs_fresh(self), po_closing.stamp(self))
             return (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H"), files_stamp(paths),
                     tuple(named), own)
         return stamp

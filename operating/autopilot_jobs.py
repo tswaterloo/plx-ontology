@@ -73,6 +73,18 @@ MESSAGES = {"mail": "send_email", "teams": "chat_message"}
 DOC_TOOL_NAME = "plx.edit_document"
 
 
+@dataclass(frozen=True)
+class Prepared:
+    """What a prepared session (``operating.assist_prepared``) adds to the Assistant's session: ``lead``
+    (the person's own block of past cases and the ground rules: the same bytes for every matter of
+    the person, put in front of the session's system prompt so the model's prompt cache is read, not
+    rewritten, for the person's next matter) and ``tools`` (local tools: the precedent search over the
+    cases the prompt does not hold). Its presence also words the task as a finished item
+    (``autopilot_agent.PREPARED_DECISION``)."""
+    lead: str = ""
+    tools: Sequence[Any] = ()
+
+
 @dataclass
 class Job:
     """What the session prepared: ``summary`` (one line: what the event asks to be done)
@@ -630,8 +642,8 @@ class Jobber:
         return _json(reply.get("result")) if good else None
 
     def _session(self, owner: str, event_text: str, person: str, message: bool = True,
-                 as_of: str = "", brief_ok: bool = False, reads: bool = True
-                 ) -> tuple[Optional[Job], str, list[str]]:
+                 as_of: str = "", brief_ok: bool = False, reads: bool = True,
+                 prepared: Any = None) -> tuple[Optional[Job], str, list[str]]:
         # ``reads``: the assistant's (``autopilot_agent``); a job always reads (what it
         # proposes to an outside reader is held by ``autopilot_outbound`` instead)
         # only a message is sorted first: an approval asked or a meeting held is itself
@@ -657,7 +669,7 @@ class Jobber:
 
     def run(self, event: Mapping[str, Any], owner: str, event_text: str, person: str,
             people: Any, *, key: Optional[str] = None, as_of: str = "", reads: bool = True,
-            extra: str = "") -> tuple[Optional[Job], str]:
+            extra: str = "", prepared: Any = None) -> tuple[Optional[Job], str]:
         """(``Job``, "") or (None, why): ``no_system_work``, a screen (the drafter's),
         ``job_failed`` (tried again), ``job_no_session``, or with a ``key``
         ``job_pending`` (running on the pool: ask again with the same key). ``as_of``: a
@@ -692,12 +704,12 @@ class Jobber:
         event_text = f"{event_text}\n{extra}" if extra else event_text
         if key is None:
             return self._finish(*self._session(owner, event_text, person, message, as_of,
-                                               brief_ok, reads), people, event, person)
+                                               brief_ok, reads, prepared), people, event, person)
         if self._pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self._pool = ThreadPoolExecutor(self.parallel, thread_name_prefix="job")
         self._running[key] = self._pool.submit(self._session, owner, event_text, person,
-                                               message, as_of, brief_ok, reads)
+                                               message, as_of, brief_ok, reads, prepared)
         return None, "job_pending"
 
     @staticmethod

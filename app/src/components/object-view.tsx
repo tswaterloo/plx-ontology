@@ -43,6 +43,7 @@ import { BizArticle, Section as DoorSection } from "./biz-page";
 import { Situation } from "./record/situation";
 import { AskNext } from "./record/ask-next";
 import { OnRecord } from "./record/on-record";
+import { CloseControl } from "./late/close-control";
 import { KindSections } from "./record/kind-sections";
 import { DocumentLists } from "./record/document-lists";
 import { ShowMore } from "./ui/show-more";
@@ -1501,7 +1502,18 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   const numeric = (v: string) => /^-?\$?[\d,]+(?:\.\d+)?(?:\s[A-Z]{3})?$/.test(v.trim());
   // a rate, a count or a number field is a detail, never the page's headline figure ("Exchange rate 1")
   const factFigures = generic && !obj.type_label ? head.keyFacts.filter((k) => k.value && numeric(k.value) && !/\b(?:rate|count|number|no)\b/i.test(k.label) && !identifierLabel(k.label)).slice(0, 5) : [];
-  const facts = head.keyFacts.filter((k) => k.value && !factFigures.includes(k));
+  // a purchase order's Details keep only what the header and figures do not already say: a
+  // fact whose words are a status badge's, or the currency the total's unit already names
+  const saidInHeader = (k: { label: string; value: string }) => {
+    if (!isPo) return false;
+    const v = k.value.trim().toLowerCase();
+    if (k.label === "Currency") {
+      const unit = head.stats.find((st) => st.label.startsWith("Total"))?.caption;
+      return !!unit && v === unit.trim().toLowerCase();
+    }
+    return head.badges.some((b) => v.includes(b.label.trim().toLowerCase()));
+  };
+  const facts = head.keyFacts.filter((k) => k.value && !factFigures.includes(k) && !saidInHeader(k));
   const trail = obj.trail?.trails?.[0];
   const trailPending = pending.has("trail");
   // the records one hop away by link kind (a server without them: the related list)
@@ -1685,7 +1697,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       </div>
       {((isPo && (ordered != null || needed != null) && !trailPending) || (isSalesOrder && needed != null)) && (
         <div>
-          <OrderLine ordered={ordered} needed={needed} daysLate={isPo && trail?.state === "late" ? trail.days_late : null} />
+          <OrderLine ordered={ordered} needed={needed} daysLate={isPo && trail?.state === "late" ? trail.days_late : null} saidAbove={isPo && badges.some((b) => b.status === "late")} />
         </div>
       )}
       {isPo && trailPending && <div className="skeleton h-[6px] rounded-full" />}
@@ -1746,6 +1758,11 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   const main = (
     <>
       {header}
+      {isPo && (
+        <div className="mb-3" data-testid="po-close-bar">
+          <CloseControl order={{ object_id: obj.object_id }} />
+        </div>
+      )}
       {tabs}
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
       <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} named={counterpart?.label ?? null} />

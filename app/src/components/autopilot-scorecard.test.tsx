@@ -33,17 +33,16 @@ describe("autopilot scorecard in the work log", () => {
     api.days.mockResolvedValue({ available: true, days: [day("2026-11-11", 9, 4, 2, 1), day("2026-11-10", 3, 1, 0, 2), day("2026-11-09")] });
     render(<AutopilotScorecardPanel days={3} />);
     const panel = await screen.findByTestId("autopilot-scorecard");
-    expect(panel).toHaveTextContent("Autopilot, last 3 days");
+    expect(panel).toHaveTextContent("Assist, last 3 days");
     expect(panel).toHaveTextContent("7 of 10 decided items used (70%), 2 after an edit");
     const rows = panel.querySelectorAll("tbody tr");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);   // the quiet day is left out
     expect(rows[0]).toHaveTextContent("Today9421");
-    expect(rows[2]).toHaveTextContent("––––");
     expect(api.days).toHaveBeenCalledWith(3, expect.anything());
     // the gate per drafted workflow of yours, in judged items
     const gates = await screen.findByTestId("scorecard-gates");
     expect(gates).toHaveTextContent("Checked 12 of the 15 items it needs; 91.7% right so far, 90% needed");
-    expect(gates).toHaveTextContent("No held-out items judged yet");
+    expect(gates).toHaveTextContent("Not enough checked yet");
     expect(gates).not.toHaveTextContent("Teams chat");
   });
 

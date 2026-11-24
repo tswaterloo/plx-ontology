@@ -17,7 +17,14 @@ from .case_tools_host_rules import (
     LIVE_READ_GETS, REREAD_GETS, _READ_OK, _RECORDED_ACL, _UNREAD, _current_version,
     _mail_store,
 )
-from .case_tools_host_citations import _PAGE_BUILD, _carried_withheld, _member_container
+from .case_tools_host_citations import _ACTIVE_CALL, _PAGE_BUILD, _carried_withheld, _member_container
+
+
+def _set_key(fast: Any) -> tuple:
+    """What a call keeps of the people exclusion's set (``_set_ahead``): the set's own identity
+    (its list, its version, owner view or not), never the object, which is built anew each time
+    for the owner (an ``id`` never matched: every handle was looked up alone)."""
+    return ("people-excluded-versions", type(fast).__name__, fast.exclusion, fast.covered_ver)
 
 
 class _GatesMixin:
@@ -167,7 +174,7 @@ class _GatesMixin:
         if not (bound.search or _PAGE_BUILD.get()):
             return None, None
         from operating.pg.people_excluded import related, withhold_names
-        kept = bound.memo.get(("people-excluded-versions", id(fast)))
+        kept = bound.memo.get(_set_key(fast))
         if kept is None:
             return None, None
         names, versions, held = kept
@@ -191,7 +198,7 @@ class _GatesMixin:
             container = _member_container(h)
             names.update(people_excluded.related(h, container))
             names.update(people_excluded.withhold_names(h, container))
-        key = ("people-excluded-versions", id(fast))
+        key = _set_key(fast)
         memo = self._call_bound.memo
         kept = memo.get(key)
         if kept is not None:
@@ -214,6 +221,19 @@ class _GatesMixin:
         from operating.pg import people_excluded
         if not people_excluded.decides(handle):
             return None
+        bound = self._call_bound
+        if (bound.search or _PAGE_BUILD.get()) and (self._in_call or _ACTIVE_CALL.get() is not None):
+            # one decision per reader in a call: the set, the reader's gate and its level
+            # are read once, not once per handle (a list of 1,100 matters decided in 0.8 s of
+            # them); a call is seconds long and ``_set_ahead`` keeps its versions the same way
+            key = ("full-reader-set", actor)
+            if key not in bound.memo:
+                bound.memo[key] = self._full_reader_set_now(actor)
+            return bound.memo[key]
+        return self._full_reader_set_now(actor)
+
+    def _full_reader_set_now(self, actor: Any) -> Any:
+        from operating.pg import people_excluded
         try:
             got = people_excluded.excluded()
             gated = self.runtime.employee_gate(actor)

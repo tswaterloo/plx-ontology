@@ -1083,6 +1083,142 @@ class EmailsThroughTheDoor(unittest.TestCase):
             self.search(tmp.OWNER, query="note", cursor="m1:0:2")
         self.assertEqual(caught.exception.code, "not_ready")
 
+    def test_the_words_only_stream_skips_the_word_lists_rows_the_same_on_every_page(self):
+        """A18 review: a search whose AND match lists one or two rows and whose ranking is
+        down streams the rows holding SOME words; the word list's rows (read by SQL, never
+        by a shape of the row's text) are in no page of the stream, page 1 included, so
+        its stream read 1, 2 and 7 rows a page is one and the same list no place is skipped and none repeats."""
+        from operating.search import plug
+        import itertools
+        import psycopg
+        import re
+        with psycopg.connect(self.dsn) as pg:
+            subjects = [r[0] for r in pg.execute(
+                f"SELECT DISTINCT subject FROM {bv.SCHEMA}.emails WHERE subject IS NOT NULL")]
+        pairs = []
+        for subject in subjects:   # two words of one real subject: that mail holds both
+            ws = [w for w in dict.fromkeys(re.findall(r"[a-z]{4,}", subject.lower()))]
+            pairs += [f"{a} {b}" for a, b in itertools.combinations(ws, 2)]
+        pairs = list(dict.fromkeys(pairs))
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", side_effect=RuntimeError("down")):
+            picked = None
+            for pair in pairs:
+                docs = self.search(tmp.OWNER, query=pair, limit=50)["documents"]
+                both = [h["citation"] for h in docs if "match" not in h]
+                if 1 <= len(both) <= 2 and len(docs) > len(both) + 3:
+                    picked = (pair, set(both))
+                    break
+            self.assertTrue(picked, f"no pair of one subject's words has one or two AND rows ({len(pairs)} tried)")
+            query, listed = picked
+
+            out = self.search(tmp.OWNER, query=query, limit=3)   # few: fewer AND rows than 3
+            self.assertTrue({h["citation"] for h in out["documents"]} >= listed)
+            nexts = [c["cursor"] for c in out["completeness"].get("continue") or []
+                     if c["cursor"].startswith("m1:")]
+            self.assertEqual(len(nexts), 1, out["completeness"])
+            start = nexts[0]
+
+            def rest(limit: int) -> list[str]:
+                """The stream from ``start`` read ``limit`` rows a page."""
+                got, cursor = [], start
+                while cursor:
+                    page = self.search(tmp.OWNER, query=query, limit=limit, cursor=cursor)
+                    self.assertTrue(page["documents"])
+                    got += [h["citation"] for h in page["documents"]]
+                    cursor = page["completeness"]["next_cursor"]
+                return got
+            by_one = rest(1)
+            self.assertEqual(len(by_one), len(set(by_one)), "a row came twice")
+            self.assertFalse(set(by_one) & listed, "a word-list row is in the stream")
+            self.assertTrue(len(by_one) > 3)
+            for limit in (2, 7):
+                self.assertEqual(rest(limit), by_one, f"limit {limit}: a row skipped or moved")
+
+    def test_the_card_messages_read_is_every_mail_and_teams_naming_the_record_newest_first(self):
+        """ASK-GENIE 20 #3: the messages leg of ``{"record": X}`` (``ontology_tools_card``)
+        lists every mail (Teams the same, by its view) whose ``records`` hold a record's handle, newest
+        first, as each reader's own views show them: the owner's rows equal a direct read of
+        the views, a narrower reader's are a subset, none twice."""
+        import psycopg
+        from operating import ontology_tools_card as card
+        # the fixture's mail names no record: three mails name two, put back after
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            before = pg.execute(f"SELECT handle, records FROM {bv.SCHEMA}.emails "
+                                "ORDER BY handle LIMIT 3").fetchall()
+            self.assertEqual(len(before), 3)
+            for (h, _), names in zip(before, (["rec://one"], ["rec://one", "rec://two"],
+                                              ["rec://two"])):
+                pg.execute(f"UPDATE {bv.SCHEMA}.emails SET records = %s WHERE handle = %s",
+                           (names, h))
+        self.addCleanup(lambda: [psycopg.connect(self.dsn, autocommit=True).execute(
+            f"UPDATE {bv.SCHEMA}.emails SET records = %s WHERE handle = %s", (r, h))
+            for h, r in before])
+        named = ["rec://one", "rec://two"]
+        seen = 0
+        for handle in named[:5]:
+            out = self.sql(tmp.OWNER, card.messages_sql([handle], ('emails',)))
+            self.assertNotIn("error", out, out)
+            cols = out["columns"]
+            self.assertEqual(cols, ["source", "handle", "at", "title", "who"])
+            rows = out["rows"]
+            handles = [(r["cells"][1] if isinstance(r["cells"][1], str)
+                        else r["cells"][1]["untrusted_text"]) for r in rows]
+            ats = [r["cells"][2] for r in rows if r["cells"][2]]
+            self.assertEqual(ats, sorted(ats, reverse=True))
+            self.assertEqual(len(handles), len(set(handles)))
+            direct = self.sql(tmp.OWNER, "SELECT count(*) FROM emails WHERE records && "
+                              f"ARRAY['{handle}']::text[]")
+            total = int(direct["rows"][0]["cells"][0])
+            narrow = self.sql(tmp.NARROW, card.messages_sql([handle], ('emails',)))
+            self.assertLessEqual(narrow["profile"]["rows"], total)
+            seen += total > 0
+        self.assertTrue(seen)
+
+    def test_the_any_word_widening_past_its_room_continues_by_cursor_and_loses_none(self):
+        """A18: a search whose every-word match finds fewer than WIDEN_BELOW rows and has no
+        ranking (down) shows the rows holding some of the words newest first; the rows past
+        the page's room are no longer dropped unsaid: they continue by an ``m1:...:w``
+        cursor, page after page, none twice and none lost, for every reader; the same
+        walk at limit 1 and 2 gives the whole stream of limit 50."""
+        from operating import ontology_tools_sql as ots
+        from operating.search import plug
+        with mock.patch.object(plug, "enabled", return_value=True), \
+                mock.patch.object(plug, "_rank", side_effect=RuntimeError("down")):
+            walked = 0
+            for actor in READERS:
+                def walk(limit: int) -> tuple[list[str], int]:
+                    out = self.search(actor, query="note zzqqnoword", limit=limit)
+                    got = [h["citation"] for h in out["documents"]]
+                    nexts = [c["cursor"] for c in out["completeness"].get("continue") or []
+                             if c["cursor"].startswith("m1:")]
+                    self.assertLessEqual(len(nexts), 1)
+                    cursor, pages = (nexts or [None])[0], 0
+                    while cursor:
+                        pages += 1
+                        self.assertLess(pages, 200)
+                        page = self.search(actor, query="note zzqqnoword", limit=limit,
+                                           cursor=cursor)
+                        self.assertTrue(page["documents"])
+                        got += [h["citation"] for h in page["documents"]]
+                        cursor = page["completeness"]["next_cursor"]
+                        self.assertEqual(page["completeness"]["complete"], not cursor)
+                    return got, pages
+                whole, _ = walk(50)
+                self.assertEqual(len(whole), len(set(whole)))
+                for limit in (1, 2):
+                    with self.subTest(actor=sorted(actor.principals), limit=limit):
+                        got, pages = walk(limit)
+                        if pages:
+                            walked += 1
+                        self.assertEqual(len(got), len(set(got)), "a row came twice")
+                        self.assertEqual(got, whole)
+            self.assertTrue(walked, "no reader's page had rows past its room")
+            # a words-only stream needs no ranking: it still answers when the ranking is down
+            page = self.search(tmp.OWNER, query="note zzqqnoword", limit=1,
+                               cursor="m1:1:1:w")
+            self.assertTrue(page["documents"])
+
     def test_header_matches_rank_first_and_pages_lose_or_repeat_nothing(self):
         """A row whose header (subject, addresses) holds every query word comes before the
         rows matched in their text only, newest first within each; walked 1, 3 or 50 at a

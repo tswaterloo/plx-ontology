@@ -1150,11 +1150,43 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.get("/api/late", response_model=m.LateList, tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
     def late_list(offset: int = Query(0, ge=0, le=LIST_OFFSET_MOST), limit: int = Query(25, ge=1, le=100),
-                  who: Reader = Depends(reader)) -> m.LateList:
-        """Every late purchase order you may see, a page at a time, longest late first
-        (Home shows the first ones: "show all")."""
+                  stale: bool = False, who: Reader = Depends(reader)) -> m.LateList:
+        """Every late purchase order you may see that is neither closed nor probably closed, a
+        page at a time, longest late first (Home shows the first ones: "show all").
+        ``stale=true``: the very late ones that show no sign of life instead (probably closed
+        or missed in the data)."""
         with first_partial():
-            return backend.late_list(who, offset=offset, limit=limit)
+            return (backend.late_list(who, offset=offset, limit=limit, stale=True) if stale
+                    else backend.late_list(who, offset=offset, limit=limit))
+
+    @app.get("/api/purchase-orders/closure", response_model=m.PoClosure, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def po_closure(handle: Optional[str] = Query(None, max_length=700),
+                   object_id: Optional[str] = Query(None, max_length=700),
+                   who: Reader = Depends(reader)) -> m.PoClosure:
+        """Whether a person closed this purchase order in the Workbench, who, when and why, and
+        any receipt or message that arrived after."""
+        from . import po_closing
+        return po_closing.status(backend, who, po_closing.handle_of(backend, who, handle, object_id),
+                                 must_see=True)
+
+    @app.post("/api/purchase-orders/close", response_model=m.PoClosure, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def po_close(body: m.PoCloseRequest, who: Reader = Depends(reader)) -> m.PoClosure:
+        """Close a purchase order you may see, for everyone, in the Workbench only (nothing is
+        written to Business Central, the Portal or Sage). It leaves every late list and count;
+        undo it with ``/api/purchase-orders/reopen``."""
+        from . import po_closing
+        return po_closing.close(backend, who, po_closing.handle_of(
+            backend, who, body.handle, body.object_id), body.reason)
+
+    @app.post("/api/purchase-orders/reopen", response_model=m.PoClosure, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def po_reopen(body: m.PoCloseRequest, who: Reader = Depends(reader)) -> m.PoClosure:
+        """Undo a close: the order is back in the late lists if it is still late."""
+        from . import po_closing
+        return po_closing.reopen(backend, who, po_closing.handle_of(
+            backend, who, body.handle, body.object_id))
 
     @app.get("/api/briefing", response_model=m.Briefing, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})

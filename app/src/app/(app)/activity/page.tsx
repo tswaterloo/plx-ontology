@@ -78,7 +78,7 @@ function Row({ r }: { r: ActionLogRow }) {
     <li
       className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-start gap-x-3 lg:items-center rounded-[3px] px-3 py-2.5 hover:bg-hover lg:grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px]"
       data-testid="actions-log-row"
-      title={`${formatDateTime(r.at)}, by ${r.actor}. Fingerprint ${r.payload_hash.slice(0, 12)}`}
+      title={`${formatDateTime(r.at)}, by ${r.actor}`}
     >
       <KindTile kind={r.kind} />
       <div className="min-w-0">
@@ -140,7 +140,6 @@ function weekOf(rows: ActionLogRow[], now = Date.now()) {
       .filter(([, n]) => n > 1)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 4),
-    check: rows.filter((r) => r.status === "failed" || r.status === "unknown").slice(0, 5),
   };
 }
 
@@ -148,17 +147,18 @@ function Summary({ rows }: { rows: ActionLogRow[] }) {
   const w = weekOf(rows);
   const cells: [string, number, string?][] = [
     ["Sent", w.sent],
-    ["Not sent (sending off)", w.notSent],
+    ["Not sent", w.notSent],
     ["Tasks set or done", w.tasks],
     ["Put away", w.putAway],
     ["People reached", w.people],
     ["Records", w.records],
   ];
+  if (cells.every(([, n]) => n === 0) && w.busiest.length === 0) return null;
   return (
     <section className="border-b border-border px-6 py-3" aria-label="Last 7 days" data-testid="activity-summary">
       <h2 className="text-[12px] font-medium text-muted">Last 7 days</h2>
       <dl className="mt-1 grid grid-cols-3 gap-x-6 gap-y-1 sm:grid-cols-6">
-        {cells.map(([label, n]) => (
+        {cells.filter(([, n]) => n > 0).map(([label, n]) => (
           <div key={label}>
             <dt className="text-[11px] leading-4 text-muted">{label}</dt>
             <dd className="text-[18px] font-semibold tabular-nums">{n}</dd>
@@ -175,19 +175,6 @@ function Summary({ rows }: { rows: ActionLogRow[] }) {
             </span>
           ))}
         </p>
-      )}
-      {w.check.length > 0 && (
-        <div className="mt-2" data-testid="activity-check">
-          <h3 className="text-[12px] font-medium text-late">Needs a look</h3>
-          <ul className="text-[12px]">
-            {w.check.map((r) => (
-              <li key={r.seq} className="truncate">
-                <span className="font-medium">{KIND[r.kind] ?? r.kind}</span> on {r.card_label}:{" "}
-                <span className="text-muted">{r.status === "failed" ? "it failed; send it again from the record" : "it may not have gone out; check the sent folder before sending again"}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
       )}
     </section>
   );

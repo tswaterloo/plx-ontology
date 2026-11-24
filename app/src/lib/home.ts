@@ -52,6 +52,9 @@ export function refreshingLine(checkedOn?: string | null): string {
  * is the one time on the screen (two clocks a few minutes apart read as a contradiction). */
 export const STALE_CLOCK_AFTER_MS = 60 * 60 * 1000;
 
+/** A page read again on return says how old it is only past this age (a few minutes). */
+export const STALE_SAY_AFTER_MS = 5 * 60 * 1000;
+
 /**
  * A page served from the last good read because a fresh one did not come in time:
  * "Refreshing" (the sidebar's "Data as of" says how new the data is); a read over an hour old
@@ -66,7 +69,8 @@ export function staleLine(staleSince?: string | null, readAt?: string | null, no
   const clock = t.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
   if (!staleSince) return `As of ${clock} ET`;
   // read again when the person comes back to the window, not on a timer (useStaleRefreshOnReturn)
-  if (onReturn) return `Showing the read from ${clock} ET. It is read again when you come back to this window.`;
+  // the page says its age only once it is old enough to matter, in plain words
+  if (onReturn) return now - t.getTime() < STALE_SAY_AFTER_MS ? null : `Last updated ${clock} ET.`;
   return now - t.getTime() < STALE_CLOCK_AFTER_MS ? "Refreshing" : `Showing the read from ${clock} ET · refreshing`;
 }
 

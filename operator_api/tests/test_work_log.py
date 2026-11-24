@@ -245,6 +245,26 @@ class WorkLogApi(unittest.TestCase):
                 "system": "BC", "label": "PO 4501", "quote": "Promised 2026-12-01",
                 "handle": ""}}]}})
 
+    def test_a_service_session_is_nobodys_work_in_any_log_or_related_list(self):
+        # the Ask canary and the page measure (session.canary: a service session) sign in as
+        # a reader but are nobody's own: no event is written, so no person's work log and no
+        # record's related list ever lists their asks (marker: the session, not the text)
+        from operating.session_identity import SERVICE_CANARY, SERVICE_MEASURE
+        store = wl.WorkLog(None, guard=lambda: Guard())
+        for service in (SERVICE_CANARY, SERVICE_MEASURE):
+            reader = SimpleNamespace(key="plx:staff:ana", display_name="Ana", email="ana@plx.example",
+                                     session=SimpleNamespace(canary=True, service=service))
+            seq = store.record(reader, kind="ask", verb="asked", title="Show purchase order 1",
+                               thread="ask:abc", source="ask", source_id="a1",
+                               records=[{"object_id": "PurchaseOrder:1", "type": "PurchaseOrder"}])
+            self.assertIsNone(seq)
+        own = SimpleNamespace(key="plx:staff:ana", display_name="Ana", email="ana@plx.example", session=SimpleNamespace(canary=False))
+        self.assertIsNotNone(store.record(own, kind="ask", verb="asked", title="Where is PO 2",
+                                          thread="ask:def", source="ask", source_id="a2"))
+        events, total = store.events(reader=None)
+        self.assertEqual((total, [e["title"] for e in events]), (1, ["Where is PO 2"]))
+        self.assertEqual(store.events(reader=None, record="PurchaseOrder:1")[1], 0)
+
     def test_the_exclusion_fails_closed_when_writing_and_reading(self):
         ask(self.ana, "where is PO 90412, is it late")
         self.guard = Guard(unavailable=True)
@@ -1164,3 +1184,19 @@ class UsageReview(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeletedChats(TimeSaved):
+    def test_a_deleted_chat_leaves_the_records_list_but_stays_in_the_full_log(self):
+        ana = self.reader("ana")
+        for item in ("c1", "c2"):
+            self.store.record(ana, kind="ask", verb="asked", title=f"about PO 1 {item}",
+                              thread=f"ask:{item}", source="ask", source_id=item,
+                              records=[{"object_id": "PO-1", "label": "PO 1"}])
+        self.store.record(ana, kind="note", verb="noted", title="phoned", thread="card:n1",
+                          source="note", records=[{"object_id": "PO-1", "label": "PO 1"}])
+        self.store.hide(ana.key, "ask:c1")
+        on_po, _ = self.store.events(reader=ana.key, record="PO-1")
+        self.assertEqual(sorted(e["title"] for e in on_po), ["about PO 1 c2", "phoned"])
+        everything, _ = self.store.events(reader=ana.key)
+        self.assertEqual(len(everything), 3)

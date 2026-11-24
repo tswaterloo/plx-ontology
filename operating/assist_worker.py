@@ -99,6 +99,15 @@ def outcome(rows: Optional[Sequence[Mapping[str, Any]]], matter: Mapping[str, An
     """The matter's new plan from what the Assistant gave (``reply_drafts.line_draft`` rows);
     ``meta`` (a prepared session's reads and unread sources) is kept on the plan's ``prepared``."""
     res = _outcome(rows, matter)
+    if res["status"] == "failed" and res["reason"] == "nothing_to_do" and (meta or {}).get("nothing"):
+        # a prepared session found the matter done and named the record that shows it: kept as the
+        # plan tier keeps "nothing" (an act of that kind and its why), never a bare failure
+        none = {"act": "nothing", "to": [], "about": "", "attach": "",
+                "system": {"system": "", "operation": "", "record": ""}, "question": "", "choices": []}
+        res = {"status": "planned", "reason": "", "plan": {
+            "ver": 1, "acts": [none], "why": str(meta["nothing"]),
+            "prepared": {k: v for k, v in meta.items() if k != "usd"}}, }
+        return res
     if meta and isinstance(res.get("plan"), dict) and isinstance(res["plan"].get("prepared"), dict):
         res["plan"]["prepared"].update(meta)
     return res
@@ -204,7 +213,8 @@ def make_draft(store: str, state_dir: str) -> tuple[Callable[..., Sequence[Mappi
                     LOG.error("the Assistant has no tool session: nothing can be read for any matter")
         return shared
 
-    def draft(owner: str, oid: str, extra: str = "", as_of: str = "") -> Sequence[Mapping[str, Any]]:
+    def draft(owner: str, oid: str, extra: str = "", as_of: str = "",
+              prepared: Any = None) -> Sequence[Mapping[str, Any]]:
         sh = setup()
         if getattr(local, "st", None) is None:
             local.st = apm._with_captures(apm._store(store), ns)
@@ -216,7 +226,8 @@ def make_draft(store: str, state_dir: str) -> tuple[Callable[..., Sequence[Mappi
                 local.queue = None
         return rd.line_draft(local.st, sh["registry"], sh["people"], sh["maps"], sh["assistant"],
                              owner, oid, state_dir=state, held=sh["held"], queue=local.queue,
-                             extra=extra, as_of=as_of)
+                             extra=extra, as_of=as_of,
+                             **({"prep": prepared} if prepared is not None else {}))
 
     def screen(text: str) -> Optional[str]:
         """Why ``text`` may not go to the model (the drafts' thread screen: pay or HR matter, a person

@@ -199,6 +199,13 @@ export function SimpleAnswer({ answer, streamed, busy, status, progress }: { ans
       {answer && (answer.untraced ?? []).length > 0 && (
         <p className="text-[12px] text-muted" data-testid="simple-untraced">Not traced to a record: {(answer.untraced ?? []).join(", ")}.</p>
       )}
+      {answer && (answer.working ?? []).length > 0 && (
+        <Disclosure label={`Working (${(answer.working ?? []).length})`} testId="simple-working">
+          <ul className="text-[12px] text-muted">
+            {(answer.working ?? []).map((w) => <li key={w}>{w}</li>)}
+          </ul>
+        </Disclosure>
+      )}
       {answer?.check && <p className="text-[12px] text-muted" data-testid="simple-check">{checkLine(answer.check)}</p>}
       {answer && cited.length > 0 && (
         <Disclosure label={`Sources (${plural(n, "record")})`} testId="simple-sources">

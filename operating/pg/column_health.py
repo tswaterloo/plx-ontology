@@ -26,6 +26,14 @@ _SCALAR = {"text", "character varying", "integer", "bigint", "numeric", "double 
            "real", "smallint", "boolean", "date", "timestamp with time zone",
            "timestamp without time zone"}
 _TEXT = {"text", "character varying"}
+_NUMBER = {"integer", "bigint", "numeric", "double precision", "real", "smallint"}
+_DATE = {"date", "timestamp with time zone", "timestamp without time zone"}
+
+
+def kind_of(data_type: str) -> str | None:
+    """The column's kind as health states it (from its declared type, nothing read)."""
+    return ("date" if data_type in _DATE else "number" if data_type in _NUMBER else
+            "text" if data_type in _TEXT else "flag" if data_type == "boolean" else None)
 
 
 def _columns(conn: Any, schema: str, view: str) -> list[tuple[str, str]]:
@@ -53,7 +61,8 @@ def statement(schema: str, view: str, cols: Sequence[tuple[str, str]], sampled: 
     """The one statement measuring every column of ``view`` (module doc): one pass for the
     counts and longest lengths, one for the rows at those lengths, one per listed column
     for its most common values; each column's result is one jsonb array
-    ``[name, fill, distinct_n, top_values, cut_share]`` of the single row returned."""
+    ``[name, fill, distinct_n, top_values, cut_share, kind, min, max, top_share]`` of the
+    single row returned."""
     src = f"{schema}.{_q(view)}" + (f" TABLESAMPLE SYSTEM ({SAMPLE_PERCENT})" if sampled else "")
     aggs, cuts, outs = ["count(*) AS n"], ["0 AS z"], []
     for i, (name, kind) in enumerate(cols):
@@ -70,17 +79,26 @@ def statement(schema: str, view: str, cols: Sequence[tuple[str, str]], sampled: 
                f"(SELECT jsonb_agg(jsonb_build_array(v, cnt)) FROM (SELECT {c}::text AS v, "
                f"count(*) AS cnt FROM s WHERE {c} IS NOT NULL AND length({c}::text) <= {SHORT} "
                f"GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {TOP}) t)")
+        # range facts (G8): the smallest and largest of a date or number column no marking may
+        # hide, and the share of filled rows holding the commonest value; none for a sample
+        ranged = kind_of(kind) in ("date", "number") and name not in hide and not sampled
+        aggs.append(f"min({c})::text AS lo{i}, max({c})::text AS hi{i}" if ranged
+                    else f"NULL::text AS lo{i}, NULL::text AS hi{i}")
+        share = (f"(SELECT max(cnt)::float8 FROM (SELECT count(*) AS cnt FROM s WHERE {c} IS "
+                 f"NOT NULL GROUP BY {c}) g) / nullif(a.f{i}, 0)"
+                 if scalar and not sampled else "NULL::float8")
         outs.append(f"jsonb_build_array({name!r}::text, a.f{i}::float8 / nullif(a.n, 0), a.d{i}, "
                     f"{top}, CASE WHEN a.m{i} > a.l{i} AND k.u{i} >= 2 THEN k.k{i}::float8 / "
-                    f"nullif(a.f{i}, 0) ELSE 0 END)")
+                    f"nullif(a.f{i}, 0) ELSE 0 END, {'NULL' if kind_of(kind) is None else repr(kind_of(kind))}::text, a.lo{i}, a.hi{i}, "
+                    f"{share})")
     return (f"WITH s AS MATERIALIZED (SELECT * FROM {src}), a AS (SELECT {', '.join(aggs)} "
             f"FROM s), k AS (SELECT {', '.join(cuts)} FROM s, a) SELECT {', '.join(outs)} "
             "FROM a, k")
 
 
 def measured(conn: Any, schema: str, view: str, sampled: bool) -> list[list[Any]] | None:
-    """Per column of ``view``: [name, fill, distinct_n, top_values, cut_share] (ONE
-    statement); None when the view has no table."""
+    """Per column of ``view``: [name, fill, distinct_n, top_values, cut_share, kind, min,
+    max, top_share] (ONE statement); None when the view has no table."""
     cols = _columns(conn, schema, view)
     if not cols:
         return None
@@ -100,7 +118,7 @@ def export(conn: Any, schema: str, views: Iterable[str], comms: Iterable[str]
             continue
         out[view] = {c: {"fill": None if f is None else round(float(f), 4), "distinct_n": d,
                          "cut_share": None if k is None else round(float(k), 4)}
-                     for c, f, d, _top, k in got}
+                     for c, f, d, _top, k, _kind, _lo, _hi, _share in got}
     return out
 
 
@@ -121,18 +139,20 @@ def measure(conn: Any, schema: str, views: Iterable[str], comms: Iterable[str]
         got = list(conn.execute(statement(schema, view, cols, sampled, hide)).fetchone())
         with conn.transaction():
             conn.execute(f"DELETE FROM {schema}.column_health WHERE view = %s", (view,))
-            for col, fill, distinct_n, top, cut_share in got:
+            for col, fill, distinct_n, top, cut_share, kind, low, high, share in got:
                 conn.execute(
                     f'INSERT INTO {schema}.column_health (view, "column", fill, distinct_n, '
-                    "top_values, cut_share, measured_at) VALUES (%s, %s, %s, %s, %s, %s, now())",
+                    "top_values, cut_share, kind, min_value, max_value, top_share, measured_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
                     (view, col, fill, distinct_n, None if top is None else json.dumps(top),
-                     cut_share))
+                     cut_share, kind, low, high, share))
         out[view] = len(got)
     return out
 
 
 def read(conn: Any, schema: str, view: str | None = None) -> list[Mapping[str, Any]]:
-    cols = ("view", "column", "fill", "distinct_n", "top_values", "cut_share", "measured_at")
+    cols = ("view", "column", "fill", "distinct_n", "top_values", "cut_share", "measured_at",
+            "kind", "min_value", "max_value", "top_share")
     where, args = ("WHERE view = %s", (view,)) if view else ("", ())
     return [dict(zip(cols, r)) for r in conn.execute(
         f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM {schema}.column_health '
@@ -141,12 +161,13 @@ def read(conn: Any, schema: str, view: str | None = None) -> list[Mapping[str, A
 
 def main(argv: Sequence[str] | None = None) -> int:
     """``python3 -m operating.pg.column_health export [--dsn DSN]``: the export, as JSON on
-    stdout (read-only: a standby works)."""
+    stdout (read-only: a standby works); ``measure``: the health of every view again, written
+    to ``biz.column_health`` (the primary)."""
     import argparse
     import psycopg
     import sys
     ap = argparse.ArgumentParser(prog="column_health")
-    ap.add_argument("command", choices=("export",))
+    ap.add_argument("command", choices=("export", "measure"))
     ap.add_argument("--dsn")
     args = ap.parse_args(argv)
     from operating.pg import business_views as bv, config
@@ -154,6 +175,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # the views, and the findings table measures read (its rows follow their messages:
         # no values kept, as for the comms views)
         names = [n for n in bv.VIEWS] + list(EXTRA)
+        if args.command == "measure":
+            # in place, after migration 0079: every view's health again with the range facts
+            # (the refresh measures only the views it remade)
+            done = measure(conn, bv.SCHEMA, names,
+                           [n for n in names if n in EXTRA or bv.VIEWS[n].fill is not None])
+            sys.stdout.write(json.dumps(done, indent=1, sort_keys=True) + "\n")
+            return 0
         got = export(conn, bv.SCHEMA, names,
                      [n for n in names if n in EXTRA or bv.VIEWS[n].fill is not None])
     sys.stdout.write(json.dumps(got, indent=1, sort_keys=True) + "\n")

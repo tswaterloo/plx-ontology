@@ -7,7 +7,7 @@ import { getInsight, getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { readAhead as keepAhead, useRead } from "@/lib/use-read";
-import { eastern } from "@/lib/format";
+import { eastern, isBeforeToday } from "@/lib/format";
 import type { InsightResult, TeamItem, TeamPerson, TeamPersonDetail, TeamTrackerWeek, TeamView } from "@/lib/types";
 
 // The Team view: one dense row per person, every captured system over 7 or 28 days, open
@@ -303,9 +303,6 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
 
   return (
     <div className="space-y-3" data-testid="team-dashboard">
-      <p className="max-w-[80ch] text-[13px] leading-5 text-muted" data-testid="team-intro">
-        What each person sent and did over the period, and the replies and tasks still open with them. Open a name to see their week.
-      </p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div role="radiogroup" aria-label="Period" className="flex h-7 overflow-hidden rounded-md border border-control text-[12px] max-sm:h-10">
           {([7, 28] as Period[]).map((p) => (
@@ -325,7 +322,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
           </>
         )}
         <span className="ml-auto truncate text-[12px] text-muted" data-testid="team-note">
-          {data.as_of ? `Counted ${eastern(data.as_of)}` : ""}
+          {data.as_of && (data.stale_since || isBeforeToday(data.as_of)) ? `Counted ${eastern(data.as_of)}` : ""}
         </span>
       </div>
 

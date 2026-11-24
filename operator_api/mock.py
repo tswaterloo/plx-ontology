@@ -878,8 +878,9 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                         else {}}
         return data_health.summary(Demo()) if check is None else data_health.page(Demo(), check)
 
-    def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
-        late = self._late()
+    def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25,
+                  stale: bool = False) -> m.LateList:
+        late = [] if stale else self._late()
         page = late[offset:offset + limit]
         return m.LateList(total=len(late), offset=offset, items=page,
                           more=offset + len(page) < len(late),

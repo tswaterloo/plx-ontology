@@ -71,12 +71,12 @@ export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?:
   return (
     <li id={`prepared-${item.item_id}`} className={linked ? "space-y-2 border-l-2 border-accent py-4 pl-3" : "space-y-2 py-4"} data-testid="prepared-job">
       <div className="flex flex-wrap items-baseline gap-x-3">
-        <span className="text-[13px] font-medium">{item.sender || "From the records"}</span>
-        {item.subject && <span className="text-[12px] text-muted">{item.subject}</span>}
+        {item.sender && <span className="text-[13px] font-medium">{item.sender}</span>}
+        {item.subject && item.subject.trim() !== (item.summary ?? "").trim() && <span className="text-[12px] text-muted">{item.subject}</span>}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
       {item.summary && <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary)}</p>}
-      {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
+      {item.message && item.message.trim() !== (item.summary ?? "").trim() && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
       {(item.facts ?? []).length > 0 && (
         <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted" aria-label="Why">
           {item.facts.map((f, n) => (

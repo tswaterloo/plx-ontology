@@ -92,7 +92,7 @@ class PageDoor(unittest.TestCase):
         return out
 
     def late_list(self, actor, limit, offset=0):
-        out = self.page({"reads": [{"name": "late_po_list", "params": {
+        out = self.page({"reads": [{"name": "late_po_list", "params": {"closed": "", "alive": "", 
             "limit": limit, "offset": offset}}]}, actor)
         self.assertNotIn("error", out, out)
         got = out["reads"]["late_po_list"]
@@ -108,7 +108,7 @@ class PageDoor(unittest.TestCase):
         marked = len(range(0, MORE, FINANCE_EVERY)) + 1          # + the fixture's PO-FIN
         self.assertGreaterEqual(late_all, MORE + 2)
         self.assertGreaterEqual(orders_all, 1)
-        reads = {"reads": [{"name": "late_po_count"}, {"name": "late_order_count"}]}
+        reads = {"reads": [{"name": "late_po_count", "params": {"closed": "", "alive": ""}}, {"name": "late_order_count"}]}
         for actor, late, orders in ((FULL, late_all, orders_all),
                                     (OPS, late_all - marked, None), (NOBODY, 0, 0)):
             with self.subTest(actor=sorted(actor.principals)):
@@ -137,7 +137,7 @@ class PageDoor(unittest.TestCase):
         hidden = {f"PO-L{k:02d}" for k in range(0, MORE, FINANCE_EVERY)} | {"PO-FIN"}
         self.assertEqual(ops, full - hidden)
         self.assertTrue(hidden <= full)
-        out = self.page({"reads": [{"name": "late_po_list", "params": {
+        out = self.page({"reads": [{"name": "late_po_list", "params": {"closed": "", "alive": "", 
             "limit": pr.MAX_ROWS, "offset": 0}}], "ids": True}, OPS)
         text = json.dumps(out, default=str)
         for word in sorted(hidden) + list(tbv.SECRET):
@@ -162,7 +162,7 @@ class PageDoor(unittest.TestCase):
                 self.assertEqual(len(set(walked)), len(walked))
 
     def test_ids_open_the_record_of_each_shown_row(self):
-        out = self.page({"reads": [{"name": "late_po_list", "params": {
+        out = self.page({"reads": [{"name": "late_po_list", "params": {"closed": "", "alive": "", 
             "limit": 5, "offset": 0}}], "ids": True}, OPS)
         rows = out["reads"]["late_po_list"]
         handles = [r[rows["columns"].index("handle")] for r in rows["rows"]]
@@ -175,9 +175,9 @@ class PageDoor(unittest.TestCase):
 
     def alerts(self, actor, rules="po_late"):
         out = self.page({"reads": [
-            {"name": "alerts_open", "params": {"rules": rules, "limit": pr.MAX_ROWS,
+            {"name": "alerts_open", "params": {"rules": rules, "closed": "", "limit": pr.MAX_ROWS,
                                                "offset": 0}},
-            {"name": "alerts_count", "params": {"rules": rules}}]}, actor)
+            {"name": "alerts_count", "params": {"rules": rules, "closed": ""}}]}, actor)
         self.assertNotIn("error", out, out)
         got = out["reads"]["alerts_open"]
         handles = {r[got["columns"].index("handle")] for r in got["rows"]}
@@ -199,7 +199,7 @@ class PageDoor(unittest.TestCase):
         self.assertGreaterEqual(len(truth), MORE)
         for actor in (FULL, OPS, NOBODY):
             with self.subTest(actor=sorted(actor.principals)):
-                listed = self.page({"reads": [{"name": "late_po_list", "params": {
+                listed = self.page({"reads": [{"name": "late_po_list", "params": {"closed": "", "alive": "", 
                     "limit": pr.MAX_ROWS, "offset": 0}}]}, actor)["reads"]["late_po_list"]
                 mine = {r[listed["columns"].index("handle")] for r in listed["rows"]} & truth
                 handles, out = self.alerts(actor)
@@ -352,7 +352,7 @@ class PageDoor(unittest.TestCase):
 
     def test_a_sqlite_store_is_refused(self):
         base = SimpleNamespace(store=SimpleNamespace(conn=object()))
-        out = self.page({"reads": [{"name": "late_po_count"}]}, base=base)
+        out = self.page({"reads": [{"name": "late_po_count", "params": {"closed": "", "alive": ""}}]}, base=base)
         self.assertEqual(out["error"]["code"], "not_served")
 
     # ---- the same door, its own connections ---------------------------------------------
@@ -367,7 +367,7 @@ class PageDoor(unittest.TestCase):
             self.assertEqual(kw, {"person": True})   # a person's page: the page views
             return real(pg, reader, work, seconds, **kw)
         with mock.patch.object(door, "scoped_read", spy):
-            self.assertNotIn("error", self.page({"reads": [{"name": "late_po_count"}]},
+            self.assertNotIn("error", self.page({"reads": [{"name": "late_po_count", "params": {"closed": "", "alive": ""}}]},
                                                 OPS, base))
         # plx.sql's door exactly (the same grant, decided in the read's own transaction);
         # none of the communications views' settings (``COMMS_SETTINGS``) beside it
@@ -398,7 +398,7 @@ class PageDoor(unittest.TestCase):
             self.assertTrue(held.wait(5))
             t0 = time.monotonic()
             with mock.patch.object(door, "reader_door", return_value=reader):
-                out = self.page({"reads": [{"name": "late_po_count"}]}, FULL, base)
+                out = self.page({"reads": [{"name": "late_po_count", "params": {"closed": "", "alive": ""}}]}, FULL, base)
             self.assertNotIn("error", out, out)
             self.assertLess(time.monotonic() - t0, 5)
             self.assertTrue(t.is_alive())    # the lock was held all along
@@ -612,7 +612,7 @@ class PageDoor(unittest.TestCase):
             self.assertEqual(got.exception.code, "not_ready")
 
     def test_a_door_ahead_without_its_store_is_refused(self):
-        out = pr.PageReads(None).call({"reads": [{"name": "late_po_list", "params": {
+        out = pr.PageReads(None).call({"reads": [{"name": "late_po_list", "params": {"closed": "", "alive": "", 
             "limit": 1, "offset": 0}}]}, None, door=door.reader_door(self.base(), FULL))
         self.assertEqual(out["error"]["code"], "invalid_request")
         out = pr.PageReads(None).call({"decide_door": True}, None, door=door.reader_door(
@@ -1430,6 +1430,7 @@ class HomeRefreshingTypes(unittest.TestCase):
         now = dt.datetime.now(dt.timezone.utc)
         ok = [{"rule": r, "ok_at": now} for r in RULES]   # every rule just finished
         rows = {"alerts_late_po_count": [{"late": 0}], "alerts_late_po_list": [],
+                "alerts_late_po_stale_count": [{"late": 0}], "late_po_candidates": [],
                 "alert_runs": ok, "alerts_count": [], "alerts_open": []}
         scope = SimpleNamespace(enabled=(), routing=None)
         types = ["needs_my_reply", "lot_on_hold", "po_late"]
@@ -1456,6 +1457,7 @@ class HomeAtRiskTotal(unittest.TestCase):
                    "handle": f"h{i}", "topic": "", "why": "w", "since": now, "first_seen": now,
                    "subject": "S"} for i in range(5)]
         rows = {"alerts_late_po_count": [{"late": 0}], "alerts_late_po_list": [],
+                "alerts_late_po_stale_count": [{"late": 0}], "late_po_candidates": [],
                 "alert_runs": ok, "alerts_open": listed,
                 "alerts_count": [{"rule": "price_below_cost", "open": 67, "oldest": now},
                                  {"rule": "lot_on_hold", "open": 4, "oldest": now}]}

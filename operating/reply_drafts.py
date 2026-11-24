@@ -404,7 +404,8 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
                assistant: Any, owner: str, oid: str, *,
                now: Optional[datetime] = None, state_dir: Optional[Path] = None,
                held: Optional[dict[str, Any]] = None, queue: Any = None,
-               history: Any = None, extra: str = "", as_of: str = "") -> list[dict[str, Any]]:
+               history: Any = None, extra: str = "", as_of: str = "",
+               prep: Any = None) -> list[dict[str, Any]]:
     """One open line's draft by the Assistant (``operating.autopilot_agent``), the same
     session Autopilot runs: the line's message event, the screens a draft keeps (participants
     cleared, nothing about pay or HR), the prepare step for its material, the session reading
@@ -465,7 +466,8 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     # (``assist_prepared``), already screened part by part there; the thread screen reads the
     # thread above only (a past case's own words must not refuse this matter)
     got, why = assistant.run(event, owner, described, str(person), people, reads=True, as_of=as_of,
-                             **({"extra": extra} if extra else {}))
+                             **({"extra": extra} if extra else {}),
+                             **({"prepared": prep} if prep is not None else {}))
     if got is None:
         got = io.invitation_only(event, material, why)
     if got is None:

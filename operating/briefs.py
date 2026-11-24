@@ -61,7 +61,6 @@ from . import time_window
 MEETING_SCHEMA = "plx-meeting-brief/v1"
 WEEKLY_SCHEMA = "plx-weekly-review/v1"
 FINANCE = "finance"
-MAX_PARTIES = 3          # outside parties one meeting brief reads
 MAX_ROWS = 10            # rows a section lists (the rest is "more", counted visibly)
 MAX_SOURCES = 5          # citations one row or figure carries
 MAX_TEXT = 160           # a subject or number as shown (untrusted text, clipped)
@@ -269,7 +268,7 @@ class Reads:
         """Lead-tier matches only (``possibly_related``): never a party."""
         if not self.declares(link_type) or self.cited.over():
             return []
-        out = self.call("plx.around", {"from": oid, "limit": MAX_PARTIES, "path": [
+        out = self.call("plx.around", {"from": oid, "path": [
             {"link_type": link_type, "direction": "forward"}]})
         rel = (out or {}).get("possibly_related") if isinstance(out, Mapping) else None
         return [o["object_id"] for o in (rel or {}).get("objects") or ()
@@ -825,7 +824,6 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
                             if p not in possible and p not in parties)
     else:
         parties = [object_id]
-    parties, possible = parties[:MAX_PARTIES], possible[:MAX_PARTIES]
     party_refs = [{"object_id": p, "type": type_of(p), "label": reads.label(p)[0]}
                   for p in parties]
     possible_refs = [{"object_id": p, "type": type_of(p), "label": reads.label(p)[0]}
@@ -1302,7 +1300,7 @@ def upcoming_meetings(call: Call, held: Iterable[str], *, now: datetime | None =
         parties = []
         if not private:
             for link in PARTY_LINKS["CalendarEvent"]:
-                for party in reads.linked(oid, link, "forward")[:MAX_PARTIES]:
+                for party in reads.linked(oid, link, "forward"):
                     if type_of(party) in PARTY_TYPES and party not in {
                             p["object_id"] for p in parties}:
                         parties.append({"object_id": party, "type": type_of(party),

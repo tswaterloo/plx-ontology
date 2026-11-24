@@ -8,7 +8,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { dataHealthExportHref, getAlertKinds, getBriefing, getBriefingItems, getDataHealth, getDataHealthPage } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { eastern, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
+import { eastern, isBeforeToday, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AlertKinds, AlertType, Briefing, BriefingItem, DataHealth } from "@/lib/types";
 
@@ -88,7 +88,7 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
               {c.read === false && (c.open === null || c.open === undefined) && (
                 <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-unchecked-${c.type}`}>This check has not run yet, so there is no count.</p>
               )}
-              {c.read === false && c.checked_at && (
+              {c.read === false && isBeforeToday(c.checked_at) && (
                 <p className="mt-0.5 text-[12px] text-muted">Last checked {eastern(c.checked_at)}.</p>
               )}
               {c.hidden > 0 && (
@@ -103,7 +103,7 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
       )}
       {off.length > 0 && (
         <p className="mt-2 text-[12px] text-faint" data-testid="data-health-off">
-          Not shown yet, until we have checked they are right: {off.map((c) => c.label.toLowerCase()).join("; ")}.
+          Not shown until they are checked: {off.map((c) => c.label.toLowerCase()).join("; ")}.
         </p>
       )}
     </section>

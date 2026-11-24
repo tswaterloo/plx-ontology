@@ -358,31 +358,67 @@ FIND_NEAR_SQL = (
     "ORDER BY greatest(whole, word) DESC, length(title), title, handle LIMIT %(limit)s")
 
 
+# ---- late purchase orders: closed by a person, and "probably closed or missed in the data" ----
+# A person's close (``assist.po_closures``, newest row per order) arrives as the ``closed`` read
+# parameter (order handles, one per line): a closed order is in no late list and no late count.
+# A late order is STALE (its own group, counted, never hidden) when it is later than the longest
+# time any closed order was ever given to arrive (requested date minus order date over the closed
+# orders of this same view: measured 11-24, 60 closed orders with both dates, longest 45 days),
+# AND nothing shows it alive since its needed-by date: no receipt linked to it, no mail or Teams post
+# naming it dated on or after that date, and no change to its own record after it was first seen.
+# The two lists are exact complements, so every order is in exactly one.
+CLOSED = "NOT (p.handle = ANY(string_to_array(%(closed)s, E'\\n')))"
+# the part of "no sign of life" the door can read: later than the longest lead, no receipt linked,
+# no change to the order's own record after it was first seen and after its needed-by date.
+# Mail and Teams are not in the door (no person-page view of them): the API reads their content-free
+# index (``record_comms``) for these candidates and passes back the ones a message names after
+# the needed-by date as ``alive`` (``operator_api.po_closing``).
+STALE_CORE = (
+    "p.days_late > (SELECT max(c.requested_date - c.order_date) FROM purchase_orders c WHERE "
+    "c.status = 'closed' AND c.requested_date >= c.order_date) "
+    "AND NOT EXISTS (SELECT 1 FROM record_links l WHERE l.link_type = 'Receipt.receives' "
+    "AND l.to_handle = p.handle) "
+    "AND NOT EXISTS (SELECT 1 FROM records r WHERE r.handle = p.handle "
+    "AND r.changed_at IS DISTINCT FROM r.first_seen AND r.changed_at::timestamptz::date > p.requested_date)")
+STALE = ("(" + STALE_CORE + " AND NOT (p.handle = ANY(string_to_array(%(alive)s, E'\\n'))))")
+_NOT_CLOSED = CLOSED.replace("p.handle", "handle")   # an alert on a closed order is no open item
+LIST_COLS = ("p.po_number, p.supplier, p.days_late, p.promised_date, p.requested_date, "
+             "p.total, p.total_currency, p.purchaser, p.line_count, p.handle, p.withheld")
+
+
+def _late_family(prefix: str, frm: str, base: str) -> dict[str, "Query"]:
+    """The count, the list and the suppliers of the live late orders, and the count and list of
+    the stale ones, over ``frm`` (aliased ``p``) restricted by ``base``; all drop the closed."""
+    live = f"{base} AND {CLOSED} AND {STALE} IS NOT TRUE"
+    old = f"{base} AND {CLOSED} AND {STALE} IS TRUE"
+    order = " ORDER BY p.days_late DESC NULLS LAST, p.po_number, p.handle "
+    page = "LIMIT %(limit)s OFFSET %(offset)s"
+    return {
+        f"{prefix}_count": Query(f"SELECT count(DISTINCT p.handle) AS late FROM {frm} WHERE {live}",
+                                 ("closed", "alive")),
+        f"{prefix}_list": Query(f"SELECT {LIST_COLS} FROM {frm} WHERE {live}{order}{page}",
+                                ("closed", "alive", "limit", "offset"), MAX_ROWS),
+        f"{prefix}_suppliers": Query(
+            "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT p.supplier, "
+            f"count(DISTINCT p.handle) AS late FROM {frm} WHERE {live} AND p.supplier IS NOT NULL "
+            "GROUP BY p.supplier) s ORDER BY late DESC, supplier LIMIT %(limit)s",
+            ("closed", "alive", "limit"), MAX_ROWS),
+        f"{prefix}_stale_count": Query(
+            f"SELECT count(DISTINCT p.handle) AS late FROM {frm} WHERE {old}", ("closed", "alive")),
+        f"{prefix}_stale_list": Query(f"SELECT {LIST_COLS} FROM {frm} WHERE {old}{order}{page}",
+                                      ("closed", "alive", "limit", "offset"), MAX_ROWS),
+    }
+
+
 # Each read is one statement over the guarded views; parameters bind as %(name)s.
 QUERIES: dict[str, Query] = {
     # Home / My work / Watching: the late purchase orders (the PO view's own verdict)
-    "late_po_count": Query(
-        "SELECT count(DISTINCT handle) AS late FROM purchase_orders WHERE "
-        + where_sql("late_purchase_orders")),
-    "late_po_list": Query(
-        "SELECT po_number, supplier, days_late, promised_date, requested_date, total, "
-        "total_currency, purchaser, line_count, handle, withheld FROM purchase_orders "
-        "WHERE " + where_sql("late_purchase_orders") + " "
-        "ORDER BY days_late DESC NULLS LAST, po_number, handle "
-        "LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
     # the open purchase orders a reader may see, late first then newest (the warm-up reads their
     # pages ahead: a first open of an order nobody opened since a refresh was 12-24 s cold)
     "open_po_list": Query(
         "SELECT po_number, handle, withheld FROM purchase_orders WHERE status = 'open' "
         "ORDER BY (verdict = 'late') DESC NULLS LAST, order_date DESC NULLS LAST, po_number, "
         "handle LIMIT %(limit)s", ("limit",), MAX_ROWS),
-    # the sidebar's late POs by supplier: each supplier's count, most first, and how many
-    # suppliers there are (a hidden supplier cell is no supplier: never named or counted)
-    "late_po_suppliers": Query(
-        "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT supplier, "
-        "count(*) AS late FROM purchase_orders WHERE " + where_sql("late_purchase_orders")
-        + " AND supplier IS NOT NULL GROUP BY supplier) s ORDER BY late DESC, supplier LIMIT %(limit)s",
-        ("limit",), MAX_ROWS),
     # customer orders past their required date (open only, the order view's days_late)
     "late_order_count": Query(
         "SELECT count(DISTINCT handle) AS late FROM sales_orders WHERE "
@@ -400,8 +436,8 @@ QUERIES: dict[str, Query] = {
     # (the page says "unavailable since", from ``alert_runs``), in the same snapshot.
     "alerts_count": Query(
         "SELECT rule, count(*) AS open, min(since) AS oldest FROM alerts WHERE state = 'open' "
-        "AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH + " GROUP BY rule "
-        "ORDER BY rule", ("rules",), 64),
+        "AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH + " AND " + _NOT_CLOSED
+        + " GROUP BY rule ORDER BY rule", ("rules", "closed"), 64),
     # ``subject``: the alerted record's own name (its ``records`` row as this reader may see
     # it; none when they may not), so a row is titled "BE FIT NOW", never "Portal customer"
     "alerts_open": Query(
@@ -409,8 +445,8 @@ QUERIES: dict[str, Query] = {
         "(SELECT r.label FROM records r WHERE r.handle = alerts.handle ORDER BY r.record_id "
         "LIMIT 1) AS subject FROM alerts "
         "WHERE state = 'open' AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH +
-        " ORDER BY since, rule, handle, topic LIMIT %(limit)s OFFSET %(offset)s",
-        ("rules", "limit", "offset"), MAX_ROWS),
+        " AND " + _NOT_CLOSED + " ORDER BY since, rule, handle, topic LIMIT %(limit)s "
+        "OFFSET %(offset)s", ("rules", "closed", "limit", "offset"), MAX_ROWS),
     # the alerts that state a money impact, biggest first (Home's Financials)
     "alerts_impact_top": _impact_top(),
     # per rule its last finished run and last run (no reason text)
@@ -419,24 +455,6 @@ QUERIES: dict[str, Query] = {
     # Home's and the late list's late POs as the po_late alert rule found them: the alert
     # joined to the order's own row (both guarded views: a row only when the reader may see
     # the alert AND the order; its cells as the order view masks them)
-    "alerts_late_po_count": Query(
-        "SELECT count(*) AS late FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
-        "WHERE a.rule = 'po_late' AND a.state = 'open' AND NOT " + bc_pilot_po_sql("p")
-        + " AND " + _FRESH.replace("rule", "a.rule", 1)),
-    "alerts_late_po_list": Query(
-        "SELECT p.po_number, p.supplier, p.days_late, p.promised_date, p.requested_date, "
-        "p.total, p.total_currency, p.purchaser, p.line_count, p.handle, p.withheld "
-        "FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
-        "WHERE a.rule = 'po_late' AND a.state = 'open' AND NOT " + bc_pilot_po_sql("p")
-        + " AND " + _FRESH.replace("rule", "a.rule", 1)
-        + " ORDER BY p.days_late DESC NULLS LAST, p.po_number, p.handle "
-        "LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
-    "alerts_late_po_suppliers": Query(
-        "SELECT supplier, late, count(*) OVER () AS suppliers FROM (SELECT p.supplier, "
-        "count(*) AS late FROM alerts a JOIN purchase_orders p ON p.handle = a.handle "
-        "WHERE a.rule = 'po_late' AND a.state = 'open' AND p.supplier IS NOT NULL AND NOT "
-        + bc_pilot_po_sql("p") + " AND " + _FRESH.replace("rule", "a.rule", 1) + " GROUP BY p.supplier) s "
-        "ORDER BY late DESC, supplier LIMIT %(limit)s", ("limit",), MAX_ROWS),
     "views_as_of": Query("SELECT view, built_at FROM view_state ORDER BY view", (), 64),
     # ---- the one search box: every kind of business record by name or number --------
     # two parallel workers at most: measured on the live box at load ~42 (owner's door,
@@ -599,6 +617,31 @@ QUERIES: dict[str, Query] = {
         "production_line, po_number, qc_ph_24h, qc_viscosity_24h, qc_tpc_yeast, tested_by, "
         "checked_by, handle, withheld FROM batches WHERE handle = %(handle)s", ("handle",)),
 }
+# Home / My work / Watching: the late purchase orders (the PO view's own verdict) ...
+# one purchase order as this reader sees it: receipts linked to it and the mail and Teams posts
+# naming it after ``since`` (an ISO time, '' for ever): a close's signs of life (``po_closing``)
+QUERIES["po_signs"] = Query(
+    "SELECT p.handle, (SELECT count(*) FROM record_links l WHERE l.link_type = 'Receipt.receives' "
+    "AND l.to_handle = p.handle) AS receipts, (SELECT array_agg(r.record_id) FROM records r "
+    "WHERE r.handle = p.handle) AS record_ids FROM purchase_orders p WHERE p.handle = %(handle)s",
+    ("handle",), 1)
+# the late orders that could be stale before mail and Teams are asked: their needed-by day and the
+# records a message may name them by (``po_closing.alive``)
+QUERIES["late_po_candidates"] = Query(
+    "SELECT p.handle, p.requested_date, (SELECT array_agg(r.record_id) FROM records r WHERE "
+    "r.handle = p.handle) AS record_ids FROM purchase_orders p WHERE ((" + where_sql("late_purchase_orders")
+    + ") OR EXISTS (SELECT 1 FROM alerts a WHERE a.rule = 'po_late' AND a.state = 'open' "
+    "AND a.handle = p.handle)) AND " + CLOSED + " AND " + STALE_CORE
+    + " AND p.handle > %(after)s ORDER BY p.handle LIMIT " + str(MAX_ROWS), ("closed", "after"), MAX_ROWS)
+# (a page of MAX_ROWS handles after ``after``: ``po_closing.params`` reads on until a short page)
+QUERIES.update(_late_family("late_po", "purchase_orders p",
+                            "(" + where_sql("late_purchase_orders") + ")"))
+# ... and as the po_late alert rule found them: the alert joined to the order's own row (both
+# guarded views: a row only when the reader may see the alert AND the order)
+QUERIES.update(_late_family(
+    "alerts_late_po", "alerts a JOIN purchase_orders p ON p.handle = a.handle",
+    "a.rule = 'po_late' AND a.state = 'open' AND NOT " + bc_pilot_po_sql("p") + " AND "
+    + _FRESH.replace("rule", "a.rule", 1)))
 
 
 class PageReadError(Exception):

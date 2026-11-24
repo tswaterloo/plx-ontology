@@ -4,6 +4,7 @@ import { SectionTabs } from "@/components/shell";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChartNoAxesColumn, ChevronDown, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview, nextStep } from "@/components/late/overview";
+import { CloseControl } from "@/components/late/close-control";
 import { stepWords, TodayDetail, type QueueRow } from "@/components/today-detail";
 import { DoneRing, lateEdge, lateFigure, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { FeedNote } from "@/components/feed-note";
@@ -240,6 +241,11 @@ export function LateView() {
   const [picked, setPicked] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<ProactiveSuggestion[]>([]);
   const [states, setStates] = useState<Record<string, ActionResult>>({});
+  // the very late orders that show no sign of life: counted always, listed when the group is opened
+  const [staleTotal, setStaleTotal] = useState<number | null>(null);
+  const [staleItems, setStaleItems] = useState<LatePo[] | null>(null);
+  const [staleOpen, setStaleOpen] = useState(false);
+  const [staleError, setStaleError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     const c = new AbortController();
@@ -252,6 +258,8 @@ export function LateView() {
       setStaleSince(all.staleSince);
       setTotal(all.total);
       setItems(all.items);
+      setStaleTotal(all.staleTotal);
+      setStaleItems(null);
     })().catch((e) => {
       if (c.signal.aborted) return;
       setBusy(noticeKind(e) === "busy");
@@ -280,6 +288,20 @@ export function LateView() {
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
   }, [desktop]);
+
+  // the stale group is read when it is opened (and again after a close changes it)
+  useEffect(() => {
+    if (!staleOpen || staleItems !== null || !staleTotal) return;
+    const c = new AbortController();
+    setStaleError(null);
+    readAllLate((offset, size) => getLateList(offset, c.signal, size, true), PAGE, MOST).then(
+      (all) => setStaleItems(all.items),
+      (e) => {
+        if (!c.signal.aborted) setStaleError(plainError(e));
+      },
+    );
+    return () => c.abort();
+  }, [staleOpen, staleItems, staleTotal]);
 
   const suppliers = useMemo(() => supplierCounts(items), [items]);
   const shown = useMemo(() => sortLate(items.filter((p) => matches(p, filter)), sort.key, sort.desc), [items, filter, sort]);
@@ -469,7 +491,7 @@ export function LateView() {
           ) : total === null ? (
             <ListSkeleton />
           ) : items.length === 0 ? (
-            <p className="px-5 py-10 text-[13px] text-muted">No late POs.</p>
+            <p className="px-5 py-10 text-[13px] text-muted">{staleTotal ? "No late POs that show signs of life." : "No late POs."}</p>
           ) : (
             <>
               <div className="flex h-9 items-end justify-between gap-3 px-5 pb-1.5 text-[12px] text-muted">
@@ -507,6 +529,34 @@ export function LateView() {
               )}
             </>
           )}
+          {ready && !!staleTotal && (
+            <details className="mt-4 border-t border-border px-2" open={staleOpen} onToggle={(e) => setStaleOpen((e.currentTarget as HTMLDetailsElement).open)} data-testid="late-stale">
+              <summary className="cursor-pointer px-3 py-3 text-[13px] font-medium text-fg" data-testid="late-stale-summary">
+                Probably closed or missed in the data: check and close <span className="num font-normal text-muted">({staleTotal})</span>
+              </summary>
+              <p className="px-3 pb-2 text-[12px] leading-4 text-muted">
+                Very late, and nothing shows them alive since their needed-by date: no receipt, no message from the supplier or in Teams, no change to the order. They are not counted above.
+              </p>
+              {staleError ? (
+                <p className="px-3 py-2 text-[13px] text-late">{staleError}</p>
+              ) : staleItems === null ? (
+                <p className="px-3 py-2 text-[13px] text-muted">Reading them</p>
+              ) : (
+                <ul className="pb-2">
+                  {staleItems.map((po) => (
+                    <li key={po.object_id} data-testid="late-stale-row">
+                      <ul>
+                        <Row po={po} chase={chaseOf(undefined)} on={false} onPick={null} />
+                      </ul>
+                      <div className="px-3 pb-2">
+                        <CloseControl order={{ handle: po.sources?.[0]?.handle, object_id: po.object_id }} compact onChanged={() => load()} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </details>
+          )}
           {!desktop && ready && items.length > 1 && <div className="mt-6 border-t border-border px-5 pt-6">{overview("chart")}</div>}
         </div>
       </div>
@@ -519,12 +569,17 @@ export function LateView() {
       {desktop && (
         <div className="hidden min-w-0 flex-1 lg:flex">
           {selected ? (
+            <div className="flex min-w-0 flex-1 flex-col">
+            <div className="shrink-0 border-b border-border px-5 py-2">
+              <CloseControl key={selected.object_id} order={{ handle: selected.sources?.[0]?.handle, object_id: selected.object_id }} onChanged={() => { pick(null); load(); }} />
+            </div>
             <TodayDetail
               key={selected.object_id}
               row={lateRow(selected, bySubject.get(selected.object_id))}
               state={bySubject.get(selected.object_id) ? states[bySubject.get(selected.object_id)!.id] : null}
               onDone={(r) => setStates((prev) => ({ ...prev, [r.card_id]: r }))}
             />
+            </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col bg-bg">
               <div className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border px-5 text-[13px] text-muted">

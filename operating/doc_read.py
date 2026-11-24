@@ -67,6 +67,11 @@ class Reading:
     # background), and the scanned pages the PDF has when that is known
     ocr_pending: list[int] = field(default_factory=list)
     ocr_total: int = 0
+    # the pages whose text came from OCR (not the PDF's text layer): how sure each line is
+    ocr_numbers: list[int] = field(default_factory=list)
+    # a Word file's tables kept as tables (name, rows (number, cells)): ``query`` reads them
+    # like sheets (the text keeps its own ``| a | b |`` lines)
+    grids: list[tuple[str, list[tuple[int, list[str]]]]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ package helpers
@@ -328,15 +333,20 @@ def _paragraph(p: ElementTree.Element) -> str:
     return "".join(parts).strip()
 
 
-def _word_blocks(body: ElementTree.Element) -> list[str]:
+def _word_blocks(body: ElementTree.Element,
+                 grids: Optional[list] = None) -> list[str]:
     lines: list[str] = []
     for block in list(body):
         if block.tag == f"{_W}tbl":
+            grid: list[tuple[int, list[str]]] = []
             for row in block.iter(f"{_W}tr"):
                 cells = [" ".join(x for x in (_paragraph(p) for p in tc.iter(f"{_W}p")) if x)
                          for tc in row.findall(f"{_W}tc")]
                 if any(cells):
                     lines.append("| " + " | ".join(cells) + " |")
+                    grid.append((len(grid) + 1, cells))
+            if grids is not None and grid:
+                grids.append((f"table {len(grids) + 1}", grid))
         elif block.tag == f"{_W}p":
             text = _paragraph(block)
             if text:
@@ -344,7 +354,7 @@ def _word_blocks(body: ElementTree.Element) -> list[str]:
         elif block.tag == f"{_W}sdt":
             content = block.find(f"{_W}sdtContent")
             if content is not None:
-                lines += _word_blocks(content)
+                lines += _word_blocks(content, grids)
     return lines
 
 
@@ -363,7 +373,8 @@ def _docx(data: bytes, unzipped: int = MAX_UNZIPPED) -> Reading:
     body = root.find(f"{_W}body") if root is not None else None
     if body is None:
         raise Unread("It is not a Word document.")
-    lines = _word_blocks(body)
+    grids: list = []
+    lines = _word_blocks(body, grids)
     extra = []
     for name, label in sorted(parts.items()):
         if label == "main":
@@ -376,7 +387,7 @@ def _docx(data: bytes, unzipped: int = MAX_UNZIPPED) -> Reading:
     text = "\n".join(lines) + ("\n\n" + "\n\n".join(extra) if extra else "")
     if not re.search(r"\w", text):
         raise Unread("It has no text to read.")
-    return Reading("text", text, parts=1)
+    return Reading("text", text, parts=1, grids=grids)
 
 
 def _pptx(data: bytes, unzipped: int = MAX_UNZIPPED) -> Reading:
@@ -428,7 +439,7 @@ def _pdf(data: bytes, ocr: bool, cap: Optional[int] = None,
     blank = [n for n, t in sorted(pages.items()) if not re.search(r"\w", t)]
     if not pages:
         blank = []
-    ocr_done, pending, total = 0, [], len(blank)
+    ocr_done, pending, total, got = 0, [], len(blank), {}
     if (blank or not pages) and ocr:
         if known is not None:
             # the background reading of this file is done: its pages, nothing read again
@@ -450,7 +461,7 @@ def _pdf(data: bytes, ocr: bool, cap: Optional[int] = None,
     if not re.search(r"\w", re.sub(r"\[page \d+\]", "", text)):
         raise Unread("It has no text to read (a scan that OCR could not read).")
     return Reading("pdf", text, parts=len(pages), unread=unread, ocr_pages=ocr_done,
-                   ocr_pending=pending, ocr_total=total)
+                   ocr_pending=pending, ocr_total=total, ocr_numbers=sorted(got))
 
 
 def ocr_rest(data: bytes) -> dict[int, str]:
@@ -534,7 +545,7 @@ def _image(data: bytes, ocr: bool) -> Reading:
     text = done.stdout.decode("utf-8", "replace").strip()
     if done.returncode != 0 or not re.search(r"\w", text):
         raise Unread("OCR found no words in it.")
-    return Reading("image", text, parts=1, ocr_pages=1)
+    return Reading("image", text, parts=1, ocr_pages=1, ocr_numbers=[1])
 
 
 # ------------------------------------------------------------------ text, legacy
@@ -656,14 +667,15 @@ def window(text: str, offset: int = 0, chars: int = WINDOW) -> dict:
             "next_offset": end if end < len(text) else None}
 
 
-def find(text: str, words: str, limit: int = MAX_FIND) -> dict:
+def find(text: str, words: str, limit: int = MAX_FIND, skip: int = 0) -> dict:
     """The lines of ``text`` holding every one of ``words`` (case and accents as written,
-    case-insensitive), each with its offset and the part (sheet, page or slide) it is in;
-    ``more``: how many further lines matched past ``limit``."""
+    case-insensitive), each with its offset and the part (sheet, page or slide) it is in:
+    ``limit`` of them from the ``skip``-th match on; ``more``: how many further lines
+    matched past those, and ``next_skip`` (the ``skip`` that reads on from there)."""
     terms = [w for w in re.split(r"\s+", str(words or "").strip().lower()) if w]
     if not terms:
         return {"matches": [], "more": 0}
-    out, more, part, at = [], 0, None, 0
+    out, more, part, at, seen = [], 0, None, 0, 0
     for line in text.split("\n"):
         start = at
         at += len(line) + 1
@@ -672,11 +684,17 @@ def find(text: str, words: str, limit: int = MAX_FIND) -> dict:
             part = marker.group(1)
         low = line.lower()
         if all(t in low for t in terms):
+            seen += 1
+            if seen <= skip:
+                continue
             if len(out) < limit:
                 out.append({"offset": start, "in": part, "line": line[:600]})
             else:
                 more += 1
-    return {"matches": out, "more": more}
+    got = {"matches": out, "more": more, "matched_total": seen}
+    if more:
+        got["next_skip"] = skip + len(out)
+    return got
 
 
 # ------------------------------------------------------------------ rows of a sheet
@@ -757,17 +775,53 @@ def _sheets(text: str) -> list[tuple[str, list[tuple[int, list[str]]]]]:
     return out
 
 
+def line_sheet(reading: "Reading") -> list[tuple[str, list[tuple[int, list[str]]]]]:
+    """The lines of a reading that is not a sheet, as one table named ``lines`` for
+    ``query``: the header (row 0: part, text, how_sure) and one row per text line, the row
+    number being the line's number in the reading. ``part`` is the marker the reading put
+    before it (``page 3``, ``slide 2``, ``header``), ``how_sure`` where the words came from:
+    ``ocr`` (a scanned page or an image), ``text layer`` (a PDF page's own text) or
+    ``document text``. A line is never split into fields here: what a field's value is
+    stays for the reader of the line."""
+    rows: list[tuple[int, list[str]]] = [(0, ["part", "text", "how_sure"])]
+    part, n = "", 0
+    for line in reading.text.split("\n"):
+        marker = re.fullmatch(r"\[([^\]]{1,60})\]", line.strip())
+        if marker:
+            part = marker.group(1)
+            continue
+        if not line.strip():
+            continue
+        n += 1
+        page = re.fullmatch(r"page (\d+)", part)
+        if reading.kind == "image" or (page and int(page.group(1)) in reading.ocr_numbers):
+            sure = "ocr"
+        elif reading.kind == "pdf":
+            sure = "text layer"
+        else:
+            sure = "document text"
+        rows.append((n, [part, line, sure]))
+    return [("lines", rows)]
+
+
+def sheets_of(reading: "Reading") -> list[tuple[str, list[tuple[int, list[str]]]]]:
+    """Every table a reading holds, for ``query``: a workbook's or CSV's sheets, a Word
+    file's tables (``table 1``...), then the ``lines`` of any other text."""
+    return _sheets(reading.text) or list(reading.grids) or line_sheet(reading)
+
+
 def query(text: str, sheet: Optional[str] = None, where: Any = (), sums: Any = (),
-          header_row: Optional[int] = None) -> dict:
+          header_row: Optional[int] = None, keep: bool = False,
+          sheets: Optional[list] = None) -> dict:
     """Rows of one sheet of a workbook or CSV reading that meet every ``where`` condition
     ({"column": a header or a column letter, "op": one of ``OPS``, "value"}; = and != compare
     two plain amounts as amounts and anything else as whole text, case-insensitive, so a
     code matches only itself; > >= < <= compare plain amounts or unambiguous dates, and a
     row whose cell is neither is counted in ``not_compared``, never silently false), counted over
     the whole sheet, with the sums of ``sums`` columns over them and the first
-    ``MAX_QUERY_ROWS``. The header is the sheet's first row (or ``header_row``). An unknown
+    ``MAX_QUERY_ROWS`` (``keep``: every matched row too, as ``table``: (row number, cells)). The header is the sheet's first row (or ``header_row``). An unknown
     sheet, column or op is refused with what there is (``ValueError``)."""
-    sheets = _sheets(text)
+    sheets = _sheets(text) if sheets is None else sheets
     if not sheets:
         raise ValueError("it has no sheet of rows")
     if sheet is None:
@@ -833,9 +887,12 @@ def query(text: str, sheet: Optional[str] = None, where: Any = (), sums: Any = (
         return {">": x > y, ">=": x >= y, "<": x < y, "<=": x <= y}[op]
 
     matched, sums_out, shown, not_numbers = 0, {n: 0.0 for n, _ in totals}, [], {}
+    table: list[tuple[int, list[str]]] = []
     for number, cells in body:
         if all(holds(cells, col, op, value) for col, op, value in conds):
             matched += 1
+            if keep:
+                table.append((number, cells))
             for n, col in totals:
                 got = _amount(cells[col]) if col < len(cells) else None
                 if got is None:
@@ -847,6 +904,8 @@ def query(text: str, sheet: Optional[str] = None, where: Any = (), sums: Any = (
                 shown.append(f"r{number} | " + " | ".join(cells))
     out = {"sheet": name, "header": header, "rows_scanned": len(body), "matched": matched,
            "rows": shown, "more": max(0, matched - len(shown))}
+    if keep:
+        out["table"] = table
     if totals:
         out["sums"] = {n: round(v, 6) for n, v in sums_out.items()}
         if any(not_numbers.values()):
@@ -858,3 +917,66 @@ def query(text: str, sheet: Optional[str] = None, where: Any = (), sums: Any = (
                                     "amount, or a date written ambiguously such as "
                                     "01/02/2025): they are not in matched")
     return out
+
+
+# ------------------------------------------------------------------ zip archives
+
+def zip_members(data: bytes, unzipped: Optional[int] = None) -> Optional[list[dict]]:
+    """The members of a plain zip (not an Office package: those are read as documents) as
+    ``{name, size, kind}``, in the archive's order, every one listed (no cap on the count);
+    None when ``data`` is no zip or is one of the Office kinds. ``ValueError`` when the
+    archive unpacks to more than ``unzipped`` bytes (a bomb: nothing of it is opened)."""
+    unzipped = MAX_UNZIPPED if unzipped is None else unzipped
+    if not data.startswith(b"PK\x03\x04") or kind_of(data) != "unknown":
+        return None
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        infos = [i for i in z.infolist() if not i.is_dir()]
+    except (zipfile.BadZipFile, ValueError, OSError):
+        return None
+    if sum(i.file_size for i in infos) > unzipped:
+        raise ValueError("the archive unpacks to more than the limit; nothing of it is opened")
+    out = []
+    for i in infos:
+        try:
+            kind = kind_of(z.read(i)) if i.file_size <= 50_000_000 else "unknown"
+            if kind == "unknown" and zip_members_ok(z, i):
+                kind = "zip"
+        except (zipfile.BadZipFile, ValueError, OSError, RuntimeError):
+            kind = "unreadable"
+        out.append({"name": i.filename, "size": i.file_size, "kind": kind})
+    return out
+
+
+def zip_members_ok(z: "zipfile.ZipFile", info: "zipfile.ZipInfo") -> bool:
+    """Whether a member is itself a zip archive."""
+    try:
+        with z.open(info) as f:
+            return f.read(4) == b"PK\x03\x04"
+    except (zipfile.BadZipFile, OSError, RuntimeError):
+        return False
+
+
+def zip_member(data: bytes, path: str, unzipped: Optional[int] = None) -> tuple[str, bytes]:
+    """(name, bytes) of the member ``path`` of a zip; ``a.zip!b.xlsx`` goes into a zip held
+    inside it, at any depth (each level inside the ``unzipped`` budget). ``ValueError`` says
+    what there is when the member is not found."""
+    unzipped = MAX_UNZIPPED if unzipped is None else unzipped
+    name, blob = "", data
+    for step in [p for p in path.split("!") if p]:
+        members = zip_members(blob, unzipped)
+        if members is None:
+            raise ValueError(f"{name or 'the file'} is not a plain zip archive")
+        names = [m["name"] for m in members]
+        if step not in names:
+            raise ValueError("no such member; the archive's members are listed by reading it "
+                             f"without member ({len(names)} of them)")
+        try:
+            info = zipfile.ZipFile(io.BytesIO(blob)).getinfo(step)
+            if info.file_size > unzipped:
+                raise ValueError("that member unpacks to more than the limit")
+            blob = zipfile.ZipFile(io.BytesIO(blob)).read(step)
+        except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+            raise ValueError("that member could not be opened") from exc
+        name = step
+    return name, blob

@@ -10,6 +10,9 @@ import { plainError } from "@/lib/errors";
 import { ago, formatDateTime } from "@/lib/format";
 import type { AskChat, AskChats } from "@/lib/types";
 
+/** Chats drawn at first; the rest are one click away (Show more, Show all). */
+const CHATS_FIRST = 15;
+
 /**
  * Your Ask conversations, like a chat app's list: pinned first, then the most recent, each
  * titled by its first question unless you named it. Open one to read it and go on asking in
@@ -22,6 +25,7 @@ export function AskChatList({ current, refreshKey, onNew, className }: { current
   const [problem, setProblem] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [drawn, setDrawn] = useState(CHATS_FIRST);
 
   useEffect(() => {
     const c = new AbortController();
@@ -113,7 +117,14 @@ export function AskChatList({ current, refreshKey, onNew, className }: { current
         {rest.length > 0 && (
           <>
             {pinned.length > 0 && <h3 className="px-2 pt-3 pb-1 text-[11px] font-medium text-faint">Recent</h3>}
-            <ul>{rest.map(row)}</ul>
+            <ul>{rest.slice(0, drawn).map(row)}</ul>
+            {rest.length > drawn && (
+              <p className="flex items-center gap-3 px-2 py-1.5 text-[12px] text-muted" data-testid="more-chats">
+                {rest.length - drawn} more
+                <button type="button" className="cursor-pointer text-accent hover:underline" onClick={() => setDrawn(drawn + 30)}>Show 30 more</button>
+                <button type="button" className="cursor-pointer text-accent hover:underline" onClick={() => setDrawn(rest.length)}>Show all</button>
+              </p>
+            )}
           </>
         )}
       </div>

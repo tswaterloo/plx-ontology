@@ -21,7 +21,7 @@ const COLS: { key: keyof Omit<AutopilotScoreDay, "day">; label: string }[] = [
 ];
 
 /** What the autopilot prepared for you each day and what you did with it, from your own
- * work log: one row a day, the last week, quiet days shown as dashes. Hidden until it has
+ * work log: one row a day, the last week, quiet days left out. Hidden until it has
  * prepared anything. */
 export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
   const { data, at } = useRead<AutopilotScorecard>(`/api/work-log/autopilot-days?days=${days}`, (s) => getAutopilotDays(days, s));
@@ -42,7 +42,7 @@ export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
     <section aria-label="Autopilot scorecard" className="border-b border-border px-6 py-3" data-testid="autopilot-scorecard">
       <StoredAge at={at ?? areaAt} />
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-[12px] font-medium text-muted">Autopilot, last {rows.length} days</h2>
+        <h2 className="text-[12px] font-medium text-muted">Assist, last {rows.length} days</h2>
         <p className="num text-[12px] text-muted">
           {decided ? `${kept} of ${decided} decided items used (${Math.round((kept * 100) / decided)}%), ${total("edited")} after an edit` : "Nothing decided yet"}
         </p>
@@ -59,7 +59,7 @@ export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((d) => (
+          {rows.filter((d) => COLS.some((c) => d[c.key] > 0)).map((d) => (
             <tr key={d.day} className={cn(d.day === today && "font-medium")}>
               <td className="py-0.5 pr-3">{dayLabel(d.day, today)}</td>
               {COLS.map((c) => (
@@ -72,11 +72,11 @@ export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
         </tbody>
       </table>
       {gates.length > 0 && (
-        <ul className="mt-2 space-y-0.5 text-[12px]" aria-label="Gate per workflow" data-testid="scorecard-gates">
+        <ul className="mt-2 space-y-0.5 text-[12px]" aria-label="Checks per workflow" data-testid="scorecard-gates">
           {gates.map((r) => (
             <li key={`${r.role}/${r.workflow}`} className="flex gap-2">
               <span className="w-40 shrink-0 font-medium">{workflowLabel(r.workflow)}</span>
-              <span className="num text-muted">{countdownText(r.countdown) ?? "No held-out items judged yet"}</span>
+              <span className="num text-muted">{countdownText(r.countdown) ?? "Not enough checked yet"}</span>
             </li>
           ))}
         </ul>

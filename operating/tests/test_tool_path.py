@@ -167,12 +167,18 @@ class Describe(unittest.TestCase):
 
                 class R:
                     def fetchall(_):
-                        return [("subject", 0.9876543, 1200, 0.0, dt.date(2026, 11, 23))]
+                        return [("subject", 0.9876543, 1200, 0.0, dt.date(2026, 11, 23),
+                                 "text", 0.0123456, None, None),
+                                ("ordered", 1.0, 80, None, dt.date(2026, 11, 23), "date",
+                                 0.417, "2026-03-28", "2026-11-20")]
                 return R()
         got = sql.SqlTool._health(Pg(), "emails")
-        self.assertEqual(got["columns"], [{"column": "subject", "fill": 0.9877,
-                                           "distinct": 1200, "cut_share": 0.0,
-                                           "measured": "2026-11-23"}])
+        self.assertEqual(got["columns"], [
+            {"column": "subject", "fill": 0.9877, "distinct": 1200, "cut_share": 0.0,
+             "measured": "2026-11-23", "kind": "text", "commonest_share": 0.0123},
+            {"column": "ordered", "fill": 1.0, "distinct": 80, "cut_share": None,
+             "measured": "2026-11-23", "kind": "date", "commonest_share": 0.417,
+             "range": ["2026-03-28", "2026-11-20"]}])
 
 
 class Docs(unittest.TestCase):
