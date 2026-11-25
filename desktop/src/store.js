@@ -207,7 +207,10 @@ function createStore({ dir, sealer, now = Date.now, log = () => undefined, maxTo
         dropName(name);
       }
     }
-    return { durable: true, door, keys: recent.map(([, m]) => m.k), entries };
+    const keys = recent.map(([, m]) => m.k);
+    const t = now();
+    const usedKeys = recent.filter(([, m]) => t - m.used <= 3600_000).map(([, m]) => m.k);
+    return { durable: true, door, keys, usedKeys, entries };
   }
 
   return {
@@ -221,6 +224,16 @@ function createStore({ dir, sealer, now = Date.now, log = () => undefined, maxTo
     },
     get size() {
       return index.size;
+    },
+
+    /** Lightweight read-only keys used in the last hour, most-recent-first, without decrypting entries. */
+    usedKeys() {
+      if (!durable || !dataKey) return [];
+      const t = now();
+      return [...index.entries()]
+        .filter(([, m]) => t - m.used <= 3600_000)
+        .sort((a, b) => b[1].used - a[1].used)
+        .map(([, m]) => m.k);
     },
 
     /** Start: unseal the data key, read the index, drop what is older than TTL_MS or lost.

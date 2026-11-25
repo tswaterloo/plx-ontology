@@ -175,6 +175,46 @@ def sentences(printed: str, cover: Cover) -> list[Mapping[str, Any]]:
 
 STANDS = "stands"
 
+# Opening phrases that signal a cover-rewritten reply leaked revision/update meta-commentary
+# instead of writing a standalone answer for the reader.
+_META_OPENINGS: tuple[str, ...] = (
+    "i've rewritten",
+    "i have rewritten",
+    "i've updated",
+    "i have updated",
+    "i've revised",
+    "i have revised",
+    "short update:",
+    "updated answer",
+    "revised answer",
+    "corrected answer",
+    "here is the updated",
+    "here is the revised",
+    "here is the corrected",
+    "here's the updated",
+    "here's the revised",
+    "here's the corrected",
+    "what changed:",
+)
+
+STANDALONE_RETRY = (
+    "Your previous reply opened with revision or update commentary instead of a standalone "
+    "answer. Write the complete answer again for the person as if answering their question "
+    "for the first time: no opening about rewriting, updating, or what changed, and no "
+    "mention of checks, reads, search passes, cursors, or filtering steps."
+)
+
+
+def meta_framing(text: str) -> bool:
+    """True when ``text`` opens with blatant meta-revision or update framing."""
+    first = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    norm = first.lstrip("#*_>`- ").casefold()
+    if not norm:
+        return False
+    if any(norm.startswith(prefix) for prefix in _META_OPENINGS):
+        return True
+    return "things changed:" in norm or "changes made:" in norm
+
 
 def message(flags: Sequence[Mapping[str, Any]]) -> str:
     """The turn that sends the flags back. The session writes the whole answer again (the
@@ -187,10 +227,13 @@ def message(flags: Sequence[Mapping[str, Any]]) -> str:
         lines.append(f'{n}. "{f["sentence"]}"\n   Why: {f["why"]}'
                      + (f'\n   Settle it with: {f["would_settle"]}' if f["would_settle"] else ""))
     lines.append("For each one run the read that settles it. Then write the complete answer "
-                 "again for the person: each of these sentences corrected, or kept where the "
+                 "again for the person as a standalone reply, as if answering their question "
+                 "for the first time: each of these sentences corrected, or kept where the "
                  "read shows it holds, every other sentence as it was. Give every figure as a "
-                 "reference to the result it comes from. Write only the answer: no mention of "
-                 "this check, of reads, parts, tools, handles or references, and nothing "
-                 "about what you did to produce it. If every sentence holds as written, reply "
-                 f"with the single word {STANDS}.")
+                 "reference to the result it comes from. Write only the answer: never frame "
+                 "it as a revision, update, or diff (no \"I've rewritten\", \"Updated answer\", "
+                 "\"Short update\", or \"Three things changed\"), no mention of this check, "
+                 "of reads, search passes, cursors, filtering steps, reading mechanics, parts, "
+                 "tools, handles or references, and nothing about what you did to produce it. "
+                 f"If every sentence holds as written, reply with the single word {STANDS}.")
     return "\n".join(lines)

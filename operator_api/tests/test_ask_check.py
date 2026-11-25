@@ -119,6 +119,8 @@ class Repair(unittest.TestCase):
                       'hold: 109 of 111 (row 0) | to settle: recount undated', msg)
         self.assertIn("| needs_cover | the reads hold: LIMIT 40 reached | to settle: count "
                       "over all mail", msg)
+        self.assertIn("standalone answer", msg)
+        self.assertIn("never frame it as a revision, update, or diff", msg)
         self.assertTrue(msg.endswith("Write the whole answer again."))
         self.assertIsNone(c.repair_message(c.Verdict("checked", [])))
 

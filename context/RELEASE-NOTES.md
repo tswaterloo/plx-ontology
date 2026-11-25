@@ -204,6 +204,11 @@ Changed:
 - Give Assist a whole job: it plans it, prepares every piece with what it read, shows progress and can be stopped
 - you approve, edit or drop each piece, and nothing is sent or changed without your confirm
 
+## Update 2026-11-25
+Changed:
+- Fable Speed §10.9 desktop push route (/api/events SSE, doors.access_mark, view_as safe)
+- Ask cover-pass revision hygiene (meta_framing retry) + general data-gap/attachment/attribution rules
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

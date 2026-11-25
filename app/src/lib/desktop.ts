@@ -23,7 +23,8 @@ export interface StoredAnswer {
  * answers the server sent this person, sealed on this machine. It refuses any page but the
  * Workbench's own. An older installed shell has none (`store` absent): the page runs on memory. */
 export interface PlxDesktopStore {
-  open: () => Promise<{ durable: boolean; door: string | null; keys: string[]; entries: StoredAnswer[] }>;
+  open: () => Promise<{ durable: boolean; door: string | null; keys: string[]; usedKeys?: string[]; entries: StoredAnswer[] }>;
+  usedKeys?: () => Promise<string[]>;
   get: (key: string) => Promise<StoredAnswer | null>;
   put: (entry: { key: string; body: string; door: string; release: string; fetchedAt: number }) => Promise<boolean>;
   drop: (key: string) => Promise<boolean>;

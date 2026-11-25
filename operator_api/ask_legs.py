@@ -295,5 +295,7 @@ def more_part(events: Sequence[Mapping[str, Any]]) -> Optional[str]:
         return None
     return ("You stopped before the end of what you started to read: " + "; ".join(left)
             + ". Read each to its last page for the period asked, then write the answer again "
-              "from all of it. Say that something was not read only if it truly could not be "
-              "read (a source down, or no access), in plain words.")
+              "from all of it as a standalone reply, as if answering for the first time: never "
+              "frame it as an update, revision, or diff, and never narrate search passes, "
+              "cursors, or filtering steps. Say that something was not read only if it truly "
+              "could not be read (a source down, or no access), in plain words.")

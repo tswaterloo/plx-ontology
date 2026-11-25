@@ -103,7 +103,10 @@ REPAIR_HEAD = ("A check of your answer against your own reads found these.\n"
                "contradicted / inconsistent: correct the statement from the cells named. "
                "needs_cover: run a read over the whole set, or say exactly what you covered. "
                "not_in_reads: read it, or take it out.\n")
-REPAIR_TAIL = "Write the whole answer again."
+REPAIR_TAIL = ("Reply as a standalone answer as if answering the user's question for the "
+               "first time: never frame it as a revision, update, or diff, and never narrate "
+               "checks, search passes, cursors, filtering steps, or reading mechanics. "
+               "Write the whole answer again.")
 
 
 @dataclass

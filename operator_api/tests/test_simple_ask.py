@@ -54,6 +54,20 @@ class AnswerFormTest(unittest.TestCase):
         self.assertEqual(1, sa.system_prompt().count("- The answer:"))
         self.assertLess(len(sa.system_prompt()), 36000)   # the prompt's budget (spec 7; 11-24 +1,000 name-finder line, +2,000 six measures over records, +1,900 whole-period paging, items block, calendar line)
 
+    def test_quality_and_hygiene_rules_are_in_the_prompt(self):
+        prompt = sa.system_prompt()
+        for rule in (
+            "narration of search passes, cursors, or filtering steps",
+            "Label email and Teams findings separately by source and date",
+            "include currency beside every dollar figure",
+            "configured mailboxes only (no meeting transcripts unless captured)",
+            "Data gaps before proxies",
+            "fallback proxy, not a firm verdict",
+            "Attached docs (PDF/CSV/DOCX) to check or enter",
+            "name the best candidate with a brief reason or ask the user to pick",
+        ):
+            self.assertIn(rule, prompt)
+
 
 class ChartTest(unittest.TestCase):
     """A chart is drawn from the rows of a plx.sql result the session got, never from

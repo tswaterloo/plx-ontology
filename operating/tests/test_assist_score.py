@@ -212,6 +212,41 @@ class AssistScoreTests(unittest.TestCase):
         self.assertEqual(res_b["by_person"], {})
         self.assertIn("excluded_people_omitted:1", res_b["not_measured"])
 
+    def test_reads_production_plan_acts_and_formatted_recipients(self):
+        matters = [{
+            "matter_id": "m-acts",
+            "owner_person": "alice@example.com",
+            "kind": "conversation",
+            "subject_key": "thread-acts",
+            "sources": {"records": []},
+            "basis_at": _ts(0),
+            "next_act": "reply",
+            "counterpart": "Vendor Display Name",
+            "plan": {
+                "ver": 1,
+                "why": "reply to vendor",
+                "acts": [{
+                    "act": "reply",
+                    "to": "Bob Smith <Bob@Vendor.com>, ops@vendor.com",
+                    "system": "mail",
+                    "about": "Confirm date",
+                }],
+            },
+        }]
+        actions = [{
+            "action_key": "a-acts",
+            "person": "alice@example.com",
+            "at": _ts(10),
+            "system": "mail",
+            "kind": "mail_sent",
+            "thread_key": "thread-acts",
+            "recipients": ["bob@vendor.com"],
+            "not_human": "",
+        }]
+        res = sc.score_matters(matters, actions)
+        self.assertEqual(res["totals"]["kind_score"], "1 of 1")
+        self.assertEqual(res["totals"]["recipient_score"], "1 of 1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,9 @@ import { viewingAs } from "./view-as";
 // page then shows it without reading it again, since it was read a moment ago.
 const kept = new Map<string, { value: unknown; at: number; shown: boolean; bytes: number }>();
 const ahead = new Map<string, Promise<unknown>>();
+// Reads a mounted page can revalidate when the server's event stream says data moved.
+// Keys are the page's own API paths (not the view-as-prefixed hot-tier keys).
+const activeRetries = new Map<string, Set<(server?: boolean) => void>>();
 /** The hot tier is bounded by bytes (an answer's length when known), oldest first out. */
 export const MOST_KEPT_BYTES = 48 * 1024 * 1024;
 const DEFAULT_BYTES = 100_000;
@@ -69,6 +72,37 @@ function keyOf(key: string): string {
   return `${viewingAs()?.key ?? ""} ${key}`;
 }
 
+
+/** Register a mounted read's revalidation; returns the unregister. */
+export function noteActiveRead(key: string, retry: (server?: boolean) => void): () => void {
+  let set = activeRetries.get(key);
+  if (!set) activeRetries.set(key, (set = new Set()));
+  set.add(retry);
+  return () => {
+    set.delete(retry);
+    if (!set.size) activeRetries.delete(key);
+  };
+}
+
+/** API paths a mounted page can re-read now. */
+export function activeReadKeys(): string[] {
+  return [...activeRetries.keys()];
+}
+
+/** Ask every mounted read to revalidate (its shown answer stays age-labelled until then). */
+export function rereadActive(): void {
+  for (const retries of activeRetries.values()) for (const retry of retries) retry(true);
+}
+
+/** API paths with a hot-tier answer, owner and view-as copies de-duplicated. */
+export function keptKeys(): string[] {
+  return [...new Set([...kept.keys()].map((k) => {
+    const at = k.indexOf(" /api/");
+    if (at >= 0) return k.slice(at + 1);
+    return k.startsWith(" ") ? k.slice(1) : k;
+  }))];
+}
+
 /** What `key` showed last time in this tab (or the page store), if anything. */
 export function keptRead<T>(key: string): T | null {
   return (kept.get(keyOf(key))?.value as T | undefined) ?? null;
@@ -106,10 +140,10 @@ export function hydrateRead(key: string, value: unknown, at: number, bytes: numb
 
 /** Read `key` ahead (a link to its page is hovered or focused), once: nothing when it was
  * read a moment ago or is being read. A failure is dropped; the page reads again. */
-export function readAhead(key: string, load: (signal: AbortSignal) => Promise<unknown>): void {
+export function readAhead(key: string, load: (signal: AbortSignal) => Promise<unknown>, force = false): void {
   const k = keyOf(key);
   const have = kept.get(k);
-  if (ahead.has(k) || (have && Date.now() - have.at < AHEAD_FRESH_MS)) return;
+  if (ahead.has(k) || (!force && have && Date.now() - have.at < AHEAD_FRESH_MS)) return;
   const began = epoch;
   let read: Promise<unknown>;
   try {
@@ -140,6 +174,7 @@ export function useRead<T>(key: string, load: (signal: AbortSignal) => Promise<T
   const [round, setRound] = useState(0);
   const loadRef = useRef(load);
   const running = useRef(false);   // a read is under way: a retry never aborts it or overlaps it
+  const queued = useRef(false);    // a server event/manual retry asked while it ran: read again after it
   const abortRetries = useRef(0);
   loadRef.current = load;
   // a new key paints its own kept value (or nothing), never the last key's
@@ -168,6 +203,11 @@ export function useRead<T>(key: string, load: (signal: AbortSignal) => Promise<T
       (v) => {
         running.current = false;
         if (ctl.signal.aborted) return;
+        if (queued.current) {
+          queued.current = false;
+          setRound((n) => n + 1);   // that answer may predate the server's change; never show it as current
+          return;
+        }
         if (began !== epoch) {
           // a change of yours was sent after this read started: its answer may be the older one; read again
           setRound((n) => n + 1);
@@ -181,6 +221,11 @@ export function useRead<T>(key: string, load: (signal: AbortSignal) => Promise<T
       (e) => {
         running.current = false;
         if (ctl.signal.aborted) return;
+        if (queued.current) {
+          queued.current = false;
+          setRound((n) => n + 1);
+          return;
+        }
         // an internal abort (e.g. a sibling route resetting shared caches) is not a server error: retry cleanly once
         if (e instanceof DOMException && e.name === "AbortError" && abortRetries.current < 2) {
           abortRetries.current += 1;
@@ -197,11 +242,15 @@ export function useRead<T>(key: string, load: (signal: AbortSignal) => Promise<T
   }, [key, round, on]);
   // a read again (Retry, or after a change of yours): what is shown is an earlier answer until the new one lands
   const shownAt = useRef<number | null>(null);
-  const retry = useCallback(() => {
-    if (running.current) return;   // a read is under way: a retry never aborts it or overlaps it
+  const retry = useCallback((server = false) => {
+    if (running.current) {
+      if (server) queued.current = true;   // never overlap it; when it lands, read again
+      return;
+    }
     setState((s) => (s.data === null || s.at !== null ? s : { ...s, at: shownAt.current ?? Date.now() }));
     setRound((n) => n + 1);
   }, []);
+  useEffect(() => noteActiveRead(key, retry), [key, retry]);
   const set = useCallback((v: T) => {
     keepRead(key, v);
     setState({ key, data: v, at: null });

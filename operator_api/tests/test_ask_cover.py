@@ -78,6 +78,114 @@ class CoverTests(unittest.TestCase):
         done = ask_patch.apply(written, got, "1. Standing orders are two.")
         self.assertEqual(done.replaced, 1)
 
+    def test_message_requires_standalone_reply_without_revision_or_process_narration(self):
+        flags = [{"kind": "A", "sentence": "None found.", "why": "limit reached",
+                  "would_settle": "count all rows"}]
+        said = ac.message(flags)
+        self.assertIn("standalone reply", said)
+        self.assertIn("for the first time", said)
+        self.assertIn("never frame it as a revision, update, or diff", said)
+        self.assertIn("search passes, cursors, filtering steps", said)
+
+    def test_meta_framing_detects_revision_openings_and_ignores_clean_answers(self):
+        for bad in (
+            "I've rewritten the one-page Word memo. Three things changed:\n- item",
+            "Short update: I've read last week's mail and Teams.",
+            "**Updated answer:** Here are the open orders.",
+            "Here is the corrected summary of open POs.",
+            "Three things changed:\n1. First",
+            "What changed: one figure was updated.",
+        ):
+            self.assertTrue(ac.meta_framing(bad), bad)
+        for clean in (
+            "",
+            "**3 open orders remain.** All are priced in CAD.",
+            "The invoice was updated on 21 Nov 2026 to 1,200.00 CAD.",
+            "No matching sales order was found in the system.",
+        ):
+            self.assertFalse(ac.meta_framing(clean), clean)
+
+    def test_covered_retry_replaces_only_when_non_empty_and_not_stands(self):
+        from dataclasses import dataclass, field
+        from operator_api import simple_ask as sa
+
+        @dataclass
+        class Ran:
+            final_text: str
+            events: list = field(default_factory=list)
+            usage: dict = field(default_factory=dict)
+
+        prev = Ran("I've rewritten the memo. Three things changed:\n- A",
+                   usage={"cover_repair": "rewritten"})
+        cleaned = sa.covered_retry(prev, Ran("Clean standalone answer."))
+        self.assertEqual(cleaned.final_text, "Clean standalone answer.")
+        self.assertEqual(cleaned.usage["cover_retry"], "rewritten")
+        self.assertEqual(sa.covered_retry(prev, Ran("")).final_text, prev.final_text)
+        self.assertEqual(sa.covered_retry(prev, Ran("stands")).final_text, prev.final_text)
+        self.assertEqual(sa.covered_retry(prev, Ran("stands")).usage["cover_retry"], "kept")
+
+    def test_warm_turn_retries_once_when_cover_rewrite_leaks_meta_framing(self):
+        from dataclasses import dataclass, field
+        from types import SimpleNamespace
+        from unittest import mock
+        from operator_api import simple_ask as sa
+
+        @dataclass
+        class FakeRun:
+            final_text: str
+            events: list = field(default_factory=list)
+            usage: dict = field(default_factory=dict)
+
+        class FakeSession:
+            alive = True
+
+            def __init__(self, replies):
+                self.replies = list(replies)
+                self.prompts = []
+
+            def turn(self, prompt, on_line, cancel):
+                self.prompts.append(prompt)
+                return FakeRun(self.replies.pop(0))
+
+            def close(self):
+                self.alive = False
+
+        def run_with(replies):
+            warm = sa.WarmSessions()
+            sess = FakeSession(replies)
+            host = SimpleNamespace(close=lambda: None)
+            asker = SimpleNamespace(
+                _reader_key=lambda s: "r1",
+                _scope_digest=lambda s: "d1",
+                _start_digest=lambda s: "s1",
+                _host_for=lambda s: host,
+                _agent_for=lambda on: SimpleNamespace(open_session=lambda h: sess),
+            )
+            with mock.patch.object(sa, "spares_per_reader", return_value=0):
+                ran = warm.turn(
+                    asker, object(), "c1", "q?", (), lambda line: None, None,
+                    check=lambda r, h: ("cover msg", sa.covered),
+                )
+            warm.close_all()
+            return ran, sess.prompts
+
+        ran, prompts = run_with([
+            "Initial answer.",
+            "I've rewritten the memo. Three things changed:\n- One",
+            "Clean standalone answer.",
+        ])
+        self.assertEqual(ran.final_text, "Clean standalone answer.")
+        self.assertEqual(ran.usage["cover_repair"], "rewritten")
+        self.assertEqual(ran.usage["cover_retry"], "rewritten")
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(prompts[2], ac.STANDALONE_RETRY)
+
+        # clean cover rewrite does not trigger a retry turn
+        ran2, prompts2 = run_with(["Initial answer.", "Clean revised answer."])
+        self.assertEqual(ran2.final_text, "Clean revised answer.")
+        self.assertNotIn("cover_retry", ran2.usage)
+        self.assertEqual(len(prompts2), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

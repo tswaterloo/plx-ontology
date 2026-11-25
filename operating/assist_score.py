@@ -58,7 +58,28 @@ def canonical_act_kind(raw: Optional[str], *, system: str = "") -> str:
 
 
 def _norm_addr(v: Any) -> str:
-    return str(v or "").strip().lower()
+    s = str(v or "").strip()
+    if "<" in s and ">" in s:
+        inner = s[s.rfind("<") + 1 : s.rfind(">")].strip()
+        if "@" in inner:
+            s = inner
+    return s.lower()
+
+
+def _parse_recipients(raw: Any) -> list[str]:
+    if not raw:
+        return []
+    items = [raw] if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple, set)) else []
+    out: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        for part in text.replace(";", ",").split(","):
+            addr = _norm_addr(part)
+            if addr:
+                out.add(addr)
+    return sorted(out)
 
 
 def _prepared_first_act(matter: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -71,21 +92,29 @@ def _prepared_first_act(matter: Mapping[str, Any]) -> tuple[str, list[str]]:
             plan = {}
     if not isinstance(plan, Mapping):
         plan = {}
+    acts = plan.get("acts")
+    first: Mapping[str, Any] = (
+        acts[0] if isinstance(acts, list) and acts and isinstance(acts[0], Mapping) else {}
+    )
     raw_kind = (
-        plan.get("first_act")
+        first.get("act")
+        or first.get("kind")
+        or plan.get("first_act")
         or plan.get("act")
         or plan.get("next_act")
         or matter.get("next_act")
         or ""
     )
-    kind = canonical_act_kind(str(raw_kind))
-    raw_recips = plan.get("recipients") or plan.get("to") or []
-    if isinstance(raw_recips, str):
-        raw_recips = [raw_recips]
-    recips = sorted({_norm_addr(r) for r in raw_recips if _norm_addr(r)})
+    kind = canonical_act_kind(str(raw_kind), system=str(first.get("system") or ""))
+    recips = _parse_recipients(
+        first.get("to")
+        or first.get("recipients")
+        or plan.get("recipients")
+        or plan.get("to")
+    )
     if not recips and matter.get("counterpart"):
         c = _norm_addr(matter.get("counterpart"))
-        if c:
+        if "@" in c:
             recips = [c]
     return kind, recips
 

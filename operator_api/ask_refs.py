@@ -752,7 +752,10 @@ def repair_message(rendered: Rendered) -> Optional[str]:
         lines.append("These figures, dates or record numbers are typed, and no result you "
                      "got (nor the person's own words) holds them exactly: "
                      + ", ".join(rendered.untraced) + ".")
-    lines.append("Write the whole answer again. Give every count, total, share or difference "
+    lines.append("Write the whole answer again as a standalone reply, as if answering the "
+                 "question for the first time: never frame it as a revision, update, or diff, "
+                 "and never narrate checks, search passes, cursors, filtering steps, or reading "
+                 "mechanics. Give every count, total, share or difference "
                  "as a reference to the result it comes from ({{count(sql://<id>)}}, "
                  "{{sum(sql://<id>.<column>, CAD)}}, {{a / b * 100 | 1}}, "
                  "{{sql://<id>#row=N.<column>}}); run plx.sql first if no result holds it. "

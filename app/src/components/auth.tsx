@@ -6,6 +6,7 @@ import { beginAuthCheck, getAuthConfig, getMe, logout, setBundlePrincipal, setTo
 import { ApiError, plainError } from "@/lib/errors";
 import { safeNext } from "@/lib/format";
 import { clearPending } from "@/lib/pending";
+import { startEvents } from "@/lib/events";
 import { clearSavedFor, setSavedUser } from "@/lib/saved";
 import { startReadStore, storeMayDraw, wipeStoreNow } from "@/lib/read-store";
 import { resetSessionCaches } from "@/lib/session-cache";
@@ -91,6 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // what this tab kept for anyone else (also across a reload) is dropped before Home reads
         setBundlePrincipal(me.principal);
         storeMayDraw();   // the desktop store's answers may be drawn now that /api/me has answered
+        startEvents();  // the session's push stream: open pages and kept reads move with the server
         setState({ status: "signed-in", config, me });
       } catch (e) {
         settleAuth();

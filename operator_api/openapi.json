@@ -10450,6 +10450,21 @@
         "title": "CustomerSummary",
         "type": "object"
       },
+      "CycleEvent": {
+        "additionalProperties": false,
+        "description": "The served data moved to another refresh cycle. The mark is opaque, never content.",
+        "properties": {
+          "cycle": {
+            "title": "Cycle",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cycle"
+        ],
+        "title": "CycleEvent",
+        "type": "object"
+      },
       "DataHealth": {
         "additionalProperties": false,
         "description": "Admin, Data health: every check the registry files under data health, each with its\nfindings for this reader; ``unread``: the checks' findings could not be read now\n(never a list of zeros).",
@@ -11153,6 +11168,21 @@
           }
         },
         "title": "DocumentsPending",
+        "type": "object"
+      },
+      "DoorEvent": {
+        "additionalProperties": false,
+        "description": "The session's door value. A different value means nothing kept under the old one may be drawn.",
+        "properties": {
+          "door": {
+            "title": "Door",
+            "type": "string"
+          }
+        },
+        "required": [
+          "door"
+        ],
+        "title": "DoorEvent",
         "type": "object"
       },
       "DraftDetail": {
@@ -19053,6 +19083,21 @@
         "title": "MemoryThread",
         "type": "object"
       },
+      "MineEvent": {
+        "additionalProperties": false,
+        "description": "Something of this person's own changed; re-read the screens and kept reads that show it.",
+        "properties": {
+          "mine": {
+            "title": "Mine",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mine"
+        ],
+        "title": "MineEvent",
+        "type": "object"
+      },
       "Money": {
         "additionalProperties": false,
         "properties": {
@@ -23340,6 +23385,21 @@
           "text"
         ],
         "title": "RecurringKeep",
+        "type": "object"
+      },
+      "ReleaseEvent": {
+        "additionalProperties": false,
+        "description": "The API code serving this stream; a page from another release reloads itself.",
+        "properties": {
+          "release": {
+            "title": "Release",
+            "type": "string"
+          }
+        },
+        "required": [
+          "release"
+        ],
+        "title": "ReleaseEvent",
         "type": "object"
       },
       "ReplyLine": {
@@ -34709,6 +34769,52 @@
         "summary": "Entry Confirm",
         "tags": [
           "writes"
+        ]
+      }
+    },
+    "/api/events": {
+      "get": {
+        "description": "The session's own event stream: no content, only marks that say what to re-read.",
+        "operationId": "page_events_api_events_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "x-sse-events": {
+                    "cycle": {
+                      "$ref": "#/components/schemas/CycleEvent"
+                    },
+                    "door": {
+                      "$ref": "#/components/schemas/DoorEvent"
+                    },
+                    "mine": {
+                      "$ref": "#/components/schemas/MineEvent"
+                    },
+                    "release": {
+                      "$ref": "#/components/schemas/ReleaseEvent"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "Server-sent events: release, cycle, mine and door; heartbeats are SSE comments."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Page Events",
+        "tags": [
+          "events"
         ]
       }
     },

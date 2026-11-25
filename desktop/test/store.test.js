@@ -182,6 +182,21 @@ test("entries older than seven days are dropped at open", async () => {
   assert.equal(walk(path.join(dir, "e")).length, 1);
 });
 
+test("open names the keys used in the last hour for push catch-up", async () => {
+  const dir = tmp();
+  let t = 1_000_000;
+  const a = createStore({ dir, sealer: sealer(), now: () => t });
+  await a.open();
+  await put(a, "/api/old", "{}", "d", { fetchedAt: t });
+  t += 2 * 3600_000;
+  await put(a, "/api/fresh", "{}", "d", { fetchedAt: t });
+  a.flush();
+  const b = createStore({ dir, sealer: sealer(), now: () => t });
+  const o = await b.open();
+  assert.deepEqual(o.keys.sort(), ["/api/fresh", "/api/old"]);
+  assert.deepEqual(o.usedKeys, ["/api/fresh"]);
+});
+
 test("without sealing the durable tier is off and nothing reaches the disk", async () => {
   for (const off of [sealer({ available: async () => false }), sealer({ available: async () => { throw new Error("no keyring"); } }), null]) {
     const dir = tmp();

@@ -38,6 +38,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import feedback as fb
 from . import view_as as va
 from .door_value import DOOR_HEADER, SESSION_HEADER, SESSION_REFUSED, door_value
+from .events import EventCenter
+
+EVENTS_POLL_SECONDS = 5.0
 from .routes import page as page_routes
 from . import work_log as wl
 from . import memory as mem
@@ -75,6 +78,7 @@ MEASURE_ROUTES = frozenset({
     # memory (and the people it names), the answer bank and the work log; GET only, read as
     # the owner the measure's ticket names, nothing remembered or written for the session
     "/api/ask/chats", "/api/feeds", "/api/teams/connection", "/api/instructions/recurring",
+    "/api/events",
     "/api/actions/log", "/api/memory", "/api/memory/people", "/api/templates/answer-bank",
     "/api/work-log",
     # a source and the records read out of it (business rule 11-23: every tool gets everything,
@@ -476,6 +480,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                   docs_url=None, redoc_url=None, openapi_url=None,
                   default_response_class=JSONResponse)
     app.state.backend, app.state.auth = backend, auth
+    center = EventCenter(backend)
+    app.state.event_center = center
     app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": ASK_JSON_MAX},
                        streamed=STREAMED)
     # a read whose connection closes cancels its work (``request_cancel``)
@@ -624,6 +630,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         wrote = getattr(request.state, "plx_wrote", None)
         if wrote is not None:
             backend.reader_wrote(*wrote)
+            if response.status_code < 400:
+                center.publish_mine(wrote[0].key)
             again = getattr(backend, "reread_after_write", None)
             if again is not None and wrote[1] is not None and response.status_code < 400:
                 again(*wrote)   # the screens it changed, read for the next visit
@@ -884,6 +892,56 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                                                   "owner": is_owner(who),
                                                   "can_view_as": viewing.available
                                                   and is_owner(who)})
+
+    # ---- events -----------------------------------------------------------------------
+
+    events_doc = {
+        200: {"description": "Server-sent events: release, cycle, mine and door; heartbeats are SSE comments.",
+              "content": {"text/event-stream": {"schema": {
+                  "type": "string", "x-sse-events": {
+                      name: {"$ref": f"#/components/schemas/{model.__name__}"}
+                      for name, model in m.PAGE_EVENTS.items()}}}}},
+        401: {"model": m.ErrorResponse}}
+
+    @app.get("/api/events", tags=["events"], responses=events_doc, response_class=StreamingResponse)
+    async def page_events(request: Request, who: Reader = Depends(reader)) -> StreamingResponse:
+        """The session's own event stream: no content, only marks that say what to re-read."""
+        q = center.subscribe(who.key)
+
+        async def stream():
+            from .page_store import code_version
+            door = getattr(request.state, "plx_door", None)
+            checked = beat = time.monotonic()
+            try:
+                yield sse("release", {"release": code_version()})
+                if door:
+                    yield sse("door", {"door": door})
+                while not await request.is_disconnected():
+                    poll_s = EVENTS_POLL_SECONDS
+                    item = None
+                    try:
+                        item = await asyncio.wait_for(q.get(), timeout=poll_s)
+                    except asyncio.TimeoutError:
+                        pass
+                    if item is not None:
+                        yield sse(item[0], item[1])
+                    now = time.monotonic()
+                    if now - checked >= poll_s:
+                        checked = now
+                        doors = getattr(backend, "doors", None)
+                        access = doors.access_mark(who) if doors is not None and hasattr(doors, "access_mark") else None
+                        moved = door_value(who, access)
+                        if moved and moved != door:
+                            door = moved
+                            yield sse("door", {"door": moved})
+                    if now - beat >= 20.0:
+                        beat = now
+                        yield KEEP_ALIVE
+            finally:
+                center.unsubscribe(q)
+
+        sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        return StreamingResponse(stream(), media_type="text/event-stream", headers=sent)
 
     # ---- ask --------------------------------------------------------------------------
 
@@ -3295,7 +3353,7 @@ def openapi_document(app: FastAPI) -> dict[str, Any]:
     doc = get_openapi(title=app.title, version=app.version, description=app.description,
                       routes=app.routes)
     _, defs = models_json_schema([(model, "serialization") for model in
-                                  [*m.ASK_EVENTS.values(), m.ErrorResponse]],
+                                  [*m.ASK_EVENTS.values(), *m.PAGE_EVENTS.values(), m.ErrorResponse]],
                                  ref_template="#/components/schemas/{model}")
     schemas = doc.setdefault("components", {}).setdefault("schemas", {})
     for name, schema in (defs.get("$defs") or {}).items():

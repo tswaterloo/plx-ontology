@@ -994,6 +994,32 @@ ASK_EVENTS: dict[str, type[_Model]] = {
     "error": ErrorBody}
 
 
+# ---- events ------------------------------------------------------------------------------
+
+class ReleaseEvent(_Model):
+    """The API code serving this stream; a page from another release reloads itself."""
+    release: str
+
+
+class CycleEvent(_Model):
+    """The served data moved to another refresh cycle. The mark is opaque, never content."""
+    cycle: str
+
+
+class MineEvent(_Model):
+    """Something of this person's own changed; re-read the screens and kept reads that show it."""
+    mine: int
+
+
+class DoorEvent(_Model):
+    """The session's door value. A different value means nothing kept under the old one may be drawn."""
+    door: str
+
+
+PAGE_EVENTS: dict[str, type[_Model]] = {
+    "release": ReleaseEvent, "cycle": CycleEvent, "mine": MineEvent, "door": DoorEvent}
+
+
 # ---- suggest ---------------------------------------------------------------------------
 
 class Suggestion(_Model):

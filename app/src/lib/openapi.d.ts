@@ -1576,6 +1576,26 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Page Events
+         * @description The session's own event stream: no content, only marks that say what to re-read.
+         */
+        get: operations["page_events_api_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/explore/{object_type}/{object_id}": {
         parameters: {
             query?: never;
@@ -8167,6 +8187,14 @@ export type components = {
             same_name?: components["schemas"]["ObjectRef"][];
         };
         /**
+         * CycleEvent
+         * @description The served data moved to another refresh cycle. The mark is opaque, never content.
+         */
+        CycleEvent: {
+            /** Cycle */
+            cycle: string;
+        };
+        /**
          * DataHealth
          * @description Admin, Data health: every check the registry files under data health, each with its
          *     findings for this reader; ``unread``: the checks' findings could not be read now
@@ -8486,6 +8514,14 @@ export type components = {
              * @description Of those, files whose read timed out; omitted with files.
              */
             timed_out?: number | null;
+        };
+        /**
+         * DoorEvent
+         * @description The session's door value. A different value means nothing kept under the old one may be drawn.
+         */
+        DoorEvent: {
+            /** Door */
+            door: string;
         };
         /** DraftDetail */
         DraftDetail: {
@@ -11641,6 +11677,14 @@ export type components = {
              */
             turn: "yours" | "theirs";
         };
+        /**
+         * MineEvent
+         * @description Something of this person's own changed; re-read the screens and kept reads that show it.
+         */
+        MineEvent: {
+            /** Mine */
+            mine: number;
+        };
         /** Money */
         Money: {
             /**
@@ -13344,6 +13388,14 @@ export type components = {
             subject?: string | null;
             /** Text */
             text: string;
+        };
+        /**
+         * ReleaseEvent
+         * @description The API code serving this stream; a page from another release reloads itself.
+         */
+        ReleaseEvent: {
+            /** Release */
+            release: string;
         };
         /** ReplyLine */
         ReplyLine: {
@@ -19876,6 +19928,35 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    page_events_api_events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-sent events: release, cycle, mine and door; heartbeats are SSE comments. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

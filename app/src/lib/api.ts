@@ -146,6 +146,12 @@ async function headers(extra: Record<string, string>): Promise<Record<string, st
   return h;
 }
 
+/** Headers for the session owner's own stream (never a view-as one): the Microsoft token
+ * when Entra mode uses one, else just `extra` and the cookie. */
+export function ownerStreamHeaders(extra: Record<string, string>): Promise<Record<string, string>> {
+  return headers(extra);
+}
+
 /** The view-as header for a read while the owner views as someone; a write then is refused here. */
 function viewAsHeader(path: string, method: string): Record<string, string> {
   const v = viewingAs();
