@@ -139,6 +139,29 @@ class ChainRead(Fixture, unittest.TestCase):
         self.assertEqual(facts["total_amount_currency"], "USD")
         self.assertNotEqual({r["facts"] for r in rows}, {"{}"})
 
+    def test_chain_and_card_results_carry_their_own_scope_line_including_on_pages(self):
+        """A17: chain scope states start, hops, filters, types reached and ambiguity, and
+        survives paging."""
+        out = self.chain({"chain": "mc://tasks/t10-9", "hops": 1})
+        self.assertIn("chain from 'mc://tasks/t10-9' (hops=1)", out["scope"])
+        self.assertIn("reached Customer (1), MCTask (1)", out["scope"])
+        # paging preserves the chain scope line
+        paged = self.call({"page": out["result"], "offset": 1}, FULL)
+        self.assertNotIn("error", paged, paged)
+        self.assertIn("chain from 'mc://tasks/t10-9' (hops=1)", paged["scope"])
+        self.assertIn("reached Customer (1), MCTask (1)", paged["scope"])
+        self.assertIn("from row 1", paged["scope"])
+        # ambiguous chain says ambiguous + candidates
+        twin = self.chain("Twin Co")
+        self.assertIn("ambiguous, not walked", twin["scope"])
+        self.assertIn("candidates:", twin["scope"])
+        # party filter appears in scope
+        picked = self.chain({"chain": "Twin Co", "party": "Alpha job"})
+        self.assertIn("party='Alpha job'", picked["scope"])
+        # record card inherits the chain scope line
+        card = self.call({"record": "IN-2"}, FULL)
+        self.assertIn("chain from 'IN-2' (hops=1)", card["scope"])
+
     def test_candidates_joined_only_by_a_guess_each_walk_their_own_links(self):
         out = self.chain("Lead Co")
         rows = self.cells(out)

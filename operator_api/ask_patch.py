@@ -121,6 +121,12 @@ def replies(reply: str) -> dict[int, str]:
     return got
 
 
+def _says(reply: str, word: str) -> bool:
+    """The reply's first word is ``word`` (alone, or followed by punctuation and any
+    explanation): the protocol's word, never text for the answer."""
+    return re.match(rf"(?i){word}\s*(?:[.!:;,\u2014-]|$)", reply.strip()) is not None
+
+
 def apply(text: str, patches: Sequence[Patch], reply: str) -> Applied:
     """``text`` with each patch's sentence swapped for the reply to its number. A reply for
     a number that is neither a sentence, ``stands`` nor ``drop`` replaces the sentence."""
@@ -131,8 +137,8 @@ def apply(text: str, patches: Sequence[Patch], reply: str) -> Applied:
         got = said.get(n)
         if got is None or got == "":
             out.kept.append(n)
-        elif got.lower().rstrip(".") == STANDS:
-            out.stood += 1
+        elif _says(got, STANDS):
+            out.stood += 1   # "stands. Both lines ..." is still "stands": none of it is spliced
         else:
             new = "" if got.lower().rstrip(".") == DROP else got
             work.append((p.start, p.end, new))

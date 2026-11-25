@@ -1,12 +1,13 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { JobCard } from "@/components/autopilot/job";
 import { PreparedFeedback } from "@/components/autopilot/prepared-feedback";
+import { noteParts, saidOnce } from "@/components/autopilot/lines";
 import { ItemActions, type MenuEntry } from "@/components/autopilot/item-actions";
 
 export { tomorrowMorning } from "@/components/autopilot/item-actions";
@@ -35,7 +36,31 @@ export function scoreOf(c: { accepted: number; edited: number; rejected: number 
 /** The same words, whatever the spacing or case: a title that is its body is said once. */
 const sameWords = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
-function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged: () => void }) {
+/** Elapsed seconds formatted plainly: "12s", "1m 5s". */
+export function formatElapsed(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
+}
+
+function startedAtMs(requestedAt?: string | null): number {
+  if (requestedAt) {
+    const parsed = Date.parse(requestedAt);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+/** Clean display name when sender is "Name <email@domain>", else as given. */
+export function senderLabel(raw: string): string {
+  const s = (raw ?? "").trim();
+  const m = /^"?([^"<]+?)"?\s*<[^>]+>$/.exec(s);
+  return m ? m[1].trim() : s;
+}
+
+export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged: () => void; feedback?: React.ReactNode }) {
   const [text, setText] = useState(item.body);
   const [editing, setEditing] = useState(false);
   const [line, setLine] = useState("");
@@ -44,8 +69,55 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   const [token, setToken] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const initiallyWorking = item.plan_status === "working";
+  const [waitingSince, setWaitingSince] = useState<number | null>(() => (initiallyWorking ? startedAtMs(item.requested_at) : null));
+  const [sawWorking, setSawWorking] = useState<boolean>(initiallyWorking);
+  const [baseline, setBaseline] = useState<{ body: string; planAt: string | null } | null>(null);
+  const [elapsedSec, setElapsedSec] = useState<number>(() => (initiallyWorking ? Math.max(0, Math.floor((Date.now() - startedAtMs(item.requested_at)) / 1000)) : 0));
   const card = useProblemSlot();
   const setError = card.set;
+  const waiting = waitingSince !== null;
+  // a reply written on request arrives from the drafting worker: poll while it runs, show
+  // "still writing" with elapsed time, and stop polling the moment the reply arrives or the job ends
+  useEffect(() => {
+    if (waitingSince === null) return;
+    setElapsedSec(Math.max(0, Math.floor((Date.now() - waitingSince) / 1000)));
+    const tick = setInterval(() => setElapsedSec(Math.max(0, Math.floor((Date.now() - waitingSince) / 1000))), 1000);
+    const poll = setInterval(onChanged, 4000);
+    return () => {
+      clearInterval(tick);
+      clearInterval(poll);
+    };
+  }, [waitingSince, onChanged]);
+  useEffect(() => {
+    if (item.plan_status === "working") {
+      setSawWorking(true);
+      if (waitingSince === null) setWaitingSince(startedAtMs(item.requested_at));
+      return;
+    }
+    const baseBody = baseline?.body ?? text;
+    if (item.body && item.body !== baseBody) {
+      setText(item.body);
+      setWaitingSince(null);
+      setSawWorking(false);
+      setBaseline(null);
+      setNote(null);
+      return;
+    }
+    const planMoved = baseline !== null && Boolean(item.plan_at) && item.plan_at !== baseline.planAt;
+    if (waitingSince !== null && (sawWorking || planMoved)) {
+      setWaitingSince(null);
+      setSawWorking(false);
+      setBaseline(null);
+      if (item.plan_status === "failed" || item.plan_reason) {
+        const why = item.plan_reason ? ` (${item.plan_reason.split(":", 1)[0]})` : "";
+        setNote(`Could not write the reply${why}. Try again.`);
+      } else {
+        setNote("Finished without a new draft. Check the card or try different words.");
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.body, item.plan_status, item.plan_at, item.plan_reason, item.requested_at]);
   const run = async (f: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -60,10 +132,22 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   const write = () =>
     run(async () => {
       const out = await replyFromLine(item.item_id, line);
-      setText(out.decision?.text ?? "");
-      setEditing(true);
+      const written = out.decision?.text ?? "";
       setOpen(null);
       setLine("");
+      if (written) {
+        setText(written);
+        setEditing(true);
+        setWaitingSince(null);
+        setSawWorking(false);
+        setBaseline(null);
+      } else {
+        setBaseline({ body: item.body, planAt: item.plan_at ?? null });
+        setSawWorking(item.plan_status === "working");
+        setWaitingSince(Date.now());
+        setElapsedSec(0);
+        setNote(null);
+      }
       onChanged();
     });
   const confirm = () =>
@@ -91,19 +175,51 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
   if (haveReply) entries.push({ label: "Copy", run: () => run(async () => void (await navigator.clipboard.writeText(text))) });
   if (haveReply && item.channel === "mail" && item.to.length > 0) entries.push({ label: "Open in Outlook", run: () => void (window.location.href = mailtoOf(item, text)) });
   entries.push({ label: "Save a preference for my drafts", run: () => setOpen("pref") });
+  const parsedNote = noteParts(item.note ?? "");
+  const [dedupedAsk, dedupedMessage, dedupedNoteText] = saidOnce([
+    !haveReply ? item.ask ?? "" : "",
+    item.message ?? "",
+    parsedNote.text,
+  ]);
+  const showSubject =
+    Boolean(item.subject) &&
+    !sameWords(item.subject, dedupedMessage) &&
+    !sameWords(item.subject, dedupedAsk);
   return (
-    <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-item">
-      <div className="flex flex-wrap items-baseline gap-x-3">
-        <span className="text-[13px] font-medium">{item.sender || "Someone"}</span>
-        {item.subject && !sameWords(item.subject, item.message) && <span className="text-[12px] text-muted">{item.subject}</span>}
+    <li
+      id={`prepared-${item.item_id}`}
+      className={cn(
+        "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4 transition-colors",
+        linked && "border-accent/70 ring-1 ring-accent/30",
+      )}
+      data-testid="prepared-item"
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="text-[14px] font-semibold text-fg" title={item.sender || undefined}>
+          {senderLabel(item.sender) || "Someone"}
+        </span>
+        {showSubject && (
+          <span className="inline-flex max-w-full items-center truncate rounded-md bg-bg/80 px-2 py-0.5 text-[12px] text-muted border border-border/70">
+            {item.subject}
+          </span>
+        )}
+        {parsedNote.labels.map((l) => (
+          <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
+            {l}
+          </p>
+        ))}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
-      {item.message && <p className="max-w-[46rem] whitespace-pre-wrap text-[13px] text-muted">{countedWords(item.message)}</p>}
+      {dedupedMessage && (
+        <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">
+          {countedWords(dedupedMessage)}
+        </p>
+      )}
       {!haveReply && (
-        <div className="max-w-[46rem] space-y-2 border-l-2 border-border pl-3">
-          <p className="text-[13px]">{countedWords(item.ask)}</p>
+        <div className="space-y-2.5 rounded-md border border-border/70 bg-bg/80 p-3.5">
+          {dedupedAsk && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(dedupedAsk)}</p>}
           {item.facts.length > 0 && (
-            <ul className="list-disc pl-4 text-[12px] text-muted">
+            <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted">
               {item.facts.map((f) => (
                 <li key={f}>{countedWords(f)}</li>
               ))}
@@ -120,18 +236,22 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
           )}
           <label className="block text-[12px] text-muted">
             {(item.options ?? []).length > 0 ? "Or say it in a few words" : "What do you want to say?"}
-            <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
+            <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg" />
           </label>
-          <Button size="sm" disabled={busy || !line.trim()} onClick={() => void write()}>
-            Write the reply
+          <Button size="sm" disabled={busy || waiting || !line.trim()} onClick={() => void write()}>
+            {waiting ? "Still writing..." : "Write the reply"}
           </Button>
         </div>
       )}
       {haveReply && (
         <>
-          {editing ? <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full max-w-[46rem] border border-border bg-bg p-2 text-[13px] text-fg" /> : <p className="max-w-[46rem] whitespace-pre-wrap bg-hover p-3 text-[13px]">{text}</p>}
+          {editing ? (
+            <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full rounded-md border border-border bg-bg p-3 text-[14px] leading-relaxed text-fg" />
+          ) : (
+            <p className="whitespace-pre-wrap rounded-md border border-border/70 bg-bg/80 p-3.5 text-[14px] leading-relaxed text-fg">{text}</p>
+          )}
           {versions.length > 0 && (
-            <div className="flex max-w-[46rem] flex-wrap items-center gap-2" aria-label="Other versions">
+            <div className="flex flex-wrap items-center gap-2" aria-label="Other versions">
               <span className="text-[12px] text-muted">Other versions:</span>
               {versions.map((o) => (
                 <Button key={o.reply} size="sm" variant="ghost" disabled={busy} onClick={() => setText(o.reply)}>
@@ -141,23 +261,23 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
             </div>
           )}
           {open === "rewrite" && (
-            <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
+            <div className="flex flex-wrap items-end gap-2">
               <label className="block min-w-[16rem] flex-1 text-[12px] text-muted">
                 Rewrite it: what do you want to say?
-                <input autoFocus value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
+                <input autoFocus value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg" />
               </label>
-              <Button size="sm" variant="outline" disabled={busy || !line.trim()} onClick={() => void write()}>
-                Rewrite
+              <Button size="sm" variant="outline" disabled={busy || waiting || !line.trim()} onClick={() => void write()}>
+                {waiting ? "Still writing..." : "Rewrite"}
               </Button>
             </div>
           )}
         </>
       )}
       {open === "pref" && (
-        <div className="flex max-w-[46rem] flex-wrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           <label className="min-w-[16rem] flex-1 text-[12px] text-muted">
             Save as a preference (for example: never mention prices to Kim)
-            <input autoFocus value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full border border-border bg-bg px-2 text-[13px] text-fg" />
+            <input autoFocus value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg" />
           </label>
           <Button size="sm" variant="outline" disabled={busy || !pref.trim()} onClick={() => void keep()}>
             Save
@@ -167,35 +287,46 @@ function Card({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?
       <TodoSteps todos={item.todos ?? []} />
       <DraftUse use={draftUseOf(item)} />
       {item.auto_would && (
-        <p className="max-w-[46rem] text-[12px] text-muted" data-testid="auto-would">
+        <p className="text-[12px] text-muted" data-testid="auto-would">
           {item.auto_would === "send" ? "With Auto on, this would go by itself." : "With Auto on, this would still wait for you."}
         </p>
       )}
       {(item.learned ?? []).length > 0 && (
-        <p className="max-w-[46rem] text-[12px] text-muted" data-testid="draft-learned">
+        <p className="text-[12px] text-muted" data-testid="draft-learned">
           Learned from your edit: {(item.learned ?? []).join("; ")}
         </p>
       )}
-      {card.provide(<ItemActions
-        item={item}
-        onGone={onGone}
-        onChanged={onChanged}
-        busy={busy}
-        entries={entries}
-        primary={
-          haveReply ? (
-            <>
-              <Button size="sm" disabled={busy} onClick={() => void confirm()}>
-                {token ? "Confirm again to send" : "Confirm"}
-              </Button>
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing((v) => !v)}>
-                {editing ? "Done editing" : "Edit"}
-              </Button>
-            </>
-          ) : null
-        }
-      />)}
-      {note && <p className="text-[12px] text-muted">{note}</p>}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
+        <div className="min-w-0">
+          {card.provide(<ItemActions
+            item={item}
+            onGone={onGone}
+            onChanged={onChanged}
+            busy={busy}
+            entries={entries}
+            primary={
+              haveReply ? (
+                <>
+                  <Button size="sm" disabled={busy} onClick={() => void confirm()}>
+                    {token ? "Confirm again to send" : "Confirm"}
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing((v) => !v)}>
+                    {editing ? "Done editing" : "Edit"}
+                  </Button>
+                </>
+              ) : null
+            }
+          />)}
+        </div>
+        {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
+      </div>
+      {waiting && (
+        <p className="text-[12px] text-muted" role="status" data-testid="reply-writing-status">
+          Writing the reply from your line. Still writing ({formatElapsed(elapsedSec)}). It shows here when it is ready.
+        </p>
+      )}
+      {!waiting && note && <p className="text-[12px] text-muted">{note}</p>}
+      {dedupedNoteText && <p className="text-[12px] text-muted" data-testid="prepared-note">{dedupedNoteText}</p>}
       {card.banner}
     </li>
   );
@@ -214,21 +345,23 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
   const drawn = items.length > count ? items.slice(0, count) : items;
   return (
     <>
-      <ul className="divide-y divide-border" aria-label="Prepared for me">
-        {drawn.map((i) => (
-          <Fragment key={i.item_id}>
-          {i.kind === "job" ? (
-            <JobCard item={i} linked={i.item_id === linked} onGone={onGone} />
-          ) : i.kind === "todo" ? (
-            <TodoCard item={i} linked={i.item_id === linked} onGone={onGone} />
-          ) : i.kind === "alert" ? (
-            <AlertCard item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
-          ) : (
-            <Card item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} />
-          )}
-          <li className="-mt-2 pb-3 !border-t-0" data-testid="prepared-feedback-row"><PreparedFeedback item={i} /></li>
-          </Fragment>
-        ))}
+      <ul className="space-y-3" aria-label="Prepared for me">
+        {drawn.map((i) => {
+          const fb = <PreparedFeedback item={i} />;
+          return (
+            <Fragment key={i.item_id}>
+              {i.kind === "job" ? (
+                <JobCard item={i} linked={i.item_id === linked} onGone={onGone} feedback={fb} />
+              ) : i.kind === "todo" ? (
+                <TodoCard item={i} linked={i.item_id === linked} onGone={onGone} feedback={fb} />
+              ) : i.kind === "alert" ? (
+                <AlertCard item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} feedback={fb} />
+              ) : (
+                <PreparedCard item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} feedback={fb} />
+              )}
+            </Fragment>
+          );
+        })}
       </ul>
       {drawn.length < items.length && (
         <p className="flex items-center gap-2 py-2 text-[12px] text-muted" data-testid="more-cards">

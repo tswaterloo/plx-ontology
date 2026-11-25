@@ -92,6 +92,11 @@ def _ids(backend: Any, reader: Reader) -> set[str]:
     return set(backend._apa_me(reader)) - {"unknown"}
 
 
+def _names_of(backend: Any) -> Optional[Callable[[Any], Mapping[str, str]]]:
+    viewing = getattr(backend, "view_as", None)
+    return viewing.names_of if viewing is not None and getattr(viewing, "available", False) else None
+
+
 def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
                  fresh: bool = False) -> m.AutopilotDrafts:
     """The reader's matters as ``AutopilotDrafts`` (module text); ``fresh``: the queue's
@@ -117,11 +122,13 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
     shown = am.shown_to(ids, rows=rows, draft=ae.load_draft())
     with pool.connection() as pg:
         got = am.as_items(pg, ids | pools, shown=shown, owner_view=owner, everyone=owner,
-                          all_ages=all_ages, door=_door(backend, reader))
+                          all_ages=all_ages, door=_door(backend, reader),
+                          names_of=_names_of(backend))
     never = backend._apa_never(state, ids)
     # a matter made from one of the remaining queue triggers' items is listed as that item's
     # own card (its prepared changes, holds and links), read as the queue lists it
-    items = [_prepared(i) for i in got["items"] if not i["queue_card"]]
+    items = _put_off(backend, state, [_prepared(i) for i in got["items"]
+                                      if not i["queue_card"] and i["kind_of_matter"] != am.MC_APPROVAL_KIND])
     queue = read_queue(reader).items
     items = sorted(items + list(queue), key=lambda i: i.created_at, reverse=True)
     return m.AutopilotDrafts(items=items, never_senders=never, older=got["older"],
@@ -131,14 +138,17 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
 
 
 def _prepared(i: Mapping[str, Any]) -> m.AutopilotPrepared:
+    from operating.assist_matters import clean_note_spacing
     def iso(v: Any) -> Optional[str]:
         return v.isoformat() if hasattr(v, "isoformat") else (str(v) if v else None)
     return m.AutopilotPrepared(
         item_id=i["item_id"], sender=i["sender"], channel=i["channel"], subject=i["subject"],
-        message=i["message"], kind=i["kind"], summary=i["summary"], note=i["note"],
+        message=i["message"], kind=i["kind"], summary=i["summary"],
+        note=clean_note_spacing(i["note"]),
         body=i["body"], to=i["to"], ask=i.get("ask", ""), created_at=iso(i["basis_at"]) or "",
         state=i["state"], verified_at=iso(i["verified_at"]), plan_status=i["plan_status"],
-        plan_reason=i["plan_reason"])
+        plan_reason=i["plan_reason"], plan_at=iso(i.get("plan_at")),
+        requested_at=iso(i.get("requested_at")))
 
 
 def _matter(backend: Any, reader: Reader, item_id: str) -> dict[str, Any]:
@@ -190,11 +200,13 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
             item = backend.autopilot_decide(who, found["legacy"], body)
             notes.autopilot_decided(who, item)
             return item
-        if body.decision not in ("accept", "reject"):
-            raise UserFacing("action_refused", "This item can be marked done or not needed.",
-                             409)
-        _log(backend, item_id, "closed", {"by": sorted(_ids(backend, who))[:1],
-                                          "decision": body.decision, "note": body.note or ""})
+        if body.decision not in ("accept", "reject", "snooze"):
+            raise UserFacing("action_refused", "This item can be marked done, not needed or "
+                             "put off until later.", 409)
+        _journal_decision(backend, who, item_id, body)
+        if body.decision != "snooze":
+            _log(backend, item_id, "closed", {"by": sorted(_ids(backend, who))[:1],
+                                              "decision": body.decision, "note": body.note or ""})
         return _decided(item_id, found["owner"], body.decision)
 
     @app.post("/api/autopilot/items/{item_id:matter}/reply-from-line",
@@ -228,6 +240,58 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
             raise UserFacing("action_refused", "This item cannot be taken yet.", 409)
         backend.autopilot_take(who, found["legacy"])
         return matters_list(backend, who, fresh=True)
+
+
+def _journal_decision(backend: Any, reader: Reader, item_id: str,
+                      body: m.AutopilotDecisionRequest) -> None:
+    """The person's word on a matter, in the decisions journal the queue's cards use, so the
+    list stops showing it at once (a done or not-needed matter is closed by the next matters
+    cycle; a Later one comes back when its time is up)."""
+    from datetime import datetime, timedelta, timezone
+    from .autopilot_area import DECISIONS_FILE, SNOOZE_DAYS, _instant, _iso
+    from operating.card_actions import Journal
+    state = backend._apa_state()
+    if state is None:
+        raise UserFacing("action_refused", "The autopilot's state directory is not configured "
+                         "on this server.", 409)
+    now = datetime.now(timezone.utc)
+    row: dict[str, Any] = {"event": "item_decision", "item_id": item_id,
+                           "decision": body.decision, "at": _iso(now),
+                           "by": sorted(backend._apa_me(reader))[0],
+                           "note": (body.note or "").strip() or None, "matter": True}
+    if body.decision == "snooze":
+        until = _instant(body.until)
+        if until is None or until <= now or until > now + timedelta(days=SNOOZE_DAYS):
+            raise UserFacing("bad_request", f"Later needs a time in the next {SNOOZE_DAYS} "
+                             "days.", 422)
+        row["until"] = _iso(until)
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with Journal(state / DECISIONS_FILE).locked() as held:
+        held.append(row)
+
+
+def _put_off(backend: Any, state: Any, items: Sequence[Mapping[str, Any]]) -> list:
+    """The matters the person already closed or put off since their basis message (their word
+    in the decisions journal), left out of the list until the cycle catches up."""
+    from datetime import datetime, timezone
+    from .autopilot_area import _instant
+    if state is None:
+        return list(items)
+    said = backend._apa_decisions(state)
+    now = datetime.now(timezone.utc)
+    out = []
+    for i in items:
+        d = said.get(i.item_id)
+        at = _instant(d.get("at")) if d and d.get("matter") else None
+        basis = _instant(i.created_at)
+        if at is not None and (basis is None or at > basis):
+            if d["decision"] in ("accept", "reject"):
+                continue
+            until = _instant(d.get("until"))
+            if d["decision"] == "snooze" and until is not None and until > now:
+                continue
+        out.append(i)
+    return out
 
 
 def _decided(item_id: str, owner: str, decision: Optional[str]) -> m.AutopilotItem:

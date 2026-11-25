@@ -1257,17 +1257,6 @@
             "description": "Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.",
             "title": "Assistant Unavailable"
           },
-          "assumption": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Assumption"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "What the answer took an open question to mean, with the other readings to change it."
-          },
           "attachments": {
             "description": "The question's attachments: what was read and what was not, and why.",
             "items": {
@@ -1506,6 +1495,14 @@
               "type": "string"
             },
             "title": "Untraced",
+            "type": "array"
+          },
+          "work_items": {
+            "description": "The items the answer lists, grouped by what the person must do, each with its source, who and when, what is needed and a link that opens it.",
+            "items": {
+              "$ref": "#/components/schemas/WorkGroup"
+            },
+            "title": "Work Items",
             "type": "array"
           },
           "working": {
@@ -2470,6 +2467,87 @@
         "title": "AskChats",
         "type": "object"
       },
+      "AskDay": {
+        "additionalProperties": false,
+        "properties": {
+          "answered": {
+            "title": "Answered",
+            "type": "integer"
+          },
+          "cost_answers": {
+            "default": 0,
+            "description": "How many of the day's answers kept a cost (the others were answered before it was kept; they are not counted as zero).",
+            "title": "Cost Answers",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The model runs' cost as each run reports it, summed over the answers that kept one.",
+            "title": "Cost Usd"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "median_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Ms"
+          },
+          "median_steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Steps"
+          },
+          "slowest_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slowest Ms"
+          },
+          "unavailable": {
+            "description": "Answers given without the assistant (its limit, sign-in or time).",
+            "title": "Unavailable",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "answered",
+          "failed",
+          "unavailable"
+        ],
+        "title": "AskDay",
+        "type": "object"
+      },
       "AskDocument": {
         "additionalProperties": false,
         "description": "A file the Ask made for you: its name, kind, size and download link; for an edited\ncopy or a redline, every change in it (before and after) to review before using it.",
@@ -2672,6 +2750,75 @@
         "title": "AskDraft",
         "type": "object"
       },
+      "AskFailure": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only for the owner (error text can quote the question).",
+            "title": "Error"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only for the owner.",
+            "title": "Question"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "title": "AskFailure",
+        "type": "object"
+      },
+      "AskObserved": {
+        "additionalProperties": false,
+        "description": "How the Ask has been doing, per day, from what each answer kept; the owner and the\nadmins. ``available`` false while the log cannot be read (the people exclusion is not\nloaded).",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/AskDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/AskFailure"
+            },
+            "title": "Failures",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available",
+          "days",
+          "failures"
+        ],
+        "title": "AskObserved",
+        "type": "object"
+      },
       "AskRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2692,7 +2839,7 @@
                 "type": "null"
               }
             ],
-            "description": "An answer to the question an earlier answer asked back (or another reading of its assumption): continues that question."
+            "description": "An answer to the question an earlier answer asked back: continues that question."
           },
           "context": {
             "anyOf": [
@@ -2826,6 +2973,1013 @@
         "title": "AskUpload",
         "type": "object"
       },
+      "AskWarmStatus": {
+        "additionalProperties": false,
+        "description": "Whether a warm Ask session is ready or starting for this reader (Ask spec 19 S3).",
+        "properties": {
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "warming": {
+            "title": "Warming",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready",
+          "warming"
+        ],
+        "title": "AskWarmStatus",
+        "type": "object"
+      },
+      "AssistJob": {
+        "additionalProperties": false,
+        "description": "A job: its state folded from its log rows. Nothing is sent or written until the person confirms a\nchange on its own card.",
+        "properties": {
+          "checklist": {
+            "items": {
+              "$ref": "#/components/schemas/AssistJobChecklistItem"
+            },
+            "title": "Checklist",
+            "type": "array"
+          },
+          "fallbacks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fallbacks",
+            "type": "array"
+          },
+          "found": {
+            "default": "",
+            "title": "Found",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "not_found": {
+            "default": "",
+            "title": "Not Found",
+            "type": "string"
+          },
+          "nothing": {
+            "default": "",
+            "title": "Nothing",
+            "type": "string"
+          },
+          "pieces": {
+            "items": {
+              "$ref": "#/components/schemas/AssistJobPiece"
+            },
+            "title": "Pieces",
+            "type": "array"
+          },
+          "plan_reads": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plan Reads",
+            "type": "array"
+          },
+          "planned": {
+            "default": 0,
+            "title": "Planned",
+            "type": "integer"
+          },
+          "progress": {
+            "default": "",
+            "title": "Progress",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested_at": {
+            "title": "Requested At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "stopping",
+              "stopped",
+              "finished",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "unread": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unread",
+            "type": "array"
+          },
+          "unread_reads": {
+            "description": "Reads of the plan the screens kept from use (each says why); the plan stands on the others.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Unread Reads",
+            "type": "array"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "job_id",
+          "text",
+          "status",
+          "requested_at"
+        ],
+        "title": "AssistJob",
+        "type": "object"
+      },
+      "AssistJobChecklistItem": {
+        "additionalProperties": false,
+        "properties": {
+          "piece": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The piece it belongs to.",
+            "title": "Piece"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AssistJobChecklistItem",
+        "type": "object"
+      },
+      "AssistJobDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "approved",
+              "dismissed",
+              "edited"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "edits": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "description": "Change index -> field -> the person's value (a message's body).",
+            "title": "Edits",
+            "type": "object"
+          },
+          "text": {
+            "default": "",
+            "description": "The person's own words for the piece (edited).",
+            "maxLength": 20000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "AssistJobDecision",
+        "type": "object"
+      },
+      "AssistJobPiece": {
+        "additionalProperties": false,
+        "description": "One prepared piece of a job: a message or system change to review (``proposals``), a question with\nreal choices (``ask``), a to-do, or nothing (with the record that shows it done). ``reads`` and\n``tool_reads`` are what it was prepared from; ``records_unread`` the records the plan named that no\nread of the piece shows.",
+        "properties": {
+          "ask": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask"
+          },
+          "changes_over_limit": {
+            "default": 0,
+            "description": "How many proposed changes on this piece exceed the desk's per-piece limit (4); all changes stay shown.",
+            "title": "Changes Over Limit",
+            "type": "integer"
+          },
+          "decision": {
+            "default": "",
+            "enum": [
+              "",
+              "approved",
+              "dismissed",
+              "edited"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "edited_text": {
+            "default": "",
+            "title": "Edited Text",
+            "type": "string"
+          },
+          "held_back": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Held Back",
+            "type": "array"
+          },
+          "instruction": {
+            "default": "",
+            "title": "Instruction",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "nothing": {
+            "default": "",
+            "title": "Nothing",
+            "type": "string"
+          },
+          "planned_records": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Planned Records",
+            "type": "array"
+          },
+          "prepared_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Change index -> the prepared write it became (its card takes the confirm).",
+            "title": "Prepared Ids",
+            "type": "object"
+          },
+          "proposals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reads",
+            "type": "array"
+          },
+          "reads_traced": {
+            "default": true,
+            "title": "Reads Traced",
+            "type": "boolean"
+          },
+          "records_unread": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Records Unread",
+            "type": "array"
+          },
+          "reply": {
+            "default": "",
+            "title": "Reply",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "prepared",
+              "nothing",
+              "failed",
+              "screened",
+              "stopped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "todos": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Todos",
+            "type": "array"
+          },
+          "tool_reads": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Tool Reads",
+            "type": "array"
+          },
+          "unread_reads": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Unread Reads",
+            "type": "array"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usd"
+          },
+          "warning": {
+            "default": "",
+            "title": "Warning",
+            "type": "string"
+          },
+          "why": {
+            "default": "",
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "n",
+          "title",
+          "status"
+        ],
+        "title": "AssistJobPiece",
+        "type": "object"
+      },
+      "AssistJobRequest": {
+        "additionalProperties": false,
+        "description": "A whole job handed to Assist, in the person's own words.",
+        "properties": {
+          "text": {
+            "description": "The job, as typed.",
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AssistJobRequest",
+        "type": "object"
+      },
+      "AssistJobs": {
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/AssistJob"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "not_run"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "AssistJobs",
+        "type": "object"
+      },
+      "AssistMinedRoutine": {
+        "additionalProperties": false,
+        "description": "A mined routine of the signed-in person from ``assist.routines``.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "mined": {
+            "additionalProperties": true,
+            "title": "Mined",
+            "type": "object"
+          },
+          "routine_id": {
+            "title": "Routine Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "candidate",
+            "title": "Status",
+            "type": "string"
+          },
+          "suggested_name": {
+            "default": "",
+            "title": "Suggested Name",
+            "type": "string"
+          },
+          "suggested_trigger_summary": {
+            "default": "",
+            "title": "Suggested Trigger Summary",
+            "type": "string"
+          },
+          "trigger": {
+            "additionalProperties": true,
+            "title": "Trigger",
+            "type": "object"
+          },
+          "validated": {
+            "additionalProperties": true,
+            "title": "Validated",
+            "type": "object"
+          }
+        },
+        "required": [
+          "routine_id",
+          "kind"
+        ],
+        "title": "AssistMinedRoutine",
+        "type": "object"
+      },
+      "AssistWorkflow": {
+        "additionalProperties": false,
+        "description": "One workflow owned by the signed-in person, folded from ``assist.workflow_log``.",
+        "properties": {
+          "backoff_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backoff Until"
+          },
+          "consecutive_failures": {
+            "default": 0,
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "instruction": {
+            "title": "Instruction",
+            "type": "string"
+          },
+          "last_error": {
+            "default": "",
+            "title": "Last Error",
+            "type": "string"
+          },
+          "last_fired_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Fired At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "pause_reason": {
+            "default": "",
+            "title": "Pause Reason",
+            "type": "string"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/AssistWorkflowRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "source_kind": {
+            "enum": [
+              "plain_language",
+              "routine",
+              "template"
+            ],
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "source_ref": {
+            "default": "",
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "paused",
+              "stopped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "trigger": {
+            "additionalProperties": true,
+            "title": "Trigger",
+            "type": "object"
+          },
+          "trigger_kind": {
+            "enum": [
+              "schedule",
+              "event",
+              "manual"
+            ],
+            "title": "Trigger Kind",
+            "type": "string"
+          },
+          "trigger_summary": {
+            "title": "Trigger Summary",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "workflow_id": {
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow_id",
+          "name",
+          "instruction",
+          "trigger_kind",
+          "trigger_summary",
+          "source_kind",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AssistWorkflow",
+        "type": "object"
+      },
+      "AssistWorkflowCreate": {
+        "additionalProperties": false,
+        "description": "Create a workflow from plain language, a mined routine, a template, or explicit fields.",
+        "properties": {
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "plain_text": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plain Text"
+          },
+          "routine_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Routine Id"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger"
+          },
+          "trigger_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "schedule",
+                  "event",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Kind"
+          }
+        },
+        "title": "AssistWorkflowCreate",
+        "type": "object"
+      },
+      "AssistWorkflowParseRequest": {
+        "additionalProperties": false,
+        "description": "Plain-language workflow text to preview its parsed trigger and instruction.",
+        "properties": {
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AssistWorkflowParseRequest",
+        "type": "object"
+      },
+      "AssistWorkflowParsed": {
+        "additionalProperties": false,
+        "properties": {
+          "instruction": {
+            "title": "Instruction",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "trigger": {
+            "additionalProperties": true,
+            "title": "Trigger",
+            "type": "object"
+          },
+          "trigger_kind": {
+            "enum": [
+              "schedule",
+              "event",
+              "manual"
+            ],
+            "title": "Trigger Kind",
+            "type": "string"
+          },
+          "trigger_summary": {
+            "title": "Trigger Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "instruction",
+          "trigger_kind",
+          "trigger_summary"
+        ],
+        "title": "AssistWorkflowParsed",
+        "type": "object"
+      },
+      "AssistWorkflowRun": {
+        "additionalProperties": false,
+        "description": "One run of a workflow, pointing to its ``assist.job_log`` job.",
+        "properties": {
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "fired",
+              "run_now"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "trigger_note": {
+            "default": "",
+            "title": "Trigger Note",
+            "type": "string"
+          },
+          "triggered_at": {
+            "title": "Triggered At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "triggered_at",
+          "kind"
+        ],
+        "title": "AssistWorkflowRun",
+        "type": "object"
+      },
+      "AssistWorkflowRunResult": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/AssistJob"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/AssistWorkflow"
+          }
+        },
+        "required": [
+          "workflow",
+          "job"
+        ],
+        "title": "AssistWorkflowRunResult",
+        "type": "object"
+      },
+      "AssistWorkflowTemplate": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "instruction": {
+            "title": "Instruction",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "trigger": {
+            "additionalProperties": true,
+            "title": "Trigger",
+            "type": "object"
+          },
+          "trigger_kind": {
+            "enum": [
+              "schedule",
+              "event",
+              "manual"
+            ],
+            "title": "Trigger Kind",
+            "type": "string"
+          },
+          "trigger_summary": {
+            "title": "Trigger Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_id",
+          "name",
+          "description",
+          "trigger_kind",
+          "trigger_summary",
+          "instruction"
+        ],
+        "title": "AssistWorkflowTemplate",
+        "type": "object"
+      },
+      "AssistWorkflowUpdate": {
+        "additionalProperties": false,
+        "description": "Edit a workflow's name, instruction or trigger.",
+        "properties": {
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger"
+          },
+          "trigger_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "schedule",
+                  "event",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Kind"
+          }
+        },
+        "title": "AssistWorkflowUpdate",
+        "type": "object"
+      },
+      "AssistWorkflows": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "routines": {
+            "items": {
+              "$ref": "#/components/schemas/AssistMinedRoutine"
+            },
+            "title": "Routines",
+            "type": "array"
+          },
+          "status": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "not_run"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/AssistWorkflowTemplate"
+            },
+            "title": "Templates",
+            "type": "array"
+          },
+          "workflows": {
+            "items": {
+              "$ref": "#/components/schemas/AssistWorkflow"
+            },
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "title": "AssistWorkflows",
+        "type": "object"
+      },
       "AssistWorking": {
         "additionalProperties": false,
         "description": "A draft asked for: it is being prepared; the list shows it when ready.",
@@ -2840,29 +3994,6 @@
           "status"
         ],
         "title": "AssistWorking",
-        "type": "object"
-      },
-      "Assumption": {
-        "additionalProperties": false,
-        "description": "What the answer took the question to mean, in one line, and the other readings:\npicking one asks it again under that reading (``AskRequest.clarified.option``).",
-        "properties": {
-          "options": {
-            "items": {
-              "$ref": "#/components/schemas/ClarifyOption"
-            },
-            "maxItems": 3,
-            "title": "Options",
-            "type": "array"
-          },
-          "text": {
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "title": "Assumption",
         "type": "object"
       },
       "AtRisk": {
@@ -5141,6 +6272,18 @@
             "title": "Options",
             "type": "array"
           },
+          "plan_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the drafting worker last finished a run for this item.",
+            "title": "Plan At"
+          },
           "plan_reason": {
             "anyOf": [
               {
@@ -5161,7 +6304,7 @@
                 "type": "null"
               }
             ],
-            "description": "none, planned, drafted, needs_you, deferred (draft on request) or failed (``plan_reason`` says why; ask again).",
+            "description": "none, planned, drafted, needs_you, working, deferred (draft on request) or failed (``plan_reason`` says why; ask again).",
             "title": "Plan Status"
           },
           "pooled": {
@@ -5175,6 +6318,18 @@
             "description": "On a reply the model wrote: it can be written again from one line of what you want to say (reply-from-line).",
             "title": "Redo",
             "type": "boolean"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When a draft or reply-from-line was last asked for.",
+            "title": "Requested At"
           },
           "sender": {
             "title": "Sender",
@@ -8701,7 +9856,7 @@
       },
       "ClarifyReply": {
         "additionalProperties": false,
-        "description": "The person's answer to an earlier answer's ``clarify`` question or ``assumption``:\nthe answer it replies to, and an option's index or their own words.",
+        "description": "The person's answer to an earlier answer's ``clarify`` question:\nthe answer it replies to, and an option's index or their own words.",
         "properties": {
           "answer_id": {
             "maxLength": 80,
@@ -10153,6 +11308,137 @@
         "title": "DueDate",
         "type": "object"
       },
+      "EmailDraftPrepared": {
+        "additionalProperties": false,
+        "description": "A prepared brief/answer email card ready for /api/actions/preview and confirm.",
+        "properties": {
+          "attachment_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attachment Name"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "card_id": {
+            "title": "Card Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "send_email",
+            "default": "send_email",
+            "title": "Kind",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "upload_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Id"
+          }
+        },
+        "required": [
+          "card_id",
+          "subject",
+          "body"
+        ],
+        "title": "EmailDraftPrepared",
+        "type": "object"
+      },
+      "EmailDraftRequest": {
+        "additionalProperties": false,
+        "description": "Draft an email carrying a brief or answer and its chart(s), for confirm-before-send.",
+        "properties": {
+          "attach_file": {
+            "default": false,
+            "title": "Attach File",
+            "type": "boolean"
+          },
+          "charts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Charts",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "format": {
+            "default": "xlsx",
+            "enum": [
+              "xlsx",
+              "docx",
+              "pptx",
+              "pdf"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "EmailDraftRequest",
+        "type": "object"
+      },
       "EntraConfig": {
         "additionalProperties": false,
         "properties": {
@@ -10875,6 +12161,138 @@
         "title": "ExploreNode",
         "type": "object"
       },
+      "ExportTable": {
+        "additionalProperties": false,
+        "description": "One table to include as a formatted worksheet in an Excel export.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "records": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Records"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          },
+          "total_rows": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rows"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "title": "ExportTable",
+        "type": "object"
+      },
+      "ExportXlsxRequest": {
+        "additionalProperties": false,
+        "description": "Export any chart, table or answer into one formatted Excel workbook.",
+        "properties": {
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/AskChart"
+            },
+            "title": "Charts",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "summary": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "Summary",
+            "type": "string"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/ExportTable"
+            },
+            "title": "Tables",
+            "type": "array"
+          },
+          "title": {
+            "default": "Export",
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "ExportXlsxRequest",
+        "type": "object"
+      },
       "Fact": {
         "additionalProperties": false,
         "properties": {
@@ -11196,6 +12614,11 @@
             ],
             "title": "Reader Name"
           },
+          "review_requested": {
+            "default": false,
+            "title": "Review Requested",
+            "type": "boolean"
+          },
           "served_version": {
             "anyOf": [
               {
@@ -11381,6 +12804,11 @@
             ],
             "title": "Rating",
             "type": "integer"
+          },
+          "review": {
+            "description": "Ask a person to review this answer (a thumbs-down only); 'The right answer is' is the fix proposed for them to approve.",
+            "title": "Review",
+            "type": "boolean"
           }
         },
         "required": [
@@ -12076,6 +13504,76 @@
         "title": "FreshnessSource",
         "type": "object"
       },
+      "GapList": {
+        "additionalProperties": false,
+        "description": "The gap list (``operating.gap_list``), most asked first; the owner and the admins.",
+        "properties": {
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/GapRow"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "on": {
+            "description": "False when this server does not keep the list.",
+            "title": "On",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on",
+          "gaps"
+        ],
+        "title": "GapList",
+        "type": "object"
+      },
+      "GapRow": {
+        "additionalProperties": false,
+        "description": "One thing Ask or Genie asked for that nothing defines: how often, first and last.",
+        "properties": {
+          "asked": {
+            "minimum": 1.0,
+            "title": "Asked",
+            "type": "integer"
+          },
+          "defined": {
+            "description": "A view or measure of this name exists now (the gap was closed after it was asked).",
+            "title": "Defined",
+            "type": "boolean"
+          },
+          "first": {
+            "title": "First",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "view",
+              "measure"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last": {
+            "title": "Last",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "asked",
+          "first",
+          "last",
+          "defined"
+        ],
+        "title": "GapRow",
+        "type": "object"
+      },
       "GraphRequest": {
         "additionalProperties": false,
         "properties": {
@@ -12395,6 +13893,526 @@
           "freshness"
         ],
         "title": "Home",
+        "type": "object"
+      },
+      "HomeNeedFacet": {
+        "additionalProperties": false,
+        "description": "One filter choice and how many items of the unified list match it.",
+        "properties": {
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "count"
+        ],
+        "title": "HomeNeedFacet",
+        "type": "object"
+      },
+      "HomeNeedItem": {
+        "additionalProperties": false,
+        "description": "One thing that needs this person in Home's unified Needs-you list. Every field is typed\ndata from its source: due date, last activity, quiet state, and cited amount.",
+        "properties": {
+          "action": {
+            "enum": [
+              "reply",
+              "approve",
+              "answer",
+              "do",
+              "decide",
+              "check",
+              "close"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "action_label": {
+            "title": "Action Label",
+            "type": "string"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A cited amount this reader may open; never a suspect total."
+          },
+          "ask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The question only this person can answer, when one is prepared.",
+            "title": "Ask"
+          },
+          "basis_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the fact it rests on last moved (ISO).",
+            "title": "Basis At"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The prepared draft, when one is ready.",
+            "title": "Body"
+          },
+          "days_late": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late"
+          },
+          "draft_ready": {
+            "default": false,
+            "title": "Draft Ready",
+            "type": "boolean"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "href": {
+            "description": "Where the item opens in the app.",
+            "title": "Href",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "reply",
+              "approve",
+              "question",
+              "task",
+              "waiting",
+              "alert",
+              "late_po",
+              "routine",
+              "feedback",
+              "gap"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "line": {
+            "description": "What needs doing next, in plain words.",
+            "title": "Line",
+            "type": "string"
+          },
+          "matter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its Assist matter id when it is one.",
+            "title": "Matter Id"
+          },
+          "next_act": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The matter's typed next act.",
+            "title": "Next Act"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "person": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who it is from or who it waits on, when known.",
+            "title": "Person"
+          },
+          "plan_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Status"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The message or quote the matter rests on.",
+            "title": "Quote"
+          },
+          "rank": {
+            "description": "Its place in the unified list, 1 first.",
+            "minimum": 1.0,
+            "title": "Rank",
+            "type": "integer"
+          },
+          "rank_reasons": {
+            "description": "Why it is there, in words.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Rank Reasons",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "mail",
+              "teams",
+              "mc",
+              "planner",
+              "alerts",
+              "pos",
+              "feedback",
+              "gaps",
+              "system"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "state": {
+            "default": "open",
+            "enum": [
+              "open",
+              "unverified",
+              "uncertain"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "still_open": {
+            "default": false,
+            "description": "Nothing has happened on it since it was due.",
+            "title": "Still Open",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "to": {
+            "description": "The prepared draft's recipients.",
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "source",
+          "source_label",
+          "title",
+          "line",
+          "action",
+          "action_label",
+          "href",
+          "rank"
+        ],
+        "title": "HomeNeedItem",
+        "type": "object"
+      },
+      "HomeNeedPart": {
+        "additionalProperties": false,
+        "description": "One source's reading state behind the unified list: a source off, stale or unreadable\nis reported honestly, never shown as an empty list.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "partial",
+              "cut",
+              "stale",
+              "unknown",
+              "not_run",
+              "off",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "source",
+          "label",
+          "status"
+        ],
+        "title": "HomeNeedPart",
+        "type": "object"
+      },
+      "HomeNeeds": {
+        "additionalProperties": false,
+        "description": "Home's unified Needs-you read: Assist matters, alerts, late POs, and (for the owner)\nnew feedback and undefined gap alerts, merged and ranked server-side. Items older than\n``older_after_days`` fold into ``older_items`` rather than being dropped.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "items": {
+            "description": "The current main list.",
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedFacet"
+            },
+            "title": "Kinds",
+            "type": "array"
+          },
+          "older_after_days": {
+            "description": "Age threshold in days for the older fold.",
+            "minimum": 1.0,
+            "title": "Older After Days",
+            "type": "integer"
+          },
+          "older_items": {
+            "description": "Items older than older_after_days, folded away rather than dropped.",
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedItem"
+            },
+            "title": "Older Items",
+            "type": "array"
+          },
+          "older_total": {
+            "description": "Count of items in the collapsed older group.",
+            "minimum": 0.0,
+            "title": "Older Total",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedPart"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedFacet"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "reading": {
+            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
+            "title": "Reading",
+            "type": "boolean"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedFacet"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this reader while refreshing in the background (ISO).",
+            "title": "Stale Since"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "partial",
+              "cut",
+              "stale",
+              "unknown",
+              "not_run",
+              "off",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "description": "Count of current items in the main list.",
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the status is not ok, in plain words.",
+            "title": "Why"
+          }
+        },
+        "required": [
+          "status",
+          "total",
+          "older_total",
+          "older_after_days"
+        ],
+        "title": "HomeNeeds",
         "type": "object"
       },
       "ImpactCause": {
@@ -12822,15 +14840,67 @@
         "title": "InsightInfo",
         "type": "object"
       },
+      "InsightLayout": {
+        "additionalProperties": false,
+        "description": "A person's own arrangement of their dashboard: the order of their charts and the ones\nthey took off (kept whole, per person).",
+        "properties": {
+          "hidden": {
+            "description": "Chart ids taken off.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Hidden",
+            "type": "array"
+          },
+          "order": {
+            "description": "Chart ids in the order they are shown.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Order",
+            "type": "array"
+          }
+        },
+        "required": [
+          "order"
+        ],
+        "title": "InsightLayout",
+        "type": "object"
+      },
       "InsightList": {
         "additionalProperties": false,
         "properties": {
+          "customised": {
+            "description": "Whether the order or the charts are your own.",
+            "title": "Customised",
+            "type": "boolean"
+          },
+          "hidden": {
+            "description": "Charts you may be shown that you took off your dashboard (add one back from here).",
+            "items": {
+              "$ref": "#/components/schemas/InsightInfo"
+            },
+            "title": "Hidden",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/InsightInfo"
             },
             "title": "Items",
             "type": "array"
+          },
+          "layout_problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Your own arrangement could not be read: the standard one is shown, and this says so.",
+            "title": "Layout Problem"
           },
           "measures": {
             "description": "The agreed measures Ask and the charts use, with their definitions.",
@@ -15842,6 +17912,591 @@
           "data_label"
         ],
         "title": "Me",
+        "type": "object"
+      },
+      "MeasureCandidate": {
+        "additionalProperties": false,
+        "description": "A candidate shared business measure captured from usage or proposed for owner review.",
+        "properties": {
+          "approved_measure_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Measure Id"
+          },
+          "dismiss_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dismiss Reason"
+          },
+          "first_seen_at": {
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "proposed_date": {
+            "default": "",
+            "title": "Proposed Date",
+            "type": "string"
+          },
+          "proposed_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Description"
+          },
+          "proposed_dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Proposed Dimensions",
+            "type": "array"
+          },
+          "proposed_grain": {
+            "title": "Proposed Grain",
+            "type": "string"
+          },
+          "proposed_id": {
+            "title": "Proposed Id",
+            "type": "string"
+          },
+          "proposed_name": {
+            "title": "Proposed Name",
+            "type": "string"
+          },
+          "proposed_owner": {
+            "title": "Proposed Owner",
+            "type": "string"
+          },
+          "proposed_per": {
+            "default": "",
+            "title": "Proposed Per",
+            "type": "string"
+          },
+          "proposed_unit": {
+            "title": "Proposed Unit",
+            "type": "string"
+          },
+          "proposed_value": {
+            "default": "",
+            "title": "Proposed Value",
+            "type": "string"
+          },
+          "proposed_view": {
+            "default": "",
+            "title": "Proposed View",
+            "type": "string"
+          },
+          "proposed_where": {
+            "default": "",
+            "title": "Proposed Where",
+            "type": "string"
+          },
+          "proposer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposer Name"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "source_kind": {
+            "enum": [
+              "accepted_answer",
+              "saved_tile",
+              "manual"
+            ],
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          },
+          "sql_mode": {
+            "default": "custom_sql",
+            "enum": [
+              "structured",
+              "custom_sql"
+            ],
+            "title": "Sql Mode",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "dismissed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tile_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tile Title"
+          },
+          "usage_count": {
+            "minimum": 1.0,
+            "title": "Usage Count",
+            "type": "integer"
+          },
+          "views": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Views",
+            "type": "array"
+          },
+          "withheld": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Withheld",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "signature",
+          "status",
+          "source_kind",
+          "usage_count",
+          "first_seen_at",
+          "last_seen_at",
+          "proposed_id",
+          "proposed_name",
+          "proposed_owner",
+          "proposed_unit",
+          "proposed_grain"
+        ],
+        "title": "MeasureCandidate",
+        "type": "object"
+      },
+      "MeasureCandidateApprove": {
+        "additionalProperties": false,
+        "description": "Optional owner edits when promoting a candidate into the live governed definitions.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions"
+          },
+          "grain": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grain"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "per": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View"
+          },
+          "where": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where"
+          }
+        },
+        "title": "MeasureCandidateApprove",
+        "type": "object"
+      },
+      "MeasureCandidateDismiss": {
+        "additionalProperties": false,
+        "description": "Optional owner reason when dismissing a candidate definition.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "MeasureCandidateDismiss",
+        "type": "object"
+      },
+      "MeasureCandidateList": {
+        "additionalProperties": false,
+        "description": "Candidate measure definitions queued for review or already reviewed (no silent cap).",
+        "properties": {
+          "can_review": {
+            "description": "True only for the owner (who can approve or dismiss).",
+            "title": "Can Review",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/MeasureCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Candidate count per status.",
+            "title": "Counts",
+            "type": "object"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "can_review",
+          "total",
+          "counts",
+          "candidates"
+        ],
+        "title": "MeasureCandidateList",
+        "type": "object"
+      },
+      "MeasureCandidatePropose": {
+        "additionalProperties": false,
+        "description": "Propose or capture a candidate definition from SQL, a saved tile, or an accepted answer.",
+        "properties": {
+          "answer_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "insight_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insight Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "source_kind": {
+            "default": "manual",
+            "enum": [
+              "accepted_answer",
+              "saved_tile",
+              "manual"
+            ],
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "MeasureCandidatePropose",
         "type": "object"
       },
       "MeasureCited": {
@@ -25414,6 +28069,68 @@
         "title": "Watchlist",
         "type": "object"
       },
+      "WorkGroup": {
+        "additionalProperties": false,
+        "description": "Items grouped by what the person must do (Decide, Reply, Follow up, Heads up).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "WorkGroup",
+        "type": "object"
+      },
+      "WorkItem": {
+        "additionalProperties": false,
+        "description": "One thing the answer lists (the model's ``items`` block): where it comes from, who and\nwhen, what is needed, and the link that opens the message or record (only when a result\nof this conversation showed it).",
+        "properties": {
+          "open_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Url"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "when": {
+            "default": "",
+            "title": "When",
+            "type": "string"
+          },
+          "who": {
+            "default": "",
+            "title": "Who",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "WorkItem",
+        "type": "object"
+      },
       "WorkLogEvent": {
         "additionalProperties": false,
         "properties": {
@@ -27000,6 +29717,90 @@
         ]
       }
     },
+    "/api/answers/gaps": {
+      "get": {
+        "description": "What Ask and Genie were asked that no view or measure defines, with how many times\n(the owner and the admins).",
+        "operationId": "answer_gaps_api_answers_gaps_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GapList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Answer Gaps",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/api/answers/observed": {
+      "get": {
+        "description": "How the Ask has been doing: per day the answers, failures, time and steps, and every\nfailed question (the owner and the admins; the question text and the error text only for the owner).",
+        "operationId": "answers_observed_api_answers_observed_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskObserved"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Answers Observed",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
     "/api/approvals": {
       "get": {
         "description": "Every pending approval on your alert list (mail asks with no answer from the\napprover, Mission Control approvals), by who it waits on and how long, each with a\ndrafted nudge. Nothing is sent.",
@@ -27437,6 +30238,945 @@
         "summary": "Ask Upload Remove",
         "tags": [
           "ask"
+        ]
+      }
+    },
+    "/api/ask/warm": {
+      "post": {
+        "description": "Start a warm Ask session for this reader when the Ask box opens or focuses\n(Ask spec 19 S3). Non-blocking; no model call is made.",
+        "operationId": "ask_warm_api_ask_warm_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskWarmStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Ask Warm",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
+    "/api/assist/jobs": {
+      "get": {
+        "description": "Your jobs, newest first, with their pieces.",
+        "operationId": "jobs_list_api_assist_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistJobs"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Jobs List",
+        "tags": [
+          "actions"
+        ]
+      },
+      "post": {
+        "description": "Hand Assist a whole job. It plans, reads and prepares every piece; nothing is sent or written.",
+        "operationId": "job_request_api_assist_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistJob"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Job Request",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/jobs/{job_id}/pieces/{n}/changes/{index}/prepare": {
+      "post": {
+        "description": "Review one proposed change of a piece: prepared through the desk as you (nothing written); confirm it\nin two steps on ``/api/prepared/{id}``. A change reviewed before answers the card it became.",
+        "operationId": "piece_prepare_api_assist_jobs__job_id__pieces__n__changes__index__prepare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "n",
+            "required": true,
+            "schema": {
+              "title": "N",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedWrite"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Piece Prepare",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/jobs/{job_id}/pieces/{n}/decision": {
+      "post": {
+        "description": "Approve, dismiss or edit one piece. Recorded only: nothing is sent or written.",
+        "operationId": "piece_decide_api_assist_jobs__job_id__pieces__n__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "n",
+            "required": true,
+            "schema": {
+              "title": "N",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistJobDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistJob"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Piece Decide",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/jobs/{job_id}/stop": {
+      "post": {
+        "description": "Stop a job: no more sessions start; the pieces already prepared stay.",
+        "operationId": "job_stop_api_assist_jobs__job_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistJob"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Job Stop",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows": {
+      "get": {
+        "description": "Your workflows (with their runs), your mined routines, and starter templates.",
+        "operationId": "workflows_list_api_assist_workflows_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflows"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Workflows List",
+        "tags": [
+          "actions"
+        ]
+      },
+      "post": {
+        "description": "Create a workflow from plain language, a mined routine, a template, or explicit fields.",
+        "operationId": "workflow_create_api_assist_workflows_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistWorkflowCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Create",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows/parse": {
+      "post": {
+        "description": "Preview how plain language turns into a workflow trigger and instruction.",
+        "operationId": "workflow_parse_api_assist_workflows_parse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistWorkflowParseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflowParsed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Parse",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows/{workflow_id}": {
+      "patch": {
+        "description": "Edit a workflow's name, instruction or trigger.",
+        "operationId": "workflow_update_api_assist_workflows__workflow_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistWorkflowUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Update",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows/{workflow_id}/pause": {
+      "post": {
+        "description": "Pause a workflow: it stops firing on schedule or events until you resume it.",
+        "operationId": "workflow_pause_api_assist_workflows__workflow_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Pause",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows/{workflow_id}/resume": {
+      "post": {
+        "description": "Resume a paused workflow (clears any failure pause/backoff and starts watching from now).",
+        "operationId": "workflow_resume_api_assist_workflows__workflow_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Resume",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows/{workflow_id}/run": {
+      "post": {
+        "description": "Run a workflow on demand right now: creates an Assist job whose pieces you review and confirm.",
+        "operationId": "workflow_run_now_api_assist_workflows__workflow_id__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflowRunResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Run Now",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/assist/workflows/{workflow_id}/stop": {
+      "post": {
+        "description": "Stop a workflow permanently and stop any run currently in progress.",
+        "operationId": "workflow_stop_api_assist_workflows__workflow_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Stop",
+        "tags": [
+          "actions"
         ]
       }
     },
@@ -30704,6 +34444,78 @@
         ]
       }
     },
+    "/api/email-draft": {
+      "post": {
+        "description": "Draft an email for a brief or answer (with its chart attached as an Office file)\nfor confirm-before-send through ``/api/actions/preview`` and ``/api/actions/confirm``.\nEmail only; live send remains gated by ``PLX_ACTIONS_LIVE`` and ``PLX_ACTIONS_SENDERS``.",
+        "operationId": "prepare_email_draft_api_email_draft_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailDraftPrepared"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Prepare Email Draft",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/entries/{entry_id}": {
       "get": {
         "description": "An order or PO you prepared that is held until its checks are settled: each\nvalue it needs, cited, confirmed by you or still a check with its suggestions.",
@@ -30969,6 +34781,97 @@
         "summary": "Explore",
         "tags": [
           "object"
+        ]
+      }
+    },
+    "/api/export/xlsx": {
+      "post": {
+        "description": "Export any chart, table or answer as a formatted Excel (.xlsx) workbook with\ntyped values, live native charts and a Sources sheet of full SQL statements. Nothing\nis kept or sent.",
+        "operationId": "export_xlsx_api_export_xlsx_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportXlsxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
+            },
+            "description": "Excel workbook."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Export Xlsx",
+        "tags": [
+          "insights"
         ]
       }
     },
@@ -31550,6 +35453,38 @@
         ]
       }
     },
+    "/api/home/needs": {
+      "get": {
+        "description": "Home's unified Needs-you list: Assist matters of every age, late purchase orders,\nalerts routed to you, and (for the owner) new feedback and undefined gap alerts, merged\nand ranked server-side with items older than 90 days folded rather than dropped.",
+        "operationId": "home_needs_api_home_needs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeNeeds"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Home Needs",
+        "tags": [
+          "home"
+        ]
+      }
+    },
     "/api/insight-news": {
       "get": {
         "description": "What your scheduled insights found that came to you (counts only: open the\ninsight to read its rows, live, as you).",
@@ -31802,6 +35737,24 @@
       "get": {
         "description": "The whole dashboard in one response (one JSON object per line): your list, then\neach chart as it is read (its own result or its own error, each read as you).",
         "operationId": "insights_stream_api_insights_all_stream_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "eager",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eager"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response"
@@ -31815,9 +35768,111 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Insights Stream",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/layout": {
+      "put": {
+        "description": "Keep your own arrangement of the dashboard (the order of your charts and the ones\nyou took off); gives the dashboard back as it now is.",
+        "operationId": "insight_layout_api_insights_layout_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InsightLayout"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Layout",
         "tags": [
           "insights"
         ]
@@ -32229,7 +36284,7 @@
     },
     "/api/insights/{insight_id}/why": {
       "get": {
-        "description": "Why did this figure change: step by step (one JSON object per line), each step read\nas you and sent as it is read with the best answer so far; stop reading at any step.",
+        "description": "Why did this figure change: step by step (one JSON object per line), each step read\nas you and sent as it is read with the best answer so far; stop reading at any step.\n``period`` (and ``against``) names the change, ``filter`` (JSON, a dimension to its\nvalues) narrows the rows explained, ``drill`` reads one ranked dimension's parts.",
         "operationId": "insight_why_api_insights__insight_id__why_get",
         "parameters": [
           {
@@ -32240,6 +36295,74 @@
               "pattern": "^[a-z0-9_]{1,61}$",
               "title": "Insight Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "drill",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Drill"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "against",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Against"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter"
             }
           }
         ],
@@ -33010,6 +37133,341 @@
         "summary": "Me",
         "tags": [
           "identity"
+        ]
+      }
+    },
+    "/api/measures/candidates": {
+      "get": {
+        "description": "Candidate measure definitions captured from accepted answers, saved charts, or\ndirect proposals (no silent cap; respects per-reader exclusion and masking).",
+        "operationId": "measure_candidates_list_api_measures_candidates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "approved",
+                    "dismissed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasureCandidateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Measure Candidates List",
+        "tags": [
+          "measures"
+        ]
+      },
+      "post": {
+        "description": "Propose or capture a candidate shared measure definition from SQL, a saved chart,\nor an accepted Ask answer.",
+        "operationId": "measure_candidates_propose_api_measures_candidates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeasureCandidatePropose"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasureCandidate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Measure Candidates Propose",
+        "tags": [
+          "measures"
+        ]
+      }
+    },
+    "/api/measures/candidates/{candidate_id}/approve": {
+      "post": {
+        "description": "Owner-only: promote a candidate into the live governed measure overlay.",
+        "operationId": "measure_candidates_approve_api_measures_candidates__candidate_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MeasureCandidateApprove"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasureCandidate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Measure Candidates Approve",
+        "tags": [
+          "measures"
+        ]
+      }
+    },
+    "/api/measures/candidates/{candidate_id}/dismiss": {
+      "post": {
+        "description": "Owner-only: dismiss a candidate definition from the review queue.",
+        "operationId": "measure_candidates_dismiss_api_measures_candidates__candidate_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MeasureCandidateDismiss"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasureCandidate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Measure Candidates Dismiss",
+        "tags": [
+          "measures"
         ]
       }
     },

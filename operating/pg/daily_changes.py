@@ -157,6 +157,7 @@ def regroup(write: Any) -> dict[str, Any]:
             f"SELECT count(*) FROM biz.{OBJECTS} s WHERE NOT EXISTS (SELECT 1 FROM "
             "ontology.objects o WHERE o.object_id = s.object_id)").fetchone()[0]
         write.execute("CREATE TEMP TABLE dc_full ON COMMIT DROP AS SELECT n.*, p.access_class, "
+                      "0 AS col_class, "
                       "'daily_changes:' || n.day || ':' || n.system || ':' || "
                       "substr(md5(concat_ws('|', n.day, n.system, n.object_type, n.audience_key, "
                       "n.markings, n.owner_only)), 1, 16) AS handle FROM dc_new n JOIN dc_pat p "
@@ -166,6 +167,11 @@ def regroup(write: Any) -> dict[str, Any]:
                 "d.owner_only = n.owner_only AND d.created = n.created AND "
                 "d.changed = n.changed AND d.removed = n.removed AND "
                 "d.access_class = n.access_class")
+        from operating.pg import door
+        revoked = (door.present(write, "biz")
+                   and door.classes_changed(write, "biz", TABLE, "dc_full"))
+        if revoked:
+            door.ensure(write, "biz")
         gone = write.execute(f"DELETE FROM biz.{TABLE} d WHERE NOT EXISTS (SELECT 1 FROM "
                              f"dc_full n WHERE {same})").rowcount
         added = write.execute(
@@ -179,6 +185,8 @@ def regroup(write: Any) -> dict[str, Any]:
         write.execute("INSERT INTO biz.class_counts (view, access_class, col_class, rows) "
                       f"SELECT %s, access_class, col_class, count(*) FROM biz.{TABLE} "
                       "GROUP BY 2, 3", (TABLE,))
+        if revoked:
+            door.bump_revoked(write, "biz")
         write.execute(f"UPDATE biz.{MARK} SET orphans = %s WHERE id = 1", (orphans,))
         return {"groups": total, "removed_rows": gone, "added_rows": added, "orphans": orphans}
 

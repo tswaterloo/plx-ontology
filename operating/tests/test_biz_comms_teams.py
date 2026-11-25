@@ -227,6 +227,130 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
                          | old[(tuple(sorted(tct.COS_ONLY.principals)), "quote")]
                          | old[(tuple(sorted(tct.COS_ONLY.principals)), "pickup")])
 
+    def test_split_compute_and_apply_write_exactly_what_the_fused_refresh_writes(self):
+        """The Spark move's roundtrip: ``compute`` (read-only, the half that runs on the
+        Spark's standby) then ``apply_rows`` writes the very rows the fused ``refresh``
+        writes — same keys, same vectors, the placeholders dropped, the state mark moved —
+        and applying the file a second time writes nothing new."""
+        import psycopg
+        import tempfile
+        from operating.pg import comm_text
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for name in ("0074_comm_text.sql", "0075_comm_text_parts.sql"):
+                pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+        with mock.patch("operating.pg.generic_records.room"):
+            comm_text.build(self.dsn, views=["teams_messages"], log=lambda *a, **k: None)
+        # rows gone: both halves must put back exactly what the fused pass would
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("UPDATE biz.comm_text_state SET built_field_id = 0")
+            pg.execute("DELETE FROM biz.comm_text WHERE handle IN (SELECT handle FROM "
+                       "biz.comm_text WHERE field_id IS NOT NULL ORDER BY handle LIMIT 10)")
+            before = pg.execute("SELECT count(*) FROM biz.comm_text").fetchone()[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            rows_file = f"{tmp}/rows.jsonl.gz"
+            computed = comm_text.compute(self.dsn, rows_file, log=lambda *a, **k: None)
+            self.assertGreater(computed["teams_messages"]["computed"], 0)
+            # compute wrote nothing: the table still lacks the rows
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                self.assertEqual(pg.execute("SELECT count(*) FROM biz.comm_text").fetchone()[0],
+                                 before)
+            applied = comm_text.apply_rows(self.dsn, rows_file, log=lambda *a, **k: None)
+            self.assertGreater(applied["teams_messages"]["applied"], 0)
+            # idempotent: a second apply of the same file changes no row content
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                content = sorted(pg.execute(
+                    "SELECT handle, field_id, part, tsv::text FROM biz.comm_text").fetchall())
+            comm_text.apply_rows(self.dsn, rows_file, log=lambda *a, **k: None)
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                self.assertEqual(sorted(pg.execute(
+                    "SELECT handle, field_id, part, tsv::text FROM biz.comm_text").fetchall()),
+                                 content)
+        # the split pass's result is the fused pass's: a fused refresh after it changes no row
+        def content():
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                return sorted(pg.execute(
+                    "SELECT handle, field_id, part, whole, tsv::text FROM biz.comm_text"
+                    ).fetchall())
+        before_fused = content()
+        with mock.patch("operating.pg.generic_records.room"):
+            comm_text.refresh(self.dsn, log=lambda *a, **k: None)
+        self.assertEqual(content(), before_fused)
+        # and the search still finds exactly what the word index finds
+        self.assertEqual(len(self.found(tct.COS_ONLY, "note")), 60)
+
+    def test_split_apply_drops_placeholders_rejects_orphan_rows_and_preserves_standby_mark(self):
+        """Split-apply edge cases: a placeholder (``field_id IS NULL``) drops once the shipped
+        batch carries a real field for that handle while unrelated placeholders stay; a row
+        before any header raises ``CommTextError`` instead of dropping silently; and a lagging
+        standby's lower ``top`` never moves ``built_field_id`` backward."""
+        import gzip
+        import psycopg
+        import tempfile
+        from operating.pg import comm_text
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for name in ("0074_comm_text.sql", "0075_comm_text_parts.sql"):
+                pg.execute((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
+        with mock.patch("operating.pg.generic_records.room"):
+            comm_text.build(self.dsn, views=["teams_messages"], log=lambda *a, **k: None)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            h, at, fid = pg.execute(
+                "SELECT handle, at, field_id FROM biz.comm_text "
+                "WHERE field_id IS NOT NULL ORDER BY handle LIMIT 1").fetchone()
+            # replace h's real row with a placeholder, and add an unrelated placeholder
+            pg.execute("DELETE FROM biz.comm_text WHERE handle = %s", (h,))
+            pg.execute("INSERT INTO biz.comm_text (handle, view, at, field_id, part, whole, tsv) "
+                       "VALUES (%s, 'teams_messages', %s, NULL, 0, true, ''::tsvector), "
+                       "('keep-placeholder', 'teams_messages', %s, NULL, 0, true, ''::tsvector)",
+                       (h, at, at))
+            pg.execute("UPDATE biz.comm_text_state SET built_field_id = 0")
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. placeholder drop: real field arrives for h, placeholder drops; unrelated stays
+            rows_file = f"{tmp}/rows.jsonl.gz"
+            comm_text.compute(self.dsn, rows_file, log=lambda *a, **k: None)
+            comm_text.apply_rows(self.dsn, rows_file, log=lambda *a, **k: None)
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                got_fids = [r[0] for r in pg.execute(
+                    "SELECT field_id FROM biz.comm_text WHERE handle = %s", (h,)).fetchall()]
+                self.assertEqual(got_fids, [fid])
+                kept = pg.execute(
+                    "SELECT field_id FROM biz.comm_text WHERE handle = 'keep-placeholder'"
+                ).fetchall()
+                self.assertEqual(kept, [(None,)])
+                pg.execute("DELETE FROM biz.comm_text WHERE handle = 'keep-placeholder'")
+            # 2. orphan row before any header raises CommTextError and writes nothing
+            orphan_file = f"{tmp}/orphan.jsonl.gz"
+            with gzip.open(orphan_file, "wt", encoding="utf-8") as fh:
+                fh.write(json.dumps(["orphan-h", at.isoformat(), 1, 0, True, "'note':1"]) + "\n")
+            with self.assertRaises(comm_text.CommTextError):
+                comm_text.apply_rows(self.dsn, orphan_file, log=lambda *a, **k: None)
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                self.assertEqual(pg.execute(
+                    "SELECT count(*) FROM biz.comm_text WHERE handle = 'orphan-h'").fetchone()[0],
+                    0)
+            # 3. standby-lag mark: advances to header['top'] - OVERLAP, never regresses on lag
+            adv_file = f"{tmp}/adv.jsonl.gz"
+            with gzip.open(adv_file, "wt", encoding="utf-8") as fh:
+                fh.write(json.dumps({"header": True, "view": "teams_messages",
+                                     "covered_from": "2000-01-01T00:00:00+00:00",
+                                     "built_field_id": 0, "top": comm_text.OVERLAP + 50}) + "\n")
+            comm_text.apply_rows(self.dsn, adv_file, log=lambda *a, **k: None)
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                self.assertEqual(pg.execute(
+                    "SELECT built_field_id FROM biz.comm_text_state "
+                    "WHERE view = 'teams_messages'").fetchone()[0], 50)
+            lag_file = f"{tmp}/lag.jsonl.gz"
+            with gzip.open(lag_file, "wt", encoding="utf-8") as fh:
+                fh.write(json.dumps({"header": True, "view": "teams_messages",
+                                     "covered_from": "2000-01-01T00:00:00+00:00",
+                                     "built_field_id": 0, "top": comm_text.OVERLAP + 10}) + "\n")
+            comm_text.apply_rows(self.dsn, lag_file, log=lambda *a, **k: None)
+            with psycopg.connect(self.dsn, autocommit=True) as pg:
+                self.assertEqual(pg.execute(
+                    "SELECT built_field_id FROM biz.comm_text_state "
+                    "WHERE view = 'teams_messages'").fetchone()[0], 50)
+
     def test_the_sidecar_holds_a_second_text_field_and_a_split_field_whole(self):
         """Review minors on 0074: a message with two text fields has a sidecar row for each
         (a word only the second holds is found, one row per field, no stop); a field whose
@@ -839,6 +963,180 @@ class TeamsThroughTheDoor(ttp.TableTeamsParity):
             version = fresh.execute("PRAGMA data_version").fetchone()[0]
             bc._WINDOWS[key] = (kept[0], version, *kept[2:])
             self.assertEqual(bc.teams_windows(self.runtime, vince), first)
+
+    def test_view_carries_chat_members_addresses_and_search_open_use_them(self):
+        """ASK-GENIE 20 #8: every Teams row carries its chat's members, addresses, domains and
+        member_ids; plx.search with participant (address and domain) finds Teams messages in
+        the reader's window; plx.open returns the chat's members and member_addresses."""
+        out = self.sql(tct.COS_ONLY,
+                       "SELECT handle, chat_type, members, addresses, domains, member_ids "
+                       "FROM teams_messages")
+        rows = [[_cell(c) for c in r["cells"]] for r in out["rows"]]
+        self.assertTrue(rows)
+        for handle, chat_type, members, addresses, domains, mids in rows:
+            self.assertTrue(members, handle)
+            self.assertIn(tct.COS.lower(), addresses)
+            self.assertIn(tct.VINCE.lower(), addresses)
+            self.assertIn("petrasoap.com", domains)
+            self.assertIn(tct.U_COS.lower(), mids)
+            self.assertIn(tct.U_VINCE.lower(), mids)
+            self.assertTrue(chat_type)
+        self.assertEqual(self.sql(tct.OUTSIDER, "SELECT handle FROM teams_messages")["rows"], [])
+
+        tool = ts.SqlTool(self.tool().base)
+        with mock.patch.object(ts, "_people_tag", return_value=self.tag):
+            cos_hits = tool.comms_search({"participant": tct.VINCE, "sources": ["teams"],
+                                          "limit": 100}, tct.COS_ONLY)
+            vince_hits = tool.comms_search({"participant": tct.VINCE, "sources": ["teams"],
+                                            "limit": 100}, tct.VINCE_ONLY)
+            out_hits = tool.comms_search({"participant": tct.VINCE, "sources": ["teams"],
+                                          "limit": 100}, tct.OUTSIDER)
+            dom_hits = tool.comms_search({"participant": "@petrasoap.com", "query": "note",
+                                          "sources": ["teams"], "limit": 100}, tct.COS_ONLY)
+            self.assertEqual({h["citation"] for h in cos_hits["documents"]},
+                             self.handles(tct.COS_ONLY))
+            self.assertEqual({h["citation"] for h in vince_hits["documents"]},
+                             self.handles(tct.VINCE_ONLY))
+            self.assertEqual(out_hits["documents"], [])
+            self.assertEqual(len(dom_hits["documents"]), 60)
+            self.assertTrue(all(h.get("direction") == "in_chat" for h in cos_hits["documents"]))
+            first_h = cos_hits["documents"][0]["citation"]
+            opened = tool.comms_open({"citation": first_h}, tct.COS_ONLY)
+            self.assertIn(tct.COS.lower(), opened.get("member_addresses") or [])
+            self.assertTrue(opened.get("members"))
+
+    def test_marked_conversation_withholds_members_and_refresh_restores_on_change(self):
+        """A marked TeamsChat version withholds members/addresses/domains/member_ids (fail
+        closed); an incremental refresh picks up a conversation version change and restores
+        them."""
+        import psycopg
+        from operating.pg import teams_members
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            chat_oid = pg.execute(
+                "SELECT object_id FROM ontology.objects WHERE object_type = 'TeamsChat' LIMIT 1"
+            ).fetchone()[0]
+            pg.execute("UPDATE ontology.object_versions SET markings = '[\"finance\"]' "
+                       "WHERE object_id = %s AND superseded_at IS NULL", (chat_oid,))
+            got = teams_members.apply(pg, "biz.teams_messages")
+            self.assertEqual(got["marked_withheld"], 1)
+            self.assertEqual(got["with_members"], 0)
+            self.assertEqual(pg.execute(
+                "SELECT count(*) FROM biz.teams_messages WHERE cardinality(members) > 0"
+            ).fetchone()[0], 0)
+            # unmark and advance the conversation's ver (and its value_sources) so refresh_changed sees it
+            old_ver = pg.execute(
+                "SELECT ver FROM ontology.object_versions WHERE object_id = %s "
+                "AND superseded_at IS NULL", (chat_oid,)).fetchone()[0]
+            top_ver = pg.execute("SELECT max(ver) FROM ontology.object_versions").fetchone()[0]
+            (state,) = pg.execute("SELECT notes FROM biz.state WHERE view = 'teams_messages'"
+                                  ).fetchone()
+            pg.execute("UPDATE ontology.object_versions SET markings = '[]', ver = %s "
+                       "WHERE object_id = %s AND superseded_at IS NULL",
+                       (top_ver + 1, chat_oid))
+            pg.execute("UPDATE ontology.value_sources SET ver = %s WHERE ver = %s",
+                       (top_ver + 1, old_ver))
+            bc.refresh_changed(pg, "teams_messages", state["marks"])
+            self.assertGreater(pg.execute(
+                "SELECT count(*) FROM biz.teams_messages WHERE cardinality(members) > 0"
+            ).fetchone()[0], 0)
+
+    def test_teams_linker_resolves_bare_and_prefixed_codes_and_skips_ambiguous(self):
+        """ASK-GENIE 20 #8: teams_links resolves bare item codes and prefixed PO numbers from
+        unmarked Teams text into records, ignores ambiguous same-system codes, and feeds
+        comm_links.named_records to derive the supplier handle."""
+        import psycopg
+        from operating.pg import message_parties as mp, teams_links
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for tbl, ddl in (
+                ("staff", "name text, email text"),
+                ("customers", "name text, email text, handle text, object_ids text[]"),
+                ("suppliers", "name text, email text, website text, handle text, object_ids text[]"),
+                ("sales_orders", "handle text, customer_handle text, object_ids text[]"),
+                ("sales_invoices", "handle text, customer_handle text, object_ids text[]"),
+                ("customer_balances", "customer_handle text"),
+                ("purchase_orders", "handle text, supplier_handle text, object_ids text[]"),
+                ("supplier_invoices", "handle text, supplier_handle text, object_ids text[]"),
+                ("supplier_balances", "supplier_handle text"),
+                ("products", "handle text, object_ids text[]"),
+            ):
+                pg.execute(f"CREATE TABLE IF NOT EXISTS biz.{tbl} ({ddl})")
+            pg.execute("INSERT INTO biz.suppliers VALUES ('Croda Inc', 'ap@croda.example', NULL, "
+                       "'api://sup/croda', ARRAY['Supplier:bc:croda'])")
+            pg.execute("INSERT INTO biz.purchase_orders VALUES ('api://po/100555', "
+                       "'api://sup/croda', ARRAY['PurchaseOrder:bc:100555'])")
+            pg.execute("INSERT INTO biz.products VALUES ('api://prod/ac600', "
+                       "ARRAY['Product:bc:ac600'])")
+            pg.execute("INSERT INTO biz.products VALUES ('api://prod/amb1', "
+                       "ARRAY['Product:bc:amb1']), ('api://prod/amb2', ARRAY['Product:bc:amb2'])")
+            pg.execute(
+                "INSERT INTO ontology.identifiers (identifier_kind, normalized, raw, role, "
+                "object_id, property, l1_handle, field_path, lineage, markings, recorded_at, "
+                "superseded_at) VALUES "
+                "('item_code', 'AC600-NF', 'AC600-NF', 'primary', 'Product:bc:ac600', 'code', 'bc://e/c/1', 'row.code', 'bc_mfg', '[]', '2026-01-01', NULL), "
+                "('petra_po', 'PO100555', 'PO100555', 'primary', 'PurchaseOrder:bc:100555', 'number', 'bc://e/c/2', 'row.number', 'bc_mfg', '[]', '2026-01-01', NULL), "
+                "('item_code', 'AMB999', 'AMB999', 'primary', 'Product:bc:amb1', 'code', 'bc://e/c/3', 'row.code', 'bc_mfg', '[]', '2026-01-01', NULL), "
+                "('item_code', 'AMB999', 'AMB999', 'primary', 'Product:bc:amb2', 'code', 'bc://e/c/4', 'row.code', 'bc_mfg', '[]', '2026-01-01', NULL)")
+            h1, h2 = [r[0] for r in pg.execute(
+                "SELECT handle FROM biz.teams_messages ORDER BY handle LIMIT 2").fetchall()]
+            pg.execute("UPDATE biz.teams_messages SET said = %s, records = '{}', suppliers = '{}' "
+                       "WHERE handle = %s", ("Check PO100555 for AC600 - NF please", h1))
+            pg.execute("UPDATE biz.teams_messages SET said = %s, records = '{}', suppliers = '{}' "
+                       "WHERE handle = %s", ("What about AMB999 today?", h2))
+            got = teams_links.apply(pg, "biz.teams_messages",
+                                    f"t.handle IN ({bc.bv_lit(h1)}, {bc.bv_lit(h2)})")
+            self.assertEqual(got["linked_rows"], 1)
+            self.assertGreaterEqual(got["ambiguous"], 1)
+            mp.apply(pg, "teams_messages", "biz.teams_messages",
+                     f"t.handle IN ({bc.bv_lit(h1)}, {bc.bv_lit(h2)})")
+            r1 = pg.execute("SELECT records, suppliers FROM biz.teams_messages WHERE handle = %s",
+                            (h1,)).fetchone()
+            r2 = pg.execute("SELECT records, suppliers FROM biz.teams_messages WHERE handle = %s",
+                            (h2,)).fetchone()
+            self.assertEqual(set(r1[0]), {"api://po/100555", "api://prod/ac600"})
+            self.assertEqual(set(r1[1]), {"api://sup/croda"})
+            self.assertEqual(r2[0], [])
+            self.assertEqual(r2[1], [])
+            self.assertEqual(bc.links_rule(bc.EMAIL), "11c84a3c7c2d5bf2")
+
+    def test_ship_swap_preserves_dependent_views_and_grants(self):
+        """Review fix (2): deploy/spark/train/ship_swap.swap uses swap_dependents to save,
+        drop and restore dependent views (incl. views on top of them, owner and grants)."""
+        import importlib.util
+        import tempfile
+        from pathlib import Path
+        import psycopg
+        from operating.pg import business_views_code as bvc
+        spec = importlib.util.spec_from_file_location(
+            "ship_swap", Path(__file__).resolve().parents[2] / "deploy/spark/train/ship_swap.py")
+        ship_swap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ship_swap)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("CREATE SCHEMA IF NOT EXISTS assist")
+            pg.execute("CREATE VIEW assist.t_swap_low AS SELECT handle, sender FROM biz.teams_messages")
+            pg.execute("CREATE VIEW assist.t_swap_top AS SELECT handle FROM assist.t_swap_low")
+            pg.execute("COMMENT ON VIEW assist.t_swap_low IS 'kept across train swap'")
+            pg.execute("CREATE TABLE biz.teams_messages_ship (LIKE biz.teams_messages INCLUDING ALL)")
+            pg.execute("INSERT INTO biz.teams_messages_ship SELECT * FROM biz.teams_messages")
+            before_n = pg.execute("SELECT count(*) FROM assist.t_swap_top").fetchone()[0]
+            state_row = pg.execute(
+                "SELECT built_at, digest, rows, seconds, notes FROM biz.state WHERE view = 'teams_messages'"
+            ).fetchone()
+        with tempfile.TemporaryDirectory() as tmp:
+            state = {"built_at": state_row[0], "digest": state_row[1], "rows": state_row[2],
+                     "seconds": state_row[3],
+                     "notes": {**state_row[4], "code": bvc.fingerprint(bv.VIEWS["teams_messages"])}}
+            sf = Path(tmp) / "ship-state-teams_messages.json"
+            sf.write_text(json.dumps(state), encoding="utf-8")
+            real_connect = psycopg.connect
+            with mock.patch.object(ship_swap, "state_file", return_value=sf), \
+                    mock.patch.object(psycopg, "connect",
+                                      side_effect=lambda _dsn, **kw: real_connect(self.dsn, **kw)):
+                rc = ship_swap.swap("t11-members", "teams_messages")
+            self.assertEqual(rc, 0)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            self.assertEqual(pg.execute("SELECT count(*) FROM assist.t_swap_top").fetchone()[0], before_n)
+            self.assertEqual(pg.execute("SELECT obj_description('assist.t_swap_low'::regclass, 'pg_class')"
+                                        ).fetchone()[0], "kept across train swap")
 
     # the plx.table cases of the base class are not this view's
     test_cardinality_1_10_60_by_day_bucket = None

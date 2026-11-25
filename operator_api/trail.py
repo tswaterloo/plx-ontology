@@ -299,6 +299,26 @@ def late_list_step(mapper: Mapper, po: Any, run_at: Optional[str]) -> Optional[m
                        check="computed_from_cited_records")
 
 
+def late_list_due_step(mapper: Mapper, po: Any) -> Optional[tuple[m.TrailStep, m.DueDate]]:
+    """The late list's needed-by date as a cited due_date step when the trail itself carries
+    none (for example when header requested_date is null and the date came from open lines),
+    so the PO record header never contradicts Late POs."""
+    due = getattr(po, "due_date", None)
+    if not isinstance(due, str) or not due:
+        return None
+    handles = [s.handle for s in getattr(po, "sources", None) or ()]
+    decided = mapper.decide(handles)
+    source = next((got for got in (mapper.source(h, decided) for h in handles) if got), None)
+    if source is None:
+        return None
+    step_model = m.TrailStep(
+        kind="due_date", at=None, title=f"Needed by {due} (from lines)",
+        detail="The needed-by date from the order's lines, consistent with your late list.",
+        source=source, check="read_from_record")
+    due_model = m.DueDate(date=due, basis="requested", source=source)
+    return step_model, due_model
+
+
 def stored_trail(view: Any, oid: str, label: Optional[str]) -> Optional[dict[str, Any]]:
     """The precomputed raw trail of a purchase order for this reader (``plan_section_door``:
     only on the day it was computed, while nothing it rests on has changed, and only to a
@@ -349,6 +369,13 @@ def po_trails(mapper: Mapper, view: Any, oids: Sequence[str],
             continue
         trail = mapper.po(raw)
         listed = (late or {}).get(oid)
+        if listed is not None and not any(s.kind == "due_date" for s in trail.steps):
+            added = late_list_due_step(mapper, listed[0])
+            if added is not None:
+                step_model, due_model = added
+                trail.steps.insert(0, step_model)
+                if trail.due is None:
+                    trail = trail.model_copy(update={"due": due_model})
         if listed is not None and trail.state != "late":
             extra = late_list_step(mapper, *listed)
             if extra is not None:

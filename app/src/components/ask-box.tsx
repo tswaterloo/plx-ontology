@@ -1,11 +1,12 @@
 "use client";
 
-import { ArrowUp, Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Paperclip, Square, Truck, User, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, Box, Brain, Building2, ExternalLink, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Paperclip, Square, Truck, User, X, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { suggest as fetchSuggest } from "@/lib/api";
+import { suggest as fetchSuggest, warmAsk } from "@/lib/api";
 import { ACCEPT, addFiles, dropFile, sizeWords, type Attachment } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { forget, recall, remember } from "@/lib/tab-memory";
 import { plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { SystemCode } from "./ui/glyphs";
@@ -20,8 +21,6 @@ export const SUGGEST_DEBOUNCE_MS = 150;
 const MIN_CHARS = 2;
 /** Room the list needs below the box; with less, it opens upward. */
 const DROP_ROOM = 360;
-/** The longest phrase looked up: the words typed before the caret, at most this many. */
-export const PHRASE_WORDS = 4;
 
 const TYPE_ICON: Record<string, LucideIcon> = {
   purchaseorder: FileBox,
@@ -106,51 +105,16 @@ export function sharedName(n: number, type: string): string {
   return `${n} ${plural(n, typeLabel(type).toLowerCase()).replace(/^\d+\s+/, "")} share this ${by}`;
 }
 
-/** The word being typed at the caret (letters, digits, - / # .), or "". */
-export function fragmentAt(text: string, caret: number): { start: number; end: number; text: string } {
+/** The record being named: text after an "@" (at the start or after a space) up to the caret,
+ * and the span it takes (the "@" included, and the rest of the word the caret sits in).
+ * With no "@" before the caret there is no mention, so nothing is looked up. */
+export function mentionAt(text: string, caret: number): { start: number; end: number; text: string } | null {
   const before = text.slice(0, caret);
-  const after = text.slice(caret);
-  const m = before.match(/[\p{L}\p{N}\-/#.&']+$/u);
-  const n = after.match(/^[\p{L}\p{N}\-/#.&']*/u);
-  const start = caret - (m ? m[0].length : 0);
-  const end = caret + (n ? n[0].length : 0);
-  return { start, end, text: text.slice(start, end) };
-}
-
-/** The words typed up to the caret within the current clause, at most `PHRASE_WORDS` of
- * them ("what did we tell three ships" -> "we tell three ships"), and the span they take;
- * the server looks up each trailing phrase of them, longest first. */
-export function phraseAt(text: string, caret: number): { start: number; end: number; text: string } {
-  const word = fragmentAt(text, caret);
-  const before = text.slice(0, word.start);
-  const clause = before.split(/[?!,;:()]/).pop() ?? "";
-  const words = clause.match(/[\p{L}\p{N}\-/#.&']+\s+/gu) ?? [];
-  const kept = words.slice(-(PHRASE_WORDS - 1));
-  const head = kept.join("");
-  const start = head ? before.lastIndexOf(head) : word.start;
-  return { start: start < 0 ? word.start : start, end: word.end, text: text.slice(start < 0 ? word.start : start, word.end) };
-}
-
-const fold = (s: string) =>
-  s
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-
-/** The part of a typed phrase a picked suggestion's name stands for: its longest
- * trailing run of words found in the name ("tell three ships" + "Three Ships (NIU BODY
- * INC.)" -> "three ships"), else its last word. */
-export function spanFor(phrase: { start: number; end: number; text: string }, label: string): { start: number; end: number } {
-  const name = ` ${fold(label)} `;
-  const parts = [...phrase.text.matchAll(/\S+/g)];
-  for (let i = 0; i < parts.length; i++) {
-    const tail = fold(parts.slice(i).map((p) => p[0]).join(" "));
-    if (tail && name.includes(` ${tail}`)) return { start: phrase.start + (parts[i].index ?? 0), end: phrase.end };
-  }
-  const last = parts[parts.length - 1];
-  return { start: phrase.start + (last?.index ?? 0), end: phrase.end };
+  const m = before.match(/(?:^|\s)@([^@\n?!;]*)$/u);
+  if (!m) return null;
+  const start = caret - m[1].length - 1;
+  const tail = text.slice(caret).match(/^[\p{L}\p{N}\-/#.&']*/u);
+  return { start, end: caret + (tail ? tail[0].length : 0), text: m[1] };
 }
 
 export function AskBox({
@@ -163,11 +127,15 @@ export function AskBox({
   onStop,
   initial = "",
   dropUp = false,
+  draftKey,
   inputId,
   label = "Ask a question",
   attachable = false,
+  deepable = false,
 }: {
-  onSubmit: (question: string, pins: Pin[], files: Attachment[]) => void;
+  onSubmit: (question: string, pins: Pin[], files: Attachment[], opts?: { deep?: boolean }) => void;
+  /** Shows the "Think it through" toggle: the question is then asked with the deeper read. */
+  deepable?: boolean;
   /** Files and images can be attached (a button, or pasted into the box). */
   attachable?: boolean;
   size?: "lg" | "md" | "sm";
@@ -183,9 +151,12 @@ export function AskBox({
   initial?: string;
   /** Open the suggestions above the box (a box at the bottom of the screen). */
   dropUp?: boolean;
+  /** Keeps the unsent text in this tab (sessionStorage) under this key, so it is there when the person comes back. */
+  draftKey?: string;
 }) {
   const router = useRouter();
-  const [queued, setQueued] = useState<{ q: string; pins: Pin[]; files: Attachment[] } | null>(null);
+  const [queued, setQueued] = useState<{ q: string; pins: Pin[]; files: Attachment[]; deep: boolean } | null>(null);
+  const [deep, setDeep] = useState(false);
   const [value, setValue] = useState(initial);
   const [pins, setPins] = useState<Pin[]>([]);
   const [items, setItems] = useState<(Suggestion & { systems?: string[]; facts?: string; shared?: number })[]>([]);
@@ -210,6 +181,18 @@ export function AskBox({
   const ctrl = useRef<AbortController | null>(null);
   const cache = useRef(new Map<string, Suggestion[]>());
   const listId = useId();
+
+  // an unsent question is kept for the tab and comes back with it
+  useEffect(() => {
+    if (draftKey && !initial) {
+      const d = recall(draftKey, (v): v is string => typeof v === "string");
+      if (d) setValue((cur) => cur || d);
+    }
+  }, [draftKey, initial]);
+  // written as it is typed; cleared where the text is emptied (an edit to nothing, a send)
+  useEffect(() => {
+    if (draftKey && value) remember(draftKey, value);
+  }, [draftKey, value]);
 
   // Auto-grow the textarea up to a cap.
   useLayoutEffect(() => {
@@ -253,10 +236,16 @@ export function AskBox({
 
   const lookup = useCallback(
     (text: string, caret: number) => {
-      const f = phraseAt(text, caret);
-      setFrag(f);
+      const f = mentionAt(text, caret);
       if (timer.current) clearTimeout(timer.current);
       ctrl.current?.abort();
+      // suggestions open only after an "@"; with none, there is no popup at all
+      if (!f) {
+        close();
+        setItems([]);
+        return;
+      }
+      setFrag(f);
       const q = f.text.trim();
       // numbers from the first digit ("1" of "po 1"), words from two letters
       const min = /\d$/.test(q) ? 1 : MIN_CHARS;
@@ -307,7 +296,7 @@ export function AskBox({
   /** Ask about it: its name replaces what was typed for it, and it is pinned. */
   function pick(s: Suggestion) {
     const label = recordLabel(s.type, s.label); // "PO PO100040" is said "PO 100040"
-    const span = spanFor(frag, label);
+    const span = frag; // "@" and what was typed after it: the name replaces them
     const next = value.slice(0, span.start) + label + " " + value.slice(span.end).replace(/^\s+/, "");
     setValue(next);
     setPins((p) => (p.some((x) => x.object_id === s.object_id) ? p : [...p, { object_id: s.object_id, type: s.type, label }]));
@@ -349,11 +338,14 @@ export function AskBox({
     if (!q || disabled || reading > 0) return;
     const live = pins.filter((p) => q.includes(p.label));
     // while an answer is being written the question waits and is asked the moment it ends
-    if (busy) setQueued({ q, pins: live, files });
+    if (busy) setQueued({ q, pins: live, files, deep });
+    else if (deepable && deep) onSubmit(q, live, files, { deep: true });
     else onSubmit(q, live, files);
+    setDeep(false);
     generation.current += 1;
     filesRef.current = [];
     setValue("");
+    if (draftKey) forget(draftKey);
     setPins([]);
     setFiles([]);
     setFileNote("");
@@ -374,7 +366,7 @@ export function AskBox({
       }
       if (e.key === "Enter" && active >= 0) {
         e.preventDefault();
-        openRecord(items[active]);
+        pick(items[active]);
         return;
       }
       if (e.key === "Tab" && active >= 0) {
@@ -403,7 +395,8 @@ export function AskBox({
     if (busy || disabled || !queued) return;
     const next = queued;
     setQueued(null);
-    onSubmit(next.q, next.pins, next.files);
+    if (next.deep) onSubmit(next.q, next.pins, next.files, { deep: true });
+    else onSubmit(next.q, next.pins, next.files);
   }, [busy, disabled, queued, onSubmit]);
 
   const big = size === "lg";
@@ -419,9 +412,9 @@ export function AskBox({
         className={cn(
           "group relative flex flex-col bg-bg transition-shadow",
           sm
-            ? "rounded-lg border border-control focus-within:border-fg"
-            : "rounded-xl shadow-[var(--lift)] focus-within:shadow-[0_0_0_1px_var(--accent)]",
-          big ? "p-2.5" : sm ? "p-0.5" : "p-2",
+            ? "rounded-xl border border-border shadow-lift focus-within:border-accent"
+            : "rounded-2xl shadow-[var(--lift)] focus-within:shadow-[0_0_0_1px_var(--accent)]",
+          big ? "px-3 pt-2 pb-2" : sm ? "px-2 py-1" : "px-2.5 pt-1.5 pb-1.5",
         )}
       >
         {attachable && files.length > 0 && (
@@ -467,7 +460,7 @@ export function AskBox({
             })}
           </div>
         )}
-        <div className="flex items-end gap-2">
+        <div className={cn("flex gap-2", sm ? "items-end" : "flex-col")}>
           <textarea
             ref={ref}
             id={inputId}
@@ -484,6 +477,7 @@ export function AskBox({
             aria-activedescendant={open && active >= 0 ? `${listId}-${active}` : undefined}
             onChange={(e) => {
               setValue(e.target.value);
+              if (draftKey && !e.target.value) forget(draftKey);
               lookup(e.target.value, e.target.selectionStart ?? e.target.value.length);
             }}
             onKeyDown={onKeyDown}
@@ -494,12 +488,15 @@ export function AskBox({
               e.preventDefault();
               void attach(pasted);
             }}
+            onFocus={() => warmAsk()}
             onBlur={() => setTimeout(close, 120)}
             className={cn(
               "max-h-[220px] flex-1 resize-none bg-transparent px-2 text-fg placeholder:text-faint focus:outline-none",
-              sm ? "min-h-[34px] py-1.5 text-[13px]" : big ? "min-h-[48px] py-3 text-[15px] leading-6" : "min-h-[40px] py-2.5 text-[14px] leading-5",
+              sm ? "min-h-[36px] py-2 text-[14px] leading-5" : big ? "min-h-[72px] py-2.5 text-[16px] leading-6" : "min-h-[36px] py-2 text-[14px] leading-5",
             )}
           />
+          {sm ? (
+            <>
           {attachable && (
             <>
               <input
@@ -520,7 +517,7 @@ export function AskBox({
                 disabled={disabled || busy}
                 aria-label="Attach files or images"
                 title="Attach a PDF, spreadsheet or image (or paste one)"
-                className={cn("flex shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer disabled:opacity-50", sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8")}
+                className={cn("flex shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer disabled:opacity-50", sm ? "m-0.5 size-[30px]" : "size-9")}
               >
                 <Paperclip className="size-4" strokeWidth={2} aria-hidden />
               </button>
@@ -532,7 +529,7 @@ export function AskBox({
               onClick={onStop}
               aria-label="Stop answering"
               title="Stop (Esc)"
-              className={cn("flex shrink-0 items-center justify-center rounded-lg bg-fg text-bg hover:opacity-85 cursor-pointer", sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8")}
+              className={cn("flex shrink-0 items-center justify-center rounded-lg bg-fg text-bg hover:opacity-85 cursor-pointer", sm ? "m-0.5 size-[30px]" : "size-9")}
             >
               <Square className="size-3 fill-current" aria-hidden />
             </button>
@@ -545,11 +542,82 @@ export function AskBox({
               aria-disabled={(!value.trim() && files.length === 0) || disabled || reading > 0}
               className={cn(
                 "flex shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm hover:brightness-110 disabled:bg-surface-2 disabled:text-faint disabled:shadow-none cursor-pointer disabled:cursor-default",
-                sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8",
+                sm ? "m-0.5 size-[30px]" : "size-9",
               )}
             >
               <ArrowUp className="size-4" strokeWidth={2.4} aria-hidden />
             </button>
+          )}
+            </>
+          ) : (
+            <div className="flex items-center gap-1 px-0.5 pb-0.5">
+          {attachable && (
+            <>
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                accept={ACCEPT}
+                hidden
+                data-testid="attach-input"
+                onChange={(e) => {
+                  void attach(Array.from(e.target.files ?? []));
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => picker.current?.click()}
+                disabled={disabled || busy}
+                aria-label="Attach files or images"
+                title="Attach a PDF, spreadsheet or image (or paste one)"
+                className={cn("flex shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer disabled:opacity-50", sm ? "m-0.5 size-[30px]" : "size-9")}
+              >
+                <Paperclip className="size-4" strokeWidth={2} aria-hidden />
+              </button>
+            </>
+          )}
+          {deepable && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={deep}
+              onClick={() => setDeep((d) => !d)}
+              title="Takes longer and uses deeper analysis"
+              data-testid="deep-toggle"
+              className={cn("flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] cursor-pointer", deep ? "bg-accent/15 text-accent font-medium" : "text-muted hover:bg-hover hover:text-fg")}
+            >
+              <Brain className="size-4" strokeWidth={2} aria-hidden />
+              Deep research
+            </button>
+          )}
+              <span className="flex-1" />
+          {busy && onStop && !value.trim() && files.length === 0 ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="Stop answering"
+              title="Stop (Esc)"
+              className={cn("flex shrink-0 items-center justify-center rounded-lg bg-fg text-bg hover:opacity-85 cursor-pointer", sm ? "m-0.5 size-[30px]" : "size-9")}
+            >
+              <Square className="size-3 fill-current" aria-hidden />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              aria-label="Ask"
+              title="Ask (Enter)"
+              disabled={(!value.trim() && files.length === 0) || disabled || reading > 0}
+              aria-disabled={(!value.trim() && files.length === 0) || disabled || reading > 0}
+              className={cn(
+                "flex shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm hover:brightness-110 disabled:bg-surface-2 disabled:text-faint disabled:shadow-none cursor-pointer disabled:cursor-default",
+                sm ? "m-0.5 size-[30px]" : "size-9",
+              )}
+            >
+              <ArrowUp className="size-4" strokeWidth={2.4} aria-hidden />
+            </button>
+          )}
+            </div>
           )}
         </div>
       </form>
@@ -582,7 +650,7 @@ export function AskBox({
               aria-selected={i === active}
               onMouseDown={(e) => {
                 e.preventDefault();
-                openRecord(s);
+                pick(s);
               }}
               onMouseEnter={() => setActive(i)}
               className={cn("flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 text-[13px]", i === active ? "bg-hover" : "")}
@@ -605,17 +673,17 @@ export function AskBox({
               <button
                 type="button"
                 tabIndex={-1}
-                aria-label={`Ask about ${recordLabel(s.type, s.label)}`}
-                title="Ask about this (Tab)"
+                aria-label={`Open ${recordLabel(s.type, s.label)}`}
+                title="Open this record"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  pick(s);
+                  openRecord(s);
                 }}
-                className={cn("inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12px] text-muted hover:bg-surface-2 hover:text-fg cursor-pointer", i === active ? "opacity-100" : "sm:opacity-0")}
-                data-testid="ask-about"
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg cursor-pointer"
+                data-testid="open-record"
               >
-                Ask
+                <ExternalLink className="size-3.5" strokeWidth={2} aria-hidden />
               </button>
             </li>
             </Fragment>

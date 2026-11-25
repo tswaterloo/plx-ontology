@@ -792,7 +792,10 @@ def load(dsn: str, entries: Sequence[Mapping[str, Any]], schema: str | None = No
                               ).fetchone()[0]
             if held != items:   # a row the exclusion could not follow is never served
                 raise RuntimeError(f"{items} items but {held} with a lineage: not swapped")
-            door.exclude(pg, s, only=TABLE, record=False, staged=(f"{s}.{new}", f"{s}.lineage"))
+            staged_gone = door.exclude(pg, s, only=TABLE, record=False,
+                                       staged=(f"{s}.{new}", f"{s}.lineage"))
+            revoked = door.present(pg, s) and (
+                bool(staged_gone) or door.classes_changed(pg, s, TABLE, f"{s}.{new}"))
             door.recount(pg, s, TABLE, new)
             pg.execute(
                 f"CREATE TABLE IF NOT EXISTS {s}.state (view text PRIMARY KEY, built_at text NOT "
@@ -811,6 +814,8 @@ def load(dsn: str, entries: Sequence[Mapping[str, Any]], schema: str | None = No
                 pg.execute(f"DROP TABLE IF EXISTS {s}.{TABLE}")
                 pg.execute(f"ALTER TABLE {s}.{new} RENAME TO {TABLE}")
                 gv.make_views(pg, s, follow=False)
+                if revoked:
+                    door.bump_revoked(pg, s)
             swap_lock.swap_in(pg, steps)
         mark_links(dsn, s)
     return {"items": items, **counts, "seconds": round(time.monotonic() - started, 1)}
@@ -876,6 +881,12 @@ def _upsert_staged(pg: Any, s: str, new: str, runs: Any, started: float) -> dict
             "WHERE t.handle IS NULL OR (n.dep_ver >= t.dep_ver AND n.dep_link >= t.dep_link)")]
         if keep:
             now = dt.datetime.now(dt.timezone.utc)
+            revoked = door.present(pg, s) and bool(pg.execute(
+                f"SELECT EXISTS (SELECT 1 FROM {s}.{TABLE} o JOIN {s}.{new} n "
+                "ON n.handle = o.handle WHERE o.handle = ANY(%s) "
+                "AND (o.access_class IS DISTINCT FROM n.access_class "
+                "OR o.col_class IS DISTINCT FROM n.col_class))", (keep,)
+            ).fetchone()[0])
             replaced = pg.execute(f"DELETE FROM {s}.{TABLE} WHERE handle = ANY(%s)",
                                   (keep,)).rowcount
             pg.execute(f"INSERT INTO {s}.{TABLE} ({cols}) SELECT {cols} FROM {s}.{new} "
@@ -888,6 +899,8 @@ def _upsert_staged(pg: Any, s: str, new: str, runs: Any, started: float) -> dict
             # the rows decided against the people exclusion as it stands (this table's lineage
             # alone, as ``make_views`` follows a rebuilt table), then the class counts
             door.follow(pg, s, TABLE)
+            if revoked:
+                door.bump_revoked(pg, s)
             door.recount(pg, s, TABLE)
             track_hubs(pg, s)
             placed = len(keep)

@@ -77,9 +77,12 @@ describe("Records page", () => {
     render(<RecordsPage />);
     expect(screen.getByText("Find a name or number")).toBeTruthy();
     expect(screen.queryByTestId("records-empty-help")).toBeNull();
+    expect(screen.getByTestId("records-browse")).toBeInTheDocument();
     nav.params = new URLSearchParams("kind=orders");
     render(<RecordsPage />);
     await waitFor(() => expect(api.list).toHaveBeenCalledWith("purchase_orders", expect.anything(), expect.anything()));
+    // Unified single search box on list tabs (no duplicate "Search this list" input)
+    expect(screen.queryByRole("searchbox", { name: "Search this list" })).toBeNull();
   });
 
   it("the answer for the earlier words stays up, dimmed, until the next one lands, and Enter never opens a stale one", async () => {

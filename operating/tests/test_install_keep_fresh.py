@@ -62,7 +62,7 @@ class AutopilotFollowUnit(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('enable --now "$u.path"', text)
         # the live feed (the fast feed's per-signal units were retired: its consumer below)
-        self.assertIn('RETIRED_SYS_UNITS="plx-autopilot-fast"', text)
+        self.assertIn('RETIRED_SYS_UNITS="plx-autopilot-fast ', text)
         self.assertFalse((tmp / "out" / "plx-autopilot-fast.service").exists())
         for name, command in (("plx-autopilot-follow", "follow"),):
             self.assertIn(name, text.split("SYS_UNITS=", 1)[1].splitlines()[0])

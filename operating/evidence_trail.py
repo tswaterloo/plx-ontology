@@ -267,6 +267,16 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
     basis = DUE_BASIS.get(str(entry.get("governing")))
     top = min((v["authority_rank"] for v in values if v.get("property") in PROPS["due"]
                and isinstance(v.get("authority_rank"), int)), default=None)
+    # When multiple open lines carry different expected dates (lo != hi), process_lateness
+    # leaves governing_date unset while still judging lateness against hi (latest) or lo
+    # (earliest). Match that same line fallback so the trail still records a due_date step.
+    effective_line_day = governing
+    if effective_line_day is None and basis == "requested" and top is None:
+        line_days = [day_of(v.get("value")) for v in values if v.get("property") == LINE_EXPECTED]
+        line_days = [d for d in line_days if d is not None]
+        if line_days:
+            effective_line_day = (max(line_days) if entry.get("state") == "late"
+                                  else min(line_days))
     seen_due: set[tuple[str, str]] = set()
     due_handle = None
     for v in values:
@@ -284,7 +294,7 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
                                       "another system's requested-by date (lower "
                                       "precedence)")))
             due_handle = due_handle or (handle_of(v) if governs else None)
-        elif prop == LINE_EXPECTED and basis == "requested" and day == governing:
+        elif prop == LINE_EXPECTED and basis == "requested" and day == effective_line_day:
             # an open line's own expected date governs only when no header states one
             # (the reader's line rule); any other line date is no due date of the order
             steps.append(step("due_date", f"Expected on a line by {day}",
@@ -302,8 +312,9 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
         steps.append(step("due_date", f"Due by {governing}", handle=cited, date=governing,
                           governs=True, detail=DUE_WORDS[basis]))
         due_handle = cited
-    out["due"] = ({"date": governing, "basis": basis, "handle": due_handle}
-                  if governing and basis and due_handle else None)
+    due_day = governing or effective_line_day
+    out["due"] = ({"date": due_day, "basis": basis, "handle": due_handle}
+                  if due_day and basis and due_handle else None)
 
     # ---- the PO's own record events and its copies (issued, shipped), as the reader:
     # every record of the order the one PO reader reads (``po_status.copies``)

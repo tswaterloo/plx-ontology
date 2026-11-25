@@ -98,12 +98,12 @@ describe("the page's main read started by the head script (W1)", () => {
       asked.push(String(input));
       return answer(200, String(input) === "/api/me" ? { principal: "p" } : { configured: true });
     }));
-    window.history.replaceState(null, "", "/trust");
+    window.history.replaceState(null, "", "/data-health");
     runHead();
-    expect(asked).toEqual(["/api/auth/config", "/api/me", "/api/sidebar", "/api/trust"]);
+    expect(asked).toEqual(["/api/auth/config", "/api/me", "/api/sidebar", "/api/trust", "/api/data-health"]);
     await getTrust();
     await getSidebar();
-    expect(asked).toHaveLength(4);
+    expect(asked).toHaveLength(5);
     await getTrust();
     expect(asked.filter((p) => p === "/api/trust")).toHaveLength(2);
   });
@@ -114,7 +114,7 @@ describe("the page's main read started by the head script (W1)", () => {
       asked.push(String(input));
       return String(input) === "/api/trust" && asked.filter((p) => p === "/api/trust").length === 1 ? answer(503, {}) : answer(200, { ok: 1 });
     }));
-    window.history.replaceState(null, "", "/trust");
+    window.history.replaceState(null, "", "/data-health");
     runHead();
     await getTrust();
     expect(asked.filter((p) => p === "/api/trust")).toHaveLength(2);
@@ -163,5 +163,12 @@ describe("every mapped page's and a record's reads start with the HTML and are t
     window.history.replaceState(null, "", "/object/Customer/" + "a".repeat(701));
     runHead();
     expect(asked.some((p) => p.startsWith("/api/object/"))).toBe(false);
+  });
+
+  it("Data health starts its records read beside the trust read", () => {
+    const asked = recorder();
+    window.history.replaceState(null, "", "/data-health");
+    runHead();
+    expect(asked).toEqual(expect.arrayContaining(["/api/trust", "/api/data-health"]));
   });
 });

@@ -9,16 +9,21 @@ const deleteInsight = vi.fn();
 const saveInsight = vi.fn();
 const setInsightSchedule = vi.fn();
 const readInsightFiltered = vi.fn();
+const proposeMeasureCandidate = vi.fn();
 vi.mock("@/lib/api", () => ({
   readInsightFiltered: (...a: unknown[]) => readInsightFiltered(...a),
   setInsightSchedule: (...a: unknown[]) => setInsightSchedule(...a),
   getInsight: (...a: unknown[]) => getInsight(...a),
   deleteInsight: (...a: unknown[]) => deleteInsight(...a),
   saveInsight: (...a: unknown[]) => saveInsight(...a),
+  proposeMeasureCandidate: (...a: unknown[]) => proposeMeasureCandidate(...a),
 }));
 
+vi.mock("@/components/insights/ask-here", () => ({ InsightsAsk: () => <div data-testid="insights-ask" /> }));
+
 import { AnswerCharts } from "@/components/answer-chart";
-import { InsightsDashboard, cellText, ScheduleControl, TOP, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
+import { PinnedHere } from "@/components/insights/pinned";
+import { InsightsDashboard, cellText, moved, ScheduleControl, TOP, placed, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
 
 const base = { about: "Per person: mail sent.", group: "Team", saved: false, question: null, schedule: "" as const, notify: "never" as const };
 const list: InsightList = {
@@ -48,6 +53,7 @@ beforeEach(() => {
   getInsight.mockReset().mockImplementation((id: string) => Promise.resolve(result(id)));
   deleteInsight.mockReset().mockResolvedValue(undefined);
   saveInsight.mockReset().mockResolvedValue({});
+  proposeMeasureCandidate.mockReset().mockResolvedValue({ id: "mc-1", status: "pending" });
 });
 
 describe("insights dashboard in one request", () => {
@@ -144,8 +150,8 @@ describe("insights dashboard in one request, a tile left for later", () => {
       render(<InsightsDashboard list={list} onChanged={vi.fn()} feed={feed} streaming={false} />);
       await waitFor(() => expect(screen.getByTestId("unread-team_output")).toBeTruthy());
       expect(getInsight).not.toHaveBeenCalled();
-      // the streamed tile is drawn and watches nothing; the later one waits for the view
-      expect(watched.map((w) => w.el.id)).toEqual(["insight-team_output"]);
+      // every tile watches the view (it is drawn only near it); the later one also reads then
+      expect(watched.map((w) => w.el.id)).toEqual(["insight-team_output", "insight-s7"]);
       watched[0].cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
       await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
       expect(getInsight).toHaveBeenCalledTimes(1);
@@ -202,7 +208,9 @@ describe("insights dashboard", () => {
     fireEvent.click(screen.getAllByText("Refresh")[0]);
     await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true, expect.anything()));
     fireEvent.click(screen.getAllByText("Details")[0]);
-    expect(screen.getByText("Per person: mail sent.")).toBeTruthy();
+    // the tile's one-line takeaway is its about line (each tile shows it, opened or not)
+    expect(screen.getAllByText("Per person: mail sent.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Hide details").length).toBe(1);
     // the reader sees what it counts in words, never the database statement
     expect(screen.queryByText("SELECT person, mail_sent FROM x")).toBeNull();
     // each tile asks about itself in Ask
@@ -252,7 +260,6 @@ describe("insights dashboard", () => {
     expect(screen.getAllByText("Revenue invoiced")).toHaveLength(2);   // the second has no measure
     expect(screen.getAllByText(/Net line revenue on posted sales invoices/)).toHaveLength(2);
     expect(screen.getAllByText("How this was worked out")).toHaveLength(2);
-    expect(screen.getByText("SELECT customer, value FROM t")).toBeTruthy();
     fireEvent.click(screen.getByText("Pin all 2 charts"));
     await waitFor(() => expect(screen.getByText("All 2 charts pinned to your charts")).toBeTruthy());
     expect(saveInsight).toHaveBeenCalledTimes(2);
@@ -379,5 +386,156 @@ describe("cellText", () => {
   });
   it("a currency column beside an unpaired decimal does not make it money", () => {
     expect(cellText("9.5", "total_count", ["9.5", "CAD"], ["total_count", "currency"])).toBe("9.5");
+  });
+});
+
+const seeing = () => {
+  const watched: { el: Element; cb: IntersectionObserverCallback }[] = [];
+  class Seen {
+    constructor(private cb: IntersectionObserverCallback) {}
+    observe(el: Element) { watched.push({ el, cb: this.cb }); }
+    disconnect() {}
+    unobserve() {}
+    takeRecords() { return []; }
+  }
+  vi.stubGlobal("IntersectionObserver", Seen);
+  return { watched, show: (id: string, on: boolean) => watched.find((w) => w.el.id === `insight-${id}`)!.cb([{ isIntersecting: on } as IntersectionObserverEntry], {} as IntersectionObserver) };
+};
+
+describe("a tile is drawn only while it is near the view", () => {
+  it.each([1, 10, 60])("N=%i stored tiles: none drawn until near, each drawn once near, undrawn when it leaves", async (n) => {
+    const seen = seeing();
+    try {
+      const items = Array.from({ length: n }, (_, i) => ({ ...list.items[0], id: `t${i}`, title: `Tile ${i}` }));
+      const feed = Object.fromEntries(items.map((it) => [it.id, { result: { ...result("team_output"), ...it } }]));
+      render(<InsightsDashboard list={{ ...list, items }} onChanged={vi.fn()} feed={feed} streaming={false} />);
+      await waitFor(() => expect(screen.getAllByTestId(/^undrawn-/)).toHaveLength(n));   // none lost
+      expect(screen.queryAllByRole("img")).toHaveLength(0);                              // none drawn
+      expect(getInsight).not.toHaveBeenCalled();
+      const few = Math.min(n, 3);
+      for (let i = 0; i < few; i++) seen.show(`t${i}`, true);
+      await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(few));        // exactly those
+      expect(screen.queryAllByTestId(/^undrawn-/)).toHaveLength(n - few);
+      seen.show("t0", false);
+      await waitFor(() => expect(screen.getByTestId("undrawn-t0")).toBeTruthy());
+      expect(screen.queryAllByRole("img")).toHaveLength(few - 1);
+      seen.show("t0", true);
+      await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(few));
+      expect(screen.queryByTestId("undrawn-t0")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("arranging your dashboard", () => {
+  const three: InsightList = { ...list, scope: "everyone", items: [
+    { ...base, id: "a", title: "A", chart: null }, { ...base, id: "b", title: "B", chart: null },
+    { ...base, id: "c", title: "C", group: "Org", chart: null }] };
+
+  it("moved: a tile swaps with its neighbour in its own group only, and stays when it cannot move", () => {
+    expect(moved(three.items, "a", 1)).toEqual(["b", "a", "c"]);
+    expect(moved(three.items, "b", -1)).toEqual(["b", "a", "c"]);
+    expect(moved(three.items, "a", -1)).toEqual(["a", "b", "c"]);   // first of its group
+    expect(moved(three.items, "b", 1)).toEqual(["a", "b", "c"]);    // last of its group: not across
+    expect(moved(three.items, "c", 1)).toEqual(["a", "b", "c"]);
+    expect(moved(three.items, "zz", 1)).toEqual(["a", "b", "c"]);
+  });
+
+  it("placed: a dropped tile takes its target's place within its group; across groups it stays", () => {
+    expect(placed(three.items, "a", "b")).toEqual(["b", "a", "c"]);
+    expect(placed(three.items, "b", "a")).toEqual(["b", "a", "c"]);
+    expect(placed(three.items, "a", "c")).toEqual(["a", "b", "c"]);
+    expect(placed(three.items, "a", "zz")).toEqual(["a", "b", "c"]);
+  });
+
+  it("moves, takes off and adds back through one call with the whole order and the whole hidden set", () => {
+    const onArrange = vi.fn();
+    const withHidden: InsightList = { ...three, hidden: [{ ...base, id: "d", title: "D", chart: null }], customised: true };
+    render(<InsightsDashboard list={withHidden} onChanged={vi.fn()} onArrange={onArrange} />);
+    expect(screen.queryByTestId("arrange-a")).toBeNull();   // not arranging: no controls on the tiles
+    fireEvent.click(screen.getByRole("button", { name: "Customize" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move A down" }));
+    expect(onArrange).toHaveBeenLastCalledWith(["b", "a", "c"], ["d"]);
+    expect((screen.getByRole("button", { name: "Move A up" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Take B off your dashboard" }));
+    expect(onArrange).toHaveBeenLastCalledWith(["a", "c"], ["d", "b"]);
+    fireEvent.click(screen.getByRole("button", { name: "Add D back" }));
+    expect(onArrange).toHaveBeenLastCalledWith(["a", "b", "c", "d"], []);
+    fireEvent.click(screen.getByText("Reset to the standard dashboard"));
+    expect(onArrange).toHaveBeenLastCalledWith([], []);
+  });
+
+  it("says when the person's arrangement could not be read", () => {
+    render(<InsightsDashboard list={{ ...three, layout_problem: "Your own arrangement could not be read; the standard one is shown." }} onChanged={vi.fn()} onArrange={vi.fn()} />);
+    expect(screen.getByTestId("layout-problem")).toHaveTextContent("could not be read");
+  });
+
+  it("splits group jump chips into Views and Measures without repeating the Measures prefix, and supports header-controlled Customize", () => {
+    const many: InsightList = {
+      ...list,
+      scope: "everyone",
+      items: [
+        { ...base, id: "t1", title: "T1", group: "Team", chart: null },
+        { ...base, id: "o1", title: "O1", group: "Org", chart: null },
+        { ...base, id: "m1", title: "M1", group: "Measures: Finance", chart: null },
+        { ...base, id: "m2", title: "M2", group: "Measures: Sales", chart: null },
+      ],
+    };
+    const { rerender } = render(
+      <InsightsDashboard list={many} onChanged={vi.fn()} onArrange={vi.fn()} editing={false} onEditingChange={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button", { name: "Customize" })).toBeNull();
+    const nav = screen.getByTestId("insight-groups");
+    expect(nav).toHaveTextContent("Views");
+    expect(nav).toHaveTextContent("Measures");
+    expect(nav).toHaveTextContent("Finance");
+    expect(nav).not.toHaveTextContent("Measures: Finance");
+    rerender(
+      <InsightsDashboard list={many} onChanged={vi.fn()} onArrange={vi.fn()} editing={true} onEditingChange={vi.fn()} />,
+    );
+    expect(screen.getByTestId("hidden-charts")).toBeTruthy();
+  });
+});
+
+describe("a chart pinned from the question box on Insights", () => {
+  it("is shown on the dashboard at once (the page's callback runs after the pin is kept)", async () => {
+    const pinned = vi.fn();
+    const chart = { kind: "bar", title: "Top customers", x: "customer", y: ["total"], labels: ["A"], series: [{ name: "total", values: [1] }], sql: "SELECT customer, total FROM t", spec: { kind: "bar", x: "customer", y: ["total"] } } as never;
+    render(<PinnedHere.Provider value={pinned}><AnswerCharts charts={[chart]} question="top customers" /></PinnedHere.Provider>);
+    fireEvent.click(screen.getByText("Pin to your charts"));
+    await waitFor(() => expect(pinned).toHaveBeenCalledTimes(1));
+    expect(saveInsight).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Added to your charts below")).toBeTruthy();
+  });
+});
+
+describe("the checked line", () => {
+  it("shows a reconciliation or a difference, never a line that only says there is nothing to check against", async () => {
+    const one = { ...list, items: [list.items[0]] };
+    const withChecked = (checked: { status: string; says: string }) => ({ ...result("team_output"), checked }) as InsightResult;
+    const { unmount } = render(<InsightsDashboard list={one} onChanged={vi.fn()} feed={{ team_output: { result: withChecked({ status: "not_checked", says: "no second figure to set it against" }) } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
+    expect(screen.queryByTestId("checked-team_output")).toBeNull();
+    unmount();
+    render(<InsightsDashboard list={one} onChanged={vi.fn()} feed={{ team_output: { result: withChecked({ status: "reconciles", says: "The months add up." }) } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByTestId("checked-team_output")).toHaveTextContent("Checked: The months add up."));
+  });
+});
+
+describe("proposing a saved tile as a shared definition", () => {
+  it("submits the saved tile's SQL to /api/measures/candidates and confirms submission", async () => {
+    const savedOnly = { ...list, items: [list.items[1]] };
+    render(<InsightsDashboard list={savedOnly} onChanged={vi.fn()} feed={{ s7: { result: result("s7") } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByTestId("propose-s7")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("propose-s7"));
+    await waitFor(() => expect(proposeMeasureCandidate).toHaveBeenCalledWith({
+      insight_id: "s7",
+      title: "Open orders by month",
+      question: undefined,
+      sql: "SELECT person, mail_sent FROM x",
+      source_kind: "saved_tile",
+    }));
+    await waitFor(() => expect(screen.getByTestId("proposed-s7")).toHaveTextContent("Proposed for review"));
   });
 });

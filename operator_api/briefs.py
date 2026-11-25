@@ -630,8 +630,19 @@ class BriefsMixin:
             view, card_id, reader, getattr(self, "state_dir", None)))
 
     def my_action_items(self, reader: Reader, person: Optional[str]) -> m.MyActionItems:
-        raw = self._brief_run(reader, lambda view: action_items_of(
-            view, person, reader, getattr(self, "state_dir", None)))
+        from operating import meeting_followup as mf
+        state_dir = getattr(self, "state_dir", None)
+        worker = getattr(self, "access_worker", None)
+        if worker is not None and not worker.stopped.is_set():
+            # action_items_of only needs the reader's held markings (no ontology tool calls):
+            # read them on the fast access worker so follow-ups never stall behind slow walks
+            # on self.reads.
+            held = worker.run(reader, _held, timeout=15, priority=-1)
+            store = _follow_ups(state_dir) if held is not None else None
+            raw = mf.my_items(store, _viewer(reader, held), person) if store is not None else None
+        else:
+            raw = self._brief_run(reader, lambda view: action_items_of(
+                view, person, reader, state_dir))
         if raw is None:
             raise UserFacing("not_found", "No meeting follow-ups are kept here.", 404)
         return m.MyActionItems(person=person, items=raw)

@@ -39,10 +39,11 @@ the page store's own pruning. Evidence: isolated-fixture
 from __future__ import annotations
 
 import os
+import queue
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 # the version the file keeps a tile under: raise it only when a kept answer's own shape changes
@@ -348,13 +349,64 @@ def door_stamp(connect: Callable[[], Any], schema: str = "biz") -> Callable[[], 
     return SharedRead(read)
 
 
+class _PriorityPool:
+    """Small daemon worker pool ordering background insight reads by priority so a tile
+    actively requested by a user (e.g. planner_open on Team/Insights) jumps ahead of
+    background measure tiles instead of waiting behind dozens of slow queries."""
+
+    def __init__(self, max_workers: int = WORKERS, thread_name_prefix: str = "insights-ahead") -> None:
+        self._jobs: "queue.PriorityQueue[tuple[int, int, Any]]" = queue.PriorityQueue()
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._closed = False
+        self._workers: list[threading.Thread] = []
+        for idx in range(max(1, max_workers)):
+            t = threading.Thread(target=self._loop, name=f"{thread_name_prefix}-{idx}", daemon=True)
+            t.start()
+            self._workers.append(t)
+
+    def submit(self, fn: Callable[..., Any], *args: Any, priority: int = 1) -> Future:
+        fut: Future = Future()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self._seq += 1
+            self._jobs.put((priority, self._seq, (fut, fn, args)))
+        return fut
+
+    def _loop(self) -> None:
+        while True:
+            _prio, _seq, item = self._jobs.get()
+            if item is None:
+                return
+            fut, fn, args = item
+            if not fut.set_running_or_notify_cancel():
+                continue
+            try:
+                fut.set_result(fn(*args))
+            except BaseException as exc:  # noqa: BLE001 - handed to the future
+                fut.set_exception(exc)
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            for _ in self._workers:
+                self._seq += 1
+                self._jobs.put((99, self._seq, None))
+        if wait:
+            for t in self._workers:
+                t.join()
+
+
 class Keeper:
     """Reads ahead and keeps warm: the readers who opened Insights lately (their reader
     object, valid while their session is) and the statements they opened."""
 
     def __init__(self, kept: Kept, read: Callable[[Any, str], Any], *,
                  clock: Callable[[], float] = time.monotonic,
-                 pool: Optional[ThreadPoolExecutor] = None) -> None:
+                 pool: Optional[Any] = None) -> None:
         self.kept, self.read, self.clock = kept, read, clock
         self._pool = pool
         self._seen: "OrderedDict[tuple, tuple[Any, set[str], float]]" = OrderedDict()
@@ -364,6 +416,7 @@ class Keeper:
         # (reader key, statement) reads queued or running here: a poll of a cold tile asks again
         # every few seconds and must never queue a second read behind the first
         self._pending: set[tuple] = set()
+        self._pending_futures: dict[tuple, Future] = {}
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         if kept.later is None:
@@ -384,30 +437,63 @@ class Keeper:
                 return None
         return self._submit(got[0], key[0], key[1])
 
-    def _submit(self, reader: Any, key: tuple, sql: str) -> Optional[Future]:
+    def _priority(self, sql: str, urgent: bool) -> int:
+        if urgent:
+            return 0
+        if sql.startswith("builtin:measure_"):
+            return 2
+        return 1
+
+    def _submit(self, reader: Any, key: tuple, sql: str, *, urgent: bool = False) -> Optional[Future]:
         """Queue one read of (key, sql) unless one is queued or running already (None)."""
         slot = (key, sql)
         with self._lock:
             if slot in self._pending:
                 return None
             self._pending.add(slot)
+        pool = self.pool()
         try:
-            fut = self.pool().submit(self._quiet, reader, key, sql)
+            if isinstance(pool, _PriorityPool):
+                fut = pool.submit(self._quiet, reader, key, sql, priority=self._priority(sql, urgent))
+            else:
+                fut = pool.submit(self._quiet, reader, key, sql)
         except BaseException:
             with self._lock:
                 self._pending.discard(slot)
             raise
+        with self._lock:
+            if slot in self._pending:
+                self._pending_futures[slot] = fut
         fut.add_done_callback(lambda _f: self._done(slot))
         return fut
 
     def _done(self, slot: tuple) -> None:
         with self._lock:
             self._pending.discard(slot)
+            self._pending_futures.pop(slot, None)
 
-    def pool(self) -> ThreadPoolExecutor:
+    def wait_pending(self, key: tuple, sql: str, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for a real background read of ``(key, sql)`` to
+        finish (no-op for test stubs that do not run on background threads). Returns True
+        when the future finished within ``timeout``."""
+        if timeout <= 0 or not isinstance(self._pool, (_PriorityPool, ThreadPoolExecutor)):
+            return False
+        with self._lock:
+            fut = self._pending_futures.get((key, sql))
+        if fut is None:
+            return False
+        try:
+            fut.result(timeout=timeout)
+            return True
+        except FutureTimeout:
+            return False
+        except Exception:  # noqa: BLE001 - error already recorded on self.failed by _quiet
+            return True
+
+    def pool(self) -> Any:
         if self._pool is None:
-            self._pool = ThreadPoolExecutor(max_workers=WORKERS,
-                                            thread_name_prefix="insights-ahead")
+            self._pool = _PriorityPool(max_workers=WORKERS,
+                                       thread_name_prefix="insights-ahead")
         return self._pool
 
     def opened(self, reader: Any, sql: str) -> None:
@@ -423,7 +509,7 @@ class Keeper:
             while len(self._seen) > MOST_READERS:
                 self._seen.popitem(last=False)
 
-    def ahead(self, reader: Any, sqls: Sequence[str]) -> list[Future]:
+    def ahead(self, reader: Any, sqls: Sequence[str], *, urgent: bool = False) -> list[Future]:
         """Start the reads of ``sqls`` as ``reader`` that are neither kept fresh nor in
         flight (the dashboard was listed: its tiles are about to be asked for)."""
         key = reader_key(reader)
@@ -434,7 +520,7 @@ class Keeper:
             age = self.kept.age((key, sql))
             if age is not None and age < self.kept.fresh * 0.8:
                 continue
-            fut = self._submit(reader, key, sql)
+            fut = self._submit(reader, key, sql, urgent=urgent)
             if fut is not None:
                 out.append(fut)
         return out

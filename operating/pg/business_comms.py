@@ -87,6 +87,8 @@ class Spec:
     # False: its types are still rows of ``records`` (``business_views.View.covers``): files
     # are listed here but are never a generic record table
     covers: bool = True
+    # Declared view version (``business_views.View.version``, bumped when rows change)
+    version: int = 1
 
 
 def _addresses(*exprs: str) -> str:
@@ -260,7 +262,7 @@ def _register(spec: Spec, doc: str, cols: Sequence[tuple[str, str, str]]) -> Non
     bv.VIEWS[spec.view] = bv.View(spec.view, doc, made, lambda rd, as_of: iter(()),
                                   spec.types, fill=lambda w, t, a: fill(spec, w, t),
                                   internal=internal, covers=spec.listed and spec.covers,
-                                  listed=spec.listed)
+                                  listed=spec.listed, version=spec.version)
 
 
 _register(EMAIL, "Every captured email, one row per mailbox copy (count distinct message_id "
@@ -283,9 +285,12 @@ TEAMS = Spec(
     "created_at",
     f"{_ts_floor('p.created_at')}, {_day('p.created_at')}, p.\"from\", p.chat_id, "
     f"p.subject, p.message_type, p.reply_to_id, {_sender_key('p.\"from\"', 'display_name')}, "
-    f"{_sender_key('p.\"from\"', 'kind')}, NULL::text",
+    f"{_sender_key('p.\"from\"', 'kind')}, NULL::text, "
+    "NULL::text, NULL::text, '{}'::text[], '{}'::text[], '{}'::text[], '{}'::text[]",
     (), keep="coalesce(btrim(p.deleted_at), '') = ''", scope="teams", text_in_fields=True,
-    header="subject, sender")
+    header="subject, sender, chat_topic, array_to_string(members, ' '), "
+           "array_to_string(addresses, ' ')",
+    version=2)
 TEAMS_COLS = (
     ("created_at", "timestamp", "when it was posted"),
     ("created_date", "date", "the day it was posted (business time zone)"),
@@ -302,9 +307,17 @@ TEAMS_COLS = (
                      "has no text (a system event: someone joined, a call started) or its text "
                      "carries a marking you may not read here. Search ranks messages by it; "
                      "open the handle for the thread around it"),
+    ("chat_topic", "text", "the chat's title or channel name, when set (untrusted text)"),
+    ("chat_type", "text", "the conversation kind (oneOnOne, group, meeting, or channel type)"),
+    ("members", "list", "names of everyone in this chat or channel (who saw what)"),
+    ("addresses", "list", "lower-case email addresses of everyone in this chat or channel"),
+    ("domains", "list", "domains of those member email addresses"),
+    ("member_ids", "list", "lower-case Teams/directory user ids of everyone in this chat or "
+                           "channel"),
 )
 _register(TEAMS, "Every captured Teams chat message you may read (deleted ones left out): "
-          "when, who posted it (author), what it says (said, the whole text), the chat, and "
+          "when, who posted it (author), who is in the chat (members, addresses, member_ids, "
+          "chat_topic, chat_type), what it says (said, the whole text), the chat, and "
           "the customers, suppliers and business records it names (their handles).", TEAMS_COLS)
 
 
@@ -1003,6 +1016,9 @@ def links_rule(spec: Spec) -> str:
              inspect.getsource(domain_spells_name), inspect.getsource(fit_pairs),
              inspect.getsource(message_parties.PartyIndex), repr(message_parties.RULES),
              inspect.getsource(comm_links)]
+    if spec.view == "teams_messages":
+        from operating.pg import teams_links
+        parts.append(inspect.getsource(teams_links))
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
 
 
@@ -1259,9 +1275,12 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         write.execute(_compose(spec, stage, t, people=got["people"] is not None,
                                rows=(lo, lo + WRITE_CHUNK)))
     write.execute(f"DROP TABLE {stage}" + (f", {text}" if spec.mail else ""))
-    if spec.view == "teams_messages":   # the message's own text (one pass, chunks in batches)
-        from operating.pg import teams_text
+    if spec.view == "teams_messages":   # the message's own text, conversation members and links
+        from operating.pg import teams_links, teams_members, teams_text
         got["said"] = teams_text.apply(write, t)
+        got["members"] = teams_members.apply(write, t)
+        write.execute(f"UPDATE {t} SET words = {_words(spec)}")
+        got["teams_links"] = teams_links.apply(write, t)
     if spec.view in ("emails", "teams_messages"):
         # the parties a message's addresses and words name, before the indexes (no index
         # to keep up with the rows it sets)
@@ -1276,6 +1295,8 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         _participants(write, t, "true")
     if spec.mail:
         write.execute(f"CREATE INDEX ON {t} (thread, mailbox)")
+    if spec.view == "teams_messages":
+        write.execute(f"CREATE INDEX ON {t} (chat)")
     write.execute(f"CREATE INDEX ON {t} ({spec.when} DESC)")
     write.execute(f"CREATE INDEX ON {t} (unit, {spec.when} DESC)")
     # the day columns (received_date, created_date ...): a filter on the day reads its index
@@ -1283,7 +1304,8 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
     for c in bv.VIEWS[spec.view].cols:
         if c.kind == "date":
             write.execute(f'CREATE INDEX ON {t} ("{c.name}")')
-    for col in ("addresses", "domains", "customers", "suppliers", "records"):
+    for col in ("addresses", "domains", "members", "member_ids", "customers", "suppliers",
+                "records"):
         if any(c.name == col for c in bv.VIEWS[spec.view].cols):
             write.execute(f"CREATE INDEX ON {t} USING gin ({col})")
     write.execute(f"CREATE INDEX ON {t} USING gin (words)")
@@ -1388,11 +1410,24 @@ def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
         got["people"] = _classify(write, spec, view,
                                   "object_ids[1] IN (SELECT object_id FROM cm_changed)",
                                   since.get("people"))
+        teams_scope = "object_ids[1] IN (SELECT object_id FROM cm_changed)"
         if spec.view == "teams_messages":
-            from operating.pg import teams_text
+            from operating.pg import teams_links, teams_members, teams_text
+            t_name = f"{bv.SCHEMA}.{view}"
             got["said"] = teams_text.apply(
-                write, f"{bv.SCHEMA}.{view}",
-                "t.object_ids[1] IN (SELECT object_id FROM cm_changed)")
+                write, t_name, "t.object_ids[1] IN (SELECT object_id FROM cm_changed)")
+            conv_chats = teams_members.changed_chats(write, lo_ver, got["ver"])
+            if conv_chats:
+                write.execute("DROP TABLE IF EXISTS pg_temp.cm_chats")
+                write.execute("CREATE TEMP TABLE cm_chats (chat text PRIMARY KEY)")
+                with write.cursor().copy("COPY cm_chats (chat) FROM STDIN") as cp:
+                    for cid in conv_chats:
+                        cp.write_row((cid,))
+                teams_scope = ("(object_ids[1] IN (SELECT object_id FROM cm_changed) "
+                               "OR chat IN (SELECT chat FROM cm_chats))")
+            got["members"] = teams_members.apply(write, t_name, teams_scope)
+            write.execute(f"UPDATE {t_name} SET words = {_words(spec)} WHERE ({teams_scope})")
+            got["teams_links"] = teams_links.apply(write, t_name, teams_scope)
         if spec.view in ("emails", "teams_messages"):
             from operating.pg import message_parties
             stamp = links_rule(spec)
@@ -1402,8 +1437,10 @@ def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
                 got["dropped"] = sorted(
                     message_parties.redo(write, spec.view).get("names_dropped", {}))
             else:
+                scope_where = (teams_scope if spec.view == "teams_messages"
+                               else "object_ids[1] IN (SELECT object_id FROM cm_changed)")
                 message_parties.apply(write, spec.view, f"{bv.SCHEMA}.{view}",
-                                      "object_ids[1] IN (SELECT object_id FROM cm_changed)",
+                                      scope_where,
                                       drop_names=since.get("dropped") or ())
                 got["dropped"] = since.get("dropped") or []
             got["links"] = stamp

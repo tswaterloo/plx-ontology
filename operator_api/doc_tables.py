@@ -142,7 +142,8 @@ def read_all(read: Callable[[str], Mapping[str, Any]], sql: str
     partial = bool(first.get("partial"))
     if not first.get("truncated"):
         return {"columns": columns, "rows": _rows(first), "ordered": "as written",
-                "pages": 1, "partial": partial, "cells_cut": _cut(first.get("rows") or ())}
+                "pages": 1, "partial": partial, "cells_cut": _cut(first.get("rows") or ()),
+                "as_of": first.get("as_of")}
     counted = read(f"SELECT count(*) AS plx_rows FROM (\n{sql}\n) AS plx_t")
     try:
         total = int(_rows(counted)[0][0])
@@ -170,4 +171,4 @@ def read_all(read: Callable[[str], Mapping[str, Any]], sql: str
     if len(rows) != total:
         raise TableRefused("Its rows changed while they were read: make the file again.")
     return {"columns": columns, "rows": rows, "ordered": ordered, "pages": pages,
-            "partial": partial, "cells_cut": cut}
+            "partial": partial, "cells_cut": cut, "as_of": first.get("as_of")}

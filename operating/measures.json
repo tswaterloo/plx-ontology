@@ -1,5 +1,5 @@
 {
- "about": "The named business measures plx.sql {measure: ...} answers from (operating/measures.py). Each is one aggregate over one business view: value (an aggregate over the view's own columns), per (the column its value is split by: a money measure's currency or a quantity's unit; values in different currencies or units are never added), date (the column a period is read on; none: a snapshot as it stands now), where (the rows it counts), dimensions (the view's columns it may be broken down by), owner (the team that owns the definition). Every statement is made from these fields only and runs as the reader through the business views' door.",
+ "about": "The named business measures plx.sql {measure: ...} answers from (operating/measures.py). Each is one aggregate over one business view: value (an aggregate over the view's own columns), per (the column its value is split by: a money measure's currency or a quantity's unit; values in different currencies or units are never added), date (the column a period is read on; none: a snapshot as it stands now), where (the rows it counts), dimensions (the view's columns it may be broken down by), owner (the team that owns the definition). Every statement is made from these fields only and runs as the reader through the business views' door. A measure may instead name a source: a record type read through the door's records view (operating/measure_sources.py), its columns stated in the entry; its requires lines are read from measured fills (devloop/source-health.json) and a measure too thin for a figure is refused as not_measurable with the fills.",
  "measures": [
   {
    "id": "revenue",
@@ -1233,6 +1233,366 @@
      "min_fill": 0.5
     }
    ]
+  },
+  {
+   "id": "ledger_posted",
+   "name": "Ledger postings",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "Net amount of posted Sage general-ledger lines in the company currency (debits positive, credits negative), by the journal date. Year-end closing entries (Sage source type CL) are left out unless counted in. Every posting has an equal and opposite one, so across all accounts the net is zero: read it for one account (filter by account) or by account; an expense account's spend is its sum.",
+   "source": {
+    "type": "RelSageGlPjd",
+    "columns": {
+     "account": {
+      "field": "acctid",
+      "kind": "text"
+     },
+     "amount": {
+      "field": "transamt",
+      "kind": "number"
+     },
+     "currency": {
+      "field": "hcurncode",
+      "kind": "text"
+     },
+     "posted": {
+      "kind": "declared_date"
+     },
+     "ledger": {
+      "field": "srceledger",
+      "kind": "text"
+     },
+     "entry_type": {
+      "field": "srcetype",
+      "kind": "text"
+     },
+     "fiscal_period": {
+      "field": "fiscalperd",
+      "kind": "text"
+     }
+    }
+   },
+   "value": "sum(amount)",
+   "per": "currency",
+   "date": "posted",
+   "where": "",
+   "dimensions": [
+    "account",
+    "ledger",
+    "entry_type",
+    "fiscal_period"
+   ],
+   "days": 30,
+   "ask": "What did we post to account 41900310001 this year?",
+   "parameters": [
+    {
+     "id": "closing_entries",
+     "default": false,
+     "excludes_where": "coalesce(entry_type = 'CL', false)",
+     "says": "year-end closing entries"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount",
+     "min_fill": 0.5
+    },
+    {
+     "column": "posted",
+     "min_fill": 0.5
+    },
+    {
+     "column": "currency",
+     "min_fill": 0.5
+    },
+    {
+     "column": "account",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "v6a2b4be4",
+   "defined_on": "2026-11-24",
+   "tile_by": "account"
+  },
+  {
+   "id": "receipt_lead_time",
+   "name": "Receipt lead time",
+   "owner": "Purchasing",
+   "unit": "quantity",
+   "definition": "Days from a purchase order's order date to the date a receipt of it was received, averaged over the receipts linked to a purchase order (Receipt.receives), by the receipt's declared date. Receipts with no purchase order linked, and receipts dated before their order, are left out and counted beside the figure.",
+   "source": {
+    "type": "Receipt",
+    "columns": {
+     "received": {
+      "kind": "declared_date"
+     },
+     "order_date": {
+      "link": "Receipt.receives",
+      "to": "purchase_orders",
+      "column": "order_date",
+      "as": "min"
+     },
+     "supplier": {
+      "link": "Receipt.receives",
+      "to": "purchase_orders",
+      "column": "supplier",
+      "as": "min"
+     }
+    },
+    "derived": {
+     "lead_days": "received - order_date"
+    }
+   },
+   "value": "avg(lead_days)",
+   "per": "",
+   "date": "received",
+   "where": "",
+   "dimensions": [
+    "supplier"
+   ],
+   "days": 90,
+   "ask": "How long do suppliers take from order to receipt?",
+   "parameters": [
+    {
+     "id": "unlinked",
+     "default": false,
+     "excludes_where": "lead_days IS NULL",
+     "says": "receipts with no purchase order linked"
+    },
+    {
+     "id": "before_order",
+     "default": false,
+     "excludes_where": "coalesce(lead_days < 0, false)",
+     "says": "receipts dated before their purchase order"
+    }
+   ],
+   "grain": "row",
+   "requires": [
+    {
+     "column": "received",
+     "min_fill": 0.5
+    },
+    {
+     "column": "lead_days",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "v123847f3",
+   "defined_on": "2026-11-24"
+  },
+  {
+   "id": "assembly_orders_realized",
+   "name": "Assembly orders realized",
+   "owner": "Operations",
+   "unit": "count",
+   "definition": "Assembly orders (every captured assembly order, FileMaker and Portal) that carry a realized date, by that date. Production batches (batches_produced) hold the ones that have a batch record; this counts the orders.",
+   "source": {
+    "type": "AssemblyOrder",
+    "columns": {
+     "realized": {
+      "field": "realized_date",
+      "kind": "date"
+     },
+     "status": {
+      "field": "status",
+      "kind": "text"
+     },
+     "order_code": {
+      "field": "code",
+      "kind": "text"
+     }
+    }
+   },
+   "value": "count(*)",
+   "per": "",
+   "date": "realized",
+   "where": "",
+   "dimensions": [
+    "status"
+   ],
+   "days": 90,
+   "ask": "How many assembly orders were realized last month?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "realized",
+     "min_fill": 0.5
+    },
+    {
+     "column": "status",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "vba335ddc",
+   "defined_on": "2026-11-24"
+  },
+  {
+   "id": "shipments_on_time_share",
+   "name": "Shipments on time",
+   "owner": "Operations",
+   "unit": "percent",
+   "definition": "Of the shipments whose sales order states a required date, the share shipped on or before it, by the declared ship date.",
+   "source": {
+    "type": "Shipment",
+    "columns": {
+     "shipped": {
+      "kind": "declared_date"
+     },
+     "required": {
+      "link": "Shipment.ships",
+      "to": "sales_orders",
+      "column": "required_date",
+      "as": "min"
+     },
+     "customer": {
+      "link": "Shipment.ships",
+      "to": "sales_orders",
+      "column": "customer",
+      "as": "min"
+     }
+    }
+   },
+   "value": "count(*)",
+   "per": "",
+   "date": "shipped",
+   "where": "required IS NOT NULL",
+   "rate_where": "shipped <= required",
+   "dimensions": [
+    "customer"
+   ],
+   "days": 90,
+   "ask": "What share of shipments went out on time last quarter?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "shipped",
+     "min_fill": 0.5
+    },
+    {
+     "column": "required",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "v319e6b2a",
+   "defined_on": "2026-11-24"
+  },
+  {
+   "id": "quotes_issued",
+   "name": "Quotes issued",
+   "owner": "Sales",
+   "unit": "money",
+   "definition": "Total of quotes by the day they were issued, split by status; the accepted and rejected dates say the outcome.",
+   "source": {
+    "type": "Quote",
+    "columns": {
+     "issued": {
+      "field": "issue_date",
+      "kind": "date"
+     },
+     "status": {
+      "field": "status",
+      "kind": "text"
+     },
+     "amount": {
+      "field": "total_amount",
+      "kind": "number"
+     },
+     "currency": {
+      "field": "total_amount_currency",
+      "kind": "text"
+     },
+     "accepted": {
+      "field": "accepted_at",
+      "kind": "date"
+     },
+     "rejected": {
+      "field": "rejected_at",
+      "kind": "date"
+     }
+    }
+   },
+   "value": "sum(amount)",
+   "per": "currency",
+   "date": "issued",
+   "where": "",
+   "dimensions": [
+    "status"
+   ],
+   "days": 90,
+   "ask": "How many quotes did we win this quarter?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount",
+     "min_fill": 0.5
+    },
+    {
+     "column": "issued",
+     "min_fill": 0.5
+    },
+    {
+     "column": "accepted",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "v7ddcc7bf",
+   "defined_on": "2026-11-24"
+  },
+  {
+   "id": "purchases_by_category",
+   "name": "Purchases by category",
+   "owner": "Purchasing",
+   "unit": "money",
+   "definition": "Purchase order line amounts, by the category of the item the line is for, by the line's declared date.",
+   "source": {
+    "type": "PurchaseOrderLine",
+    "columns": {
+     "line_date": {
+      "kind": "declared_date"
+     },
+     "amount": {
+      "field": "line_total",
+      "kind": "number"
+     },
+     "currency": {
+      "field": "line_total_currency",
+      "kind": "text"
+     },
+     "category": {
+      "link": "PurchaseOrderLine.for_item",
+      "to": "products",
+      "column": "category",
+      "as": "min"
+     }
+    }
+   },
+   "value": "sum(amount)",
+   "per": "currency",
+   "date": "line_date",
+   "where": "",
+   "dimensions": [
+    "category"
+   ],
+   "days": 90,
+   "ask": "What did we buy by category this quarter?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount",
+     "min_fill": 0.5
+    },
+    {
+     "column": "line_date",
+     "min_fill": 0.5
+    },
+    {
+     "column": "category",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "v477711c6",
+   "defined_on": "2026-11-24"
   }
  ]
 }

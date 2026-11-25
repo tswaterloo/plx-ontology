@@ -148,6 +148,40 @@ def blocks(chart: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [block]
 
 
+def _measure_line(measure: Any) -> Optional[str]:
+    if not isinstance(measure, Mapping):
+        return None
+    name = str(measure.get("name") or measure.get("id") or "").strip()
+    if not name:
+        return None
+    bits = [str(measure.get(k) or "").strip() for k in ("owner", "version") if measure.get(k)]
+    tail = f" ({', '.join(bits)})" if bits else ""
+    defn = str(measure.get("definition") or "").strip()
+    return f"Measure: {name}{tail}" + (f" — {defn}" if defn else ".")
+
+
+def statement_provenance(*, count: Optional[int] = None, as_of: Any = None, sql: str = "",
+                         measure: Any = None, title: str = "") -> list[str]:
+    """Citation lines for any table or figure backed by a SQL statement or governed measure."""
+    lines: list[str] = []
+    head_parts: list[str] = []
+    if count is not None:
+        head_parts.append(f"{count} {'record' if count == 1 else 'records'}")
+    if as_of:
+        head_parts.append(f"as of {str(as_of)[:10]}")   # guard-ok: ISO date prefix YYYY-MM-DD
+    prefix = f"{title}: " if title else "Source: "
+    if head_parts:
+        lines.append(f"{prefix}{', '.join(head_parts)}.")
+    elif title:
+        lines.append(f"{title}.")
+    mline = _measure_line(measure)
+    if mline:
+        lines.append(mline)
+    if sql and str(sql).strip():
+        lines.append("Statement: " + " ".join(str(sql).split()))
+    return lines
+
+
 def provenance(chart: Mapping[str, Any]) -> list[str]:
     """What a file says about where its numbers come from."""
     count = chart.get('rows') or len(chart.get('labels') or ())
@@ -178,6 +212,9 @@ def provenance(chart: Mapping[str, Any]) -> list[str]:
         lines.append(f"Fitted line y = {trend['slope']:.4g} x + {trend['intercept']:.4g}; "
                      f"r = {trend['r']:.2f} over {trend['n']} points (how closely they move "
                      "together, not that one causes the other).")
+    mline = _measure_line(chart.get("measure"))
+    if mline:
+        lines.append(mline)
     if chart.get("sql"):
         lines.append("Statement: " + " ".join(str(chart["sql"]).split()))
     return lines

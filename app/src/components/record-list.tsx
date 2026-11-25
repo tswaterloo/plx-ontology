@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { getRecordList } from "@/lib/api";
+import { StoredAge } from "@/components/ui/stored-age";
+import { getRecordList, recordListPath } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { safeHref } from "@/lib/format";
+import { useRead } from "@/lib/use-read";
 import type { BizCell, RecordList as List } from "@/lib/types";
 import { Cell } from "./biz-page";
 
@@ -25,57 +27,84 @@ function isEmpty(c: BizCell | undefined): boolean {
   return !c || (!c.hidden && !c.text && !c.number && !c.day && !c.money);
 }
 
+/** Plain-English verdict display so internal tags ("neither", "late (not counted)") never confuse readers. */
+export function formatVerdict(raw: string): { label: string; title?: string; tone?: string } | null {
+  const key = raw.trim().toLowerCase();
+  if (key === "neither") return { label: "–", tone: "text-faint" };
+  if (key === "late (not counted)") {
+    return {
+      label: "Late (excluded)",
+      title: "Excluded from the late PO count (e.g. non-counted or pilot record)",
+      tone: "text-muted",
+    };
+  }
+  if (key === "late") return { label: "Late", tone: "font-medium text-late" };
+  if (key === "on_time" || key === "on time") return { label: "On time", tone: "text-ok" };
+  if (key === "at_risk" || key === "at risk") return { label: "At risk", tone: "font-medium text-risk" };
+  if (key === "unknown") return { label: "Unknown", tone: "text-muted" };
+  return null;
+}
+
+const UNIT_RATE_COL = /(?:^|_)(?:unit_price|unit_cost|price_per|cost_per|rate)(?:$|_)/i;
+
+type ListReadOptions = { filters?: Record<string, string>; q?: string; sort?: string; direction?: string; offset?: number; facets?: boolean };
+
 /**
  * One Records list of a business view, from the metadata the server sends with it: its
  * columns (money with its currency, dates, counts), the filters the data offers (each
  * choice with how many it holds), text search, sort by any column, and pages of 25 with a
  * link on every row to the record. Changing a filter, the text or the sort starts again
  * from the first row (a parent keys the list by its view, so another view starts clean); a failed read says so with Retry, never an empty list.
+ * A list already read in this session (or kept by the desktop shell) is drawn at once with its
+ * age while it is read again.
  */
-export function RecordList({ view, initialSort }: { view: string; initialSort?: { key: string; direction: "asc" | "desc" } }) {
+export function RecordList({
+  view,
+  initialSort,
+  externalQuery,
+  onClearExternalQuery,
+}: {
+  view: string;
+  initialSort?: { key: string; direction: "asc" | "desc" };
+  externalQuery?: string;
+  onClearExternalQuery?: () => void;
+}) {
   const router = useRouter();
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [text, setText] = useState("");
-  const [q, setQ] = useState("");
+  const controlledSearch = externalQuery !== undefined;
+  const activeText = controlledSearch ? externalQuery : text;
+  const [q, setQ] = useState(controlledSearch ? externalQuery.trim() : "");
   const [sort, setSort] = useState<{ key: string; direction: "asc" | "desc" } | null>(initialSort ?? null);
   const [page, setPage] = useState(0);
-  const [got, setGot] = useState<List | null>(null);
   const [offered, setOffered] = useState<List["filters"]>([]);
-  const [problem, setProblem] = useState<unknown>(null);
-  const [busy, setBusy] = useState(false);
-  const [round, setRound] = useState(0);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
+      const next = activeText.trim();
       setQ((was) => {
-        if (was !== text.trim()) setPage(0);
-        return text.trim();
+        if (was !== next) setPage(0);
+        return next;
       });
     }, 250);
     return () => window.clearTimeout(t);
-  }, [text]);
+  }, [activeText]);
 
-  const key = JSON.stringify([view, filters, q, sort, page]);
+  const narrow = Object.values(filters).some(Boolean) || q !== "";
+  const initialRead = page === 0 && !narrow && (sort?.key ?? null) === (initialSort?.key ?? null) && (sort?.direction ?? null) === (initialSort?.direction ?? null);
+  const options: ListReadOptions = { filters, q, sort: sort?.key, direction: sort?.direction, offset: page * PAGE, facets: initialRead };
+  const path = recordListPath(view, options);
+  const { data: got, error: problem, retry, at } = useRead<List>(path, (signal) => getRecordList(view, options, signal));
+
   useEffect(() => {
-    const ctl = new AbortController();
-    setProblem(null);
-    setBusy(true);
-    getRecordList(view, { filters, q, sort: sort?.key, direction: sort?.direction, offset: page * PAGE, facets: offered.length === 0 && page === 0 }, ctl.signal)
-      .then(
-        (p) => {
-          setGot(p);
-          if (p.filters.length) setOffered(p.filters);
-        },
-        (e) => !ctl.signal.aborted && setProblem(e),
-      )
-      .finally(() => !ctl.signal.aborted && setBusy(false));
-    return () => ctl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, round]);
+    if (got?.view === view && got.filters.length) setOffered(got.filters);
+  }, [got, view]);
 
   const shown = got && got.view === view ? got : null;
   const rows = useMemo(() => shown?.table.rows ?? [], [shown]);
-  if (problem) return <LoadProblem message={plainError(problem)} onRetry={() => setRound((n) => n + 1)} />;
+  const choices = offered.length ? offered : (shown?.filters ?? []);
+  const busy = !shown || at !== null;
+  if (problem) return <LoadProblem message={plainError(problem)} onRetry={retry} />;
   if (!shown) return <Pending label="Reading the list" />;
 
   const first = shown.offset + 1;
@@ -91,8 +120,9 @@ export function RecordList({ view, initialSort }: { view: string; initialSort?: 
 
   return (
     <section aria-label={shown.title} data-testid={`record-list-${view}`} aria-busy={busy}>
+      <StoredAge at={at} />
       <div className="flex flex-wrap items-end gap-x-4 gap-y-2 text-[13px]">
-        {shown.searchable && (
+        {shown.searchable && !controlledSearch && (
           <label className="flex flex-col gap-1 text-[12px] text-muted">
             Search this list
             <input
@@ -106,7 +136,7 @@ export function RecordList({ view, initialSort }: { view: string; initialSort?: 
             />
           </label>
         )}
-        {offered.map((f) => (
+        {choices.map((f) => (
           <label key={f.key} className="flex flex-col gap-1 text-[12px] text-muted">
             {f.label}
             <select
@@ -118,12 +148,15 @@ export function RecordList({ view, initialSort }: { view: string; initialSort?: 
                 setFilters((cur) => ({ ...cur, [f.key]: e.target.value }));
               }}
             >
-              {f.options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                  {o.count != null ? ` (${group(o.count)})` : ""}
-                </option>
-              ))}
+              {f.options.map((o) => {
+                const vLabel = f.key === "verdict" && o.value ? (formatVerdict(o.value)?.label ?? o.label) : o.label;
+                return (
+                  <option key={o.value} value={o.value}>
+                    {vLabel}
+                    {o.count != null ? ` (${group(o.count)})` : ""}
+                  </option>
+                );
+              })}
             </select>
           </label>
         ))}
@@ -134,6 +167,7 @@ export function RecordList({ view, initialSort }: { view: string; initialSort?: 
               setPage(0);
               setText("");
               setFilters({});
+              onClearExternalQuery?.();
             }}
             className="h-8 cursor-pointer text-[13px] text-accent hover:underline"
           >
@@ -150,14 +184,14 @@ export function RecordList({ view, initialSort }: { view: string; initialSort?: 
         </p>
       ) : (
         <div className="mt-2 overflow-x-auto">
-          <table className="w-full border-collapse text-[13px]">
+          <table className="w-full border-collapse text-[12.5px]">
             <thead>
               <tr className="border-b border-border text-left text-[12px] text-muted">
                 {shown.table.columns.map((c, i) => {
                   const on = shown.column_keys[i] === active;
                   const numeric = rows.some((r) => r[i]?.money || r[i]?.number);
                   return (
-                    <th key={c} scope="col" aria-sort={on ? (direction === "asc" ? "ascending" : "descending") : "none"} className={cn("py-1.5 pr-4 font-normal", numeric && "text-right")}>
+                    <th key={c} scope="col" aria-sort={on ? (direction === "asc" ? "ascending" : "descending") : "none"} className={cn("py-1.5 pr-3 last:pr-0 font-normal", numeric && "text-right")}>
                       <button type="button" onClick={() => choose(i)} className={cn("inline-flex cursor-pointer items-center gap-1 whitespace-nowrap hover:text-fg", on && "text-fg")}>
                         {c}
                         {on && (direction === "asc" ? <ArrowUp className="size-3" aria-hidden /> : <ArrowDown className="size-3" aria-hidden />)}
@@ -179,15 +213,21 @@ export function RecordList({ view, initialSort }: { view: string; initialSort?: 
                     }}
                   >
                     {r.map((c, i) => {
+                      const colKey = shown.column_keys[i] ?? "";
                       const numeric = rows.some((x) => x[i]?.money || x[i]?.number);
+                      const verdict = colKey === "verdict" && c.text && !c.hidden && !c.href ? formatVerdict(c.text) : null;
                       return (
-                        <td key={i} className={cn("py-1.5 pr-4 align-top whitespace-nowrap", numeric && "text-right")}>
+                        <td key={i} className={cn("py-1.5 pr-3 last:pr-0 align-top whitespace-nowrap", numeric && "text-right")}>
                           {isEmpty(c) ? (
                             <span className="text-faint" aria-label="none">–</span>
+                          ) : verdict ? (
+                            <span className={cn("block max-w-[22ch] truncate", verdict.tone)} title={verdict.title ?? c.text ?? undefined}>
+                              {verdict.label}
+                            </span>
                           ) : (
                             // a long name is cut at the column's width (its full text on hover)
-                            <span className="block max-w-[28ch] truncate" title={c.text ?? undefined}>
-                              <Cell c={c} numeric={numeric} />
+                            <span className="block max-w-[22ch] truncate" title={c.text ?? undefined}>
+                              <Cell c={c} numeric={numeric} fixedCents={!UNIT_RATE_COL.test(colKey)} />
                             </span>
                           )}
                         </td>

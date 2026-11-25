@@ -299,7 +299,7 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
         </Block>
       )}
       {!!runs?.rows.length && (
-        <Block title={itemId ? "Run log for this item" : "Run log"} href="/autopilot-log" linkText="Audit log" count={runs.rows.length} testId="related-run-log">
+        <Block title={itemId ? "Run log for this item" : "Run log"} href="/assist?show=log" linkText="Audit log" count={runs.rows.length} testId="related-run-log">
           <ShowAll items={runs.rows} first={SHOWN} as="li">
             {(r, i) => (
               <li key={`${r.at}-${r.event}-${i}`} className={cn("flex gap-x-2 text-[13px] leading-5", dense ? "flex-col" : "items-baseline justify-between")} data-testid="related-run-row">
@@ -340,7 +340,7 @@ export function Related({ records, label, docTypes = [], itemId, workflow, dense
             Work log
           </Link>
           {owner && (itemId || workflow) && (
-            <Link href="/autopilot-log" className="text-muted hover:text-fg hover:underline">
+            <Link href="/assist?show=log" className="text-muted hover:text-fg hover:underline">
               Audit log
             </Link>
           )}

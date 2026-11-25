@@ -310,31 +310,25 @@ def sender_host(out: Path, t: Mapping[str, Any], people: Any, owner: Mapping[str
 
 def _agent_answer(state: Path, config: Path, claims: Mapping[str, str], secret: str,
                   question: str) -> tuple[str, str]:
-    """The Ask's agent path for one question as the sender (``operator_api.agent_ask``:
-    one Claude Code session on the operator's login, every claim through the answer
-    gate): (its gated prose, "") or ("", why it settled nothing: a failure code or the
-    answerability, never text)."""
-    from operator_api.agent_ask import HOST_HELPERS_ENV, AgentAsk, reply_prose
+    """The Ask path for one question as the sender (``operator_api.simple_ask``):
+    (its reply prose, "") or ("", why it settled nothing)."""
+    from operator_api import simple_ask
+    from operator_api.agent_ask import HOST_HELPERS_ENV, AgentAsk
     from scripts import eval_real_agent as real
-    # one host per session: helper hosts beside it outgrow the eval's memory cap and the
-    # session's reads stall (measured 2026-11-10 under a 4 GB scope)
     os.environ[HOST_HELPERS_ENV] = "0"
 
     def host_for(_session: Any) -> Any:
         return real.LiveHost(state, config, dict(claims), secret, tenant="plx",
-                             agent="plx.agent.investigate")
+                             agent=simple_ask.AGENT)
     ask = AgentAsk(state_dir=state, host_config=config, secret=secret,
                    seconds=AGENT_SECONDS, host_for=host_for)
     try:
-        ran = ask.run(None, question, route="lookup")
+        ran = simple_ask.run(ask, None, question)
     except Exception as error:  # noqa: BLE001 - a failed session settles nothing
         return "", "error:" + type(error).__name__
-    if ran.failure or not ran.answer or ran.answer.get("answerability") not in (
-            "answerable", "partial"):
-        return "", ran.failure or ("timeout" if (ran.usage or {}).get("subtype") == "timeout"
-                                   else "") \
-            or str((ran.answer or {}).get("answerability") or "no_answer")
-    return reply_prose(ran.final_text, ran.answer), ""
+    if ran.failure or ran.stopped or not ran.text.strip():
+        return "", ran.failure or ("timeout" if ran.stopped else "no_answer")
+    return ran.text.strip(), ""
 
 
 def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: float,

@@ -10,7 +10,7 @@ import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { bizPage } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
-import { formatDate, formatNumber, money, safeHref } from "@/lib/format";
+import { formatDate, formatMoneyCents, formatNumber, money, safeHref } from "@/lib/format";
 import { rememberOpened } from "@/lib/saved";
 import type { BizCell, BizKind, BizPage as Page, BizTable } from "@/lib/types";
 
@@ -24,9 +24,17 @@ export function kindFrom(raw: string | null, allowed: readonly BizKind[]): BizKi
   return raw && (allowed as readonly string[]).includes(raw) && (KINDS as readonly string[]).includes(raw) ? (raw as BizKind) : null;
 }
 
-export function Cell({ c, numeric }: { c: BizCell; numeric?: boolean }) {
+export function Cell({ c, numeric, fixedCents }: { c: BizCell; numeric?: boolean; fixedCents?: boolean }) {
   if (c.hidden) return <span className="text-muted" title="You don't have access to this value">Restricted</span>;
-  const text = c.money ? money(c.money) : c.day ? formatDate(c.day, { short: true }) : c.number != null ? formatNumber(c.number) : c.text ?? "";
+  const text = c.money
+    ? fixedCents
+      ? formatMoneyCents(c.money.amount, c.money.currency)
+      : money(c.money)
+    : c.day
+      ? formatDate(c.day, { short: true })
+      : c.number != null
+        ? formatNumber(c.number)
+        : c.text ?? "";
   const href = safeHref(c.href);
   const body = href ? (
     <Link href={href} className="text-accent hover:underline">

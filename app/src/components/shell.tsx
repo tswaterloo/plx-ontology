@@ -361,6 +361,7 @@ export const NAV_SECTIONS: NavSection[] = [
     key: "assist", href: "/assist", label: "Assist", place: "/assist", icon: Bot, holds: ["/autopilot"], group: "main",
     children: [
       { href: "/assist", label: "Prepared" },
+      { href: "/assist?show=workflows", label: "Workflows" },
       { href: "/assist?show=routines", label: "Routines" },
       { href: "/assist?show=log", label: "What it did" },
       { href: "/assist?show=switches", label: "Switches" },
@@ -389,8 +390,6 @@ export const NAV_SECTIONS: NavSection[] = [
     children: [
       { href: "/ops", label: "Reliability", ops: true },
       { href: "/data-health", label: "Data health", ops: true },
-      { href: "/trust", label: "Trust", ops: true },
-      { href: "/autopilot-log", label: "Autopilot log", ops: true, owner: true },
       { href: "/feedback", label: "Feedback triage", admin: true },
     ],
   },
@@ -609,7 +608,7 @@ export function useOpsProblem(ops: boolean, every = 60_000): boolean {
   return open;
 }
 
-/** True on the Admin screens (Reliability, Trust, Feedback triage): the only place ops detail shows. */
+/** True on the Admin screens (Reliability, Data health, Feedback triage): the only place ops detail shows. */
 export function useAdminScreen(): boolean {
   const path = usePathname() ?? "/";
   const hash = useHash();
@@ -629,6 +628,10 @@ const OPS_LABEL: Record<string, string> = {
   config_keys_ignored: "Ignored settings",
   search_follow_last_pass: "Search index",
   capture_undecided_list: "Mail addresses the directory can't place",
+  autopilot_reply_latency: "Assist reply time",
+  autopilot_fast_waiting: "Assist fast feed",
+  autopilot_fast_restarts: "Assist fast feed restart loop",
+  autopilot_settle_errors: "Assist items not checked for done",
 };
 
 const CAPTURE_LABEL: Record<string, string> = {
@@ -666,12 +669,16 @@ export function opsLabel(name: string) {
  * the check already words, stays as it is.
  */
 const UNIT_WORDS: Record<string, string> = {
-  "autopilot-fast-serve": "Autopilot fast feed",
+  "autopilot-fast-serve": "Assist fast feed",
   "ts-petra": "Petra tailnet node",
   "ts-petra-http-proxy": "Petra tailnet web proxy",
   "ts-petra-socks-proxy": "Petra tailnet socks proxy",
   "ts-petra-netns": "Petra tailnet network",
-  "search-follow": "Search index follower",
+  "search-follow": "Search index refresh",
+  "scoreboard": "Nightly Ask scoreboard",
+  "suite": "Nightly test run",
+  "rishi-push": "Product repo update",
+  "restore-test": "Backup restore test",
 };
 
 export function opsLine(key: string, line: string): string {
@@ -679,11 +686,11 @@ export function opsLine(key: string, line: string): string {
   if (key.startsWith("unit:") && unit) {
     const job = UNIT_WORDS[unit[1]] ?? unit[1].replace(/-/g, " ");
     const kind = unit[2] === "timer" ? "schedule" : unit[2] === "service" ? "job" : unit[2];
-    return `${job[0].toUpperCase()}${job.slice(1)} ${kind}: ${unit[3]}`;
+    return `${job[0].toUpperCase()}${job.slice(1)} ${kind}: ${unit[3]}`.replace(/\bAutopilot\b/g, "Assist");
   }
   const lead = /^([a-z0-9]+(?:[_:][a-z0-9/.-]+)+): (.*)$/.exec(line);
-  if (lead && (lead[1] === key || key.startsWith(lead[1]))) return `${opsLabel(lead[1])}: ${lead[2]}`;
-  return line;
+  if (lead && (lead[1] === key || key.startsWith(lead[1]))) return `${opsLabel(lead[1])}: ${lead[2]}`.replace(/\bAutopilot\b/g, "Assist");
+  return line.replace(/\bAutopilot\b/g, "Assist");
 }
 
 /** 45 min, 5 h, 2 days: the size a reader takes in at a glance. */
@@ -825,7 +832,7 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
       role={notice.calm ? "status" : "alert"}
       title="Details on the Admin page"
       className={cn(
-        "flex items-center gap-1.5 border-b px-5 py-1 text-[12px] leading-4 hover:underline",
+        "flex shrink-0 items-center gap-1.5 border-b px-5 py-1.5 text-[12px] leading-4 hover:underline",
         notice.calm ? "border-border bg-subtle text-muted" : "border-late-line bg-late-soft text-late",
         className,
       )}
@@ -911,7 +918,7 @@ function SectionNav({ me, late, group }: { me: NavReader; late: number | null; g
 
 /** A sidebar item's tabs, drawn by each of its pages under the title at every width (Home:
  * Needs you, Alerts, Late POs; Work log: Everything, Messages and tasks; Admin: Reliability,
- * Data health, Trust, Autopilot log, Feedback triage). */
+ * Data health, Feedback triage). */
 export function SectionTabs(props: { section: string; className?: string }) {
   // the ?query names Home's tab; until it is read (a static render) no tab is marked
   return (
@@ -1377,7 +1384,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/autopilot-log", "/ops", "/trust", "/work-log", "/templates", "/memory", "/help", "/assist", "/orders", "/customers", "/suppliers", "/products", "/more", "/records", "/account", "/order", "/insights", "/data-health"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/ops", "/work-log", "/templates", "/memory", "/help", "/assist", "/orders", "/customers", "/suppliers", "/products", "/more", "/records", "/account", "/order", "/insights", "/data-health"];
 
 /** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
  * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */

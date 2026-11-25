@@ -19,7 +19,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Iterator, Sequence
+from typing import AbstractSet, Any, Iterator, Sequence
 
 from . import clean
 from . import headers as hd
@@ -125,16 +125,131 @@ KIND_PROPS = {"Contact": {("contact_type", "Company"): "contact"}}
 _PERSON_KEYS = ("email",)
 
 
+def _entities_for_type(conn: Any, object_type: str, etype: str, name_props: tuple[str, ...],
+                       rows: Sequence[Any], types: Sequence[str] | None,
+                       exclusion: Any, counts: Counts) -> Iterator[Entity]:
+    code_props = CODE_PROPS.get(object_type, ())
+    text_name = TEXT_NAMES.get(object_type)
+    kind_props = KIND_PROPS.get(object_type, {})
+    ids = json.dumps([r["object_id"] for r in rows])
+    latest: dict[str, str] = {}
+    for r in conn.execute("SELECT object_id, markings FROM object_versions WHERE "
+                          "object_id IN (SELECT value FROM json_each(?)) "
+                          "ORDER BY julianday(recorded_at)", (ids,)):
+        latest[r["object_id"]] = r["markings"]
+    names: dict[str, list[tuple[int, str, str]]] = {}
+    attrs: dict[str, list[tuple[str, str, str]]] = {}
+    codes: dict[str, list[tuple[str, str, str]]] = {}
+    addresses: dict[str, list[str]] = {}
+    kinds: dict[str, str] = {}
+    for r in conn.execute(
+            "SELECT object_id, property, value, markings FROM object_values WHERE "
+            "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
+            "AND +property IN (SELECT value FROM json_each(?))",
+            (ids, json.dumps(list(name_props) + list(ATTRIBUTE_PROPS)
+                             + list(_PERSON_KEYS) + list(code_props)
+                             + ([text_name[0]] if text_name else [])
+                             + [prop for prop, _value in kind_props]))):
+        if not (isinstance(r["value"], str) and r["value"].strip()):
+            continue
+        if (r["property"], r["value"].strip()) in kind_props:
+            kinds[r["object_id"]] = kind_props[(r["property"], r["value"].strip())]
+            continue
+        if r["property"] in _PERSON_KEYS:
+            if etype in PERSON_TYPES:
+                addresses.setdefault(r["object_id"], []).append(r["value"].strip())
+            continue
+        if text_name and r["property"] == text_name[0]:
+            text = re.sub(r"\s+", " ", r["value"]).strip()
+            if text.upper() not in _PLACEHOLDERS and len(text) <= 60:
+                codes.setdefault(r["object_id"], []).append(
+                    (text_name[1], text, r["markings"]))
+            continue
+        if r["property"] in code_props:
+            code = _code_value(r["value"])
+            if code:
+                codes.setdefault(r["object_id"], []).append(
+                    (CODE_LABELS.get(object_type, etype), code, r["markings"]))
+            continue
+        if r["property"] in name_props:
+            names.setdefault(r["object_id"], []).append(
+                (name_props.index(r["property"]), r["value"].strip(), r["markings"]))
+        else:
+            attrs.setdefault(r["object_id"], []).append(
+                (r["property"], r["value"].strip(), r["markings"]))
+    ordered = {oid: [(v, m) for _, v, m in sorted(found)]   # declared order
+               for oid, found in names.items()}
+    idents: dict[str, list[Any]] = {}
+    for r in conn.execute(
+            "SELECT object_id, identifier_kind, normalized, raw, role, markings, "
+            "property FROM "
+            "identifiers WHERE object_id IN (SELECT value FROM json_each(?)) AND "
+            "superseded_at IS NULL ORDER BY role DESC, identifier_kind, normalized",
+            (ids,)):
+        if r["identifier_kind"] not in hd.TECHNICAL \
+                and _names_itself(object_type, r["property"], r["identifier_kind"],
+                                  r["normalized"]):
+            idents.setdefault(r["object_id"], []).append(r)
+    for row in rows:
+        rtype = kinds.get(row["object_id"], etype)
+        if types is not None and rtype not in types:
+            continue
+        if not _cleared(row, rtype, addresses.get(row["object_id"], []), exclusion,
+                        counts):
+            continue
+        if object_type in TITLED_ONLY and not ordered.get(row["object_id"]):
+            counts.skip(f"entity_untitled:{rtype}")
+            continue
+        entity = _entity(row, rtype, latest.get(row["object_id"], "[]"),
+                         ordered.get(row["object_id"], []),
+                         idents.get(row["object_id"], []), counts,
+                         attrs.get(row["object_id"], []),
+                         codes.get(row["object_id"], []))
+        if entity is None:
+            continue
+        counts.chunks[f"entity:{rtype}"] += 1
+        yield entity
+
+
 def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | None = None,
-             limit: int | None = None, exclusion: Any = None) -> Iterator[Entity]:
+             limit: int | None = None, exclusion: Any = None,
+             objects: AbstractSet[str] | None = None) -> Iterator[Entity]:
     """Every entity; ``exclusion`` (``permissions.Exclusion``) withholds a unit it does not
     clear and a person whose address it does not clear (no guard, an unavailable one, or
-    no address: no person is listed)."""
+    no address: no person is listed). ``objects``: when given, inspect only those objects
+    instead of scanning every type table-wide."""
     counts = counts or Counts()
+    if objects is not None and not objects:
+        return
     produced = 0
+    if objects is not None:
+        by_type: dict[str, list[Any]] = {}
+        wanted = sorted(objects)
+        for start in range(0, len(wanted), 500):
+            for r in conn.execute(
+                    "SELECT o.object_id, o.object_type, o.audience_key, v.markings FROM "
+                    "objects o JOIN object_versions v ON v.object_id = o.object_id AND "
+                    "v.superseded_at IS NULL WHERE o.object_id IN (SELECT value FROM "
+                    "json_each(?)) AND o.missing_from_source_since IS NULL ORDER BY "
+                    "o.object_id", (json.dumps(wanted[start:start + 500]),)):
+                if r["object_type"] in ENTITY_TYPES:
+                    by_type.setdefault(r["object_type"], []).append(r)
+        for object_type, (etype, name_props) in sorted(ENTITY_TYPES.items()):
+            kind_props = KIND_PROPS.get(object_type, {})
+            if types is not None and etype not in types \
+                    and not set(kind_props.values()) & set(types):
+                continue
+            mine = by_type.get(object_type) or []
+            for start in range(0, len(mine), BATCH):
+                for entity in _entities_for_type(conn, object_type, etype, name_props,
+                                                 mine[start:start + BATCH], types,
+                                                 exclusion, counts):
+                    yield entity
+                    produced += 1
+                    if limit is not None and produced >= limit:
+                        return
+        return
     for object_type, (etype, name_props) in sorted(ENTITY_TYPES.items()):
-        code_props = CODE_PROPS.get(object_type, ())
-        text_name = TEXT_NAMES.get(object_type)
         kind_props = KIND_PROPS.get(object_type, {})
         if types is not None and etype not in types \
                 and not set(kind_props.values()) & set(types):
@@ -149,83 +264,8 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
             if not rows:
                 break
             after = rows[-1]["object_id"]
-            ids = json.dumps([r["object_id"] for r in rows])
-            latest: dict[str, str] = {}
-            for r in conn.execute("SELECT object_id, markings FROM object_versions WHERE "
-                                  "object_id IN (SELECT value FROM json_each(?)) "
-                                  "ORDER BY julianday(recorded_at)", (ids,)):
-                latest[r["object_id"]] = r["markings"]
-            names: dict[str, list[tuple[str, str]]] = {}
-            attrs: dict[str, list[tuple[str, str, str]]] = {}
-            codes: dict[str, list[tuple[str, str, str]]] = {}
-            addresses: dict[str, list[str]] = {}
-            kinds: dict[str, str] = {}
-            for r in conn.execute(
-                    "SELECT object_id, property, value, markings FROM object_values WHERE "
-                    "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
-                    "AND +property IN (SELECT value FROM json_each(?))",
-                    (ids, json.dumps(list(name_props) + list(ATTRIBUTE_PROPS)
-                                     + list(_PERSON_KEYS) + list(code_props)
-                                     + ([text_name[0]] if text_name else [])
-                                     + [prop for prop, _value in kind_props]))):
-                if not (isinstance(r["value"], str) and r["value"].strip()):
-                    continue
-                if (r["property"], r["value"].strip()) in kind_props:
-                    kinds[r["object_id"]] = kind_props[(r["property"], r["value"].strip())]
-                    continue
-                if r["property"] in _PERSON_KEYS:
-                    if etype in PERSON_TYPES:
-                        addresses.setdefault(r["object_id"], []).append(r["value"].strip())
-                    continue
-                if text_name and r["property"] == text_name[0]:
-                    text = re.sub(r"\s+", " ", r["value"]).strip()
-                    if text.upper() not in _PLACEHOLDERS and len(text) <= 60:
-                        codes.setdefault(r["object_id"], []).append(
-                            (text_name[1], text, r["markings"]))
-                    continue
-                if r["property"] in code_props:
-                    code = _code_value(r["value"])
-                    if code:
-                        codes.setdefault(r["object_id"], []).append(
-                            (CODE_LABELS.get(object_type, etype), code, r["markings"]))
-                    continue
-                if r["property"] in name_props:
-                    names.setdefault(r["object_id"], []).append(
-                        (name_props.index(r["property"]), r["value"].strip(), r["markings"]))
-                else:
-                    attrs.setdefault(r["object_id"], []).append(
-                        (r["property"], r["value"].strip(), r["markings"]))
-            ordered = {oid: [(v, m) for _, v, m in sorted(found)]   # declared order
-                       for oid, found in names.items()}
-            idents: dict[str, list[Any]] = {}
-            for r in conn.execute(
-                    "SELECT object_id, identifier_kind, normalized, raw, role, markings, "
-                    "property FROM "
-                    "identifiers WHERE object_id IN (SELECT value FROM json_each(?)) AND "
-                    "superseded_at IS NULL ORDER BY role DESC, identifier_kind, normalized",
-                    (ids,)):
-                if r["identifier_kind"] not in hd.TECHNICAL \
-                        and _names_itself(object_type, r["property"], r["identifier_kind"],
-                                          r["normalized"]):
-                    idents.setdefault(r["object_id"], []).append(r)
-            for row in rows:
-                rtype = kinds.get(row["object_id"], etype)
-                if types is not None and rtype not in types:
-                    continue
-                if not _cleared(row, rtype, addresses.get(row["object_id"], []), exclusion,
-                                counts):
-                    continue
-                if object_type in TITLED_ONLY and not ordered.get(row["object_id"]):
-                    counts.skip(f"entity_untitled:{rtype}")
-                    continue
-                entity = _entity(row, rtype, latest.get(row["object_id"], "[]"),
-                                 ordered.get(row["object_id"], []),
-                                 idents.get(row["object_id"], []), counts,
-                                 attrs.get(row["object_id"], []),
-                                 codes.get(row["object_id"], []))
-                if entity is None:
-                    continue
-                counts.chunks[f"entity:{rtype}"] += 1
+            for entity in _entities_for_type(conn, object_type, etype, name_props, rows,
+                                             types, exclusion, counts):
                 yield entity
                 produced += 1
                 if limit is not None and produced >= limit:
@@ -435,8 +475,70 @@ def _person_name(address: str) -> str:
     return " ".join(w.capitalize() for w in words) or local
 
 
+def _scan_participant_rows(conn: Any, object_type: str, props: Sequence[str], when: str,
+                           rows: Sequence[Any], exclusion: Any, counts: Counts,
+                           seen: dict[tuple[str, str], list[Any]]) -> None:
+    values: dict[str, dict[str, Any]] = {}
+    for r in conn.execute(
+            "SELECT object_id, property, value, markings FROM object_values WHERE "
+            "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
+            "AND +property IN (SELECT value FROM json_each(?))",
+            (json.dumps([r["object_id"] for r in rows]), json.dumps([*props, when]))):
+        values.setdefault(r["object_id"], {})[r["property"]] = (r["value"], r["markings"])
+    for row in rows:
+        unit = row["audience_key"]
+        if not valid_key(unit) or not exclusion.unit_clear(unit):
+            counts.skip("people_exclusion:participant_unit")
+            continue
+        got = values.get(row["object_id"], {})
+        stamp = str((got.get(when) or ("", ""))[0] or "")
+        people: list[tuple[str, str | None, str]] = []   # (who, name, value marks)
+        if object_type == "Email":
+            sender = _addresses((got.get("sender") or ("", ""))[0])
+            if not sender or not all(exclusion.identity_clear(a) for a in sender):
+                counts.skip("people_exclusion:participant_message")
+                continue
+            for prop in _MAIL_PEOPLE:
+                value, marks = got.get(prop) or ("", "[]")
+                people += [(a, None, marks) for a in _addresses(value)]
+        else:
+            value, marks = got.get("from") or ("", "[]")
+            try:
+                who = json.loads(value) if isinstance(value, str) else {}
+            except ValueError:
+                who = {}
+            if not isinstance(who, dict) or not who.get("id"):
+                continue
+            if not exclusion.identity_clear(who["id"]):
+                counts.skip("people_exclusion:participant_message")
+                continue
+            people.append((str(who["id"]).lower(), who.get("display_name"), marks))
+        for who, name, marks in people:
+            if not exclusion.identity_clear(who):
+                counts.skip("people_exclusion:participant")
+                continue
+            if "@" in who and role_mailbox(who):
+                counts.skip("participant_role_mailbox")
+                continue
+            base = parse_markings(row["markings"], marks, '["pii"]')
+            if base is None:
+                continue
+            key = (unit, who)
+            held = seen.get(key)
+            if held is None:
+                seen[key] = [stamp, row["object_id"], set(base), name]
+                continue
+            if name and not held[3]:
+                held[3] = name
+            # the row is keyed as one real message: the least marked one seen
+            # (newest among equals), so its reader may open the message it names
+            if set(base) < held[2] or (set(base) == held[2] and stamp > held[0]):
+                held[0], held[1], held[2] = stamp, row["object_id"], set(base)
+
+
 def participants(conn: Any, counts: Counts | None = None, exclusion: Any = None,
-                 limit: int | None = None) -> Iterator[Entity]:
+                 limit: int | None = None,
+                 objects: AbstractSet[str] | None = None) -> Iterator[Entity]:
     """Every mail and Teams participant as a ``person`` entity, one per audience unit (a
     mailbox, a chat or channel) and address or Teams user: its name (a Teams display
     name, else the address's own words), its address, domain and organisation (the
@@ -446,85 +548,53 @@ def participants(conn: Any, counts: Counts | None = None, exclusion: Any = None,
     plus ``pii``: only a reader holding it sees a person, as with contacts. The people
     exclusion holds: no row in a unit it withholds, none for an address or user it does
     not clear, none from a message whose sender it does not clear; nothing without a
-    guard."""
+    guard. ``objects``: when given, inspect only those objects instead of scanning every
+    message in the store."""
     counts = counts or Counts()
     if exclusion is None or exclusion.unavailable:
         counts.skip("people_exclusion:participants_undecided")
+        return
+    if objects is not None and not objects:
         return
     orgs = organisations(conn)
     internal = getattr(exclusion, "internal", frozenset())
     # (unit, who) -> [newest time, message id, markings, name]
     seen: dict[tuple[str, str], list[Any]] = {}
-    for object_type, props, when in (("Email", _MAIL_PEOPLE, "received_at"),
-                                     ("TeamsChatMessage", ("from",), "created_at"),
-                                     ("TeamsChannelMessage", ("from",), "created_at")):
-        after = ""
-        while True:
-            rows = conn.execute(
-                "SELECT o.object_id, o.audience_key, v.markings FROM objects o "
-                "JOIN object_versions v ON v.object_id = o.object_id AND v.superseded_at IS NULL "
-                "WHERE o.object_type = ? AND o.object_id > ? AND o.missing_from_source_since "
-                "IS NULL ORDER BY o.object_id LIMIT ?", (object_type, after, BATCH)).fetchall()
-            if not rows:
-                break
-            after = rows[-1]["object_id"]
-            values: dict[str, dict[str, Any]] = {}
+    specs = (("Email", _MAIL_PEOPLE, "received_at"),
+             ("TeamsChatMessage", ("from",), "created_at"),
+             ("TeamsChannelMessage", ("from",), "created_at"))
+    if objects is not None:
+        by_type: dict[str, list[Any]] = {}
+        wanted = sorted(objects)
+        msg_types = [t for t, _, _ in specs]
+        for start in range(0, len(wanted), 500):
             for r in conn.execute(
-                    "SELECT object_id, property, value, markings FROM object_values WHERE "
-                    "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
-                    "AND +property IN (SELECT value FROM json_each(?))",
-                    (json.dumps([r["object_id"] for r in rows]), json.dumps([*props, when]))):
-                values.setdefault(r["object_id"], {})[r["property"]] = (r["value"],
-                                                                        r["markings"])
-            for row in rows:
-                unit = row["audience_key"]
-                if not valid_key(unit) or not exclusion.unit_clear(unit):
-                    counts.skip("people_exclusion:participant_unit")
-                    continue
-                got = values.get(row["object_id"], {})
-                stamp = str((got.get(when) or ("", ""))[0] or "")
-                people: list[tuple[str, str | None, str]] = []   # (who, name, value marks)
-                if object_type == "Email":
-                    sender = _addresses((got.get("sender") or ("", ""))[0])
-                    if not sender or not all(exclusion.identity_clear(a) for a in sender):
-                        counts.skip("people_exclusion:participant_message")
-                        continue
-                    for prop in _MAIL_PEOPLE:
-                        value, marks = got.get(prop) or ("", "[]")
-                        people += [(a, None, marks) for a in _addresses(value)]
-                else:
-                    value, marks = got.get("from") or ("", "[]")
-                    try:
-                        who = json.loads(value) if isinstance(value, str) else {}
-                    except ValueError:
-                        who = {}
-                    if not isinstance(who, dict) or not who.get("id"):
-                        continue
-                    if not exclusion.identity_clear(who["id"]):
-                        counts.skip("people_exclusion:participant_message")
-                        continue
-                    people.append((str(who["id"]).lower(), who.get("display_name"), marks))
-                for who, name, marks in people:
-                    if not exclusion.identity_clear(who):
-                        counts.skip("people_exclusion:participant")
-                        continue
-                    if "@" in who and role_mailbox(who):
-                        counts.skip("participant_role_mailbox")
-                        continue
-                    base = parse_markings(row["markings"], marks, '["pii"]')
-                    if base is None:
-                        continue
-                    key = (unit, who)
-                    held = seen.get(key)
-                    if held is None:
-                        seen[key] = [stamp, row["object_id"], set(base), name]
-                        continue
-                    if name and not held[3]:
-                        held[3] = name
-                    # the row is keyed as one real message: the least marked one seen
-                    # (newest among equals), so its reader may open the message it names
-                    if set(base) < held[2] or (set(base) == held[2] and stamp > held[0]):
-                        held[0], held[1], held[2] = stamp, row["object_id"], set(base)
+                    "SELECT o.object_id, o.object_type, o.audience_key, v.markings FROM "
+                    "objects o JOIN object_versions v ON v.object_id = o.object_id AND "
+                    "v.superseded_at IS NULL WHERE o.object_type IN (SELECT value FROM "
+                    "json_each(?)) AND o.object_id IN (SELECT value FROM json_each(?)) AND "
+                    "o.missing_from_source_since IS NULL ORDER BY o.object_id",
+                    (json.dumps(msg_types), json.dumps(wanted[start:start + 500]))):
+                by_type.setdefault(r["object_type"], []).append(r)
+        for object_type, props, when in specs:
+            mine = by_type.get(object_type) or []
+            for start in range(0, len(mine), BATCH):
+                _scan_participant_rows(conn, object_type, props, when,
+                                       mine[start:start + BATCH], exclusion, counts, seen)
+    else:
+        for object_type, props, when in specs:
+            after = ""
+            while True:
+                rows = conn.execute(
+                    "SELECT o.object_id, o.audience_key, v.markings FROM objects o "
+                    "JOIN object_versions v ON v.object_id = o.object_id AND v.superseded_at IS NULL "
+                    "WHERE o.object_type = ? AND o.object_id > ? AND o.missing_from_source_since "
+                    "IS NULL ORDER BY o.object_id LIMIT ?", (object_type, after, BATCH)).fetchall()
+                if not rows:
+                    break
+                after = rows[-1]["object_id"]
+                _scan_participant_rows(conn, object_type, props, when, rows, exclusion,
+                                       counts, seen)
     produced = 0
     for (unit, who), (_stamp, oid, marks, name) in sorted(seen.items()):
         if "@" in who:

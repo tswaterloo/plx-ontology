@@ -205,16 +205,24 @@ def attach_saved(people: Iterable[Any], found: Optional[Mapping[str, Any]],
 LIST_WEEKS = 2   # tracker weeks per person in the Team list (the drill-down has all four)
 
 
+def _clean_csv(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return value
+    parts = [p.strip() for p in str(value).split(",") if p.strip()]
+    return ", ".join(parts) if parts else None
+
+
 def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[str],
                open_: Mapping[str, int], is_self: bool, shared: bool = False) -> dict[str, Any]:
     from operating import team_activity as ta
     days = row.get("days") or {}
     trend = [sum(int(v) for v in (days.get((until - timedelta(days=i)).isoformat()) or {}
                                   ).values()) for i in range(27, -1, -1)]
-    roles = [ta.ROLE_LABELS[r] for r in row.get("roles") or () if r in ta.ROLE_LABELS]
+    roles = [_clean_csv(ta.ROLE_LABELS[r]) or ta.ROLE_LABELS[r]
+             for r in row.get("roles") or () if r in ta.ROLE_LABELS]
     reply, n = row.get("reply") or {}, row.get("reply_n") or {}
     return {"key": key_of(oid), "name": str(row.get("name")), "self": is_self, "shared": shared,
-            "team": team or row.get("department"),   # a derived role is a role, never a team
+            "team": _clean_csv(team or row.get("department")),   # a derived role is a role, never a team
             "roles": roles,
             "d7": _sum(days, until - timedelta(days=6), until),
             "d28": _sum(days, until - timedelta(days=27), until),

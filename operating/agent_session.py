@@ -30,6 +30,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -365,7 +366,7 @@ def over_rss_cap(pid: int, cap_mb: float | None,
         return None
     held = rss(pid)
     return held if held is not None and held > cap_mb else None
-_SET_HANDLE = re.compile(r"set:[A-Za-z0-9_-]{16,}")
+_SET_HANDLE = re.compile(r"(?:set:[A-Za-z0-9_-]{16,}|sql://[0-9a-f]{20})")
 OPEN_TOOL = "plx.open"   # its ``citation`` may be a short ref (``open_refs``)
 HELPER_INIT_ID = "plx-helper-init"
 PEER_GONE = "tool_host_stopped"
@@ -520,7 +521,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                early: "EarlyStart | None" = None,
                pool: "HostPool | None" = None, question: str | None = None,
                entities: Sequence[Mapping[str, Any]] | None = None,
-               local: "Mapping[str, LocalTool] | None" = None) -> int:
+               local: "Mapping[str, LocalTool] | None" = None,
+               on_ready: Callable[[Callable[..., Any] | None], None] | None = None,
+               preread_lookup: Callable[[str, Any], "tuple[threading.Event, Callable[[], Any]] | None"] | None = None) -> int:
     """The tool gate: relay MCP stdio between a client (the agent) and ``server`` (the case
     host), listing only ``allowed`` tools and refusing a ``tools/call`` of any other name
     with a tool error, never forwarded; each refusal appends its tool name to ``log``. A
@@ -732,6 +735,12 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         if reader is not None and key in reader.ids and "method" not in message:
             return    # a late answer to the host's own early request
         if key in asked and "method" not in message:
+            if pool is not None and isinstance(result, dict):
+                for handle in _SET_HANDLE.findall(json.dumps(result)):
+                    owners[handle] = peer
+            if isinstance(result, dict):
+                with lock:
+                    open_refs.learn(json.dumps(result), refs)
             asked[key][1] = message
             asked[key][0].set()
             note({"event": "end", "id": message.get("id")})
@@ -911,6 +920,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         threading.Thread(target=watch, daemon=True).start()
         with lock:
             start_helper()   # the first one starts with the session
+    if on_ready is not None:
+        on_ready(ask)
     for line in inbound:
         try:
             message = json.loads(line)
@@ -1000,6 +1011,49 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             deliver(primary, {"jsonrpc": "2.0", "id": message["id"],
                               "result": repeated_result(hit)})
             continue
+        if preread_lookup is not None and message.get("method") == "tools/call" \
+                and "id" in message:
+            in_flight = preread_lookup(str(params.get("name") or ""), params.get("arguments"))
+            if in_flight is not None:
+                done_ev, get_raw = in_flight
+                if done_ev.is_set():
+                    raw_hit = get_raw()
+                    if isinstance(raw_hit, dict) and not raw_hit.get("isError"):
+                        key = json.dumps(message["id"])
+                        with lock:
+                            from_cache.add(key)
+                            waiting.add(key)
+                            if aliases is not None:
+                                aliased.add(key)
+                        deliver(primary, {"jsonrpc": "2.0", "id": message["id"],
+                                          "result": json.loads(json.dumps(raw_hit))})
+                        continue
+                else:
+                    # Wait for the in-flight pre-read on a helper thread so the inbound loop
+                    # stays non-blocking for other parallel calls in the same turn.
+                    def _join_preread(msg: dict[str, Any] = dict(message),
+                                      p: Mapping[str, Any] = dict(params),
+                                      ev: threading.Event = done_ev,
+                                      fetch: Callable[[], Any] = get_raw) -> None:
+                        ev.wait(PREFETCH_CALL_SECONDS)
+                        raw_hit = fetch()
+                        if isinstance(raw_hit, dict) and not raw_hit.get("isError"):
+                            key = json.dumps(msg["id"])
+                            with lock:
+                                from_cache.add(key)
+                                waiting.add(key)
+                                if aliases is not None:
+                                    aliased.add(key)
+                            deliver(primary, {"jsonrpc": "2.0", "id": msg["id"],
+                                              "result": json.loads(json.dumps(raw_hit))})
+                            return
+                        target_p = route(p)
+                        with lock:
+                            waiting.add(json.dumps(msg["id"]))
+                        target_p.open[json.dumps(msg["id"])] = (time.monotonic(), p.get("name"))
+                        target_p.send(msg)
+                    threading.Thread(target=_join_preread, daemon=True).start()
+                    continue
         if message.get("method") == "tools/call" and budget is not None and budget.active:
             with lock:
                 at = clock()
@@ -1050,6 +1104,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         if prelude is not None and message.get("method") == "notifications/initialized":
             threading.Thread(target=prelude, args=(ask,), daemon=True).start()
             prelude = None
+    if on_ready is not None:
+        on_ready(None)
 
     ends = time.monotonic() + HOST_SUBMIT_SECONDS
     while local_open and time.monotonic() < ends:
@@ -1553,6 +1609,102 @@ def _client_bound(allowed: Iterable[str]) -> bool:
     return any(name in bound for name in allowed)
 
 
+class PrereadJob:
+    """In-flight background pre-reads for one turn (Ask spec 19 S2): started alongside
+    the model's first turn so fast reads enter the prompt directly while slower reads
+    continue concurrently and are joined by ``serve_gate`` if the model calls them."""
+
+    def __init__(self, reads: Sequence[tuple[str, Mapping[str, Any]]],
+                 cancel: Any = None) -> None:
+        self._lock = threading.Lock()
+        self._reads: list[tuple[str, dict[str, Any], str]] = [
+            (name, dict(args), _read_key(name, args)) for name, args in reads]
+        self._events: dict[str, dict[str, Any]] = {}
+        self._raw: dict[str, dict[str, Any]] = {}
+        self._failed: dict[str, str] = {}
+        self._skipped: dict[str, str] = {}
+        self._done_key: dict[str, threading.Event] = {
+            key: threading.Event() for _, _, key in self._reads}
+        self._done_all = threading.Event()
+        self._cancel = cancel
+
+    def record_ok(self, key: str, event: dict[str, Any], raw: Mapping[str, Any]) -> None:
+        with self._lock:
+            self._events[key] = event
+            self._raw[key] = dict(raw)
+        ev = self._done_key.get(key)
+        if ev is not None:
+            ev.set()
+
+    def record_fail(self, key: str, why: str) -> None:
+        with self._lock:
+            self._failed[key] = why
+        ev = self._done_key.get(key)
+        if ev is not None:
+            ev.set()
+
+    def record_skip(self, key: str, why: str) -> None:
+        with self._lock:
+            self._skipped[key] = why
+        ev = self._done_key.get(key)
+        if ev is not None:
+            ev.set()
+
+    def finish(self) -> None:
+        for ev in self._done_key.values():
+            ev.set()
+        self._done_all.set()
+
+    def lookup(self, name: str, arguments: Any
+               ) -> tuple[threading.Event, Callable[[], Any]] | None:
+        key = _read_key(name, arguments if isinstance(arguments, Mapping) else {})
+        ev = self._done_key.get(key)
+        if ev is None:
+            return None
+
+        def _get() -> Any:
+            with self._lock:
+                return self._raw.get(key)
+        return ev, _get
+
+    def wait(self, seconds: float, cancel: Any = None) -> bool:
+        """Wait up to ``seconds`` for all pre-reads to finish, waking immediately when
+        ``cancel`` is set. Returns True if all finished."""
+        stop = cancel or self._cancel
+        if seconds <= 0:
+            return self._done_all.is_set()
+        ends = time.monotonic() + seconds
+        while not self._done_all.is_set():
+            if stop is not None and stop.is_set():
+                return False
+            left = ends - time.monotonic()
+            if left <= 0:
+                return False
+            self._done_all.wait(min(0.02, left))
+        return True
+
+    def snapshot(self) -> tuple[list[dict[str, Any]],
+                                list[tuple[str, dict[str, Any], str]],
+                                list[tuple[str, dict[str, Any], str]]]:
+        """(completed valid events, failed (name, args, why), skipped/in-flight (name, args, why))."""
+        with self._lock:
+            events: list[dict[str, Any]] = []
+            failed: list[tuple[str, dict[str, Any], str]] = []
+            skipped: list[tuple[str, dict[str, Any], str]] = []
+            for name, args, key in self._reads:
+                if key in self._events:
+                    events.append(dict(self._events[key]))
+                elif key in self._failed:
+                    failed.append((name, dict(args), self._failed[key]))
+                elif key in self._skipped:
+                    skipped.append((name, dict(args), self._skipped[key]))
+                else:
+                    skipped.append((name, dict(args),
+                                    "still running in background (call directly if needed; "
+                                    "the host will reuse the in-flight read)"))
+            return events, failed, skipped
+
+
 class HostGate:
     """The tool gate (``serve_gate``) served by the host process itself, in front of the
     host's MCP server, for one agent session: the session's Claude Code reaches it through
@@ -1599,6 +1751,12 @@ class HostGate:
         # each first read's tool name and milliseconds, in the order made (timing only)
         self.prefetch_ms: list[tuple[str, int]] = []
         self.prefetch_done = threading.Event()
+        self._handover = threading.Lock()
+        self._handed_over = False
+        self._live_ask: Callable[..., Any] | None = None
+        self._live_ready = threading.Event()
+        self._preread_lock = threading.Lock()
+        self._active_preread: "PrereadJob | None" = None
         self.inbound, self.outbound = Path(work) / "gate.in", Path(work) / "gate.out"
         os.mkfifo(self.inbound, 0o600)
         os.mkfifo(self.outbound, 0o600)
@@ -1716,6 +1874,8 @@ class HostGate:
         early = self._early
         if early is not None:
             early.done.wait()
+        with self._handover:
+            self._handed_over = True
         try:
             serve_gate(allowed, command, log, stdin=inbound, stdout=outbound, timing=timing,
                        budget=budget, budget_log=budget_log, env=env,
@@ -1725,13 +1885,112 @@ class HostGate:
                        prelude=self._prelude if self.prefetch and (
                            early is None or early.init_result is None) else None,
                        early=early, pool=self.pool, question=self.question,
-                       entities=self.entities, local=self.local)
+                       entities=self.entities, local=self.local,
+                       on_ready=self._set_live_ask,
+                       preread_lookup=self._lookup_preread)
         finally:
+            self._set_live_ask(None)
             for stream in (inbound, outbound):
                 try:
                     stream.close()
                 except OSError:
                     pass
+
+    def _set_live_ask(self, ask: Callable[..., Any] | None) -> None:
+        self._live_ask = ask
+        if ask is not None:
+            self._live_ready.set()
+        else:
+            self._live_ready.clear()
+
+    def _lookup_preread(self, name: str, arguments: Any
+                        ) -> tuple[threading.Event, Callable[[], Any]] | None:
+        with self._preread_lock:
+            job = self._active_preread
+        return job.lookup(name, arguments) if job is not None else None
+
+    def clear_preread(self) -> None:
+        """Clear the turn's active pre-read job once the turn ends so a follow-up turn
+        never sees a prior turn's pre-read."""
+        with self._preread_lock:
+            self._active_preread = None
+
+    def start_reads(self, reads: Sequence[tuple[str, Mapping[str, Any]]], *,
+                    cancel: Any = None,
+                    seconds: float = PREFETCH_CALL_SECONDS) -> PrereadJob:
+        """Start deterministic pre-reads in the background on this session's reader host.
+        Releases the EarlyStart/serve_gate handover lock between reads, checks ``cancel``
+        before each read, records failures and skips explicitly, and registers the job so
+        ``serve_gate`` joins any read still in flight when the model calls it."""
+        job = PrereadJob(reads, cancel=cancel)
+        with self._preread_lock:
+            self._active_preread = job
+
+        def _one(name: str, arguments: Mapping[str, Any], key: str, left: float) -> None:
+            if name not in self.allowed:
+                job.record_skip(key, "skipped (tool not allowed in this session)")
+                return
+            began = time.monotonic()
+            reply = None
+            with self._handover:
+                if not self._handed_over and self._early is not None:
+                    self._early.done.wait(max(0.1, left))
+                    if self._early.init_result is not None:
+                        reply = self._early.request(name, arguments,
+                                                    min(PREFETCH_CALL_SECONDS, left))
+            if reply is None:
+                if self._live_ready.wait(min(5.0, max(0.1, left))):
+                    ask_fn = self._live_ask
+                    if ask_fn is not None:
+                        reply = ask_fn(name, arguments, min(PREFETCH_CALL_SECONDS, left))
+            elapsed = round((time.monotonic() - began) * 1000)
+            raw = reply.get("result") if isinstance(reply, Mapping) else None
+            if not isinstance(raw, Mapping):
+                job.record_fail(key, "no response from host")
+                return
+            shown = raw if self.aliases is None else \
+                handle_aliases.shorten_result(self.aliases, raw)
+            entry = {"name": name, "arguments": dict(arguments), "quiet": False,
+                     "shown_arguments": dict(arguments) if self.aliases is None
+                     else self.aliases.shorten(dict(arguments)),
+                     "raw": raw, "shown": shown}
+            ev = _prefetched_event(entry)
+            ev["elapsed_ms"] = elapsed
+            res = ev.get("result")
+            if ev.get("is_error") or (isinstance(res, Mapping) and res.get("error")):
+                err = res.get("error") if isinstance(res, Mapping) else None
+                why = (f"{err.get('code') or 'error'}: {err.get('message') or 'failed'}"
+                       if isinstance(err, Mapping) else str(err or "tool error"))
+                job.record_fail(key, why)
+                return
+            job.record_ok(key, ev, raw)
+
+        def _worker() -> None:
+            ends = time.monotonic() + max(seconds, 0.1)
+            try:
+                for name, args, key in job._reads:
+                    if cancel is not None and cancel.is_set():
+                        job.record_skip(key, "skipped (cancelled)")
+                        continue
+                    left = ends - time.monotonic()
+                    if left <= 0:
+                        job.record_skip(key, "skipped (pre-read time budget elapsed)")
+                        continue
+                    _one(name, args, key, left)
+            finally:
+                job.finish()
+
+        threading.Thread(target=_worker, daemon=True, name="ask-preread").start()
+        return job
+
+    def run_reads(self, reads: Sequence[tuple[str, Mapping[str, Any]]], *,
+                  seconds: float = PREFETCH_CALL_SECONDS,
+                  cancel: Any = None) -> list[dict[str, Any]]:
+        """Run deterministic pre-reads to completion (up to ``seconds``), respecting
+        ``cancel``."""
+        job = self.start_reads(reads, cancel=cancel, seconds=seconds)
+        job.wait(seconds, cancel=cancel)
+        return job.snapshot()[0]
 
     def _read_one(self, name: str, arguments: Mapping[str, Any], ask: Callable[..., Any],
                   ends: float) -> None:
@@ -2166,10 +2425,36 @@ class AttachedSession:
                                         else type(exc).__name__),
                                 seconds=time.monotonic() - started)
             raise
+        finally:
+            gate = self.state.get("gate")
+            if gate is not None and callable(getattr(gate, "clear_preread", None)):
+                gate.clear_preread()
         turns, tokens = model_ledger.usage_of(ran.usage)
         model_ledger.record("agent_session", prompt=prompt, ok=bool(ran.final_text),
                             seconds=time.monotonic() - started, tokens=tokens, turns=turns)
         return ran
+
+    def start_preread(self, reads: Sequence[tuple[str, Mapping[str, Any]]], *,
+                      cancel: Any = None,
+                      seconds: float = PREFETCH_CALL_SECONDS) -> "PrereadJob | None":
+        """Start deterministic pre-reads alongside a warm session turn."""
+        if not self.alive or not reads:
+            return None
+        gate = self.state.get("gate")
+        if gate is None or not callable(getattr(gate, "start_reads", None)):
+            return None
+        return gate.start_reads(reads, cancel=cancel, seconds=seconds)
+
+    def preread(self, reads: Sequence[tuple[str, Mapping[str, Any]]], *,
+                seconds: float = PREFETCH_CALL_SECONDS,
+                cancel: Any = None) -> list[dict[str, Any]]:
+        """Run deterministic pre-reads on this warm session's host before a turn."""
+        if not self.alive or not reads:
+            return []
+        gate = self.state.get("gate")
+        if gate is None or not callable(getattr(gate, "run_reads", None)):
+            return []
+        return gate.run_reads(reads, seconds=seconds, cancel=cancel)
 
     def close(self) -> None:
         self._closed = True
@@ -2396,6 +2681,9 @@ class ClaudeCodeAgent:
         self.records_named = False
         self.first_reads: list[tuple[str, dict[str, Any]]] = []
         self.follow_reads: Callable[..., Any] | None = None
+        self.prefetch_heading: str | None = None
+        self.on_prefetched: Callable[[list[dict[str, Any]]], None] | None = None
+        self.prefetch_wait: float | None = None
         # The records the Ask found for the question before the session (object_id,
         # object_type, same_as): its first reads are their cards (``for_question``).
         self.known_roots: list[Mapping[str, Any]] = []
@@ -2622,6 +2910,7 @@ class ClaudeCodeAgent:
                     started.stop()
                 raise ToolsUnattached(reason, retry=reason != HOST_NOT_READY)
             feeds = feeds and bool(gate.prefetch)
+            state["gate"] = gate
             config.write_text(json.dumps({"mcpServers": {"plx": gate.client()}}),
                               encoding="utf-8")
             session = Path(work) / "session"
@@ -2701,7 +2990,10 @@ class ClaudeCodeAgent:
                                     "stream-json"]
 
                             def feed(prompt: str = prompt) -> str:
-                                task = _fed(prompt, gate)
+                                task = _fed(prompt, gate, heading=self.prefetch_heading,
+                                            on_prefetched=self.on_prefetched,
+                                            wait_seconds=self.prefetch_wait,
+                                            cancel=cancel)
                                 phases["fed_ms"] = round((time.time() - started) * 1000)
                                 # The session's clock starts when it has its task: the
                                 # time its first reads took (up to PREFETCH_WAIT_SECONDS,
@@ -3111,28 +3403,73 @@ def _shown_with(images: Sequence[Mapping[str, str]], feed: Callable[[], str] | N
     return fed
 
 
-def _fed(prompt: str, gate: "HostGate") -> str:
+def _fed(prompt: str, gate: "HostGate", *, heading: str | None = None,
+         on_prefetched: Callable[[list[dict[str, Any]]], None] | None = None,
+         wait_seconds: float | None = None, cancel: Any = None) -> str:
     """The session's input (``--input-format stream-json``): the task with the results of
     the host's first reads (``HostGate`` prefetch), once they are in or after
-    ``PREFETCH_WAIT_SECONDS`` (without what was not read by then)."""
-    gate.prefetch_done.wait(PREFETCH_WAIT_SECONDS)
+    ``wait_seconds`` (default ``PREFETCH_WAIT_SECONDS``), waking immediately on ``cancel``."""
+    limit = PREFETCH_WAIT_SECONDS if wait_seconds is None else max(0.0, float(wait_seconds))
+    ends = time.monotonic() + limit
+    while not gate.prefetch_done.is_set():
+        if cancel is not None and cancel.is_set():
+            break
+        left = ends - time.monotonic()
+        if left <= 0:
+            break
+        gate.prefetch_done.wait(min(0.02, left))
+    if on_prefetched is not None and gate.prefetched:
+        try:
+            on_prefetched([_prefetched_event(r) for r in list(gate.prefetched)])
+        except Exception:  # noqa: BLE001 - progress callback never stops the session
+            logging.getLogger("operating.agent_session").warning(
+                "on_prefetched callback failed", exc_info=True)
     shown = []
+    notes: list[str] = []
+    seen_keys: set[str] = set()
     for read in list(gate.prefetched):
         if read.get("quiet"):
             continue   # a source the task already names: read as evidence, not shown
+        seen_keys.add(_read_key(read["name"], read["arguments"]))
         try:
             value = tool_results.result_value(read["shown"])
         except tool_results.ToolResultUnreadable:
+            notes.append(f"- {read['name']} {json.dumps(read['arguments'], ensure_ascii=False)}: "
+                         "unreadable pre-read result")
+            continue
+        if isinstance(value, Mapping) and value.get("error"):
+            err = value["error"]
+            why = (f"{err.get('code') or 'error'}: {err.get('message') or 'failed'}"
+                   if isinstance(err, Mapping) else str(err))
+            notes.append(f"- {read['name']} {json.dumps(read['arguments'], ensure_ascii=False)}: "
+                         f"failed ({why})")
             continue
         text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if len(text) > PREFETCH_MAX_CHARS:
-            continue
+            if isinstance(value, Mapping) and isinstance(value.get("result"), str):
+                summary = {k: value[k] for k in ("result", "scope", "columns", "row_count",
+                                                 "profile", "views", "as_of", "chain", "card",
+                                                 "note", "truncated") if k in value}
+                summary["rows_in_store"] = True
+                summary["page"] = {"page": value["result"], "offset": 0}
+                text = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+            else:
+                continue
         called = read.get("shown_arguments", read["arguments"])
         shown.append(f"{read['name']} {json.dumps(called, ensure_ascii=False)}"
                      f" returned:\n{text}")
-    task = prompt if not shown else (prompt + "\n\n" + PREFETCH_HEADING + "\n\n"
-                                     + "\n\n".join(shown))
-    return _task_line(task)
+    if wait_seconds is not None:
+        for name, arguments in gate.prefetch:
+            if _read_key(name, arguments) not in seen_keys:
+                why = "skipped (cancelled)" if (cancel is not None and cancel.is_set()) \
+                    else "still running in background"
+                notes.append(f"- {name} {json.dumps(dict(arguments), ensure_ascii=False)}: {why}")
+    parts = [prompt]
+    if shown:
+        parts.append((heading or PREFETCH_HEADING) + "\n\n" + "\n\n".join(shown))
+    if notes and heading is not None:
+        parts.append("Pre-read notes (not yet in the prompt):\n" + "\n".join(notes))
+    return _task_line("\n\n".join(parts))
 
 
 def _prompt_filed(argv: list[str], work: Path) -> list[str]:

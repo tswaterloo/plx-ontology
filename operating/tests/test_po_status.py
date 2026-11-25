@@ -42,12 +42,13 @@ class VocabularyTest(unittest.TestCase):
                              ps.PoStatus(ps.CLOSED, "RECEIVED"), raw)
             self.assertEqual(ps.classify(raw, D(10), D(12)).cls, ps.CLOSED, raw)
         # ORDERED: what the purchase-order-sent hook writes on a send
-        for raw in ("Pending", "PENDING", "B.Order", "b.order", "B.ORDER", "ORDERED"):
+        for raw in ("Pending", "PENDING", "B.Order", "b.order", "B.ORDER", "ORDERED",
+                    "Revised", "REVISED"):
             self.assertEqual(ps.classify(raw, D(10), D(0)), ps.PoStatus(ps.OPEN, "SUBMITTED"),
                              raw)
             self.assertEqual(ps.classify(raw, D(10), D(4)), ps.PoStatus(ps.OPEN, "PARTIAL"),
                              raw)
-        for raw in ("Revised", "REVISED", "Generated", "generated", "On Hold", "?"):
+        for raw in ("Generated", "generated", "On Hold", "?"):
             self.assertEqual(ps.classify(raw, D(10), D(0)),
                              ps.PoStatus(ps.UNKNOWN, reason="status_unmapped"), raw)
         for raw in (None, "", "   ", True):
@@ -177,8 +178,8 @@ class VocabularyTest(unittest.TestCase):
         open_, closed = ps.classify("Pending", D(5), D(0)), ps.bc("Released", True)
         self.assertEqual(ps.combine([open_, closed]),
                          ps.PoStatus(ps.UNKNOWN, reason="status_disputed"))
-        self.assertEqual(ps.combine([ps.sage(), ps.classify("Revised", D(1), D(0))]).reason,
-                         "status_unmapped")
+        self.assertEqual(ps.combine([ps.sage(), ps.classify("Revised", D(1), D(0))]),
+                         ps.PoStatus(ps.OPEN, ps.SUBMITTED))
         self.assertEqual(ps.combine([]).reason, "status_missing")
         self.assertEqual(ps.combine([open_, ps.classify("B.Order", D(5), D(2))]),
                          ps.PoStatus(ps.OPEN))   # one class, two codes: no code
@@ -250,9 +251,10 @@ class OracleCrossCheckTest(unittest.TestCase):
     def test_stricter_where_the_portal_would_guess(self):
         from evals.oracle import keys
 
-        for raw in ("Revised", "Generated", None):
+        for raw in ("Generated", None):
             self.assertEqual(keys.po_fulfillment_code(raw, D(5), D(0)), "SUBMITTED")
             self.assertEqual(ps.classify(raw, D(5), D(0)).cls, ps.UNKNOWN)
+        self.assertEqual(ps.classify("Revised", D(5), D(0)), ps.PoStatus(ps.OPEN, "SUBMITTED"))
         self.assertEqual(keys.po_fulfillment_code("Pending", D(0), D(0)), "SUBMITTED")
         self.assertEqual(ps.classify("Pending", D(0), D(0)).cls, ps.UNKNOWN)
 
@@ -349,7 +351,7 @@ class LatenessVerdictTest(unittest.TestCase):
         self.assertEqual(verdict(open_, None, after, self.TODAY),
                          (ps.UNKNOWN, "no_requested_date"))
         self.assertEqual(verdict(ps.classify("Revised", D(1), D(0)), before, None, self.TODAY),
-                         (ps.UNKNOWN, "status_unknown"))
+                         (ps.LATE, None))
         self.assertEqual(verdict(ps.sage(), before, None, self.TODAY),
                          (ps.UNKNOWN, "status_unknown"))
 
@@ -558,9 +560,9 @@ class SystemOfRecordTest(unittest.TestCase):
         # yet received): the Portal lines do not speak for the whole order
         self.assertEqual(order("Revised", ["1"] * 3, nothing + [("1", None, None)]).cls,
                          ps.OPEN)
-        self.assertNotEqual(order("Revised", ["1"] * 3, [("1", ps.PARTIAL_RECEIPT, None),
-                                                       (ps.UNREAD, None, None)] * 2).cls,
-                            ps.CLOSED)   # an FM total not readable: never closed
+        self.assertEqual(order("Revised", ["1"] * 3, [("1", ps.PARTIAL_RECEIPT, None),
+                                                      (ps.UNREAD, None, None)] * 2).cls,
+                         ps.UNKNOWN)   # an FM total not readable: never closed
         # a closing FileMaker word agrees
         self.assertEqual(order("Revised", ["1"] * 3, [("1", "1", None)] * 3,
                                fm_head=("Complete",)).cls, ps.CLOSED)
@@ -729,26 +731,26 @@ class VocabularySummaryTest(unittest.TestCase):
         self.assertEqual(out["words"]["portal_po"], {
             "B.Order": {"open": 1}, "Cancel": {"closed": 1}, "Complete": {"closed": 1},
             "DRAFT": {"draft": 1}, "Generated": {"unknown": 1}, "Pending": {
-                "open": 1, "unknown": 2}, "Revised": {"unknown": 1}, "_null_": {"unknown": 1},
+                "open": 1, "unknown": 2}, "Revised": {"open": 1}, "_null_": {"unknown": 1},
             "complete": {"closed": 1}})
         self.assertEqual(out["classes"]["portal_po"],
-                         {"open": 2, "closed": 3, "draft": 1, "unknown": 5})
+                         {"open": 3, "closed": 3, "draft": 1, "unknown": 4})
         # the Complete 10/4 is closed with its remainder cancelled; no Complete is open
         self.assertEqual((out["complete_open"], out["canceled_remainder"]),
                          (0, {"portal_po": 1}))
         self.assertEqual(out["unknown_words"]["portal_po"],
-                         {"Generated": 1, "Pending": 2, "Revised": 1, "_null_": 1})
+                         {"Generated": 1, "Pending": 2, "_null_": 1})
         self.assertEqual(out["unknown_reasons"]["portal_po"], {
             "nothing_ordered": 1, "quantities_unknown": 1, "status_missing": 1,
-            "status_unmapped": 2})
+            "status_unmapped": 1})
         # before: header codes only; none of the real words was open or closed
         self.assertEqual(out["before_engine_rule"]["portal_po"],
                          {"open": 0, "closed": 0, "neither": 11})
         self.assertEqual(out["classes"]["fm_po"],
                          {"open": 0, "closed": 2, "draft": 1, "unknown": 2})
         self.assertEqual(out["unknown_reasons"]["fm_po"],
-                         {"status_missing": 1, "status_unmapped": 1})
-        self.assertEqual((out["unmapped_rows"], out["open_plus_closed"]), (0, 5))
+                         {"status_missing": 1, "quantities_unknown": 1})
+        self.assertEqual((out["unmapped_rows"], out["open_plus_closed"]), (0, 6))
         self.assertEqual(out["sage_iscomplete"], {
             "0": {"lines_open": 1}, "1": {"lines_complete": 1, "lines_open": 1},
             "_null_": {"unknown": 1}})
@@ -769,8 +771,8 @@ class VocabularySummaryTest(unittest.TestCase):
             out = ps.vocabulary({"portal_po": _scan(heads), "portal_line": _scan(lines)})
             self.assertEqual(sum(out["classes"]["portal_po"].values()), 11 * copies)
             self.assertEqual(out["classes"]["portal_po"],
-                             {"open": 2 * copies, "closed": 3 * copies, "draft": copies,
-                              "unknown": 5 * copies})
+                             {"open": 3 * copies, "closed": 3 * copies, "draft": copies,
+                              "unknown": 4 * copies})
             self.assertEqual(out["unmapped_rows"], 0)
 
     def test_an_fm_mirrored_po_takes_received_from_filemakers_item_states_or_fails_closed(self):
@@ -921,10 +923,10 @@ class LiveCheckTest(unittest.TestCase):
         code, summary, text = self.run_spec()
         self.assertEqual(lv.check_expectations(self.spec, code, summary), [], summary)
         self.assertEqual(summary["classes"]["portal_po"],
-                         {"open": 2, "closed": 3, "draft": 1, "unknown": 3})
+                         {"open": 3, "closed": 3, "draft": 1, "unknown": 2})
         self.assertEqual(summary["complete_open"], 0)
         self.assertEqual(summary["unknown_words"]["portal_po"],
-                         {"Generated": 1, "Revised": 1, "_null_": 1})
+                         {"Generated": 1, "_null_": 1})
         self.assertEqual(summary["classes"]["fm_po"],
                          {"open": 0, "closed": 3, "draft": 1, "unknown": 5})
         self.assertEqual(summary["sage_iscomplete"],
@@ -974,7 +976,7 @@ class LiveCheckTest(unittest.TestCase):
             fixture._fm(3499, idpogen=3399, qty="10", status="Revised")]
         code, summary, _text = self.run_spec(fetch=fake, state="revised")
         self.assertEqual(summary["fm_qc"]["unread"], 1, summary["fm_qc"])
-        self.assertEqual(summary["classes"]["portal_po"]["unknown"], 4)
+        self.assertEqual(summary["classes"]["portal_po"]["unknown"], 3)
 
     def test_a_new_word_is_counted_by_name_and_the_check_still_passes(self):
         fake = self.fake()
@@ -983,13 +985,13 @@ class LiveCheckTest(unittest.TestCase):
         code, summary, _text = self.run_spec(fetch=fake)
         self.assertEqual(lv.check_expectations(self.spec, code, summary), [])
         self.assertEqual(summary["unknown_words"]["portal_po"]["On_Hold"], 1)
-        self.assertEqual(summary["unknown_reasons"]["portal_po"]["status_unmapped"], 3)
+        self.assertEqual(summary["unknown_reasons"]["portal_po"]["status_unmapped"], 2)
 
     def test_nothing_open_or_closed_fails(self):
         fake = self.fake()
         fake.tables["public.app_purchase_order"] = [
             row for row in fake.tables["public.app_purchase_order"]
-            if row["status"] in ("DRAFT", "Revised", None)]
+            if row["status"] in ("DRAFT", "Generated", None)]
         code, summary, _text = self.run_spec(fetch=fake)
         self.assertEqual(summary["open_plus_closed"], 0)
         self.assertTrue(lv.check_expectations(self.spec, code, summary))

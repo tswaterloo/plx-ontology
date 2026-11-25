@@ -93,7 +93,7 @@ REPEAT_AT = 3     # the same reply shape this many times: offered as a template
 SHAPE_ENDS = 2       # a reply's first and last sentences kept as templates (few-shot)
 # role lessons: categorical keys only (never a fact, a phrase or a sender)
 ROLE_KEYS = re.compile(r"^(?:greeting|signoff|length|source:[a-z_]+|detector:[a-z_]+|"
-                       r"decision:[a-z_]+\|[a-z_]+\|[a-z_]+)$")
+                       r"decision:[a-z0-9_]+(?:\|[a-z0-9_]+){0,2})$")
 
 # the sides of a correspondent a person's greeting and sign-off are learned for apart (a
 # person writes "Hi Bob," to a customer and "Bob -" to a colleague), and the frame keys
@@ -574,7 +574,9 @@ def _text_of(kind: str, key: str, value: str, extra: str = "") -> str:
         return (f"Finds answers from {system} useful" if value == "good"
                 else f"Often finds answers from {system} unhelpful")
     if kind == "decision":
-        what = key.split(":", 1)[1].replace("|", ", ")
+        what = key.split(":", 1)[1].replace("|", ", ").replace("_", " ")
+        if "unknown" in what.split(", "):
+            return ""     # an old lesson written with a placeholder part: not shown
         return (f"Usually acts on prepared items ({what})" if value == "act"
                 else f"Usually leaves prepared items ({what})")
     if kind == "detector":
@@ -626,8 +628,9 @@ def distil(signals: Iterable[Signal], *, now: datetime,
                 votes.add(s.person, "style", "drop:" + digest(t), "no", at, now, s.ref, text=t)
         if s.kind in ("draft_sent", "replied", "item_acted", "draft_ignored"):
             value = "ignore" if s.kind == "draft_ignored" else "act"
-            kind_key = "|".join(_slug(d.get(k)) for k in ("autopilot", "channel", "side"))
-            votes.add(s.person, "decision", "decision:" + kind_key, value, at, now, s.ref)
+            kind_key = decision_kind(d.get("autopilot"), d.get("channel"), d.get("side"))
+            if kind_key:      # a signal that says no kind of item teaches nothing about the kind
+                votes.add(s.person, "decision", "decision:" + kind_key, value, at, now, s.ref)
             if d.get("sender"):
                 votes.add(s.person, "decision", f"sender:{_slug(d.get('autopilot'))}|"
                           f"{d['sender']}", value, at, now, s.ref)
@@ -686,6 +689,15 @@ def distil(signals: Iterable[Signal], *, now: datetime,
     lessons.extend(_role_lessons(lessons, roles or {}))
     lessons.sort(key=lambda l: (l.scope, l.who, l.kind, l.key))
     return lessons
+
+
+def decision_kind(autopilot: Any, channel: Any, side: Any) -> str:
+    """The kind of item a decision lesson is about: the parts a signal states, joined (an
+    approval has no channel or side: its kind is the workflow alone). "" when it names no
+    workflow: nothing is learned about an unnamed kind (never an "unknown" placeholder)."""
+    if not str(autopilot or "").strip():
+        return ""
+    return "|".join(_slug(x) for x in (autopilot, channel, side) if str(x or "").strip())
 
 
 def _slug(value: Any) -> str:
@@ -1469,8 +1481,9 @@ class Lessons:
         keys = []
         if sender:
             keys.append(f"sender:{_slug(autopilot)}|{sender}")
-        keys.append("decision:" + "|".join(_slug(x) for x in (
-            autopilot, event.get("channel"), event.get("side"))))
+        kind_key = decision_kind(autopilot, event.get("channel"), event.get("side"))
+        if kind_key:
+            keys.append("decision:" + kind_key)
         for key in keys:
             # the person's own behaviour only: never left out because colleagues leave it
             own = self.by.get(("person", person), {}).get(f"decision:{key}")

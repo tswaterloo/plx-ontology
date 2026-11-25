@@ -82,6 +82,33 @@ class WorkLogApi(unittest.TestCase):
     def log(self, client, **params):
         return client.get("/api/work-log", params=params).json()
 
+    def test_how_the_ask_has_been_doing_is_counted_per_day_from_what_each_answer_kept(self):
+        import os
+        with mock.patch.dict(os.environ, {"PLX_FEEDBACK_ADMINS": "staff:owner"}):
+            ask(self.ana, "where is PO 90412, is it late")
+            ask(self.ben, "which orders are late")
+            # a question that ended in an error is kept and counted, not lost
+            self.backend.work_log.record(
+                SimpleNamespace(key="staff:ana", display_name="Ana", email="ana@plx.example", session=SimpleNamespace(canary=False, view_as=False)), kind="ask", verb="failed", title="why is it slow",
+                thread="ask:failed", source="ask",
+                detail={"question": "why is it slow", "outcome": "error",
+                        "_review": {"error": "internal:abc", "steps": [], "stream_ms": 900}})
+            self.assertEqual(self.ana.get("/api/answers/observed").status_code, 403)
+            got = self.owner.get("/api/answers/observed").json()
+        self.assertTrue(got["available"])
+        self.assertEqual(sum(d["answered"] for d in got["days"]), 2)           # none lost
+        self.assertEqual(sum(d["failed"] for d in got["days"]), 1)
+        self.assertEqual([(f["question"], f["error"]) for f in got["failures"]],
+                         [(None, None)])   # the question and error text only for an owner-open reader
+        self.assertTrue(all(d["median_ms"] is not None for d in got["days"] if d["answered"]))
+        # no answer kept a cost here: no figure, never a zero
+        self.assertEqual([(d["cost_usd"], d["cost_answers"]) for d in got["days"]], [(None, 0)])
+        # the excluded person's exclusion undecidable: nothing is shown, never zeros
+        self.guard = Guard(unavailable=True)
+        with mock.patch.dict(os.environ, {"PLX_FEEDBACK_ADMINS": "staff:owner"}):
+            off = self.owner.get("/api/answers/observed").json()
+        self.assertEqual((off["available"], off["days"], off["failures"]), (False, [], []))
+
     def test_each_path_writes_one_log_and_each_person_reads_only_their_own(self):
         first = ask(self.ana, "where is PO 90412, is it late")
         self.assertEqual(self.ana.post("/api/feedback/note", json={

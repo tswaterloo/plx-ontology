@@ -22,6 +22,7 @@ from operating.answer_gate import _sentences
 
 from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
+from .brief_email import BriefEmailMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
 from .prepared_area import PreparedWritesMixin
@@ -588,7 +589,7 @@ _UNJUDGED = [("SalesOrder:demo:51007", "Sales order 51007"),
              ("SalesOrder:demo:51019", "Sales order 51019")]
 
 
-class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
+class MockBackend(TemplatesMixin, BriefEmailMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
                   AutopilotStudioMixin, InstructMixin, DocFillMixin, DocStyleMixin,
                   PreparedWritesMixin, AssistantToolsMixin, EntryCreateMixin, MockWatchMixin,
                   AskDraftsMixin):
@@ -903,6 +904,11 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
                      sources=[src("BC", "bc://demo/purchaseOrders/90388",
                                   "BC purchase order 90388", fields={
                                       "Expected Receipt Date": "2026-10-24"})])]
+
+    def home_needs(self, reader: Reader, feedback_store: Any = None) -> m.HomeNeeds:
+        """The demo's unified Needs-you list through the real merge."""
+        from . import home_needs
+        return home_needs.build(self, reader, feedback_store)
 
     def home(self, reader: Reader) -> m.Home:
         late = self._late()

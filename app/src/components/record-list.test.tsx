@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const asked = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, fail: false, push: vi.fn() }));
+const asked = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, fail: false, hold: false, push: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: asked.push, replace: vi.fn() }), usePathname: () => "/records", useSearchParams: () => new URLSearchParams("") }));
 const cell = (t: string, href?: string) => ({ text: t, href });
 const rowOf = (n: number) => [cell(`BC-${n}`, `/object/Batch/b${n}`), cell("Base"), { money: { amount: "1234567.5", currency: "CAD" } }, { number: "120000.25 kg" }, { day: "2020-03-05" }, {}];
@@ -11,6 +11,7 @@ vi.mock("@/lib/api", async (orig) => ({
   getRecordList: (_v: string, f: { filters?: Record<string, string>; offset?: number; sort?: string; direction?: string; facets?: boolean; q?: string }) => {
     asked.calls.push({ ...f });
     if (asked.fail) return Promise.reject(new Error("down"));
+    if (asked.hold) return new Promise(() => undefined);
     const all = f.filters?.status === "Open" ? [1] : Array.from({ length: 30 }, (_, i) => i + 1);
     const off = f.offset ?? 0;
     const page = all.slice(off, off + 25);
@@ -24,11 +25,15 @@ vi.mock("@/lib/api", async (orig) => ({
 }));
 
 import { RecordList } from "./record-list";
+import { recordListPath } from "@/lib/api";
+import { forgetKeptReads, keepRead } from "@/lib/use-read";
 
 beforeEach(() => {
   asked.calls = [];
   asked.fail = false;
+  asked.hold = false;
   asked.push.mockClear();
+  forgetKeptReads();
 });
 
 describe("a Records list", () => {
@@ -78,5 +83,35 @@ describe("a Records list", () => {
     render(<RecordList view="batches" />);
     expect(await screen.findByRole("button", { name: /try again|retry/i })).toBeInTheDocument();
     expect(screen.queryByTestId("record-list-batches")).toBeNull();
+  });
+
+  it("the stored-read key is the exact API path, with filter keys in one order", () => {
+    expect(recordListPath("batches", { filters: { zeta: "two words", status: "Open" }, q: "base", sort: "total", direction: "desc", offset: 50, facets: false })).toBe("/api/records/list?view=batches&q=base&offset=50&facets=false&sort=total&direction=desc&f=status%3AOpen&f=zeta%3Atwo+words");
+  });
+
+  it("a second visit draws the kept list in the first render, labelled while it is read again", () => {
+    const path = recordListPath("batches", { offset: 0, facets: true, q: "" });
+    keepRead(path, {
+      view: "batches", title: "Batches", total: 1, offset: 0, more: false, next_offset: 1,
+      table: { key: "batches", title: "Batches", columns: ["Batch code"], rows: [[cell("BC-stored", "/object/Batch/stored")]], total: 1 },
+      column_keys: ["batch_code"], sort: "scheduled_date", direction: "desc", searchable: true, filters: [],
+    }, true, undefined, Date.now() - 60_000);
+    asked.hold = true;
+    render(<RecordList view="batches" />);
+    expect(screen.getByRole("link", { name: "BC-stored" })).toBeInTheDocument();
+    expect(screen.getByText(/reading it again/)).toBeInTheDocument();
+    expect(asked.calls[0]).toMatchObject({ facets: true, offset: 0 });
+  });
+
+  it("rounds order totals to 2 decimals, formats verdict jargon, and hides duplicate search box when controlled", async () => {
+    const { formatVerdict } = await import("./record-list");
+    expect(formatVerdict("neither")).toMatchObject({ label: "–" });
+    expect(formatVerdict("late (not counted)")).toMatchObject({ label: "Late (excluded)" });
+    expect(formatVerdict("on_time")).toMatchObject({ label: "On time" });
+    expect(formatVerdict("late")).toMatchObject({ label: "Late" });
+
+    render(<RecordList view="batches" externalQuery="" />);
+    await screen.findByRole("link", { name: "BC-1" });
+    expect(screen.queryByRole("searchbox", { name: "Search this list" })).toBeNull();
   });
 });

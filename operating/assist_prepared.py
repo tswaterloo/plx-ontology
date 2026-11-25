@@ -110,6 +110,7 @@ FROM {SCHEMA}.matters m
 LEFT JOIN {SCHEMA}.readings r ON r.source = m.sources->'readings'->-1->>0
      AND r.message_key = m.sources->'readings'->-1->>1
 WHERE m.state = 'open' AND m.plan_status = 'none' AND m.owner_person = ANY(%(people)s)
+  AND m.kind <> 'approval'      -- Mission Control approvals are decided in Mission Control (assist_matters.MC_APPROVAL_KIND)
   AND {BASIS_SQL}
 ORDER BY coalesce(m.touched_at, m.basis_at) DESC, m.matter_id"""
 
@@ -272,7 +273,8 @@ def serve(pg: Any, people: Sequence[str], session: Callable[..., Sequence[Mappin
           nearest: Callable[[Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]]], Any], *,
           screen: Callable[[str], Optional[str]], state: Optional[Path] = None,
           as_of_basis: bool = False, model: Any = "", now: Optional[dt.datetime] = None,
-          notes_of: Callable[[str], Sequence[str]] = lambda owner: ()) -> dict[str, Any]:
+          notes_of: Callable[[str], Sequence[str]] = lambda owner: (),
+          write_context: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
     """Serve every waiting matter of ``people``: ``session(owner, oid, extra=...)`` runs the Assistant;
     ``inputs_of(matters)`` gives each matter's words and situation, ``nearest(matters, inputs)`` its
     precedents; ``screen(text)`` is the thread screen (why it may not go to the model, or None), applied
@@ -341,6 +343,34 @@ def serve(pg: Any, people: Sequence[str], session: Callable[..., Sequence[Mappin
                 ready.set()
         if trace.get("nothing"):
             meta["nothing"] = trace["nothing"]
+        # Translate any plx.prepare_write system proposals into validated dry-run write intents
+        # (F8: BC, calendar, Planner, SharePoint, Mission Control; strictly dry-run, 0 auto on class B).
+        proposals = [p for r in rows if isinstance(r, Mapping)
+                     for p in (r.get("proposals") or ()) if isinstance(p, Mapping)]
+        if proposals:
+            from operating import assist_writes as asw
+            wctx = dict(write_context or {})
+            owner_obj = wctx.get("owner_of")(matter["owner_person"]) if callable(wctx.get("owner_of")) else matter["owner_person"]
+            intents, refusals = asw.prepare_session_writes(
+                proposals,
+                owner_obj,
+                read_current=wctx.get("read_current"),
+                may=wctx.get("may"),
+                guard=wctx.get("guard"),
+                door=wctx.get("door"),
+                screen=screen,
+                state=wctx.get("state", state),
+                environ=wctx.get("environ"),
+                readiness_map=wctx.get("readiness_map"),
+                known_domains=wctx.get("known_domains") or (),
+                rules=wctx.get("rules"),
+                workflow=str(wctx.get("workflow") or ""),
+                now=at or stamp,
+            )
+            if intents:
+                meta["write_intents"] = intents
+            if refusals:
+                meta["write_refusals"] = refusals
         # ``reads``: the handles opened inside this process; the Assistant's own tool calls run in its
         # session process, so they are recorded as ``tool_reads`` (every call: tool, arguments, failed)
         # beside them, and ``reads_traced`` is False only when neither saw anything (KNOWN-GAPS S15)

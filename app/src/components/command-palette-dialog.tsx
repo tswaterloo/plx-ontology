@@ -32,28 +32,27 @@ type Item =
 
 // `ops`: an Admin page, listed only for the readers Admin is open to (the server refuses the rest)
 const PLACES: { label: string; href: string; hint: string; words: string; ops?: boolean }[] = [
-  { label: "Home", href: "/", hint: "What needs you today, and what the autopilots prepared", words: "my work today home front page briefing prepared autopilot drafts entries" },
-  { label: "Late POs", href: "/?show=late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
-  { label: "Alerts", href: "/?show=alerts", hint: "Every alert, rules and data health", words: "alerts watching briefing rules attention" },
-  { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
+  { label: "Home", href: "/", hint: "What needs you today, and what Assist prepared", words: "my work today home front page briefing prepared assist autopilot drafts entries" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
+  { label: "Assist", href: "/assist", hint: "What is prepared for you, drafts waiting for your OK, routines, log", words: "assist prepared drafts routines log plan autopilot" },
+  { label: "Insights", href: "/insights", hint: "Dashboards: sales, purchasing, receivables and team views", words: "insights dashboards charts tiles measures reports numbers" },
+  { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
+  { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
+  { label: "Late POs", href: "/?show=late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
+  { label: "Alerts", href: "/?show=alerts", hint: "Active alerts and notification rules", words: "alerts watching briefing rules attention" },
   { label: "Messages and tasks", href: "/activity", hint: "Work log: each message and task you started, and whether it went out", words: "activity actions messages tasks sent log journal" },
-  { label: "Data health", href: "/data-health", hint: "Duplicate parties, missing fields, sync mismatches", words: "data health duplicates missing fields sync mismatch twins customer po", ops: true },
   { label: "Orders", href: "/orders", hint: "Purchase orders late first, and sales orders", words: "orders purchase po sales late" },
   { label: "Customers", href: "/customers", hint: "Find a customer", words: "customers accounts chains" },
   { label: "Suppliers", href: "/suppliers", hint: "Find a supplier", words: "suppliers vendors" },
   { label: "Products", href: "/products", hint: "Find a product, item or lot", words: "products items lots stock" },
-  { label: "More", href: "/more", hint: "Invoices, shipments, receipts, batches and every list", words: "invoices shipments receipts batches lists documents production" },
   { label: "Records", href: "/records", hint: "Find a customer, order, invoice, shipment, supplier or product", words: "records customers orders invoices shipments receipts lots suppliers products items find" },
-  { label: "Assist", href: "/assist", hint: "What is prepared for you, drafts waiting for your OK, routines, log", words: "assist prepared drafts routines log plan" },
+  { label: "More", href: "/more", hint: "Invoices, shipments, receipts, batches and every list", words: "invoices shipments receipts batches lists documents production" },
   { label: "Switches", href: "/assist?show=switches", hint: "What gets prepared for you, and Auto", words: "autopilot switches auto assist prepare" },
-  { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
   { label: "Work log", href: "/work-log", hint: "What you did, day by day", words: "work log history time saved" },
   { label: "Memory", href: "/memory", hint: "What the Workbench remembers for you", words: "memory remember notes facts" },
   { label: "Templates", href: "/templates", hint: "Reply and document templates", words: "templates drafts replies documents" },
-  { label: "Insights", href: "/insights", hint: "Dashboards: sales, purchasing, receivables and the people tiles", words: "insights dashboards charts tiles measures reports numbers" },
+  { label: "Data health", href: "/data-health", hint: "Completeness, freshness, duplicates and sync checks", words: "data health trust fresh freshness accuracy scores duplicates missing fields sync mismatch", ops: true },
   { label: "Reliability", href: "/ops", hint: "What is broken now: capture, timers, backups", words: "reliability ops alarms broken capture timers backups health", ops: true },
-  { label: "Trust", href: "/trust", hint: "How often the Workbench was right, on held-out items", words: "trust accuracy scores held-out measured quality", ops: true },
   { label: "Help", href: "/help", hint: "How to ask, what each screen is for", words: "help guide how to docs questions" },
 ];
 
@@ -195,7 +194,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.14)] animate-fade-in dark:bg-[rgb(0_0_0/0.45)]" />
         <Dialog.Content
-          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-[3px] bg-raised shadow-[0_0_0_0.5px_rgb(0_0_0/0.14),0_24px_64px_-12px_rgb(0_0_0/0.3)] animate-fade-in focus:outline-none dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.12),0_24px_64px_-12px_rgb(0_0_0/0.7)]"
+          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-xl bg-raised shadow-[0_0_0_0.5px_rgb(0_0_0/0.14),0_24px_64px_-12px_rgb(0_0_0/0.3)] animate-fade-in focus:outline-none dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.12),0_24px_64px_-12px_rgb(0_0_0/0.7)]"
           aria-describedby={undefined}
           data-testid="command-palette"
         >

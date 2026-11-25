@@ -368,7 +368,7 @@ export default function OpsPage() {
                             <span className={cn("w-16 shrink-0 text-[12px]", c.state === "breach" ? "font-semibold text-late" : c.state === "ok" ? "text-muted" : "text-faint")}>
                               {STATE_WORD[c.state] ?? "Unknown"}
                             </span>
-                            <span className="min-w-0 flex-1">{c.line ?? opsLabel(c.name)}</span>
+                            <span className="min-w-0 flex-1">{c.line ? opsLine(c.name, c.line) : opsLabel(c.name)}</span>
                           </li>
                         ))}
                       </ul>

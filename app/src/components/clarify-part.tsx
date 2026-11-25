@@ -1,8 +1,8 @@
 "use client";
 
-// The one question an answer asked back (answer.clarify) and the reading an answer assumed
-// (answer.assumption). Each option is a quick reply; a reply continues the same
-// conversation (AskRequest.clarified), so the question is never typed again.
+// The one question an answer asked back (answer.clarify). Each option is a quick reply;
+// a reply continues the same conversation (AskRequest.clarified), so the question is
+// never typed again.
 
 import { useState } from "react";
 import type { Answer, AskRequest } from "@/lib/types";
@@ -52,29 +52,5 @@ export function ClarifyPart({ a, onReply }: { a: Answer; onReply?: (words: strin
         </form>
       )}
     </section>
-  );
-}
-
-export function AssumptionLine({ a, onReply }: { a: Answer; onReply?: (words: string, reply: ClarifyReply) => void }) {
-  const s = a.assumption;
-  if (!s) return null;
-  return (
-    <p className="text-[13px] leading-5 text-muted" data-testid="assumption">
-      Taken as: {s.text}
-      {(s.options ?? []).length > 0 && (
-        <>
-          {" "}
-          Instead:{" "}
-          {(s.options ?? []).map((o, i) => (
-            <span key={i}>
-              {i > 0 && ", "}
-              <button type="button" className="text-accent hover:underline disabled:opacity-60" disabled={!onReply} onClick={() => onReply?.(o.label, { answer_id: a.answer_id, option: i })}>
-                {o.label}
-              </button>
-            </span>
-          ))}
-        </>
-      )}
-    </p>
   );
 }

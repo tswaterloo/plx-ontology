@@ -351,6 +351,25 @@ class TurnTests(CoverageCase):
         self.assertEqual(self.coverage(BOX_B)["status"], "whole")
         self.assertEqual(self.held(BOX_B), sorted(["B-1", *other]))
 
+    def test_relisting_never_extends_the_capture_budget(self):
+        self.first_run()
+        self.graph.moved_in(BOX_A, [f"A-OLD-{n}" for n in range(6)])
+        self.later()
+        read = []
+        real_turns = capture_mail.MailCapture._turns
+
+        def slow_turns(capture, ordered):
+            self.ticks["now"] += 20
+            return real_turns(capture, ordered)
+
+        def watched(capture, box, row, limit):
+            read.append(box)
+            return 0, "cut"
+        with mock.patch.object(capture_mail.MailCapture, "_turns", slow_turns), \
+                mock.patch.object(capture_mail.MailCapture, "_relist", watched):
+            self.capture(budget_seconds=10).run(scope())
+        self.assertEqual(read, [])
+
     def test_the_folder_attempted_longest_ago_goes_first(self):
         self.first_run()
         self.graph.moved_in(BOX_A, [f"A-OLD-{n}" for n in range(10)])

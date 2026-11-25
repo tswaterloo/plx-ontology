@@ -26,7 +26,7 @@ def _true(cell):
 
 
 def _variants():
-    for m in measures.measures().values():
+    for m in measures.typed().values():
         yield m["id"], {}
         for d in m["dimensions"]:
             yield m["id"], {"by": d}
@@ -56,7 +56,7 @@ def _variants():
 class Catalogue(unittest.TestCase):
     def test_every_entry_names_only_its_views_columns_and_every_statement_is_checked(self):
         views = sqlt._dictionary()
-        for m in measures.measures().values():
+        for m in measures.typed().values():
             cols = set(views[m["view"]]["columns"])
             named = set(m["dimensions"]) | {c for c in (m["per"], m["date"]) if c}
             for agg in (m["value"], m.get("rate_value") or ""):
@@ -89,12 +89,12 @@ class Catalogue(unittest.TestCase):
         2026 CAD counted 930,586.59 of pilot lines, September's 10.00 made a "why" answer's
         change disagree with its own months)."""
         views = sqlt._dictionary()
-        piloted = [m for m in measures.measures().values()
+        piloted = [m for m in measures.typed().values()
                    if "pilot" in views[m["view"]]["columns"]]
         self.assertTrue(piloted)
         # the same for orders no Sage copy holds (sales_orders.of_record = false: FileMaker
         # order entry, Portal-only, BC pilot; live 11-21 late_orders 66 for the 55 of record)
-        of_record = [m for m in measures.measures().values()
+        of_record = [m for m in measures.typed().values()
                      if "of_record" in views[m["view"]]["columns"]]
         self.assertTrue(of_record)
         for name, opts in _variants():
@@ -118,8 +118,8 @@ class Catalogue(unittest.TestCase):
         self.assertNotIn("DATE '", sql)
 
     def test_what_the_catalogue_does_not_hold_is_refused(self):
-        snapshot = next(m["id"] for m in measures.measures().values() if not m["date"])
-        dated = next(m["id"] for m in measures.measures().values() if m["date"])
+        snapshot = next(m["id"] for m in measures.typed().values() if not m["date"])
+        dated = next(m["id"] for m in measures.typed().values() if m["date"])
         DIM = measures.measures()[dated]["dimensions"][0]
         report = next(iter(measures.reports()))
         bad = [("no_such_measure", {}), (True, {}), (None, {}), (dated, {"by": "handle"}),
@@ -195,7 +195,7 @@ class Catalogue(unittest.TestCase):
         for bad in ("SELECT sets(1)", "SELECT x FROM t GROUP BY sets (a)"):
             with self.assertRaises(ToolError, msg=bad):
                 sqlt.check(bad, allowed_schema="")
-        for m in measures.measures().values():
+        for m in measures.typed().values():
             self.assertEqual(f"'{m['id']}'," in sql, bool(m["date"]), m["id"])
             if not m["date"]:
                 self.assertIn(m["id"], entry["definition"])
@@ -343,7 +343,7 @@ class MeasureDoor(unittest.TestCase):
         pinned chart of them moves with the date), and through the door they read exactly
         what the same days named as fixed dates read: on a date column and a timestamp one,
         alone and compared with the period before."""
-        dated = [m for m in measures.measures().values() if m["date"]]
+        dated = [m for m in measures.typed().values() if m["date"]]
         kinds = {measures._is_day_column(m["view"], m["date"]) for m in dated}
         self.assertEqual(kinds, {True, False})      # both column types are exercised
         for text in measures.RELATIVE:
@@ -390,7 +390,7 @@ class MeasureDoor(unittest.TestCase):
         """Through a reader's door a view's unbounded min reads every row (~20 s for mail,
         three times per comparison): coverage is an EXISTS before the earlier period, and
         the first record is read only after the start, only when it is not covered."""
-        for m in measures.measures().values():
+        for m in measures.typed().values():
             if not m["date"]:
                 continue
             for by in [None] + m["dimensions"][:1]:
@@ -404,7 +404,7 @@ class MeasureDoor(unittest.TestCase):
         only lately) is not read as 0: previous and change are NULL, the row says covered
         false, incomplete, and the date the source starts; within the source's reach the
         same measure compares as before."""
-        for m in measures.measures().values():
+        for m in measures.typed().values():
             if not m["date"]:
                 continue
             out = self.call({"measure": m["id"], "compare": True, "days": 3650}, FULL)
@@ -691,7 +691,7 @@ class MeasureDoor(unittest.TestCase):
         is blank too (live 11-22: a customer's one unpriced order this quarter read as "0,
         a drop of USD 43,700"; the fixture's Beta Inc revenue is such a part)."""
         unread = 0
-        for m in measures.measures().values():
+        for m in measures.typed().values():
             if not m["date"] or m["value"].startswith("count("):
                 continue
             for actor in (FULL, OPS):
@@ -927,7 +927,7 @@ class StatedExclusions(unittest.TestCase):
 
     def test_a_measure_without_parameters_reads_as_before(self):
         from operating import measures
-        for mid, m in measures.measures().items():
+        for mid, m in measures.typed().items():
             if m.get("parameters"):
                 continue
             self.assertEqual(measures.effective_where(m), f"({m['where']})" if m["where"] else "")
@@ -939,7 +939,7 @@ class PeriodLanguage(MeasureDoor):
     as fixed dates, in hand-written form, give (ASK-GENIE 17.4 G1, 20 #6)."""
 
     def dated(self):
-        return [m for m in measures.measures().values() if m["date"] and not measures.is_rate(m)
+        return [m for m in measures.typed().values() if m["date"] and not measures.is_rate(m)
                 and m["dimensions"]][:3]
 
     def read(self, name, **args):
@@ -1053,7 +1053,7 @@ class PeriodLanguage(MeasureDoor):
         largest part and that part's share of the whole change: each figure equals what the
         measure's own one-dimension comparison gives (the same rows read two ways)."""
         seen = 0
-        for m in measures.measures().values():
+        for m in measures.typed().values():
             if not m["date"] or m["per"] or measures.is_rate(m) or not m["dimensions"]:
                 continue
             try:
@@ -1090,6 +1090,16 @@ class PeriodLanguage(MeasureDoor):
         for bad in ({"why": True, "by": "customer"}, {"why": "yes"}, {"why": True, "unusual": True}):
             with self.assertRaises(ToolError):
                 measures.statement("revenue", **bad)
+
+
+    def test_why_takes_a_filter_that_narrows_the_rows_it_ranks(self):
+        """"why did purchases from DSM drop": the filter narrows the rows every dimension is
+        ranked over (the statement carries it); a bad filter is still refused."""
+        sql, _ = measures.statement("revenue", why=True, period="2026-10",
+                                    filter={"customer": "Acme"})
+        self.assertIn("lower(btrim(customer::text)) IN (lower('Acme'))", sql)
+        with self.assertRaises(ToolError):
+            measures.statement("revenue", why=True, filter={"nope": "x"})
 
 
 for _name in dir(MeasureDoor):          # only this class's own tests run here

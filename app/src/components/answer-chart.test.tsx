@@ -1,6 +1,14 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { AnswerCharts, ANSWER_BARS, firstBars, withoutChartBlocks, type AskChart } from "./answer-chart";
+
+const readStatement = vi.fn();
+const proposeMeasureCandidate = vi.fn();
+vi.mock("@/lib/api", () => ({
+  readStatement: (...a: unknown[]) => readStatement(...a),
+  saveInsight: vi.fn(),
+  proposeMeasureCandidate: (...a: unknown[]) => proposeMeasureCandidate(...a),
+}));
+import { AnswerCharts, ANSWER_BARS, checkedLine, firstBars, withoutChartBlocks, type AskChart } from "./answer-chart";
 import { chartNotes } from "./charts/chart-view";
 import { PALETTE, axisLabels, conversion, dateLabel, extent, human, ramp, short, ticks, waterfall } from "./charts/scale";
 import { panelGrid, wrap } from "./charts/export";
@@ -291,5 +299,80 @@ describe("an answer's bar chart of many names", () => {
       expect(cut.series[0].values).toHaveLength(Math.min(n, ANSWER_BARS));
       expect(firstBars({ ...bars, kind: "line" } as AskChart).labels).toHaveLength(n);
     }
+  });
+});
+
+describe("the work behind a chart", () => {
+  const read = (rows: (string | null)[][]) => ({ sql: "SELECT currency, total FROM v WHERE x", columns: ["currency", "total"], rows, row_count: rows.length, truncated: false, read_at: "2026-11-24T20:00:00+00:00",
+    work: { views: ["sales_invoices"], more_filters: 0, filters: [{ index: 0, text: "status = 'posted'" }] } });
+  it("checkedLine: says the rows read now add up to the chart, and says when they do not or cannot be compared", () => {
+    expect(checkedLine(bars, read([["CAD", "703058.44"], ["USD", "701688.25"]])).ok).toBe(true);
+    const off = checkedLine(bars, read([["CAD", "703058.44"], ["USD", "1.00"]]));
+    expect(off.ok).toBe(false);
+    expect(off.says).toContain("reads 703,059.44 now");
+    expect(checkedLine(bars, read([["CAD", "1"]])).ok).toBeNull();                    // other points: not compared
+    expect(checkedLine({ ...bars, series: [{ name: "other", values: [1, 2] }] }, read([["a", "1"], ["b", "2"]])).ok).toBeNull();
+    expect(checkedLine(bars, { ...read([["CAD", "1"], ["USD", "2"]]), truncated: true }).ok).toBeNull();
+  });
+  it("opens to the statement read now: its views, its filters (one taken out reads again), the rows and the checked line", async () => {
+    readStatement.mockReset().mockResolvedValueOnce(read([["CAD", "703058.44"], ["USD", "701688.25"]])).mockResolvedValueOnce(read([["CAD", "9"]]));
+    render(<AnswerCharts charts={[{ ...bars, sql: "SELECT currency, total FROM v WHERE x" }]} question="invoiced by currency" />);
+    fireEvent(screen.getByText("How this was worked out").closest("details")!, new Event("toggle"));
+    (screen.getByText("How this was worked out").closest("details") as HTMLDetailsElement).open = true;
+    fireEvent(screen.getByText("How this was worked out").closest("details")!, new Event("toggle"));
+    await waitFor(() => expect(screen.getByTestId("chart-checked")).toHaveTextContent("Checked: Read again now: total adds up to 1,404,746.69"));
+    expect(readStatement).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("chart-work")).toHaveTextContent("Reads sales_invoices");
+    fireEvent.click(screen.getByRole("button", { name: "status = 'posted'" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take out" }));
+    await waitFor(() => expect(screen.getByTestId("chart-filtered")).toHaveTextContent("Your filters (not saved): 1 rows"));
+    expect(readStatement).toHaveBeenLastCalledWith("SELECT currency, total FROM v WHERE x", [{ index: 0, text: null }]);
+    expect(screen.queryByTestId("chart-checked")).toBeNull();     // a changed read is not the chart's figures
+  });
+  it("allocates enough SVG height and left padding for rotated long person names without clipping", () => {
+    const longNames = [
+      "Alessia Montgomery-Clarke",
+      "Tobias Van Der Berg",
+      "Beatrice Okafor-Simmons",
+      "Sophia Chen-Williams",
+      "Stephanie MacAllister",
+      "Kenneth Richardson",
+      "Patricia Lindqvist",
+      "Benjamin Kowalski",
+      "Victoria Delacroix",
+    ];
+    const chart: AskChart = {
+      kind: "bar",
+      title: "Work sent per person",
+      x: "person",
+      labels: longNames,
+      series: [{ name: "mail_sent", values: [90, 80, 70, 60, 50, 40, 30, 20, 10] }],
+      as_of: null,
+      sql: "SELECT 1",
+    };
+    render(<AnswerCharts charts={[chart]} />);
+    const svg = screen.getByRole("img", { name: "Work sent per person" });
+    const vb = (svg.getAttribute("viewBox") ?? "").split(/\s+/).map(Number);
+    const svgHeight = vb[3];
+    const rotated = Array.from(svg.querySelectorAll("text[transform*='rotate(-45']"));
+    expect(rotated.length).toBeGreaterThan(0);
+    for (const label of rotated) {
+      const y = Number(label.getAttribute("y"));
+      // 18-char rotated label at 45 deg needs > 85px vertical clearance below y
+      expect(svgHeight - y).toBeGreaterThan(95);
+    }
+  });
+
+  it("offers Propose as shared definition for ad-hoc SQL charts and submits it", async () => {
+    proposeMeasureCandidate.mockReset().mockResolvedValue({ id: "mc-1", status: "pending" });
+    render(<AnswerCharts charts={[{ ...bars, sql: "SELECT currency, total FROM v WHERE x" }]} question="invoiced by currency" />);
+    fireEvent.click(screen.getByTestId("chart-propose"));
+    await waitFor(() => expect(proposeMeasureCandidate).toHaveBeenCalledWith({
+      title: "Invoiced by currency",
+      question: "invoiced by currency",
+      sql: "SELECT currency, total FROM v WHERE x",
+      source_kind: "manual",
+    }));
+    await waitFor(() => expect(screen.getByTestId("chart-proposed")).toHaveTextContent("Proposed for review"));
   });
 });

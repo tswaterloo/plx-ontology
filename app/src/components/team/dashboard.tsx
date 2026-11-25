@@ -197,6 +197,34 @@ function readAhead(key: string) {
 }
 const readAheadStop = () => clearTimeout(readAheadTimer);
 
+function splitCsv(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(/[,;\uFF0C]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function cleanCsv(raw: string | null | undefined): string {
+  return splitCsv(raw).join(", ");
+}
+
+export function formatRoleList(roles: string[] | string | null | undefined, team?: string | null): string[] {
+  const teamKey = cleanCsv(team).toLowerCase();
+  const list = Array.isArray(roles) ? roles : roles ? [roles] : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of list) {
+    for (const part of splitCsv(entry)) {
+      const key = part.toLowerCase();
+      if (!key || key === teamKey || seen.has(key)) continue;
+      seen.add(key);
+      out.push(part);
+    }
+  }
+  return out;
+}
+
 export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: string }) {
   const { data: plannerResult } = useRead<InsightResult>(PLANNER_PATH, plannerRead);
   const planner = useMemo(() => (plannerResult ? plannerByKey(plannerResult) : null), [plannerResult]);
@@ -223,16 +251,21 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
     else setQuery(person.trim());
   }, [person, people]);
 
-  const teams = useMemo(() => [...new Set(people.map((p) => p.team).filter((t): t is string => !!t))].sort(), [people]);
-  const roles = useMemo(() => [...new Set(people.flatMap((p) => p.roles ?? []))].sort(), [people]);
+  const teams = useMemo(() => [...new Set(people.map((p) => cleanCsv(p.team)).filter(Boolean))].sort(), [people]);
+  const roles = useMemo(() => [...new Set(people.flatMap((p) => formatRoleList(p.roles)))].sort(), [people]);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = people.filter((p) =>
-      (!team || (team === "-" ? !p.team : p.team === team)) &&
-      (!role || (p.roles ?? []).includes(role)) &&
-      (!q || p.name.toLowerCase().includes(q)) &&
-      (!system || CHANNELS.some((c) => c.system === system && (counts(p, period)[c.key] ?? 0) > 0)));
+    const list = people.filter((p) => {
+      const pt = cleanCsv(p.team);
+      const pr = formatRoleList(p.roles);
+      return (
+        (!team || (team === "-" ? !pt : pt === team)) &&
+        (!role || pr.includes(role)) &&
+        (!q || p.name.toLowerCase().includes(q)) &&
+        (!system || CHANNELS.some((c) => c.system === system && (counts(p, period)[c.key] ?? 0) > 0))
+      );
+    });
     const value = (p: TeamPerson): number | string => {
       switch (sort.key) {
         case "name": return p.name.toLowerCase();
@@ -349,10 +382,31 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
               {/* person, team (when any is on record), all, this week and saved (when shown) */}
               <th colSpan={(teams.length > 0 ? 2 : 1) + (has.week ? 1 : 0) + 1 + (savedShown ? 1 : 0)} />
               {groups.map((g) => (
-                <th key={g.system} colSpan={g.span} scope="colgroup" className="whitespace-nowrap border-b-2 px-2 pt-1 text-center font-normal"
-                  style={{ borderColor: GROUPS[g.system].tone }}>{GROUPS[g.system].label}</th>
+                <th
+                  key={g.system}
+                  colSpan={g.span}
+                  scope="colgroup"
+                  className={cn(
+                    "whitespace-nowrap border-b-2 px-2 pt-1 font-normal",
+                    g.span === 1 ? "text-right" : "text-center",
+                  )}
+                  style={{ borderColor: GROUPS[g.system].tone }}
+                >
+                  {GROUPS[g.system].label}
+                </th>
               ))}
-              {openSpan > 0 && <th colSpan={openSpan} scope="colgroup" className="whitespace-nowrap border-b-2 border-dot-risk px-2 pt-1 text-center font-normal">Open</th>}
+              {openSpan > 0 && (
+                <th
+                  colSpan={openSpan}
+                  scope="colgroup"
+                  className={cn(
+                    "whitespace-nowrap border-b-2 border-dot-risk px-2 pt-1 font-normal",
+                    openSpan === 1 ? "text-right" : "text-center",
+                  )}
+                >
+                  Open
+                </th>
+              )}
               {tailSpan > 0 && <th colSpan={tailSpan} />}
             </tr>
             <tr className="border-b border-border">
@@ -381,9 +435,12 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                       {p.name}
                     </button>
                     {p.self && <span className="ml-1.5 text-[11px] text-muted">you</span>}
-                    {(p.roles ?? []).some((r) => r !== p.team) && <div className="truncate text-[11px] text-muted" data-testid="team-roles">{(p.roles ?? []).filter((r) => r !== p.team).join(", ")}</div>}
+                    {(() => {
+                      const pr = formatRoleList(p.roles, p.team);
+                      return pr.length > 0 ? <div className="truncate text-[11px] text-muted" data-testid="team-roles">{pr.join(", ")}</div> : null;
+                    })()}
                   </td>
-                  {teams.length > 0 && <td className="whitespace-nowrap px-2 py-1.5 text-muted">{p.team ?? <span className="text-faint">·</span>}</td>}
+                  {teams.length > 0 && <td className="whitespace-nowrap px-2 py-1.5 text-muted">{cleanCsv(p.team) || <span className="text-faint">·</span>}</td>}
                   <td className="px-2 py-1.5 text-right"><Figure n={total(p, period)} strong /></td>
                   {has.week && <td className="whitespace-nowrap px-2 py-1.5 text-right" data-testid="team-week"
                     title={lastWeek(p) ? `Last week: ${lastWeek(p)!.done.toLocaleString("en-US")}` : undefined}>
@@ -507,7 +564,7 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
         <div className="space-y-6" data-testid="team-person">
           <div>
             <div className="text-[15px] font-semibold">{p.name}</div>
-            <div className="text-[12px] text-muted">{[p.team, ...(p.roles ?? []).filter((r) => r !== p.team)].filter(Boolean).join(" · ") || "No team or role on record"}</div>
+            <div className="text-[12px] text-muted">{[cleanCsv(p.team), ...formatRoleList(p.roles, p.team)].filter(Boolean).join(" · ") || "No team or role on record"}</div>
           </div>
 
           <section className="space-y-2">

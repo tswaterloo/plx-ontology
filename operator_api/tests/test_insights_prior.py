@@ -356,3 +356,59 @@ class WhyDidItChange(unittest.TestCase):
         for bad in ("team_output", "measure_open_orders"):
             with self.assertRaises(UserFacing):
                 list(b.insight_why_stream(owner, bad))
+        # step 2 carries every ranked dimension as figures, not only the top one
+        ins.read_sql = fake
+        try:
+            two = list(b.insight_why_stream(owner, "measure_invoices_issued"))[1]
+        finally:
+            ins.read_sql = real
+        self.assertEqual([r["dimension"] for r in two["ranking"]], ["customer", "customer_chain"])
+        self.assertEqual(two["ranking"][1]["top_share_of_change_pct"], "20.0")
+        # a drill reads one dimension's parts alone; one the measure does not declare is refused
+        reads.clear()
+        ins.read_sql = fake
+        try:
+            (parts,) = list(b.insight_why_stream(owner, "measure_invoices_issued", drill="customer"))
+            with self.assertRaises(UserFacing):
+                list(b.insight_why_stream(owner, "measure_invoices_issued", drill="not_a_dimension"))
+            # the named change and the filter reach every statement read
+            list(b.insight_why_stream(owner, "measure_invoices_issued", period="2026-10",
+                                      filter={"customer": "Acme"}))
+        finally:
+            ins.read_sql = real
+        self.assertEqual((parts["of"], parts["rows"][0][0]), (1, "Acme"))
+        self.assertTrue(all("lower('Acme')" in q and "2026-10-01" in q for q in reads[1:]))
+
+    def test_insight_why_uses_stored_drill_when_available_and_falls_back_on_filter(self):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from unittest import mock
+        from operating.pg import measure_values as mv
+        from operator_api import insights as ins
+        from operator_api.tests import test_insights as ti
+        b = ti.Backend(ti.sql_out(ti.Mixin.rows, ti.OUTPUT), everyone=True)
+        b.doors = SimpleNamespace(get=lambda r: (SimpleNamespace(grant="g"), "dsn"),
+                                  decide_now=lambda r: None)
+        owner = ti.person("employee:owner")
+        live_calls = []
+
+        def fake_live(backend, reader, sql, seconds=0, ahead=False):
+            live_calls.append(sql)
+            return {"columns": ["customer", "current", "previous", "change"],
+                    "rows": [{"cells": ["Acme", "50", "10", "40"]}]}
+
+        def fake_stored(pg, door, measure_id, *, by=None, period=None, against=None, why=False):
+            return {"columns": [by or "customer", "current", "previous", "change"],
+                    "rows": [["Acme", "50", "10", "40"]], "period": "2026-10",
+                    "as_of": "2026-11-24T00:00:00Z", "source": "stored"}
+
+        fake_pool = SimpleNamespace(connection=lambda: nullcontext(object()))
+        with mock.patch("operating.page_reads.pool_for", return_value=fake_pool), \
+                mock.patch.object(mv, "stored_compare", side_effect=fake_stored), \
+                mock.patch.object(ins, "read_sql", side_effect=fake_live):
+            (got,) = list(b.insight_why_stream(owner, "measure_invoices_issued", drill="customer"))
+            self.assertEqual((got["source"], got["rows"][0][0], len(live_calls)), ("stored", "Acme", 0))
+            # filter -> cannot use single-dimension stored rows -> falls back to live statement
+            (filtered,) = list(b.insight_why_stream(owner, "measure_invoices_issued",
+                                                    drill="customer", filter={"status": "posted"}))
+            self.assertEqual((filtered["source"], len(live_calls)), ("statement", 1))

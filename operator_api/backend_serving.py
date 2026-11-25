@@ -313,6 +313,11 @@ class ServingMixin:
                        "is busy" if exc.code == "busy" else "couldn't be read")
                 raise errors.UserFacing("page_unavailable", f"The list {why}; try again in a "
                                         "minute.", 503) from None
+        if getattr(self, "doors", None) is not None:
+            # The reader's door is already decided ahead and scoped_read re-checks the door
+            # stamp and people exclusion inside Postgres: run directly without stalling on
+            # _serving's worker access checks (Data -> Customers / Orders / Suppliers).
+            return read()
         return self._serving(reader, ("records_list", view, tuple(sorted(chosen.items())), q,
                                       sort, direction, offset, limit, facets),
                              read, self._screen_inputs())

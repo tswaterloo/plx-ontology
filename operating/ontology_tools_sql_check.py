@@ -143,8 +143,93 @@ def _column_list(tokens: list[tuple[str, str]], idx: int) -> bool:
                                       and prev[1].lower() in bv.VIEWS)
 
 
-def check(sql: Any, *, schemas: frozenset[str] = frozenset(), allowed_schema: str = ""
-          ) -> str:
+def _has_qualified_table(tokens: list[tuple[str, str]]) -> bool:
+    """True when ``tokens`` names any schema-qualified relation (``FROM s.t``, ``JOIN s.t``,
+    comma-join in a FROM list, or a 3-part ``s.t.c`` reference)."""
+    # Track per-paren state: (in_from, is_call). Inside a function call like extract(... FROM x)
+    # or jsonb_each_text(t.col), FROM/dots are expression arguments, not table references.
+    stack: list[list[bool]] = [[False, False]]
+    clause_ends = frozenset({
+        "where", "group", "order", "having", "limit", "offset", "union", "intersect",
+        "except", "window", "fetch", "for", "on", "using", "set", "returning", "values",
+    })
+    n = len(tokens)
+    for idx, (kind, tok) in enumerate(tokens):
+        if kind == "punct" and tok == ".":
+            prev = tokens[idx - 1] if idx else ("", "")
+            nxt = tokens[idx + 1] if idx + 1 < n else ("", "")
+            nxt2 = tokens[idx + 2] if idx + 2 < n else ("", "")
+            if nxt2 == ("punct", ".") and prev[0] in ("word", "qident") and nxt[0] in ("word", "qident"):
+                return True
+            if stack[-1][0] and not stack[-1][1]:
+                if prev[0] in ("word", "qident") and nxt[0] in ("word", "qident"):
+                    return True
+            continue
+        if kind == "punct" and tok == "(":
+            prev = tokens[idx - 1] if idx else ("", "")
+            is_call = (
+                prev[0] in ("word", "qident")
+                and not (prev[0] == "word" and prev[1].lower() in SYNTAX)
+                and not (prev[0] == "word" and prev[1].lower() == "as")
+            )
+            parent_from = stack[-1][0] and not stack[-1][1]
+            stack.append([parent_from and not is_call, is_call])
+            continue
+        if kind == "punct" and tok == ")":
+            if len(stack) > 1:
+                stack.pop()
+            continue
+        if kind != "word":
+            continue
+        low = tok.lower()
+        if stack[-1][1]:
+            continue
+        if low in ("select", "with", "values"):
+            stack[-1][0] = False
+        elif low == "from":
+            prev = tokens[idx - 1] if idx else ("", "")
+            if not (prev[0] == "word" and prev[1].lower() == "distinct"):
+                stack[-1][0] = True
+        elif low == "join":
+            stack[-1][0] = True
+        elif low in clause_ends:
+            stack[-1][0] = False
+    return False
+
+
+def check_where(clause: Any, view: str = "t") -> str:
+    """Validate a bare SQL WHERE predicate against ``invalid_sql`` and schema-qualified refs."""
+    if not isinstance(clause, str) or not clause.strip():
+        raise _bad("WHERE condition must be non-empty SQL text")
+    if "\x00" in clause:
+        raise _bad("the condition holds a NUL character")
+    text = clause.strip()
+    tokens = _tokens(text)
+    depth = 0
+    forbidden_top = frozenset({
+        "select", "union", "intersect", "except", "group", "having", "order",
+        "limit", "offset", "for", "into", "returning", "with", "fetch",
+    })
+    for idx, (kind, tok) in enumerate(tokens):
+        if kind == "punct" and tok == "(":
+            depth += 1
+        elif kind == "punct" and tok == ")":
+            depth -= 1
+            if depth < 0:
+                raise _bad("unbalanced parentheses in WHERE condition")
+        elif depth == 0 and kind == "word":
+            low = tok.lower()
+            prev = tokens[idx - 1] if idx else ("", "")
+            if low in forbidden_top or (low == "from" and not (prev[0] == "word" and prev[1].lower() == "distinct")):
+                raise _bad(f"'{tok}' is not allowed in a WHERE condition")
+    if depth != 0:
+        raise _bad("unbalanced parentheses in WHERE condition")
+    check(f"SELECT 1 FROM {view} WHERE ({text})", bare_views=True)
+    return text
+
+
+def check(sql: Any, *, schemas: frozenset[str] = frozenset(), allowed_schema: str = "",
+          bare_views: bool = False) -> str:
     """The statement as it will run (one trailing ``;`` dropped), or ``invalid_sql``."""
     if not isinstance(sql, str) or not sql.strip():
         raise _bad("sql is one SELECT statement as text")
@@ -159,6 +244,9 @@ def check(sql: Any, *, schemas: frozenset[str] = frozenset(), allowed_schema: st
     flat = " ".join(t.lower() for k, t in tokens if k == "word")
     if _LOCKING.search(flat):
         raise _bad("locking clauses (FOR UPDATE / SHARE) are not allowed")
+    if bare_views and _has_qualified_table(tokens):
+        raise _bad("schema-qualified names are not allowed: read the views by their bare names",
+                   "plx.sql {\"describe\": true} lists them")
     for idx, (kind, tok) in enumerate(tokens):
         if kind == "punct" and tok == ";":
             raise _bad("one statement per call: ';' is not allowed")

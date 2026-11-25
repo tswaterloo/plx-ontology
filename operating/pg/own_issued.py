@@ -50,6 +50,7 @@ import json
 import os
 import re
 import sqlite3
+from pathlib import Path
 import sys
 import threading
 import time
@@ -80,6 +81,40 @@ MAIL_DB = os.path.join(STATE, "mail-capture", "capture.db")
 SHAREPOINT_DB = os.path.join(STATE, "sharepoint-capture", "capture.db")
 BLOBS = {"mail": os.path.join(STATE, "mail-capture", "blobs", "sha256"),
          "sharepoint": os.path.join(STATE, "sharepoint-capture", "blobs", "sha256")}
+
+_BUNDLE_ROWS: tuple[tuple[str, int, int, int], dict[str, Any]] | None = None
+
+
+def _load_bundle_rows() -> dict[str, Any] | None:
+    """Load the capture rows from ``PLX_OWN_ROWS`` (once per file version in this
+    process); None when unset. Missing, unreadable, or corrupt JSON raises."""
+    global _BUNDLE_ROWS
+    path = os.environ.get("PLX_OWN_ROWS") or ""
+    if not path:
+        return None
+    st = os.stat(path)
+    key = (path, st.st_ino, st.st_size, st.st_mtime_ns)
+    if _BUNDLE_ROWS is None or _BUNDLE_ROWS[0] != key:
+        with open(path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if not isinstance(loaded, dict):
+            raise ValueError("own_issued_rows_invalid")
+        _BUNDLE_ROWS = (key, {str(k): v for k, v in loaded.items()})
+    return _BUNDLE_ROWS[1]
+
+
+def _bundle_row(sha: str) -> tuple[str, dict[str, Any]] | None:
+    """The capture row of ``sha`` from the bundle ``PLX_OWN_ROWS`` names (a run judging
+    away from the box: the rows the box's pass would read, shipped with the blobs), None
+    when no bundle is set or it names no row for the digest."""
+    rows = _load_bundle_rows()
+    if rows is None or sha not in rows:
+        return None
+    found = rows[sha]
+    if not (isinstance(found, list) and len(found) == 2 and found[0] in BLOBS
+            and isinstance(found[1], dict)):
+        raise ValueError("own_issued_rows_invalid")
+    return found[0], found[1]
 
 
 # ------------------------------------------------------------------ the decision
@@ -262,12 +297,18 @@ def judge(task: tuple[str, tuple[str, ...]]) -> tuple[str, dict[str, Any] | None
     error)."""
     from integrations.captured_text import captured_text
     sha, types = task
+    bundle_rows = bool(os.environ.get("PLX_OWN_ROWS"))
+    row = _bundle_row(sha) if bundle_rows else None
     try:
-        found = _capture_row(sha, _db(os.environ.get("PLX_OWN_MAIL_DB", MAIL_DB)),
-                             _db(os.environ.get("PLX_OWN_SP_DB", SHAREPOINT_DB)))
+        if bundle_rows:
+            found = row   # a bundle pass: the box's rows decide, never a store copy's
+        else:
+            found = _capture_row(sha, _db(os.environ.get("PLX_OWN_MAIL_DB", MAIL_DB)),
+                                 _db(os.environ.get("PLX_OWN_SP_DB", SHAREPOINT_DB)))
         if found is None:
             return sha, None, "not_captured"
-        read = captured_text(BLOBS[found[0]], found[1])
+        blobs = os.environ.get("PLX_OWN_%s_BLOBS" % found[0].upper()) or BLOBS[found[0]]
+        read = captured_text(blobs, found[1])
         if read is None:
             return sha, None, "no_text"
         pages = list(read.pages)
@@ -282,6 +323,7 @@ def _judge_all(tasks: Sequence[tuple[str, tuple[str, ...]]], workers: int,
     """Judge ``tasks`` (digest, types) in a process pool: (digest -> {type: evidence} of
     each document read, empty when not PLX's own; error name -> count). A document that
     could not be read is not in the first map (judged again on the next pass)."""
+    _load_bundle_rows()   # fail loudly if PLX_OWN_ROWS is missing or corrupt before work starts
     judged: dict[str, dict[str, Any]] = {}
     errors: dict[str, int] = {}
     if not tasks:
@@ -332,10 +374,14 @@ def build(conn: Any, *, workers: int, limit: int | None = None, write: bool = Tr
     started = time.monotonic()
     by_sha = {sha: objs for sha, objs in _objects(conn).items()
               if shas is None or sha in shas}
-    tasks = [(sha, tuple(sorted(TYPES))) for sha in sorted(by_sha)]
+    # a digest named in ``shas`` is judged whether the store holds an object of it yet or
+    # not (the judgement is the document's; a lagging read copy then decides nothing
+    # late): the hidden rows are the objects', derived when they are written
+    task_shas = sorted(by_sha) if shas is None else sorted(shas)
+    tasks = [(sha, tuple(sorted(TYPES))) for sha in task_shas]
     if limit is not None:
         tasks = tasks[:limit]
-        by_sha = {sha: by_sha[sha] for sha, _ in tasks}
+        by_sha = {sha: by_sha[sha] for sha, _ in tasks if sha in by_sha}
     judged, errors = _judge_all(tasks, workers, decisions)
     rows = _hidden_rows(by_sha, judged)
     if write:
@@ -343,7 +389,7 @@ def build(conn: Any, *, workers: int, limit: int | None = None, write: bool = Tr
     return _summary(len(tasks), judged, rows, errors, started, written=write)
 
 
-def refresh(conn: Any, *, workers: int) -> dict[str, Any]:
+def refresh(conn: Any, *, workers: int, export: Any = None) -> dict[str, Any]:
     """The incremental pass (``plx-own-issued.timer``): judge only the documents of
     supplier-typed objects no pass judged yet (the ones the delta added), record them, and
     add a hidden row for every held object of a document judged PLX's own (a new object of
@@ -353,6 +399,27 @@ def refresh(conn: Any, *, workers: int) -> dict[str, Any]:
     if conn.execute(f"SELECT NOT EXISTS (SELECT 1 FROM {JUDGED})").fetchone()[0]:
         return dict(build(conn, workers=workers), mode="build")
     by_sha = _objects(conn)
+    known, unread = _known_judged(conn)
+    seen = {r[0] for r in conn.execute(f"SELECT content_sha256 FROM {JUDGED}").fetchall()}
+    tasks = [(sha, tuple(sorted(TYPES))) for sha in sorted(by_sha)
+             if sha not in seen or sha in unread]
+    if export is not None:
+        # the pass away from the box (``plx-own-issued`` on a Spark): the decisions are the
+        # pass's whole answer; the box's ``apply --incremental`` records them, the very
+        # transaction below, against the objects the store holds then
+        with open(export, "w", encoding="utf-8") as fh:
+            judged, errors = _judge_all(tasks, workers, fh)
+        rows = _hidden_rows(by_sha, {**known, **judged})
+        return _summary(len(tasks), judged, rows, errors, started, mode="refresh-export")
+    judged, errors = _judge_all(tasks, workers)
+    rows = _hidden_rows(by_sha, {**known, **judged})
+    _record(conn, judged, rows)
+    return _summary(len(tasks), judged, rows, errors, started, mode="refresh")
+
+
+def _known_judged(conn: Any) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """(sha -> evidence of each document the table judges PLX's own in the rule's shape,
+    the digests judged own whose evidence no longer is: judged again)."""
     known: dict[str, dict[str, Any]] = {}
     unread: set[str] = set()   # judged own, its evidence not of the rule's shape
     for sha, evidence in conn.execute(f"SELECT content_sha256, evidence FROM {JUDGED} "
@@ -368,26 +435,29 @@ def refresh(conn: Any, *, workers: int) -> dict[str, Any]:
             known[sha] = got
         else:
             unread.add(sha)
-    seen = {r[0] for r in conn.execute(f"SELECT content_sha256 FROM {JUDGED}").fetchall()}
-    tasks = [(sha, tuple(sorted(TYPES))) for sha in sorted(by_sha)
-             if sha not in seen or sha in unread]
-    judged, errors = _judge_all(tasks, workers)
-    rows = _hidden_rows(by_sha, {**known, **judged})
+    return known, unread
+
+
+def _record(conn: Any, judged: Mapping[str, Mapping[str, Any]],
+            rows: Sequence[tuple[str, str, str, str]]) -> None:
+    """``refresh``'s one transaction: the judgements upserted, the hidden rows only added
+    (an object already hidden keeps its first row)."""
     at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     with conn.transaction():
         with conn.cursor() as cur:
-            cur.executemany(
-                f"INSERT INTO {JUDGED} (content_sha256, own, evidence, judged_at) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT (content_sha256) DO UPDATE SET "
-                "own = EXCLUDED.own, evidence = EXCLUDED.evidence, "
-                "judged_at = EXCLUDED.judged_at",
-                [(sha, bool(out), json.dumps(out, sort_keys=True) if out else None, at)
-                 for sha, out in sorted(judged.items())])
-            cur.executemany(
-                f"INSERT INTO {TABLE} (object_id, object_type, content_sha256, evidence, "
-                "detected_at) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (object_id) DO NOTHING",
-                [(*r, at) for r in rows])
-    return _summary(len(tasks), judged, rows, errors, started, mode="refresh")
+            if judged:
+                cur.executemany(
+                    f"INSERT INTO {JUDGED} (content_sha256, own, evidence, judged_at) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT (content_sha256) DO UPDATE SET "
+                    "own = EXCLUDED.own, evidence = EXCLUDED.evidence, "
+                    "judged_at = EXCLUDED.judged_at",
+                    [(sha, bool(out), json.dumps(out, sort_keys=True) if out else None, at)
+                     for sha, out in sorted(judged.items())])
+            if rows:
+                cur.executemany(
+                    f"INSERT INTO {TABLE} (object_id, object_type, content_sha256, evidence, "
+                    "detected_at) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (object_id) DO NOTHING",
+                    [(*r, at) for r in rows])
 
 
 def _objects(conn: Any) -> dict[str, list[tuple[str, str]]]:
@@ -423,14 +493,16 @@ def _write(conn: Any, rows: Sequence[tuple[str, str, str, str]],
                                     if out else None, at))
 
 
-def apply(conn: Any, decisions: Iterable[str]) -> dict[str, Any]:
+def apply(conn: Any, decisions: Iterable[str], *, incremental: bool = False
+          ) -> dict[str, Any]:
     """Write the hidden rows of a ``build --dry-run --decisions`` file against the objects
     the store holds now (a document's objects are its current supplier-typed ones; a
-    decision line of any other shape stops the apply before anything is written)."""
+    decision line of any other shape stops the apply before anything is written).
+    ``incremental``: the file is a ``refresh --export`` pass's: its judgements are added
+    to the table's (``_record``, refresh's own transaction) instead of replacing both
+    tables."""
     by_sha = _objects(conn)
-    rows: list[tuple[str, str, str, str]] = []
     judged: dict[str, dict[str, Any]] = {}
-    docs = 0
     for line in decisions:
         if not line.strip():
             continue
@@ -440,17 +512,20 @@ def apply(conn: Any, decisions: Iterable[str]) -> dict[str, Any]:
                 and (got[1] is None or isinstance(got[1], dict))):
             raise ValueError("own_issued_decision_invalid")
         sha, out, error = got
-        if not error:
-            judged[sha] = out or {}
         for object_type, evidence in (out or {}).items():
             if object_type not in TYPES or not isinstance(evidence, dict) \
                     or evidence.get("rule") != RULE:
                 raise ValueError("own_issued_decision_invalid")
-        held = [(o, t) for o, t in by_sha.get(sha, ()) if t in (out or {})]
-        docs += bool(held)
-        rows += [(o, t, sha, json.dumps(out[t], sort_keys=True)) for o, t in held]
-    _write(conn, rows, judged)
-    return {"hidden_documents": docs, "hidden_objects": len(rows),
+        if not error:
+            judged[sha] = out or {}
+    if incremental:
+        known, _unread = _known_judged(conn)
+        rows = _hidden_rows(by_sha, {**known, **judged})
+        _record(conn, judged, rows)
+    else:
+        rows = _hidden_rows(by_sha, judged)
+        _write(conn, rows, judged)
+    return {"hidden_documents": len({r[2] for r in rows}), "hidden_objects": len(rows),
             "by_type": {t: sum(1 for r in rows if r[1] == t) for t in sorted(TYPES)}}
 
 
@@ -461,6 +536,100 @@ def verify(conn: Any) -> dict[str, Any]:
         f"SELECT count(*), count(o.object_id) FROM {TABLE} h LEFT JOIN ontology.objects o "
         "ON o.object_id = h.object_id AND o.object_type = h.object_type").fetchone()
     return {"rows": got[0], "live_supplier_objects": got[1]}
+
+
+def _clear_bundle(out: Path) -> None:
+    """Remove stale bundle files (``tasks.txt``, ``rows.json``, and ``blobs/``) so a
+    skipped or repeated pass never reuses old tasks or retains raw attachment bytes."""
+    import shutil
+    for name in ("tasks.txt", "rows.json"):
+        (out / name).unlink(missing_ok=True)
+    blobs = out / "blobs"
+    if blobs.exists():
+        shutil.rmtree(blobs)
+
+
+def _write_private(target: Path, content: bytes) -> None:
+    """Write ``content`` to ``target`` atomically with mode ``0600``."""
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(content)
+    os.replace(tmp, target)
+
+
+def bundle(conn: Any, out: Any) -> dict[str, Any]:
+    """Write the inputs a Spark pass judges the unjudged documents from: ``out/tasks.txt``
+    (the digests as ``build --shas`` reads them), ``out/rows.json`` (each digest's capture
+    row, ``PLX_OWN_ROWS``), and the blobs those rows need under ``out/blobs/<store>``
+    (``PLX_OWN_MAIL_BLOBS`` / ``PLX_OWN_SHAREPOINT_BLOBS``: raw bytes, ``.dropped``
+    readings when the original was dropped, and pinned OCR text when OCR-read). Stale
+    bundle files and blobs from earlier runs are cleared first so skipped runs never reuse
+    old tasks and purged attachments never linger. The write side of the pass is the box's
+    alone (``apply --incremental``)."""
+    from integrations.captured_text import (
+        DROPPED_SUFFIX, blob_path, ocr_digest, read_blob, read_dropped,
+    )
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    _clear_bundle(out)
+    # the pass's tasks, exactly as refresh computes them (with nothing judged yet the
+    # first full build stays the box's ``build``)
+    if conn.execute(f"SELECT NOT EXISTS (SELECT 1 FROM {JUDGED})").fetchone()[0]:
+        return {"skipped": "never_built"}
+    by_sha = _objects(conn)
+    _known, unread = _known_judged(conn)
+    seen = {r[0] for r in conn.execute(f"SELECT content_sha256 FROM {JUDGED}").fetchall()}
+    tasks = [sha for sha in sorted(by_sha) if sha not in seen or sha in unread]
+    mail = _db(os.environ.get("PLX_OWN_MAIL_DB", MAIL_DB))
+    sharepoint = _db(os.environ.get("PLX_OWN_SP_DB", SHAREPOINT_DB))
+    blobs = out / "blobs"
+    rows: dict[str, Any] = {}
+    extracted = dropped = missing = 0
+    for sha in tasks:
+        found = _capture_row(sha, mail, sharepoint)
+        if found is None:
+            continue
+        store, row = found
+        rows[sha] = [store, row]
+        src_blobs = os.environ.get(f"PLX_OWN_{store.upper()}_BLOBS") or BLOBS[store]
+        dst_blobs = blobs / store
+        content = read_blob(src_blobs, sha)
+        if content is not None:
+            placed = blob_path(dst_blobs, sha)
+            if not placed.exists():
+                _write_private(placed, content)
+                extracted += 1
+            text_digest = ocr_digest(row)
+            if text_digest is not None:
+                placed_text = blob_path(dst_blobs, text_digest)
+                if not placed_text.exists():
+                    text_bytes = read_blob(src_blobs, text_digest)
+                    if text_bytes is None:
+                        missing += 1
+                    else:
+                        _write_private(placed_text, text_bytes)
+                        extracted += 1
+        elif read_dropped(src_blobs, sha) is not None:
+            placed_dropped = blob_path(dst_blobs, sha, DROPPED_SUFFIX)
+            if not placed_dropped.exists():
+                try:
+                    raw_dropped = blob_path(src_blobs, sha, DROPPED_SUFFIX).read_bytes()
+                except FileNotFoundError:
+                    missing += 1
+                else:
+                    _write_private(placed_dropped, raw_dropped)
+                    dropped += 1
+        else:
+            missing += 1
+    with open(out / "rows.json", "w", encoding="utf-8") as fh:
+        json.dump(rows, fh, sort_keys=True)
+    with open(out / "tasks.txt", "w", encoding="utf-8") as fh:
+        for sha in tasks:
+            fh.write(sha + "\n")
+    return {"tasks": len(tasks), "rows": len(rows), "extracted": extracted,
+            "dropped": dropped, "missing": missing}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -478,8 +647,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--workers", type=int, default=4)
     r.add_argument("--if-migrated", action="store_true",
                    help="do nothing (exit 0) until migration 0038 made the tables")
+    r.add_argument("--export", help="write the pass's decisions here instead of recording "
+                                    "them (the Spark pass; the box's apply --incremental "
+                                    "records them)")
     a = sub.add_parser("apply", help="write a dry run's decisions (current objects)")
     a.add_argument("decisions")
+    a.add_argument("--incremental", action="store_true",
+                   help="the decisions are a refresh --export pass's: add them to the "
+                        "tables, never replace")
+    a.add_argument("--if-migrated", action="store_true",
+                   help="do nothing (exit 0) until migration 0038 made the tables")
+    u = sub.add_parser("bundle", help="write the inputs a Spark pass judges the unjudged "
+                                      "documents from (tasks, rows, blobs)")
+    u.add_argument("--out", required=True)
+    u.add_argument("--if-migrated", action="store_true",
+                   help="do nothing (exit 0) until migration 0038 made the tables")
     sub.add_parser("verify", help="rows and the live supplier objects they still name")
     args = parser.parse_args(argv)
     import psycopg
@@ -488,14 +670,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                          application_name="plx-own-issued") as conn:
         if getattr(args, "if_migrated", False) and None in conn.execute(
                 "SELECT to_regclass(%s), to_regclass(%s)", (TABLE, JUDGED)).fetchone():
+            if args.command == "bundle":
+                _clear_bundle(Path(args.out))
             out = {"skipped": "table_missing"}
         elif args.command == "verify":
             out = verify(conn)
         elif args.command == "refresh":
-            out = refresh(conn, workers=max(1, args.workers))
+            out = refresh(conn, workers=max(1, args.workers), export=args.export)
         elif args.command == "apply":
             with open(args.decisions, encoding="utf-8") as fh:
-                out = apply(conn, list(fh))
+                out = apply(conn, list(fh), incremental=args.incremental)
+        elif args.command == "bundle":
+            out = bundle(conn, args.out)
         else:
             shas = None
             if args.shas:

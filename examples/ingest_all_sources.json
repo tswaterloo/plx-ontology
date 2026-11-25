@@ -51,6 +51,10 @@
  },
  "mail": {
   "scope": "../integrations/mail_capture_scope.json",
+  "skip_mailboxes": [
+   "vince@petrasoap.com",
+   "stephen@petrasoap.com"
+  ],
   "budget_seconds": 1500
  },
  "mail_backlog": {
@@ -90,5 +94,15 @@
  },
  "brain": {
   "namespaces": "knowledge_namespaces.ingest.json"
+ },
+ "mail_priority": {
+  "scope": "../integrations/mail_capture_scope.json",
+  "mailboxes": [
+   "vince@petrasoap.com",
+   "stephen@petrasoap.com"
+  ],
+  "budget_seconds": 45,
+  "min_interval_seconds": 60,
+  "freshness_target_seconds": 60
  }
 }

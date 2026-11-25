@@ -292,3 +292,27 @@ class ScheduledPassLockTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["skipped"], "scheduled_pass_running")
         self.assertEqual(ran.call_args.kwargs["pass_wait"], 2.0)
+
+    def test_the_apply_folds_cli_fails_when_every_payload_is_stale_or_bad(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from operating import vendor_watch
+
+        def run(result):
+            out = io.StringIO()
+            with mock.patch("operating.host.HostConfig.from_file"), \
+                    mock.patch("ontology.window_lock.skip_report", return_value=None), \
+                    mock.patch.object(vendor_watch, "apply_fold_payloads",
+                                      return_value=result), \
+                    redirect_stdout(out):
+                code = vendor_watch.main(["--state-dir", "s", "--config", "c",
+                                          "--apply-folds", "folds"])
+            return code, json.loads(out.getvalue())
+        base = {"files": 2, "applied": 0, "stale": 1, "bad": 1, "left": 2}
+        code, printed = run(base)
+        self.assertEqual((code, printed), (1, base))
+        for result in ({**base, "applied": 1}, {**base, "stale": 0, "bad": 0}):
+            self.assertEqual(run(result)[0], 0, result)

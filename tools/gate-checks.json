@@ -157,7 +157,6 @@
       "tests.test_eval_objective_agent",
       "operator_api.test_records",
       "operator_api.tests.test_agent_ask",
-      "operator_api.tests.test_answer_trail",
       "operator_api.tests.test_app_api",
       "operator_api.tests.test_backend_fixture",
       "operator_api.tests.test_feedback",

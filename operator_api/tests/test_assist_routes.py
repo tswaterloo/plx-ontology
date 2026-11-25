@@ -9,7 +9,7 @@ in ``operating/tests/test_assist_matters`` against a real Postgres. Evidence lab
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import unittest
 from unittest.mock import patch
@@ -18,7 +18,7 @@ from operator_api.tests import test_autopilot_area as base
 from operator_api.tests.test_autopilot_area import COLLEAGUE, OWNER
 
 M_OK, M_CUT, M_MARK, M_OLD = ("a" * 24, "b" * 24, "c" * 24, "d" * 24)
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(timezone.utc) - timedelta(seconds=5)
 
 
 def matter(matter_id: str, **over) -> dict:
@@ -147,6 +147,17 @@ class AssistRoutes(unittest.TestCase):
         self.listed(COLLEAGUE)
         self.assertNotIn(OWNER[1], self.calls[-1]["owners"])       # another person's id never
 
+    def test_view_as_names_lookup_reaches_the_matters_read(self) -> None:
+        from operator_api import view_as as va
+        self.backend.view_as = va.ViewAs(
+            candidates=lambda: [(COLLEAGUE[1], COLLEAGUE[0])],
+            identity=lambda oid, seconds: None,
+            excluded=lambda: (lambda oid: False))
+        self.listed(OWNER)
+        resolver = self.calls[-1].get("names_of")
+        self.assertTrue(callable(resolver))
+        self.assertEqual(resolver([COLLEAGUE[1]]), {COLLEAGUE[1]: "Sam"})
+
     def test_no_store_says_not_run_and_still_lists_the_queues_cards(self) -> None:
         self.backend.memory = None
         from operating import autopilot as ap
@@ -182,16 +193,54 @@ class AssistRoutes(unittest.TestCase):
 
     def test_done_on_a_matter_is_a_log_row_and_hand_and_take_of_one_are_refused_said(self) -> None:
         owner = self.client(OWNER)
+        edit = owner.post(f"/api/autopilot/items/{M_OK}/decision", json={"decision": "edit", "text": "x"})
+        self.assertEqual(edit.status_code, 409)
+        for route, body in (("hand", {"to": "x"}), ("take", None)):
+            got = owner.post(f"/api/autopilot/items/{M_OK}/{route}", **({"json": body} if body else {}))
+            self.assertEqual(got.status_code, 409, got.text)
         got = owner.post(f"/api/autopilot/items/{M_OK}/decision", json={"decision": "accept"})
         self.assertEqual(got.status_code, 200, got.text)
         self.assertEqual(got.json()["state"], "accepted")
         self.assertEqual([(w, d["decision"]) for w, d in self.pool.logged()], [("closed", "accept")])
-        snooze = owner.post(f"/api/autopilot/items/{M_OK}/decision", json={"decision": "edit", "text": "x"})
-        self.assertEqual(snooze.status_code, 409)
-        for route, body in (("hand", {"to": "x"}), ("take", None)):
-            got = owner.post(f"/api/autopilot/items/{M_OK}/{route}", **({"json": body} if body else {}))
-            self.assertEqual(got.status_code, 409, got.text)
         self.assertEqual(len(self.pool.logged()), 1)
+
+    def test_later_on_a_matter_puts_it_off_and_done_takes_it_off_the_list_at_once(self) -> None:
+        from datetime import timedelta
+        owner = self.client(OWNER)
+        self.envelope["items"].append(matter(M_OLD))
+        until = (NOW + timedelta(days=1)).isoformat()
+        got = owner.post(f"/api/autopilot/items/{M_OK}/decision", json={"decision": "snooze", "until": until})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertNotIn(M_OK, self.matters(self.listed()))        # off the list until its time
+        self.assertEqual(self.pool.logged(), [])                   # still open: nothing closed
+        bad = owner.post(f"/api/autopilot/items/{M_OK}/decision",
+                         json={"decision": "snooze", "until": (NOW - timedelta(days=1)).isoformat()})
+        self.assertIn(bad.status_code, (404, 422))
+        # Done (the cycle closes it later) and Not needed: gone from the list on the next read
+        got = owner.post(f"/api/autopilot/items/{M_OLD}/decision", json={"decision": "reject"})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertNotIn(M_OLD, self.matters(self.listed()))
+        self.assertEqual([(w, d["decision"]) for w, d in self.pool.logged()], [("closed", "reject")])
+
+    def test_a_newer_message_brings_a_closed_matter_back(self) -> None:
+        owner = self.client(OWNER)
+        owner.post(f"/api/autopilot/items/{M_OK}/decision", json={"decision": "accept"})
+        self.assertNotIn(M_OK, self.matters(self.listed()))
+        from datetime import timedelta
+        self.envelope["items"][0]["basis_at"] = datetime.now(timezone.utc) + timedelta(seconds=5)
+        self.assertIn(M_OK, self.matters(self.listed()))
+
+    def test_mission_control_approvals_are_not_listed_and_questions_are(self) -> None:
+        # decided in Mission Control (owner 11-24): worked from the matter's kind, never text
+        self.envelope["items"] += [matter(M_OLD, kind_of_matter="approval", subject="Approve PO"),
+                                   matter("e" * 24, kind_of_matter="task", subject="MC question")]
+        listed = self.matters(self.listed())
+        self.assertNotIn(M_OLD, listed)
+        self.assertIn("e" * 24, listed)
+        from operating import assist_matters as am
+        flows = am.mc_approval_workflows()
+        self.assertIn("job_approval", flows)
+        self.assertNotIn("mail_approval_request", flows)      # an approval asked in mail stays
 
     def test_a_line_is_kept_and_the_draft_requested(self) -> None:
         got = self.client(OWNER).post(f"/api/autopilot/items/{M_OK}/reply-from-line",

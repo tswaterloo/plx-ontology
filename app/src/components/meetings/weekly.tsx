@@ -160,7 +160,7 @@ function FigureStrip({ section }: { section: BriefSection }) {
   const figures = section.figures ?? [];
   return (
     <div data-testid="weekly-figures">
-      <dl className="grid grid-cols-2 border-y border-border sm:grid-cols-4 xl:grid-cols-7">
+      <dl className="grid grid-cols-2 gap-px border-y border-border bg-border sm:grid-cols-3 lg:grid-cols-4">
         {figures.map((f, i) => (
           <Figure key={`${f.label}-${i}`} f={f} />
         ))}
@@ -177,26 +177,37 @@ function Figure({ f }: { f: BriefFigure }) {
   const bad = d != null && d !== 0 && (d > 0) === worseWhenUp(f.label);
   const Arrow = d != null && d > 0 ? ArrowUpRight : ArrowDownRight;
   const prev = f.previous != null ? figureText({ value: f.previous, unit: f.unit, currency: f.currency }) : null;
+  const text = figureText(f);
+  const moneyMatch = !missing && f.unit === "money" ? /^(.*?)\s+([A-Z]{3})$/.exec(text) : null;
   return (
-    <div className="min-w-0 border-r border-border px-3 py-2.5 last:border-r-0" data-testid="brief-figure">
+    <div className="min-w-0 bg-bg px-3.5 py-3" data-testid="brief-figure">
       <dt className="truncate text-[12px] text-muted" title={f.label}>{f.label}</dt>
-      <dd className={cn("num leading-7", missing ? "text-[13px] text-muted" : "text-[19px] font-semibold")}>{figureText(f)}</dd>
-      <dd className="flex items-center gap-1 text-[12px]">
+      <dd className={cn("num mt-0.5 leading-7 whitespace-nowrap tabular-nums", missing ? "text-[13px] text-muted" : "text-[19px] font-semibold")}>
+        {moneyMatch ? (
+          <>
+            {moneyMatch[1]}
+            <span className="ml-1 text-[12px] font-normal text-muted">{moneyMatch[2]}</span>
+          </>
+        ) : (
+          text
+        )}
+      </dd>
+      <dd className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12px] leading-4">
         {d != null && d !== 0 && (
-          <span className={cn("num inline-flex items-center", bad ? "text-late" : "text-ok")}>
-            <Arrow className="size-3.5" strokeWidth={2} aria-hidden />
+          <span className={cn("num inline-flex items-center whitespace-nowrap font-medium tabular-nums", bad ? "text-late" : "text-ok")}>
+            <Arrow className="mr-0.5 size-3.5 shrink-0" strokeWidth={2} aria-hidden />
             {signedDelta(f)}
           </span>
         )}
-        {d === 0 && <span className="text-muted">no change</span>}
-        {prev && <span className="truncate text-faint">vs {prev}</span>}
+        {d === 0 && <span className="whitespace-nowrap text-muted">no change</span>}
+        {prev && <span className="num whitespace-nowrap tabular-nums text-faint">vs {prev}</span>}
       </dd>
-      {f.note && !missing && <dd className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-faint">{f.note}</dd>}
+      {f.note && !missing && <dd className="mt-1 line-clamp-2 text-[11px] leading-4 text-faint">{f.note}</dd>}
     </div>
   );
 }
 
-function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?: boolean }) {
+function Sections({ list }: { list: BriefSection[]; numbered?: boolean }) {
   // a section that could not be read yet says its note under its title, never "nothing this week"
   const shown = list.filter((s) => (s.rows ?? []).length > 0 || (s.figures ?? []).length > 0 || (s.state === "unread" && !!s.note));
   const left = list.filter((s) => !shown.includes(s));
@@ -206,12 +217,17 @@ function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?:
   const quiet = left.filter((s) => !unread.includes(s));
   return (
     <>
-      {shown.map((s, i) => (
+      {shown.map((s) => {
+        const count = (s.rows ?? []).length + (s.more ?? 0);
+        return (
         <section key={s.key} data-testid={`brief-section-${s.key}`}>
-          <h3 className="flex items-baseline gap-2 border-b border-border pb-1 text-[13px] font-semibold">
-            {numbered && <span className="num text-[12px] font-normal text-faint">{i + 1}</span>}
-            {s.title}
-            <span className="num text-[12px] font-normal text-muted">{(s.rows ?? []).length + (s.more ?? 0) || ""}</span>
+          <h3 className="flex items-center gap-2 border-b border-border pb-1.5 text-[13px] font-semibold">
+            <span>{s.title}</span>
+            {count > 0 && (
+              <span className="num rounded bg-subtle px-1.5 py-0.5 text-[11px] font-medium leading-none text-muted" data-testid="section-count">
+                {count}
+              </span>
+            )}
           </h3>
           {s.note && s.state !== "shown" && <p className="mt-1 text-[12px] text-muted">{readable(s.note)}</p>}
           {(s.figures ?? []).length > 0 && s.key !== "late_pos" && (
@@ -259,7 +275,8 @@ function Sections({ list, numbered = false }: { list: BriefSection[]; numbered?:
           </ul>
           {(s.more ?? 0) > 0 && <p className="mt-1 text-[12px] text-muted">{s.more} more not listed.</p>}
         </section>
-      ))}
+        );
+      })}
       {quiet.length > 0 && (
         <p className="text-[12px] text-muted" title={quiet.map((s) => s.title).join(" · ")} data-testid="weekly-quiet">
           {quiet.length === 1 ? `Nothing this week on ${quiet[0].title.charAt(0).toLowerCase()}${quiet[0].title.slice(1)}` : `${quiet.length} more topics had nothing this week`}.

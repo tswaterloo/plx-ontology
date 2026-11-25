@@ -705,6 +705,9 @@ def _check_shape(chart: Mapping[str, Any]) -> None:
             raise NotDrawn("That chart's values do not line up with its labels.")
     if chart.get("xs") is not None and len(chart["xs"]) != len(labels):
         raise NotDrawn("That chart's values do not line up with its labels.")
+    if chart.get("kind") == "waterfall" and labels and not chart.get("panels") \
+            and not (chart.get("series") or ()):
+        raise NotDrawn("That chart's values do not line up with its labels.")
 
 
 # ---------------------------------------------------------------------------- chart blocks

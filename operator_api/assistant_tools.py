@@ -127,6 +127,9 @@ DOCUMENT_SPEC = {
         "a line '[table N]' in content places table N (the rest go at the end); a csv "
         "of one table needs only content '[table 1]'. The result says each table's row "
         "count: state that count. "
+        "citations: statements behind prose figures not in a table or chart, each "
+        "{\"label\" or \"title\", \"sql\", \"as_of\", \"count\", \"measure\"}; these go in "
+        "a Sources section, slide or sheet. "
         "name: the file name. It answers file_id and download_url: to email it, call "
         "plx.prepare_write (system mail, operation send_email) with change.attachments: "
         "[file_id]; to save it to SharePoint, operation file_upload with change.file_id "
@@ -142,7 +145,26 @@ DOCUMENT_SPEC = {
                        "tables": {"type": "array",
                                   "items": {"type": "object", "required": ["sql"],
                                             "properties": {"sql": {"type": "string"},
-                                                           "title": {"type": "string"}}}}}},
+                                                           "title": {"type": "string"}}}},
+                       "citations": {
+                           "type": "array",
+                           "items": {
+                               "type": "object",
+                               "properties": {
+                                   "label": {"type": "string"},
+                                   "title": {"type": "string"},
+                                   "sql": {"type": "string"},
+                                   "as_of": {"type": "string"},
+                                   "count": {"type": "integer"},
+                                   "measure": {
+                                       "type": "object",
+                                       "properties": {
+                                           "id": {"type": "string"},
+                                           "name": {"type": "string"},
+                                           "owner": {"type": "string"},
+                                           "version": {"type": "string"},
+                                           "definition": {"type": "string"},
+                                           "period": {"type": "string"}}}}}}}},
     "annotations": {"readOnlyHint": False, "destructiveHint": False},
 }
 
@@ -620,10 +642,11 @@ class AssistantToolsMixin:
         try:
             charts = self._document_charts(reader, args.get("charts"))
             tables, held = self._document_tables(reader, args.get("tables"), kind)
+            raw_cites = args.get("citations") if isinstance(args.get("citations"), list) else []
             doc = self._prepare_document(  # type: ignore[attr-defined]
                 reader, {"kind": kind, "content": str(args.get("content") or ""),
                          "name": _words(args.get("name")) or "Document"}, [], guard,
-                charts=charts, tables=tables)
+                charts=charts, tables=tables, citations=raw_cites)
         except UserFacing as refused:
             return {"refused": refused.message}
         file_id = doc.download_url.rsplit("/", 1)[-1]
@@ -662,7 +685,8 @@ class AssistantToolsMixin:
                 raise UserFacing("table", f"Table {n} is not made: {why}", 422) from None
             except Refused as why:
                 raise UserFacing("table", f"Table {n} can't be read: {why.message}", 422) from None
-            t = files.table(item.get("title"), got["columns"], got["rows"])
+            t = files.table(item.get("title"), got["columns"], got["rows"],
+                            sql=sql, as_of=got.get("as_of"))
             tables.append(t)
             held.append({"table": n, "rows": len(got["rows"]), "columns": got["columns"],
                          "ordered": got["ordered"]} | ({"partial": "some cells are values "

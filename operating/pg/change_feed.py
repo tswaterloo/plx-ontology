@@ -474,12 +474,14 @@ def commit(cur: Any, consumer: str, end: int) -> None:
                 f"{CURSORS}.position), updated_at = now()", (consumer, end))
 
 
-def read(dsn: str, consumer: str, **kwargs: Any) -> Batch | None:
+def read(dsn: str, consumer: str, *, require_writable: bool = True, **kwargs: Any) -> Batch | None:
     """``read_since`` on a connection of its own; None also when Postgres cannot be read
-    (the consumer keeps its own way, which is complete)."""
+    (the consumer keeps its own way, which is complete). ``require_writable=False`` lets a
+    read-only compute pass (a Spark hot standby) read its batch without failing on the
+    cursor privilege check; the box apply commits the cursor."""
     try:
         with connect(dsn) as conn:
-            if present(conn) and not writable(conn):
+            if require_writable and present(conn) and not writable(conn):
                 # it could never move its cursor: the same rows again on every run
                 _loud(consumer, "cannot write its cursor as this database user; reading "
                       "its own way (grant INSERT, UPDATE on ontology.change_cursors)")

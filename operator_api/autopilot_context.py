@@ -52,6 +52,8 @@ from operating import learning
 from . import memory as mem
 from operating.autopilot_records import shown
 
+LOG = logging.getLogger(__name__)
+
 # its own name: the served PLX_PG_DSN changes other paths of the autopilot (entity resolution)
 DSN_ENV = "PLX_AUTOPILOT_MEMORY_DSN"
 MOST_MEMORY = 20         # memory rows a draft reads
@@ -689,6 +691,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ.update(allowed_env(os.environ))
     register()
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["assist-job"]:
+        # a whole job handed to Assist: the same tool session as every Assist session
+        from operating import assist_job
+        return assist_job.main(args[1:], notes_factory=notes_factory)
+    if args[:1] == ["assist-workflows"]:
+        from operating import assist_workflows
+        return assist_workflows.main(args[1:])
     if args[:1] in (["assist-worker"], ["assist-prepared"]):
         # the Assist sessions (drafts asked for, prepared sessions) read through the same tool
         # session as the autopilot's drafts: registered above, never by ``operating`` itself

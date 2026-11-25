@@ -127,5 +127,50 @@ class Ledger(unittest.TestCase):
         self.assertTrue({"emails", "graph_mail", "teams"} <= set(enum))
 
 
+def paged_search(cursor, since="2026-11-24", sent=None):
+    comp = {"truncated": bool(cursor), "next_cursor": cursor}
+    return {"type": "tool_call", "name": "plx.search",
+            "arguments": {"query": "mail", "since": since, **({"cursor": sent} if sent else {})},
+            "result": json.dumps({"documents": [{}] * 40, "completeness": comp})}
+
+
+def open_work(next_offset, offset=None):
+    return {"type": "tool_call", "name": "plx.my_open_work",
+            "arguments": {"offset": offset} if offset is not None else {},
+            "result": json.dumps({"matters": [{}], "next_offset": next_offset})}
+
+
+class PagesNotRead(unittest.TestCase):
+    """11-24: the model stopped at the first page (40 mails) and then said older mail was
+    not covered; the host knows a page exists that no call took."""
+
+    def test_a_period_search_that_continues_and_was_not_continued_is_sent_back(self):
+        got = al.more_part([paged_search("c1:abc")])
+        self.assertIn("c1:abc", got)
+        self.assertIn("since 2026-11-24", got)
+        self.assertIn("truly could not be", got)    # a coverage line only for a real failure
+
+    def test_a_followed_page_and_a_finished_list_say_nothing(self):
+        self.assertIsNone(al.more_part([paged_search("c1:abc"), paged_search(None, sent="c1:abc")]))
+        self.assertIsNone(al.more_part([paged_search(None)]))
+        self.assertIsNone(al.more_part([open_work(None)]))
+
+    def test_the_open_work_list_is_read_to_its_last_page(self):
+        self.assertIn("from item 40", al.more_part([open_work(40)]))
+        self.assertIn("from item 80", al.more_part([open_work(40), open_work(80, 40)]))
+        self.assertIsNone(al.more_part([open_work(40), open_work(None, 40)]))
+
+    def test_a_search_with_no_period_is_not_forced_to_the_end(self):
+        # a name search over all time has no period asked: the model judges how far to read
+        ev = paged_search("c1:abc")
+        ev["arguments"].pop("since")
+        self.assertIsNone(al.more_part([ev]))
+
+    def test_every_unfollowed_cursor_of_many_legs_is_listed_once(self):
+        for n in (1, 10, 60):
+            lines = al.unfollowed([paged_search(f"c1:{i}") for i in range(n)])
+            self.assertEqual(len(lines), n)
+
+
 if __name__ == "__main__":
     unittest.main()

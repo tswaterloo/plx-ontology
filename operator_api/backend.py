@@ -83,6 +83,7 @@ from .instruct_api import InstructMixin
 from .templates_api import TemplatesMixin
 from .ask_drafts import AskDraftsMixin, draft_models
 from .write_intents_api import WriteIntentsMixin
+from .brief_email import BriefEmailMixin
 from .briefs import BriefsMixin
 from operating.file_modes import keep_shared
 from operating import general_answer
@@ -132,10 +133,8 @@ from .answers import (  # noqa: F401 - re-exported
     aged_to_today, without_tests, late_total, supplier_of,
     attention_items, LIST_CONFIRMATION, CONFIRMATION_WORDS, list_confirmation, _NEED_DATE,
     need_date, late_amount, rounded_alike, _quantities_in_words,
-    read_shortcut, _AT_RISK, _CUSTOMER_ORDERS, _LATE_SUPPLY, _LATE_FOR,
-    orders_at_risk_question, _SLIP_WORD, _LATE_WORD, late_for_target,
     _base, words_of, late_answer, late_rule_behind, ORDER_TWIN_LINK, AT_RISK_KINDS, MAX_CHAIN_SOURCES,
-    at_risk_gaps, held_up_by, _name_forms, _display_of, _linked, at_risk_answer,
+    at_risk_gaps, held_up_by, _name_forms, _display_of, _linked,
     PICK_PREFIX, picked_question, customer_object, profit_question, order_margin_question,
     profit_worded,
     _money, _decided_sources, MAX_CARDS_TOGETHER, with_orders, profit_choices,
@@ -238,7 +237,7 @@ _MISS_LOG = logging.getLogger("operator_api.serving_miss")
 
 
 class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
-                       TemplatesMixin, BriefsMixin, TeamViewMixin, InsightsMixin, ActionsMixin,
+                       TemplatesMixin, BriefsMixin, BriefEmailMixin, TeamViewMixin, InsightsMixin, ActionsMixin,
                        WriteIntentsMixin,
                        AutopilotMixin,
                        AutopilotAreaMixin, AutopilotStudioMixin, InstructMixin, DocFillMixin,
@@ -791,25 +790,6 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             return
         yield from simple_ask.finish(self, reader, request, answer, conversation, ms,
                                      nobodys)
-
-
-    def at_risk_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int]
-                    ) -> Callable[[Any], Optional[m.AnswerPayload]]:
-        """Which customer orders late purchase orders put at risk (``order_at_risk`` and
-        ``po_impact`` gaps of the reader's inbox: ``operating.impact_chain``'s walk PO ->
-        line -> item -> assembly component -> assembly order -> order line -> customer
-        order, each record cited), or those of one order or customer the question names.
-        None: a named order or customer with no such finding (the agent path answers)."""
-        def job(view: Any) -> Optional[m.AnswerPayload]:
-            try:
-                inbox = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS, include_off=True)
-            except TypeError:   # a workspace that reads no kinds: every gap, one page
-                inbox = view.gap_inbox()
-            with view._request():
-                return at_risk_answer(self, view, request, inbox, conversation, ms)
-        return job
-
-
 
 
     def profit_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int], *,
@@ -2473,269 +2453,6 @@ def find_customers(view: Any, query: str, wanted: set[str]
     return [c for c in candidates
             if wanted <= {normal_name(plain(c.get("display")))} - {""}
             or wanted <= customer_names(view, c)], candidates
-
-
-def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, ran: Any,
-                 found: Mapping[str, Any], conversation: str,
-                 ms: Callable[[], int], *,
-                 trail: Optional[m.EvidenceTrail] = None,
-                 read_trail: bool = True) -> m.AnswerPayload:
-    """The agent session's gated reply as the contract's answer: the direct answer is the
-    reply's sentences (``agent_ask.reply_prose``: the gate removed every sentence no
-    passed claim backs); the facts are the claims the session's last gate decision passed,
-    each source with the value or quote the gate checked and opened only when this reader
-    may open it; not found is the answer's gaps. A session stopped at the cap answers
-    with what its last decision passed, else says it is still working."""
-    from operating import agent_session as runner
-    from operator_api.agent_ask import plain_tree, reply_prose
-    from operating import answer_gate
-    from operator_api.workspace.object_workspace import ITEM_REFUSED, NOT_GRANTED
-
-    decision, _refused = runner._gate_results(ran.events)
-    decision = plain_tree(decision) if isinstance(decision, Mapping) else None
-    facts: list[m.Fact] = []
-    dropped: dict[str, int] = {}
-    hidden_claims: list[Mapping[str, Any]] = []
-    for claim in (decision or {}).get("claims") or ():
-        if not isinstance(claim, Mapping):
-            continue
-        claim = {**claim, "citations": [c for c in claim.get("citations") or ()
-                                        if isinstance(c, str)]}
-        if not claim["citations"]:
-            dropped["uncited"] = dropped.get("uncited", 0) + 1
-            hidden_claims.append(claim)
-            continue
-        refusal = claim_refusal(view.access.decide(claim["citations"]))
-        if refusal is not None:
-            # The session read as this reader and its gate passed the claim on what the
-            # reader's host served them, so this happens only when the grant changed
-            # mid-Ask: a claim citing a unit the reader's grant withholds is not shown
-            # (counted below, never silently). A captured original or SharePoint file
-            # (``HOST_READ_SCHEMES``) whose item re-check this app's runtime cannot make
-            # stays: the reader's own host gate admitted it, and it opens through that
-            # host (``WorkspaceBackend.source``, which decides it again on open).
-            key = "not_granted" if refusal == NOT_GRANTED else "item_refused" \
-                if refusal == ITEM_REFUSED else "withheld"
-            dropped[key] = dropped.get(key, 0) + 1
-            hidden_claims.append(claim)
-            continue
-        sources = backend._claim_sources(view, claim)
-        if not sources:
-            dropped["no_source"] = dropped.get("no_source", 0) + 1
-            hidden_claims.append(claim)
-            continue
-        sources = [source.model_copy(update={"open_url": open_url(source.handle)})
-                   if source.open_url is None and source.handle.startswith(HOST_READ_SCHEMES)
-                   else source for source in sources]
-        if len(facts) < MAX_FACTS:
-            check = (claim.get("check") or {}).get("status")
-            facts.append(m.Fact(text=presentation.fact_text(str(claim.get("text") or ""),
-                                                            claim)[:1000], sources=sources,
-                                check=check if isinstance(check, str) else None))
-    withheld = len(hidden_claims)
-    if withheld:
-        logging.getLogger("operator_api.ask").info(json.dumps({"claims_not_shown": dropped}))
-    answer = ran.answer or {}
-    passed = [c for c in (decision or {}).get("claims") or () if isinstance(c, Mapping)]
-    refused = [c for c in (decision or {}).get("unsupported_claims") or ()
-               if isinstance(c, Mapping)]
-
-    def screened(text: str, fallback: str) -> str:
-        """A gap's words as any reply text leaves: through the gate's reply screen (a
-        statement no passed claim backs is not shown)."""
-        if not text:
-            return fallback
-        reply = answer_gate.final_reply(text, passed, unsupported=refused,
-                                        question=request.question)
-        return fallback if reply["modified"] or not reply["text"].strip() else text
-    not_found = dedupe_not_found([
-        m.NotFound(what=presentation.plain_words(screened(words_of(gap.get("subject")),
-                                                          "A value the question asks for")),
-                   where_it_would_live=presentation.plain_words(
-                       screened(words_of(gap.get("reason")),
-                                "No record you can see holds it")))
-        for gap in answer.get("gaps") or () if isinstance(gap, Mapping)])
-    if ran.stopped:
-        said = " ".join(fact.text for fact in facts) if withheld else str(
-            ((decision or {}).get("reply") or {}).get("text") or "").strip()
-        said = presentation.reader_prose(said, [c.get("phrase") for c in passed])[0] \
-            or " ".join(fact.text for fact in facts)
-        direct = PARTIAL_AT_LIMIT + said if facts and said else STILL_WORKING.format(
-            seconds=int(getattr(backend.agent_ask, "seconds", 0) or 0))
-        outcome = "partial" if facts else "abstained"
-    else:
-        direct = reply_prose(ran.final_text, ran.answer)
-        state = answer.get("answerability")
-        outcome = ("answered" if state == "answerable" and facts else
-                   "partial" if facts or state == "partial" else "not_found")
-        if withheld and permission_withheld(dropped):
-            # A claim withheld for a permission (the reader's grant, or an item's own
-            # permissions as this app decides them): only the shown facts are said.
-            direct = " ".join(fact.text for fact in facts)
-        elif withheld:
-            # Withheld for another reason (no citation, no source): the reply is screened
-            # again with only the shown claims passed and the others refused, and any
-            # sentence repeating a withheld claim's words goes too.
-            hidden_ids = {str(h.get("id")) for h in hidden_claims}
-            shown = [c for c in passed if str(c.get("id")) not in hidden_ids]
-            direct = answer_gate.final_reply(direct, shown,
-                                             unsupported=list(refused) + hidden_claims,
-                                             question=request.question)["text"] \
-                if facts else ""
-            direct = without_claim_words(direct, hidden_claims)
-        if not direct and facts:
-            direct = " ".join(fact.text for fact in facts)
-        direct, _removed = presentation.reader_prose(
-            direct, [c.get("phrase") for c in passed])
-        # Written as a person would (``operating.humanize``): only when a tic is flagged,
-        # and a changed text is shown only when every fact in it is kept and the gate's
-        # reply screen passes it unchanged.
-        # its model rewrite (``PLX_HUMANIZE=rewrite``) is sent the text masked: a record's
-        # card number never reaches the model (``operating.card_text``)
-        from operating.card_text import masked_call
-        direct = humanize.polish(direct, kind="answer", verify=lambda said: not (
-            answer_gate.final_reply(said, passed, unsupported=refused,
-                                    question=request.question)["modified"]),
-            rewrite=masked_call(humanize.default_rewriter()), use_default=False).text
-        # What could not be confirmed is shown as its own list below the answer: the
-        # answer itself ends at its last backed sentence, with no sentence about the list.
-        if not direct and facts:
-            direct = " ".join(fact.text for fact in facts)
-        if not direct:
-            direct = ("I couldn't establish this from the records you can see; what is "
-                      "missing is listed below." if not_found else
-                      "I couldn't find records you can see that answer this.")
-    if not withheld and trail_reads_all(view):
-        # Nothing was withheld from this answer and the reader's full-read grant opens
-        # every mail, SharePoint and Teams item: a "material I may not read" caveat says
-        # nothing true, so it is not shown.
-        direct = without_access_caveats(direct) or direct
-    late = named_late_pos(backend, view, request.question, found)
-    if late:
-        # The lateness Home shows for a PO the question names: the gap inbox's own fact
-        # and evidence (the late-PO answer's), each source decided for this reader again.
-        as_of = late[0][1]
-        when = f" as of {as_of[:10]}" if as_of else ""
-        lead = []
-        rest = direct
-        for po, _ in late:
-            sources = [backend._source(view, s.handle) for s in po.sources]
-            facts.insert(0, m.Fact(text=f"{po.label}: {po.days_late} days late. "
-                                        f"{po.reason}"[:1000], sources=sources,
-                                   check="computed_from_cited_records"))
-            name = f"PO {po.label}" if po.label.isdigit() else po.label
-            contrary = presentation.first_sentence(rest, LATENESS_CONTRARY)
-            if contrary and NEGATED.search(contrary):
-                # "I couldn't confirm it was fully received" or "not fully received" is
-                # no source saying it arrived: not shown as one beside the late list.
-                contrary = None
-            if contrary:
-                # A gated sentence says otherwise (received, closed, complete): both are
-                # shown side by side, neither dropped (the sentence moves up beside it).
-                rest = rest.replace(contrary, "", 1)
-                lead.append(f"Home lists {name} as {po.days_late} days late{when}: "
-                            f"{po.reason.rstrip('.')}. Not everything agrees: "
-                            f"{contrary.strip()}")
-            else:
-                # The agent's own hedge that lateness is unknown is answered by the late
-                # list's fact; a sentence stating a checked phrase or figure stays.
-                checked = [c.get("phrase") for c in passed] + [
-                    v.get("value") for c in passed for v in c.get("value_claims") or ()
-                    if isinstance(v, Mapping) and isinstance(v.get("value"), str)]
-                # the PO's own number is the sentence's subject, not a checked fact it
-                # adds: "I can't tell whether PO 106001 is late" goes like any hedge
-                own = sorted({po.label, _po_key(po.label)} - {""}, key=len, reverse=True)
-                checked = [_masked(v, own) for v in checked if isinstance(v, str)]
-                rest = presentation.without(rest, LATENESS_HEDGE, checked)[0]
-                lead.append(f"{name} is {po.days_late} days late{when} (it is on the late "
-                            f"list on your home page): {po.reason.rstrip('.')}.")
-        kept = presentation.tidy(rest)
-        direct = " ".join(lead) + ("\n\n" + kept if kept else "")
-        del facts[MAX_FACTS:]
-        # a gap saying lateness is unknown is answered by the late list's fact
-        not_found = [item for item in not_found if not LATENESS_GAP.search(item.what)]
-        if outcome == "not_found":
-            outcome = "partial"
-    subjects = [m.ObjectRef(object_id=r["object_id"],
-                            type=str(r.get("object_type") or "Object"),
-                            label=str(r.get("mention") or r.get("object_type") or
-                                      "Record")[:200],
-                            open_url=object_url(r.get("object_type") or "Object",
-                                                r["object_id"]))
-                for r in found.get("roots") or () if isinstance(r.get("object_id"), str)]
-    did_you_mean, promoted = business_choices(found.get("ambiguous") or ())
-    did_you_mean = told_apart(view, did_you_mean)
-    subjects += [p for p in promoted if p.object_id not in {s.object_id for s in subjects}]
-    conflicts: list[m.Conflict] = []
-    for root in subjects[:3]:
-        card = view._call("plx.object", {"object_id": root.object_id})
-        conflicts += backend._conflicts(view, card.get("conflicts") or (), root.label)
-    # the answer's subject: the record the page asks about, else the first record the
-    # question resolved to; never another record that happens to have a plan
-    roots = ([m.ObjectRef(object_id=request.object_id,
-                          type=request.object_id.split(":", 1)[0],
-                          label=request.object_id.split(":", 1)[0],
-                          open_url=object_url(request.object_id.split(":", 1)[0],
-                                              request.object_id))]
-             if request.object_id and ":" in request.object_id else subjects[:1])
-    if not roots:
-        # the question named a record held in several systems (each a candidate): one
-        # thing when the reader's identity links say so, else the session's own records
-        from operating.why_trail import same_records
-        for item in found.get("ambiguous") or ():
-            ids = [c["object_id"] for c in item.get("candidates") or ()
-                   if isinstance(c.get("object_id"), str)]
-            if 1 < len(ids) <= 4 and same_records(view._call, ids):
-                kind = ids[0].split(":", 1)[0]
-                roots = [m.ObjectRef(object_id=ids[0], type=kind,
-                                     label=str(item.get("mention") or kind)[:200],
-                                     open_url=object_url(kind, ids[0]))]
-                break
-        roots = roots or session_roots(ran.events, set(),
-                                       same=lambda ids: same_records(view._call, ids))
-    hidden_ids = {str(h.get("id")) for h in hidden_claims}
-    # ``read_trail`` False: no trail is read now (one that outran the answer's time); the
-    # trail the agent was given before it wrote still stands
-    trail = trail if not read_trail else one_trail(
-        backend, view, request, found, late,
-        [c for c in passed if str(c.get("id")) not in hidden_ids], roots, facts,
-        read=trail)
-    if trail is not None and trail.kind == "materials" and trail.materials:
-        direct = materials_lead(trail, direct)
-    not_found = reconciled_not_found(not_found, trail)
-    failure = getattr(ran, "failure", None)
-    if failure is None and ran.stopped and not facts:
-        failure = "timeout"
-    unavailable = UNAVAILABLE_WORDS.get(failure) if failure else None
-    if failure == "timeout":
-        # the session's own budget (a lookup's is shorter than the app's cap)
-        seconds = int(getattr(ran, "budget", None) or getattr(backend.agent_ask, "seconds", 0)
-                      or 0)
-        unavailable = f"it reached its {seconds} s time limit" if seconds else unavailable
-    if unavailable is not None:
-        # The session failed as a session (its usage limit, its sign-in, its time, a
-        # crash): the assistant was unavailable, never "no records answer this". What was
-        # read without it (the trail, the late list, the records named) is shown.
-        direct, outcome = unavailable_answer(unavailable, trail, facts, subjects, late)
-    elif outcome == "not_found" and trail_shows(trail):
-        # the records read for the question show something: not "not found"
-        outcome = "partial"
-        if direct.startswith("I couldn't find records you can see"):
-            direct = RECORDS_BELOW
-    elif outcome == "not_found" and promoted:
-        # the one business record the question names is linked, never "not found"
-        outcome = "partial"
-        if direct.startswith("I couldn't find records you can see"):
-            direct = RECORD_LINKED
-    return m.AnswerPayload(
-        answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
-        direct_answer=str(direct)[:4000], facts=facts, not_found=not_found[:10],
-        hidden=m.Hidden(count=withheld, by_owner=[],
-                        message=hidden_message(withheld, []) if withheld else None),
-        conflicts=conflicts[:6],
-        freshness=backend.freshness(_base(view)), subjects=subjects, did_you_mean=did_you_mean[:8],
-        trail=trail, conversation_id=conversation, latency_ms=ms(),
-        assistant_unavailable=unavailable)
 
 
 def one_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,

@@ -1,394 +1,378 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { HomeNeedItem, HomeNeeds } from "@/lib/types";
 
-// every read My work makes fails the way a server failure does
-const { fail, ok, asked } = vi.hoisted(() => ({
-  fail: () => Promise.reject(Object.assign(new Error("forced"), { code: "internal", message: "forced" })),
-  // set by a test that reads successfully: what each read answers
-  ok: { on: false, briefing: null as unknown, home: null as unknown, replies: null as unknown, drafts: [] as unknown[], briefingPending: false, suggestionsPending: false },
-  // how often a group's page and the seen mark were asked for
-  asked: { items: 0, seen: 0 },
+const nav = vi.hoisted(() => ({
+  search: "",
+  push: vi.fn(),
+  replace: vi.fn(),
 }));
-const nav = vi.hoisted(() => ({ search: "" }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(nav.search), usePathname: () => "/" }));
+const api = vi.hoisted(() => ({
+  needs: vi.fn(),
+  decide: vi.fn(),
+  close: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: nav.push, replace: nav.replace }),
+  useSearchParams: () => new URLSearchParams(nav.search),
+  usePathname: () => "/",
+}));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
-  getBriefing: () => (ok.briefingPending ? new Promise(() => undefined) : ok.on ? Promise.resolve(ok.briefing) : fail()), getBriefingItems: () => (asked.items++, fail()), getBriefingPages: () => (asked.items++, fail()), getSuggestions: () => (ok.suggestionsPending ? new Promise(() => undefined) : fail()), getActionStates: fail, markBriefingSeen: () => (asked.seen++, fail()),
-  getReplies: () => (ok.on && ok.replies ? Promise.resolve(ok.replies) : fail()),
-  getAutopilotDrafts: () => (ok.on ? Promise.resolve({ items: ok.drafts, never_senders: [] }) : fail()),
-  getAutopilot: fail,
+  getHomeNeeds: (...args: unknown[]) => api.needs(...args),
+  decideAutopilotItem: (...args: unknown[]) => api.decide(...args),
+  getPoClosure: () => Promise.resolve({ closed: false }),
+  closePo: (...args: unknown[]) => api.close(...args),
 }));
-vi.mock("@/components/shell", async (orig) => ({ ...(await orig<typeof import("@/components/shell")>()), loadHome: () => (ok.on ? Promise.resolve(ok.home) : fail()), loadLateRead: () => (ok.on ? Promise.resolve({ items: [], total: 0 }) : fail()) }));
-vi.mock("@/components/needs-me", () => ({ NeedsMe: () => null }));
 
 import HomePage from "./page";
-import { publishNeedsCount, useNeedsCount } from "@/components/shell";
+import { navSectionsFor, publishNeedsCount, useNeedsCount } from "@/components/shell";
 
-describe("Home's three tabs (simpler tabs, 11-18): what needs you, Alerts (was /watching), Late POs (was /late)", () => {
-  const tabs = () => screen.getByTestId("section-tabs-home");
-  const on = () => within(tabs()).getAllByRole("link").filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent);
-  it("?show= picks the tab; an unknown one opens what needs you", async () => {
-    try {
-      nav.search = "show=alerts";
-      const a = render(<HomePage />);
-      // the Alerts and Late POs tabs load as their own chunks (first drawn as "Reading ...")
-      await screen.findAllByRole("link", { name: "Alerts" });
-      expect(within(tabs()).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Needs you", "/"], ["Alerts", "/?show=alerts"], ["Late POs", "/?show=late"]]);
-      expect(on()).toEqual(["Alerts"]);
-      expect(screen.queryByTestId("needs-you")).toBeNull();
-      a.unmount();
-      nav.search = "show=late&supplier=Acme";
-      const l = render(<HomePage />);
-      expect(await screen.findByTestId("late-header")).toBeInTheDocument();
-      expect(on()).toEqual(["Late POs"]);
-      l.unmount();
-      nav.search = "show=../../ops";
-      render(<HomePage />);
-      expect(await screen.findByTestId("needs-you")).toBeInTheDocument();
-      expect(on()).toEqual(["Needs you"]);
-    } finally {
-      nav.search = "";
-    }
-  });
+function item(n: number, over: Partial<HomeNeedItem> = {}): HomeNeedItem {
+  return {
+    id: `n${n}`,
+    kind: "task",
+    source: "planner",
+    source_label: "Planner",
+    title: `Need ${n}`,
+    line: `Line for need ${n}`,
+    action: "do",
+    action_label: "Do it",
+    href: `/task/${n}`,
+    rank: n,
+    rank_reasons: ["newest open work"],
+    state: "open",
+    still_open: false,
+    draft_ready: false,
+    basis_at: "2026-11-25T12:00:00Z",
+    ...over,
+  };
+}
+
+function facets(items: HomeNeedItem[], key: "source" | "kind") {
+  const counts = new Map<string, number>();
+  for (const row of items) counts.set(row[key], (counts.get(row[key]) ?? 0) + 1);
+  return [...counts].map(([value, count]) => ({ value, label: value, count }));
+}
+
+function needs(items: HomeNeedItem[], over: Partial<HomeNeeds> = {}): HomeNeeds {
+  return {
+    status: "ok",
+    total: items.length,
+    items,
+    older_total: over.older_items?.length ?? 0,
+    older_items: [],
+    older_after_days: 90,
+    sources: facets(items, "source"),
+    kinds: facets(items, "kind"),
+    people: [],
+    parts: [],
+    as_of: "2026-11-25T14:00:00Z",
+    ...over,
+  };
+}
+
+function rowTexts() {
+  return screen.queryAllByTestId("need-row").map((row) => row.textContent ?? "");
+}
+
+beforeEach(() => {
+  nav.search = "";
+  nav.push.mockReset();
+  nav.replace.mockReset();
+  api.needs.mockReset();
+  api.decide.mockReset();
+  api.close.mockReset();
+  publishNeedsCount(null, true);
+  window.history.replaceState(null, "", "/");
 });
 
-describe("My work when nothing can be read", () => {
-  it("shows the failure once and is no longer marked as still loading", async () => {
+describe("Sidebar navigation and Home tabs remain intact", () => {
+  it("keeps the full owner sidebar menu intact and switches Home section tabs via ?show=", async () => {
+    const secs = navSectionsFor({ owner: true, ops_reader: true, feedback_admin: true });
+    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual([
+      "Home",
+      "Assist",
+      "Ask",
+      "Insights",
+      "Data",
+      "Meetings",
+      "Team",
+      "Admin",
+    ]);
+
+    api.needs.mockResolvedValue(needs([item(1)]));
+    nav.search = "show=alerts";
+    const alertsView = render(<HomePage />);
+    await screen.findAllByRole("link", { name: "Alerts" });
+    const tabs = screen.getByTestId("section-tabs-home");
+    expect(within(tabs).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
+      ["Needs you", "/"],
+      ["Alerts", "/?show=alerts"],
+      ["Late POs", "/?show=late"],
+    ]);
+    expect(screen.queryByTestId("needs-you")).toBeNull();
+    alertsView.unmount();
+
+    nav.search = "show=late";
+    const lateView = render(<HomePage />);
+    expect(await screen.findByTestId("late-header")).toBeInTheDocument();
+    lateView.unmount();
+
+    nav.search = "";
     render(<HomePage />);
-    const list = await screen.findByTestId("needs-you");
-    await waitFor(() => expect(list).toHaveTextContent("Couldn't load your work."));
-    await waitFor(() => expect(list.hasAttribute("data-pending")).toBe(false));
-    expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(1);
+    expect(await screen.findByTestId("needs-you")).toBeInTheDocument();
   });
 });
 
-describe("Home never waits on the suggestion cards", () => {
-  it("lists the late orders and stops being marked loading while the cards are still read", async () => {
-    ok.on = true;
-    ok.suggestionsPending = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.briefing = { status: "read", count: 0, items: [], groups: [] };
-    ok.replies = { total: 0, items: [] };
-    try {
-      render(<HomePage />);
-      await screen.findByText("Nothing needs you right now.");
-      expect(screen.getByTestId("needs-you").hasAttribute("data-pending")).toBe(false);
-    } finally {
-      ok.on = false;
-      ok.suggestionsPending = false;
-    }
-  });
-});
+describe("Unified Needs-you list and inline filters", () => {
+  it("renders one ranked list with plain English action labels and clean inline filter chips", async () => {
+    api.needs.mockResolvedValue(
+      needs([
+        item(1, {
+          kind: "reply",
+          source: "mail",
+          source_label: "Mail",
+          person: "Maya",
+          title: "Re: packing slip",
+          next_act: "new_message",
+          action_label: "Reply",
+          draft_ready: true,
+          body: "Thanks, checking now.",
+        }),
+        item(2, {
+          kind: "late_po",
+          source: "pos",
+          source_label: "POs",
+          person: "Acme",
+          title: "PO 9182",
+          action_label: "Check",
+          days_late: 8,
+        }),
+        item(3, {
+          kind: "alert",
+          source: "alerts",
+          source_label: "Alerts",
+          title: "Batch on hold",
+          action_label: "Decide",
+        }),
+      ]),
+    );
 
-describe("Home keeps the checks' gaps on the alert pages", () => {
-  it("never lists what a check could not judge", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.briefing = {
-      status: "read", count: 0, items: [], groups: [],
-      data_note_items: [{ check: "late_so", reason: "no_lines", words: "late customer orders: cannot check 12 records that lack order lines", count: 12 }],
-    };
-    ok.replies = { total: 0, items: [] };
     render(<HomePage />);
-    // one sentence, only once every part (late, alerts, replies, prepared) was read as empty
-    await screen.findByText("Nothing needs you right now.");
-    expect(screen.queryByText(/cannot check/)).toBeNull();
-    expect(screen.queryByTestId("briefing-data-notes")).toBeNull();
-    ok.on = false;
+    await waitFor(() => expect(rowTexts()).toHaveLength(3));
+    expect(rowTexts()[0]).toContain("Re: packing slip");
+    expect(rowTexts()[0]).toContain("Maya · Mail · Reply");
+    expect(rowTexts()[0]).toContain("Draft ready");
+    expect(rowTexts()[0]).not.toContain("new_message");
+    expect(rowTexts()[1]).toContain("PO 9182");
+    expect(rowTexts()[2]).toContain("Batch on hold");
+
+    // No cluttered category tablist inside Needs you header.
+    const header = screen.getByTestId("home-header");
+    expect(within(header).queryByRole("tab")).toBeNull();
+
+    // Filter cleanly with inline kind chip.
+    const filters = screen.getByTestId("kind-filters");
+    fireEvent.click(within(filters).getByRole("button", { name: /^Late PO/ }));
+    await waitFor(() => expect(rowTexts()).toHaveLength(1));
+    expect(rowTexts()[0]).toContain("PO 9182");
+
+    // Clear filters restores every item.
+    fireEvent.click(screen.getByTestId("clear-filters"));
+    await waitFor(() => expect(rowTexts()).toHaveLength(3));
   });
 
-  it("publishes one count for the sidebar only when every part was read; a failed part leaves it unknown, never 0", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.briefing = { status: "read", count: 0, items: [], groups: [] };
-    ok.replies = null; // the inbox read fails
-    publishNeedsCount(null);
+  it("publishes sidebar needs count only when status is ok", async () => {
     const seen: (number | null)[] = [];
     const Probe = () => {
       seen.push(useNeedsCount());
       return null;
     };
-    render(<><HomePage /><Probe /></>);
-    await waitFor(() => expect(screen.getByTestId("needs-you").hasAttribute("data-pending")).toBe(false));
-    await new Promise((r) => setTimeout(r, 30));
-    expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+    api.needs.mockResolvedValue(needs([item(1), item(2)], { status: "partial", why: "Mail could not be read." }));
+    const first = render(
+      <>
+        <HomePage />
+        <Probe />
+      </>,
+    );
+    await screen.findByTestId("needs-state");
     expect(seen.every((n) => n === null)).toBe(true);
-    ok.on = false;
+    first.unmount();
+
+    api.needs.mockResolvedValue(needs([item(1), item(2)], { status: "ok" }));
+    render(
+      <>
+        <HomePage />
+        <Probe />
+      </>,
+    );
+    await waitFor(() => expect(seen[seen.length - 1]).toBe(2));
   });
 
-  it("says no 'nothing needs action' above replies it lists while the checks re-run", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [], refreshing: true, checked_on: "2026-11-17T19:13:00Z" } };
-    ok.briefing = { status: "read", count: 0, items: [], groups: [], refreshing: true, checked_on: "2026-11-17T19:13:00Z" };
-    ok.replies = { total: 2, items: [] };
+  it("never silently cuts long lists and exposes Show more and Show all", async () => {
+    api.needs.mockResolvedValue(needs(Array.from({ length: 125 }, (_, i) => item(i + 1))));
     render(<HomePage />);
-    await screen.findByTestId("home-replies");
-    expect(screen.queryByTestId("briefing-refreshing")).toBeNull();
-    expect(screen.queryByText(/Nothing needs/)).toBeNull();
-    ok.on = false;
-  });
-  it("on a desktop opens the first reply by itself, and an empty Home lets the list take the whole width", async () => {
-    const offers = ["send_email", "teams_message", "mark_done", "snooze", "dismiss"].map((kind) => ({ kind, label: kind, outbound: false }));
-    const was = window.matchMedia;
-    window.matchMedia = (q: string) => ({ matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {} }) as unknown as MediaQueryList;
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.briefing = { status: "read", count: 0, items: [], groups: [] };
-    ok.replies = { total: 1, as_of: "2026-11-17", sent: 0, writes: 0, lines: [{ id: "r1", kind: "reply_owed", channel: "mail", days: 3, chases: 0, subject: "Where is my order", draft: { channel: "email", to: [], subject: "Re", body: "stub", status: "draft_not_sent", sent: false }, rank: [1], new_inquiry: false, card_id: "c1", offers }] };
-    const { unmount } = render(<HomePage />);
-    const detail = await screen.findByTestId("reply-detail");
-    expect(detail).toHaveTextContent("Where is my order");
-    expect(detail.querySelector("[data-testid=action-send_email]")).toHaveTextContent("Reply");
-    unmount();
-    ok.replies = { total: 0, as_of: "2026-11-17", sent: 0, writes: 0, lines: [] };
-    render(<HomePage />);
-    await screen.findByText("Nothing needs you right now.");
-    expect(screen.queryByTestId("reply-detail")).toBeNull();
-    expect(screen.getByTestId("briefing").className).toContain("lg:max-w-none");
-    expect(screen.getByTestId("briefing").className).not.toContain("lg:w-[368px]");
-    window.matchMedia = was;
-    ok.on = false;
+    await waitFor(() => expect(rowTexts()).toHaveLength(100));
+    const paging = screen.getByTestId("needs-paging");
+    expect(paging).toHaveTextContent("Showing 100 of 125");
+    fireEvent.click(within(paging).getByRole("button", { name: "Show all" }));
+    await waitFor(() => expect(rowTexts()).toHaveLength(125));
   });
 });
 
-describe("Home reads a group's further items only when it can show them", () => {
-  it("reads no group page when every item sent home is among the top ones, and still marks the visit seen", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    // 65 of a kind that waits in Watching (none sent home): Home shows none of them
-    ok.briefing = {
-      status: "read", count: 65, home_count: 0, items: [],
-      groups: [{ event_type: "price_below_cost", label: "Below cost", count: 65, in_top: 0, new_since_visit: 0, acknowledged: 0 }],
-    };
-    ok.replies = { total: 0, items: [] };
-    asked.items = 0;
-    asked.seen = 0;
-    render(<HomePage />);
-    await waitFor(() => expect(asked.seen).toBe(1));
-    expect(asked.items).toBe(0);
-    ok.on = false;
-  });
+describe("Right-hand detail panel opens on click and closes on Close button or Escape", () => {
+  it("opens an item on click, closes smoothly with Escape, and closes with the Close button", async () => {
+    api.needs.mockResolvedValue(
+      needs([
+        item(1, { title: "PO 90412", line: "Confirm supplier ship date.", object_id: "PurchaseOrder:demo:90412", object_type: "PurchaseOrder", href: "/po/90412" }),
+        item(2, { title: "SO 77120", line: "Customer waiting on update.", object_id: "SalesOrder:demo:77120", object_type: "SalesOrder", href: "/order/77120" }),
+      ]),
+    );
 
-  it("takes the group's page from the briefing itself (no second request) and marks the visit seen at once", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    const item = { id: "r1", event_type: "reply_needed", object_type: "Batch", object_id: "Batch:1", subject_label: "BC-1", summary: "Reply is due to BC-1.", home: true, rank: 1 };
-    ok.briefing = {
-      status: "read", count: 9, home_count: 2, items: [],
-      groups: [{ event_type: "reply_needed", label: "Reply", count: 9, in_top: 0, new_since_visit: 0, acknowledged: 0 }],
-      pages: [{ event_type: "reply_needed", total: 9, offset: 0, items: [item], more: true }],
-    };
-    ok.replies = { total: 0, items: [] };
-    asked.items = 0;
-    asked.seen = 0;
     render(<HomePage />);
-    await waitFor(() => expect(asked.seen).toBe(1));
-    expect(asked.items).toBe(0);
-    expect(await screen.findByText("Reply is due to BC-1.", { exact: false })).toBeInTheDocument();
-    ok.on = false;
+    await waitFor(() => expect(rowTexts()).toHaveLength(2));
+    expect(screen.queryByTestId("need-detail")).toBeNull();
+
+    // Open by clicking the first item.
+    fireEvent.click(screen.getAllByTestId("need-row")[0]);
+    const detail = await screen.findByTestId("need-detail");
+    expect(detail).toHaveTextContent("PO 90412");
+    expect(detail).toHaveTextContent("Confirm supplier ship date.");
+
+    // Close by pressing Escape.
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("need-detail")).toBeNull());
+
+    // Open the second item and close via the Close button.
+    fireEvent.click(screen.getAllByTestId("need-row")[1]);
+    const detail2 = await screen.findByTestId("need-detail");
+    expect(detail2).toHaveTextContent("SO 77120");
+    fireEvent.click(screen.getByTestId("close-detail"));
+    await waitFor(() => expect(screen.queryByTestId("need-detail")).toBeNull());
   });
 });
 
-describe("Home stays a short list", () => {
-  it("lists a few alerts of a kind and the rest one click away, the late orders all", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    const item = (n: number) => ({ id: `a${n}`, event_type: "lot_on_hold", object_type: "Batch", object_id: `Batch:${n}`, subject_label: `BC-${n}`, summary: `Lot ${n} is on quality hold.`, home: true, rank: n });
-    ok.briefing = {
-      status: "read", count: 7, home_count: 7, items: [1, 2, 3, 4, 5, 6, 7].map(item),
-      groups: [{ event_type: "lot_on_hold", label: "Batch on quality hold", count: 7, in_top: 7, new_since_visit: 0, acknowledged: 0 }],
-    };
-    ok.replies = { total: 0, items: [] };
+describe("90-day fold keeps older items reachable in one click", () => {
+  it("folds items older than 90 days into a collapsed section and expands them on click", async () => {
+    api.needs.mockResolvedValue(
+      needs(
+        [item(1, { title: "Current PO 9100" })],
+        {
+          older_total: 2,
+          older_after_days: 90,
+          older_items: [
+            item(2, { id: "late:old-1", kind: "late_po", source: "pos", source_label: "POs", title: "Old PO 8001", line: "Check old purchase order.", days_late: 120 }),
+            item(3, { id: "late:old-2", kind: "late_po", source: "pos", source_label: "POs", title: "Old PO 8002", line: "Check old purchase order.", days_late: 145 }),
+          ],
+        },
+      ),
+    );
+
     render(<HomePage />);
-    const more = await screen.findByTestId("home-folded");
-    expect(more).toHaveTextContent("Show 4 more");
-    expect(screen.getByText("Lot 3 is on quality hold.", { exact: false })).toBeInTheDocument();
-    expect(screen.queryByText("Lot 4 is on quality hold.", { exact: false })).toBeNull();
-    fireEvent.click(more);
-    expect(await screen.findByText("Lot 7 is on quality hold.", { exact: false })).toBeInTheDocument();
-    ok.on = false;
+    await waitFor(() => expect(rowTexts()).toHaveLength(1));
+    expect(rowTexts()[0]).toContain("Current PO 9100");
+    expect(screen.queryByText("Old PO 8001")).toBeNull();
+
+    const toggle = screen.getByTestId("older-needs-toggle");
+    expect(toggle).toHaveTextContent("Older than 90 days (2)");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const olderList = screen.getByTestId("older-needs-list");
+    expect(olderList).toHaveTextContent("Old PO 8001");
+    expect(olderList).toHaveTextContent("Old PO 8002");
+
+    // Clicking an older item opens it in the detail panel.
+    fireEvent.click(within(olderList).getAllByTestId("need-row")[0]);
+    const detail = await screen.findByTestId("need-detail");
+    expect(detail).toHaveTextContent("Old PO 8001");
   });
 });
 
-describe("Home counts an alert kind the way Alerts does", () => {
-  it("heads a group with every alert of its kind firing, not the rows read so far", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    const item = (n: number) => ({ id: `c${n}`, event_type: "price_below_cost", object_type: "Customer", object_id: `Customer:${n}`, subject_label: `C-${n}`, summary: `Customer ${n} paid below cost.`, home: true, rank: n });
-    // 65 fire; the briefing's first page holds 25 of them
-    ok.briefing = {
-      status: "read", count: 65, home_count: 65, items: Array.from({ length: 25 }, (_, i) => item(i + 1)),
-      groups: [{ event_type: "price_below_cost", label: "Customer price below cost", count: 65, in_top: 25, new_since_visit: 0, acknowledged: 0 }],
-    };
-    ok.replies = { total: 0, items: [] };
+describe("Gap alerts in Needs you (Genie item 9)", () => {
+  it("shows undefined gap alerts for the owner and links to Data health", async () => {
+    api.needs.mockResolvedValue(
+      needs([
+        item(1, {
+          id: "gap:measure:fill_rate",
+          kind: "gap",
+          source: "gaps",
+          source_label: "Gaps",
+          title: "fill_rate (measure)",
+          line: "Asked 12 times, no definition.",
+          action: "decide",
+          action_label: "Define",
+          href: "/data-health#answers-gaps",
+          object_id: null,
+          object_type: null,
+        }),
+      ]),
+    );
+
     render(<HomePage />);
-    const more = await screen.findByTestId("home-folded");
-    expect(more).toHaveTextContent("Show 62 more");
-    expect(screen.getByRole("heading", { name: /below cost\s*65/i })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /below cost\s*25/i })).toBeNull();
-    ok.on = false;
+    await waitFor(() => expect(rowTexts()).toHaveLength(1));
+    expect(rowTexts()[0]).toContain("fill_rate (measure)");
+    expect(rowTexts()[0]).toContain("Asked 12 times, no definition.");
+
+    fireEvent.click(screen.getByTestId("need-row"));
+    const detail = await screen.findByTestId("need-detail");
+    const link = within(detail).getByRole("link", { name: "Open in Data health" });
+    expect(link).toHaveAttribute("href", "/data-health#answers-gaps");
   });
 });
 
-describe("Home gathers the registry's Financials into one compact section", () => {
-  it("lists a count and the biggest few with their money, opens the full list, and keeps them out of what needs you", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    const money = (n: number, id: string, basis: string, event: string) => ({ id, event_type: event, object_type: "Customer", object_id: `Customer:${id}`, subject_label: `Cust ${n}`, summary: `Cust ${n} paid 80% of cost.`, home: true, section: "financials", alert_kind: "margin_loss", rank: n, amount: { amount: String(6576.48 * n), currency: "CAD" }, amount_basis: basis });
-    ok.briefing = {
-      status: "read", count: 71, home_count: 4, watching_count: 0,
-      items: [
-        { id: "l1", event_type: "lot_on_hold", object_type: "Batch", object_id: "Batch:1", subject_label: "BC-1", summary: "Batch BC-1 is on quality hold.", home: true, rank: 1, alert_kind: "quality_hold" },
-        ...[3, 2, 1].map((n) => money(n, `m${n}`, "below_cost", "price_below_cost")),
-      ],
-      groups: [
-        { event_type: "lot_on_hold", label: "Batch on quality hold", count: 4, in_top: 1, new_since_visit: 0, acknowledged: 0 },
-        { event_type: "price_below_cost", label: "Customer price below cost", count: 67, in_top: 3, new_since_visit: 0, acknowledged: 0, section: "financials" },
-      ],
-    };
-    ok.replies = { total: 0, items: [] };
+describe("Error and empty states", () => {
+  it("shows a calm retry notice when the list cannot be read", async () => {
+    api.needs.mockRejectedValue(Object.assign(new Error("forced"), { code: "internal", message: "forced" }));
     render(<HomePage />);
-    const box = await screen.findByTestId("home-financials");
-    expect(within(box).getByRole("heading", { name: /Financials\s*67/ })).toBeInTheDocument();
-    // the biggest few in the order given, each with its money and thousands separators
-    const rows = within(box).getAllByTestId("briefing-item");
-    expect(rows).toHaveLength(3);
-    expect(rows[0]).toHaveTextContent("$19,729.44 CAD");
-    // the full list is one click away and says how many it holds
-    expect(within(box).getByRole("link", { name: "All 67" }).getAttribute("href")).toBe("/?show=alerts#kind-margin_loss");
-    // needs you: the batches only (4); the 67 are not 67 things to act on
-    expect(screen.getByRole("heading", { name: /Quality holds\s*4/ })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /below cost/i })).toBeNull();
-    expect(screen.getAllByTestId("briefing-item")).toHaveLength(4);
-    ok.on = false;
+    const list = await screen.findByTestId("needs-you");
+    await waitFor(() => expect(list.hasAttribute("data-pending")).toBe(false));
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
-});
 
-describe("One section for holds", () => {
-  it("lists a prepared hold card in its kind's section, first, and nowhere else", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.briefing = {
-      status: "read", count: 1, home_count: 1,
-      items: [{ id: "l1", event_type: "lot_on_hold", object_type: "Batch", object_id: "Batch:1", subject_label: "BC-1", summary: "Batch BC-1 is on quality hold.", home: true, rank: 1, alert_kind: "quality_hold" }],
-      groups: [{ event_type: "lot_on_hold", label: "Batch on quality hold", count: 1, in_top: 1, new_since_visit: 0, acknowledged: 0 }],
-    };
-    ok.replies = { total: 0, items: [] };
-    ok.drafts = [{ item_id: "q1", sender: "", channel: "system", subject: "QC hold or fail", message: "", kind: "alert", alert_kind: "quality_hold", to: [], cc: [], body: "", edited: false, summary: "Lot BC-9 is on-hold; 1 open order(s) affected.", ask: "Lot BC-9 is on-hold; 1 open order(s) affected.", facts: [], created_at: "2026-11-21T12:00:00Z" }];
+  it("shows one calm line when everything was read and nothing waits", async () => {
+    api.needs.mockResolvedValue(needs([]));
     render(<HomePage />);
-    await screen.findByRole("heading", { name: /Quality holds/ });
-   
-    const card = await screen.findAllByText(/Lot BC-9 is on-hold; 1 open order affected/);
-    expect(card).toHaveLength(1);
-    const section = screen.getByRole("heading", { name: /Quality holds/ }).parentElement!.parentElement!;
-    expect(section).toHaveTextContent("Holding up an order");
-    expect(section).toHaveTextContent("Lot BC-9");
-    expect(screen.queryByTestId("assist-queue")).toBeNull();
-    ok.drafts = [];
-    ok.on = false;
+    expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
   });
-});
 
-describe("The visit is marked seen after the suggestion cards have settled", () => {
-  it("sends no mark while the cards are still being read (the mark makes their kept read stale)", async () => {
-    ok.on = true;
-    ok.suggestionsPending = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.briefing = { status: "read", count: 0, home_count: 0, items: [], groups: [] };
-    ok.replies = { total: 0, items: [] };
-    asked.seen = 0;
-    const { unmount } = render(<HomePage />);
-    await screen.findAllByRole("heading", { name: "Home" });
-    await new Promise((r) => setTimeout(r, 400));
-    expect(asked.seen).toBe(0);
-    // leaving before the cards settle still marks the visit seen (once)
-    unmount();
-    expect(asked.seen).toBe(1);
-    ok.suggestionsPending = false;
-  });
-});
-
-describe("Home reads no page it would fold away", () => {
-  it("reads no group page when the top items already fill the rows Home shows of that kind", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    const item = (n: number) => ({ id: `b${n}`, event_type: "lot_on_hold", object_type: "Batch", object_id: `Batch:${n}`, subject_label: `BC-${n}`, summary: `Lot ${n} is on quality hold.`, home: true, rank: n });
-    ok.briefing = {
-      status: "read", count: 18, home_count: 18, items: [1, 2, 3, 4].map(item),
-      groups: [{ event_type: "lot_on_hold", label: "Batch on quality hold", count: 18, in_top: 4, new_since_visit: 0, acknowledged: 0 }],
-    };
-    ok.replies = { total: 0, items: [] };
-    asked.items = 0;
-    asked.seen = 0;
+  it("formats Mission Control label, human dates, separate privacy badges, and alert next steps cleanly", async () => {
+    api.needs.mockResolvedValue(
+      needs([
+        item(1, {
+          id: "matter:mc1",
+          kind: "task",
+          source: "mc",
+          source_label: "MC",
+          title: "Mission Control task due 2026-10-29",
+          line: "Mission Control task TASK-3601\nOnly you can see this.",
+        }),
+        item(2, {
+          id: "alert:price1",
+          kind: "alert",
+          source: "alerts",
+          source_label: "Alerts",
+          title: "PHILLIP ADAM INC (NA)",
+          line: "Price for Bottle 500ml dropped 28 % since 2026-06-24",
+          ask: "Check the customer's agreed price for the product.",
+        }),
+      ]),
+    );
     render(<HomePage />);
-    await waitFor(() => expect(asked.seen).toBe(1));
-    expect(asked.items).toBe(0);
-    ok.on = false;
-  });
-});
-
-describe("Home while the alerts are still being read", () => {
-  it("shows the late orders and replies at once and one line for the alerts, never a page of skeleton rows", async () => {
-    ok.on = true;
-    ok.briefingPending = true;
-    ok.home = { needs_attention: { status: "read", late_total: 1, late_pos: [{ object_id: "PurchaseOrder:demo:90388", label: "90388", supplier: "Northwind", days_late: 12, due_date: "2026-11-01", open_url: "/po/90388" }] } };
-    ok.replies = { total: 0, items: [] };
-    render(<HomePage />);
-    expect(await screen.findByText("90388", { exact: false })).toBeInTheDocument();
-    expect(screen.getByTestId("alerts-reading")).toHaveTextContent("Reading your alerts");
-    expect(screen.queryByLabelText("Loading your work")).toBeNull();
-    ok.briefingPending = false;
-    ok.on = false;
-  });
-
-  it("says the alerts are being read when nothing else is there yet", async () => {
-    ok.on = true;
-    ok.briefingPending = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    ok.replies = { total: 0, items: [] };
-    render(<HomePage />);
-    expect(await screen.findByTestId("alerts-reading")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Loading your work")).toBeNull();
-    expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
-    ok.briefingPending = false;
-    ok.on = false;
-  });
-});
-
-describe("Home's counts add up", () => {
-  it("All is the sum of its chips: a draft to confirm counts under Confirm, an alert waiting on you (nothing to confirm) under Decide", async () => {
-    ok.on = true;
-    ok.home = { needs_attention: { status: "read", late_total: 0, late_pos: [] } };
-    const item = (n: number) => ({ id: `h${n}`, event_type: "lot_on_hold", object_type: "Batch", object_id: `Batch:${n}`, subject_label: `BC-${n}`, summary: `Lot ${n} is on quality hold.`, home: true, rank: n });
-    ok.briefing = {
-      status: "read", count: 3, home_count: 3, items: [1, 2, 3].map(item),
-      groups: [{ event_type: "lot_on_hold", label: "Batch on quality hold", count: 3, in_top: 3, new_since_visit: 0, acknowledged: 0 }],
-    };
-    ok.replies = { total: 0, items: [] };
-    const alert = { item_id: "ap_q", sender: "", channel: "system", kind: "alert", subject: "QC hold or fail", message: "", body: "", to: [], cc: [], edited: false, ask: "", summary: "Lot L-1 is on-hold; it holds up 1 open order.", facts: ["OR-9, Three Ships"], note: "", links: [], created_at: "2026-11-18T14:00:00Z" };
-    ok.drafts = [alert, { ...alert, item_id: "ap_r", summary: "Lot L-2 is on-hold; it holds up 1 open order." }];
-    try {
-      const { unmount } = render(<HomePage />);
-      const header = await screen.findByTestId("home-header");
-      // one kind of thing waiting (Decide 5 is All 5): no chips, the list says it
-      await waitFor(() => expect(screen.getByTestId("assist-queue")).toHaveAccessibleName("Waiting on you"));
-      expect(within(header).queryByRole("tab")).toBeNull();
-      expect(screen.queryByText("Prepared for you")).toBeNull();
-      unmount();
-      // a draft to confirm is prepared for you and counts under Confirm alone
-      ok.drafts = [alert, { ...alert, item_id: "ap_d", kind: "reply", subject: "Re: order", summary: "Reply drafted." }];
-      render(<HomePage />);
-      const header2 = await screen.findByTestId("home-header");
-      const chip2 = (name: string) => within(header2).getByRole("tab", { name: new RegExp(`^${name}`) });
-      await waitFor(() => expect(chip2("All")).toHaveTextContent("All5"));
-      expect(chip2("Confirm")).toHaveTextContent("Confirm1");
-      expect(chip2("Decide")).toHaveTextContent("Decide4");
-      fireEvent.click(chip2("Confirm"));
-      expect(screen.getByTestId("assist-queue")).toHaveAccessibleName("Prepared for you");
-      expect(screen.queryByText("Lot 1 is on quality hold.", { exact: false })).toBeNull();
-    } finally {
-      ok.on = false;
-      ok.drafts = [];
-    }
+    await waitFor(() => expect(rowTexts()).toHaveLength(2));
+    expect(rowTexts()[0]).toContain("Mission Control");
+    expect(rowTexts()[0]).not.toMatch(/· MC ·/);
+    expect(rowTexts()[0]).toContain("29 Oct");
+    expect(rowTexts()[0]).not.toContain("2026-10-29");
+    expect(screen.getByTestId("need-scope")).toHaveTextContent("Only you can see this");
+    expect(rowTexts()[1]).toContain("28%");
+    expect(rowTexts()[1]).not.toContain("28 %");
+    expect(rowTexts()[1]).toContain("24 Jun");
+    fireEvent.click(screen.getAllByTestId("need-row")[1]);
+    const detail = await screen.findByTestId("need-detail");
+    expect(within(detail).getByTestId("need-next-step")).toHaveTextContent("Check the customer's agreed price for the product.");
   });
 });

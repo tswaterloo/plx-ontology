@@ -314,7 +314,7 @@ class HomeLateCountTest(_pe.Engine):
     def world(self) -> tuple[World, str]:
         w = World()
         late = po(w, "Pending", "2026-10-10", lines=(("10", "4"),))
-        po(w, "Revised", "2026-10-01")                                  # unmapped word
+        po(w, "Generated", "2026-10-01")                                # unmapped word
         po(w, "Pending", "2026-10-01", lines=(("10", "UNREAD"),))       # quantities unknown
         w.obj("PurchaseOrder", {"sage_is_complete": "0", "expected_date": "2026-10-01"})
         po(w, "Pending")                                                # no due date

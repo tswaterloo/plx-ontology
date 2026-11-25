@@ -476,6 +476,10 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
         got, event, owner, text, material, addresses_of,
         lambda: Ctx(st, day, time.monotonic() + seconds, domains), str(person), review=True)
     jobs = None
+    kept_proposals: list[dict[str, Any]] = []
+    if prep is not None and got.proposals:
+        from .autopilot_jobs import kept
+        kept_proposals = kept(got.proposals)
     if got.proposals or got.todos:
         try:
             jobs = keep_jobs(queue, registry, spec, event, owner, str(got.summary or ""),
@@ -483,6 +487,8 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
         except sqlite3.Error:   # a busy queue costs the changes, never the line's draft
             jobs = None
     extra = {"jobs": jobs} if jobs else {}
+    if kept_proposals:
+        extra["proposals"] = kept_proposals
     if got.reply:
         row = {"draft": got.reply, "note": got.note or "", **extra}
         if got.warning:
@@ -491,7 +497,7 @@ def line_draft(st: Any, registry: Mapping[str, Any], people: Any, maps: Sequence
     if got.ask and got.ask.get("question"):
         return [{"kind": "your_call", "ask": got.ask["question"],
                  "options": list(got.ask.get("options") or ()), **extra}]
-    if jobs:
+    if jobs or kept_proposals:
         return [{"why": "changes_prepared", **extra}]
     return [{"why": why or "no_draft"}]
 

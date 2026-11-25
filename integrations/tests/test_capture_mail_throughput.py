@@ -13,6 +13,8 @@ listings, child folders and a newest-first message listing. Evidence label:
 from __future__ import annotations
 
 from collections import Counter
+import fcntl
+from hashlib import sha256
 import os
 from pathlib import Path
 import re
@@ -710,6 +712,26 @@ class DeferredFolderTests(ThroughputCase):
                                                    "content_status": deferred})
             check("end")
 
+    def test_deferred_folder_preload_can_be_bounded_to_the_runs_mailboxes(self):
+        store, deferred = self.store, capture_mail.ATTACHMENT_DEFERRED
+        for box in (BOX_A, BOX_B):
+            store.db.execute("INSERT INTO mailboxes VALUES (?,?,?,?,?,?,?)",
+                             (box, f"{box}@x", "[]", "[]", "{}", "t", "t"))
+            handle = f"graph-mail://{box}/M@CK"
+            store.add_version(
+                {"mailbox": box, "id": "M", "citation": handle, "change_key": "CK",
+                 "content_sha256": "d"}, folder_id="F", body_status="captured",
+                attachments=[{"id": "A", "metadata": {"id": "A"},
+                              "content_status": deferred}])
+        store.load_deferred_folders([BOX_A])
+        bounded = store.__dict__["_deferred_folders"]
+        self.assertEqual(bounded.get(BOX_A), {"F"})
+        self.assertNotIn(BOX_B, bounded)
+        store.load_deferred_folders()
+        whole = store.__dict__["_deferred_folders"]
+        self.assertEqual(whole.get(BOX_A), {"F"})
+        self.assertEqual(whole.get(BOX_B), {"F"})
+
     def test_a_folder_round_end_never_counts_the_mailbox_deferred_pile(self):
         """The check reads one folder through its index, not the mailbox's pile."""
         store, deferred = self.store, capture_mail.ATTACHMENT_DEFERRED
@@ -778,6 +800,85 @@ class LanesAndPriorityTests(ThroughputCase):
         kwargs.setdefault("sleep", self.sleeps.append)
         kwargs.setdefault("page_size", 2)
         return MailCapture(self.store, GraphMailReader(api, audience), CAPTURE, **kwargs)
+
+    def test_disjoint_mailbox_scopes_may_write_the_same_store_at_once(self):
+        box_a, upn_a = self.add_mailbox(21)
+        box_b, upn_b = self.add_mailbox(22)
+        for box, tag in ((box_a, "A"), (box_b, "B")):
+            for n in range(4):
+                self.graph.put(box, f"{tag}-{n}", "CK-1", sender="same@example.com")
+        other = capture_mail.MailCaptureStore(self.state, clock=self.clock)
+        try:
+            first = self.lane_capture([upn_a])
+            api, self.transport = graph_read.build_graph(
+                ENV, sender=self.graph,
+                retry=BoundedBackoff(sleep=self.sleeps.append, jitter=lambda: 0.0))
+            audience = capture_mail.LiveSourceAudience(
+                {f"mail:{upn_b}": ["svc:mail-capture"]}, tenant="plx",
+                classifications={"mail:*": "restricted"})
+            second = MailCapture(other, GraphMailReader(api, audience), CAPTURE,
+                                 sleep=self.sleeps.append, page_size=2)
+            self.graph.slow = 0.005
+            outcomes: dict[str, object] = {}
+            threads = [threading.Thread(target=lambda: outcomes.setdefault(
+                           "a", first.run(lane_scope([upn_a])))),
+                       threading.Thread(target=lambda: outcomes.setdefault(
+                           "b", second.run(lane_scope([upn_b]))))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+            self.assertFalse([t for t in threads if t.is_alive()])
+            # Both disjoint lanes wrote their whole mailbox before the aggregation runs.
+            self.assertEqual(sorted(m for m, _f in self.stored()),
+                             sorted([f"A-{n}" for n in range(4)] +
+                                    [f"B-{n}" for n in range(4)]))
+            # The next runs' starts fold the stored versions into the shared priority
+            # aggregates. Running both at once must not count them twice: the aggregate's
+            # scan-and-watermark critical section is store-wide.
+            first = self.lane_capture([upn_a])
+            api, self.transport = graph_read.build_graph(
+                ENV, sender=self.graph,
+                retry=BoundedBackoff(sleep=self.sleeps.append, jitter=lambda: 0.0))
+            second = MailCapture(other, GraphMailReader(api, audience), CAPTURE,
+                                 sleep=self.sleeps.append, page_size=2)
+            threads = [threading.Thread(target=lambda: outcomes.setdefault(
+                           "a2", first.run(lane_scope([upn_a], priority={})))),
+                       threading.Thread(target=lambda: outcomes.setdefault(
+                           "b2", second.run(lane_scope([upn_b], priority={}))))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+            self.assertFalse([t for t in threads if t.is_alive()])
+        finally:
+            other.close()
+        self.assertEqual({k for k in outcomes}, {"a", "b", "a2", "b2"})
+        self.assertEqual(sorted(m for m, _f in self.stored()),
+                         sorted([f"A-{n}" for n in range(4)] +
+                                [f"B-{n}" for n in range(4)]))
+        counts = {r["mailbox_id"]: r["n"] for r in self.store.db.execute(
+            "SELECT mailbox_id, SUM(n) AS n FROM priority_senders GROUP BY mailbox_id")}
+        self.assertEqual(counts, {box_a: 4, box_b: 4})
+
+    def test_an_overlapping_capture_process_skips_a_locked_mailbox_never_racing_it(self):
+        box, upn = self.add_mailbox(20)
+        self.graph.put(box, "M-LOCKED", "CK-1")
+        locks = self.store.root / "mailbox-locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        held = open(locks / (sha256(box.encode("utf-8")).hexdigest() + ".lock"), "a+b")
+        try:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            report = self.lane_capture([upn]).run(lane_scope([upn]))
+        finally:
+            held.close()
+        entry = report["mailboxes"][0]
+        self.assertEqual((entry["status"], entry["complete"]),
+                         (capture_mail.CAPTURE_IN_PROGRESS, False))
+        self.assertEqual(self.stored(box), [])
+        again = self.lane_capture([upn]).run(lane_scope([upn]))
+        self.assertTrue(again["mailboxes"][0]["complete"], again["incomplete_reasons"])
+        self.assertEqual([m for m, _f in self.stored(box)], ["M-LOCKED"])
 
     def test_lanes_capture_mailboxes_at_once_through_one_writer_losing_nothing(self):
         writing = {"now": 0, "most": 0}

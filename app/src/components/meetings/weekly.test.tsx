@@ -36,4 +36,35 @@ describe("weekly review", () => {
     expect(unread).toMatch(/cash position/);
     expect(unread).toMatch(/payables/);
   });
+
+  it("renders a single section count badge without duplicating the agenda number", async () => {
+    const api = await import("@/lib/api");
+    vi.spyOn(api, "getWeeklyReview").mockResolvedValueOnce({
+      kind: "weekly", title: "Weekly review", as_of: "2026-11-25", basis: "From the records.", parties: [], possible_parties: [], subject_sources: [], gaps: [],
+      sections: [
+        {
+          key: "figures",
+          title: "Figures",
+          state: "shown",
+          rows: [],
+          figures: [{ label: "Invoiced (CAD)", value: "122597.47", previous: "261092.68", delta: "-138495.21", unit: "money", currency: "CAD" }],
+          more: 0,
+        },
+        {
+          key: "late_pos",
+          title: "Late purchase orders (open now)",
+          state: "shown",
+          rows: [{ label: "PO 106001", who: "DSM", detail: "153 days late", sources: [] }],
+          figures: [],
+          more: 0,
+        },
+      ],
+    } as unknown as Brief);
+    render(<WeeklyReview />);
+    const late = await screen.findByTestId("brief-section-late_pos");
+    const heading = within(late).getByRole("heading", { level: 3 });
+    expect(heading.textContent).toBe("Late purchase orders (open now)1");
+    expect(within(heading).getByTestId("section-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("brief-figure").textContent).toContain("$122,597.47CAD");
+  });
 });

@@ -12,7 +12,6 @@ export const PAGE_INTROS = {
   "/?show=alerts": "Alerts from the rules you set and the records you follow.",
   "/?show=late": "Every purchase order past its due date, with the date the supplier gave, if any.",
   "/assist": "What is prepared for you, and what to do next.",
-  "/autopilot-log": "What Assist did, and what each person did with it.",
   "/meetings": "",
   "/team": "What people are working on and what waits on whom.",
   "/insights": "Live charts, including every chart you pin from an answer.",
@@ -26,8 +25,7 @@ export const PAGE_INTROS = {
   "/activity": "Each message and task you started here, and whether it went out.",
   "/help": "How the Workbench helps in your role.",
   "/ops": "What is broken now, and what to do about it.",
-  "/data-health": "Records to fix: entered twice, missing details, or different in two systems.",
-  "/trust": "Whether the data is up to date, how accurate the answers are, and what is on.",
+  "/data-health": "Is the data complete, fresh and correct, system by system, with the problems first.",
   "/feedback": "Feedback you sent, and what became of it.",
 } as const satisfies Record<string, string>;
 

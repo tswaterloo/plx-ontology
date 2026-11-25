@@ -68,7 +68,7 @@ REFUSED = {
 }
 MAX_LOOKUPS = 3
 MAX_LOG = 8
-_ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
+_ADDRESS = re.compile(r"\b[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
 _RECORDISH = re.compile(r"\b[A-Za-z]{0,6}[-#]?\d{3,}[A-Za-z0-9-]*\b")
 EMAIL_LOOKUPS = 3
 _EMAIL_NAMED = re.compile(
@@ -131,10 +131,39 @@ def _person(reader: Any) -> Optional[str]:
     return email.strip().lower() if isinstance(email, str) and "@" in email else None
 
 
+def _clean_strings(value: Any, clean: Callable[[str], str]) -> Any:
+    """Apply ``clean`` to every string nested inside ``value``."""
+    if isinstance(value, str):
+        return clean(value)
+    if isinstance(value, Mapping):
+        return {k: _clean_strings(v, clean) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean_strings(v, clean) for v in value]
+    return value
+
+
+def _clean_measure(measure: Any, clean: Callable[[str], str]) -> Any:
+    """``measure`` with every string field passed through ``clean``."""
+    if not isinstance(measure, Mapping):
+        return measure
+    return {k: (clean(v) if isinstance(v, str) else v) for k, v in measure.items()}
+
+
 def _clean_chart(chart: Mapping[str, Any], clean: Callable[[str], str]) -> dict[str, Any]:
     """``chart`` with every word it shows passed through ``clean``."""
     out = dict(chart)
     out["title"] = clean(str(chart.get("title") or ""))
+    for key in ("x", "sql", "x_label", "y_label", "y2_label",
+                "open_period", "first_period", "currency", "as_of"):
+        val = chart.get(key)
+        if isinstance(val, str):
+            out[key] = clean(val)
+        elif val is not None:
+            out[key] = clean(str(val))
+    if chart.get("measure") is not None:
+        out["measure"] = _clean_strings(chart["measure"], clean)
+    if isinstance(chart.get("spec"), Mapping):
+        out["spec"] = _clean_strings(chart["spec"], clean)
     out["labels"] = [clean(str(v)) for v in chart.get("labels") or ()]
     out["series"] = [{**s, "name": clean(str(s.get("name") or ""))}
                      for s in chart.get("series") or ()]
@@ -825,29 +854,43 @@ class InstructMixin(ia.InstructAssistMixin):
     def _prepare_document(self, reader: Reader, doc: Mapping[str, str],
                           folders: list[ins.Folder], guard: Any,
                           charts: Sequence[Mapping[str, Any]] = (),
-                          tables: Sequence[Mapping[str, Any]] = ()) -> m.InstructDocument:
+                          tables: Sequence[Mapping[str, Any]] = (),
+                          citations: Sequence[Mapping[str, Any]] = ()) -> m.InstructDocument:
         from .feedback import clean
         kind = doc["kind"]
         raw = str(doc.get("content") or "")
+        def _clean_text(value: Any, limit: int = 0) -> str:
+            text = str(value or "")
+            return clean(text, guard, limit or max(len(text), 1)) or ""
+
         # the file's words as drafts' are: no excluded person's address or object id and
         # no secret-looking string in the bytes anyone downloads or uploads (ACT-008);
         # a chart's words (title, labels, series and panel names) too
-        content = clean(raw, guard, max(len(raw), 1)) or ""
-        charts = [_clean_chart(c, lambda t: clean(t, guard, max(len(t), 1)) or "")
-                  for c in charts]
-        # a table's rows (read as the person, ``doc_tables``) cleaned as the words are
-        tables = [dict(t, title=clean(str(t.get("title") or ""), guard, 300) or "",
-                       lines=clean(str(t.get("lines") or ""), guard,
-                                   max(len(str(t.get("lines") or "")), 1)) or "")
+        content = _clean_text(raw)
+        charts = [_clean_chart(c, _clean_text) for c in charts]
+        # a table's rows and statement (read as the person, ``doc_tables``) cleaned as the words are
+        tables = [dict(t, title=_clean_text(t.get("title"), 300),
+                       lines=_clean_text(t.get("lines")),
+                       **({"sql": _clean_text(t["sql"])} if t.get("sql") else {}),
+                       **({"measure": _clean_measure(t["measure"], _clean_text)}
+                          if isinstance(t.get("measure"), Mapping) else {}))
                   for t in tables]
+        clean_cites = [{
+            **c,
+            **({"label": _clean_text(c["label"], 300)} if c.get("label") else {}),
+            **({"title": _clean_text(c["title"], 300)} if c.get("title") else {}),
+            **({"sql": _clean_text(c["sql"])} if c.get("sql") else {}),
+            **({"measure": _clean_measure(c["measure"], _clean_text)}
+               if isinstance(c.get("measure"), Mapping) else {}),
+        } for c in citations if isinstance(c, Mapping) and (c.get("sql") or c.get("measure"))]
         if not content and not charts and not tables:
             raise _refuse("no_draft")
         try:
-            data = files.make(kind, content, charts, tables)
+            data = files.make(kind, content, charts, tables, citations=clean_cites)
         except files.FileRefused as refused:
             if refused.code != "pdf_unavailable":
                 raise _refuse("no_draft") from None
-            kind, data = "docx", files.make("docx", content, charts, tables)
+            kind, data = "docx", files.make("docx", content, charts, tables, citations=clean_cites)
         folder = next((f for f in folders if f.key == doc.get("folder")), None)
         target = None
         if folder is not None:
@@ -860,8 +903,27 @@ class InstructMixin(ia.InstructAssistMixin):
         # the people the file names (an excluded one is already withheld from it, so
         # nothing of them is kept here): cleared by the people exclusion again before an
         # upload and before a download, for a person excluded since the draft
-        people = sorted({a.lower() for a in _ADDRESS.findall(
-            "\n".join([content, *(str(t.get("lines") or "") for t in tables)]))})
+        texts = [content]
+        for item in (*tables, *charts, *clean_cites):
+            for key in ("label", "title", "lines", "sql"):
+                if item.get(key):
+                    texts.append(str(item[key]))
+            measure = item.get("measure")
+            if isinstance(measure, Mapping):
+                texts.extend(v for v in measure.values() if isinstance(v, str))
+            texts.extend(str(v) for v in item.get("labels") or ())
+            for s in item.get("series") or ():
+                if isinstance(s, Mapping) and s.get("name"):
+                    texts.append(str(s["name"]))
+            for p in item.get("panels") or ():
+                if isinstance(p, Mapping):
+                    if p.get("title"):
+                        texts.append(str(p["title"]))
+                    texts.extend(str(v) for v in p.get("labels") or ())
+                    for s in p.get("series") or ():
+                        if isinstance(s, Mapping) and s.get("name"):
+                            texts.append(str(s["name"]))
+        people = sorted({a.lower() for a in _ADDRESS.findall("\n".join(texts))})
         row = self._uploads().prepare(reader.key, name=name, kind=kind, data=data,
                                       target=target, people=people)
         return m.InstructDocument(name=name, kind=kind, size=row["size"],

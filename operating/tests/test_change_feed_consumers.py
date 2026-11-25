@@ -161,6 +161,56 @@ class ProactiveIncremental(unittest.TestCase):
         self.assertEqual((gap["feed"]["state"], gap["candidates"]), ("gap", 2), gap)
         self.assertGreaterEqual(position(self.dsn, "proactive_incremental"), 1000000)
 
+    def test_split_compute_apply_advances_feed_cursor_only_to_what_standby_saw(self):
+        from operating import proactive_incremental as pi
+        from operating.pg import change_feed
+        from operating.tests.test_proactive_engine import AS_OF, people
+        from operating.tests.test_proactive_incremental import MOMENT
+
+        ids = self.ids
+        self.publish("delta-1.sqlite", [ids["unconfirmed"]])
+        write(self.dsn, [ids["unconfirmed"]], self.digest, name="delta:delta-1.sqlite")
+        first = self.run_pass()
+        self.assertTrue(first["feed"]["committed"])
+        first_pos = position(self.dsn, "proactive_incremental")
+        self.assertIsNotNone(first_pos)
+
+        # Standby (read-only user: writable=False) has replayed delta-2 (seq = first_pos + 1); compute runs against it
+        self.publish("delta-2.sqlite", [ids["overdue"]])
+        write(self.dsn, [ids["overdue"]], self.digest, name="delta:delta-2.sqlite")
+        export = self.store.parent / "export"
+        with mock.patch.object(change_feed, "writable", return_value=False):
+            comp = pi.compute(self.store, export, as_of=AS_OF, clock=lambda: MOMENT, people=people())
+        self.assertEqual(comp["changed"], 1, comp)
+
+        # Before apply runs, primary advances to delta-3 (seq = first_pos + 2)
+        self.publish("delta-3.sqlite", [ids["expired"]])
+        write(self.dsn, [ids["expired"]], self.digest, name="delta:delta-3.sqlite")
+
+        res = pi.apply_fold_payloads(self.store, export, clock=lambda: MOMENT,
+                                     people=people(), wait=True)
+        self.assertEqual((res["stale"], res["bad"], res["left"]), (0, 0, 0), res)
+        # Cursor on primary must stop at what compute saw (first_pos + 1), NOT first_pos + 2
+        pos_after_lag = position(self.dsn, "proactive_incremental")
+        self.assertEqual(pos_after_lag, first_pos + 1)
+        self.assertEqual(self.taken(), {"delta-1.sqlite", "delta-2.sqlite"})
+
+        # Next split pass picks up delta-3 without skipping it
+        export2 = self.store.parent / "export2"
+        comp2 = pi.compute(self.store, export2, as_of=AS_OF, clock=lambda: MOMENT,
+                           people=people())
+        self.assertEqual(comp2["changed"], 1, comp2)
+        pi.apply_fold_payloads(self.store, export2, clock=lambda: MOMENT,
+                               people=people(), wait=True)
+        self.assertEqual(position(self.dsn, "proactive_incremental"), first_pos + 2)
+        self.assertEqual(self.taken(), {"delta-1.sqlite", "delta-2.sqlite", "delta-3.sqlite"})
+
+        # Replaying an older/lagged feed commit never regresses the primary cursor
+        old_batch = change_feed.Batch("proactive_incremental", "ok", first_pos,
+                                      first_pos + 1, head=first_pos + 1)
+        self.assertTrue(change_feed.commit_to(self.dsn, old_batch))
+        self.assertEqual(position(self.dsn, "proactive_incremental"), first_pos + 2)
+
 
 class AiWatcher(unittest.TestCase):
     """Postgres the only store: the watcher's changes are the feed's rows past its cursor

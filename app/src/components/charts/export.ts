@@ -1,7 +1,8 @@
 // Saving a chart: a PNG of what is on screen (drawn from the chart's SVG at twice its size)
 // and the Office/PDF files the server makes from the chart (lib/api chartFile).
 
-import { chartFile } from "@/lib/api";
+import { chartFile, exportXlsx } from "@/lib/api";
+import type { ExportXlsxRequest } from "@/lib/types";
 
 export const FILES = [
   { format: "xlsx", label: "Excel" },
@@ -153,4 +154,10 @@ export async function savePng(svg: SVGSVGElement | SVGSVGElement[], title: strin
 /** A chart as a server-made file, saved under its title. */
 export async function saveFile(chart: { title: string }, format: (typeof FILES)[number]["format"]): Promise<void> {
   save(await chartFile(chart, format), fileName(chart.title, format));
+}
+
+/** Any chart, table or answer as a formatted Excel (.xlsx) workbook, saved under its title. */
+export async function saveExcel(req: ExportXlsxRequest, title?: string): Promise<void> {
+  const name = title || req.title || "Export";
+  save(await exportXlsx({ ...req, title: name }), fileName(name, "xlsx"));
 }

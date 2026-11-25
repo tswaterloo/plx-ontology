@@ -215,9 +215,9 @@ export function TypeItems({ type, count, more: label, skip = [] }: { type: strin
         <ul className="space-y-1" data-testid={`items-${type}`}>
           {items.map((it) => (
             <li key={it.id} className="min-w-0">
-              <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block line-clamp-2 text-fg hover:underline" title={it.summary}>
+              <Link href={safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id)} className="block line-clamp-2 text-fg hover:underline" title={readable(it.summary)}>
                 {it.subject_label ? recordLabel(it.object_type, it.subject_label) : it.label}
-                {it.summary ? <span className="text-muted"> · {it.summary}</span> : null}
+                {it.summary ? <span className="text-muted"> · {readable(it.summary)}</span> : null}
               </Link>
             </li>
           ))}

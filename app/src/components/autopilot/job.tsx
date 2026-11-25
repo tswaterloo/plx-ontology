@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { useProblem, useProblemSlot } from "@/components/ui/notice";
 import { PreparedChange } from "@/components/prepared-change";
 import { TodoSteps } from "@/components/autopilot/todo";
+import { noteParts, saidOnce } from "@/components/autopilot/lines";
 import { prepareAutopilotJob, type PreparedItem, type ProposedJob } from "@/lib/api";
 import { ItemActions } from "@/components/autopilot/item-actions";
 import { plainError } from "@/lib/errors";
@@ -66,25 +67,42 @@ function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
   );
 }
 
-export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
+export function JobCard({ item, linked, onGone, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; feedback?: React.ReactNode }) {
   const card = useProblemSlot();
+  const parsedNote = noteParts(item.note ?? "");
+  const [subjectLine, summary, message, noteText] = saidOnce([item.subject ?? "", item.summary ?? "", item.message ?? "", parsedNote.text]);
+  const headline = summary || subjectLine;
+  const subHeader = summary && subjectLine ? subjectLine : "";
   return (
-    <li id={`prepared-${item.item_id}`} className={linked ? "space-y-2 border-l-2 border-accent py-4 pl-3" : "space-y-2 py-4"} data-testid="prepared-job">
-      <div className="flex flex-wrap items-baseline gap-x-3">
-        {item.sender && <span className="text-[13px] font-medium">{item.sender}</span>}
-        {item.subject && item.subject.trim() !== (item.summary ?? "").trim() && <span className="text-[12px] text-muted">{item.subject}</span>}
+    <li
+      id={`prepared-${item.item_id}`}
+      className={linked ? "max-w-[50rem] space-y-3 rounded-lg border border-accent/70 bg-surface/60 p-4 ring-1 ring-accent/30" : "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4"}
+      data-testid="prepared-job"
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        {item.sender && <span className="text-[14px] font-semibold text-fg">{item.sender}</span>}
+        {subHeader && (
+          <span className="inline-flex max-w-full items-center truncate rounded-md border border-border/70 bg-bg/80 px-2 py-0.5 text-[12px] text-muted">
+            {subHeader}
+          </span>
+        )}
+        {parsedNote.labels.map((l) => (
+          <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
+            {l}
+          </p>
+        ))}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
-      {item.summary && <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary)}</p>}
-      {item.message && item.message.trim() !== (item.summary ?? "").trim() && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
+      {headline && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(headline)}</p>}
+      {message && <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">{message}</p>}
       {(item.facts ?? []).length > 0 && (
-        <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted" aria-label="Why">
+        <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted" aria-label="Why">
           {item.facts.map((f, n) => (
             <li key={n}>{f}</li>
           ))}
         </ul>
       )}
-      {item.note && <p className="text-[12px] text-muted">{item.note}</p>}
+      {noteText && <p className="text-[12px] text-muted" data-testid="prepared-note">{noteText}</p>}
       {(item.links ?? []).length > 0 && (
         <div className="flex flex-wrap gap-3 text-[13px]">
           {(item.links ?? []).map((l) => (
@@ -96,13 +114,20 @@ export function JobCard({ item, linked, onGone }: { item: PreparedItem; linked?:
       )}
       {card.provide(
         <>
-          <ul className="max-w-[46rem] divide-y divide-border" aria-label="Changes to review">
-            {(item.jobs ?? []).map((j) => (
-              <Proposed key={j.index} itemId={item.item_id} job={j} />
-            ))}
-          </ul>
+          {(item.jobs ?? []).length > 0 && (
+            <ul className="divide-y divide-border/70 rounded-md border border-border/70 bg-bg/80 px-3" aria-label="Changes to review">
+              {(item.jobs ?? []).map((j) => (
+                <Proposed key={j.index} itemId={item.item_id} job={j} />
+              ))}
+            </ul>
+          )}
           <TodoSteps todos={item.todos ?? []} />
-          <ItemActions item={item} onGone={onGone} />
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
+            <div className="min-w-0">
+              <ItemActions item={item} onGone={onGone} />
+            </div>
+            {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
+          </div>
         </>,
       )}
       {card.banner}

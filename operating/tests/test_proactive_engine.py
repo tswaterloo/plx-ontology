@@ -150,7 +150,7 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
     po(w, "Complete", "2026-10-01", lines=(("10", "10"),))                         # closed
     po(w, "Cancel", "2026-10-01")                                                  # closed
     po(w, "DRAFT", "2026-10-01")                                                   # not issued
-    po(w, "Revised", "2026-10-01")                                                 # unknown
+    po(w, "Generated", "2026-10-01")                                               # unknown
     w.obj("PurchaseOrder", {"sage_is_complete": "1", "expected_date": "2026-10-01"})  # Sage
     w.obj("PurchaseOrder", {"po_number": "SYNTH-PO-1", "expected_date": "2026-10-01"})
     lead_po = po(w, "B.Order", "2026-11-02", lines=(("10", "4"),))
@@ -1834,6 +1834,44 @@ class PassResumeTest(Engine):
         # the rules judged before the deploy are of older code: still told apart (served
         # behind until the next pass judges them again), never hidden by the resume
         self.assertTrue(pe.served_behind(self.store))
+
+    def test_exported_group_folds_replay_to_the_same_inbox(self):
+        """The Spark transport is the fold itself: every group's payload JSON-round-trips,
+        and applying the payloads in order to a fresh inbox leaves the same rows as the
+        pass that exported them (checkpoint included)."""
+        moment = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        world, ids = seeded()
+        world.build(self.store)
+        exported = []
+
+        def run_group(_runtime, _inv, _aud, projection, as_of, *, budget, only, threads,
+                      clock, finish_pass, checkpoint, pass_cache):
+            return pe.run(projection, pe.inbox_path(projection), as_of,
+                          coverage=ids["coverage"], qc_link_types=(QC_LINK,),
+                          on_hand_sources=(ON_HAND,), clock=clock, people=people(),
+                          cadence={}, budget=budget, only=only, threads=threads,
+                          finish_pass=finish_pass, checkpoint=checkpoint,
+                          pass_cache=pass_cache,
+                          fold_export=lambda payload: exported.append(
+                              json.loads(json.dumps(payload))))
+        with mock.patch.object(pe, "GROUP_SECONDS", 1500.0):
+            pe.refresh_pass(None, None, None, self.store, AS_OF, kind="whole",
+                            seconds=10_000, threads=1, clock=lambda: moment,
+                            run_group=run_group)
+        self.assertGreater(len(exported), 1)
+        expected = self.snapshot()
+
+        other = self.dir / "replayed-store.sqlite"
+        world.build(other)
+        other_inbox = pe.inbox_path(other)
+        for payload in exported:
+            pe.write_fold_payload(other_inbox, payload)
+        held = self.inbox
+        self.inbox = other_inbox
+        try:
+            self.assertEqual(self.snapshot(), expected)
+        finally:
+            self.inbox = held
 
     def test_the_pool_ends_after_the_last_group_that_calls_tools(self):
         """The pool's workers (a case session each over the whole store, ~2.2 GB) end

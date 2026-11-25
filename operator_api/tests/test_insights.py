@@ -1482,8 +1482,14 @@ class TilesUseTheMeasure(unittest.TestCase):
         from operating import measures
         tile = {t.id: t for t in ins.builtin()}["customer_mail"]
         self.assertNotIn(measures.where_sql("mail_received"), tile.sql)
-        self.assertIn("not the mail_received measure", tile.about)
+        self.assertIn("not the Mail received measure", tile.about)
         self.assertIn("mail_received", measures.measures())
+
+    def test_builtin_insight_copy_uses_plain_words_without_snake_case_ids(self):
+        import re
+        for tile in ins.builtin():
+            for field in (tile.title, tile.about):
+                self.assertEqual(re.findall(r"\b[a-z]+_[a-z_]+\b", field or ""), [], tile.id)
 
     def test_every_measure_tile_is_the_catalogues_own_statement(self):
         """A tile named for a measure shows that measure: its statement is the catalogue's
@@ -1497,7 +1503,8 @@ class TilesUseTheMeasure(unittest.TestCase):
             if tile is None:
                 continue                       # one the checker refuses is left out, never altered
             with self.subTest(name):
-                want, _ = measures.statement(name, by="month" if entry.get("date") else None)
+                want, _ = measures.statement(name, by=entry.get("tile_by") or ("month" if entry.get("date") else None),
+                                             unchecked=True)
                 self.assertEqual(tile.sql, want)
                 if entry.get("where"):
                     self.assertIn(measures.where_sql(name), tile.sql)

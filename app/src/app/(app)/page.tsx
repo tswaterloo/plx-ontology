@@ -1,49 +1,54 @@
 "use client";
 
-import { useReaderWords } from "@/components/view-as";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
-import Link from "next/link";
-import { PageIntro } from "@/components/ui/page-intro";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { HiddenNotice } from "@/components/answer-parts";
-import { ALERTS_HREF, LATE_HREF, loadHome, loadLateRead, MobileAccount, MobileSearch, publishNeedsCount, SectionTabs } from "@/components/shell";
-import { ReplyCard, ReplyList } from "@/components/reply-list";
-import type { QueueRow } from "@/components/today-detail";
+import {
+  Bell,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleHelp,
+  ClipboardList,
+  Clock3,
+  ListChecks,
+  Mail,
+  MessageCircle,
+  MessageSquare,
+  MessageSquareWarning,
+  Truck,
+  X,
+} from "lucide-react";
 import dynamic from "next/dynamic";
-import { LIMIT_MS, Pending, SlowNote, StillReading, useSlow } from "@/components/ui/skeleton";
-import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
-import { FeedNote } from "@/components/feed-note";
-import { LoadProblem, StaleNote } from "@/components/ui/notice";
-import { NeedsMe } from "@/components/needs-me";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PreparedCard } from "@/components/autopilot/prepared";
+import { noteParts } from "@/components/autopilot/lines";
 import { HomeAsk } from "@/components/home-start";
-import { AssistQueue, type PreparedCount } from "@/components/home/assist-queue";
-import { YourCommitments } from "@/components/your-commitments";
-import { InsightNewsList } from "@/components/insights/news";
-import { YourTurn } from "@/components/memory-people";
-import { SignedInFirstWeek } from "@/components/first-week";
-import { isPutAway } from "@/lib/actions";
-import { useStaleRefreshOnReturn } from "@/lib/stale-refresh";
-import { getActionStates, getReplies, onHomeBundleFresh, startHomeBundle, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
+import { CloseControl } from "@/components/late/close-control";
+import { MobileAccount, MobileSearch, publishNeedsCount, SectionTabs } from "@/components/shell";
+import { Button } from "@/components/ui/button";
+import { LoadProblem, StaleNote } from "@/components/ui/notice";
+import { PageIntro } from "@/components/ui/page-intro";
+import { Pending } from "@/components/ui/skeleton";
+import { getHomeNeeds, type PreparedItem } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
-import { replyLine, withoutCarried } from "@/components/briefing";
-import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
-import { headline, keyOwner, refreshingLine } from "@/lib/home";
-import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
+import { formatDate, formatMoney, readable, safeHref } from "@/lib/format";
+import { keyOwner } from "@/lib/home";
+import { useStaleRefreshOnReturn } from "@/lib/stale-refresh";
+import type { HomeNeedItem, HomeNeeds } from "@/lib/types";
 
-// Parts Home does not draw at first paint load as their own chunks: the detail pane (drawn once
-// the briefing is read, so its code is fetched on mount, beside those reads) and the Alerts and
-// Late POs tabs (fetched when the browser is idle). Home's first JavaScript is that much less.
-const loadDetail = () => import("@/components/today-detail");
 const loadAlerts = () => import("@/components/home/alerts-view");
 const loadLate = () => import("@/components/home/late-view");
-const TodayDetail = dynamic(() => loadDetail().then((m) => m.TodayDetail), { loading: () => <Pending label="Opening" /> });
-const AlertsView = dynamic(() => loadAlerts().then((m) => m.AlertsView), { loading: () => <Pending label="Reading the alerts" /> });
-const LateView = dynamic(() => loadLate().then((m) => m.LateView), { loading: () => <Pending label="Reading the late POs" /> });
+const AlertsView = dynamic(() => loadAlerts().then((m) => m.AlertsView), {
+  loading: () => <Pending label="Reading the alerts" />,
+});
+const LateView = dynamic(() => loadLate().then((m) => m.LateView), {
+  loading: () => <Pending label="Reading the late POs" />,
+});
+
 function usePreloadHomeParts() {
   useEffect(() => {
-    void loadDetail();
     const idle = () => void Promise.all([loadAlerts(), loadLate()]).catch(() => undefined);
     const ric = (window as Window & { requestIdleCallback?: (f: () => void) => number }).requestIdleCallback;
     if (ric) ric(idle);
@@ -51,498 +56,679 @@ function usePreloadHomeParts() {
   }, []);
 }
 
-const SEEN_AFTER_MS = 6000; // the visit is marked seen after this at the latest, cards settled or not
+const PAGE_ROWS = 100;
 const TZ = "America/Toronto";
+const KIND_ORDER = ["reply", "approve", "question", "late_po", "alert", "task", "waiting", "routine", "gap", "feedback"];
+const SOURCE_ORDER = ["mail", "teams", "pos", "alerts", "planner", "mc", "gaps", "feedback", "system"];
+const DUE_ORDER = ["overdue", "today", "next7", "later", "undated"];
 
-/** "Couldn't load {thing}." with the incident kept for the Reference line (the notice carries the retry). */
-function didntLoad(thing: string, err: unknown): string {
-  const msg = plainError(err);
-  if (/^The Workbench server failed/.test(msg)) {
-    const inc = /incident ([0-9a-f]+)/.exec(msg)?.[1];
-    return `Couldn't load ${thing}.${inc ? ` (incident ${inc})` : ""}`;
-  }
-  return msg;
-}
-
-/** The list's groups, most urgent first; a kind the app doesn't know sorts before "no due date". */
-/** Alerts of one kind Home lists before "Show N more": it stays a short list of what needs
- * you (a kind with dozens open would bury the rest); every one is in Alerts. */
-export const HOME_ROWS = 3;
-const ORDER = ["po_late", "negative_margin", "customer_order_at_risk", "po_due", "eta_slipped", "vendor_no_reply", "vendor_terms_unapplied", "quantity_mismatch", "lot_on_hold", "lot_near_expiry", "quote_accepted_no_order"];
-const SHORT_GROUP: Record<string, string> = { po_late: "Late", po_undated: "No date", po_due: "Due soon", lot_on_hold: "Quality holds" };
-/** The alert kind a group's items belong to (the registry's), if its rows say. */
-const kindOfGroup = (g: { rows: QueueRow[] }): string | null => g.rows.find((r) => r.item?.alert_kind)?.item?.alert_kind ?? null;
-/** My work's chips: what the reader does about an item. */
-const VERBS = [
-  { verb: "confirm", label: "Confirm" },
-  { verb: "reply", label: "Reply" },
-  { verb: "approve", label: "Approve" },
-  { verb: "chase", label: "Chase" },
-  { verb: "decide", label: "Decide" },
-] as const;
-const VERB_OF_KIND: Record<string, string> = {
-  reply_owed: "reply",
-  approval_waiting: "approve",
-  label_change: "approve",
-  late_po: "chase",
-  waiting_on_them: "chase",
-  customer_chasing: "chase",
+// guard-ok: display labels for typed kind values; no meaning is guessed from these words.
+const KIND_WORDS: Record<string, string> = {
+  reply: "Reply",
+  approve: "Approve",
+  question: "Question",
+  task: "Task",
+  waiting: "Waiting",
+  alert: "Alert",
+  late_po: "Late PO",
+  routine: "Routine",
+  feedback: "Feedback",
+  gap: "Gap",
 };
-function verbOf(g: { type: string; rows: QueueRow[] }): string {
-  if (g.type === "po_late" || g.type === "po_due" || g.type === "po_undated") return "chase";
-  const kind = g.rows.find((r) => r.item?.alert_kind)?.item?.alert_kind;
-  return (kind && VERB_OF_KIND[kind]) || "decide";
+// guard-ok: display labels for typed source values; no meaning is guessed from these words.
+const SOURCE_WORDS: Record<string, string> = {
+  mail: "Mail",
+  teams: "Teams",
+  mc: "Mission Control",
+  planner: "Planner",
+  alerts: "Alerts",
+  pos: "POs",
+  feedback: "Feedback",
+  gaps: "Gaps",
+  system: "System",
+};
+
+function sourceLabelOf(item: Pick<HomeNeedItem, "source" | "source_label">): string {
+  if (item.source === "mc" || item.source_label === "MC") return "Mission Control";
+  return item.source_label || SOURCE_WORDS[item.source] || item.source;
 }
 
-/**
- * Prepared work: drafts an autopilot made for you, each one click to approve. The
- * autopilot engine fills it; with nothing prepared it shows nothing, so My work stays one
- * list.
- */
-const rankOf = (t: string) => (t === "po_undated" ? 999 : ORDER.indexOf(t) === -1 ? 500 : ORDER.indexOf(t));
-
-/** A late PO's supplier date, in the row's few words. */
-const CONFIRM_WORDS: Record<string, string> = { confirmed: "supplier confirmed", none_found: "no supplier date", found_unverified: "date unverified", needs_check: "check the confirmation" };
-
-function lateRow(p: LatePo, suggestion?: ProactiveSuggestion, item?: BriefingItem): QueueRow {
-  return {
-    key: p.object_id,
-    group: "po_late",
-    type: "PurchaseOrder",
-    objectId: p.object_id,
-    title: recordLabel("PurchaseOrder", p.label),
-    counterpart: p.supplier ?? null,
-    line: [
-      p.due_date ? `Needed ${formatDate(p.due_date, { short: true })}` : "No due date",
-      p.amount && !p.amount_suspect ? formatMoney(p.amount.amount, p.amount.currency) : p.amount_suspect ? "check the total" : null,
-      CONFIRM_WORDS[p.confirmation ?? ""] ?? null,
-    ].filter(Boolean).join(" · "),
-    days: p.days_late ?? null,
-    status: "late",
-    href: safeHref(p.open_url) ?? objectHref("PurchaseOrder", p.object_id),
-    late: p,
-    item,
-    suggestion,
-  };
+function cleanBodyText(raw: string): string {
+  const text = readable(raw, { shortDates: true }).trim();
+  if (!text) return "";
+  return /[.!?:…)]$/.test(text) ? text : `${text}.`;
 }
+// guard-ok: display labels for typed due-date buckets; no meaning is guessed from these words.
+const DUE_WORDS: Record<string, string> = {
+  overdue: "Overdue",
+  today: "Due today",
+  next7: "Next 7 days",
+  later: "Later",
+  undated: "No date",
+};
 
-function itemRow(i: BriefingItem, suggestion?: ProactiveSuggestion): QueueRow {
-  const type = i.object_type ?? "PurchaseOrder";
-  const amount = i.amount && !i.amount_suspect ? formatMoney(i.amount.amount, i.amount.currency) : null;
-  const plain = withoutCarried(readable(i.summary));
-  const summary = replyLine(plain) ?? plain.replace(/^An open purchase order has no due date recorded$/i, "Open, no due date");
-  return {
-    key: i.object_id,
-    group: i.event_type,
-    type,
-    objectId: i.object_id,
-    title: recordLabel(type, i.subject_label ?? ""),
-    counterpart: i.counterpart ?? null,
-    line: i.section ? summary : [summary, amount].filter(Boolean).join(" · "),
-    figure: i.section ? amount : null,
-    days: i.event_type === "po_undated" ? null : (i.days ?? null),
-    status: i.amount_suspect ? "suspect" : i.event_type === "po_undated" ? "risk" : /late|negative/.test(i.event_type) ? "late" : "risk",
-    href: safeHref(i.open_url) ?? objectHref(type, i.object_id),
-    item: i,
-    suggestion,
-  };
-}
+type FilterState = { kinds: string[]; source: string; due: string };
 
 function useDesktop() {
   const [desk, setDesk] = useState(true);
   useEffect(() => {
-    const m = window.matchMedia("(min-width: 1024px)");
-    const on = () => setDesk(m.matches);
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(min-width: 1024px)");
+    const on = () => setDesk(media.matches);
     on();
-    m.addEventListener("change", on);
-    return () => m.removeEventListener("change", on);
+    media.addEventListener("change", on);
+    return () => media.removeEventListener("change", on);
   }, []);
   return desk;
 }
 
-function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: boolean; onPick: () => void; actionState?: ActionResult; testId?: string }) {
-  const away = isPutAway(actionState);
+function splitParam(text: string | null): string[] {
+  return (text ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+function dayOf(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("en-CA", { timeZone: TZ });
+}
+
+function dueValue(item: HomeNeedItem): string {
+  const dueDay = dayOf(item.due_at);
+  if (!dueDay) return "undated";
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: TZ });
+  const days = Math.round(
+    (new Date(`${today}T12:00:00Z`).getTime() - new Date(`${dueDay}T12:00:00Z`).getTime()) / 86_400_000,
+  );
+  if (days > 0) return "overdue";
+  if (days === 0) return "today";
+  if (days >= -7) return "next7";
+  return "later";
+}
+
+function whenWords(item: HomeNeedItem): string {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: TZ });
+  const dueDay = dayOf(item.due_at);
+  if (dueDay) {
+    const days = Math.round(
+      (new Date(`${today}T12:00:00Z`).getTime() - new Date(`${dueDay}T12:00:00Z`).getTime()) / 86_400_000,
+    );
+    if (days > 0) return days === 1 ? "1 day overdue" : `${days} days overdue`;
+    if (days === 0) return "Due today";
+    return `Due ${formatDate(item.due_at, { short: true })}`;
+  }
+  if (item.days_late != null && item.days_late > 0) {
+    return item.days_late === 1 ? "1 day overdue" : `${item.days_late} days overdue`;
+  }
+  const basis = dayOf(item.basis_at);
+  if (!basis) return "";
+  const days = Math.max(
+    0,
+    Math.round(
+      (new Date(`${today}T12:00:00Z`).getTime() - new Date(`${basis}T12:00:00Z`).getTime()) / 86_400_000,
+    ),
+  );
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return `${days} days old`;
+}
+
+function KindIcon({ item, className }: { item: HomeNeedItem; className?: string }) {
+  const cls = cn("size-[16px] shrink-0 text-muted", className);
+  if (item.kind === "late_po") return <Truck className={cls} aria-label="Late PO" />;
+  if (item.kind === "alert") return <Bell className={cls} aria-label="Alert" />;
+  if (item.kind === "approve") return <CheckCircle2 className={cls} aria-label="Approve" />;
+  if (item.kind === "question") return <CircleHelp className={cls} aria-label="Question" />;
+  if (item.kind === "waiting") return <Clock3 className={cls} aria-label="Waiting" />;
+  if (item.kind === "feedback") return <MessageSquareWarning className={cls} aria-label="Feedback" />;
+  if (item.kind === "gap") return <CircleHelp className={cls} aria-label="Gap" />;
+  if (item.kind === "reply") {
+    return item.source === "teams" ? <MessageSquare className={cls} aria-label="Teams" /> : <Mail className={cls} aria-label="Mail" />;
+  }
+  if (item.kind === "routine") return <ListChecks className={cls} aria-label="Routine" />;
+  return <ClipboardList className={cls} aria-label="Task" />;
+}
+
+function NeedRow({ item, on, onPick }: { item: HomeNeedItem; on: boolean; onPick: () => void }) {
+  const href = safeHref(item.href) ?? "/";
+  const when = whenWords(item);
+  const overdue = dueValue(item) === "overdue" || (item.days_late != null && item.days_late > 0);
+  const srcLabel = sourceLabelOf(item);
+  const titleText = readable(item.title, { shortDates: true });
+  const parts = noteParts(item.line ?? "");
+  const lineText = parts.text ? cleanBodyText(parts.text) : "";
   return (
-    <li className="cv-auto cv-row" data-testid={testId}>
+    <li className="cv-auto cv-row">
       <a
-        href={row.href}
+        href={href}
+        data-row-link=""
+        data-testid="need-row"
+        aria-current={on ? "true" : undefined}
         onClick={(e) => {
           if (e.metaKey || e.ctrlKey || e.shiftKey) return;
           e.preventDefault();
           onPick();
         }}
-        aria-current={on ? "true" : undefined}
-        data-row-link=""
-        data-testid="briefing-item"
         className={cn(
-          "flex gap-3 rounded-[3px] px-3 py-2.5 outline-none transition-[background-color,box-shadow] duration-100",
-          row.status === "late" && row.days != null && lateEdge(row.days),
-          on ? "bg-row-on shadow-[var(--lift),inset_2px_0_0_var(--accent)]" : "hover:bg-hover",
+          "flex gap-3 rounded-lg border px-3.5 py-3 outline-none transition-colors",
+          on
+            ? "border-accent/60 bg-row-on shadow-[var(--lift),inset_2px_0_0_var(--accent)]"
+            : "border-border/60 bg-bg/70 hover:border-border-strong hover:bg-surface/80",
           "focus-visible:ring-2 focus-visible:ring-ring/50",
-          away && "opacity-60",
         )}
       >
+        <span className="pt-0.5"><KindIcon item={item} /></span>
         <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span className="num shrink-0 text-[13px] font-semibold leading-[18px]">{row.title}</span>
-            {row.counterpart && <span className="min-w-0 truncate text-[13px] leading-[18px] text-fg/80">{row.counterpart}</span>}
-            <span className="ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 tabular-nums">
-              {row.days != null ? (
-                <>
-                  <span className={cn("num font-medium", row.status === "late" ? lateFigure(row.days) : "text-fg")}>{row.days}d</span>
-                </>
-              ) : row.group === "po_undated" ? (
-                <>
-                  <span className="text-muted">No date</span>
-                  <OpenRing size={13} />
-                </>
-              ) : row.figure ? (
-                <span className="num font-medium text-fg">{row.figure}</span>
-              ) : null}
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate text-[14px] font-medium leading-5 text-fg">{titleText}</span>
+            {item.draft_ready && (
+              <span className="shrink-0 rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium leading-3.5 text-fg/85">
+                Draft ready
+              </span>
+            )}
+            {when && (
+              <span
+                className={cn(
+                  "ml-auto shrink-0 tabular-nums",
+                  overdue
+                    ? "rounded-md border border-late-line bg-late-soft px-2 py-0.5 text-[11px] font-medium leading-3.5 text-late"
+                    : "pl-2 text-[12px] leading-4 text-muted",
+                )}
+              >
+                {when}
+              </span>
+            )}
+          </span>
+          {(item.person || srcLabel || item.action_label) && (
+            <span className="mt-1 flex flex-wrap items-center gap-1 text-[12px] leading-4 text-muted">
+              {item.person && <span className="truncate">{item.person}</span>}
+              {item.person && srcLabel && <span aria-hidden> · </span>}
+              {srcLabel && (
+                <span className="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium leading-3.5 text-muted">
+                  {srcLabel}
+                </span>
+              )}
+              {(item.person || srcLabel) && item.action_label && <span aria-hidden> · </span>}
+              {item.action_label && <span className="truncate">{item.action_label}</span>}
             </span>
-          </span>
-          <span className="mt-0.5 flex items-baseline gap-2 text-[12px] leading-4 text-muted">
-            <span className="min-w-0 truncate">{row.line}</span>
-            {away && <span className="ml-auto shrink-0 text-faint">Done</span>}
-          </span>
+          )}
+          {lineText && (
+            <span className="mt-1.5 block truncate text-[13px] leading-5 text-fg/85" title={lineText}>
+              {lineText}
+            </span>
+          )}
+          {parts.labels.length > 0 && (
+            <span className="mt-1.5 flex flex-wrap gap-1.5" data-testid="need-scope">
+              {parts.labels.map((label) => (
+                <span key={label} className="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] leading-4 text-muted">
+                  {label.replace(/\.$/, "")}
+                </span>
+              ))}
+            </span>
+          )}
         </span>
       </a>
     </li>
   );
 }
 
-function ListSkeleton({ onRetry }: { onRetry: () => void }) {
-  const over = useSlow(LIMIT_MS);
+function preparedOf(item: HomeNeedItem): PreparedItem | null {
+  if (!item.matter_id || (!item.body && !item.ask)) return null;
+  return {
+    item_id: item.matter_id,
+    sender: item.person ?? "",
+    channel: item.source === "teams" ? "teams" : item.source === "mail" ? "mail" : "system",
+    subject: item.title,
+    message: item.quote ?? "",
+    kind: item.body ? "reply" : "your_call",
+    to: item.to ?? [],
+    cc: [],
+    body: item.body ?? "",
+    edited: false,
+    state: item.state === "unverified" ? "unverified" : "open",
+    verified_at: item.verified_at,
+    plan_status: item.plan_status,
+    ask: item.ask ?? "",
+    facts: [],
+    created_at: item.basis_at ?? "",
+  };
+}
+
+function MatterView({ item, onGone }: { item: HomeNeedItem; onGone: (id: string) => void }) {
+  const prepared = preparedOf(item);
+  if (!prepared) return null;
   return (
-    <>
-    {over ? <StillReading label="Reading your work" onRetry={onRetry} className="px-5 pt-3" since={Date.now() - LIMIT_MS} /> : <SlowNote className="px-5 pt-3" />}
-    <ul className="space-y-1 px-2 pt-2" aria-busy="true" aria-label="Loading your work">
-      {Array.from({ length: 9 }).map((_, i) => (
-        <li key={i} className="flex gap-3 px-3 py-2.5">
-          <span className="skeleton size-8 rounded-[3px]" />
-          <span className="flex-1 space-y-2">
-            <span className="skeleton block h-3" style={{ width: `${62 - (i % 3) * 9}%` }} />
-            <span className="skeleton block h-2.5" style={{ width: `${40 - (i % 2) * 8}%` }} />
-          </span>
-        </li>
-      ))}
+    <ul className="border-t border-border pt-2" data-testid="need-draft">
+      <PreparedCard item={prepared} onGone={() => onGone(item.id)} onChanged={() => undefined} />
     </ul>
-    </>
   );
 }
 
+function detailLinkLabel(item: HomeNeedItem): string {
+  if (item.kind === "gap") return "Open in Data health";
+  if (item.kind === "feedback") return "Open in Feedback";
+  if (item.object_id) return "Open the full record";
+  return "Open in Assist";
+}
+
+function NeedDetail({
+  item,
+  onClose,
+  onGone,
+}: {
+  item: HomeNeedItem;
+  onClose: () => void;
+  onGone: (id: string) => void;
+}) {
+  const href = safeHref(item.href);
+  const srcLabel = sourceLabelOf(item);
+  const titleText = readable(item.title, { shortDates: true });
+  const parts = noteParts(item.line ?? "");
+  const lineText = parts.text ? cleanBodyText(parts.text) : "";
+  const nextStep = !item.matter_id && item.ask ? readable(item.ask, { shortDates: true }).trim() : "";
+  const subtitle = [
+    item.person,
+    whenWords(item),
+    item.amount ? formatMoney(item.amount.amount, item.amount.currency) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const askHref = item.object_id
+    ? `/ask?q=${encodeURIComponent(`What is the latest on ${item.title}?`)}&object=${encodeURIComponent(item.object_id)}`
+    : null;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-bg" data-testid="need-detail">
+      <div className="hidden h-[52px] shrink-0 items-center gap-2 border-b border-border px-5 lg:flex">
+        <KindIcon item={item} />
+        <span className="min-w-0 truncate text-[13px] text-muted">
+          {KIND_WORDS[item.kind] ?? item.kind} · {srcLabel}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close details"
+          title="Close (Esc)"
+          data-testid="close-detail"
+          className="ml-auto inline-flex size-8 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer"
+        >
+          <X className="size-4" aria-hidden />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 sm:px-8">
+        <div className="max-w-2xl space-y-5">
+          <header className="space-y-1.5">
+            <div className="flex items-center gap-2 text-[12px] text-muted lg:hidden">
+              <KindIcon item={item} />
+              <span>{KIND_WORDS[item.kind] ?? item.kind} · {srcLabel}</span>
+            </div>
+            <h2 className="text-[20px] font-semibold leading-7 tracking-[-0.015em] text-fg">{titleText}</h2>
+            {subtitle && <p className="text-[13px] text-muted">{subtitle}</p>}
+            {parts.labels.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-0.5" data-testid="need-detail-scope">
+                {parts.labels.map((label) => (
+                  <span key={label} className="inline-flex items-center rounded-[4px] bg-hover px-2 py-0.5 text-[11.5px] leading-4 text-muted">
+                    {label.replace(/\.$/, "")}
+                  </span>
+                ))}
+              </div>
+            )}
+          </header>
+
+          {lineText && <p className="text-[14px] leading-6 text-fg">{lineText}</p>}
+
+          {nextStep && nextStep !== lineText && (
+            <div className="rounded-lg border border-border bg-hover/50 px-4 py-3" data-testid="need-next-step">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted">Suggested next step</p>
+              <p className="mt-1 text-[13px] leading-5 text-fg">{nextStep}</p>
+            </div>
+          )}
+
+          {item.quote && (
+            <blockquote className="border-l-2 border-border pl-3 text-[13px] leading-5 text-muted whitespace-pre-wrap">
+              {item.quote}
+            </blockquote>
+          )}
+
+          {item.rank_reasons && item.rank_reasons.length > 0 && (
+            <p className="text-[12px] text-muted">Here because it is {item.rank_reasons.join(", ")}.</p>
+          )}
+
+          {item.state !== "open" && (
+            <p className="text-[12px] text-muted">
+              {item.state === "unverified"
+                ? "Its source could not be checked again; it stays listed until checked."
+                : "It may already be closed or missing in the data; check it before acting."}
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center gap-4">
+            {href && href !== "/" && (
+              <Link href={href} className="text-[13px] font-medium text-accent underline-offset-2 hover:underline">
+                {detailLinkLabel(item)}
+              </Link>
+            )}
+            {askHref && (
+              <Link href={askHref} className="inline-flex items-center gap-1.5 text-[13px] text-muted hover:text-fg">
+                <MessageCircle className="size-3.5" aria-hidden />
+                Ask about this
+              </Link>
+            )}
+          </div>
+
+          {item.kind === "late_po" && item.object_id && (
+            <div className="border-t border-border pt-3">
+              <CloseControl order={{ object_id: item.object_id }} onChanged={() => onGone(item.id)} />
+            </div>
+          )}
+
+          <MatterView item={item} onGone={onGone} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function partLines(payload: HomeNeeds): string[] {
+  const lines: string[] = [];
+  if (payload.why) lines.push(payload.why);
+  for (const part of payload.parts ?? []) {
+    if (part.status !== "ok" && part.status !== "off" && part.note && !payload.why?.includes(part.note)) {
+      lines.push(`${part.label}: ${part.note}`);
+    }
+  }
+  return [...new Set(lines)];
+}
+
+function initialFilters(params: ReturnType<typeof useSearchParams>): FilterState {
+  const kinds = splitParam(params?.get("kind") ?? null);
+  if (kinds.length === 0 && params?.get("view") === "reply") kinds.push("reply");
+  return {
+    kinds,
+    source: (params?.get("source") ?? "").trim(),
+    due: (params?.get("due") ?? "").trim(),
+  };
+}
+
 function Today() {
-  const w = useReaderWords();
   const router = useRouter();
   const params = useSearchParams();
   const desktop = useDesktop();
-  const [home, setHome] = useState<HomeResponse | null>(null);
+
+  const [payload, setPayload] = useState<HomeNeeds | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [briefing, setBriefing] = useState<Briefing | null>(null);
-  const [briefingError, setBriefingError] = useState<string | null>(null);
-  const [late, setLate] = useState<LatePo[] | null>(null);
-  // every late order the server counts, which can be more than Today reads (the rest are on Late orders)
-  const [lateAll, setLateAll] = useState<number | null>(null);
-  const [suggestions, setSuggestions] = useState<ProactiveSuggestion[]>([]);
-  const supplier = params.get("supplier");
-  const [states, setStates] = useState<Record<string, ActionResult>>({});
-  const [pages, setPages] = useState<Record<string, { items: BriefingItem[]; more: boolean; total: number }>>({});
-  const [opened, setOpened] = useState<Record<string, boolean>>({});
-  const [filter, setFilter] = useState<string>(params.get("view") === "reply" ? "reply" : "all");
-  // the Reply chip's list: your own mail and chats waiting on your answer (inbox triage)
-  const [replies, setReplies] = useState<ReplyTriage | null>(null);
-  const [repliesError, setRepliesError] = useState<unknown>(null);
-  // Home's first reads come in ONE answer (/api/home/bundle), the last one kept in this tab shown
-  // at once: this effect comes before every read below. When the fresh bundle arrives after
-  // the kept one was shown, each read is made again (answered from the fresh bundle).
-  const [bundleRound, setBundleRound] = useState(0);
-  // a layout effect: it runs before any child's read effect (needs-me's approvals read was
-  // sent on its own, ahead of the bundle that carries it)
-  useLayoutEffect(() => {
-    startHomeBundle();
-    return onHomeBundleFresh(() => setBundleRound((n) => n + 1));
-  }, []);
-  useEffect(() => {
-    const c = new AbortController();
-    getReplies(c.signal).then(setReplies, (e) => !c.signal.aborted && setRepliesError(e));
-    return () => c.abort();
-  }, [bundleRound]);
-  // how many items the queue holds (AssistQueue reports it once read; null until then or on a failed read)
-  const [queued, setQueued] = useState<PreparedCount | null>(null);
-  const [picked, setPicked] = useState<string | null>(params.get("sel"));
-  const [replyPick, setReplyPick] = useState<string | null>(null);
+  const [round, setRound] = useState(0);
+  const [gone, setGone] = useState<Set<string>>(() => new Set());
+  const [shown, setShown] = useState(PAGE_ROWS);
+  const [olderOpen, setOlderOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterState>(() => initialFilters(params));
+  const [picked, setPicked] = useState<string | null>(() => {
+    const matter = params?.get("matter");
+    return matter ? (matter.startsWith("matter:") ? matter : `matter:${matter}`) : (params?.get("sel") ?? null);
+  });
+
+  const supplier = params?.get("supplier") ?? null;
   const listRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback((fresh = false) => {
+  const load = useCallback(() => {
     const c = new AbortController();
     setError(null);
-    loadHome(fresh)
-      .then((h) => !c.signal.aborted && setHome(h))
-      .catch((e) => {
+    getHomeNeeds(c.signal).then(
+      (got) => {
+        if (c.signal.aborted) return;
+        setPayload(got);
+      },
+      (e) => {
         if (c.signal.aborted) return;
         setBusy(noticeKind(e) === "busy");
-        setError(didntLoad("your work", e));
-      });
-    return () => c.abort();
-  }, []);
-  useEffect(() => load(bundleRound > 0), [load, bundleRound]);
-  // a stale answer is asked for again from the server, not from the read already held
-  const reloadHome = useCallback(() => void load(true), [load]);
-  useStaleRefreshOnReturn(home?.stale_since, reloadHome);
-
-  // The visit is marked seen once the briefing is read AND the suggestion cards have settled
-  // (or SEEN_AFTER_MS passed): the mark makes the kept briefing and suggestions stale, so a
-  // mark sent first sent the cards' own read back to the server to be made again behind a poll
-  // the page then waited on.
-  const briefingRead = useRef(false);
-  const suggestionsSettled = useRef(false);
-  const seenSent = useRef(false);
-  const markSeen = useCallback(() => {
-    if (!briefingRead.current || !suggestionsSettled.current || seenSent.current) return;
-    seenSent.current = true;
-    void markBriefingSeen().catch(() => undefined);
-  }, []);
-  useEffect(() => {
-    const t = setTimeout(() => {
-      suggestionsSettled.current = true;
-      markSeen();
-    }, SEEN_AFTER_MS);
-    return () => {
-      clearTimeout(t);
-      // leaving before the cards settled still counts as the visit: the briefing was read
-      suggestionsSettled.current = true;
-      markSeen();
-    };
-  }, [markSeen]);
-
-  const loadBriefing = useCallback(() => {
-    const c = new AbortController();
-    setBriefingError(null);
-    getBriefing(c.signal, "all", true)
-      .then((b) => {
-        setBriefing(b);
-        // each group's next page comes with the briefing (the server picks the kinds Home
-        // can show: only the kinds sent home, of each only HOME_ROWS before "Show more"):
-        // no second request, so the visit is marked seen at once (pages are cut from the
-        // briefing the server kept, and the mark makes that stale)
-        if (b.pages?.length)
-          setPages((cur) => {
-            const next = { ...cur };
-            for (const p of b.pages ?? []) next[p.event_type] = { items: p.items ?? [], more: !!p.more, total: p.total ?? 0 };
-            return next;
-          });
-        if (b.status === "read") {
-          briefingRead.current = true;
-          markSeen();
-        }
-      })
-      .catch((e) => !c.signal.aborted && setBriefingError(didntLoad("the briefing", e)));
-    return () => c.abort();
-  }, [markSeen]);
-  useEffect(() => loadBriefing(), [loadBriefing, bundleRound]);
-
-  useEffect(() => {
-    const c = new AbortController();
-    loadLateRead(bundleRound > 0).then(
-      (l) => {
-        if (c.signal.aborted) return;
-        setLate(l.items);
-        setLateAll(l.total);
+        setError(plainError(e));
+        publishNeedsCount(null);
       },
-      () => !c.signal.aborted && setLate([]),
     );
-    // the suggestion cards only add to rows already listed ("ETA confirmed?", a draft): the
-    // list never waits for them (their first read can take a minute on a cold server)
-    getSuggestions(c.signal)
-      .then((s) => !c.signal.aborted && setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined)
-      .finally(() => {
-        suggestionsSettled.current = true;
-        markSeen();
-      });
-    getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
-  }, [markSeen, bundleRound]);
+  }, []);
+  useEffect(() => load(), [load, round]);
 
-  const more = useCallback((eventType: string) => {
-    const cur = pages[eventType];
-    getBriefingItems(eventType, cur?.items.length ?? 0)
-      .then((p) => setPages((x) => ({ ...x, [eventType]: { items: [...(x[eventType]?.items ?? []), ...(p.items ?? [])], more: !!p.more, total: p.total ?? 0 } })))
-      .catch(() => undefined);
-  }, [pages]);
-
-  const groups = useMemo(() => {
-    const bySubject = new Map(suggestions.map((s) => [s.subject.object_id, s]));
-    const top = briefing?.status === "read" ? (briefing.items ?? []) : [];
-    const itemBy = new Map(top.map((i) => [i.object_id, i]));
-    const out: { type: string; label: string; count: number; rows: QueueRow[]; more: boolean; section?: string }[] = [];
-    const na = home?.needs_attention;
-    const lateList = late?.length ? late : na?.status === "read" ? (na.late_pos ?? []) : [];
-    if (lateList.length) {
-      const rows = [...lateList].sort((a, b) => (b.days_late ?? -1) - (a.days_late ?? -1)).map((p) => lateRow(p, bySubject.get(p.object_id), itemBy.get(p.object_id)));
-      out.push({ type: "po_late", label: "Late", count: na?.late_total ?? rows.length, rows, more: false });
+  useEffect(() => {
+    if (!supplier && payload) {
+      publishNeedsCount(payload.status === "ok" ? payload.total : null);
     }
-    // My work holds only the kinds the alert registry sends home (measured >= 90% on 15+
-    // and actionable); everything else waits in Watching
-    const homeOnly = briefing?.status === "read" && typeof briefing.home_count === "number";
-    for (const g of briefing?.status === "read" ? (briefing.groups ?? []) : []) {
-      if (g.event_type === "po_late") continue;
-      const seen = new Set<string>();
-      // a gathered section lists its biggest few as the briefing sent them, never pages of the rest
-      const rows = [...top.filter((i) => i.event_type === g.event_type), ...(g.section ? [] : (pages[g.event_type]?.items ?? []))]
-        .filter((i) => !homeOnly || i.home)
-        .filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)))
-        .map((i) => itemRow(i, bySubject.get(i.object_id)));
-      // the group's count is every alert of its kind firing for you (the count Alerts shows),
-      // never just the rows read so far: Home said 25 below cost while Alerts said 65
-      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: Math.max(g.count, rows.length), rows, more: rows.length < g.count && !g.section, section: g.section ?? undefined });
-    }
-    return out.sort((a, b) => rankOf(a.type) - rankOf(b.type));
-  }, [briefing, late, home, suggestions, pages]);
+  }, [payload, supplier]);
 
-  // what needs a person, one item each; the groups the registry gathers into a section
-  // (Financials: a count and the biggest few, the full list in Alerts) stand apart from it
-  const needsGroups = useMemo(() => groups.filter((g) => !g.section), [groups]);
-  const financialGroups = useMemo(() => groups.filter((g) => g.section === "financials"), [groups]);
-  // a kind with prepared cards of its own (a hold that blocks an order) lists them in the
-  // kind's one section, first, not in a second section beside it
-  const [heldN, setHeldN] = useState<Record<string, number>>({});
-  const mergedKinds = useMemo(() => (supplier ? [] : [...new Set(needsGroups.map(kindOfGroup).filter((k): k is string => !!k))]), [needsGroups, supplier]);
-  const bySupplier = supplier
-    ? needsGroups.map((g) => ({ ...g, rows: g.rows.filter((r) => r.counterpart === supplier) })).filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length, more: false }))
-    : needsGroups;
-  const capped = bySupplier.map((g) =>
-    g.type === "po_late" || opened[g.type] || g.rows.length <= HOME_ROWS ? { ...g, folded: 0 } : { ...g, rows: g.rows.slice(0, HOME_ROWS), folded: g.rows.length - HOME_ROWS },
+  const refresh = useCallback(() => setRound((n) => n + 1), []);
+  useStaleRefreshOnReturn(payload?.stale_since, refresh);
+
+  const activeCurrent = useMemo(
+    () => (payload?.items ?? []).filter((item) => !gone.has(item.id) && (!supplier || item.person === supplier)),
+    [payload, gone, supplier],
   );
-  const visible = filter === "all" ? capped : capped.filter((g) => verbOf(g) === filter);
-  const financialShown = useMemo(() => (filter === "all" && !supplier ? financialGroups : []), [filter, supplier, financialGroups]);
-  const flat = useMemo(() => [...visible, ...financialShown].flatMap((g) => g.rows), [visible, financialShown]);
-  const selectedKey = picked ?? (desktop ? flat[0]?.key ?? null : null);
-  const selected = flat.find((r) => r.key === selectedKey) ?? groups.flatMap((g) => g.rows).find((r) => r.key === selectedKey) ?? null;
+  const activeOlder = useMemo(
+    () => (payload?.older_items ?? []).filter((item) => !gone.has(item.id) && (!supplier || item.person === supplier)),
+    [payload, gone, supplier],
+  );
 
-  // a desktop's detail pane shows the chosen message when replies are listed; with no row
-  // chosen and nothing else to open, the first message opens by itself
-  const replyLines = desktop && !supplier && (filter === "all" || filter === "reply") ? (replies?.lines ?? []) : [];
-  const replyShown = replyLines.find((l) => l.id === replyPick) ?? (replyLines.length && (filter === "reply" || !selected) ? replyLines[0] : null);
-  const shownRow = replyShown ? null : selected;
+  const kindCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of activeCurrent) counts.set(row.kind, (counts.get(row.kind) ?? 0) + 1);
+    return counts;
+  }, [activeCurrent]);
+
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of activeCurrent) counts.set(row.source, (counts.get(row.source) ?? 0) + 1);
+    return counts;
+  }, [activeCurrent]);
+
+  const dueCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of activeCurrent) {
+      const bucket = dueValue(row);
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+    }
+    return counts;
+  }, [activeCurrent]);
+
+  const matches = useCallback(
+    (item: HomeNeedItem) =>
+      (filters.kinds.length === 0 || filters.kinds.includes(item.kind)) &&
+      (!filters.source || item.source === filters.source) &&
+      (!filters.due || dueValue(item) === filters.due),
+    [filters],
+  );
+
+  const items = useMemo(() => activeCurrent.filter(matches), [activeCurrent, matches]);
+  const olderItems = useMemo(() => activeOlder.filter(matches), [activeOlder, matches]);
+
+  useEffect(() => {
+    setShown(PAGE_ROWS);
+  }, [filters, supplier]);
+
+  // guard-ok: exact total, Show more, and Show all controls are rendered beside the list.
+  const visible = items.slice(0, shown);
+  const selectable = useMemo(
+    () => (olderOpen ? [...visible, ...olderItems] : visible),
+    [visible, olderOpen, olderItems],
+  );
+  const allListed = useMemo(() => [...items, ...olderItems], [items, olderItems]);
+  const selected = useMemo(
+    () => (picked ? (allListed.find((item) => item.id === picked) ?? null) : null),
+    [allListed, picked],
+  );
+
+  const showDetail = !desktop && !!picked && !!selected;
+  const wide = desktop && !selected;
+
+  const replaceUrl = useCallback((mutate: (q: URLSearchParams) => void) => {
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search);
+    mutate(q);
+    const qs = q.toString();
+    window.history.replaceState(null, "", qs ? `/?${qs}` : "/");
+  }, []);
 
   const pick = useCallback(
-    (key: string) => {
-      setReplyPick(null);
-      setPicked(key);
-      const q = new URLSearchParams();
-      if (supplier) q.set("supplier", supplier);
-      q.set("sel", key);
-      if (desktop) window.history.replaceState(null, "", `/?${q}`);
-      else router.push(`/?${q}`);
+    (id: string) => {
+      setPicked(id);
+      replaceUrl((q) => {
+        q.delete("matter");
+        q.set("sel", id);
+      });
     },
-    [desktop, router, supplier],
+    [replaceUrl],
   );
-  // phone: Back from a record returns to the list
-  useEffect(() => {
-    if (!desktop) setPicked(params.get("sel"));
-  }, [params, desktop]);
-  // a supplier picked in the sidebar starts at its first PO
-  const lastSupplier = useRef(supplier);
-  useEffect(() => {
-    if (lastSupplier.current === supplier) return;
-    lastSupplier.current = supplier;
-    if (desktop) setPicked(null);
-    setFilter("all");
-  }, [supplier, desktop]);
 
-  // j / k and the arrows move the selection; Enter opens the record
+  const closeDetail = useCallback(() => {
+    setPicked(null);
+    replaceUrl((q) => {
+      q.delete("sel");
+      q.delete("matter");
+    });
+  }, [replaceUrl]);
+
+  const toggleKind = useCallback(
+    (kind: string) => {
+      setFilters((cur) => {
+        const nextKinds = cur.kinds.includes(kind) ? cur.kinds.filter((x) => x !== kind) : [...cur.kinds, kind];
+        replaceUrl((q) => {
+          q.delete("view");
+          if (nextKinds.length) q.set("kind", nextKinds.join(","));
+          else q.delete("kind");
+        });
+        return { ...cur, kinds: nextKinds };
+      });
+    },
+    [replaceUrl],
+  );
+
+  const setAllKinds = useCallback(() => {
+    setFilters((cur) => ({ ...cur, kinds: [] }));
+    replaceUrl((q) => {
+      q.delete("view");
+      q.delete("kind");
+    });
+  }, [replaceUrl]);
+
+  const setSourceFilter = useCallback(
+    (source: string) => {
+      setFilters((cur) => ({ ...cur, source }));
+      replaceUrl((q) => {
+        if (source) q.set("source", source);
+        else q.delete("source");
+      });
+    },
+    [replaceUrl],
+  );
+
+  const setDueFilter = useCallback(
+    (due: string) => {
+      setFilters((cur) => ({ ...cur, due }));
+      replaceUrl((q) => {
+        if (due) q.set("due", due);
+        else q.delete("due");
+      });
+    },
+    [replaceUrl],
+  );
+
+  const clearFilters = useCallback(() => {
+    setFilters({ kinds: [], source: "", due: "" });
+    replaceUrl((q) => {
+      q.delete("kind");
+      q.delete("source");
+      q.delete("due");
+      q.delete("view");
+    });
+  }, [replaceUrl]);
+
+  const markGone = useCallback(
+    (id: string) => {
+      setGone((cur) => new Set(cur).add(id));
+      setPayload((cur) => {
+        if (!cur) return cur;
+        const inMain = (cur.items ?? []).some((row) => row.id === id);
+        const inOlder = (cur.older_items ?? []).some((row) => row.id === id);
+        if (!inMain && !inOlder) return cur;
+        return {
+          ...cur,
+          items: (cur.items ?? []).filter((row) => row.id !== id),
+          total: inMain ? Math.max(0, cur.total - 1) : cur.total,
+          older_items: (cur.older_items ?? []).filter((row) => row.id !== id),
+          older_total: inOlder ? Math.max(0, (cur.older_total ?? 0) - 1) : cur.older_total,
+        };
+      });
+      if (picked === id) closeDetail();
+    },
+    [picked, closeDetail],
+  );
+
+  // Escape closes the open detail panel; j/k and arrow keys move through the list.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
-      const t = e.target;
-      // a link, button, field or open dialog keeps its own keys (Enter on a focused link opens that link)
-      const owner = keyOwner(t);
-      if (owner === "own") return;
-      const rowLink = owner === "row" && t instanceof Element ? t.closest("[data-row-link]") : null;
-      if (!flat.length || !desktop) return;
-      const at = flat.findIndex((r) => r.key === selectedKey);
+      if (e.key === "Escape" && picked) {
+        const active = document.activeElement;
+        if (active instanceof Element && active.closest("[role='dialog']")) return;
+        e.preventDefault();
+        closeDetail();
+        return;
+      }
+      if (!desktop || selectable.length === 0) return;
+      if (keyOwner(e.target) === "own") return;
+      const at = selectable.findIndex((r) => r.id === picked);
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
-        pick(flat[Math.min(flat.length - 1, at + 1)].key);
+        pick(selectable[Math.min(selectable.length - 1, at + 1)].id);
       } else if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
-        pick(flat[Math.max(0, at - 1)].key);
-      } else if (e.key === "Enter" && (rowLink || selected)) {
-        e.preventDefault();
-        // on a focused row, Enter opens that row's own record
-        router.push(rowLink?.getAttribute("href") ?? selected!.href);
+        pick(selectable[Math.max(0, at <= 0 ? 0 : at - 1)].id);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flat, selectedKey, selected, desktop, pick, router]);
-  useEffect(() => {
-    listRef.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [selectedKey]);
+  }, [picked, closeDetail, desktop, selectable, pick]);
 
-  const head = headline(home, briefing);
-  const na = home?.needs_attention;
-  const lateTotal = na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
-  // the late orders, replies and prepared work show as soon as they are read; the alerts
-  // (a slower first read) say they are still being read, never a page of skeleton rows
-  const loading = !error && groups.length === 0 && (!home || late === null);
-  const alertsReading = !briefing && !briefingError && !error;
-  const refreshing = briefing?.refreshing || na?.refreshing;
-  // drafts to confirm count under Confirm; alerts waiting on you (nothing to confirm) under Decide
-  const prepared = queued?.confirm ?? 0;
-  const preparedAlerts = queued?.alerts ?? 0;
-  // replies or prepared items listed below: no "nothing needs action" line above them
-  const othersListed = filter === "all" && !supplier && ((replies?.total ?? 0) > 0 || prepared + preparedAlerts > 0);
-  // the one count, shared with the sidebar: late, alerts, replies you owe and prepared items;
-  // unknown (null) until every part is read, and while any part failed (never a partial number)
-  const everyRead = !loading && !error && !!briefing && briefing.status === "read" && late !== null && replies !== null && !repliesError && queued !== null;
-  const total = everyRead ? needsGroups.reduce((n, g) => n + g.count, 0) + (replies?.total ?? 0) + prepared + preparedAlerts : null;
-  useEffect(() => {
-    if (!supplier) publishNeedsCount(total);
-  }, [total, supplier]);
-  const done = (r: ActionResult) => setStates((prev) => ({ ...prev, [r.card_id]: r }));
-  const showDetail = !desktop && !!picked && !!selected;
-  // nothing to open beside the list: it takes the whole width
-  const wide = desktop && !loading && !shownRow && !replyShown;
+  const loading = !error && !payload;
+  const notes = payload ? partLines(payload) : [];
+  const hasFilters = filters.kinds.length > 0 || !!filters.source || !!filters.due;
 
-  const verbChips = VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "confirm" ? (supplier ? 0 : prepared) : v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) + (v.verb === "decide" && !supplier ? preparedAlerts : 0) })).filter((v) => v.count > 0);
-  // one kind of thing waiting: "All 8" beside "Decide 8" is the same list twice, so no chips then
-  const tabs =
-    verbChips.length > 1 || (verbChips.length > 0 && filter !== "all") ? (
-      <div className="flex h-full min-w-0 gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
-        {[{ type: "all", label: "All", count: supplier ? (loading ? null : bySupplier.reduce((n, g) => n + g.count, 0)) : total }, ...verbChips].map((g) => (
-          <button
-            key={g.type}
-            type="button"
-            role="tab"
-            aria-selected={filter === g.type}
-            onClick={() => setFilter(g.type)}
-            className={cn(
-              "relative flex h-full shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer",
-              filter === g.type ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
-            )}
-          >
-            {g.label}
-            {/* no count before the list is read: never "All 0" then the items (owner walk 11-17) */}
-            {g.count !== null && <span className="text-[12px] font-normal num text-faint">{g.count}</span>}
-          </button>
-        ))}
-      </div>
-    ) : null;
+  const kindChips = useMemo(() => {
+    const present = new Set([...kindCounts.keys(), ...filters.kinds]);
+    return [...KIND_ORDER.filter((k) => present.has(k)), ...[...present].filter((k) => !KIND_ORDER.includes(k))];
+  }, [kindCounts, filters.kinds]);
+
+  const sourceChoices = useMemo(() => {
+    const present = new Set([...sourceCounts.keys(), ...(filters.source ? [filters.source] : [])]);
+    return [...SOURCE_ORDER.filter((s) => present.has(s)), ...[...present].filter((s) => !SOURCE_ORDER.includes(s))];
+  }, [sourceCounts, filters.source]);
+
+  const dueChoices = useMemo(() => {
+    const present = new Set([...dueCounts.keys(), ...(filters.due ? [filters.due] : [])]);
+    return DUE_ORDER.filter((d) => present.has(d));
+  }, [dueCounts, filters.due]);
+
+  const showFilterBar =
+    !loading &&
+    !error &&
+    (kindChips.length > 1 || sourceChoices.length > 1 || dueChoices.length > 1 || hasFilters);
 
   const list = (
     <section
-      className={cn("flex min-h-0 min-w-0 flex-1 flex-col border-border bg-list", wide ? "lg:max-w-none" : "lg:w-[368px] lg:flex-none lg:shrink-0 lg:border-r xl:w-[384px]", showDetail && "hidden")}
-      aria-label="Needs action"
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1 flex-col border-border bg-list",
+        wide ? "lg:max-w-none" : "lg:w-[384px] lg:flex-none lg:shrink-0 lg:border-r xl:w-[420px]",
+        showDetail && "hidden",
+      )}
+      aria-label="Needs you"
       data-testid="briefing"
     >
-      {/* desktop toolbar: the title and the tabs on the line every pane's toolbar shares */}
-      <header className="hidden h-[52px] shrink-0 items-stretch gap-5 border-b border-border px-5 lg:flex" data-testid="home-header">
-        <h1 className="self-center text-[15px] font-semibold tracking-[-0.015em]">Home</h1>
-        {tabs}
+      <header className="hidden h-[52px] shrink-0 items-center gap-3 border-b border-border px-5 lg:flex" data-testid="home-header">
+        <h1 className="text-[15px] font-semibold tracking-[-0.015em]">Home</h1>
+        {!loading && payload && payload.status === "ok" && (
+          <span className="num text-[12px] text-muted" data-testid="needs-total">
+            {items.length}
+          </span>
+        )}
       </header>
-      {/* phone: large title, as an iPhone app opens */}
       <header className="lg:hidden">
         <div className="flex h-11 items-center justify-end gap-1 px-3">
           <MobileSearch />
@@ -551,19 +737,18 @@ function Today() {
         <h1 className="px-5 text-[30px] leading-9 font-bold tracking-[-0.025em]">Home</h1>
       </header>
       <SectionTabs section="home" />
-      {/* the day and what is late: the phone's line under its title; said to screen readers on a desktop */}
-      <p className="px-5 text-[13px] text-muted lg:sr-only" data-testid="headline">
-        {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: TZ })}
-        {lateTotal ? ` · ${lateTotal} late` : head && lateTotal === 0 ? ` · ${head.text}` : ""}
-      </p>
-      <PageIntro path="/" className="px-5 pt-1 lg:px-5 lg:pt-3" />
-      {tabs ? <div className="mt-3 flex h-10 shrink-0 border-b border-border px-5 lg:hidden">{tabs}</div> : <div className="h-3 lg:hidden" aria-hidden />}
+      <PageIntro path="/" className="px-5 pt-2 lg:px-5 lg:pt-3" />
 
       {supplier && (
         <div className="flex shrink-0 items-center gap-2 px-5 pt-3" data-testid="supplier-filter">
-          <span className="inline-flex h-7 min-w-0 items-center gap-2 rounded-[3px] bg-bg pr-1 pl-2 shadow-lift">
+          <span className="inline-flex h-7 min-w-0 items-center gap-2 rounded-[4px] bg-bg pr-1 pl-2 shadow-lift">
             <span className="truncate text-[12px] font-medium">{supplier}</span>
-            <button type="button" onClick={() => router.push("/")} aria-label="Show every supplier" className="flex size-5 items-center justify-center rounded text-muted hover:bg-hover hover:text-fg cursor-pointer">
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              aria-label="Show every supplier"
+              className="flex size-5 items-center justify-center rounded text-muted hover:bg-hover hover:text-fg cursor-pointer"
+            >
               <X className="size-3.5" aria-hidden />
             </button>
           </span>
@@ -571,166 +756,184 @@ function Today() {
       )}
 
       {!supplier && <HomeAsk className="shrink-0 px-5 pt-3" />}
-      <StaleNote since={home?.stale_since ?? briefing?.stale_since} onReturn={!!home?.stale_since} className="shrink-0 px-5 py-1.5" />
-      <FeedNote feed="reply_drafts" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
-      <FeedNote feed="autopilot" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
-      <FeedNote feed="late_pos" className="shrink-0 px-5 py-1.5 text-[12px] text-risk" />
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing && !briefingError && !error ? { "data-pending": "" } : {})}>
-        <SignedInFirstWeek />
-        {/* prepared work is its own chip (Confirm): listed under All and Confirm, never under
-            another verb, so All is the sum of the chips; kept mounted so its count stays read */}
-        {!supplier && !error && (
-          <div hidden={filter !== "all" && filter !== "confirm" && filter !== "decide"}>
-            <AssistQueue onCount={setQueued} except={mergedKinds} only={filter === "confirm" ? "confirm" : filter === "decide" ? "alerts" : undefined} />
-          </div>
-        )}
-        {/* sections no chip counts: under All only (a chip lists what its count says) */}
-        {filter === "all" && !supplier && (
-          <>
-            <NeedsMe />
-            <YourCommitments />
-            <InsightNewsList />
-            <YourTurn />
-          </>
-        )}
-        {error ? (
-          <div className="p-4">
-            <LoadProblem message={error} busy={busy} onRetry={() => load(true)} />
-          </div>
-        ) : loading ? (
-          <ListSkeleton onRetry={() => window.location.reload()} />
-        ) : filter === "reply" ? (
-          <div className="px-5 pt-3" data-testid="my-replies">
-            {repliesError ? <LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /> : replies ? <ReplyList triage={replies} selectedId={replyShown?.id} onSelect={desktop ? setReplyPick : undefined} states={states} onDone={done} /> : <Pending label="Reading your inbox" />}
-          </div>
-        ) : needsGroups.length === 0 && !(othersListed && !briefingError && briefing?.status === "read") ? (
-          <div className="px-5 py-10 text-[13px] text-muted">
-            {briefingError ? (
-              <LoadProblem message={briefingError} onRetry={loadBriefing} />
-            ) : alertsReading ? (
-              <Pending label="Reading your alerts" testId="alerts-reading" />
-            ) : refreshing ? (
-              <p data-testid="briefing-refreshing">{refreshingLine(briefing?.checked_on ?? na?.checked_on)}</p>
-            ) : briefing && briefing.status !== "read" ? (
-              <p data-testid="briefing-unavailable">{briefing.status === "not_configured" ? "The briefing hasn't run on this server." : "Couldn't load the briefing. Try again in a few minutes."}</p>
-            ) : (
-              total === 0 ? <p className="text-fg" data-testid="home-empty">Nothing needs you right now.</p> : null
-            )}
-          </div>
-        ) : (
-          visible.map((g) => (
-            <div key={g.type}>
-              <div className="sticky top-0 z-10 flex h-9 items-end bg-list px-5 pb-1.5">
-                <h2 className="text-[12px] font-medium text-muted">
-                  {g.type === "po_late" && !supplier ? (
-                    <Link href={LATE_HREF} className="group inline-flex items-center gap-1 hover:text-fg" data-testid="stat-late" title="Every late PO">
-                      {g.label} <span className="font-normal text-faint num">{g.count}</span>
-                      <ChevronRight className="size-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
-                    </Link>
-                  ) : (
-                    <>
-                      {g.label} <span className="font-normal text-faint num">{g.count + (mergedKinds.includes(kindOfGroup(g) ?? "") ? (heldN[kindOfGroup(g) ?? ""] ?? 0) : 0)}</span>
-                    </>
-                  )}
-                </h2>
-              </div>
-              {!supplier && (() => {
-                const kind = kindOfGroup(g);
-                if (!kind || needsGroups.find((x) => kindOfGroup(x) === kind)?.type !== g.type) return null;
-                const held = heldN[kind] ?? 0;
+
+      {showFilterBar && (
+        <div className="shrink-0 space-y-2 border-b border-border px-5 py-3" data-testid="needs-filters">
+          {(kindChips.length > 1 || filters.kinds.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by type" data-testid="kind-filters">
+              <button
+                type="button"
+                aria-pressed={filters.kinds.length === 0}
+                onClick={setAllKinds}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1 rounded-[4px] px-2 text-[12px] cursor-pointer",
+                  filters.kinds.length === 0 ? "bg-row-on font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                )}
+              >
+                All
+                <span className="num text-[11px] text-faint">{activeCurrent.length}</span>
+              </button>
+              {kindChips.map((kind) => {
+                const on = filters.kinds.includes(kind);
+                const count = kindCounts.get(kind) ?? 0;
                 return (
-                  <div hidden={filter !== "all" && filter !== "decide"}>
-                    {held > 0 && <p className="px-5 pt-0.5 text-[12px] text-muted">Holding up an order</p>}
-                    <div className="px-5">
-                      <AssistQueue kind={kind} onKind={(n) => setHeldN((x) => (x[kind] === n ? x : { ...x, [kind]: n }))} />
-                    </div>
-                    {held > 0 && <p className="px-5 pt-2 text-[12px] text-muted">Not holding an order we found</p>}
-                  </div>
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => toggleKind(kind)}
+                    className={cn(
+                      "inline-flex h-7 items-center gap-1 rounded-[4px] px-2 text-[12px] cursor-pointer",
+                      on ? "bg-row-on font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                    )}
+                  >
+                    {KIND_WORDS[kind] ?? kind}
+                    <span className="num text-[11px] text-faint">{count}</span>
+                  </button>
                 );
-              })()}
-              <ul className="px-2">
-                {g.rows.map((r, n) => (
-                  <Row key={r.key} row={r} on={!replyShown && r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} testId={g.type === "po_late" && n === 0 && !supplier ? "stat-oldest" : undefined} />
-                ))}
-              </ul>
-              {g.type === "po_late" && late && lateAll !== null && lateAll > late.length && (
-                <Link href={LATE_HREF} className="mx-5 mt-1 mb-2 block text-[12px] font-medium text-muted hover:text-fg" data-testid="late-partial">
-                  Showing the first {late.length} of {lateAll} late orders; all of them are on Late orders
-                </Link>
+              })}
+            </div>
+          )}
+
+          {(sourceChoices.length > 1 || dueChoices.length > 1 || hasFilters) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {sourceChoices.length > 1 && (
+                <label className="relative inline-flex h-7 items-center rounded-[4px] bg-bg/60 hover:bg-hover">
+                  <select
+                    aria-label="Filter by source"
+                    value={filters.source}
+                    onChange={(e) => setSourceFilter(e.target.value)}
+                    className="h-full cursor-pointer appearance-none bg-transparent pr-6 pl-2 text-[12px] text-fg outline-none"
+                  >
+                    <option value="">All sources</option>
+                    {sourceChoices.map((src) => (
+                      <option key={src} value={src}>
+                        {SOURCE_WORDS[src] ?? src} ({sourceCounts.get(src) ?? 0})
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 size-3 text-muted" aria-hidden />
+                </label>
               )}
-              {g.folded > 0 && (
+              {dueChoices.length > 1 && (
+                <label className="relative inline-flex h-7 items-center rounded-[4px] bg-bg/60 hover:bg-hover">
+                  <select
+                    aria-label="Filter by due date"
+                    value={filters.due}
+                    onChange={(e) => setDueFilter(e.target.value)}
+                    className="h-full cursor-pointer appearance-none bg-transparent pr-6 pl-2 text-[12px] text-fg outline-none"
+                  >
+                    <option value="">Any timing</option>
+                    {dueChoices.map((bucket) => (
+                      <option key={bucket} value={bucket}>
+                        {DUE_WORDS[bucket] ?? bucket} ({dueCounts.get(bucket) ?? 0})
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 size-3 text-muted" aria-hidden />
+                </label>
+              )}
+              {hasFilters && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setOpened((x) => ({ ...x, [g.type]: true }));
-                    if (!pages[g.type] && (briefing?.groups ?? []).some((b) => b.event_type === g.type && b.count > (b.in_top ?? 0))) more(g.type);
-                  }}
-                  className="mx-5 mt-1 mb-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer"
-                  data-testid="home-folded"
+                  onClick={clearFilters}
+                  className="text-[12px] text-muted hover:text-fg cursor-pointer"
+                  data-testid="clear-filters"
                 >
-                  Show {Math.max(g.folded, g.count - g.rows.length)} more
-                </button>
-              )}
-              {g.folded === 0 && g.more && pages[g.type]?.more !== false && (
-                <button type="button" onClick={() => more(g.type)} className="mx-5 mt-1 mb-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer">
-                  Show more ({g.count - g.rows.length})
+                  Clear filters
                 </button>
               )}
             </div>
-          ))
-        )}
-        {filter === "all" && !supplier && !error && !loading && financialGroups.length > 0 && (
-          <section aria-label="Financials" data-testid="home-financials">
-            <div className="sticky top-0 z-10 flex h-9 items-end bg-list px-5 pb-1.5">
-              <h2 className="text-[12px] font-medium text-muted">
-                Financials <span className="font-normal text-faint num">{financialGroups.reduce((n, g) => n + g.count, 0)}</span>
-              </h2>
-            </div>
-            {financialGroups.map((g) => {
-              const kind = g.rows.find((r) => r.item?.alert_kind)?.item?.alert_kind;
-              return (
-                <div key={g.type} className="pb-2" data-testid={`financials-${g.type}`}>
-                  <div className="flex items-baseline gap-2 px-5 pt-1 text-[12px] text-muted">
-                    <span className="text-fg/80">{g.label}</span>
-                    <span className="num text-faint">{g.count}</span>
-                    <Link href={kind ? `${ALERTS_HREF}#kind-${kind}` : ALERTS_HREF} className="ml-auto font-medium hover:text-fg">
-                      {g.count > g.rows.length ? `All ${g.count}` : "In Alerts"}
-                    </Link>
+          )}
+        </div>
+      )}
+
+      <StaleNote since={payload?.stale_since} onReturn={!!payload?.stale_since} className="shrink-0 px-5 py-1.5" />
+      {notes.length > 0 && (
+        <div className="shrink-0 space-y-1 px-5 py-2 text-[12px] text-muted" data-testid="needs-state" aria-live="polite">
+          {notes.map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+      )}
+
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto pb-4"
+        data-testid="needs-you"
+        {...(loading ? { "data-pending": "" } : {})}
+      >
+        {error ? (
+          <div className="p-4">
+            <LoadProblem message={error} busy={busy} onRetry={refresh} />
+          </div>
+        ) : loading ? (
+          <div className="px-5 pt-4">
+            <Pending label="Reading what needs you" />
+          </div>
+        ) : (
+          <>
+            {items.length === 0 ? (
+              <div className="px-5 py-10 text-[13px] text-muted" data-testid="home-empty">
+                {hasFilters
+                  ? "Nothing matches these filters."
+                  : payload?.status === "ok"
+                    ? olderItems.length > 0
+                      ? "Nothing recent needs you right now."
+                      : "Nothing needs you right now."
+                    : "The list could not be read completely; see the note above."}
+              </div>
+            ) : (
+              <>
+                <ul className="space-y-1.5 px-3 pt-2.5">
+                  {visible.map((item) => (
+                    <NeedRow key={item.id} item={item} on={selected?.id === item.id} onPick={() => pick(item.id)} />
+                  ))}
+                </ul>
+                {visible.length < items.length && (
+                  <div className="flex items-center gap-2 px-5 py-3 text-[12px] text-muted" data-testid="needs-paging">
+                    <span>
+                      Showing {visible.length} of {items.length}
+                    </span>
+                    <Button size="sm" variant="ghost" onClick={() => setShown((n) => n + PAGE_ROWS)}>
+                      Show {Math.min(PAGE_ROWS, items.length - visible.length)} more
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setShown(items.length)}>
+                      Show all
+                    </Button>
                   </div>
-                  <ul className="px-2">
-                    {g.rows.map((r) => (
-                      <Row key={r.key} row={r} on={!replyShown && r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} />
+                )}
+              </>
+            )}
+
+            {olderItems.length > 0 && payload && (
+              <div className="mt-2 border-t border-border px-2 pt-2" data-testid="older-needs">
+                <button
+                  type="button"
+                  aria-expanded={olderOpen}
+                  onClick={() => setOlderOpen((open) => !open)}
+                  data-testid="older-needs-toggle"
+                  className="flex w-full items-center gap-2 rounded-[4px] px-3 py-2 text-left text-[13px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                >
+                  {olderOpen ? (
+                    <ChevronDown className="size-4 shrink-0" aria-hidden />
+                  ) : (
+                    <ChevronRight className="size-4 shrink-0" aria-hidden />
+                  )}
+                  <span>
+                    Older than {payload.older_after_days} days ({olderItems.length})
+                  </span>
+                  <span className="ml-auto text-[12px] font-normal text-faint">{olderOpen ? "Hide" : "Show"}</span>
+                </button>
+                {olderOpen && (
+                  <ul className="space-y-0.5 pt-1" data-testid="older-needs-list">
+                    {olderItems.map((item) => (
+                      <NeedRow key={item.id} item={item} on={selected?.id === item.id} onPick={() => pick(item.id)} />
                     ))}
                   </ul>
-                </div>
-              );
-            })}
-          </section>
-        )}
-        {alertsReading && groups.length > 0 && <Pending label="Reading your alerts" className="px-5 pt-2" testId="alerts-reading" />}
-        {briefing?.status === "read" && briefing.count > 0 && briefing.watching_count !== 0 && groups.length > 0 && (
-          <Link href={`${ALERTS_HREF}#alerts`} className="mx-5 mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg" data-testid="see-all">
-            {typeof briefing.watching_count === "number" ? `${briefing.watching_count} more in Alerts` : `All ${briefing.count} in Alerts`}
-            <ChevronRight className="size-3.5" aria-hidden />
-          </Link>
-        )}
-        {(briefing?.test_records_hidden || na?.test_records_hidden) && groups.length > 0 && (
-          <p className="px-4 pt-3 text-[12px] text-faint" data-testid="briefing-tests-hidden">
-            {briefing?.test_records_hidden ?? na?.test_records_hidden}
-          </p>
-        )}
-        {na?.status === "read" && <div className="px-4 pt-2"><HiddenNotice hidden={na?.hidden} /></div>}
-        {filter === "all" && !supplier && !error && !loading && (
-          <>
-            {replies && replies.total > 0 && (
-              <div className="px-5 pt-3" data-testid="home-replies">
-                <h2 className="pb-1 text-[12px] font-medium text-muted">
-                  Reply <span className="font-normal text-faint num">{replies.total}</span>
-                </h2>
-                <ReplyList triage={replies} selectedId={replyShown?.id} onSelect={desktop ? setReplyPick : undefined} states={states} onDone={done} />
+                )}
               </div>
             )}
-            {repliesError && <div className="px-5 pt-3"><LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /></div>}
           </>
         )}
       </div>
@@ -743,43 +946,29 @@ function Today() {
       {showDetail && selected && (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="sticky top-0 z-20 flex h-11 shrink-0 items-center border-b border-border bg-bg px-1.5 lg:hidden">
-            {/* back to the list; a link opened straight to an item has no list behind it, so go to it */}
-            <button type="button" onClick={() => (window.history.length > 1 ? router.back() : router.replace("/"))} className="flex h-9 items-center gap-0.5 pr-2 text-[15px] text-accent cursor-pointer">
+            <button
+              type="button"
+              onClick={closeDetail}
+              className="flex h-9 items-center gap-0.5 pr-2 text-[15px] text-accent cursor-pointer"
+            >
               <ChevronLeft className="size-6" strokeWidth={2} aria-hidden />
               Home
             </button>
-            <span className="ml-auto pr-3 text-[13px] text-muted">{selected.title}</span>
+            <span className="ml-auto truncate pr-3 text-[13px] text-muted">{selected.title}</span>
           </div>
-          <TodayDetail row={selected} state={selected.suggestion ? states[selected.suggestion.id] : null} onDone={done} />
+          <NeedDetail item={selected} onClose={closeDetail} onGone={markGone} />
         </div>
       )}
-      {desktop && !wide && (
+      {desktop && selected && (
         <div className="hidden min-w-0 flex-1 lg:flex">
-          {replyShown ? (
-            <div className="flex min-w-0 flex-1 flex-col" data-testid="reply-detail">
-              <div className="h-[52px] shrink-0 border-b border-border" />
-              <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
-                <ReplyCard key={replyShown.id} className="max-w-xl" line={replyShown} state={replyShown.card_id ? (states[replyShown.card_id] ?? null) : null} onDone={done} />
-              </div>
-            </div>
-          ) : selected ? (
-            <TodayDetail key={selected.key} row={selected} state={selected.suggestion ? states[selected.suggestion.id] : null} onDone={done} />
-          ) : (
-            <div className="flex flex-1 flex-col">
-              <div className="h-[52px] shrink-0 border-b border-border" />
-              <div className="flex-1 overflow-y-auto px-8 py-8">
-                {!loading && !error && visible.length > 0 && <p className="mt-8 text-[12px] text-faint">Choose an item on the left to open it here.</p>}
-              </div>
-            </div>
-          )}
+          <NeedDetail key={selected.id} item={selected} onClose={closeDetail} onGone={markGone} />
         </div>
       )}
     </div>
   );
 }
 
-/** Home is one page with three tabs (the owner, 11-18: simpler tabs): what needs you, the
- * alerts (?show=alerts, was /watching) and the late POs (?show=late, was /late). */
+/** Home opens the unified Needs-you list; Alerts (?show=alerts) and Late POs (?show=late) remain intact. */
 function HomeTab() {
   usePreloadHomeParts();
   const show = useSearchParams()?.get("show");

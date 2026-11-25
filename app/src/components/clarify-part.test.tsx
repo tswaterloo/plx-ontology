@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { Answer } from "@/lib/types";
-import { AssumptionLine, ClarifyPart } from "./clarify-part";
+import { ClarifyPart } from "./clarify-part";
 
 const asked = {
   answer_id: "a1",
@@ -13,7 +13,6 @@ const asked = {
       { label: "PO 5448", detail: null },
     ],
   },
-  assumption: { text: "the calendar quarter, July to September", options: [{ label: "the fiscal quarter" }] },
 } as unknown as Answer;
 
 describe("asking back", () => {
@@ -25,14 +24,6 @@ describe("asking back", () => {
     fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "the one from Azelis" } });
     fireEvent.click(screen.getByRole("button", { name: "Answer" }));
     expect(onReply).toHaveBeenLastCalledWith("the one from Azelis", { answer_id: "a1", text: "the one from Azelis" });
-  });
-
-  it("says the assumed reading in one line and offers the other reading", () => {
-    const onReply = vi.fn();
-    render(<AssumptionLine a={asked} onReply={onReply} />);
-    expect(screen.getByTestId("assumption").textContent).toContain("Taken as: the calendar quarter, July to September");
-    fireEvent.click(screen.getByRole("button", { name: "the fiscal quarter" }));
-    expect(onReply).toHaveBeenCalledWith("the fiscal quarter", { answer_id: "a1", option: 0 });
   });
 
   it("offers nothing to press while a reply cannot be sent", () => {

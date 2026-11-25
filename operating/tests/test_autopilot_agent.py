@@ -388,11 +388,13 @@ class SecondCheck(unittest.TestCase):
                          ("", "Yes, Nov 20 works; the trucks are booked.", None,
                           ck.WARN_UNSUPPORTED))
         # the output step: a reviewed draft (Assist) keeps it with the warning; unreviewed
-        # (Autopilot) it is the person's open question, as before
+        # (Autopilot) it is kept the same way: never an empty "What should the reply say?"
+        # card for a draft a check flagged (the person reads every card; Auto never sends it)
         from operating import autopilot_agent_io as io
         for review, want in ((True, ("Yes, Nov 20 works; the trucks are booked.", None,
                                      ck.WARN_UNSUPPORTED)),
-                             (False, ("", {"question": ck.ASK_PLAIN, "options": []}, ""))):
+                             (False, ("Yes, Nov 20 works; the trucks are booked.", None,
+                                      ck.WARN_UNSUPPORTED))):
             with self.subTest(review=review):
                 got, _ = run(assistant(reply, Check(drop={"R"})))
                 inside = {**MAIL, "side": "internal"}
@@ -429,7 +431,8 @@ class SecondCheck(unittest.TestCase):
                 # a "repair" that says something new (no figure in it) is no repair either
                 ("Yes, Nov 20 works; the credit hold is released and your order shipped.",
                  True, ("Yes, Nov 20 works; the trucks are booked.", ck.WARN_UNSUPPORTED)),
-                ("Yes, Nov 20 works; [trucks].", False, ("", ""))):
+                ("Yes, Nov 20 works; [trucks].", False,
+                 ("Yes, Nov 20 works; the trucks are booked.", ck.WARN_UNSUPPORTED))):
             with self.subTest(fixed=fixed, review=review):
                 got, _ = run(assistant(reply, Check(drop={"R"}, fixed=fixed)))
                 out, _held, _why = io.agent_output(got, inside, "employee:A", "Nov 20?", {},

@@ -42,7 +42,8 @@ SPEC = {
         "do', 'what is open', 'what am I waiting on', 'what did I promise'. Read it FIRST "
         "for such questions, before any mail search. matters: every open matter of any age "
         "with kind, channel (mail, teams, system), from, subject, the quote it rests on, "
-        "next act, due, whether a draft is prepared, and 'still_open' when it has gone "
+        "next act, due, whether a draft is prepared, the ref of the message it rests on "
+        "(plx.open reads it; the answer's list links it), and 'still_open' when it has gone "
         "quiet since it was due; notes: what the person told the Workbench themselves "
         "(about meetings, customers, 'already handled', this week's priorities), which "
         "override the matters they contradict. status other than ok or stale says the "
@@ -70,6 +71,14 @@ def _row(i: Mapping[str, Any]) -> dict[str, Any]:
            "next_act": i["ask"] or None, "basis_at": _iso(i["basis_at"]),
            "due_at": _iso(i["due_at"]), "still_open": bool(i["still_open"]),
            "draft_prepared": bool(i["body"])}
+    # the message or record the matter rests on: its handle and the short ref the answer's
+    # items block links by (a handle too short for a ref is written as it is)
+    handle = next(iter(i.get("citations") or ()), None)
+    if handle:
+        from operating import open_refs
+        out["open"] = handle
+        if len(handle) >= open_refs.MIN_CHARS and handle.split("://", 1)[0] in open_refs.SCHEMES:
+            out["ref"] = open_refs.short(handle)
     return {k: v for k, v in out.items() if v not in (None, "", False)} | {
         "id": out["id"], "kind": out["kind"], "state": out["state"]}
 
@@ -91,19 +100,22 @@ def _notes(backend: Any, reader: Any) -> Any:
             for r in sorted(rows, key=lambda r: (not r.get("records"), ))]
 
 
-def call(backend: Any, reader: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+def store(backend: Any, reader: Any, *, person: str = "") -> dict[str, Any]:
+    """The person's own Assist store in one read, all ages, as ``call`` uses it: the raw
+    matter rows and the store's honest status (never an empty list for off or unreadable)."""
     from operating import assist_matters as am
     from operating import autopilot_engine as ae
     from . import assist_routes as routes
     pool = routes._pool(backend)
     if pool is None:
-        return {"status": "not_connected",
+        return {"status": "not_connected", "items": [],
                 "reason": "the Assist store is not connected here: read mail and Teams "
                           "with plx.search"}
     owner = bool(backend._apa_is_owner(reader))
-    person = str(args.get("person") or "").strip().lower()
+    person = person.strip().lower()
     if person and not owner:
-        return {"status": "refused", "reason": "only the owner reads another person's matters"}
+        return {"status": "refused", "items": [],
+                "reason": "only the owner reads another person's matters"}
     ids = {person} if person else routes._ids(backend, reader)
     pools = set() if person else set(backend._apa_pools(reader))
     from operating.card_actions import JournalBroken
@@ -114,8 +126,16 @@ def call(backend: Any, reader: Any, args: Mapping[str, Any]) -> dict[str, Any]:
         rows = None
     shown = am.shown_to(ids, rows=rows, draft=ae.load_draft())
     with pool.connection() as pg:
-        got = am.as_items(pg, ids | pools, shown=shown, owner_view=owner, everyone=False,
-                          all_ages=True, door=routes._door(backend, reader))
+        return am.as_items(pg, ids | pools, shown=shown, owner_view=owner, everyone=False,
+                           all_ages=True, door=routes._door(backend, reader),
+                           names_of=routes._names_of(backend))
+
+
+def call(backend: Any, reader: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    person = str(args.get("person") or "").strip().lower()
+    got = store(backend, reader, person=person)
+    if got["status"] in ("not_connected", "refused"):
+        return got
     items = [i for i in got["items"] if not args.get("kind") or i["kind_of_matter"] == args["kind"]]
     start = args.get("offset") if type(args.get("offset")) is int else 0
     page, size, at = [], 0, start

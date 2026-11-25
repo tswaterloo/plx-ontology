@@ -270,16 +270,27 @@ def _dsn_of(conn: Any) -> str:
 def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
           limit: int | None, embedder: md.Embedder | None = None, order: str = "recent",
           workers: int = 1, bulk: bool | None = None,
-          budget_seconds: float | None = None) -> dict[str, Any]:
+          budget_seconds: float | None = None, batch_size: int | None = None,
+          row_cap: int | None = None, write_budget: Any | None = None,
+          reuse: bool = True) -> dict[str, Any]:
     """Embed every pending content hash (``limit``: the first that many in ``order``),
     reusing a vector another row of the same content already has. ``workers`` > 1: that
     many processes, each with ``PLX_EMBED_THREADS`` threads (default: physical cores /
     workers). ``bulk`` (default: more than ``BULK_MIN`` pending): the HNSW index is dropped
     for the load and rebuilt after (``operating.pg.bulk``), also when the load fails.
     ``budget_seconds``: no batch is started after that long (each stored batch stays; the
-    next run continues with what is still pending)."""
+    next run continues with what is still pending). ``batch_size`` bounds the hashes in one
+    committed batch; ``row_cap`` bounds the wide-table rows one committed batch may update.
+    ``write_budget`` (``operating.embed.write_budget.RollingWriteBudget``)
+    meters each committed batch's WAL and starts no batch once the rolling hour is full;
+    because ``reuse_embeddings`` is one unbounded UPDATE, reuse is deferred whenever a write
+    budget is active (the hash is encoded again and one bounded batch still writes every row
+    of it)."""
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing as mp
+    if row_cap is not None and int(row_cap) < 1:
+        return {"refused": "embed_rows_not_positive"}
+    row_cap = None if row_cap is None else int(row_cap)
     dim = st.column_dim(conn)
     if dim is None:
         return {"refused": "embedding_column_absent"}
@@ -298,14 +309,23 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
         return {"refused": f"embed_model_unknown:{name}"}
     if model_dim > dim:
         return {"refused": f"model_dim_{model_dim}_wider_than_column_{dim}"}
-    reused = st.reuse_embeddings(conn, name)
+    reuse = reuse and write_budget is None
+    reused = st.reuse_embeddings(conn, name) if reuse else 0
     todo = st.pending(conn, name, kinds, limit, order)
     bulk = len(todo) > BULK_MIN if bulk is None else bulk
     from operating.pg import bulk as pgbulk
     conn.commit()     # pending() left a transaction open: never hold it across the load
+    meter = None
+    if write_budget is not None:
+        from .write_budget import WalMeter
+        meter = WalMeter(conn)
+        if meter.position() is None:
+            return {"refused": "wal_position_unreadable", "model": name,
+                    "write_budget": write_budget.status()}
     dropped = pgbulk.drop_vector_index(conn) if bulk and todo else False
     started = time.monotonic()
     texts_done = rows = chars = 0
+    wal_written = 0
     pool = None
     rebuild_seconds = None
     try:
@@ -321,27 +341,42 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
             from concurrent.futures import ThreadPoolExecutor
             pool = ThreadPoolExecutor(1)
             local = embedder
-        batches = [todo[i:i + EMBED_BATCH] for i in range(0, len(todo), EMBED_BATCH)]
+        batch_size = max(1, int(batch_size or EMBED_BATCH))
+        batches = [todo[i:i + batch_size] for i in range(0, len(todo), batch_size)]
         inflight: list[tuple[list[tuple[str, str]], Any]] = []
 
         def drain(n: int) -> None:
-            nonlocal rows, texts_done, chars
+            nonlocal rows, texts_done, chars, wal_written
             while len(inflight) > n:
                 found, future = inflight.pop(0)
                 vectors = future.result()
-                rows += st.store_embeddings(conn, name, dim, [s for s, _ in found], vectors)
+                before = meter.position() if meter is not None else None
+                if meter is not None and before is None:
+                    raise RuntimeError("wal_position_lost_before_embed_batch")
+                rows += st.store_embeddings(conn, name, dim, [s for s, _ in found], vectors,
+                                            row_cap=row_cap)
+                if meter is not None:
+                    written = meter.since(before)
+                    if written is None:
+                        raise RuntimeError("wal_position_lost_during_embed")
+                    wal_written += written
+                    write_budget.record(written)
                 texts_done += len(found)
                 chars += sum(len(t) for _, t in found)
 
         for shas in batches:
             if budget_seconds is not None and time.monotonic() - started > budget_seconds:
                 break
+            if write_budget is not None:
+                drain(0)     # account for every committed batch before starting another
+                if write_budget.blocked():
+                    break
             found = st.texts_for(conn, shas)
             conn.commit()     # never hold a read transaction while the batch encodes
             texts = [t for _, t in found]
             inflight.append((found, pool.submit(md.worker_encode, texts) if embedder is None
                              else pool.submit(local.encode, texts)))
-            drain(2 * workers if embedder is None else 1)
+            drain(0 if write_budget is not None else (2 * workers if embedder is None else 1))
         drain(0)
     finally:
         if pool is not None:
@@ -360,13 +395,24 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
             rebuild_seconds = round(time.monotonic() - t0, 1)
     remaining = len(st.pending(conn, name, None, None))
     rate = texts_done / seconds if seconds > 0 else 0.0
-    return {"model": name, "dim": model_dim, "column_dim": dim, "order": order,
-            "workers": workers, "bulk_index_rebuild_seconds": rebuild_seconds,
-            "reused_rows": reused, "texts_embedded": texts_done, "rows_updated": rows,
-            "seconds": round(seconds, 1), "texts_per_second": round(rate, 2),
-            "chars_per_text": int(chars / texts_done) if texts_done else 0,
-            "pending_after": remaining,
-            "projected_hours_for_pending": round(remaining / rate / 3600, 1) if rate else None}
+    report = {"model": name, "dim": model_dim, "column_dim": dim, "order": order,
+              "workers": workers, "bulk_index_rebuild_seconds": rebuild_seconds,
+              "reused_rows": reused, "texts_embedded": texts_done, "rows_updated": rows,
+              "seconds": round(seconds, 1), "texts_per_second": round(rate, 2),
+              "chars_per_text": int(chars / texts_done) if texts_done else 0,
+              "pending_after": remaining,
+              "projected_hours_for_pending": round(remaining / rate / 3600, 1) if rate else None}
+    if batch_size is not None:
+        report["batch_size"] = max(1, int(batch_size))
+    if row_cap is not None:
+        report["row_cap"] = int(row_cap)
+    if write_budget is not None:
+        report["write_budget"] = write_budget.status()
+        report["wal_bytes"] = wal_written
+        report["wal_bytes_per_row"] = int(wal_written / rows) if rows else None
+        if not reuse:
+            report["reuse_deferred"] = "write_budget"
+    return report
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -191,6 +191,19 @@ Changed:
 - One Data page in the menu holds every kind of record: orders, customers, suppliers, products, invoices, shipments and every other list
 - Home's prepared list opens fast: the reader's access is decided once per read instead of once per item, and the list draws its first 40 cards with Show more and Show all
 
+## Update 2026-11-25
+Changed:
+- Ask opens with 'Planning where to look' while it decides what to read
+- Insights draws only what you see, lets each person arrange, add and remove charts and ask in place, and gains ledger, receipt lead time and assembly measures
+- measures the data can't support say why
+- Admin is three tabs: Reliability, Data health (now holding what Trust showed) and Feedback
+- the old Autopilot log opens Assist's What it did
+- Insights and Ask charts show their work: the statement, the views, filters you can edit, and a check against the drawn figures
+- the ledger tile reads by account
+- Data health shows how answers are doing, the wrong answers waiting for a person, and the gaps
+- Give Assist a whole job: it plans it, prepares every piece with what it read, shows progress and can be stopped
+- you approve, edit or drop each piece, and nothing is sent or changed without your confirm
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

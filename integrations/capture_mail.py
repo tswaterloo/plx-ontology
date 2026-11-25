@@ -109,8 +109,11 @@ Named mailboxes (``mailboxes``, ``allowlisted_mailboxes``) stay bound to the one
 canonical allowlist, ``operating/case_mail_scope.json``
 (``operating.case_mail_scope.MailScope``): a named mailbox outside it, or one still
 ``pending_confirmation``, is set aside when the scope is read
-(``outside_allowlist``, counted) and never requested. Capturing a mailbox never
-lets anyone see it: every reader is re-gated per mailbox when viewing.
+(``outside_allowlist``, counted) and never requested. The fast-lane subset of a
+directory-wide scope is the one exception: those addresses were already covered by the
+scope they came from, so the subset extends its in-memory allowlist with just them
+rather than narrowing capture. Capturing a mailbox never lets anyone see it: every
+reader is re-gated per mailbox when viewing.
 
 Scheduling (``schedule_units``, one rule shared with the SharePoint capture; with
 ``pages_per_turn`` the run takes the folders in that order in turns of a few pages each,
@@ -196,6 +199,7 @@ from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 import contextlib
 import contextvars
+import fcntl
 import itertools
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -209,6 +213,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -503,6 +508,7 @@ _TRUNCATED_INDEX = ("CREATE INDEX IF NOT EXISTS messages_truncated_lists ON mess
 CAPPED_AFTER_ATTEMPTS = 2
 REPAIRS_PER_ROUND = 100
 TIME_BUDGET = "time_budget"   # a folder left when the run's time budget was spent
+CAPTURE_IN_PROGRESS = "capture_in_progress"   # another capture process holds this mailbox
 _ATTACHMENT_COLUMNS = ("(message_handle, attachment_id, l1_handle, mailbox_id, metadata, "
                        "content_sha256, content_status, recorded_at, text_status, "
                        "text_sha256) VALUES (?,?,?,?,?,?,?,?,?,?)")
@@ -614,10 +620,13 @@ class MailCaptureStore:
         self.purge_undecided = 0   # addresses the last purge could not decide (kept)
         self._keys_bytes: int | None = None   # message_keys pages (``store_bytes``)
         self.deny = deny
-        # One connection, one writer: the lanes of a run share it, each call under
-        # ``lock`` (``MailCapture`` lanes), so the store never sees two writers.
+        # One connection, shared by this capture's lanes under ``lock``. Separate capture
+        # processes may write disjoint mailboxes to the same store at once, so write
+        # transactions start IMMEDIATE: a writer waits on SQLite's one write lock instead
+        # of racing a read-snapshot upgrade and failing a capture unit with BUSY_SNAPSHOT.
         keep_store_modes(self.path)   # before SQLite makes -wal/-shm from the store's mode
-        self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False,
+                                  isolation_level="IMMEDIATE")
         self.lock = threading.RLock()
         self.db.row_factory = sqlite3.Row
         wal_journal(self.db)
@@ -946,11 +955,18 @@ class MailCaptureStore:
     @staticmethod
     def _write_file(target: Path, data: bytes) -> None:
         target.parent.mkdir(exist_ok=True, mode=0o700)
-        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-        os.replace(temporary, target)
+        # Unique even when two capture lanes of one test process write the same
+        # content-addressed blob at once (in deployment they are separate processes).
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.",
+                                                      suffix=".tmp", dir=target.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(data)
+            os.replace(temporary, target)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def blob(self, digest: str) -> bytes:
         """A blob's bytes (stored as they are or compressed), re-hashed. An original the
@@ -1662,17 +1678,30 @@ class MailCaptureStore:
                 "a.mailbox_id=? AND a.content_status=?", (mailbox_id, ATTACHMENT_DEFERRED))}
         return folders
 
-    def load_deferred_folders(self) -> None:
-        """Every mailbox's folders holding a deferred attachment, by one grouped query
-        (a run's start, before its lanes share the store lock)."""
+    def load_deferred_folders(self, mailbox_ids: Iterable[str] | None = None) -> None:
+        """The folders holding a deferred attachment, by one grouped query (a run's start,
+        before its lanes share the store lock). ``mailbox_ids`` bounds the preload to the
+        run's opened mailboxes; none means every mailbox, as a whole-store caller expects."""
         cache: dict[str, set[str]] = {}
-        for row in self.db.execute(
-                "SELECT DISTINCT a.mailbox_id, m.folder_id FROM attachments a JOIN messages m "
-                "ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
-                "a.content_status=?", (ATTACHMENT_DEFERRED,)):
+        sql = ("SELECT DISTINCT a.mailbox_id, m.folder_id FROM attachments a JOIN messages m "
+               "ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+               "a.content_status=?")
+        params: list[Any] = [ATTACHMENT_DEFERRED]
+        opened = None if mailbox_ids is None else list(dict.fromkeys(mailbox_ids))
+        if opened is not None:
+            if not opened:
+                self.__dict__["_deferred_folders"] = cache
+                return
+            sql += " AND a.mailbox_id IN (" + ",".join("?" * len(opened)) + ")"
+            params.extend(opened)
+        for row in self.db.execute(sql, params):
             cache.setdefault(row[0], set()).add(row[1])
-        for mailbox_id in self.db.execute("SELECT mailbox_id FROM mailboxes"):
-            cache.setdefault(mailbox_id[0], set())
+        if opened is not None:
+            for mailbox_id in opened:
+                cache.setdefault(mailbox_id, set())
+        else:
+            for mailbox_id in self.db.execute("SELECT mailbox_id FROM mailboxes"):
+                cache.setdefault(mailbox_id[0], set())
         self.__dict__["_deferred_folders"] = cache
 
     def _mark_deferred(self, mailbox_id: str, folder_id: str) -> None:
@@ -6168,6 +6197,8 @@ class MailCapture:
         queue.sort(key=lambda e: e[0])
         kept = self._deadline
         phase_end = self._monotonic() + RELIST_SECONDS
+        if kept is not None:
+            phase_end = min(phase_end, kept)
         try:
             for _order, box, row in queue:
                 left = min(RELIST_PAGES - summary["relist_pages"], RELIST_FOLDER_PAGES)
@@ -6592,7 +6623,9 @@ class MailCapture:
         mailboxes = []
         people_excluded = 0
         opened: dict[str, tuple[str, ...]] = {}   # mailbox id -> its scope folders
-        with self.reader.directory_cache():
+        lock_dir = self.store.root / "mailbox-locks"
+        lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self.reader.directory_cache(), contextlib.ExitStack() as mailbox_locks:
             for index, (address, folders) in enumerate(targets):
                 entry: dict[str, Any] = {"index": index, "folders": [],
                                          "folders_bound": len(folders)}
@@ -6637,6 +6670,22 @@ class MailCapture:
                     continue
                 if identity["object_id"] in opened:
                     continue               # named and listed: captured once per run
+                # A mailbox is one logical capture lane across every process of this
+                # store. SQLite serializes the small write transactions of disjoint
+                # mailboxes, but two readers of one mailbox would race its delta cursor,
+                # folder retirement and resync reconcile. Take the lane before any write
+                # for the mailbox; overlap is skipped, never raced.
+                lock_path = lock_dir / (sha256(identity["object_id"].encode("utf-8")).hexdigest()
+                                        + ".lock")
+                handle = open(lock_path, "a+b")
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    handle.close()
+                    entry.update(status=CAPTURE_IN_PROGRESS, complete=False)
+                    mailboxes.append(entry)
+                    continue
+                mailbox_locks.enter_context(handle)
                 opened[identity["object_id"]] = folders
                 self.store.record_mailbox(identity)
                 entry["mailbox_id"] = identity["object_id"]
@@ -6662,7 +6711,7 @@ class MailCapture:
             self._check_backlog(now=True)
             # Before the lanes share the store lock: which folders hold a deferred
             # attachment (``has_deferred_attachments`` at each folder round's end).
-            self.store.load_deferred_folders()
+            self.store.load_deferred_folders(list(opened))
             self._repaired = set()
             if self.ocr_workers and self._ocr is None and _ocr_engine():
                 self._ocr = _OcrQueue(self.store, self.ocr_workers, self._budget_spent,
@@ -6691,7 +6740,7 @@ class MailCapture:
                 self.store.save_folder(entry["mailbox_id"], "inbox", status=NO_MAILBOX,
                                        reason=NO_MAILBOX, last_run_at=self.store.now())
                 entry.update(status=NO_MAILBOX, complete=True)
-            elif "mailbox_id" in entry:
+            elif entry.get("mailbox_id") in opened:
                 entry["folders"] = [done[(entry["mailbox_id"], folder)]
                                     for folder in opened[entry["mailbox_id"]]]
                 # Complete only when every folder is, and was brought current this run.
@@ -6926,6 +6975,11 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                              "from its stored cursor on the next invocation")
     parser.add_argument("--scope", default=str(DEFAULT_SCOPE),
                         help="plx-mail-capture-scope/v1 file")
+    parser.add_argument("--only-mailboxes", default=None,
+                        help="comma-separated mailboxes of the scope to capture, with its "
+                             "window, folders, history and OCR policy unchanged")
+    parser.add_argument("--skip-mailboxes", default=None,
+                        help="comma-separated mailboxes left to another capture lane")
     parser.add_argument("--live-audience", required=True,
                         help="plx-live-source-audience/v1 file granting the capture principal")
     parser.add_argument("--principal", default=CAPTURE_PRINCIPAL)
@@ -7156,6 +7210,14 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     if isinstance(args.runs, bool) or not 1 <= args.runs <= 5:
         raise ValueError("runs must be 1..5")
     scope = CaptureScope.from_file(args.scope)
+    if getattr(args, "only_mailboxes", None) and getattr(args, "skip_mailboxes", None):
+        raise ValueError("only_mailboxes and skip_mailboxes are alternatives")
+    if getattr(args, "skip_mailboxes", None):
+        scope = scope.without_mailboxes([a.strip() for a in args.skip_mailboxes.split(",")
+                                         if a.strip()])
+    if getattr(args, "only_mailboxes", None):
+        scope = scope.mailbox_subset([a.strip() for a in args.only_mailboxes.split(",")
+                                      if a.strip()])
     audience = LiveSourceAudience.from_file(args.live_audience)
     env = os.environ if environ is None else environ
     state_base = None

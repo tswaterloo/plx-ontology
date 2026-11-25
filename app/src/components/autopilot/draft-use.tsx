@@ -24,39 +24,30 @@ const SHOWN = 5;
 
 function Entries({ label, entries, testId }: { label: string; entries: MemoryUse[]; testId: string }) {
   const [all, setAll] = useState(false);
+  // what the person may read, in the words they saved it in; never a stored key or a count of
+  // entries they cannot open
   const readable = entries.filter((e) => e.text);
-  const hidden = entries.length - readable.length;
-  if (!entries.length) return null;
+  if (!readable.length) return null;
   return (
     <div data-testid={testId}>
       <p className="text-[12px] text-muted">{label}</p>
-      {readable.length > 0 && (
-        <ul className="mt-0.5 space-y-0.5 text-[12px]">
-          {readable.slice(0, all ? undefined : SHOWN).map((e) => (
-            <li key={e.id} className="break-words">
-              {e.kind ? <span className="text-muted">{e.kind.replaceAll("_", " ")}: </span> : null}
-              {e.text}
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="mt-0.5 space-y-0.5 text-[12px]">
+        {readable.slice(0, all ? undefined : SHOWN).map((e) => (
+          <li key={e.id} className="break-words">{e.text}</li>
+        ))}
+      </ul>
       <ShowMore hidden={readable.length - SHOWN} open={all} onToggle={() => setAll((v) => !v)} />
-      {hidden > 0 && (
-        <p className="text-[12px] text-muted">
-          {hidden === 1 ? "1 entry" : `${hidden} entries`} you can't read: someone else's memory, or since changed or deleted
-        </p>
-      )}
     </div>
   );
 }
 
-/** The memory and template behind a draft, with the entries read but not applied kept apart. */
+/** What changed the draft: the template and the notes applied. What was only read for it is
+ * not listed (raw stored memory is internal, and none of it changed the draft). */
 export function DraftUse({ use }: { use: DraftUseData | null }) {
   if (!use) return null;
-  const memory = use.memory ?? [];
-  const related = use.related ?? [];
+  const memory = (use.memory ?? []).filter((e) => e.text);
   const template = use.template ?? null;
-  if (!memory.length && !related.length && !template) return null;
+  if (!memory.length && !template) return null;
   return (
     <div className="space-y-1.5" aria-label="Used for this draft" data-testid="autopilot-draft-use">
       {template && (
@@ -66,8 +57,7 @@ export function DraftUse({ use }: { use: DraftUseData | null }) {
           {template.doc_type ? <span className="text-muted"> ({template.doc_type.replaceAll("_", " ")})</span> : null}
         </p>
       )}
-      <Entries label="Applied" entries={memory} testId="draft-use-applied" />
-      <Entries label="Related, not applied" entries={related} testId="draft-use-related" />
+      <Entries label="Used for this draft" entries={memory} testId="draft-use-applied" />
     </div>
   );
 }

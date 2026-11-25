@@ -11,6 +11,7 @@ import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, requestDraft, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { countedWords, formatDateTime } from "@/lib/format";
+import { noteParts, saidOnce } from "@/components/autopilot/lines";
 import { cn } from "@/lib/cn";
 
 const SYSTEMS: Record<string, string> = {
@@ -47,7 +48,7 @@ export function TodoSteps({ todos }: { todos: TodoStep[] }) {
   );
 }
 
-export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void }) {
+export function TodoCard({ item, linked, onGone, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; feedback?: React.ReactNode }) {
   const [busy, setBusy] = useState(false);
   const card = useProblemSlot();
   const setError = card.set;
@@ -79,34 +80,69 @@ export function TodoCard({ item, linked, onGone }: { item: PreparedItem; linked?
     }
   };
   return (
-    <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-todo">
-      <div className="flex flex-wrap items-baseline gap-x-3">
-        {item.sender && <span className="text-[13px] font-medium">{item.sender}</span>}
-        {item.subject && item.subject.trim() !== (item.summary ?? "").trim() && <span className="text-[12px] text-muted">{item.subject}</span>}
-        <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
-      </div>
-      {item.summary && <p className="max-w-[46rem] text-[13px]">{countedWords(item.summary)}</p>}
-      {item.message && item.message.trim() !== (item.summary ?? "").trim() && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{item.message}</p>}
-      {item.note && <p className="max-w-[46rem] text-[12px] text-muted" data-testid="prepared-note">{item.note}</p>}
-      <TodoSteps todos={item.todos ?? []} />
-      {card.provide(<ItemActions
-        item={item}
-        onGone={onGone}
-        busy={busy}
-        primary={
+    <li
+      id={`prepared-${item.item_id}`}
+      className={cn(
+        "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4 transition-colors",
+        linked && "border-accent/70 ring-1 ring-accent/30",
+      )}
+      data-testid="prepared-todo"
+    >
+      {(() => {
+        const n = noteParts(item.note ?? "");
+        const [subjectLine, summary, noteText, message] = saidOnce([item.subject ?? "", item.summary ?? "", n.text, item.message ?? ""]);
+        const headline = summary || subjectLine;
+        const subHeader = summary && subjectLine ? subjectLine : "";
+        return (
           <>
-            <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
-              Done
-            </Button>
-            {canDraft && !asked && (
-              <Button size="sm" variant="ghost" disabled={busy} onClick={() => void draft()}>
-                {item.plan_status === "failed" ? "Ask again" : "Draft it"}
-              </Button>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              {item.sender && <span className="text-[14px] font-semibold text-fg">{item.sender}</span>}
+              {subHeader && (
+                <span className="inline-flex max-w-full items-center truncate rounded-md border border-border/70 bg-bg/80 px-2 py-0.5 text-[12px] text-muted">
+                  {subHeader}
+                </span>
+              )}
+              {n.labels.map((l) => (
+                <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
+                  {l}
+                </p>
+              ))}
+              <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
+            </div>
+            {headline && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(headline)}</p>}
+            {noteText && <p className="text-[13px] leading-relaxed text-muted" data-testid="prepared-note">{noteText}</p>}
+            {message && (
+              <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">
+                {message}
+              </p>
             )}
-            {asked && <span className="text-[12px] text-muted" data-testid="draft-asked">Drafting. It shows here when it is ready.</span>}
           </>
-        }
-      />)}
+        );
+      })()}
+      <TodoSteps todos={item.todos ?? []} />
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
+        <div className="min-w-0">
+          {card.provide(<ItemActions
+            item={item}
+            onGone={onGone}
+            busy={busy}
+            primary={
+              <>
+                <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
+                  Done
+                </Button>
+                {canDraft && !asked && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void draft()}>
+                    {item.plan_status === "failed" ? "Ask again" : "Draft it"}
+                  </Button>
+                )}
+                {asked && <span className="text-[12px] text-muted" data-testid="draft-asked">Drafting. It shows here when it is ready.</span>}
+              </>
+            }
+          />)}
+        </div>
+        {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
+      </div>
       {card.banner}
     </li>
   );

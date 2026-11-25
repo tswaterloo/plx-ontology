@@ -61,7 +61,7 @@ LIST_OFFSET_MOST = 10_000_000
 # GET (a path exactly one of MEASURE_ROUTES or under one of MEASURE_PREFIXES) and the
 # MEASURE_POSTS; never a write, an action, an upload or the view-as list
 MEASURE_ROUTES = frozenset({
-    "/api/me", "/api/home", "/api/home/bundle", "/api/sidebar", "/api/briefing", "/api/briefing/items",
+    "/api/me", "/api/home", "/api/home/bundle", "/api/home/needs", "/api/sidebar", "/api/briefing", "/api/briefing/items",
     "/api/briefing/pages", "/api/briefing/unjudged", "/api/suggestions", "/api/insights",
     "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/data-health", "/api/labour",
     "/api/my-work", "/api/suggest",
@@ -260,8 +260,8 @@ def origin_allowed(origin: str, headers: Any, allowed_origins: frozenset[str]) -
 
 
 # POST routes that change nothing the reader's screens show until they finish on their own
-# terms (the Ask counts its answer as a write itself)
-READ_POSTS = frozenset({"/api/ask", "/api/ask/files"})
+# terms (the Ask counts its answer as a write itself; warming a session is a read-only setup)
+READ_POSTS = frozenset({"/api/ask", "/api/ask/files", "/api/ask/warm", "/api/mcp"})
 # Writes that change only some of the reader's screens (the first part of a screen's name,
 # ``WorkspaceBackend._serving``); every other write leaves none of them current. Home marks
 # the briefing seen on each visit: its "new since your visit" marks and counts move; My work,
@@ -493,10 +493,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     if state_dir:
         from operating import person_style
         person_style.register(state_dir)
+        from operating import measure_candidates as _mc
+        _mc.register(state_dir)
     app.state.page_latency = pages
     feedback_store = getattr(backend, "feedback_store", None) \
         or fb.FeedbackStore.for_backend(backend)
     app.state.feedback = feedback_store
+    from operating import measure_candidates as _mc_mod
+    candidate_store = getattr(backend, "candidate_store", None) \
+        or _mc_mod.CandidateStore.for_backend(backend)
+    app.state.measure_candidates = candidate_store
     # The work log (``operator_api.work_log``): every path below appends what it did.
     work = getattr(backend, "work_log", None) or wl.WorkLog.for_backend(backend)
     app.state.work_log = work
@@ -564,10 +570,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.exception_handler(AuthRequired)
     async def _auth(request: Request, error: AuthRequired) -> JSONResponse:
         response = problem(error.code, error.status)
-        if request.headers.get("authorization") or request.cookies.get(SESSION_COOKIE):
+        if (request.headers.get("authorization") or request.cookies.get(SESSION_COOKIE)) \
+                and error.code != "canary_route_refused":
             # credentials were sent and refused (expired, revoked, no access): the desktop app
             # forgets what it kept. A request with none (Microsoft mode's first read, before
-            # the token is attached) says nothing about the person.
+            # the token is attached) says nothing about the person. A route-scoped refusal on
+            # a read-only service session does not invalidate the session itself.
             response.headers[SESSION_HEADER] = SESSION_REFUSED
         if error.status == 401 and auth.mode == "entra":
             response.headers["WWW-Authenticate"] = 'Bearer realm="plx-workbench"'
@@ -642,8 +650,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def reader(request: Request) -> Reader:
         who = auth.authenticate(request.headers, request.cookies)
         # none on a view-as read: its answer is the viewed person's, never kept on the machine
-        request.state.plx_door = None if request.headers.get(va.HEADER) is not None else door_value(
-            who, getattr(getattr(backend, "doors", None), "stamp", lambda: None)())
+        if request.headers.get(va.HEADER) is not None:
+            request.state.plx_door = None
+        else:
+            doors = getattr(backend, "doors", None)
+            access = doors.access_mark(who) if hasattr(doors, "access_mark") else None
+            request.state.plx_door = door_value(who, access)
         if getattr(who.session, "warm_ahead", False):   # read-ahead serves nobody
             raise AuthRequired("sign_in_required")
         if getattr(who.session, "view_as", False):   # only ever made below, per request
@@ -949,9 +961,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                         steps.append({"step": payload.step, "message": payload.message,
                                       "elapsed_ms": payload.elapsed_ms})
                     if event == "answer":
+                        from . import answer_cost
+                        spent = answer_cost.take(payload.answer_id)
                         notes.ask(who, payload, review={
                             "steps": steps[:40],
-                            "stream_ms": int((time.perf_counter() - started) * 1000)})
+                            "stream_ms": int((time.perf_counter() - started) * 1000),
+                            **({"cost": spent} if spent else {})})
                     yield sse(event, payload)
             except UserFacing as error:
                 failed = error.code
@@ -1095,6 +1110,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def home(who: Reader = Depends(reader)) -> m.Home:
         with first_partial():
             return backend.home(who)
+
+    @app.get("/api/home/needs", response_model=m.HomeNeeds, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}})
+    def home_needs(who: Reader = Depends(reader)) -> m.HomeNeeds:
+        """Home's unified Needs-you list: Assist matters of every age, late purchase orders,
+        alerts routed to you, and (for the owner) new feedback and undefined gap alerts, merged
+        and ranked server-side with items older than 90 days folded rather than dropped."""
+        with first_partial():
+            return backend.home_needs(who, feedback_store)
 
     @app.get("/api/sidebar", response_model=m.Sidebar, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -1295,7 +1319,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             "home": lambda: home(who),
             "sidebar": lambda: sidebar(who),
             "briefing": lambda: briefing("all", True, who),
-            "late": lambda: late_list(0, 100, who),
+            "late": lambda: late_list(offset=0, limit=100, who=who),
             "suggestions": lambda: suggestions(who),
             "replies": lambda: reply_triage(who),
             "approvals": lambda: approvals_queue(who)}
@@ -1372,6 +1396,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     from . import assist_routes   # the list from matters; a matter's item actions first
     assist_routes.install(app, backend, reader, notes)
+    from . import assist_jobs   # a whole job handed to Assist (ASSIST10)
+    assist_jobs.install(app, backend, reader)
+    from . import assist_workflows   # a person's own repeatable workflows (PLAN-1124 (b))
+    assist_workflows.install(app, backend, reader)
 
     @app.get("/api/autopilot", response_model=m.AutopilotArea, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
@@ -1636,11 +1664,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/insights/all/stream", tags=["insights"], response_class=StreamingResponse,
              responses={401: {"model": m.ErrorResponse}})
-    def insights_stream(request: Request, who: Reader = Depends(reader)) -> StreamingResponse:
+    def insights_stream(request: Request, eager: Optional[int] = None,
+                        who: Reader = Depends(reader)) -> StreamingResponse:
         """The whole dashboard in one response (one JSON object per line): your list, then
         each chart as it is read (its own result or its own error, each read as you)."""
         backend_ = _insights()
-        lines = backend_.insights_stream(who)
+        lines = backend_.insights_stream(who, eager)
 
         def body() -> Iterator[bytes]:
             for line in lines:
@@ -1656,19 +1685,41 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """One insight as you read it (its stored value with its read time; never read in this
         request: a Refresh starts the read behind it, a tile with nothing stored says 202): its definition (the statement), rows, chart and the people they name."""
         from .insights import FILLING, NotStored
+        backend_ = _insights()
         try:
-            out = _insights().insight_result(who, insight_id, again, stored_only=True)
+            out = backend_.insight_result(who, insight_id, again, stored_only=True)
         except NotStored:
-            raise FILLING   # its read is running in the background; nothing is computed here
+            if not again and callable(getattr(backend_, "wait_filling", None)) \
+                    and backend_.wait_filling(who, insight_id):
+                try:
+                    out = backend_.insight_result(who, insight_id, False, stored_only=True)
+                except NotStored:
+                    raise FILLING from None
+            else:
+                raise FILLING   # its read is running in the background; nothing is computed here
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/insights/{insight_id}/why", tags=["insights"],
              response_class=StreamingResponse, responses=errs)
     def insight_why(request: Request, insight_id: str = PathParam(pattern=r"^[a-z0-9_]{1,61}$"),
+                    drill: Optional[str] = Query(None, max_length=64),
+                    period: Optional[str] = Query(None, max_length=64),
+                    against: Optional[str] = Query(None, max_length=64),
+                    filter: Optional[str] = Query(None, max_length=2000),
                     who: Reader = Depends(reader)) -> StreamingResponse:
         """Why did this figure change: step by step (one JSON object per line), each step read
-        as you and sent as it is read with the best answer so far; stop reading at any step."""
-        lines = _insights().insight_why_stream(who, insight_id)
+        as you and sent as it is read with the best answer so far; stop reading at any step.
+        ``period`` (and ``against``) names the change, ``filter`` (JSON, a dimension to its
+        values) narrows the rows explained, ``drill`` reads one ranked dimension's parts."""
+        narrowed = None
+        if filter is not None:
+            try:
+                narrowed = json.loads(filter)
+            except ValueError:
+                narrowed = None
+            if not isinstance(narrowed, dict):
+                raise UserFacing("invalid_request", "filter is JSON: a dimension to its values.", 422)
+        lines = _insights().insight_why_stream(who, insight_id, drill, period, against, narrowed)
         first = next(lines, None)       # a figure that cannot be explained is its own error
 
         def body() -> Iterator[bytes]:
@@ -1706,7 +1757,19 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Pin a chart from an answer (or save a statement) to your dashboard: it reads
         again as whoever opens it."""
         out = _insights().insight_save(who, body)
+        from . import measure_candidates_api as mc_api
+        mc_api.capture_from_saved_tile(
+            candidate_store, backend, who,
+            tile_id=out.id, title=out.title, question=out.question or "", sql=body.sql)
         return JSONResponse(out.model_dump(mode="json"))
+
+    @app.put("/api/insights/layout", response_model=m.InsightList, tags=["insights"],
+             responses=errs)
+    def insight_layout(body: m.InsightLayout, who: Reader = Depends(reader)) -> Response:
+        """Keep your own arrangement of the dashboard (the order of your charts and the ones
+        you took off); gives the dashboard back as it now is."""
+        out = _insights().insight_layout(who, body)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     @app.delete("/api/insights/{insight_id}", response_model=m.InsightDeleted,
                 tags=["insights"], responses=errs)
@@ -1761,6 +1824,35 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         name = file_name(body.chart.title or "Chart", body.format)
         plain = re.sub(r'[^A-Za-z0-9 ._()-]', "_", name).strip() or f"chart.{body.format}"
         return Response(data, media_type=MEDIA[body.format],
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": f'attachment; filename="{plain}"'})
+
+    @app.post("/api/export/xlsx", tags=["insights"], responses={
+        **errs, 200: {"content": {"application/vnd.openxmlformats-officedocument."
+                                  "spreadsheetml.sheet": {}}, "description": "Excel workbook."}})
+    def export_xlsx(body: m.ExportXlsxRequest, who: Reader = Depends(reader)) -> Response:
+        """Export any chart, table or answer as a formatted Excel (.xlsx) workbook with
+        typed values, live native charts and a Sources sheet of full SQL statements. Nothing
+        is kept or sent."""
+        from operating import excel_export as ex
+        from operating.instruct_files import MEDIA, file_name
+        from .charts import NotDrawn, _check_shape
+        chart_dicts = [c.model_dump(mode="json") for c in body.charts]
+        try:
+            for c in chart_dicts:
+                _check_shape(c)
+            data = ex.workbook_xlsx(
+                title=body.title,
+                summary=body.summary,
+                tables=[t.model_dump(mode="json") for t in body.tables],
+                charts=chart_dicts,
+                citations=body.citations,
+            )
+        except (ValueError, NotDrawn) as why:
+            raise UserFacing("export_xlsx", str(why), 422) from None
+        name = file_name(body.title or "Export", "xlsx")
+        plain = re.sub(r'[^A-Za-z0-9 ._()-]', "_", name).strip() or "export.xlsx"
+        return Response(data, media_type=MEDIA["xlsx"],
                         headers={"Cache-Control": "no-store",
                                  "Content-Disposition": f'attachment; filename="{plain}"'})
 
@@ -2121,7 +2213,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         purchase orders, top alerts, cash position and margin (finance), quality holds, each
         weekly figure against the week before. Generated from the records you may read, no
         model call; every figure cites its sources and nothing hidden is counted."""
-        return backend.weekly_review(who, week)
+        with first_partial():
+            return backend.weekly_review(who, week)
 
     @app.get("/api/meetings/follow-up/{meeting_id}", response_model=m.MeetingFollowUp,
              tags=["briefs"], responses={401: {"model": m.ErrorResponse},
@@ -2158,6 +2251,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if len(object_type) > 60 or len(object_id) > 700 or not object_id:
             return problem("invalid_request", 422)
         return backend.meeting_brief(who, object_type, object_id)
+
+    @app.post("/api/email-draft", response_model=m.EmailDraftPrepared, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def prepare_email_draft(body: m.EmailDraftRequest,
+                            who: Reader = Depends(reader)) -> m.EmailDraftPrepared:
+        """Draft an email for a brief or answer (with its chart attached as an Office file)
+        for confirm-before-send through ``/api/actions/preview`` and ``/api/actions/confirm``.
+        Email only; live send remains gated by ``PLX_ACTIONS_LIVE`` and ``PLX_ACTIONS_SENDERS``."""
+        return backend.prepare_email_draft(who, body)
 
     @app.post("/api/actions/preview", response_model=m.ActionPreview, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
@@ -2538,6 +2641,11 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         except RecordNotFound:   # not an answer given to this reader; else a logged 500
             return problem("not_found", 404)
         notes.answer_rated(who, body, entry)
+        if body.rating == 1:
+            from . import measure_candidates_api as mc_api
+            mc_api.capture_from_accepted_answer(
+                candidate_store, backend, who, body.answer_id,
+                (entry.get("context") or {}).get("markings"))
         out = out.model_copy(update={"feedback_id": entry["id"],
                                      "stored_in": [*out.stored_in, "feedback_store"]})
         return JSONResponse(out.model_dump(mode="json"))
@@ -2584,6 +2692,38 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                                       for r in rows])
         return JSONResponse(out.model_dump(mode="json"))
 
+    @app.get("/api/answers/gaps", response_model=m.GapList, tags=["feedback"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def answer_gaps(who: Reader = Depends(reader)) -> Response:
+        """What Ask and Genie were asked that no view or measure defines, with how many times
+        (the owner and the admins)."""
+        if not fb.is_admin(who):
+            return problem("forbidden", 403)
+        from operating import gap_list
+        out = m.GapList(on=gap_list.path() is not None,
+                        gaps=[m.GapRow(**g, defined=gap_list.defined(g["kind"], g["name"]))
+                              for g in gap_list.counts()])
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/answers/observed", response_model=m.AskObserved, tags=["feedback"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def answers_observed(who: Reader = Depends(reader)) -> Response:
+        """How the Ask has been doing: per day the answers, failures, time and steps, and every
+        failed question (the owner and the admins; the question text and the error text only for the owner)."""
+        if not fb.is_admin(who):
+            return problem("forbidden", 403)
+        got = work.observed()
+        if got is None:
+            out = m.AskObserved(available=False, days=[], failures=[])
+        else:
+            from .feedback import owner_open
+            owner = bool(owner_open(getattr(who, "session", None)))
+            out = m.AskObserved(available=True, days=[m.AskDay(**d) for d in got["days"]],
+                                failures=[m.AskFailure(at=f["at"], error=f["error"] if owner else None,
+                                                       question=f["question"] if owner else None)
+                                          for f in got["failures"]])
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
     @app.post("/api/feedback/{feedback_id}/status", response_model=m.FeedbackEntry,
               tags=["feedback"], responses={401: {"model": m.ErrorResponse},
                                             403: {"model": m.ErrorResponse},
@@ -2599,6 +2739,192 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("not_found", 404)
         shown = fb.Viewer(backend, who, [row]).entry(row)
         return JSONResponse(_feedback_entry(shown, who, True).model_dump(mode="json"))
+
+    # ---- candidate business measure definitions --------------------------------------
+
+    @app.get("/api/measures/candidates", response_model=m.MeasureCandidateList,
+             tags=["measures"], responses={401: {"model": m.ErrorResponse},
+                                           403: {"model": m.ErrorResponse}})
+    def measure_candidates_list(
+        status: Optional[m.MeasureCandidateStatus] = None,
+        who: Reader = Depends(reader),
+    ) -> Response:
+        """Candidate measure definitions captured from accepted answers, saved charts, or
+        direct proposals (no silent cap; respects per-reader exclusion and masking)."""
+        if getattr(getattr(who, "session", None), "view_as", False):
+            raise UserFacing("view_as_refused", va.READ_ONLY, 403)
+        from . import measure_candidates_api as mc_api
+        owner = is_owner(who)
+        admin = fb.is_admin(who)
+        all_rows, _ = candidate_store.list(status=None)
+        visible_all = mc_api.present_candidates(
+            all_rows, backend=backend, reader=who, owner=owner, admin=admin)
+        counts = {s: 0 for s in _mc_mod.CANDIDATE_STATES}
+        for item in visible_all:
+            counts[item.status] = counts.get(item.status, 0) + 1
+        shown = [item for item in visible_all if status is None or item.status == status]
+        out = m.MeasureCandidateList(
+            can_review=owner, total=len(shown), counts=counts, candidates=shown)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/measures/candidates", response_model=m.MeasureCandidate,
+              tags=["measures"], responses={401: {"model": m.ErrorResponse},
+                                            403: {"model": m.ErrorResponse},
+                                            404: {"model": m.ErrorResponse},
+                                            422: {"model": m.ErrorResponse}})
+    def measure_candidates_propose(
+        body: m.MeasureCandidatePropose,
+        who: Reader = Depends(reader),
+    ) -> Response:
+        """Propose or capture a candidate shared measure definition from SQL, a saved chart,
+        or an accepted Ask answer."""
+        if getattr(getattr(who, "session", None), "view_as", False):
+            raise UserFacing("view_as_refused", va.READ_ONLY, 403)
+        from . import measure_candidates_api as mc_api
+        sql = (body.sql or "").strip()
+        title = (body.title or "").strip()
+        question = (body.question or "").strip()
+        source_kind = body.source_kind
+        source_ref = (body.source_ref or "").strip()
+        markings = fb.served_markings(backend, who)
+
+        if not sql and body.insight_id:
+            store = backend.insight_store() if hasattr(backend, "insight_store") else None
+            spec = store.get(who.key, body.insight_id) if store is not None else None
+            if spec is None:
+                return problem("not_found", 404)
+            sql = spec.sql
+            title = title or spec.title
+            question = question or spec.question
+            source_kind = "saved_tile"
+            source_ref = source_ref or spec.id
+        elif not sql and body.answer_id:
+            try:
+                kept = backend.answer_context(who, body.answer_id)
+            except RecordNotFound:
+                return problem("not_found", 404)
+            queries = [q for q in (kept.get("queries") or ()) if isinstance(q, Mapping) and q.get("sql")]
+            chosen = next((q for q in queries if not q.get("measure_id")), queries[0] if queries else None)
+            if chosen is None:
+                raise UserFacing("invalid_request", "That answer did not run a SQL query to propose.", 422)
+            sql = str(chosen["sql"])
+            title = title or str(chosen.get("title") or "")
+            question = question or str(kept.get("question") or "")
+            source_kind = "accepted_answer"
+            source_ref = source_ref or body.answer_id
+            kept_markings = kept.get("markings")
+            if kept_markings is None or markings is None:
+                markings = None
+            else:
+                markings = sorted((set(kept_markings) | set(markings)) & set(fb.SENSITIVE))
+
+        if not sql:
+            raise UserFacing("invalid_request", "Send a SQL statement, a saved chart id, or an answer id.", 422)
+
+        guard = fb.exclusion()
+        hidden = fb.reader_excluded(who, guard)
+        try:
+            row = candidate_store.capture(
+                sql=sql,
+                source_kind=source_kind,
+                title=title,
+                question=question,
+                source_ref=source_ref,
+                name=(body.name or "").strip(),
+                description=(body.description or "").strip(),
+                owner=(body.owner or "").strip(),
+                proposer_key=who.key,
+                proposer_name=None if hidden else who.display_name,
+                proposer_hidden=hidden,
+                markings=markings,
+                guard=guard,
+            )
+        except _mc_mod.CandidateError as exc:
+            raise UserFacing(exc.code, exc.message, exc.status) from None
+        presented = mc_api.present_candidates(
+            [row], backend=backend, reader=who, owner=is_owner(who), admin=fb.is_admin(who), guard=guard)
+        if not presented:
+            safe_row = m.MeasureCandidate(
+                id=str(row["id"]),
+                signature=str(row["signature"]),
+                status=row["status"],
+                source_kind=row["source_kind"],
+                usage_count=int(row.get("usage_count") or 1),
+                first_seen_at=str(row["first_seen_at"]),
+                last_seen_at=str(row["last_seen_at"]),
+                proposed_id="withheld",
+                proposed_name="Existing candidate definition",
+                proposed_description=None,
+                proposed_owner="Company",
+                proposed_unit=str(row.get("proposed_unit") or "number"),
+                proposed_grain=str(row.get("proposed_grain") or "row"),
+                withheld=["pending"],
+            )
+            return JSONResponse(safe_row.model_dump(mode="json"))
+        return JSONResponse(presented[0].model_dump(mode="json"))
+
+    @app.post("/api/measures/candidates/{candidate_id}/approve",
+              response_model=m.MeasureCandidate, tags=["measures"],
+              responses={401: {"model": m.ErrorResponse},
+                         403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse},
+                         409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def measure_candidates_approve(
+        candidate_id: str,
+        body: Optional[m.MeasureCandidateApprove] = None,
+        who: Reader = Depends(reader),
+    ) -> Response:
+        """Owner-only: promote a candidate into the live governed measure overlay."""
+        if getattr(getattr(who, "session", None), "view_as", False):
+            raise UserFacing("view_as_refused", va.READ_ONLY, 403)
+        if not is_owner(who):
+            return problem("forbidden", 403)
+        from . import measure_candidates_api as mc_api
+        guard = fb.exclusion()
+        edits = body.model_dump(exclude_none=True) if body is not None else None
+        try:
+            row = candidate_store.approve(
+                candidate_id,
+                reviewer_name=who.display_name,
+                edits=edits,
+                guard=guard,
+            )
+        except _mc_mod.CandidateError as exc:
+            raise UserFacing(exc.code, exc.message, exc.status) from None
+        presented = mc_api.present_candidates(
+            [row], backend=backend, reader=who, owner=True, admin=True, guard=guard)
+        return JSONResponse(presented[0].model_dump(mode="json"))
+
+    @app.post("/api/measures/candidates/{candidate_id}/dismiss",
+              response_model=m.MeasureCandidate, tags=["measures"],
+              responses={401: {"model": m.ErrorResponse},
+                         403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}})
+    def measure_candidates_dismiss(
+        candidate_id: str,
+        body: Optional[m.MeasureCandidateDismiss] = None,
+        who: Reader = Depends(reader),
+    ) -> Response:
+        """Owner-only: dismiss a candidate definition from the review queue."""
+        if getattr(getattr(who, "session", None), "view_as", False):
+            raise UserFacing("view_as_refused", va.READ_ONLY, 403)
+        if not is_owner(who):
+            return problem("forbidden", 403)
+        from . import measure_candidates_api as mc_api
+        guard = fb.exclusion()
+        try:
+            row = candidate_store.dismiss(
+                candidate_id,
+                reviewer_name=who.display_name,
+                reason=body.reason if body is not None else None,
+                guard=guard,
+            )
+        except _mc_mod.CandidateError as exc:
+            raise UserFacing(exc.code, exc.message, exc.status) from None
+        presented = mc_api.present_candidates(
+            [row], backend=backend, reader=who, owner=True, admin=True, guard=guard)
+        return JSONResponse(presented[0].model_dump(mode="json"))
 
     # ---- the work log ---------------------------------------------------------------
 
@@ -2872,6 +3198,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("not_found", 404)
         return work_log_thread(thread, who)
 
+    @app.post("/api/ask/warm", response_model=m.AskWarmStatus, tags=["ask"],
+              responses={401: {"model": m.ErrorResponse}})
+    def ask_warm(who: Reader = Depends(reader)) -> Response:
+        """Start a warm Ask session for this reader when the Ask box opens or focuses
+        (Ask spec 19 S3). Non-blocking; no model call is made."""
+        from . import simple_ask
+        out = m.AskWarmStatus(**simple_ask.warm_status(backend, who))
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
     @app.get("/api/ask/chats", response_model=m.AskChats, tags=["ask"],
              responses={401: {"model": m.ErrorResponse}})
     def ask_chats(q: Optional[str] = Query(None, max_length=200),
@@ -2934,7 +3269,20 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                                        "question", "answer")},
             claims=row.get("claims") or [], flagged=row.get("flagged") or [],
             withheld=row.get("withheld") or [],
+            review_requested=bool(row.get("review_requested")),
             served_version=ctx.get("served_version"), app_version=ctx.get("app_version"))
+
+    @app.post("/api/mcp", include_in_schema=False)
+    async def genie_mcp_endpoint(request: Request) -> JSONResponse:
+        who = reader(request)
+        if request.headers.get(va.HEADER) is not None:
+            raise UserFacing(
+                "view_as_refused",
+                "MCP endpoint is read-only for the authenticated reader; view-as is not permitted",
+                403,
+            )
+        from .genie_mcp import handle_mcp_request
+        return await handle_mcp_request(request, backend, who)
 
     return app
 

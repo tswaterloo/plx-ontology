@@ -55,6 +55,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 from typing import Any, Callable, Iterable, Mapping
 
 from . import drafts
@@ -719,12 +720,46 @@ def organiser_of(record: Mapping[str, Any], viewer: Viewer) -> bool:
 
 # ------------------------------------------------------------------ store
 
+_PEOPLE_CACHE_LOCK = threading.Lock()
+_PEOPLE_CACHE: dict[tuple[Any, ...], Any] = {}
+_PEOPLE_ENV_KEYS = ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE",
+                    "PLX_EXCLUDED_PEOPLE_SET", "PLX_PEOPLE_EXCLUSION_OFF")
+
+
+def _dir_mtimes(state_dir: Path) -> tuple[tuple[str, int], ...]:
+    """Stat stamp of the mail-capture directory files ``with_directory`` reads, so the cached
+    guard reloads immediately whenever capture updates them."""
+    out: list[tuple[str, int]] = []
+    for rel in ("mail-capture/capture.sqlite", "mail-capture/directory.json",
+                "mail-capture/tenant-listing.json", "mail-capture/tenant-users.json"):
+        p = state_dir / rel
+        try:
+            st = p.stat()
+            out.append((rel, st.st_mtime_ns))
+        except OSError:
+            out.append((rel, -1))
+    return tuple(out)
+
+
 def people_for(state_dir: str | Path, environ: Mapping[str, str] | None = None) -> Any:
     """The people exclusion of this host (its ID list, the mail capture's directory
-    attached), as every follow-up read re-checks it."""
+    attached), as every follow-up read re-checks it. Cached per (state_dir, exclusion env,
+    directory file mtimes) so follow-up requests do not re-read capture SQLite on every hit."""
     from integrations import people_exclusion as px
     env = dict(os.environ if environ is None else environ)
-    return px.with_directory(px.PeopleExclusion.from_env(env), state_dir)
+    root = Path(state_dir)
+    env_sig = tuple((k, env.get(k, "")) for k in _PEOPLE_ENV_KEYS)
+    key = (str(root), env_sig, _dir_mtimes(root))
+    with _PEOPLE_CACHE_LOCK:
+        hit = _PEOPLE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    guard = px.with_directory(px.PeopleExclusion.from_env(env), state_dir)
+    with _PEOPLE_CACHE_LOCK:
+        if len(_PEOPLE_CACHE) >= 32:
+            _PEOPLE_CACHE.clear()
+        _PEOPLE_CACHE[key] = guard
+    return guard
 
 
 def readmit(record: Mapping[str, Any], people: Any) -> str | None:

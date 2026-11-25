@@ -832,8 +832,8 @@ PRICE_BELOW_TYPICAL = Rule(
     "array_agg(DISTINCT cl) AS classes FROM cum, unnest(classes) cl GROUP BY 1, 2, 3, 4), "
     "standing AS (SELECT cust, count(*) - 1 AS others FROM paid GROUP BY cust) "
     + _PRICE_OUT.format(
-        why="concat_ws(' ', x.customer, 'paid', round((1 - x.price / t.median) * 100), "
-            "'% below the usual price for', x.item_name, '(' || x.cur || ' per ' || x.unit || "
+        why="concat_ws(' ', x.customer, 'paid', round((1 - x.price / t.median) * 100) "
+            "|| '% below the usual price for', x.item_name, '(' || x.cur || ' per ' || x.unit || "
             "') over the last {p[days]} days.')").replace(
         "x.classes || c.access_class", "x.classes || t.classes || c.access_class") +
     "FROM paid x JOIN typ t USING (cust, item, unit, cur) JOIN standing sd USING (cust) "
@@ -863,7 +863,7 @@ CUSTOMER_PRICE_DROP = Rule(
              "{p[day]}::date - 2 * {p[days]} AND l.invoice_date <= {p[day]}::date - {p[days]}")
     + " " + _PRICE_OUT.format(
         why="concat_ws(' ', x.customer || '''s price for', x.item_name, 'dropped', "
-            "round((1 - x.price / w.price) * 100), '% (' || x.cur || ' per ' || x.unit || "
+            "round((1 - x.price / w.price) * 100) || '% (' || x.cur || ' per ' || x.unit || "
             "') against the {p[days]} days before.')").replace(
         "x.classes || c.access_class", "x.classes || w.classes || c.access_class").replace(
         "x.cols, x.srcs", "x.cols || w.cols, x.srcs || w.srcs") +

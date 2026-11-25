@@ -36,17 +36,15 @@ from .backend_run import _keep_found
 
 
 
-def _understood(question: str, *, assumption: str = "", choice: Optional[str] = None,
+def _understood(question: str, *, choice: Optional[str] = None,
                 asked: str = "") -> str:
     """The question the answer path works with: the person's words, then what they
-    meant (their pick or their own answer to ``asked``) or the stated assumption."""
+    meant (their pick or their own answer to ``asked``)."""
     question = question.strip()
     if choice:
         meant = f"Asked \"{asked}\", they answered: {choice}" if asked else \
             f"They mean: {choice}"
         return f"{question}\n({meant})"
-    if assumption:
-        return f"{question}\n(Read as: {assumption})"
     return question
 
 
@@ -157,12 +155,11 @@ class AskMixin:
                 memory.tool(reader, self._memory_decide(reader, wait=True)))
 
     def _clarified(self, reader: Reader, request: m.AskRequest) -> m.AskRequest:
-        """A reply to the question an earlier answer asked back (or another reading of
-        its assumption): that question again, with the record picked as ``object_id``
-        or the person's words added. When the earlier answer is not this reader's own,
-        no longer kept (a restart) or kept no question, the reply's own words are
-        answered as they stand (never another reader's question or records), and never
-        asked back again."""
+        """A reply to the question an earlier answer asked back: that question again,
+        with the record picked as ``object_id`` or the person's words added. When the
+        earlier answer is not this reader's own, no longer kept (a restart) or kept no
+        question, the reply's own words are answered as they stand (never another
+        reader's question or records), and never asked back again."""
         reply = request.clarified
         assert reply is not None
         with self._lock:

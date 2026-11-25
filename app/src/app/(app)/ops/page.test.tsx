@@ -122,7 +122,8 @@ describe("Reliability: open problems in words", () => {
     const { opsLine } = await import("@/components/shell");
     expect(opsLine("capture_undecided_list", "capture_undecided_list: 1 undecided address(es) since Nov 12")).toBe("Mail addresses the directory can't place: 1 undecided address(es) since Nov 12");
     expect(opsLine("unit:plx-reply-drafts.timer", "plx-reply-drafts.timer (system): stopped: no next run")).toBe("Reply drafts schedule: stopped: no next run");
-    expect(opsLine("unit:plx-autopilot-fast-serve.service", "plx-autopilot-fast-serve.service (system): enabled but not running")).toBe("Autopilot fast feed job: enabled but not running");
+    expect(opsLine("unit:plx-autopilot-fast-serve.service", "plx-autopilot-fast-serve.service (system): enabled but not running")).toBe("Assist fast feed job: enabled but not running");
+    expect(opsLine("autopilot_reply_latency", "Autopilot reply time: 18 min")).toBe("Assist reply time: 18 min");
     expect(opsLine("some_check", "some_check_other: x")).toBe("some_check_other: x");
     // a line the check already words is left alone
     expect(opsLine("disk_forecast:/data", "Disk forecast: /data fills in about 11.8 days")).toBe("Disk forecast: /data fills in about 11.8 days");

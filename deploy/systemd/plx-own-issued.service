@@ -1,11 +1,11 @@
 # PLX Workbench own-issued guard refresh at low priority: one run of
-# `python3 -m operating.pg.own_issued refresh`. Judges the document of every
-# SupplierInvoice / SupplierConfirmation object no pass judged yet (the ones the delta
-# added; the first run judges them all) by the Sage OE record-line rule (PLX's own sales
-# invoices and order confirmations the served store holds as supplier documents) and adds
-# their rows to ontology.own_issued_documents / own_issued_judged in one transaction;
-# readers withhold those ids. Reads the served store and the capture stores' kept readings
-# only; writes only those two tables.
+# deploy/spark/own_issued.sh, the pass with its judging on a Spark (the box keeps
+# serving). The box bundles the inputs of the documents no pass judged yet (the digests,
+# their capture rows, and their blobs, cleaned up after each run), the Spark judges them
+# there (the extraction and matching CPU and memory are the Spark's), and the box applies
+# the decisions in refresh's own transaction, the only writes of
+# ontology.own_issued_documents / own_issued_judged. Same judgement, same rows:
+# a document the pass cannot read is never recorded and is judged again on a later pass.
 # Does nothing until migration 0038 is applied (--if-migrated); skipped in a migration
 # window (window_lock). Started by plx-own-issued.timer.
 [Unit]
@@ -25,7 +25,7 @@ UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SEC
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PGAPPNAME=%N
 ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
-ExecStart=/data/venv/bin/python3 -m operating.pg.own_issued refresh --if-migrated --workers 12
+ExecStart=@PLX_CURRENT@/deploy/spark/own_issued.sh /data/scratch/plx-own-issued
 Nice=19
 CPUWeight=20
 IOWeight=20

@@ -8,14 +8,28 @@ it with the fill, and a read of that measure says so instead of a number
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Mapping
 
+log = logging.getLogger(__name__)
+
 HEALTH = Path(__file__).resolve().parents[1] / "devloop" / "column-health.json"
+# the same measurement for the columns of a measure over records (``source``, exported by
+# ``python3 -m operating.source_health export``): key ``source:<measure id>``
+SOURCE_HEALTH = Path(__file__).resolve().parents[1] / "devloop" / "source-health.json"
 
 
-def health(path: Path = HEALTH) -> dict[str, dict[str, dict[str, Any]]]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def health(path: Path = HEALTH, source: Path = SOURCE_HEALTH) -> dict[str, dict[str, dict[str, Any]]]:
+    got = json.loads(path.read_text(encoding="utf-8"))
+    if source.exists():
+        got.update(json.loads(source.read_text(encoding="utf-8")).get("sources", {}))
+    return got
+
+
+def key_of(m: Mapping[str, Any]) -> str:
+    """Where measure ``m``'s columns are measured: its view, or its own source."""
+    return f"source:{m['id']}" if m.get("source") else m["view"]
 
 
 def problems(m: Mapping[str, Any], got: Mapping[str, Mapping[str, Mapping[str, Any]]]
@@ -24,9 +38,10 @@ def problems(m: Mapping[str, Any], got: Mapping[str, Mapping[str, Mapping[str, A
     req = m.get("requires")
     if not isinstance(req, list) or not req:
         return [f"{m['id']}: declares no requires"]
-    cols = got.get(m["view"])
+    key = key_of(m)
+    cols = got.get(key)
     if cols is None:
-        return [f"{m['id']}: {m['view']} has no column health"]
+        return [f"{m['id']}: {key} has no column health"]
     out = []
     for r in req:
         c, need = r.get("column"), r.get("min_fill")
@@ -35,11 +50,11 @@ def problems(m: Mapping[str, Any], got: Mapping[str, Mapping[str, Mapping[str, A
             continue
         h = cols.get(c)
         if h is None:
-            out.append(f"{m['id']}: {m['view']}.{c} is not a column")
+            out.append(f"{m['id']}: {key}.{c} is not a column")
         elif h.get("fill") is None:
-            out.append(f"{m['id']}: {m['view']}.{c} has no measured fill")
+            out.append(f"{m['id']}: {key}.{c} has no measured fill")
         elif h["fill"] < need:
-            out.append(f"{m['id']}: {m['view']}.{c} filled on {h['fill']:.0%}, needs {need:.0%}")
+            out.append(f"{m['id']}: {key}.{c} filled on {h['fill']:.1%}, needs {need:.0%}")
     return out
 
 
@@ -48,3 +63,16 @@ def measurable(m: Mapping[str, Any], got: Mapping[str, Any] | None = None) -> di
     why = problems(m, health() if got is None else got)
     return {"status": "ok"} if not why else {"status": "unknown",
                                             "why": "not measurable: " + "; ".join(why)}
+
+
+def verdict(m: Mapping[str, Any]) -> tuple[str, str]:
+    """(why not, note) for a read of measure ``m``: ``why not`` is plain words when it is not
+    measurable on the newest exported health ("" when it is); ``note`` says the fill could not
+    be checked (health unreadable: the read goes on and says so), "" otherwise."""
+    try:
+        got = health()
+    except (OSError, ValueError) as exc:
+        log.warning("fill contract: column health unreadable (%s)", exc)
+        return "", f"the fill of its columns could not be checked ({type(exc).__name__})"
+    why = problems(m, got)
+    return ("not measurable: " + "; ".join(why) if why else ""), ""

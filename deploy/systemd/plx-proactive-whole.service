@@ -35,9 +35,8 @@ Environment=PLX_PROACTIVE_WORKERS=6
 # the store the incremental pass reads (plx-proactive-inc.service)
 Environment=PLX_ONTOLOGY_PG=only
 # the engine's budget (each detector also stops at its own window), the vendor checks the rest
-ExecStart=/data/venv/bin/python3 -m operating.vendor_watch --state-dir /data/plx-state \
-  --config @PLX_HOME@/.config/plx/workbench-host-vince/host.json \
-  --refresh whole --refresh-seconds 5400 --budget-seconds 6300 --bound 400
+ExecStart=@PLX_CURRENT@/deploy/spark/proactive_whole.sh /data/plx-state \
+  @PLX_HOME@/.config/plx/workbench-host-vince/host.json /data/scratch/plx-proactive-whole
 # serving keeps its share of the host: lower CPU and I/O weight than plx-api
 Nice=5
 CPUWeight=50

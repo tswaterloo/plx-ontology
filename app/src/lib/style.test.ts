@@ -20,7 +20,7 @@ function files(dir: string): string[] {
 const RULES: [string, RegExp][] = [
   ["gradient", /\bbg-(?:gradient|linear|radial|conic)-|(?<!repeating-)(?:linear|radial|conic)-gradient\(/],
   ["glow", /\b0_0_0_(?:[2-9]|\d{2,})px|(?<![\w])0_0_[1-9]\d*px_[^\]\s]*--accent|\bdrop-shadow(?:-|\b)|\bshadow-(?:accent|blue|\w+-\d{3})\b/],
-  ["looping motion", /\banimate-(?:pulse|ping|bounce|blink)\b|\binfinite\b(?![^;]*\bspin\b)/],
+  ["looping motion", /\banimate-(?:pulse|ping|bounce|blink)\b|(?<!skeleton-pulse[^;]*)\binfinite\b(?![^;]*\bspin\b)/],   // a loading placeholder's slow pulse (owner 11-24) is the one allowed loop
   ["pill badge", /\brounded-full\b[^"'`]*\b(?:px|py)-\d|\b(?:px|py)-\d[^"'`]*\brounded-full\b/],
   ["emoji", /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B50}\u{2B55}\u{FE0F}]/u],
 ];

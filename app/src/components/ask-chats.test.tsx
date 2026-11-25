@@ -72,4 +72,31 @@ describe("Ask's chats list", () => {
     await act(async () => userEvent.click(await screen.findByRole("menuitem", { name: "Unpin" })));
     expect(api.updateAskChat).toHaveBeenCalledWith("c2", { pinned: false });
   });
+
+  it("puts time in group headers, not on the rows", async () => {
+    render(<AskChatList onNew={() => undefined} />);
+    await screen.findByText("Which orders are late?");
+    expect(screen.getByRole("region", { name: "Today" })).toHaveTextContent("Which orders are late?");
+    expect(screen.queryByText(/ago$/)).toBeNull();
+  });
+
+  it("folds the same question asked again into one row with a count, the rest one click away", async () => {
+    const again = [1, 2, 3].map((n) => ({ conversation_id: `r${n}`, title: "Which open sales orders are late?", named: false, pinned: false, questions: 1, last_at: hoursAgo(n) }));
+    api.getAskChats.mockResolvedValue({ available: true, chats: again });
+    render(<AskChatList onNew={() => undefined} />);
+    await screen.findByText("Which open sales orders are late?");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: /Asked 3 times/ }));
+    expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/ask?c=r1", "/ask?c=r2", "/ask?c=r3"]);
+  });
+
+  it("reaches every chat of a long list with no cap or show-more wall", async () => {
+    const many = Array.from({ length: 150 }, (_, n) => ({ conversation_id: `m${n}`, title: `Question ${n}`, named: false, pinned: false, questions: 1, last_at: hoursAgo(n / 10) }));
+    api.getAskChats.mockResolvedValue({ available: true, chats: many });
+    render(<AskChatList onNew={() => undefined} />);
+    await screen.findByText("Question 0");
+    // no IntersectionObserver in this environment: the whole list is drawn
+    await waitFor(() => expect(screen.getAllByRole("link")).toHaveLength(150));
+    expect(screen.queryByText(/Show 30 more|Show all/)).toBeNull();
+  });
 });

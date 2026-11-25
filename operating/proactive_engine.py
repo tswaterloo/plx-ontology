@@ -228,7 +228,7 @@ from .proactive_engine_inbox import (
     _current_since, engine_code, engine_marking_grants, _fold, _fold_scoped, _generation_of,
     GROUP_SECONDS, group_seconds, _held_unchecked, inbox_path, _learned_order, _OBJECT_VISIBLE,
     _of_served, _open_inbox, _owned, _OWNER_KINDS, PASS_KEY, pass_record, _people, _populations,
-    _POPULATIONS_KEY, _read_cache, READ_WHOLE_DATA, reader_key, _reader_view, _resumable,
+    _POPULATIONS_KEY, _read_cache, READ_WHOLE_DATA, reader_key, _reader_view, _resumable, Scope,
     _served_digest, _shown, _summary, _table_from_disk, _tables_building, _TABLES_KEPT,
     _tables_kept, _today, UNJUDGED_SHOWN, UnknownCheck, _visible, _write_pass)
 from .proactive_engine_budget import (
@@ -1457,7 +1457,9 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         memory: "_MemoryGate | None" = None,
         finish_pass: bool = False,
         checkpoint: "tuple[str, Mapping[str, Any]] | None" = None,
-        pass_cache: PassCache | None = None) -> dict[str, Any]:
+        pass_cache: PassCache | None = None,
+        fold_export: Callable[[Mapping[str, Any]], None] | None = None,
+        write_inbox: bool = True) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -1518,7 +1520,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
 
         def many(tool: str, arguments: Sequence[Any]) -> list[Any]:
             return pmap(proactive_pool.tool_call, [(tool, a) for a in arguments])
-    cache = _read_cache(Path(inbox))
+    cache = _read_cache(Path(inbox), readonly=not write_inbox)
     if scope is not None:
         only = [d for d in DETECTORS if d in scope.subjects]
     shared = pass_cache if scope is None else None
@@ -1531,7 +1533,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     if memory is None:
         gate.reserve = detector_reserve(store_path)
     st.watch(window.interrupt, window.pinned, window.left)
-    st.cursor_path = Path(str(inbox) + ".commitments-recent.json")
+    st.cursor_path = Path(str(inbox) + ".commitments-recent.json") if write_inbox else None
     try:
         results: dict[str, dict[str, Any]] = {}
         seconds: dict[str, float] = {}
@@ -1767,51 +1769,140 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     for result in results.values():
         for gap in result["gaps"]:
             gaps.setdefault(gap["id"], gap)
+    payload = {
+        "fold_transport": 1, "results": results, "gaps": gaps, "scope_rows": held,
+        "run_at": run_at, "as_of": as_of.isoformat(), "digest": digest,
+        "seconds": seconds, "not_due": sorted(not_due), "started_at": started_at,
+        "code": engine_code(), "abandoned": sorted(abandoned),
+        "populations": populations, "scope": _scope_payload(scope),
+        "record_run": only is None or finish_pass, "whole_scope": finish_pass,
+        "checkpoint_key": checkpoint[0] if checkpoint is not None else None,
+        "checkpoint_record": checkpoint[1] if checkpoint is not None else None,
+        "checkpoint_ran": list(order) + list(not_due),
+    }
+    return write_fold_payload(inbox, payload, export=fold_export, write_inbox=write_inbox)
+
+
+def _scope_payload(scope: "Scope | None") -> dict[str, Any] | None:
+    """A fold payload's portable form of an incremental scope (None for a whole pass)."""
+    if scope is None:
+        return None
+    return {"subjects": {name: sorted(ids) for name, ids in sorted(scope.subjects.items())},
+            "read": sorted(scope.read),
+            "audience_keys": None if scope.audience_keys is None else sorted(scope.audience_keys)}
+
+
+def _scope_from_payload(data: Mapping[str, Any] | None) -> "Scope | None":
+    if data is None:
+        return None
+    keys = data.get("audience_keys")
+    return Scope({name: frozenset(ids) for name, ids in data["subjects"].items()},
+                 frozenset(data["read"]), None if keys is None else frozenset(keys))
+
+
+def _prepare_fold_payload(held_pops: dict[str, Any], payload: Mapping[str, Any]
+                          ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]],
+                                     dict[str, Any], Scope | None, list[tuple], list[str],
+                                     dict[str, Any]]:
+    """Compute the settled results, gaps, summary, and moved populations for a fold payload."""
+    results = {name: dict(result) for name, result in payload["results"].items()}
+    gaps = {gid: dict(gap) for gid, gap in payload["gaps"].items()}
+    populations = payload["populations"]
+    scope = _scope_from_payload(payload.get("scope"))
+    held = [tuple(row) for row in payload["scope_rows"]]
+    moved: list[str] = []
+    if scope is not None:
+        # a population a rule judges against moved since the rule's last fold:
+        # subjects this pass did not read may move with it, so the rule is not
+        # folded here but judged whole (``proactive_incremental``)
+        moved = sorted(name for name in results
+                       if populations.get(name) != held_pops.get(name))
+        for name in moved:
+            del results[name]
+        gaps = {gid: gap for gid, gap in gaps.items() if gap["detector"] in results}
+    summary = _summary(results, gaps, held)
+    summary["seconds"] = payload["seconds"]   # each detector's run time (counts only)
+    not_due = list(payload["not_due"])
+    if not_due:
+        summary["not_due"] = sorted(not_due)   # their cadence: left as they were
+    abandoned = list(payload["abandoned"])
+    if abandoned:
+        summary["cut_off"] = sorted(abandoned)   # past their hard window
+    if moved:
+        summary["population_moved"] = moved
+        summary["populations_moved"] = sorted({
+            key for name in moved for key in set(populations.get(name, {}))
+            | set(held_pops.get(name) or {})
+            if populations.get(name, {}).get(key)
+            != (held_pops.get(name) or {}).get(key)})
+    return results, gaps, summary, scope, held, moved, held_pops
+
+
+def _read_populations_ro(inbox: Path) -> dict[str, Any]:
+    if not inbox.is_file():
+        return {}
+    try:
+        with closing(sqlite3.connect(f"file:{inbox.resolve()}?mode=ro", uri=True,
+                                     timeout=30)) as conn:
+            return _populations(conn)
+    except sqlite3.Error:
+        return {}
+
+
+def write_fold_payload(inbox: Any, payload: Mapping[str, Any], *,
+                       export: Callable[[Mapping[str, Any]], None] | None = None,
+                       write_inbox: bool = True) -> dict[str, Any]:
+    """Fold one run's transported payload into ``inbox`` in the pass's own transaction.
+
+    This is the single definition of the run fold. A pass on the host and a box-side
+    applier for a pass that ran on a Spark both call it; ``export`` receives the same
+    JSON-shaped payload after the target inbox's population check has settled it, before
+    the transaction commits. When ``write_inbox`` is False (read-only Spark compute),
+    ``inbox`` is read-only for ``populations`` and only ``export`` runs.
+    """
+    if not write_inbox:
+        held_pops = _read_populations_ro(Path(inbox))
+        results, gaps, summary, _scope, _held, moved, _ = _prepare_fold_payload(
+            held_pops, payload)
+        if export is not None:
+            exported = {**payload, "results": results, "gaps": gaps,
+                        "summary": summary, "population_moved": moved}
+            export(exported)
+        return summary
     with closing(_open_inbox(Path(inbox))) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             held_pops = _populations(conn)
-            moved: list[str] = []
-            if scope is not None:
-                # a population a rule judges against moved since the rule's last fold:
-                # subjects this pass did not read may move with it, so the rule is not
-                # folded here but judged whole (``proactive_incremental``)
-                moved = sorted(name for name in results
-                               if populations.get(name) != held_pops.get(name))
-                for name in moved:
-                    del results[name]
-                gaps = {gid: gap for gid, gap in gaps.items() if gap["detector"] in results}
-            summary = _summary(results, gaps, held)
-            summary["seconds"] = seconds   # each detector's run time (counts and enums only)
-            if not_due:
-                summary["not_due"] = sorted(not_due)   # their cadence: left as they were
-            code = engine_code()
+            results, gaps, summary, scope, held, moved, _ = _prepare_fold_payload(
+                held_pops, payload)
+            populations = payload["populations"]
+            not_due = list(payload["not_due"])
+            code = payload["code"]
+            started_at = payload["started_at"]
             conn.executemany("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
                 (_CADENCE_KEY + name, json.dumps({"at": at, "code": code}, sort_keys=True))
                 for name, at in sorted(started_at.items())
                 if name in results and results[name].get("status") not in
                 ("not_configured", "failed")])
-            if abandoned:
-                summary["cut_off"] = sorted(abandoned)   # past their hard window
-            if moved:
-                summary["population_moved"] = moved
-                summary["populations_moved"] = sorted({
-                    key for name in moved for key in set(populations.get(name, {}))
-                    | set(held_pops.get(name) or {})
-                    if populations.get(name, {}).get(key)
-                    != (held_pops.get(name) or {}).get(key)})
             for name, result in results.items():
                 if result["status"] in READ_WHOLE_DATA:
                     held_pops[name] = populations.get(name, {})
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                          (_POPULATIONS_KEY, json.dumps(held_pops, sort_keys=True)))
             if scope is not None:
-                _fold_scoped(conn, results, gaps, run_at, scope)
+                _fold_scoped(conn, results, gaps, payload["run_at"], scope)
             else:
-                _fold(conn, results, gaps, held, run_at, as_of, digest, summary,
-                      record_run=only is None or finish_pass, whole_scope=finish_pass)
-            if checkpoint is not None:
-                _write_pass(conn, checkpoint[0], checkpoint[1], order + not_due)
+                _fold(conn, results, gaps, held, payload["run_at"],
+                      date.fromisoformat(payload["as_of"]), payload["digest"], summary,
+                      record_run=bool(payload["record_run"]),
+                      whole_scope=bool(payload["whole_scope"]))
+            if payload.get("checkpoint_key") is not None:
+                _write_pass(conn, payload["checkpoint_key"], payload["checkpoint_record"],
+                            payload["checkpoint_ran"])
+            if export is not None:
+                exported = {**payload, "results": results, "gaps": gaps,
+                            "summary": summary, "population_moved": moved}
+                export(exported)
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")

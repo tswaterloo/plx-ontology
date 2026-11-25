@@ -76,7 +76,12 @@ export function CloseControl({ order, onChanged, compact = false }: { order: PoK
   return (
     <div className="text-[13px] leading-5" data-testid="po-close">
       {!open ? (
-        <button type="button" onClick={() => setOpen(true)} className="text-muted underline hover:text-fg cursor-pointer" data-testid="po-close-open">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex h-8 items-center rounded-md border border-border bg-bg px-3 text-[12.5px] font-medium text-muted hover:border-border-strong hover:bg-hover hover:text-fg cursor-pointer"
+          data-testid="po-close-open"
+        >
           Close this order
         </button>
       ) : (

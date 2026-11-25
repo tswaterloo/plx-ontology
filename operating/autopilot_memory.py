@@ -128,6 +128,10 @@ def _model_agent(queue: Queue, held: dict[str, Any], summary: Mapping[str, Any],
     out.update({"summary": got.summary, "drafted_by": "model"})
     if got.note:
         out["note"] = got.note
+    if getattr(got, "warning", ""):
+        # the person reads every card before anything goes: a draft a check flagged stays
+        # with what to check (and waits for the person: ``autopilot_write.routine``)
+        out["warning"] = got.warning
     if got.todos:
         out["todos"] = got.todos
     if got.ask or got.reply:

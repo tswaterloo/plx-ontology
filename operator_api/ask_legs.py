@@ -225,6 +225,7 @@ def repair_part(book: Ledger, events: Sequence[Mapping[str, Any]] = ()) -> Optio
     """The repair message's lines for the legs nothing read (None: every leg read); a
     session that read something and declared no legs is asked to declare them."""
     if not book.legs and any(e.get("type") == "tool_call" and not e.get("is_error")
+                             and not e.get("prefetched")
                              and not _is_legs(str(e.get("name") or "")) for e in events):
         return NO_LEGS
     if not book.unread:
@@ -232,3 +233,67 @@ def repair_part(book: Ledger, events: Sequence[Mapping[str, Any]] = ()) -> Optio
     return ("You listed these parts but made no read for them: " + "; ".join(
         f"{leg.part} ({', '.join(leg.sources)})" for leg in book.unread)
         + ". Read each one, or say in the answer that you did not look at it.")
+
+
+def _calls(events: Sequence[Mapping[str, Any]]) -> list[tuple[str, Mapping[str, Any], Any]]:
+    out = []
+    for event in events:
+        if event.get("type") != "tool_call" or event.get("is_error"):
+            continue
+        args = event.get("arguments") or event.get("input") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {}
+        out.append((str(event.get("name") or ""), args if isinstance(args, Mapping) else {},
+                    _parsed(event.get("result"))))
+    return out
+
+
+def unfollowed(events: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The reads that said they go on and whose continuation no later call took (owner
+    11-24: the model stopped at the first page of a search and then said the rest was not
+    covered). Two kinds, both from the read's own result and the calls that came after:
+
+    * a ``plx.search`` over a period (the call carried ``since``) whose result continues
+      (a cursor): followed when a later search sent that cursor;
+    * a ``plx.my_open_work`` whose result has ``next_offset``: followed when a later call
+      sent that offset.
+
+    Each is returned as a plain line for the repair message. Never a judgement of what
+    matters: only that a page the host knows exists was not read."""
+    calls = _calls(events)
+    out: list[str] = []
+    for n, (name, args, got) in enumerate(calls):
+        later = calls[n + 1:]
+        if not isinstance(got, Mapping) or got.get("error"):
+            continue
+        if name.endswith(("plx.search", "plx_search")) and args.get("since"):
+            comp = got.get("completeness") if isinstance(got.get("completeness"), Mapping) else {}
+            cursors = [c.get("cursor") for c in comp.get("continue") or ()
+                       if isinstance(c, Mapping) and c.get("cursor")] \
+                or ([comp["next_cursor"]] if comp.get("next_cursor") else [])
+            for cursor in cursors:
+                if not any(a.get("cursor") == cursor for m, a, _ in later
+                           if m.endswith(("plx.search", "plx_search"))):
+                    out.append(f"a search since {args['since']} has more results (cursor "
+                               f"{cursor})")
+        elif name.endswith(("plx.my_open_work", "plx_my_open_work")):
+            more = got.get("next_offset")
+            if type(more) is int and not any(
+                    a.get("offset") == more for m, a, _ in later
+                    if m.endswith(("plx.my_open_work", "plx_my_open_work"))):
+                out.append(f"your open-work list goes on from item {more}")
+    return out
+
+
+def more_part(events: Sequence[Mapping[str, Any]]) -> Optional[str]:
+    """The repair message's lines for pages not read (None: none left)."""
+    left = unfollowed(events)
+    if not left:
+        return None
+    return ("You stopped before the end of what you started to read: " + "; ".join(left)
+            + ". Read each to its last page for the period asked, then write the answer again "
+              "from all of it. Say that something was not read only if it truly could not be "
+              "read (a source down, or no access), in plain words.")

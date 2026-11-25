@@ -56,7 +56,7 @@ describe("the queue on Home and its Switches tab", () => {
     cleanup();
     nav.params = "tab=audit";
     render(<AutopilotView area={area()} />);
-    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/autopilot-log"));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/assist?show=log"));
     cleanup();
     nav.params = "item=ap_2";
     render(<AutopilotView area={area()} />);
@@ -139,7 +139,7 @@ describe("the queue on Home and its Switches tab", () => {
     });
     render(<AssistQueue />);
     expect(await screen.findByText("Never mention prices to Kim")).toBeTruthy();
-    expect(screen.getByText("Applied")).toBeTruthy();
+    expect(screen.getByText("Used for this draft")).toBeTruthy();
     expect(screen.getByTestId("draft-learned").textContent).toContain("Starts replies with just the person's name");
     await more(0);
     await userEvent.click(screen.getByRole("menuitem", { name: "Save a preference for my drafts" }));

@@ -45,6 +45,7 @@ partial). ``door_views`` records the columns each view
 masks; a view whose rows carry a mark on a column it does not mask is refused."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -62,6 +63,57 @@ _COL = re.compile(r"[a-z][a-z0-9_]{0,50}")
 # (the database, schema, the exclusion's tables) whose tables ``check`` found: its next call reads the
 # door in one statement (a table dropped since fails that statement: forgotten, asked again)
 _CHECK_SQL: dict[tuple[Any, ...], bool] = {}
+_HAS_REVOKED: dict[tuple[Any, ...], bool] = {}
+
+
+def access_mark(decided: Mapping[str, Any], documents_digest: str | None = None,
+                grant_digest: str | None = None) -> str | None:
+    """One stable digest of the access a decided door gives, never of ordinary data
+    volume: the held access classes, the columns' allow-lists, the document-hidden
+    handles (``plx.d_hidden``), the refused views, whether document resolution was
+    needed, the hidden documents' own digest when it was read, and the schema's
+    revocation epoch (``revoked``: bumped on row-level exclusion, audience tightening,
+    or column marking changes even when reusing an existing class id). ``withheld``
+    row counts are deliberately out: they move as rows arrive and leave in an ordinary
+    refresh. The range settings are out too; they are another encoding of the same
+    allow-lists. None when the decision is not the shape this version understands
+    (fail closed: no door value, so nothing new is stored).
+    """
+    settings = decided.get("settings")
+    refused = decided.get("refused")
+    docs = decided.get("docs")
+    revoked = decided.get("revoked")
+    if (not isinstance(settings, dict) or not isinstance(refused, list)
+            or not isinstance(docs, bool)
+            or not isinstance(revoked, int) or isinstance(revoked, bool) or revoked < 0):
+        return None
+    fixed = ("plx.classes", "plx.dclasses", "plx.d_hidden")
+    if any(not isinstance(settings.get(k), str) for k in fixed):
+        return None
+    columns: dict[str, str] = {}
+    for key in sorted(settings):
+        if not key.startswith("plx.u_"):
+            continue
+        value = settings[key]
+        column = key[len("plx.u_"):]
+        if not isinstance(value, str) or not _COL.fullmatch(column):
+            return None
+        columns[column] = value
+    if any(not isinstance(v, str) for v in refused):
+        return None
+    if docs:
+        if not isinstance(documents_digest, str) or not documents_digest:
+            return None
+    elif documents_digest is not None and not isinstance(documents_digest, str):
+        return None
+    if grant_digest is not None and not isinstance(grant_digest, str):
+        return None
+    body = {"v": 2, "grant": grant_digest, "revoked": revoked,
+            "classes": settings["plx.classes"], "dclasses": settings["plx.dclasses"],
+            "d_hidden": settings["plx.d_hidden"], "columns": columns,
+            "refused": sorted(refused), "docs": docs, "hidden_documents": documents_digest}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+                          ).hexdigest()[:32]
 
 
 def setting_for(column: str) -> str:
@@ -136,9 +188,13 @@ def ensure(write: Any, schema: str) -> None:
     if f"{STATE}.stamp" not in have:
         write.execute(f"CREATE TABLE IF NOT EXISTS {schema}.{STATE} ("
                       "one boolean PRIMARY KEY DEFAULT true CHECK (one), stamp bigint NOT NULL)")
-    write.execute(f"INSERT INTO {schema}.{STATE} VALUES (true, 0) ON CONFLICT DO NOTHING")
+    write.execute(f"INSERT INTO {schema}.{STATE} (one, stamp) VALUES (true, 0) "
+                  "ON CONFLICT DO NOTHING")
     if f"{STATE}.excluded_at" not in have:
         write.execute(f"ALTER TABLE {schema}.{STATE} ADD COLUMN IF NOT EXISTS excluded_at text")
+    if f"{STATE}.revoked" not in have:
+        write.execute(f"ALTER TABLE {schema}.{STATE} ADD COLUMN IF NOT EXISTS "
+                      "revoked bigint NOT NULL DEFAULT 0")
 
 
 def exclusion_stamp(pg: Any) -> str:
@@ -190,8 +246,41 @@ def is_v2(write: Any, schema: str, name: str) -> bool:
         (schema, name, [c for c, _ in PERMISSION_COLS])).fetchone()[0] == len(PERMISSION_COLS)
 
 
+def is_class_guarded(write: Any, schema: str, name: str) -> bool:
+    """Whether ``schema.name`` carries ``access_class``, ``col_class`` and ``handle``
+    (a pages-only table like ``measure_values`` that has no ``ai_ok`` column)."""
+    need = ["access_class", "col_class", "handle"]
+    return write.execute(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema = %s AND "
+        "table_name = %s AND column_name = ANY(%s)",
+        (schema, name, need)).fetchone()[0] == len(need)
+
+
 def _bump(write: Any, schema: str) -> None:
     write.execute(f"UPDATE {schema}.{STATE} SET stamp = stamp + 1")
+
+
+def bump_revoked(write: Any, schema: str) -> None:
+    """Bump the revocation epoch and stamp in ``<schema>.door_state`` when an existing
+    served row's access or column marking changed or was excluded (reusing an existing
+    class id included), so every reader's ``access_mark`` / ``X-PLX-Door`` moves."""
+    write.execute(f"UPDATE {schema}.{STATE} SET revoked = revoked + 1, stamp = stamp + 1")
+
+
+def classes_changed(write: Any, schema: str, old_name: str, new_ref: str) -> bool:
+    """Whether any surviving handle present in both ``<schema>.<old_name>`` and
+    ``new_ref`` changed its ``access_class`` or ``col_class`` (reusing an existing class
+    id included). New rows added and old rows removed in an ordinary refresh return False.
+    Returns False when ``old_name`` does not exist yet or is not a v2 table."""
+    if (write.execute("SELECT to_regclass(%s)", (f"{schema}.{old_name}",)).fetchone()[0] is None
+            or not is_v2(write, schema, old_name)):
+        return False
+    return bool(write.execute(
+        f"SELECT EXISTS (SELECT 1 FROM {schema}.{old_name} o JOIN {new_ref} n "
+        "ON n.handle = o.handle "
+        "WHERE o.access_class IS DISTINCT FROM n.access_class "
+        "OR o.col_class IS DISTINCT FROM n.col_class)"
+    ).fetchone()[0])
 
 
 def _document_marks(write: Any) -> bool:
@@ -408,7 +497,17 @@ def exclude(write: Any, schema: str, *, only: str | None = None, record: bool = 
             if not staged:
                 recount(write, schema, view)
         if gone and not staged:
-            _bump(write, schema)
+            touched = views | {v for v, _ in cells}
+            if touched and write.execute(
+                    "SELECT to_regclass(%s)", (f"{schema}.measure_values",)).fetchone()[0]:
+                from operating import measures as ms
+                drop_m = sorted(mid for mid, entry in ms.typed().items()
+                                if entry.get("view") in touched)
+                if drop_m:
+                    write.execute(f"DELETE FROM {schema}.measure_values WHERE measure = ANY(%s)",
+                                  (drop_m,))
+                    recount(write, schema, "measure_values")
+            bump_revoked(write, schema)
         if record:
             write.execute(f"UPDATE {schema}.{STATE} SET excluded_at = %s", (set_stamp,))
     return gone
@@ -632,6 +731,101 @@ def hidden_count_ddl(table: str, src: str, dst: str, *, group: Sequence[str],
             + "".join(f" AND ({c})" for c in also) + f" GROUP BY {cols}")
 
 
+def measure_values_ddl(write: Any, src: str, dst: str) -> str:
+    """The guarded page-only view ``dst.measure_values`` over ``src.measure_values``:
+    row visibility via ``held_class_sql`` (outright held classes; ``t.handle`` stays NULL
+    so document-resolved classes fail closed), and per-measure ``col_class`` masking for
+    value, ``per``, ``date``, ``where`` and dimension columns (derived from
+    ``operating.measures.typed()`` and ``src.col_classes``). Every column marked or needed
+    in ``src.col_classes`` is recorded in ``door_views`` for ``measure_values``, so any
+    new marked column added later refuses the view until it is regenerated."""
+    from operating import measures as ms
+    from operating.pg import measure_values as mv
+    ensure(write, src)
+    got = write.execute(
+        f"SELECT DISTINCT k FROM {src}.{COL_CLASSES} c, "
+        "LATERAL (SELECT jsonb_object_keys(c.marks) UNION "
+        "SELECT jsonb_object_keys(c.needs)) AS j(k) ORDER BY 1").fetchall()
+    all_marked = sorted({k for (k,) in got if _COL.fullmatch(k)}
+                        | set(masked_columns(write, src, "measure_values")))
+    write.execute(f"INSERT INTO {src}.{VIEWS_TABLE} VALUES (%s, %s) ON CONFLICT (view) "
+                  "DO UPDATE SET masked = EXCLUDED.masked", ("measure_values", all_marked))
+    marked_set = set(all_marked)
+
+    def hides(c: str) -> str:
+        return (f"NOT COALESCE({_in('t.col_class', range_setting_for(c), setting_for(c))}, "
+                "false)")
+
+    def lit(s: str) -> str:
+        return "'" + s.replace("'", "''") + "'"
+
+    typed = ms.typed()
+    known_ids = sorted(typed)
+    if not known_ids:
+        return (f"CREATE VIEW {dst}.measure_values WITH (security_barrier) AS SELECT "
+                "t.measure, t.version, t.dims, t.period, t.n, t.sum, t.as_of, t.handle, "
+                f"'{{}}'::text[] AS withheld FROM {src}.measure_values t WHERE false")
+
+    val_cases: list[str] = []
+    per_cases: list[str] = []
+    row_hides: list[str] = []
+    dim_mids: dict[str, list[str]] = {}
+    for mid in known_ids:
+        m = typed[mid]
+        vcols = {c.name for c in bv.VIEWS[m["view"]].cols} if m["view"] in bv.VIEWS else set()
+        v_hidden_set: set[str] = set()
+        for expr in (m["value"], m.get("rate_value") or m["value"]):
+            try:
+                _, _, col = mv.parse_value(expr)
+            except ValueError:
+                continue
+            if col not in ("*", "handle") and col in marked_set:
+                v_hidden_set.add(col)
+        v_hidden = sorted(v_hidden_set)
+        if v_hidden:
+            val_cases.append(f"WHEN {lit(mid)} THEN (" + " OR ".join(hides(c) for c in v_hidden) + ")")
+        per = m.get("per") or ""
+        if per and per in marked_set:
+            per_cases.append(f"WHEN {lit(mid)} THEN ({hides(per)})")
+        wtext = " ".join(filter(None, [m.get("where"), m.get("rate_where"),
+                                       *(p.get("excludes_where") or "" for p in ms.parameters_of(m))]))
+        w_hidden = {c for c in vcols if c in marked_set and re.search(rf"\b{re.escape(c)}\b", wtext)}
+        date_col = m.get("date") or ""
+        if date_col and date_col in marked_set:
+            w_hidden.add(date_col)
+        if w_hidden:
+            row_hides.append(f"NOT (t.measure = {lit(mid)} AND ("
+                             + " OR ".join(hides(c) for c in sorted(w_hidden)) + "))")
+        for d in m.get("dimensions") or ():
+            if d in marked_set:
+                dim_mids.setdefault(d, []).append(mid)
+
+    val_cond = f"(CASE t.measure {' '.join(val_cases)} ELSE false END)" if val_cases else "false"
+    per_cond = f"(CASE t.measure {' '.join(per_cases)} ELSE false END)" if per_cases else "false"
+    n_expr = f"CASE WHEN {val_cond} THEN NULL::bigint ELSE t.n END" if val_cases else "t.n"
+    sum_expr = f"CASE WHEN {val_cond} THEN NULL::numeric ELSE t.sum END" if val_cases else "t.sum"
+    dims_expr = f"(CASE WHEN {per_cond} THEN t.dims - '_per' ELSE t.dims END)" if per_cases else "t.dims"
+    withheld_parts: list[str] = []
+    if val_cases:
+        withheld_parts.append(f"CASE WHEN {val_cond} THEN 'sum' END")
+    if per_cases:
+        withheld_parts.append(f"CASE WHEN {per_cond} THEN '_per' END")
+    for d in sorted(dim_mids):
+        mids_sql = ", ".join(lit(x) for x in sorted(dim_mids[d]))
+        d_cond = f"(t.measure IN ({mids_sql}) AND (t.dims ? {lit(d)}) AND ({hides(d)}))"
+        dims_expr = (f"(CASE WHEN {d_cond} THEN jsonb_set({dims_expr}, "
+                     f"ARRAY[{lit(d)}], 'null'::jsonb) ELSE {dims_expr} END)")
+        withheld_parts.append(f"CASE WHEN {d_cond} THEN {lit(d)} END")
+    withheld = ("array_remove(ARRAY[" + ", ".join(withheld_parts) + "]::text[], NULL)"
+                if withheld_parts else "'{}'::text[]")
+    known_sql = ", ".join(lit(mid) for mid in known_ids)
+    where = [f"({held_class_sql()})", f"t.measure IN ({known_sql})", *row_hides]
+    return (f"CREATE VIEW {dst}.measure_values WITH (security_barrier) AS SELECT "
+            f"t.measure, t.version, {dims_expr} AS dims, t.period, {n_expr} AS n, "
+            f"{sum_expr} AS sum, t.as_of, t.handle, {withheld} AS withheld "
+            f"FROM {src}.measure_values t WHERE " + " AND ".join(where))
+
+
 # ---------------------------------------------------------------------- the reader's side
 
 def present(pg: Any, schema: str) -> bool:
@@ -676,6 +870,28 @@ def check(pg: Any, schema: str) -> tuple[int, bool] | None:
 
 def stamp(pg: Any, schema: str) -> int:
     return int(pg.execute(f"SELECT stamp FROM {schema}.{STATE}").fetchone()[0])
+
+
+def _revoked(pg: Any, schema: str) -> int | None:
+    """The schema's revocation epoch (``door_state.revoked``), or None when the column or
+    row is absent (fail closed: no ``access_mark`` until present)."""
+    info = getattr(pg, "info", None)
+    key = (getattr(info, "host", None), getattr(info, "port", None),
+           getattr(info, "dbname", None), schema)
+    if not _HAS_REVOKED.get(key):
+        has = pg.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = %s "
+            "AND table_name = %s AND column_name = 'revoked'",
+            (schema, STATE)).fetchone()
+        if not has:
+            return None
+        _HAS_REVOKED[key] = True
+    try:
+        row = pg.execute(f"SELECT revoked FROM {schema}.{STATE}").fetchone()
+    except Exception:
+        _HAS_REVOKED.pop(key, None)
+        raise
+    return None if row is None or row[0] is None else int(row[0])
 
 
 def _holds(need: Any, keys: set[str], sets: set[str], tokens: set[str],
@@ -779,7 +995,8 @@ def reader_scope(pg: Any, schema: str, *, audience_keys: Iterable[str],
         settings[setting_for(col)] = arr(ids)
         settings[range_setting_for(col)] = ranges(ids)
     return {"settings": settings, "withheld": withheld, "refused": refused,
-            "docs": not (asked and callable(hidden_docs))}
+            "docs": not (asked and callable(hidden_docs)),
+            "revoked": _revoked(pg, schema)}
 
 
 def lineage(pg: Any, schema: str, pairs: Sequence[tuple[str, str]]) -> dict[tuple[str, str],
@@ -936,6 +1153,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["convert", "ensure", "exclude", "is_v1", "is_v2", "lineage", "present", "reader_scope",
-           "setting_for", "stamp", "view_ddl", "serves", "schemas", "exclusion_stamp",
-           "exclude_everywhere", "exclude_within", "follow"]
+__all__ = ["access_mark", "bump_revoked", "classes_changed", "convert", "ensure", "exclude",
+           "is_v1", "is_v2", "is_class_guarded", "lineage", "measure_values_ddl", "present",
+           "reader_scope", "setting_for", "stamp", "view_ddl", "serves", "schemas",
+           "exclusion_stamp", "exclude_everywhere", "exclude_within", "follow"]

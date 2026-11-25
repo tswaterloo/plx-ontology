@@ -1320,6 +1320,8 @@ class EmailsThroughTheDoor(unittest.TestCase):
             self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), 1)
             with mock.patch.object(cs, "COMMON_CHUNKS", 1):
                 self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples")), cs.WALK_ROWS)
+                self.assertEqual(cs.walk_rows(pg, cs.tsquery("samples"),
+                                              cs.ATTACH_COMMON_CHUNKS), 1)
             # the message-level estimate (A11): a word matching few messages reads its index
             # at once (header tier), a common one (threshold lowered) and no query walk
             q = cs.tsquery("samples")
@@ -1522,7 +1524,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
         with full:
             for walk, batch in ((1, cs.ATTACH_BATCH), (2, cs.ATTACH_BATCH), (2, 1), (2, 2)):
                 with self.subTest(walk=walk, batch=batch), \
-                        mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk), \
+                        mock.patch.object(cs, "walk_rows", lambda pg, q, common_chunks=None, walk=walk: walk), \
                         mock.patch.object(cs, "ATTACH_BATCH", batch):
                     out = self.search(tmp.OWNER, query=q)
                     docs = [h for h in out["documents"] if "attachment" in h.get("match", "")]
@@ -1542,7 +1544,7 @@ class EmailsThroughTheDoor(unittest.TestCase):
             from operating import ontology_tools_sql as ots
             for walk, batch in ((1, cs.ATTACH_BATCH), (2, cs.ATTACH_BATCH), (2, 1)):
                 with self.subTest(continued=True, walk=walk, batch=batch), \
-                        mock.patch.object(cs, "walk_rows", lambda pg, q, walk=walk: walk), \
+                        mock.patch.object(cs, "walk_rows", lambda pg, q, common_chunks=None, walk=walk: walk), \
                         mock.patch.object(cs, "ATTACH_BATCH", batch), \
                         mock.patch.object(ots, "ATTACH_EXTRA", 1):
                     out = self.search(tmp.OWNER, query=q)

@@ -98,6 +98,31 @@ class Doors:
         """The door stamp the refresher read last (None before its first pass)."""
         return self._stamp
 
+    def access_mark(self, reader: Any) -> Optional[str]:
+        """The stable access digest of ``reader``'s current decided door, or None before
+        one is fresh at the stamp last read. This is the request-side key for a kept page:
+        unlike the schema-wide stamp it does not move when a refresh rebuilds the tables
+        but leaves what this reader may read unchanged. No decision is started here; an
+        unknown or stale door simply carries no header, so nothing new is stored."""
+        key = reader_key(reader)
+        if key is None:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            held = self._held.get(key)
+            if held is not None:
+                held.served_at = now
+                held.reader = reader
+        if held is None or now - held.decided_at > MAX_AGE_SECONDS or (
+                self._stamp is not None and held.stamp != self._stamp):
+            return None
+        door = held.door
+        decided = door if isinstance(door, dict) else getattr(door, "decided", None)
+        if not isinstance(decided, dict):
+            return None
+        mark = decided.get("access_mark")
+        return mark if isinstance(mark, str) and mark else None
+
     def decide_now(self, reader: Any) -> Optional[tuple[Any, str]]:
         """Decide ``reader``'s door on this thread (a GET that found none: ``get`` logged it),
         then the door, or None when it could not be decided (the read is refused)."""
@@ -154,11 +179,19 @@ class Doors:
             return False
         with self._lock:
             held = self._held.get(key)
+            if (held is not None and held.door is not None
+                    and held.stamp is not None and stamp is not None
+                    and stamp < held.stamp):
+                # decisions finish out of order on the decider threads; a slower decision
+                # from an older stamp must not overwrite a newer held door for the same key
+                return True
             new = Held(door, dsn, stamp, reader, comms)
             if held is not None:
                 new.served_at = held.served_at
             self._held[key] = new
-            if stamp is not None:
+            if stamp is not None and (self._stamp is None or stamp >= self._stamp):
+                # decisions finish out of order on the decider threads; the schema stamp
+                # itself never goes back, so a slower older decision must not move this back
                 self._stamp = stamp
         self._counts["decides"] += 1
         return True

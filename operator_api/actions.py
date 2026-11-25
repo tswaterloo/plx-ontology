@@ -152,6 +152,12 @@ class ActionsMixin:
             if built is None:
                 raise UserFacing("not_found", "That filled form is not one of yours.", 404)
             return built
+        if card_id.startswith("brief:"):
+            # an emailed brief or answer with its chart, rebuilt for this reader only
+            built = self.brief_email_card(reader, card_id)  # type: ignore[attr-defined]
+            if built is None:
+                raise UserFacing("not_found", "That email draft is not one of yours.", 404)
+            return built
         if card_id.startswith("pack:"):
             # a record's document pack, rebuilt now as this reader's own (never the request's)
             built = self.record_pack_dict(reader, card_id[len("pack:"):])

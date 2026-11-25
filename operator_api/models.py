@@ -614,15 +614,8 @@ class Clarify(_Model):
     free_text: bool = True
 
 
-class Assumption(_Model):
-    """What the answer took the question to mean, in one line, and the other readings:
-    picking one asks it again under that reading (``AskRequest.clarified.option``)."""
-    text: str
-    options: list[ClarifyOption] = Field(default_factory=list, max_length=3)
-
-
 class ClarifyReply(_Model):
-    """The person's answer to an earlier answer's ``clarify`` question or ``assumption``:
+    """The person's answer to an earlier answer's ``clarify`` question:
     the answer it replies to, and an option's index or their own words."""
     answer_id: str = Field(min_length=1, max_length=80)
     option: Optional[int] = Field(None, ge=0, le=3)
@@ -721,6 +714,23 @@ class AnswerPart(_Model):
     found: int = Field(0, ge=0)
 
 
+class WorkItem(_Model):
+    """One thing the answer lists (the model's ``items`` block): where it comes from, who and
+    when, what is needed, and the link that opens the message or record (only when a result
+    of this conversation showed it)."""
+    source: str = ""
+    who: str = ""
+    when: str = ""
+    text: str
+    open_url: Optional[str] = None
+
+
+class WorkGroup(_Model):
+    """Items grouped by what the person must do (Decide, Reply, Follow up, Heads up)."""
+    title: str = ""
+    items: list[WorkItem] = Field(default_factory=list)
+
+
 class AnswerCheck(_Model):
     """One call with no tools checked the answer against what the session read before it
     was shown (Ask plan A4): checked (nothing wrong), repaired (sent back once and written
@@ -742,6 +752,10 @@ class AnswerPayload(_Model):
     direct_answer: str
     facts: list[Fact] = Field(default_factory=list)
     not_found: list[NotFound] = Field(default_factory=list)
+    work_items: list[WorkGroup] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="The items the answer lists, grouped by what the person must do, each "
+                    "with its source, who and when, what is needed and a link that opens it.")
     hidden: Hidden
     conflicts: list[Conflict] = Field(default_factory=list)
     freshness: Freshness
@@ -825,10 +839,6 @@ class AnswerPayload(_Model):
         None, json_schema_extra=_optional,
         description="One question asked back because the answer turns on a choice the "
                     "question leaves open; nothing else is answered until it is picked.")
-    assumption: Optional[Assumption] = Field(
-        None, json_schema_extra=_optional,
-        description="What the answer took an open question to mean, with the other "
-                    "readings to change it.")
     cited_more: int = Field(0, ge=0, json_schema_extra=_optional, description="Results the "
                             "answer read past the ones listed in ``cited`` (counted, not listed).")
     cited: Optional[list[CitedTable]] = Field(
@@ -917,8 +927,8 @@ class AskRequest(_Model):
                     "use: continues that instruction.")
     clarified: Optional[ClarifyReply] = Field(
         None, json_schema_extra=_optional,
-        description="An answer to the question an earlier answer asked back (or another "
-                    "reading of its assumption): continues that question.")
+        description="An answer to the question an earlier answer asked back: continues "
+                    "that question.")
     deep: bool = Field(
         False, json_schema_extra=_optional,
         description="Think it through: plan the reads, cross-check the key figures a "
@@ -1137,6 +1147,88 @@ class Home(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader instead: when that page was "
                     "read (ISO). It is refreshed in the background.")
+    reading: bool = _reading()
+
+
+class HomeNeedItem(_Model):
+    """One thing that needs this person in Home's unified Needs-you list. Every field is typed
+    data from its source: due date, last activity, quiet state, and cited amount."""
+    id: str
+    kind: Literal["reply", "approve", "question", "task", "waiting", "alert", "late_po",
+                  "routine", "feedback", "gap"]
+    source: Literal["mail", "teams", "mc", "planner", "alerts", "pos", "feedback", "gaps",
+                    "system"]
+    source_label: str
+    title: str
+    line: str = Field(description="What needs doing next, in plain words.")
+    person: Optional[str] = Field(None, description="Who it is from or who it waits on, when known.")
+    basis_at: Optional[str] = Field(None, description="When the fact it rests on last moved (ISO).")
+    due_at: Optional[str] = None
+    state: Literal["open", "unverified", "uncertain"] = "open"
+    still_open: bool = Field(False, description="Nothing has happened on it since it was due.")
+    draft_ready: bool = False
+    action: Literal["reply", "approve", "answer", "do", "decide", "check", "close"]
+    action_label: str
+    href: str = Field(description="Where the item opens in the app.")
+    matter_id: Optional[str] = Field(None, description="Its Assist matter id when it is one.")
+    quote: Optional[str] = Field(None, description="The message or quote the matter rests on.")
+    ask: Optional[str] = Field(None, description="The question only this person can answer, "
+                                                 "when one is prepared.")
+    body: Optional[str] = Field(None, description="The prepared draft, when one is ready.")
+    to: list[str] = Field(default_factory=list, description="The prepared draft's recipients.")
+    next_act: Optional[str] = Field(None, description="The matter's typed next act.")
+    plan_status: Optional[str] = None
+    verified_at: Optional[str] = None
+    object_id: Optional[str] = None
+    object_type: Optional[str] = None
+    amount: Optional[Money] = Field(None, description="A cited amount this reader may open; "
+                                                      "never a suspect total.")
+    days_late: Optional[int] = Field(None, ge=0)
+    rank: int = Field(ge=1, description="Its place in the unified list, 1 first.")
+    rank_reasons: list[str] = Field(default_factory=list, description="Why it is there, in words.")
+
+
+class HomeNeedFacet(_Model):
+    """One filter choice and how many items of the unified list match it."""
+    value: str
+    label: str
+    count: int = Field(ge=0)
+
+
+class HomeNeedPart(_Model):
+    """One source's reading state behind the unified list: a source off, stale or unreadable
+    is reported honestly, never shown as an empty list."""
+    source: str
+    label: str
+    status: Literal["ok", "partial", "cut", "stale", "unknown", "not_run", "off", "failed"]
+    note: Optional[str] = None
+    total: Optional[int] = Field(None, ge=0)
+    as_of: Optional[str] = None
+
+
+class HomeNeeds(_Model):
+    """Home's unified Needs-you read: Assist matters, alerts, late POs, and (for the owner)
+    new feedback and undefined gap alerts, merged and ranked server-side. Items older than
+    ``older_after_days`` fold into ``older_items`` rather than being dropped."""
+    status: Literal["ok", "partial", "cut", "stale", "unknown", "not_run", "off", "failed"]
+    why: Optional[str] = Field(None, description="Why the status is not ok, in plain words.")
+    total: int = Field(ge=0, description="Count of current items in the main list.")
+    items: list[HomeNeedItem] = Field(default_factory=list, description="The current main list.")
+    older_total: int = Field(ge=0, description="Count of items in the collapsed older group.")
+    older_items: list[HomeNeedItem] = Field(
+        default_factory=list,
+        description="Items older than older_after_days, folded away rather than dropped.",
+    )
+    older_after_days: int = Field(ge=1, description="Age threshold in days for the older fold.")
+    sources: list[HomeNeedFacet] = Field(default_factory=list)
+    kinds: list[HomeNeedFacet] = Field(default_factory=list)
+    people: list[HomeNeedFacet] = Field(default_factory=list)
+    parts: list[HomeNeedPart] = Field(default_factory=list)
+    as_of: Optional[str] = None
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server serves the last page it read for this reader while "
+                    "refreshing in the background (ISO).")
     reading: bool = _reading()
 
 
@@ -2125,6 +2217,15 @@ class FeedbackRequest(_Model):
                                                     "person marked wrong.")
     page: Optional[str] = _PAGE
     app_version: Optional[str] = _APP_VERSION
+    review: bool = Field(False, json_schema_extra=_optional,
+                         description="Ask a person to review this answer (a thumbs-down only); "
+                                     "'The right answer is' is the fix proposed for them to approve.")
+
+    @model_validator(mode="after")
+    def _review_is_a_thumbs_down(self) -> "FeedbackRequest":
+        if self.review and self.rating != -1:
+            raise ValueError("a review is asked for on a wrong answer (rating -1)")
+        return self
 
 
 class FeedbackResponse(_Model):
@@ -2191,6 +2292,7 @@ class FeedbackEntry(_Model):
     flagged: list[int] = Field(default_factory=list)
     served_version: Optional[str] = None
     app_version: Optional[str] = None
+    review_requested: bool = False
     # what is not shown to this reader: the markings (and ``source``) it lacks
     withheld: list[str] = Field(default_factory=list)
 
@@ -2202,6 +2304,136 @@ class FeedbackList(_Model):
     offset: int = Field(ge=0)
     counts: dict[str, int] = Field(description="Entries per status under the other filters.")
     entries: list[FeedbackEntry]
+
+
+class GapRow(_Model):
+    """One thing Ask or Genie asked for that nothing defines: how often, first and last."""
+    kind: Literal["view", "measure"]
+    name: str
+    asked: int = Field(ge=1)
+    first: str
+    last: str
+    defined: bool = Field(description="A view or measure of this name exists now (the gap "
+                          "was closed after it was asked).")
+
+
+class GapList(_Model):
+    """The gap list (``operating.gap_list``), most asked first; the owner and the admins."""
+    on: bool = Field(description="False when this server does not keep the list.")
+    gaps: list[GapRow]
+
+
+MeasureCandidateStatus = Literal["pending", "approved", "dismissed"]
+MeasureCandidateSource = Literal["accepted_answer", "saved_tile", "manual"]
+
+
+class MeasureCandidate(_Model):
+    """A candidate shared business measure captured from usage or proposed for owner review."""
+    id: str
+    signature: str
+    status: MeasureCandidateStatus
+    source_kind: MeasureCandidateSource
+    source_ref: Optional[str] = None
+    tile_title: Optional[str] = None
+    question: Optional[str] = None
+    sql: Optional[str] = None
+    views: list[str] = Field(default_factory=list)
+    sql_mode: Literal["structured", "custom_sql"] = "custom_sql"
+    usage_count: int = Field(ge=1)
+    first_seen_at: str
+    last_seen_at: str
+    proposed_id: str
+    proposed_name: str
+    proposed_description: Optional[str] = None
+    proposed_owner: str
+    proposed_unit: str
+    proposed_grain: str
+    proposed_view: str = ""
+    proposed_value: str = ""
+    proposed_per: str = ""
+    proposed_date: str = ""
+    proposed_where: str = ""
+    proposed_dimensions: list[str] = Field(default_factory=list)
+    proposer_name: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    dismiss_reason: Optional[str] = None
+    approved_measure_id: Optional[str] = None
+    withheld: list[str] = Field(default_factory=list)
+
+
+class MeasureCandidateList(_Model):
+    """Candidate measure definitions queued for review or already reviewed (no silent cap)."""
+    can_review: bool = Field(description="True only for the owner (who can approve or dismiss).")
+    total: int = Field(ge=0)
+    counts: dict[str, int] = Field(description="Candidate count per status.")
+    candidates: list[MeasureCandidate]
+
+
+class MeasureCandidatePropose(_Model):
+    """Propose or capture a candidate definition from SQL, a saved tile, or an accepted answer."""
+    sql: Optional[str] = Field(None, max_length=20000)
+    title: Optional[str] = Field(None, max_length=200)
+    question: Optional[str] = Field(None, max_length=2000)
+    name: Optional[str] = Field(None, max_length=160)
+    description: Optional[str] = Field(None, max_length=2000)
+    owner: Optional[str] = Field(None, max_length=80)
+    source_kind: MeasureCandidateSource = "manual"
+    source_ref: Optional[str] = Field(None, max_length=200)
+    answer_id: Optional[str] = Field(None, max_length=120)
+    insight_id: Optional[str] = Field(None, max_length=80)
+
+
+class MeasureCandidateApprove(_Model):
+    """Optional owner edits when promoting a candidate into the live governed definitions."""
+    id: Optional[str] = Field(None, max_length=60)
+    name: Optional[str] = Field(None, max_length=160)
+    description: Optional[str] = Field(None, max_length=2000)
+    owner: Optional[str] = Field(None, max_length=80)
+    unit: Optional[str] = Field(None, max_length=40)
+    grain: Optional[str] = Field(None, max_length=40)
+    view: Optional[str] = Field(None, max_length=80)
+    value: Optional[str] = Field(None, max_length=120)
+    per: Optional[str] = Field(None, max_length=80)
+    date: Optional[str] = Field(None, max_length=80)
+    where: Optional[str] = Field(None, max_length=2000)
+    dimensions: Optional[list[str]] = None
+
+
+class MeasureCandidateDismiss(_Model):
+    """Optional owner reason when dismissing a candidate definition."""
+    reason: Optional[str] = Field(None, max_length=1000)
+
+
+class AskDay(_Model):
+    day: str
+    answered: int
+    failed: int
+    unavailable: int = Field(description="Answers given without the assistant (its limit, "
+                             "sign-in or time).")
+    median_ms: Optional[int] = None
+    slowest_ms: Optional[int] = None
+    median_steps: Optional[int] = None
+    cost_usd: Optional[str] = Field(None, description="The model runs' cost as each run "
+                                    "reports it, summed over the answers that kept one.")
+    cost_answers: int = Field(0, description="How many of the day's answers kept a cost "
+                              "(the others were answered before it was kept; they are not "
+                              "counted as zero).")
+
+
+class AskFailure(_Model):
+    at: str
+    question: Optional[str] = Field(None, description="Only for the owner.")
+    error: Optional[str] = Field(None, description="Only for the owner (error text can quote the question).")
+
+
+class AskObserved(_Model):
+    """How the Ask has been doing, per day, from what each answer kept; the owner and the
+    admins. ``available`` false while the log cannot be read (the people exclusion is not
+    loaded)."""
+    available: bool
+    days: list[AskDay]
+    failures: list[AskFailure]
 
 
 class FeedbackStatusRequest(_Model):
@@ -2829,6 +3061,28 @@ class GraphRequest(_Model):
 class TeamsChat(_Model):
     name: str
     chat_id: str
+
+
+class EmailDraftRequest(_Model):
+    """Draft an email carrying a brief or answer and its chart(s), for confirm-before-send."""
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field("", max_length=8000)
+    to: Optional[str] = Field(None, max_length=254)
+    charts: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    format: Literal["xlsx", "docx", "pptx", "pdf"] = "xlsx"
+    attach_file: bool = False
+
+
+class EmailDraftPrepared(_Model):
+    """A prepared brief/answer email card ready for /api/actions/preview and confirm."""
+    card_id: str
+    kind: Literal["send_email"] = "send_email"
+    subject: str
+    body: str
+    to: Optional[str] = None
+    attachment_name: Optional[str] = None
+    upload_id: Optional[str] = None
 
 
 class ActionPreview(_Model):
@@ -4213,8 +4467,12 @@ class AutopilotPrepared(_Model):
                                        "the item was last re-checked against its source.")
     plan_status: Optional[str] = Field(
         None, json_schema_extra=_optional, description="none, planned, drafted, needs_you, "
-        "deferred (draft on request) or failed (``plan_reason`` says why; ask again).")
+        "working, deferred (draft on request) or failed (``plan_reason`` says why; ask again).")
     plan_reason: Optional[str] = Field(None, json_schema_extra=_optional)
+    plan_at: Optional[str] = Field(None, json_schema_extra=_optional, description="When the "
+                                   "drafting worker last finished a run for this item.")
+    requested_at: Optional[str] = Field(None, json_schema_extra=_optional, description="When "
+                                        "a draft or reply-from-line was last asked for.")
 
 
 class AutopilotDrafts(_Model):
@@ -4232,9 +4490,191 @@ class AutopilotDrafts(_Model):
     reason: str = Field("", json_schema_extra=_optional)
 
 
+class AssistJobRequest(_Model):
+    """A whole job handed to Assist, in the person's own words."""
+    text: str = Field(min_length=1, max_length=20000, description="The job, as typed.")
+
+
+class AssistJobChecklistItem(_Model):
+    text: str
+    piece: Optional[int] = Field(None, json_schema_extra=_optional, description="The piece it belongs to.")
+
+
+class AssistJobPiece(_Model):
+    """One prepared piece of a job: a message or system change to review (``proposals``), a question with
+    real choices (``ask``), a to-do, or nothing (with the record that shows it done). ``reads`` and
+    ``tool_reads`` are what it was prepared from; ``records_unread`` the records the plan named that no
+    read of the piece shows."""
+    n: int
+    title: str
+    instruction: str = ""
+    status: Literal["prepared", "nothing", "failed", "screened", "stopped"]
+    why: str = ""
+    message: str = ""
+    summary: str = ""
+    reply: str = ""
+    ask: Optional[dict[str, Any]] = Field(None, json_schema_extra=_optional)
+    proposals: list[dict[str, Any]] = Field(default_factory=list)
+    todos: list[dict[str, Any]] = Field(default_factory=list)
+    note: str = ""
+    warning: str = ""
+    nothing: str = ""
+    held_back: list[dict[str, Any]] = Field(default_factory=list)
+    reads: list[str] = Field(default_factory=list)
+    tool_reads: list[dict[str, Any]] = Field(default_factory=list)
+    reads_traced: bool = True
+    records_unread: list[str] = Field(default_factory=list)
+    unread_reads: list[dict[str, Any]] = Field(default_factory=list)
+    planned_records: list[str] = Field(default_factory=list)
+    decision: Literal["", "approved", "dismissed", "edited"] = ""
+    edited_text: str = ""
+    prepared_ids: dict[str, str] = Field(default_factory=dict, description="Change index -> the prepared "
+                                         "write it became (its card takes the confirm).")
+    changes_over_limit: int = Field(0, description="How many proposed changes on this piece exceed the desk's "
+                                    "per-piece limit (4); all changes stay shown.")
+    usd: Optional[str] = Field(None, json_schema_extra=_optional)
+
+
+class AssistJob(_Model):
+    """A job: its state folded from its log rows. Nothing is sent or written until the person confirms a
+    change on its own card."""
+    job_id: str
+    text: str
+    status: Literal["queued", "running", "stopping", "stopped", "finished", "failed"]
+    reason: str = ""
+    message: str = ""
+    progress: str = ""
+    requested_at: str
+    summary: str = ""
+    checklist: list[AssistJobChecklistItem] = Field(default_factory=list)
+    found: str = ""
+    not_found: str = ""
+    nothing: str = ""
+    planned: int = 0
+    unread: list[str] = Field(default_factory=list)
+    fallbacks: list[str] = Field(default_factory=list)
+    plan_reads: list[str] = Field(default_factory=list)
+    unread_reads: list[dict[str, Any]] = Field(default_factory=list, description="Reads of the plan the screens "
+                                               "kept from use (each says why); the plan stands on the others.")
+    pieces: list[AssistJobPiece] = Field(default_factory=list)
+    usd: Optional[float] = Field(None, json_schema_extra=_optional)
+
+
+class AssistJobs(_Model):
+    jobs: list[AssistJob] = Field(default_factory=list)
+    status: Literal["ok", "not_run"] = "ok"
+    reason: str = ""
+
+
+class AssistJobDecision(_Model):
+    decision: Literal["approved", "dismissed", "edited"]
+    text: str = Field("", max_length=20000, description="The person's own words for the piece (edited).")
+    edits: dict[str, dict[str, str]] = Field(
+        default_factory=dict, description="Change index -> field -> the person's value (a message's body).")
+
+
 class AssistWorking(_Model):
     """A draft asked for: it is being prepared; the list shows it when ready."""
     status: Literal["working"]
+
+
+class AssistWorkflowParseRequest(_Model):
+    """Plain-language workflow text to preview its parsed trigger and instruction."""
+    text: str = Field(min_length=1, max_length=20000)
+
+
+class AssistWorkflowParsed(_Model):
+    name: str
+    instruction: str
+    trigger_kind: Literal["schedule", "event", "manual"]
+    trigger: dict[str, Any] = Field(default_factory=dict)
+    trigger_summary: str
+
+
+class AssistWorkflowCreate(_Model):
+    """Create a workflow from plain language, a mined routine, a template, or explicit fields."""
+    plain_text: Optional[str] = Field(None, max_length=20000, json_schema_extra=_optional)
+    template_id: Optional[str] = Field(None, max_length=120, json_schema_extra=_optional)
+    routine_id: Optional[str] = Field(None, max_length=120, json_schema_extra=_optional)
+    name: Optional[str] = Field(None, max_length=500, json_schema_extra=_optional)
+    instruction: Optional[str] = Field(None, max_length=20000, json_schema_extra=_optional)
+    trigger_kind: Optional[Literal["schedule", "event", "manual"]] = Field(None, json_schema_extra=_optional)
+    trigger: Optional[dict[str, Any]] = Field(None, json_schema_extra=_optional)
+
+
+class AssistWorkflowUpdate(_Model):
+    """Edit a workflow's name, instruction or trigger."""
+    name: Optional[str] = Field(None, max_length=500, json_schema_extra=_optional)
+    instruction: Optional[str] = Field(None, max_length=20000, json_schema_extra=_optional)
+    trigger_kind: Optional[Literal["schedule", "event", "manual"]] = Field(None, json_schema_extra=_optional)
+    trigger: Optional[dict[str, Any]] = Field(None, json_schema_extra=_optional)
+
+
+class AssistWorkflowRun(_Model):
+    """One run of a workflow, pointing to its ``assist.job_log`` job."""
+    job_id: str
+    triggered_at: str
+    kind: Literal["fired", "run_now"]
+    trigger_note: str = ""
+    job: Optional[AssistJob] = Field(None, json_schema_extra=_optional)
+
+
+class AssistWorkflow(_Model):
+    """One workflow owned by the signed-in person, folded from ``assist.workflow_log``."""
+    workflow_id: str
+    name: str
+    instruction: str
+    trigger_kind: Literal["schedule", "event", "manual"]
+    trigger: dict[str, Any] = Field(default_factory=dict)
+    trigger_summary: str
+    source_kind: Literal["plain_language", "routine", "template"]
+    source_ref: str = ""
+    status: Literal["active", "paused", "stopped"]
+    pause_reason: str = ""
+    created_at: str
+    updated_at: str
+    next_run_at: Optional[str] = Field(None, json_schema_extra=_optional)
+    last_fired_at: Optional[str] = Field(None, json_schema_extra=_optional)
+    consecutive_failures: int = 0
+    backoff_until: Optional[str] = Field(None, json_schema_extra=_optional)
+    last_error: str = ""
+    runs: list[AssistWorkflowRun] = Field(default_factory=list)
+
+
+class AssistWorkflowTemplate(_Model):
+    template_id: str
+    name: str
+    description: str
+    trigger_kind: Literal["schedule", "event", "manual"]
+    trigger: dict[str, Any] = Field(default_factory=dict)
+    trigger_summary: str
+    instruction: str
+
+
+class AssistMinedRoutine(_Model):
+    """A mined routine of the signed-in person from ``assist.routines``."""
+    routine_id: str
+    kind: str
+    description: str = ""
+    trigger: dict[str, Any] = Field(default_factory=dict)
+    mined: dict[str, Any] = Field(default_factory=dict)
+    validated: dict[str, Any] = Field(default_factory=dict)
+    status: str = "candidate"
+    suggested_name: str = ""
+    suggested_trigger_summary: str = ""
+
+
+class AssistWorkflows(_Model):
+    workflows: list[AssistWorkflow] = Field(default_factory=list)
+    routines: list[AssistMinedRoutine] = Field(default_factory=list)
+    templates: list[AssistWorkflowTemplate] = Field(default_factory=list)
+    status: Literal["ok", "not_run"] = "ok"
+    reason: str = ""
+
+
+class AssistWorkflowRunResult(_Model):
+    workflow: AssistWorkflow
+    job: AssistJob
 
 
 class AutopilotNeverRequest(_Model):
@@ -5273,6 +5713,27 @@ class ChartFile(_Model):
     format: Literal["xlsx", "pptx", "docx", "pdf"]
 
 
+class ExportTable(_Model):
+    """One table to include as a formatted worksheet in an Excel export."""
+    title: str = Field("", max_length=200)
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[Optional[str]]] = Field(default_factory=list)
+    sql: Optional[str] = Field(None, max_length=20000)
+    as_of: Optional[str] = Field(None, max_length=64)
+    total_rows: Optional[int] = Field(None, ge=0, json_schema_extra=_optional)
+    records: Optional[int] = Field(None, ge=0, json_schema_extra=_optional)
+    truncated: bool = Field(False, json_schema_extra=_optional)
+
+
+class ExportXlsxRequest(_Model):
+    """Export any chart, table or answer into one formatted Excel workbook."""
+    title: str = Field("Export", max_length=200)
+    summary: str = Field("", max_length=20000)
+    tables: list[ExportTable] = Field(default_factory=list)
+    charts: list[AskChart] = Field(default_factory=list)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class InsightInfo(_Model):
     """One insight on a dashboard: a built-in definition or one the person saved."""
     id: str = Field(description="A built-in's name, or 's<n>' for one you saved.")
@@ -5326,6 +5787,21 @@ class InsightList(_Model):
     measures: list[MeasureInfo] = Field(default_factory=list, json_schema_extra=_optional,
                                         description="The agreed measures Ask and the charts "
                                         "use, with their definitions.")
+    hidden: list[InsightInfo] = Field(default_factory=list, json_schema_extra=_optional,
+                                      description="Charts you may be shown that you took off "
+                                      "your dashboard (add one back from here).")
+    customised: bool = Field(False, json_schema_extra=_optional,
+                             description="Whether the order or the charts are your own.")
+    layout_problem: Optional[str] = Field(None, json_schema_extra=_optional,
+                                          description="Your own arrangement could not be read: "
+                                          "the standard one is shown, and this says so.")
+
+
+class InsightLayout(_Model):
+    """A person's own arrangement of their dashboard: the order of their charts and the ones
+    they took off (kept whole, per person)."""
+    order: list[str] = Field(description="Chart ids in the order they are shown.")
+    hidden: list[str] = Field(default_factory=list, description="Chart ids taken off.")
 
 
 class InsightServed(_Model):
@@ -5786,3 +6262,9 @@ class RecurringChange(_Model):
     weekday: Optional[Literal["monday", "tuesday", "wednesday", "thursday", "friday",
                               "saturday", "sunday"]] = None
     state: Optional[Literal["active", "paused"]] = None
+
+
+class AskWarmStatus(_Model):
+    """Whether a warm Ask session is ready or starting for this reader (Ask spec 19 S3)."""
+    ready: bool
+    warming: bool

@@ -50,6 +50,8 @@ const config: NextConfig = {
     return [
       { source: "/autopilot", has: [{ type: "query", key: "item" }], destination: "/assist", permanent: false },
       { source: "/autopilot", destination: "/assist?show=switches", permanent: false },
+      { source: "/autopilot-log", destination: "/assist?show=log", permanent: false },
+      { source: "/trust", destination: "/data-health", permanent: false },
       { source: "/watching", destination: "/?show=alerts", permanent: false },
       { source: "/late", destination: "/?show=late", permanent: false },
       { source: "/my-work", destination: "/", permanent: false },

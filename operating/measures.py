@@ -93,20 +93,93 @@ def fill(sql: str) -> str:
     return _WHERE_REF.sub(lambda m: where_sql(m.group(1)), sql.replace("{business_tz}", BUSINESS_TZ))
 
 
+def _validate_entry(m: Mapping[str, Any]) -> dict[str, Any]:
+    from operating import measure_sources as srcs
+    from operating.ontology_tools_sql_check import check as check_sql, check_where
+    entry = dict(m)
+    if entry.get("sql"):
+        entry["sql"] = check_sql(entry["sql"], bare_views=True)
+        if not all(_NAME.match(d) for d in entry.get("dimensions") or ()):
+            raise ValueError(f"measure {entry['id']}: dimensions are not plain")
+        return entry
+    if entry.get("source"):
+        # a measure over records no typed view holds: its statement reads one derived table
+        # (``measure_sources``); its columns, not a view's, are what the fields below name
+        srcs.check(entry)
+        if entry.get("view"):
+            raise ValueError(f"measure {entry['id']}: a source measure names no view")
+        entry = {**entry, "view": f"records:{entry['source']['type']}", "_from": srcs.from_sql(entry)}
+    else:
+        for field in ("view", "per", "date"):
+            if entry[field] and not _NAME.match(entry[field]):
+                raise ValueError(f"measure {entry['id']}: {field} {entry[field]!r} is not a column name")
+    for field in ("per", "date"):
+        if entry[field] and not _NAME.match(entry[field]):
+            raise ValueError(f"measure {entry['id']}: {field} {entry[field]!r} is not a column name")
+    if not _VALUE.match(entry["value"]) or not all(_NAME.match(d) for d in entry["dimensions"]):
+        raise ValueError(f"measure {entry['id']}: value or dimensions are not plain")
+    if entry.get("rate_value") and not _VALUE.match(entry["rate_value"]):
+        raise ValueError(f"measure {entry['id']}: rate_value is not plain")
+    check_view = "records" if entry.get("source") else entry["view"]
+    for clause_field in ("where", "rate_where"):
+        clause = entry.get(clause_field)
+        if clause:
+            entry[clause_field] = check_where(clause, check_view)
+    for param in parameters_of(entry):
+        if param.get("excludes_where"):
+            check_where(param["excludes_where"], check_view)
+    return entry
+
+
 @lru_cache(maxsize=1)
-def measures() -> dict[str, dict[str, Any]]:
+def base_measures() -> dict[str, dict[str, Any]]:
+    """The git-tracked catalogue measures from ``measures.json`` alone."""
     data = json.loads(CATALOGUE.read_text(encoding="utf-8"))["measures"]
     out: dict[str, dict[str, Any]] = {}
     for m in data:
-        for field in ("view", "per", "date"):
-            if m[field] and not _NAME.match(m[field]):
-                raise ValueError(f"measure {m['id']}: {field} {m[field]!r} is not a column name")
-        if not _VALUE.match(m["value"]) or not all(_NAME.match(d) for d in m["dimensions"]):
-            raise ValueError(f"measure {m['id']}: value or dimensions are not plain")
-        if m.get("rate_value") and not _VALUE.match(m["rate_value"]):
-            raise ValueError(f"measure {m['id']}: rate_value is not plain")
-        out[m["id"]] = m
+        entry = _validate_entry(m)
+        out[entry["id"]] = entry
     return out
+
+
+def overlay_stamp() -> tuple[str, int, int]:
+    """Cache key for the live governed overlay (``operating.measure_candidates``)."""
+    from operating import measure_candidates as mc
+    return mc.overlay_stamp()
+
+
+@lru_cache(maxsize=4)
+def _measures_at(_stamp: tuple[str, int, int]) -> dict[str, dict[str, Any]]:
+    from operating import measure_candidates as mc
+    out = dict(base_measures())
+    for raw in mc.governed_overlay():
+        mid = raw.get("id")
+        if not mid or mid in out:
+            continue
+        try:
+            entry = _validate_entry(raw)
+        except (ValueError, KeyError, ToolError):
+            continue
+        out[entry["id"]] = entry
+    return out
+
+
+def measures() -> dict[str, dict[str, Any]]:
+    """Every governed measure: ``measures.json`` plus owner-approved definitions from the
+    live governed overlay (``operating.measure_candidates``)."""
+    return _measures_at(overlay_stamp())
+
+
+def typed() -> dict[str, dict[str, Any]]:
+    """The measures over a business view (not over records or custom SQL): what the view-based
+    machinery (door fixtures, stored values, the unusual scan) reads."""
+    return {k: v for k, v in measures().items() if not v.get("source") and not v.get("sql")}
+
+
+def from_of(m: Mapping[str, Any]) -> str:
+    """What a statement of ``m`` reads FROM: its business view, or (a measure over records
+    no typed view holds) its derived source table."""
+    return m.get("_from") or m["view"]
 
 
 # the fields that decide what a measure counts: its version changes when any of them does
@@ -122,8 +195,12 @@ def version(m: Mapping[str, Any]) -> str:
     the date an answer shows is never the date of an older definition."""
     import hashlib
     # a statement's working copy holds its parameters' where; the version is the entry's
-    said = json.dumps({k: m.get("_where", m.get(k)) if k == "where" else m.get(k)
-                       for k in DEFINING}, sort_keys=True, default=str)
+    said = {k: m.get("_where", m.get(k)) if k == "where" else m.get(k) for k in DEFINING}
+    if m.get("source"):
+        said["source"] = m["source"]       # only a source measure has one: older versions stand
+    if m.get("sql"):
+        said["sql"] = m["sql"]             # only a saved-SQL approved measure has one
+    said = json.dumps(said, sort_keys=True, default=str)
     return "v" + hashlib.sha256(said.encode("utf-8")).hexdigest()[:8]
 
 
@@ -164,7 +241,8 @@ def listing(full: bool = False) -> dict[str, Any]:
                       "owner": m["owner"], "unit": m["unit"], "source": m["view"],
                       "dimensions": list(m["dimensions"])
                       + (list(TIME_DIMENSIONS) if m["date"] else []),
-                      "period": (f"last {m.get('days', 30)} days by {m['date']}"
+                      "period": ("as defined" if m.get("sql")
+                                 else f"last {m.get('days', 30)} days by {m['date']}"
                                  if m["date"] else "now (a snapshot)"),
                       **({"ask": m["ask"]} if m.get("ask") else {})}
                      for m in measures().values()],
@@ -203,10 +281,20 @@ def lines(full: bool = False) -> list[str]:
     return out
 
 
-def _bad(message: str) -> ToolError:
-    return ToolError("invalid_request", message,
+def _bad(message: str, code: str = "invalid_request") -> ToolError:
+    if code == "not_measurable":
+        return ToolError(code, message, "its columns are measured on the data and are too thin "
+                         "for a figure: say that and why; never estimate it or read it from "
+                         "another source as if it were this measure")
+    return ToolError(code, message,
                      "plx.sql {\"measure\": true} lists the measures, their dimensions "
                      "and periods")
+
+
+def _fill_verdict(m: Mapping[str, Any]) -> tuple[str, str]:
+    """(why not measurable, note that the fill could not be checked) of measure ``m``."""
+    from operating import fill_contract
+    return fill_contract.verdict(m)
 
 
 def _days(value: Any, default: int) -> int:
@@ -443,6 +531,9 @@ def _is_day_column(view: str, column: str) -> bool:
     """Whether ``view.column`` holds dates (True) or timestamps (False), from plx.sql's
     data dictionary; a column it does not type is refused: a moving edge compared with the
     wrong type would shift the period by the time zone's hours."""
+    from operating import measure_sources as srcs
+    if srcs.is_derived(view):
+        return True        # a source table's date columns are made days (``measure_sources``)
     from operating.ontology_tools_sql import _dictionary
     kind = str((_dictionary().get(view) or {}).get("columns", {}).get(column) or "")
     kind = kind.split(":", 1)[0].strip().lower()
@@ -499,6 +590,9 @@ def _rate_parts(m: Mapping[str, Any], cond: Optional[str] = None) -> str:
 def _agg(m: Mapping[str, Any], cond: Optional[str] = None) -> str:
     """The measure's value over its rows meeting ``cond`` (None: all of them)."""
     if not is_rate(m):
+        # an average is shown to two places (a numeric average carries sixteen digits)
+        if m["value"].startswith("avg("):
+            return f"round({m['value']}{_when(cond)}, 2)"
         return m["value"] + _when(cond)
     num_cond = " AND ".join(f"({c})" for c in (cond, m.get("rate_where")) if c) or None
     return (f"round(100.0 * {m.get('rate_value') or m['value']}{_when(num_cond)} "
@@ -568,7 +662,7 @@ def _unusual_body(m: Mapping[str, Any], by: Optional[str], n: int,
     same = "".join(f" AND b.{k} IS NOT DISTINCT FROM k.{k}" for k in keys)
     empty = "NULL::numeric" if is_rate(m) else "0"
     return (f"WITH b AS (SELECT {lead}floor(extract(epoch FROM now() - {m['date']}) / "
-            f"{n * 86400})::int AS ago, {_agg(m)} AS value FROM {m['view']} WHERE {where} "
+            f"{n * 86400})::int AS ago, {_agg(m)} AS value FROM {from_of(m)} WHERE {where} "
             f"GROUP BY {lead}ago), "
             f"k AS (SELECT {lead}max(ago) AS reach FROM b"
             + (f" GROUP BY {', '.join(keys)}" if keys else "") + "), "
@@ -621,7 +715,10 @@ def _scan(n: int, without: frozenset = frozenset()) -> tuple[str, dict[str, Any]
     named."""
     parts = []
     span = f"interval '{n * (UNUSUAL_PERIODS + 1)} days'"
-    dated = [m for m in measures().values() if m["date"] and m["view"] not in without]
+    # a measure over records (``source``) has no view to read once for all: it is judged alone
+    # with {"measure": id, "unusual": true}, and named here as left out
+    dated = [m for m in measures().values() if m["date"] and m["view"] not in without
+             and not m.get("source") and not m.get("sql")]
     # each view read once (its rows in the window, only the columns its measures name): the
     # door's rule is decided per row read, and five reads of the invoice lines and two of
     # the mail made one scan a minute through the owner's door
@@ -672,9 +769,12 @@ def _scan(n: int, without: frozenset = frozenset()) -> tuple[str, dict[str, Any]
            "LAST,measure,per")
     left = sorted(m["id"] for m in measures().values() if not m["date"])
     unread = sorted(m["id"] for m in measures().values() if m["date"] and m["view"] in without)
-    return sql, {"id": SCAN, **({"not_read": "views not served here: " + ", ".join(
-                     sorted(without)) + "; measures left out: " + ", ".join(unread)}
-                    if unread else {}), "name": "Every dated measure, judged for unusual change",
+    alone = sorted(m["id"] for m in measures().values() if m["date"] and m.get("source"))
+    said = ([("views not served here: " + ", ".join(sorted(without)) + "; measures left out: "
+              + ", ".join(unread))] if unread else []) \
+        + ([("measures over records, judged one at a time with {\"measure\": \"<id>\", "
+             "\"unusual\": true}: " + ", ".join(alone))] if alone else [])
+    return sql, {"id": SCAN, **({"not_read": "; ".join(said)} if said else {}), "name": "Every dated measure, judged for unusual change",
                  "kind": "scan", "definition": (
                      "Each dated catalogue measure (its own definition, plx.sql {\"measure\": "
                      "true}) per currency or unit, " + _unusual_said(n) + ". Snapshots are "
@@ -690,7 +790,8 @@ def excluded_statements(name: str, days: Any = None, period: Any = None, filter:
     ``parameters`` leaves switched off: the measure's own statement over exactly the rows
     that parameter leaves out, over the same period and filter, ungrouped: one row, its
     ``value`` over them and ``row_count`` = how many records it leaves out. The one
-    definition of an excluded count (a measure read and a measure tile both use it)."""
+    definition of an excluded count (a measure read and a measure tile both use it). The
+    measure's own fill verdict is its read's, not this count's (``unchecked``)."""
     m = measures().get(name)
     on = parameters if isinstance(parameters, Mapping) else {}
     out = []
@@ -698,7 +799,7 @@ def excluded_statements(name: str, days: Any = None, period: Any = None, filter:
         if on.get(p["id"], p.get("default", False)):
             continue
         sql, _entry = statement(name, None, days, False, period, None, filter, False,
-                                parameters=on, excluded=p["id"])
+                                parameters=on, excluded=p["id"], unchecked=True)
         out.append((p, sql))
     return out
 
@@ -721,7 +822,8 @@ def statement(name: Any, by: Any = None, days: Any = None,
               compare: Any = False, period: Any = None,
               against: Any = None, filter: Any = None,
               unusual: Any = False, without: Any = (), parameters: Any = None,
-              excluded: Optional[str] = None, why: Any = False) -> tuple[str, dict[str, Any]]:
+              excluded: Optional[str] = None, why: Any = False,
+              unchecked: bool = False) -> tuple[str, dict[str, Any]]:
     """(the SELECT for one catalogue entry, what to cite with it). Refuses (``ToolError``)
     a name, dimension, filter or period the entry does not hold.
 
@@ -730,7 +832,12 @@ def statement(name: Any, by: Any = None, days: Any = None,
     same kind of period just before it. ``filter`` keeps the rows whose dimensions hold
     the values named (``_filters``): a follow-up's slice of an earlier answer.
     ``unusual`` judges the latest ``days`` against the periods of ``days`` before it
-    (``_unusual``); ``name`` ``"*"`` with it scans every dated measure at once."""
+    (``_unusual``); ``name`` ``"*"`` with it scans every dated measure at once.
+
+    A measure whose declared columns are not filled enough on the newest measured data
+    (``fill_contract``: ``requires``) is refused as ``not_measurable`` with the fills, never
+    answered with a thin number; ``unchecked`` (Insights drawing that refusal as its tile)
+    builds the statement anyway."""
     if not isinstance(name, str):
         raise _bad("measure names one entry of the catalogue")
     if not isinstance(compare, bool) or not isinstance(unusual, bool) \
@@ -739,8 +846,9 @@ def statement(name: Any, by: Any = None, days: Any = None,
     if why:
         # why a figure changed: which dimension holds the change (``_why``); it is the
         # every-dimension comparison read as a ranking of the dimensions
-        if by is not None or unusual or filter is not None:
-            raise _bad("why ranks every dimension of the change: no by, unusual or filter with it")
+        if by is not None or unusual:
+            raise _bad("why ranks every dimension of the change: no by or unusual with it "
+                       "(a filter narrows the rows it ranks, a period names the change)")
         by, compare = EVERY, True
     if unusual:
         if compare or period is not None or against is not None:
@@ -779,6 +887,19 @@ def statement(name: Any, by: Any = None, days: Any = None,
                           "scope": r["scope"],
                           "definition": r.get("about", ""), "owner": r.get("group", ""),
                           "sql": r["sql"]}
+    if m.get("sql"):
+        if by is not None or days is not None or compare or period is not None \
+                or filter is not None or unusual or why:
+            raise _bad(f"{name} runs its agreed statement as saved, with no by, days, "
+                       "period, filter, unusual, why or compare")
+        return m["sql"], {"id": name, "name": m["name"], "kind": "measure",
+                          "definition": m["definition"], "owner": m["owner"],
+                          "version": version(m), "defined_on": defined_on(m),
+                          "unit": m["unit"], "source": m.get("view", ""),
+                          "period": "as defined", "by": None, "sql": m["sql"]}
+    unmeasurable, unchecked_note = ("", "") if unchecked else _fill_verdict(m)
+    if unmeasurable:
+        raise _bad(unmeasurable, code="not_measurable")
     # stated exclusions (S2): the rows each parameter leaves out are left out unless it is
     # switched on; ``excluded`` reads only the rows one parameter leaves out
     on = parameters if isinstance(parameters, Mapping) else {}
@@ -826,7 +947,7 @@ def statement(name: Any, by: Any = None, days: Any = None,
         if earlier[0] < named[1] and named[0] < earlier[1]:
             raise _bad("period and against overlap: name two separate periods")
         earlier, full_earlier = _aligned(named, earlier)
-    value, per, view = m["value"], m["per"], m["view"]
+    value, per, view = m["value"], m["per"], from_of(m)
     rate = is_rate(m)
     where = ([f"({m['where']})"] if m["where"] else []) + sliced
     keys = []
@@ -1006,7 +1127,8 @@ def statement(name: Any, by: Any = None, days: Any = None,
                  "definition": m["definition"], "owner": m["owner"], "version": version(m),
                  "defined_on": defined_on(m),
                  "unit": m["unit"],
-                 "source": view, "period": period, "by": by,
+                 "source": m["view"], "period": period, "by": by,
+                 **({"fill_unchecked": unchecked_note} if unchecked_note else {}),
                  **_cited_filter(filter), **(_rate_note(m) if rate else {}), "sql": sql}
 
 
@@ -1058,7 +1180,7 @@ def _trend_compare(m: Mapping[str, Any], by: str, named: Period, earlier: Period
     """A period against an earlier one, one row per month (or week) of it: step 0 is the first
     month of each, with the label of the current month and of the earlier one beside the two
     values and their change (a year over year by month)."""
-    view, d = m["view"], m["date"]
+    view, d = from_of(m), m["date"]
     local = d if _is_day_column(view, d) else f"({d} AT TIME ZONE '{ZONE}')"
 
     def first(p: Period) -> str:      # the period's first day, as a date

@@ -59,6 +59,19 @@ class Accounts(unittest.TestCase):
             self.assertFalse(ta.is_shared("a-1", {"name_from": "address"}, Path(tempfile.mkdtemp())))
             self.assertFalse(ta.is_shared("a-1", {"name_from": "address"}, None))
 
+    def test_team_person_row_normalizes_comma_spacing(self):
+        from datetime import date
+        from operator_api import team_view as tv
+        row = tv.person_row(
+            "11111111-2222-4333-8444-555555555555",
+            {"name": "Pat Mercer", "department": "Customer service,Purchasing,Receivables", "days": {}},
+            until=date(2026, 11, 25),
+            team=None,
+            open_={},
+            is_self=False,
+        )
+        self.assertEqual(row["team"], "Customer service, Purchasing, Receivables")
+
 
 if __name__ == "__main__":
     unittest.main()

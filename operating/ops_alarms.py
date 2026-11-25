@@ -194,6 +194,38 @@ def systemctl(scope: str, args: Sequence[str]) -> str:
     return done.stdout
 
 
+def journalctl(scope: str, unit: str) -> str:
+    """The unit's recent journal text, message bodies only; empty when unreadable (the
+    caller keeps the cautious alarm rather than treating an intentional restart as proven)."""
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    flag = ["--user-unit"] if scope == "user" else ["--unit"]
+    try:
+        done = subprocess.run(["journalctl", *flag, unit, "--no-pager", "-o", "cat",
+                               "-n", "80"], capture_output=True, text=True, timeout=30,
+                              env=env)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+RELEASE_RESTART_UNITS = {"plx-autopilot-fast-serve.service"}
+
+
+def restart_reason(journal: str) -> Optional[str]:
+    """The reason of the newest structured ``status: restart`` line a feed wrote before
+    ending on purpose; None without one (systemd's own lines and plain output decide nothing)."""
+    for line in reversed(journal.splitlines()):
+        try:
+            got = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(got, dict) and got.get("status") == "restart" \
+                and isinstance(got.get("reason"), str):
+            return got["reason"]
+    return None
+
+
 PG_SQL = """
 SELECT current_setting('max_connections')::int,
        count(*) FILTER (WHERE backend_type = 'client backend'),
@@ -235,6 +267,7 @@ from operating.ops_alarms_memory import (  # noqa: E402,F401 - read as ops_alarm
 @dataclass
 class Probes:
     systemctl: Callable[[str, Sequence[str]], str] = systemctl
+    journal: Callable[[str, str], str] = journalctl
     pg: Callable[[str, float], dict[str, Any]] = pg_probe
     meminfo: Callable[[], str] = meminfo
     disk_free: Callable[[str], int] = field(default=lambda p: shutil.disk_usage(p).free)
@@ -303,7 +336,8 @@ def _has_next(unit: Mapping[str, str]) -> bool:
 
 def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
                 t: Mapping[str, float], ignore: frozenset[str],
-                reported: frozenset[str] = frozenset()) -> list[Check]:
+                reported: frozenset[str] = frozenset(),
+                journal: Optional[Callable[[str, str], str]] = None) -> list[Check]:
     """One breach per unit of ``scope`` that stopped; nothing for a healthy one.
     ``reported``: units another check already names with its reason (left out here)."""
     by_id = {u["Id"]: u for u in units}
@@ -319,9 +353,12 @@ def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
         detail = None
         if state == "failed":
             detail = ("killed: out of memory" if result == "oom-kill" else
-                      f"failed ({result or 'unknown'})")
+                      f"failed: {_RESULT_WORDS.get(result, result or 'no reason given')}")
         elif sub == "auto-restart":
-            detail = f"restarting again and again ({u.get('NRestarts', '?')} restarts)"
+            intentional = uid in RELEASE_RESTART_UNITS and journal is not None \
+                and restart_reason(journal(scope, uid)) == "release_moved"
+            if not intentional:
+                detail = f"restarting again and again ({u.get('NRestarts', '?')} restarts)"
         elif state == "activating" and uid.endswith(".service") and since is not None \
                 and since > (t["delta_activating_hours"] if uid == DELTA_UNIT
                              and scope == "system" else t["unit_activating_hours"]):
@@ -330,12 +367,12 @@ def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
                 and u.get("UnitFileState", "").startswith("enabled") \
                 and u.get("Type", "") in LONG_RUNNING_TYPES and uid not in reported \
                 and uid not in RUN_TO_END:
-            detail = ("enabled but not running"
+            detail = ("switched on but not running"
                       + ("" if since is None else " for under an hour" if since < 1
                          else f" for {since:g} h")
-                      + " (it exited cleanly, so nothing restarts it)"
+                      + " (it ended normally and nothing starts it again)"
                       if result in ("", "success") else
-                      f"enabled but not running ({result})")
+                      f"switched on but not running ({_RESULT_WORDS.get(result, result)})")
         elif uid.endswith(".timer") and (u.get("UnitFileState", "").startswith("enabled")
                                          or state == "active"):
             served = by_id.get(u.get("Unit", ""), {})
@@ -1449,7 +1486,8 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
             c["name"] == "ingest_service" and c["state"] == "breach" for c in checks)
             else ())
         checks += guarded(f"unit_states:{scope}",
-                          lambda: unit_checks(scope, units, now, t, ignore, reported))
+                          lambda: unit_checks(scope, units, now, t, ignore, reported,
+                                              probes.journal))
         if scope == "system":
             checks += guarded("backups", lambda: backup_checks(units, now, t, backup_root))
     if backup_root is not None:   # capture and off-box copies, partial sets (main only)
@@ -1521,7 +1559,7 @@ def line(check: Mapping[str, Any]) -> str:
     if check.get("unit") == "min" and isinstance(value, (int, float)):
         what = {"delta_last_cycle": "Data refresh (delta) last finished",
                 "proactive_last_pass": "Proactive alerts last good pass",
-                "search_follow_last_pass": "Search follower last pass",
+                "search_follow_last_pass": "Search index last refresh",
                 "delta_cycle_runtime": "Data refresh cycle running for",
                 "delta_backlog": "Data refresh backlog waiting since"}.get(
             name, f"{name.split(':')[1]} capture last made progress"

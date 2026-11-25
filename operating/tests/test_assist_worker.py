@@ -79,10 +79,15 @@ class Worker(unittest.TestCase):
         again = aw.run_queue(self.pg, draft)
         self.assertEqual((again["requested"], len(seen)), (0, 1))     # asked once, served once
         self.assertIsNone(b)
-        # a second request after the draft is served again
+        # a second request after the draft (or on a needs_you card) shows working until the worker finishes
         self.ask("t1")
+        waiting = self.item(a)
+        self.assertEqual(waiting["plan_status"], "working")
+        self.assertIsNotNone(waiting["requested_at"])
         aw.run_queue(self.pg, lambda o, i: [{"draft": "New text"}])
-        self.assertEqual(self.item(a)["body"], "New text")
+        done = self.item(a)
+        self.assertEqual((done["plan_status"], done["body"]), ("drafted", "New text"))
+        self.assertGreaterEqual(done["plan_at"], done["requested_at"])
         # a matter nobody asked for is never drafted
         other = self.pg.execute("SELECT plan_status FROM assist.matters WHERE subject_key = 't2'"
                                 ).fetchone()[0]

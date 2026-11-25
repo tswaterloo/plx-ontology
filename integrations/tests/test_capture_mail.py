@@ -1393,6 +1393,80 @@ class ScopeAndCliTests(unittest.TestCase):
             with self.assertRaises(CaptureError):
                 CaptureScope.from_json(bad, allowlist=SYNTHETIC)
 
+    def test_mailbox_subset_keeps_the_full_scopes_capture_policy(self):
+        scope = CaptureScope([], window_days=120, all_mailboxes=True,
+                             all_mailbox_folders="all", allowlist=SYNTHETIC,
+                             history="all", ocr="deferred",
+                             priority={"mailboxes": [UPN_B], "recent_days": 30,
+                                       "active_days": 7})
+        subset = scope.mailbox_subset([UPN_B])
+        self.assertEqual(subset.mailboxes, ((UPN_B, ("all",)),))
+        self.assertEqual((subset.window_days, subset.history, subset.ocr,
+                          subset.all_mailboxes, subset.priority_mailboxes,
+                          subset.recent_days, subset.active_days),
+                         (120, "all", "deferred", False, (UPN_B,), 30, 7))
+        with self.assertRaises(CaptureError):
+            scope.mailbox_subset([])
+        with self.assertRaises(CaptureError):
+            scope.mailbox_subset([UPN_B, UPN_B])
+
+    def test_directory_wide_subset_does_not_narrow_to_the_named_allowlist(self):
+        restrictive = MailScope([UPN_A])
+        scope = CaptureScope([], all_mailboxes=True, all_mailbox_folders="all",
+                             allowlist=restrictive)
+        subset = scope.mailbox_subset([UPN_B])
+        self.assertEqual(subset.mailboxes, ((UPN_B, ("all",)),))
+        self.assertEqual(subset.outside_allowlist, ())
+        # A scope that is not directory-wide keeps the canonical named-mailbox rule.
+        named_only = CaptureScope([{"address": UPN_A, "folders": ["inbox"]}],
+                                  all_mailboxes=False, all_mailbox_folders="all",
+                                  allowlist=restrictive)
+        strict = named_only.mailbox_subset([UPN_B])
+        self.assertEqual(strict.mailboxes, ())
+        self.assertEqual(strict.outside_allowlist, (UPN_B,))
+
+    def test_full_pass_skip_and_priority_subset_cover_disjoint_directory_mailboxes(self):
+        graph = FakeGraph()
+        graph.put(BOX_A, "A-1", "CK-1")
+        graph.put(BOX_B, "B-1", "CK-1")
+        base = CaptureScope([], all_mailboxes=True, all_mailbox_folders=["inbox"],
+                            allowlist=MailScope([UPN_A]))
+        full = base.without_mailboxes([UPN_B])
+        fast = base.mailbox_subset([UPN_B])
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MailCaptureStore(Path(tmp) / "state")
+            try:
+                api, _transport = graph_read.build_graph(ENV, sender=graph)
+                capture = MailCapture(store, GraphMailReader(api, capture_audience()), CAPTURE,
+                                      page_size=2)
+                full_run = capture.run(full, directory=lambda: capture_mail.directory_mailboxes(
+                    api, full.directory_allows))
+                self.assertEqual([m.get("mailbox_id") for m in full_run["mailboxes"]], [BOX_A])
+                self.assertEqual(store.folder_state(BOX_B, "inbox"), None)
+                fast_run = capture.run(fast)
+                self.assertEqual([m.get("mailbox_id") for m in fast_run["mailboxes"]], [BOX_B])
+                self.assertIsNotNone(store.folder_state(BOX_A, "inbox"))
+                self.assertIsNotNone(store.folder_state(BOX_B, "inbox"))
+            finally:
+                store.close()
+
+    def test_without_mailboxes_is_the_exact_complement_of_a_priority_subset(self):
+        scope = CaptureScope([], window_days=120, all_mailboxes=True,
+                             all_mailbox_folders="all", allowlist=SYNTHETIC,
+                             history="all", ocr="deferred",
+                             priority={"mailboxes": [UPN_A, UPN_B], "recent_days": 30,
+                                       "active_days": 7})
+        rest = scope.without_mailboxes([UPN_B])
+        subset = scope.mailbox_subset([UPN_B])
+        self.assertEqual((rest.window_days, rest.history, rest.ocr, rest.all_mailboxes,
+                          rest.priority_mailboxes),
+                         (120, "all", "deferred", True, (UPN_A,)))
+        self.assertEqual(subset.mailboxes, ((UPN_B, ("all",)),))
+        self.assertEqual(rest.mailboxes, ())
+        self.assertIn(UPN_B, rest.excluded)
+        with self.assertRaises(CaptureError):
+            scope.without_mailboxes([])
+
     def test_all_mailboxes_scope_lists_the_directory(self):
         graph = FakeGraph()
         graph.put(BOX_A, "MSG-1", "CK-1-1")

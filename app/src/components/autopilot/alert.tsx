@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { ItemActions } from "@/components/autopilot/item-actions";
+import { noteParts, saidOnce } from "@/components/autopilot/lines";
 import { Button } from "@/components/ui/button";
 import { useProblem, useProblemSlot } from "@/components/ui/notice";
 import { getAutopilotColleagues, handAutopilotItem, setFollowing, takeAutopilotItem, type PreparedItem } from "@/lib/api";
@@ -15,50 +16,60 @@ import { plainError } from "@/lib/errors";
 import { countedWords, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
-export function AlertCard({ item, linked, onGone, onChanged }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged?: () => void }) {
+export function AlertCard({ item, linked, onGone, onChanged, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged?: () => void; feedback?: React.ReactNode }) {
   const [passing, setPassing] = useState(false);
   const card = useProblemSlot();
-  const summary = countedWords(item.summary ?? "");
-  const same = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
-  // the body repeats the title's own words on some items: said once
-  const extra = item.message && !same(item.message, summary) && !same(item.message, item.summary ?? "") ? item.message : "";
+  const parsedNote = noteParts(item.note ?? "");
+  const [summary, extra, noteText] = saidOnce([countedWords(item.summary ?? ""), item.message ?? "", parsedNote.text]);
   const mc = item.alert_kind === "mc_approval_pending";
   return (
-    <li id={`prepared-${item.item_id}`} className={cn("space-y-2 py-4", linked && "border-l-2 border-accent pl-3")} data-testid="prepared-alert">
-      <div className="flex flex-wrap items-baseline gap-x-3">
-        <span className="text-[13px] font-medium">{item.subject || "From the records"}</span>
+    <li
+      id={`prepared-${item.item_id}`}
+      className={cn(
+        "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4 transition-colors",
+        linked && "border-accent/70 ring-1 ring-accent/30",
+      )}
+      data-testid="prepared-alert"
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="text-[14px] font-semibold text-fg">{item.subject || "From the records"}</span>
+        {parsedNote.labels.map((l) => (
+          <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
+            {l}
+          </p>
+        ))}
         <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
       {mc ? (
         <>
           {/* a Mission Control approval is the agents' own text: one plain line, the rest on open */}
-          <p className="max-w-[46rem] truncate text-[13px]" title={summary} data-testid="alert-line">{summary}</p>
-          {(summary.length > 40 || extra || item.facts.length > 0 || item.note) && (
-            <details className="text-[12px] text-muted" data-testid="alert-details">
-              <summary className="cursor-pointer">Details</summary>
-              <div className="mt-1 space-y-1">
-                <p className="max-w-[46rem] whitespace-pre-wrap break-words text-fg">{summary}</p>
-                {extra && <p className="max-w-[46rem] whitespace-pre-wrap break-words">{extra}</p>}
+          <p className="truncate text-[14px] font-medium leading-relaxed text-fg" title={summary} data-testid="alert-line">{summary}</p>
+          {(summary.length > 40 || extra || item.facts.length > 0 || noteText) && (
+            <details className="rounded-md border border-border/70 bg-bg/70 px-3 py-2 text-[12px] text-muted" data-testid="alert-details">
+              <summary className="cursor-pointer font-medium text-fg/90">Details</summary>
+              <div className="mt-2 space-y-1.5 leading-relaxed">
+                <p className="whitespace-pre-wrap break-words text-fg">{summary}</p>
+                {extra && <p className="whitespace-pre-wrap break-words">{extra}</p>}
                 {item.facts.map((f, n) => (
                   <p key={n}>{countedWords(f)}</p>
                 ))}
-                {item.note && <p>{countedWords(item.note)}</p>}
+                {noteText && <p>{countedWords(noteText)}</p>}
               </div>
             </details>
           )}
         </>
       ) : (
         <>
-          <p className="max-w-[46rem] text-[13px]">{summary}</p>
-          {extra && <p className="max-w-[46rem] whitespace-pre-wrap text-[12px] text-muted">{extra}</p>}
+          {summary && <p className="text-[14px] font-medium leading-relaxed text-fg">{summary}</p>}
+          {extra && <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">{extra}</p>}
           {item.facts.length > 0 && (
-            <ul className="max-w-[46rem] list-disc space-y-0.5 pl-4 text-[12px] text-muted">
+            <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted">
               {item.facts.map((f, n) => (
                 <li key={n}>{countedWords(f)}</li>
               ))}
             </ul>
           )}
-          {item.note && <p className="text-[12px] text-muted">{countedWords(item.note)}</p>}
+          {noteText && <p className="text-[12px] text-muted" data-testid="prepared-note">{countedWords(noteText)}</p>}
         </>
       )}
       {(item.links ?? []).length > 0 && (
@@ -74,14 +85,19 @@ export function AlertCard({ item, linked, onGone, onChanged }: { item: PreparedI
         </div>
       )}
       {item.handed_from && <p className="text-[12px] text-muted" data-testid="alert-handed-from">Passed to you by {item.handed_from}. Setting it aside clears it for them too.</p>}
-      {item.pooled ? (
-        <Take itemId={item.item_id} onTaken={() => (onChanged ? onChanged() : onGone(item.item_id))} />
-      ) : card.provide(
-        <>
-          <ItemActions item={item} onGone={onGone} setAsideOnly={!!item.handed_from} entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]} />
-          <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} />
-        </>,
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
+        <div className="min-w-0">
+          {item.pooled ? (
+            <Take itemId={item.item_id} onTaken={() => (onChanged ? onChanged() : onGone(item.item_id))} />
+          ) : card.provide(
+            <>
+              <ItemActions item={item} onGone={onGone} setAsideOnly={!!item.handed_from} entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]} />
+              <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} />
+            </>,
+          )}
+        </div>
+        {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
+      </div>
       {card.banner}
     </li>
   );

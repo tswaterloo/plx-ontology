@@ -49,6 +49,98 @@ def mention_key(text: Any) -> str:
     return re.sub(r"[^0-9A-Z]", "", str(text or "").upper())
 
 
+def _identifier_leads(question: str) -> list[Any]:
+    from . import query_understanding as qu
+    try:
+        return list(qu.identifier_leads(question))
+    except Exception:  # noqa: BLE001 - unread: the resolver still looks
+        import logging
+        logging.getLogger("operating.session_prefetch").warning(
+            "session_prefetch: identifier_leads failed", exc_info=True)
+        return []
+
+
+def _code_key(lead: Any) -> str:
+    """One normalized lookup key for an identifier lead: prefer a normalized form without
+    spaces that starts with a letter when present, else the first form or text."""
+    forms = [str(f).strip() for f in (getattr(lead, "forms", None) or ()) if isinstance(f, str) and f.strip()]
+    for form in forms:
+        if form[0].isalpha() and " " not in form:
+            return form
+    return forms[0] if forms else str(getattr(lead, "text", "") or "").strip()
+
+
+def question_named(question: str) -> tuple[list[Any], list[str]]:
+    """The one definition of what a question names: ``(identifier_leads, entity_names)``.
+    Uses the identifier grammar (``query_understanding.identifier_leads``) for codes and
+    ``entity_resolution.mentions`` for entity names, with no extra regexes."""
+    if not isinstance(question, str) or not question.strip():
+        return [], []
+    leads = _identifier_leads(question)
+    names: list[str] = []
+    try:
+        from . import entity_resolution, name_finder
+        for mention in entity_resolution.mentions(question):
+            if mention.get("kind") != "name":
+                continue
+            text = str(mention.get("text") or "").strip()
+            if not text or text in names:
+                continue
+            try:
+                name_finder.words(text)
+            except name_finder.NamesInputError:
+                continue
+            names.append(text)
+    except Exception:  # noqa: BLE001 - name extraction failure never blocks pre-reads
+        import logging
+        logging.getLogger("operating.session_prefetch").warning(
+            "session_prefetch: mention extraction failed", exc_info=True)
+    return leads, names
+
+
+def _context_record_args(record: str) -> Optional[dict[str, Any]]:
+    """Parse a page's open record id (handle, ``Type:system:number``, or plain code) into
+    ``plx.sql`` record-card arguments without regexes."""
+    raw = str(record or "").strip()
+    if not raw:
+        return None
+    if "://" in raw:
+        return {"record": raw}
+    parts = raw.split(":", 2)
+    if len(parts) == 3 and parts[0].isidentifier() and parts[2].strip():
+        return {"record": parts[2].strip(), "type": parts[0]}
+    return {"record": raw}
+
+
+def sql_reads(question: str, *, context_record: Optional[str] = None
+              ) -> list[tuple[str, dict[str, Any]]]:
+    """The deterministic ``plx.sql`` pre-reads for what ``question`` names (shared with
+    ``first_reads`` through ``question_named``): ``{"record": ...}`` for codes and open
+    record context, ``{"names": ...}`` for entity names. Deduplicated in order."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+
+    def add(args: Mapping[str, Any]) -> None:
+        key = json.dumps(args, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            out.append(("plx.sql", dict(args)))
+
+    if context_record:
+        args = _context_record_args(context_record)
+        if args:
+            add(args)
+
+    leads, names = question_named(question)
+    for lead in leads:
+        key = _code_key(lead)
+        if key:
+            add({"record": key})
+    for name in names:
+        add({"names": name})
+    return out
+
+
 def first_reads(question: str, looked: Optional[Mapping[str, Any]] = None
                 ) -> list[tuple[str, dict[str, Any]]]:
     """The records ``question`` names, looked up as the reader: each identifier the
@@ -62,16 +154,12 @@ def first_reads(question: str, looked: Optional[Mapping[str, Any]] = None
     44 of 114 sessions repeated them first (12-14 s median each) and 3 of the 89 repeats
     found a record the Ask had not. An identifier only this grammar reads is still
     looked up."""
-    from . import query_understanding as qu
     if not isinstance(question, str) or not question.strip():
         return []
     done = {mention_key(m) for m in (looked or {}).get("mentions") or ()
             if isinstance(m, str)} - {""}
     out: list[tuple[str, dict[str, Any]]] = []
-    try:
-        leads = qu.identifier_leads(question)
-    except Exception:  # noqa: BLE001 - unread: the resolver still looks
-        leads = []
+    leads, _names = question_named(question)
     seen: set[str] = set()
     for lead in leads:
         key = (lead.forms[0] if lead.forms else lead.text).upper()

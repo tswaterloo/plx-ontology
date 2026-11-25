@@ -20,7 +20,7 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
   const router = useRouter();
   const linked = params.get("item");
   useEffect(() => {
-    if (params.get("tab") === "audit") router.replace("/autopilot-log");
+    if (params.get("tab") === "audit") router.replace("/assist?show=log");
     else if (linked) router.replace(`/?item=${encodeURIComponent(linked)}`);
   }, [params, router, linked]);
   const admin = area.owner || area.drafts_switched_on != null;

@@ -1441,6 +1441,34 @@ def items_built(states: Sequence[Mapping[str, Any]]) -> Optional[datetime]:
     return mine
 
 
+def _line_expected_date(lines: Sequence[Mapping[str, Any]]) -> Optional[str]:
+    """Earliest expected receipt date across a purchase order's open lines (falling back to all
+    lines when quantities are absent), matching Late POs' line-level fallback when header
+    requested_date is null. Skips hidden cells."""
+    open_dates: list[str] = []
+    all_dates: list[str] = []
+    for row in lines:
+        if _hidden(row, "expected_date"):
+            continue
+        day = _iso(row.get("expected_date"))
+        if not day:
+            continue
+        day = day[:10]
+        all_dates.append(day)
+        ordered = row.get("ordered_quantity")
+        received = row.get("received_quantity")
+        is_open = True
+        if ordered is not None and received is not None:
+            try:
+                is_open = Decimal(str(received)) < Decimal(str(ordered))
+            except ArithmeticError:
+                is_open = True
+        if is_open:
+            open_dates.append(day)
+    chosen = open_dates or all_dates
+    return min(chosen) if chosen else None
+
+
 def order(backend: Any, reader: Any, kind: str, handle: str,
           loaded: Optional[tuple[dict[str, Any], list[dict[str, Any]], list[Any]]] = None
           ) -> m.BizPage:
@@ -1508,7 +1536,12 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
     note = None if lines else "No lines on record."
-    if kind == "purchase_order" and h.get("status") == "open" and all(
+    line_due = (_line_expected_date(lines)
+                if kind == "purchase_order" and h.get("requested_date") is None
+                and not _hidden(h, "requested_date") else None)
+    if line_due is not None:
+        facts.append(m.BizFact(label="Needed by (from lines)", value=m.BizCell(day=line_due)))
+    elif kind == "purchase_order" and h.get("status") == "open" and all(
             h.get(c) is None and not _hidden(h, c) for c in ("requested_date", "promised_date")):
         # a PO nobody dated can never be late: say so beside the other facts, never leave it
         # out (live 11-23: 102 of 111 open POs carry no needed-by or promised date)

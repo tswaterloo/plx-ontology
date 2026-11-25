@@ -17,8 +17,15 @@ from operating.tests import test_sql_views_install as _tsv
 class NamesAreDefinedOnce(unittest.TestCase):
     def test_every_name_is_a_business_view_or_a_catalog_table(self):
         known = set(bv.VIEWS) | set(catalog.GENERIC) | set(catalog.COMMS_DERIVED)
-        for mid, m in measures.measures().items():
+        for mid, m in measures.typed().items():
             self.assertIn(m["view"], known, mid)
+        # a measure over records reads the door's records, and the business views it links to
+        for mid, m in measures.measures().items():
+            if m.get("source"):
+                self.assertIn("records", known, mid)
+                for how in m["source"]["columns"].values():
+                    if "link" in how:
+                        self.assertIn(how["to"], known, mid)
         self.assertLessEqual(set(catalog.view_names()), known)
         want = nv.named("biz")
         self.assertEqual(set(want), {"biz", "biz_sql"})

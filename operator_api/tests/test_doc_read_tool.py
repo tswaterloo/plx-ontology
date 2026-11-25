@@ -580,5 +580,98 @@ class OrderKeys(unittest.TestCase):
         self.assertIsNone(order_keys("SELECT * FROM t ORDER BY value * 2", cols))
 
 
+class DocumentCitationsApiTest(Base):
+    def test_make_document_schema_declares_and_accepts_citations(self):
+        from operator_api.assistant_tools import DOCUMENT_SPEC
+        schema = DOCUMENT_SPEC["inputSchema"]
+        self.assertIn("citations", schema["properties"])
+        cite_props = schema["properties"]["citations"]["items"]["properties"]
+        for key in ("label", "title", "sql", "as_of", "count", "measure"):
+            self.assertIn(key, cite_props)
+        payload = {
+            "name": "Cited summary", "kind": "xlsx", "content": "# Summary\n5 open POs.",
+            "citations": [{"title": "Open POs", "sql": "SELECT count(*) AS n FROM purchase_orders",
+                           "as_of": "2026-11-24", "count": 5,
+                           "measure": {"id": "open_pos", "name": "Open POs", "owner": "Ops",
+                                       "version": "v1", "definition": "Count of open POs"}}],
+        }
+        # Verify every payload key is declared when additionalProperties is False
+        self.assertFalse(schema.get("additionalProperties", True))
+        self.assertTrue(set(payload).issubset(set(schema["properties"])))
+        self.assertTrue(set(payload["citations"][0]).issubset(set(cite_props)))
+        got = self.tools(self.ana)["plx.make_document"].call(payload)
+        self.assertNotIn("refused", got)
+        data = self.b._uploads().file(self.ana.key, got["file_id"])
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            self.assertIn('name="Sources"', z.read("xl/workbook.xml").decode())
+            self.assertIn("SELECT count(*) AS n FROM purchase_orders",
+                          z.read("xl/worksheets/sheet2.xml").decode())
+
+    def test_make_document_handles_non_integer_citation_count_cleanly(self):
+        got = self.tools(self.ana)["plx.make_document"].call({
+            "name": "Report", "kind": "docx", "content": "# Summary\nOpen POs.",
+            "citations": [{"title": "Open POs", "sql": "SELECT 1", "count": "not-an-int"}],
+        })
+        self.assertNotIn("refused", got)
+        self.assertIn("file_id", got)
+
+    def test_citations_and_measures_cleaned_and_rechecked_for_excluded_people(self):
+        from operator_api.errors import UserFacing
+        # Excluded person in citation title, sql, measure fields and chart measure is withheld
+        doc = self.b._prepare_document(
+            self.ana, {"kind": "docx", "name": "Cited", "content": "# Summary\nText."}, [],
+            self.guard,
+            charts=[{"kind": "bar", "title": "C", "x": "a", "labels": ["x"],
+                     "series": [{"name": "y", "values": [1.0]}],
+                     "sql": f"SELECT '{HIDDEN[0]}'",
+                     "measure": {"id": HIDDEN[1], "name": f"By {HIDDEN[0]}",
+                                 "owner": HIDDEN[0], "version": "v1",
+                                 "definition": f"For {HIDDEN[0]}"}}],
+            tables=[{"title": f"Tbl {HIDDEN[0]}", "lines": "| a |\n| 1 |", "count": 1,
+                     "sql": f"SELECT '{HIDDEN[0]}'",
+                     "measure": {"id": "t1", "name": f"TM {HIDDEN[0]}", "owner": HIDDEN[0],
+                                 "version": "v1", "definition": f"TDef {HIDDEN[0]}"}}],
+            citations=[{"title": f"Cite {HIDDEN[0]}", "sql": f"SELECT '{HIDDEN[0]}'",
+                        "measure": {"id": "c1", "name": f"CM {HIDDEN[0]}",
+                                    "owner": HIDDEN[0], "version": "v1",
+                                    "definition": f"CDef {HIDDEN[0]}"}}],
+        )
+        file_id = doc.download_url.rsplit("/", 1)[-1]
+        raw_bytes = self.b._uploads().file(self.ana.key, file_id)
+        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
+            all_xml = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist())
+        self.assertNotIn(HIDDEN[0], all_xml)
+        self.assertNotIn(HIDDEN[1], all_xml)
+
+        # Non-excluded person (STAFF) in table title/sql and citation fields is tracked in
+        # people so excluding them after draft blocks serving the file
+        cases = [
+            ("table_sql", {"tables": [{"title": "T", "lines": "| a |\n| 1 |", "count": 1,
+                                       "sql": f"SELECT '{STAFF[0]}'"}], "citations": []}),
+            ("table_title", {"tables": [{"title": f"T {STAFF[0]}", "lines": "| a |\n| 1 |",
+                                         "count": 1, "sql": "SELECT 1"}], "citations": []}),
+            ("cite_title", {"tables": [], "citations": [{"title": f"F {STAFF[0]}", "sql": "SELECT 1"}]}),
+            ("cite_sql", {"tables": [], "citations": [{"label": "F", "sql": f"SELECT '{STAFF[0]}'"}]}),
+            ("cite_measure", {"tables": [], "citations": [
+                {"label": "F", "measure": {"id": "m", "name": "M", "owner": STAFF[0],
+                                           "version": "v1", "definition": "D"}}]}),
+        ]
+        for case_name, extra in cases:
+            with self.subTest(case=case_name):
+                self.guard = PeopleExclusion([HIDDEN[1]])
+                self.guard.attach_directory([(OWNER[1], OWNER[0], []), (STAFF[1], STAFF[0], []),
+                                             (HIDDEN[1], HIDDEN[0], [])])
+                d = self.b._prepare_document(
+                    self.ana, {"kind": "docx", "name": f"Check {case_name}", "content": "# Hi\nBody."},
+                    [], self.guard, **extra)
+                fid = d.download_url.rsplit("/", 1)[-1]
+                self.b.instruct_file(self.ana, fid)
+                self.guard = PeopleExclusion([HIDDEN[1], STAFF[1]])
+                self.guard.attach_directory([(OWNER[1], OWNER[0], []), (STAFF[1], STAFF[0], []),
+                                             (HIDDEN[1], HIDDEN[0], [])])
+                with self.assertRaises(UserFacing):
+                    self.b.instruct_file(self.ana, fid)
+
+
 if __name__ == "__main__":
     unittest.main()

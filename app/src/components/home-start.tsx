@@ -10,13 +10,13 @@ import { togglePin, usePins } from "@/lib/pins";
 import { useSaved } from "@/lib/saved";
 import { cn } from "@/lib/cn";
 
-/** Home's Ask box, on top of the list: the question opens Ask. */
+/** Home's Ask box, on top of the list: compact 1-line auto-grow bar that opens Ask. */
 export function HomeAsk({ className }: { className?: string }) {
   const router = useRouter();
   return (
     <div className={cn("w-full", className)} data-testid="home-ask">
       <AskBox
-        size="md"
+        size="sm"
         label="Ask or tell the Workbench"
         placeholder="Ask a question, or ask for a chart, document or quote"
         onSubmit={(question, chosen) => {

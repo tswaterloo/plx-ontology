@@ -304,7 +304,14 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
         seconds = round(time.monotonic() - started, 2)
         with write.transaction():
             # everything heavy first: none of it locks a table a reader has open
-            decided = _decide_staged(write, S, name, nxt, lin, guarded)
+            decided, staged_gone = _decide_staged(write, S, name, nxt, lin, guarded)
+            revoked = False
+            if guarded is not None:
+                from operating.pg import door
+                if door.present(write, S):
+                    door.ensure(write, S)
+                    revoked = (bool(staged_gone)
+                               or door.classes_changed(write, S, name, f"{S}.{nxt}"))
             write.execute(f"DELETE FROM {S}.class_counts WHERE view = %s", (name,))
             write.execute(f"INSERT INTO {S}.class_counts (view, access_class, col_class, "
                           f"rows) SELECT %s, access_class, col_class, count(*) FROM {S}.{nxt} "
@@ -336,6 +343,8 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
                 write.execute(f"DROP TABLE IF EXISTS {S}.{old}")
                 if guarded is not None:
                     guarded.create(write, v, S, **({} if follow else {"follow": False}))
+                    if revoked:
+                        door.bump_revoked(write, S)
                 write.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
                               "'plx_api') THEN EXECUTE 'GRANT SELECT ON " + S + "." + name +
                               " TO plx_api'; END IF; END $$")
@@ -347,27 +356,28 @@ def build_view(name: str, reader: Any, write: Any, *, as_of: dt.date,
 
 
 def _decide_staged(write: Any, schema: str, name: str, nxt: str, lin: str,
-                   guarded: Any) -> str | None:
+                   guarded: Any) -> tuple[str | None, int]:
     """Decide the staged table's rows against the people exclusion now, before the swap
     takes its locks (``door.exclude(staged=)``: the lineage scan it costs no longer runs
-    while readers are locked out). Returns the exclusion stamp it decided against, or
-    None where the swap's own ``door.follow`` must decide it (no door, an old-shape table,
-    a schema whose stamp was never recorded: that one decides the whole schema)."""
+    while readers are locked out). Returns (the exclusion stamp it decided against, rows
+    or cells excluded), or (None, 0) where the swap's own ``door.follow`` must decide it
+    (no door, an old-shape table, a schema whose stamp was never recorded: that one
+    decides the whole schema)."""
     if guarded is None:
-        return None
+        return None, 0
     from operating.pg import door
     try:
         stamp = door.exclusion_stamp(write)
     except LookupError:
-        return None
+        return None, 0
     if write.execute("SELECT to_regclass(%s)", (f"{schema}.{door.STATE}",)).fetchone()[0] is None:
-        return None   # a schema with no door yet: the swap's follow makes it and decides it
+        return None, 0   # a schema with no door yet: the swap's follow makes it and decides it
     if (write.execute(f"SELECT excluded_at FROM {schema}.{door.STATE}").fetchone() or
             (None,))[0] is None or not door.is_v2(write, schema, nxt):
-        return None
-    door.exclude(write, schema, only=name, record=False,
-                 staged=(f"{schema}.{nxt}", f"{schema}.{lin}"))
-    return stamp
+        return None, 0
+    gone = door.exclude(write, schema, only=name, record=False,
+                        staged=(f"{schema}.{nxt}", f"{schema}.{lin}"))
+    return stamp, gone
 
 
 def _still_decided(write: Any, stamp: str | None) -> bool:

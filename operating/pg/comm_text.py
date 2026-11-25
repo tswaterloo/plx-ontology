@@ -37,23 +37,37 @@ OVERLAP = 20000
 # stays under tsvector's limit (1,048,575 bytes) even where the stored form is compressed
 PIECE_BYTES = 300_000
 
-UPSERT = ("WITH w AS (SELECT b.handle, b.{when} AS at, fd.field_id, w.words, "
-          "sum(pg_column_size(w.words)) OVER (PARTITION BY b.handle, fd.field_id "
-          "ORDER BY c.chunk_id) AS run "
-          "FROM biz.{view} b "
-          "LEFT JOIN ontology.text_fields fd ON fd.object_id = b.object_ids[1] "
-          "AND fd.version_handle = b.handle "
-          "LEFT JOIN ontology.text_chunks c ON c.field_id = fd.field_id "
-          "LEFT JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id "
-          "WHERE {where}), "
-          "p AS (SELECT handle, at, field_id, floor(coalesce(run, 0) / %(piece)s)::int AS part, "
-          "coalesce(string_agg(words::text, ' ')::tsvector, ''::tsvector) AS tsv "
-          "FROM w GROUP BY handle, at, field_id, floor(coalesce(run, 0) / %(piece)s)::int) "
+# the computation every pass does per range, shared by the fused upsert and the Spark move's
+# compute half: a row per (handle, field, piece) with the piece's vector. In split mode the
+# compute runs on the Spark's hot standby (the heavy scan and aggregation never on the box),
+# the rows ship back and the apply writes them in the very upsert the fused pass used.
+_CTE = ("WITH w AS (SELECT b.handle, b.{when} AS at, fd.field_id, w.words, "
+        "sum(pg_column_size(w.words)) OVER (PARTITION BY b.handle, fd.field_id "
+        "ORDER BY c.chunk_id) AS run "
+        "FROM biz.{view} b "
+        "LEFT JOIN ontology.text_fields fd ON fd.object_id = b.object_ids[1] "
+        "AND fd.version_handle = b.handle "
+        "LEFT JOIN ontology.text_chunks c ON c.field_id = fd.field_id "
+        "LEFT JOIN ontology.chunk_words w ON w.chunk_id = c.chunk_id "
+        "WHERE {where}), "
+        "p AS (SELECT handle, at, field_id, floor(coalesce(run, 0) / %(piece)s)::int AS part, "
+        "coalesce(string_agg(words::text, ' ')::tsvector, ''::tsvector) AS tsv "
+        "FROM w GROUP BY handle, at, field_id, floor(coalesce(run, 0) / %(piece)s)::int) ")
+
+UPSERT_SELECT = ("SELECT handle, %(view)s AS view, at, field_id, part, "
+                 "max(part) OVER (PARTITION BY handle, field_id) = 0 AS whole, tsv FROM p ")
+
+UPSERT = (_CTE +
           "INSERT INTO biz.comm_text (handle, view, at, field_id, part, whole, tsv) "
-          "SELECT handle, %(view)s, at, field_id, part, "
-          "max(part) OVER (PARTITION BY handle, field_id) = 0, tsv FROM p "
+          + UPSERT_SELECT +
           "ON CONFLICT (handle, (coalesce(field_id, 0)), part) DO UPDATE SET at = EXCLUDED.at, "
           "whole = EXCLUDED.whole, tsv = EXCLUDED.tsv")
+
+# the compute half of a split pass (runs read-only, on the Spark's standby): the same rows the
+# fused upsert would insert, the vector in its exact text form for the shipping file
+# a shipped row needs no view column: it belongs to the header it follows in the file
+COMPUTE = (_CTE + UPSERT_SELECT.replace("%(view)s AS view, ", "").replace(
+    "tsv FROM p", "tsv::text AS tsv FROM p"))
 
 # a "no text yet" row (no field) is dropped once its message has a row with a field
 DROP_PLACEHOLDERS = ("DELETE FROM biz.comm_text t USING biz.{view} b WHERE t.handle = b.handle "
@@ -206,9 +220,136 @@ def refresh(dsn: str, *, log: Any = print) -> dict[str, Any]:
     return out
 
 
+def compute(dsn: str, out_path: str, *, log: Any = print) -> dict[str, Any]:
+    """The compute half of a split refresh (the Spark move, T2 speed): read-only, so the
+    Spark's hot standby carries the scan and aggregation. Writes one gzip JSON-lines file:
+    a header per view (the covered window and the field mark the pass saw, so the apply's
+    state write matches what the compute read, never the box's newer tail) and one line per
+    row the fused upsert would have inserted. Nothing here writes."""
+    import gzip
+    import psycopg
+    out: dict[str, Any] = {}
+    with psycopg.connect(dsn, autocommit=True) as pg, gzip.open(out_path, "wt",
+                                                                encoding="utf-8") as fh:
+        pg.execute("SET statement_timeout = 0")
+        pg.execute("SET default_transaction_read_only = on")
+        for view, st in state(pg).items():
+            when = VIEWS[view]
+            top = pg.execute("SELECT coalesce(max(field_id), 0) FROM ontology.text_fields"
+                             ).fetchone()[0]
+            where_tail = (f"b.{when} >= %(cov)s AND b.handle IN (SELECT fd2.version_handle FROM "
+                          "ontology.text_fields fd2 WHERE fd2.field_id > %(mark)s)")
+            where_miss = (f"b.{when} >= %(cov)s AND NOT EXISTS (SELECT 1 FROM biz.comm_text t "
+                          "WHERE t.handle = b.handle)")
+            fh.write(json.dumps({"header": True, "view": view,
+                                 "covered_from": str(st["covered_from"]),
+                                 "built_field_id": st["built_field_id"],
+                                 "top": top}) + "\n")
+            n = 0
+            for where in (where_tail, where_miss):
+                params = {"cov": st["covered_from"], "mark": st["built_field_id"]}
+                for handle, at, field_id, part, whole, tsv in pg.execute(
+                        COMPUTE.format(view=view, when=when, where=where),
+                        {**params, "piece": PIECE_BYTES}):
+                    fh.write(json.dumps([handle, at.isoformat(), field_id, part, whole, tsv])
+                             + "\n")
+                    n += 1
+            out[view] = {"computed": n}
+            log(f"{view}: {n} rows computed", flush=True)
+    return out
+
+
+def _sections(fh: Any):
+    """Stream ``(header, rows)`` pairs from a ``compute`` JSON-lines file without buffering
+    rows in RAM. Raises ``CommTextError`` if any row precedes a header or is malformed."""
+    pending: list[Any] = []
+
+    def next_rec() -> Any:
+        if pending:
+            return pending.pop()
+        line = fh.readline()
+        if not line:
+            return None
+        return json.loads(line)
+
+    rec = next_rec()
+    while rec is not None:
+        if not (isinstance(rec, dict) and rec.get("header")):
+            raise CommTextError("comm_text apply: row before header")
+        header = rec
+
+        def rows() -> Any:
+            while True:
+                item = next_rec()
+                if item is None:
+                    return
+                if isinstance(item, dict) and item.get("header"):
+                    pending.append(item)
+                    return
+                if not isinstance(item, list) or len(item) != 6:
+                    raise CommTextError(f"comm_text apply: malformed row: {item!r}")
+                yield item
+
+        yield header, rows()
+        rec = next_rec()
+
+
+def apply_rows(dsn: str, in_path: str, *, log: Any = print) -> dict[str, Any]:
+    """The write half of a split refresh, on the box: streams each view section from the gzip
+    JSON-lines file straight into a temp table COPY, upserts into ``biz.comm_text`` through
+    the very upsert the fused pass used, drops placeholders only for handles in the shipped
+    batch that gained a field, and moves the state mark to what the compute saw — never past
+    it, so a field the standby had not replayed yet is read again on the next pass. Idempotent:
+    applying the same file twice writes nothing new."""
+    import gzip
+    import psycopg
+    out: dict[str, Any] = {}
+    with gzip.open(in_path, "rt", encoding="utf-8") as fh, \
+            psycopg.connect(dsn, autocommit=False) as pg:
+        pg.execute("SET statement_timeout = 0")
+        pg.execute("CREATE TEMP TABLE comm_text_ship (handle text, at timestamptz, "
+                   "field_id bigint, part int, whole boolean, tsv text) ON COMMIT DROP")
+        for header, rows in _sections(fh):
+            view = header.get("view")
+            if view not in VIEWS:
+                raise CommTextError(f"comm_text apply: unknown view {view!r}")
+            pg.execute("TRUNCATE comm_text_ship")
+            with pg.cursor().copy("COPY comm_text_ship (handle, at, field_id, part, whole, tsv) "
+                                  "FROM STDIN") as copy:
+                for handle, at, field_id, part, whole, tsv in rows:
+                    copy.write_row((handle, at, field_id, part, whole, tsv))
+            # one INSERT for what the fused pass upserted in two: a message whose rows the
+            # tail and the missing-window phases both computed is shipped twice; ctid DESC
+            # keeps the later phase's row deterministically, matching the fused pass's second
+            # upsert overwriting the first's row
+            cur = pg.execute(
+                "INSERT INTO biz.comm_text (handle, view, at, field_id, part, whole, tsv) "
+                "SELECT DISTINCT ON (handle, coalesce(field_id, 0), part) handle, %s, at, "
+                "field_id, part, whole, tsv::tsvector FROM comm_text_ship "
+                "ORDER BY handle, coalesce(field_id, 0), part, ctid DESC "
+                "ON CONFLICT (handle, (coalesce(field_id, 0)), part) DO UPDATE SET at = "
+                "EXCLUDED.at, whole = EXCLUDED.whole, tsv = EXCLUDED.tsv", (view,))
+            n = cur.rowcount
+            # scope placeholder deletion to the shipped batch: never scan biz.{view} on the box
+            pg.execute(
+                "DELETE FROM biz.comm_text t WHERE t.view = %s AND t.field_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM comm_text_ship s "
+                "WHERE s.handle = t.handle AND s.field_id IS NOT NULL)", (view,))
+            new_mark = max(0, header["top"] - OVERLAP)
+            pg.execute("UPDATE biz.comm_text_state SET built_field_id = %s, built_at = now(), "
+                       "rows = (SELECT count(*) FROM biz.comm_text WHERE view = %s) "
+                       "WHERE view = %s AND built_field_id < %s",
+                       (new_mark, view, view, new_mark))
+            out[view] = {"applied": out.get(view, {}).get("applied", 0) + n}
+            log(f"{view}: {n} rows applied", flush=True)
+        pg.commit()
+    return out
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m operating.pg.comm_text")
-    ap.add_argument("command", choices=("status", "build", "refresh", "seal"))
+    ap.add_argument("command", choices=("status", "build", "refresh", "seal", "compute", "apply"))
+    ap.add_argument("--file", help="compute: write the rows here; apply: read them from here")
     ap.add_argument("--dsn")
     ap.add_argument("--days", type=int, help="build: cover this many days of mail")
     ap.add_argument("--view", action="append", choices=sorted(VIEWS))
@@ -228,6 +369,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.since).replace(tzinfo=dt.timezone.utc))
         elif args.command == "build":
             out = build(dsn, views=args.view, days=args.days)
+        elif args.command == "compute":
+            if not args.file:
+                raise CommTextError("compute needs --file")
+            out = compute(dsn, args.file)
+        elif args.command == "apply":
+            if not args.file:
+                raise CommTextError("apply needs --file")
+            out = apply_rows(dsn, args.file)
         else:
             out = refresh(dsn)
     except Exception as exc:  # noqa: BLE001 - said, exit 1: never a silent skip

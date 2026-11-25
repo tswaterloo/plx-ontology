@@ -167,6 +167,29 @@ def _row(hop: int, direction: str, edge: Mapping[str, Any] | None, via: str | No
             facts(record, entry) if known else {}, known]
 
 
+def scope_line(start: str, hops: int, reached: Mapping[str, int], *,
+               party: str | None = None, type_: str | None = None,
+               ambiguous: bool = False, guesses: int = 0,
+               generic: Any = None) -> str:
+    """The scope line of a chain read (Ask audit A17): start, hops, filters, types
+    reached with counts, ambiguity/guess notes, plus the rows-shown tail."""
+    tail = str(generic).rsplit("; ", 1)[-1] if generic else ""
+    filters = [f"hops={hops}"]
+    if type_ and str(type_).strip():
+        filters.append(f"type={str(type_).strip()}")
+    if party and str(party).strip():
+        filters.append(f"party={str(party).strip()!r}")
+    types = ", ".join(f"{t} ({n})" for t, n in sorted(reached.items())) or "none"
+    if ambiguous:
+        head = (f"chain from {start!r} ({', '.join(filters)}): ambiguous, not walked; "
+                f"candidates: {types}")
+    else:
+        head = f"chain from {start!r} ({', '.join(filters)}): reached {types}"
+        if guesses:
+            head += f"; {guesses} guess link{'' if guesses == 1 else 's'} listed, not walked"
+    return f"{head}; {tail}" if tail else head
+
+
 def walk(tool: Any, conn: Any, scope: Any, actor: Any, args: Mapping[str, Any]
          ) -> dict[str, Any]:
     """The chain read ``args`` asks (``chain``, ``hops``, ``party``, ``type``) as ``actor``;
@@ -272,6 +295,15 @@ def walk(tool: Any, conn: Any, scope: Any, actor: Any, args: Mapping[str, Any]
             reached[record["type"]] = reached.get(record["type"], 0) + 1
     got = _got(w, rows)
     out = tool._present(f"chain {key}", got, actor, started)
+    out["scope"] = scope_line(
+        key, hops, reached, party=party, type_=type_, ambiguous=ambiguous,
+        guesses=guesses, generic=out.get("scope"))
+    from operating.ontology_tools_sql_rows import RESULTS
+    kept = RESULTS.get(out["result"].split("//", 1)[-1])
+    if kept is not None:
+        kept["scope_head"] = scope_line(
+            key, hops, reached, party=party, type_=type_, ambiguous=ambiguous,
+            guesses=guesses)
     out["chain"] = {
         "start": key, "hops": hops, "records": len(rows) - (0 if ambiguous else len(starts)),
         "reached": dict(sorted(reached.items())), "per_hop": per_hop,

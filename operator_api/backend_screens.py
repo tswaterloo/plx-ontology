@@ -98,6 +98,19 @@ class ScreensMixin:
                 as_of=_iso_now(), total=0, sent=0, writes=0, reading=True))
 
     def team_view(self, reader: Reader) -> m.TeamView:
+        # Team dashboard pairs /api/team with /api/insights/planner_open: start warming
+        # planner_open at urgent priority right away so it does not cold-miss with 425.
+        if callable(getattr(self, "_insight_keeper", None)):
+            try:
+                from .insights import BUILTIN_REF
+                keeper = self._insight_keeper()
+                try:
+                    keeper.ahead(reader, [BUILTIN_REF + "planner_open"], urgent=True)
+                except TypeError:
+                    keeper.ahead(reader, [BUILTIN_REF + "planner_open"])
+            except Exception as exc:  # noqa: BLE001 - warming is best-effort, logged
+                import logging
+                logging.getLogger("operator_api.warm").debug("planner_open warm skipped: %s", type(exc).__name__)
         # who it names is part of the access state (``_screen_access``), the activity
         # snapshot and the gap inbox's open rows its inputs
         return self._serving(reader, ("team",), lambda: TeamViewMixin.team_view(
@@ -187,6 +200,40 @@ class ScreensMixin:
                              self._screen_inputs(files=(
                                  self.data_dir / WEEKLY_FILE if self.data_dir else None,)),
                              reading=lambda: BriefsMixin.weekly_reading(self, reader))
+
+    def home_needs(self, reader: Reader, feedback_store: Any = None) -> m.HomeNeeds:
+        """Home's unified Needs-you payload (``operator_api.home_needs``), kept per reader as a
+        main screen: served immediately from the last-good cache and refreshed in the background
+        when the hour, alerts, Assist cycle, autopilot state, feedback store, or gap list moves."""
+        from operating import gap_list
+        from . import assist_routes
+        from . import home_needs
+
+        def assist_stamp() -> Any:
+            pool = assist_routes._pool(self)
+            if pool is None:
+                return "not_connected"
+            try:
+                with pool.connection() as pg:
+                    row = pg.execute("SELECT last_cycle_at FROM assist.matters_heartbeat").fetchone()
+                return row[0].isoformat() if row and row[0] is not None else "never"
+            except Exception as exc:  # noqa: BLE001 - the read itself says failed
+                return f"unknown:{type(exc).__name__}"
+
+        files = tuple(
+            p for p in (
+                getattr(feedback_store, "directory", None),
+                gap_list.path(),
+            )
+            if p
+        )
+        return self._serving(
+            reader,
+            ("home_needs",),
+            lambda: home_needs.build(self, reader, feedback_store),
+            self._screen_inputs(files=files, extra=assist_stamp, autopilot=True, alerts=True),
+            reading=home_needs.reading,
+        )
 
     def home(self, reader: Reader) -> m.Home:
         from . import page_sql

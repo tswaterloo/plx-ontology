@@ -433,6 +433,8 @@ def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[s
         why.append("contested_workflow")
     if work.get("gaps"):
         why.append("incomplete:gaps")
+    if work.get("warning"):       # a check flagged the draft: the person reads it, it never goes alone
+        why.append("incomplete:flagged")
     if work.get("recommendation") not in (None, "approve") and kind != "mc_approval":
         why.append(f"judgment_call:{work.get('recommendation')}")
     text = "\n".join([str(item.get("title") or ""), str(work.get("summary") or ""),

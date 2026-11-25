@@ -34,10 +34,15 @@ def named(schema: str = "biz") -> dict[str, dict[str, list[str]]]:
     guarded = sql_views.guarded_schema(schema)
     out: dict[str, dict[str, list[str]]] = {schema: {}, guarded: {}}
     for mid, m in sorted(measures.measures().items()):
-        for s in (schema, guarded):
-            if s == schema and m["view"] in catalog.COMMS_DERIVED:
-                continue   # a view over the guarded comms views: it lives only there
-            out[s].setdefault(m["view"], []).append(f"measure {mid}")
+        # a measure over records (``source``) names the door's records and links, and the
+        # business views its link columns read; the view the entry's "view" label shows is no relation
+        named = ["records", "record_links"] + [h["to"] for h in m["source"]["columns"].values()
+                                                if "link" in h] if m.get("source") else [m["view"]]
+        for view in named:
+            for s in (schema, guarded):
+                if s == schema and view in catalog.COMMS_DERIVED:
+                    continue   # a view over the guarded comms views: it lives only there
+                out[s].setdefault(view, []).append(f"measure {mid}")
     for name in catalog.view_names():
         out[guarded].setdefault(name, []).append("Ask catalog")
     return out

@@ -41,7 +41,8 @@ PERSON_CHARS = 30000           # the person's own block (same for all their matt
 NEAR_CHARS = 30000             # the cases nearest the matter written into the prompt (a case that does not fit is in the tool)
 HUNG_SECONDS = 1800            # a call that has not returned in this long is a hung process
 ACTS = ("reply", "forward", "new_message", "attach", "system_write", "ask_person", "nothing")
-KINDS = ("conversation", "approval", "task")
+# no "approval": Mission Control approvals are decided in Mission Control (assist_matters.MC_APPROVAL_KIND)
+KINDS = ("conversation", "task")
 PROMPT = """You prepare the next step for {person}, who works at a manufacturer, the way {person}
 would take it. It is {when}.
 

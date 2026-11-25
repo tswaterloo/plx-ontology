@@ -8,8 +8,9 @@ door:
 
 * the reader's own door key (``doors.reader_key``: tenant, principals, clearance, the
   declared full-read grant, service, mode: the one definition of who a reader is);
-* the biz schema's door stamp (``door_state.stamp``: bumped when a guarded view is made or
-  the exclusion decided again, not by data refreshes; read by ``Doors`` every pass);
+* the reader's own access mark (``access_mark`` of the decided door: the classes,
+  column allow-lists, document-hidden handles, and revocation epoch, never the
+  schema-wide rebuild stamp or row counts that move with ordinary data refreshes);
 * the people exclusion's rule stamp (``permissions.exclusion_rule_stamp``: the list and its
   file, never the set's ``covered_ver`` that moves with each delta cycle).
 
@@ -63,11 +64,11 @@ def _rule_stamp() -> Optional[str]:
     return got
 
 
-def door_value(reader: Any, door_stamp: Optional[int]) -> Optional[str]:
-    """The door value of ``reader`` at ``door_stamp``, or None when any part is unknown."""
+def door_value(reader: Any, access_mark: Optional[str]) -> Optional[str]:
+    """The door value of ``reader`` at ``access_mark``, or None when any part is unknown."""
     key = reader_key(reader)
     rule = _rule_stamp()
-    if key is None or door_stamp is None or rule is None:
+    if key is None or not isinstance(access_mark, str) or not access_mark or rule is None:
         return None
-    body = json.dumps([list(key), int(door_stamp), rule], default=str, sort_keys=False)
+    body = json.dumps([list(key), access_mark, rule], default=str, sort_keys=False)
     return hashlib.sha256(body.encode()).hexdigest()[:32]

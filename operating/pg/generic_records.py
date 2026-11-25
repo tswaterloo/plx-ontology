@@ -822,11 +822,16 @@ def swap(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any]) -> N
     ~36M rows) is done first against the new tables, none of it locking a table a reader
     has open; the lock-taking statements then run as ``swap_lock.swap_in`` does for every
     other view (a short lock wait, tried again), so a reader never queues behind the swap."""
-    from operating.pg import swap_lock
+    from operating.pg import door, swap_lock
     with pg.transaction():
         dst = gv.sql_views.guarded_schema(s)
         door_side(pg, s, tables={"records": "records_new", "record_links": "record_links_new"})
         _state(pg, s, got, notes, "records_new")
+        revoked = False
+        if door.present(pg, s):
+            door.ensure(pg, s)
+            revoked = (door.classes_changed(pg, s, "records", f"{s}.records_new")
+                       or door.classes_changed(pg, s, "record_links", f"{s}.record_links_new"))
 
         def steps() -> None:
             if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
@@ -839,6 +844,8 @@ def swap(pg: Any, s: str, got: Mapping[str, int], notes: Mapping[str, Any]) -> N
                 gv.mark_tables(pg, s)
             if pg.execute("SELECT to_regnamespace(%s)", (dst,)).fetchone()[0] is not None:
                 gv.make_views(pg, s)
+            if revoked:
+                door.bump_revoked(pg, s)
         swap_lock.swap_in(pg, steps)
 
 
@@ -945,7 +952,10 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                 + "OR EXISTS (SELECT 1 FROM "
                 f"{ONT}.own_issued_documents oi WHERE oi.object_id = r.record_id) OR "
                 f"EXISTS (SELECT 1 FROM {ONT}.objects o WHERE o.row_no = r.rid AND "
-                f"{removed_sql('o', _now())}) RETURNING r.rid, r.record_id, r.handle) SELECT * FROM d")
+                f"{removed_sql('o', _now())}) RETURNING r.rid, r.record_id, r.handle, "
+                "r.access_class, r.col_class, EXISTS (SELECT 1 FROM "
+                f"{ONT}.own_issued_documents oi WHERE oi.object_id = r.record_id) AS own_doc"
+                ") SELECT * FROM d")
             gone = pg.execute("SELECT count(*) FROM gr_gone").fetchone()[0]
             _stage(pg, "o.row_no IN (SELECT rid FROM gr_changed) AND "
                    + types_sql(notes or {}), excluded_ready(pg))
@@ -969,7 +979,8 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
                 "gr_gone) OR l.to_rid IN (SELECT rid FROM gr_gone) OR EXISTS (SELECT 1 FROM "
                 f"gr_lt t JOIN {s}.records f ON f.record_id = t.from_object JOIN {s}.records "
                 "x ON x.record_id = t.to_object WHERE f.rid = l.from_rid AND x.rid = "
-                "l.to_rid AND t.link_type = l.link_type) RETURNING l.handle) SELECT * FROM d")
+                "l.to_rid AND t.link_type = l.link_type) "
+                "RETURNING l.handle, l.access_class, l.col_class) SELECT * FROM d")
             _probe_plan(pg, "gr_lt", "gr_gone")
             pg.execute(
                 f"CREATE TEMP TABLE gr_lid AS SELECT l.link_id, l.link_type FROM "
@@ -995,7 +1006,19 @@ def refresh(dsn: str, schema: str | None = None, *, sweep: bool = False) -> dict
             _views_follow_masks(pg, s)
             door.follow(pg, s, "records")
             door.follow(pg, s, "record_links")
-            door._bump(pg, s)
+            revoked = door.present(pg, s) and bool(pg.execute(
+                "SELECT EXISTS (SELECT 1 FROM gr_gone WHERE own_doc) "
+                f"OR EXISTS (SELECT 1 FROM gr_gone g JOIN {s}.records r ON r.handle = g.handle "
+                "WHERE g.access_class IS DISTINCT FROM r.access_class "
+                "OR g.col_class IS DISTINCT FROM r.col_class) "
+                f"OR EXISTS (SELECT 1 FROM gr_ldel g JOIN {s}.record_links l ON l.handle = g.handle "
+                "WHERE g.access_class IS DISTINCT FROM l.access_class "
+                "OR g.col_class IS DISTINCT FROM l.col_class)"
+            ).fetchone()[0])
+            if revoked:
+                door.bump_revoked(pg, s)
+            else:
+                door._bump(pg, s)
     return {"dropped": gone, "read": added, "links_read": linked, "marks": got}
 
 

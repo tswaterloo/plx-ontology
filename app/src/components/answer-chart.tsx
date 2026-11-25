@@ -1,12 +1,16 @@
 "use client";
 
-import type { Answer } from "@/lib/types";
+import { ChevronDown, Download } from "lucide-react";
+import type { Answer, StatementRead } from "@/lib/types";
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
+import { PinnedHere } from "@/components/insights/pinned";
 import { ChartView, chartKey, chartNotes, useChartTheme } from "@/components/charts/chart-view";
 import { FILES, saveFile, savePng } from "@/components/charts/export";
+import { EmailDraftButton } from "@/components/email-draft-button";
 import { INK } from "@/components/charts/scale";
-import { saveInsight } from "@/lib/api";
+import { QueryToggle, ShowWork } from "@/components/query-work";
+import { proposeMeasureCandidate, readStatement, saveInsight } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 
@@ -39,8 +43,10 @@ function ChartSaves({ chart, figure }: { chart: AskChart; figure: React.RefObjec
   return (
     <span className="inline-flex items-center gap-x-1 text-[12px] text-muted">
       <details ref={menu} className="relative">
-        <summary className={`${quiet} inline-flex list-none items-center`} aria-label="Save the chart">
-          {busy ? "Saving" : "Save as"}
+        <summary className={saveTrigger} aria-label="Save the chart">
+          <Download className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+          <span>{busy ? "Saving" : "Save as"}</span>
+          <ChevronDown className="size-3 shrink-0 opacity-70" strokeWidth={2} aria-hidden />
         </summary>
         <div className="absolute left-0 z-10 mt-1 flex min-w-[9rem] flex-col rounded-md border border-border bg-bg py-1 shadow-sm" role="menu">
           {png && (
@@ -65,12 +71,48 @@ function ChartSaves({ chart, figure }: { chart: AskChart; figure: React.RefObjec
   );
 }
 
-const quiet = "h-7 px-1.5 font-medium text-fg underline-offset-2 hover:underline cursor-pointer disabled:cursor-default disabled:opacity-50";
+const saveTrigger = "inline-flex h-8 list-none items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-muted hover:border-border-strong hover:bg-hover hover:text-fg cursor-pointer [&::-webkit-details-marker]:hidden";
 const item = "px-3 py-1 text-left text-[12px] text-fg hover:bg-hover cursor-pointer disabled:cursor-default disabled:opacity-50";
 
 /** The charts an answer drew, each from the rows of one query result it read. */
+/** Propose an ad-hoc chart's SQL as a candidate shared measure definition for owner review. */
+function ProposeChartDefinition({ chart, question }: { chart: AskChart; question: string }) {
+  const [state, setState] = useState<"idle" | "saving" | "sent" | "failed">("idle");
+  const [problem, setProblem] = useState("");
+  if (!chart.sql || chart.measure) return null;
+  const propose = async () => {
+    setState("saving");
+    setProblem("");
+    try {
+      await proposeMeasureCandidate({
+        title: chart.title || undefined,
+        question: question || undefined,
+        sql: chart.sql ?? "",
+        source_kind: "manual",
+      });
+      setState("sent");
+    } catch (err) {
+      setProblem(plainError(err));
+      setState("failed");
+    }
+  };
+  return (
+    <span className="text-[12px]">
+      {state === "sent" ? (
+        <span data-testid="chart-proposed">Proposed for review</span>
+      ) : (
+        <button type="button" onClick={propose} disabled={state === "saving"} className="h-7 rounded-md px-2 font-medium hover:bg-hover cursor-pointer disabled:opacity-50" data-testid="chart-propose">
+          {state === "saving" ? "Proposing" : "Propose as shared definition"}
+        </button>
+      )}
+      {state === "failed" && problem && <span className="ml-2 text-muted" role="alert">{problem}</span>}
+    </span>
+  );
+}
+
 /** Pin a chart to Insights: its statement reads again, as whoever opens it, every time. */
 function PinChart({ chart, question }: { chart: AskChart; question: string }) {
+  const here = useContext(PinnedHere);
   const [state, setState] = useState<"idle" | "saving" | "pinned" | "failed">("idle");
   const [problem, setProblem] = useState("");
   if (!chart.sql) return null;
@@ -86,6 +128,7 @@ function PinChart({ chart, question }: { chart: AskChart; question: string }) {
         notify: "never",
       });
       setState("pinned");
+      here?.();
     } catch (err) {
       setProblem(plainError(err));
       setState("failed");
@@ -94,7 +137,7 @@ function PinChart({ chart, question }: { chart: AskChart; question: string }) {
   return (
     <span className="text-[12px]">
       {state === "pinned" ? (
-        <Link href="/insights" className="text-accent hover:underline">Pinned to your charts</Link>
+        here ? <span>Added to your charts below</span> : <Link href="/insights" className="text-accent hover:underline">Pinned to your charts</Link>
       ) : (
         <button type="button" onClick={pin} disabled={state === "saving"} className="h-7 rounded-md px-2 font-medium hover:bg-hover cursor-pointer disabled:opacity-50">
           {state === "saving" ? "Pinning" : "Pin to your charts"}
@@ -107,6 +150,7 @@ function PinChart({ chart, question }: { chart: AskChart; question: string }) {
 
 /** Pin every chart of an answer at once: the answer becomes a set of live charts on Insights. */
 function PinAll({ charts, question }: { charts: AskChart[]; question: string }) {
+  const here = useContext(PinnedHere);
   const [state, setState] = useState<"idle" | "saving" | "pinned" | "failed">("idle");
   const [problem, setProblem] = useState("");
   const pinnable = charts.filter((c) => c.sql);
@@ -125,6 +169,7 @@ function PinAll({ charts, question }: { charts: AskChart[]; question: string }) 
         });
       }
       setState("pinned");
+      here?.();
     } catch (err) {
       setProblem(plainError(err));
       setState("failed");
@@ -133,7 +178,7 @@ function PinAll({ charts, question }: { charts: AskChart[]; question: string }) 
   return (
     <div className="text-[12px]">
       {state === "pinned" ? (
-        <Link href="/insights" className="text-accent hover:underline">All {pinnable.length} charts pinned to your charts</Link>
+        here ? <span>All {pinnable.length} charts added to your charts below</span> : <Link href="/insights" className="text-accent hover:underline">All {pinnable.length} charts pinned to your charts</Link>
       ) : (
         <button type="button" onClick={pin} disabled={state === "saving"} className="h-7 rounded-md border border-border px-2 font-medium hover:bg-hover cursor-pointer disabled:opacity-50">
           {state === "saving" ? "Pinning" : `Pin all ${pinnable.length} charts`}
@@ -146,6 +191,75 @@ function PinAll({ charts, question }: { charts: AskChart[]; question: string }) 
 
 /** What a chart's numbers mean and how they were read: the agreed measure's definition, then
  * the period and the statement itself, a click away. */
+const num = (c: string | null | undefined) => (c === null || c === undefined || c === "" || !Number.isFinite(Number(c)) ? null : Number(c));
+
+/** Pure: the "checked" line: the statement read again now, its rows added up against the
+ * figures the chart draws, series by series; said not compared when the chart draws other
+ * points than the statement's rows (a split, panels, a cut). */
+export function checkedLine(chart: Pick<AskChart, "labels" | "series" | "panels">, read: Pick<StatementRead, "columns" | "rows" | "row_count" | "truncated">): { ok: boolean | null; says: string } {
+  if (chart.panels?.length || read.truncated || chart.labels.length !== read.row_count)
+    return { ok: null, says: `Not compared: the chart draws ${chart.labels.length} points and the statement read now gives ${read.row_count} rows${read.truncated ? " (more than shown)" : ""}.` };
+  const parts: string[] = [];
+  let all = true;
+  for (const s of chart.series) {
+    const at = read.columns.indexOf(s.name);
+    if (at < 0) continue;
+    const fresh = read.rows.reduce((t, r) => t + (num(r[at]) ?? 0), 0);
+    const drawn = s.values.reduce((t: number, v) => t + (typeof v === "number" ? v : 0), 0);
+    const same = Math.abs(fresh - drawn) <= 0.005 * Math.max(1, read.row_count);
+    all = all && same;
+    parts.push(`${s.name} ${same ? "adds up to" : `reads ${fresh.toLocaleString()} now but the chart shows`} ${drawn.toLocaleString()}`);
+  }
+  if (parts.length === 0) return { ok: null, says: "Not compared: no drawn series is a column of the statement." };
+  return { ok: all, says: `Read again now: ${parts.join("; ")}.` };
+}
+
+/** The statement behind a chart: read once when opened, its views and filters (a filter can be changed or taken out,
+ * read as you, nothing saved), the rows, and whether they add up to what the chart draws. */
+function ChartWork({ chart }: { chart: AskChart }) {
+  const [first, setFirst] = useState<StatementRead | null>(null);
+  const [now, setNow] = useState<StatementRead | null>(null);
+  const [problem, setProblem] = useState("");
+  const [busy, setBusy] = useState(false);
+  const open = async () => {
+    if (first || busy) return;
+    setBusy(true);
+    try {
+      const got = await readStatement(chart.sql ?? "", []);
+      setFirst(got);
+      setNow(got);
+    } catch (e) {
+      setProblem(plainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const shown = now ?? first;
+  const check = first && now === first ? checkedLine(chart, first) : null;
+  return (
+    <details onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) void open(); }}>
+      <summary className="cursor-pointer underline-offset-2 hover:underline">How this was worked out</summary>
+      {chart.measure?.period && <p className="mt-1">Period: {chart.measure.period}</p>}
+      {busy && <p className="mt-1">Reading the statement</p>}
+      {problem && <p className="mt-1" role="alert">{problem}</p>}
+      {first?.work && (
+        <ShowWork work={first.work} testId="chart-work" read={async (edits) => setNow(await readStatement(chart.sql ?? "", edits))} onReset={() => setNow(first)} />
+      )}
+      {check && <p className={check.ok === false ? "mt-1 text-red-700" : "mt-1"} data-testid="chart-checked">Checked: {check.says}</p>}
+      {now && now !== first && <p className="mt-1" data-testid="chart-filtered">Your filters (not saved): {now.row_count} rows{now.truncated ? " (more than shown)" : ""}.</p>}
+      {shown && shown.rows.length > 0 && (
+        <div className="mt-1 max-h-60 overflow-auto">
+          <table className="w-full text-left text-[11px]">
+            <thead className="sticky top-0 bg-bg"><tr>{shown.columns.map((c) => <th key={c} className="px-2 py-0.5 font-medium">{c}</th>)}</tr></thead>
+            <tbody>{shown.rows.map((r, i) => <tr key={i} className="border-t border-border">{r.map((c, j) => <td key={j} className="px-2 py-0.5 tabular-nums">{c}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+      )}
+      <QueryToggle sql={now?.sql ?? chart.sql ?? ""} testId="chart-query" />
+    </details>
+  );
+}
+
 function HowComputed({ chart }: { chart: AskChart }) {
   const m = chart.measure;
   if (!m && !chart.sql) return null;
@@ -157,13 +271,7 @@ function HowComputed({ chart }: { chart: AskChart }) {
           {m.owner ? <span> ({m.owner})</span> : null}: {m.definition}
         </p>
       )}
-      {chart.sql && (
-        <details>
-          <summary className="cursor-pointer underline-offset-2 hover:underline">How this was worked out</summary>
-          {m?.period && <p className="mt-1">Period: {m.period}</p>}
-          <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border p-2 font-mono text-[11px] text-fg">{chart.sql}</pre>
-        </details>
-      )}
+      {chart.sql && <ChartWork chart={chart} />}
     </div>
   );
 }
@@ -200,10 +308,12 @@ function OneChart({ chart, question, caption }: { chart: AskChart; question?: st
           {all ? `Show the first ${ANSWER_BARS}` : `Showing the first ${ANSWER_BARS} of ${chart.labels.length}: show all`}
         </button>
       )}
-      <div className="flex flex-wrap items-center gap-x-3 text-[12px] text-muted">
+      <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
         {chart.as_of && <span>As of {formatDate(chart.as_of)}</span>}
         <ChartSaves chart={chart} figure={figure} />
+        <EmailDraftButton title={chart.title || question || "Chart"} summary={question || ""} charts={[chart as unknown as Record<string, unknown>]} />
         {question !== undefined && <PinChart chart={chart} question={question} />}
+        {question !== undefined && <ProposeChartDefinition chart={chart} question={question} />}
       </div>
       {question !== undefined && <HowComputed chart={chart} />}
     </figure>
@@ -212,6 +322,6 @@ function OneChart({ chart, question, caption }: { chart: AskChart; question?: st
 
 /** Pure: streamed answer text without a chart block the model is still writing. */
 export function withoutChartBlocks(text: string): string {
-  // a chart, a question asked back or a declared gap: blocks the app reads, never shown as text
-  return text.replace(/```(?:chart|clarify|gap)\b[\s\S]*?(```|$)/gi, "").trimEnd();
+  // a chart, a question asked back, a declared gap or the items list: blocks the app reads, never shown as text
+  return text.replace(/```(?:chart|clarify|gap|items)\b[\s\S]*?(```|$)/gi, "").trimEnd();
 }

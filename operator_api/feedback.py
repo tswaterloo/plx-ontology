@@ -694,7 +694,7 @@ class Viewer:
         """``row`` with ``claims``, ``flagged`` and ``withheld`` (markings not shown)."""
         ctx = row.get("context") or {}
         out = dict(row, claims=list(ctx.get("claims") or []), flagged=ctx.get("flagged") or [],
-                   withheld=[])
+                   review_requested=bool(ctx.get("review_requested")), withheld=[])
         self._now_clean(out)
         if row.get("reader") != self.reader.key and (
                 ctx.get("reader_hidden") or self._writer_excluded(row.get("reader"))):
@@ -788,6 +788,7 @@ def record_answer(store: FeedbackStore, backend: Any, reader: Any, request: Any,
         markings |= {"finance", "pii"}
     context = {**_context_common(backend, reader, request.app_version, who["_hidden"]),
                "claims": claims, "flagged": flagged,
+               "review_requested": bool(getattr(request, "review", False)),
                "markings": None if markings is None else sorted(markings),
                "conversation_id": kept.get("conversation_id"),
                "data_as_of": kept.get("as_of"),

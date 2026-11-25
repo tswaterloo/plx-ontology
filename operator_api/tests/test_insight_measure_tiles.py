@@ -7,7 +7,7 @@ from __future__ import annotations
 import unittest
 
 from operating import measures as ms
-from operating.ontology_tools_sql import check
+from operating.ontology_tools_sql import ToolError, check
 from operator_api import insights as ins
 
 
@@ -21,10 +21,42 @@ class MeasureTiles(unittest.TestCase):
         for name, entry in catalogue.items():
             tile = tiles[f"{ins.MEASURE_TILE}{name}"]
             self.assertTrue(tile.about.startswith(str(entry["definition"])))
-            self.assertEqual(tile.sql, ms.statement(name, by="month" if entry.get("date") else None)[0])
+            self.assertEqual(tile.sql, ms.statement(name, by=entry.get("tile_by") or ("month" if entry.get("date") else None), unchecked=True)[0])
             check(tile.sql)
             self.assertIn(str(entry.get("owner")), tile.group)
             self.assertEqual(tile.scope, "everyone")   # the reader's door decides the rows
+
+    def test_every_built_in_tile_has_an_owner_and_is_in_the_one_registry_or_is_a_people_tile(self):
+        """One definition (A9): a built-in tile's statement lives in the registry
+        (``measures.reports()``: id, owner = its group, definition) unless it is a people tile
+        (a person column or a rolled-up count), which the Team rule cuts per viewer after the
+        door and so is not a company-wide report. None is outside both, none without an owner."""
+        reports = ms.reports()
+        for spec in ins.builtin():
+            self.assertTrue(spec.group and spec.group != "Mine", spec.id)       # owner named
+            self.assertTrue(spec.about, spec.id)                                # a definition
+            people = bool(spec.person or spec.rollup)
+            if spec.scope in ("everyone", "full") and not people:
+                self.assertIn(spec.id, reports, spec.id)
+                self.assertEqual(reports[spec.id]["sql"], ms.fill(spec.sql), spec.id)
+            else:
+                self.assertTrue(people or spec.scope in ("self", "org"), spec.id)
+
+    def test_a_measure_the_data_cannot_support_keeps_its_tile_and_says_why(self):
+        """Not measurable (``requires`` below its fill on the measured data): the tile stays,
+        its statement is the measure's own, and it reads the reason, never a figure."""
+        from operating import fill_contract
+        tiles = {s.id: s for s in ins.declared() if s.id.startswith(ins.MEASURE_TILE)}
+        thin = {n for n, m in ms.measures().items() if fill_contract.problems(m, fill_contract.health())}
+        self.assertTrue(thin)                       # the data does hold thin measures today
+        for name in ms.measures():
+            tile = tiles[f"{ins.MEASURE_TILE}{name}"]
+            self.assertEqual(bool(tile.unmeasurable), name in thin, name)
+            if name in thin:
+                self.assertTrue(tile.unmeasurable.startswith("not measurable: "), name)
+                with self.assertRaises(ToolError) as e:
+                    ms.statement(name)
+                self.assertEqual(e.exception.code, "not_measurable")
 
     def test_each_measure_states_its_definition_owner_version_and_the_day_it_was_set(self):
         """The definition line a measure's tile and answer show: the catalogue records each
@@ -44,7 +76,7 @@ class MeasureTiles(unittest.TestCase):
                               entry["defined_on"]))
             self.assertEqual((listed[name].version, listed[name].defined_on),
                              (entry["version"], entry["defined_on"]))
-            self.assertEqual(ms.statement(name)[1]["defined_on"], entry["defined_on"])
+            self.assertEqual(ms.statement(name, unchecked=True)[1]["defined_on"], entry["defined_on"])
         edited = {**catalogue["revenue"], "where": "TRUE"}
         self.assertEqual(ms.defined_on(edited), "")
         self.assertEqual(ms.defined_on({**catalogue["revenue"], "defined_on": "soon"}), "")

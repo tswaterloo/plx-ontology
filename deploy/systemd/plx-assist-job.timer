@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Assist jobs: look for jobs handed to Assist 15 seconds after the last run ended
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

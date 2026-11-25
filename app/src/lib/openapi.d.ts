@@ -132,6 +132,48 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/answers/gaps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Answer Gaps
+         * @description What Ask and Genie were asked that no view or measure defines, with how many times
+         *     (the owner and the admins).
+         */
+        get: operations["answer_gaps_api_answers_gaps_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/answers/observed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Answers Observed
+         * @description How the Ask has been doing: per day the answers, failures, time and steps, and every
+         *     failed question (the owner and the admins; the question text and the error text only for the owner).
+         */
+        get: operations["answers_observed_api_answers_observed_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals": {
         parameters: {
             query?: never;
@@ -275,6 +317,256 @@ export type paths = {
          * @description Take a file off a question: remove what ``POST /api/ask/files`` kept.
          */
         delete: operations["ask_upload_remove_api_ask_files__upload_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ask/warm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask Warm
+         * @description Start a warm Ask session for this reader when the Ask box opens or focuses
+         *     (Ask spec 19 S3). Non-blocking; no model call is made.
+         */
+        post: operations["ask_warm_api_ask_warm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Jobs List
+         * @description Your jobs, newest first, with their pieces.
+         */
+        get: operations["jobs_list_api_assist_jobs_get"];
+        put?: never;
+        /**
+         * Job Request
+         * @description Hand Assist a whole job. It plans, reads and prepares every piece; nothing is sent or written.
+         */
+        post: operations["job_request_api_assist_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/jobs/{job_id}/pieces/{n}/changes/{index}/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Piece Prepare
+         * @description Review one proposed change of a piece: prepared through the desk as you (nothing written); confirm it
+         *     in two steps on ``/api/prepared/{id}``. A change reviewed before answers the card it became.
+         */
+        post: operations["piece_prepare_api_assist_jobs__job_id__pieces__n__changes__index__prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/jobs/{job_id}/pieces/{n}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Piece Decide
+         * @description Approve, dismiss or edit one piece. Recorded only: nothing is sent or written.
+         */
+        post: operations["piece_decide_api_assist_jobs__job_id__pieces__n__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/jobs/{job_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Job Stop
+         * @description Stop a job: no more sessions start; the pieces already prepared stay.
+         */
+        post: operations["job_stop_api_assist_jobs__job_id__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workflows List
+         * @description Your workflows (with their runs), your mined routines, and starter templates.
+         */
+        get: operations["workflows_list_api_assist_workflows_get"];
+        put?: never;
+        /**
+         * Workflow Create
+         * @description Create a workflow from plain language, a mined routine, a template, or explicit fields.
+         */
+        post: operations["workflow_create_api_assist_workflows_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/workflows/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflow Parse
+         * @description Preview how plain language turns into a workflow trigger and instruction.
+         */
+        post: operations["workflow_parse_api_assist_workflows_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/workflows/{workflow_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Workflow Update
+         * @description Edit a workflow's name, instruction or trigger.
+         */
+        patch: operations["workflow_update_api_assist_workflows__workflow_id__patch"];
+        trace?: never;
+    };
+    "/api/assist/workflows/{workflow_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflow Pause
+         * @description Pause a workflow: it stops firing on schedule or events until you resume it.
+         */
+        post: operations["workflow_pause_api_assist_workflows__workflow_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/workflows/{workflow_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflow Resume
+         * @description Resume a paused workflow (clears any failure pause/backoff and starts watching from now).
+         */
+        post: operations["workflow_resume_api_assist_workflows__workflow_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/workflows/{workflow_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflow Run Now
+         * @description Run a workflow on demand right now: creates an Assist job whose pieces you review and confirm.
+         */
+        post: operations["workflow_run_now_api_assist_workflows__workflow_id__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assist/workflows/{workflow_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workflow Stop
+         * @description Stop a workflow permanently and stop any run currently in progress.
+         */
+        post: operations["workflow_stop_api_assist_workflows__workflow_id__stop_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1219,6 +1511,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/email-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Email Draft
+         * @description Draft an email for a brief or answer (with its chart attached as an Office file)
+         *     for confirm-before-send through ``/api/actions/preview`` and ``/api/actions/confirm``.
+         *     Email only; live send remains gated by ``PLX_ACTIONS_LIVE`` and ``PLX_ACTIONS_SENDERS``.
+         */
+        post: operations["prepare_email_draft_api_email_draft_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/entries/{entry_id}": {
         parameters: {
             query?: never;
@@ -1278,6 +1592,28 @@ export type paths = {
         get: operations["explore_api_explore__object_type___object_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/export/xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Xlsx
+         * @description Export any chart, table or answer as a formatted Excel (.xlsx) workbook with
+         *     typed values, live native charts and a Sources sheet of full SQL statements. Nothing
+         *     is kept or sent.
+         */
+        post: operations["export_xlsx_api_export_xlsx_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1461,6 +1797,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/home/needs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Home Needs
+         * @description Home's unified Needs-you list: Assist matters of every age, late purchase orders,
+         *     alerts routed to you, and (for the owner) new feedback and undefined gap alerts, merged
+         *     and ranked server-side with items older than 90 days folded rather than dropped.
+         */
+        get: operations["home_needs_api_home_needs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/insight-news": {
         parameters: {
             query?: never;
@@ -1549,6 +1907,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/insights/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Insight Layout
+         * @description Keep your own arrangement of the dashboard (the order of your charts and the ones
+         *     you took off); gives the dashboard back as it now is.
+         */
+        put: operations["insight_layout_api_insights_layout_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/insights/{insight_id}": {
         parameters: {
             query?: never;
@@ -1627,6 +2006,8 @@ export type paths = {
          * Insight Why
          * @description Why did this figure change: step by step (one JSON object per line), each step read
          *     as you and sent as it is read with the best answer so far; stop reading at any step.
+         *     ``period`` (and ``against``) names the change, ``filter`` (JSON, a dimension to its
+         *     values) narrows the rows explained, ``drill`` reads one ranked dimension's parts.
          */
         get: operations["insight_why_api_insights__insight_id__why_get"];
         put?: never;
@@ -1849,6 +2230,72 @@ export type paths = {
         get: operations["me_api_me_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/measures/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Measure Candidates List
+         * @description Candidate measure definitions captured from accepted answers, saved charts, or
+         *     direct proposals (no silent cap; respects per-reader exclusion and masking).
+         */
+        get: operations["measure_candidates_list_api_measures_candidates_get"];
+        put?: never;
+        /**
+         * Measure Candidates Propose
+         * @description Propose or capture a candidate shared measure definition from SQL, a saved chart,
+         *     or an accepted Ask answer.
+         */
+        post: operations["measure_candidates_propose_api_measures_candidates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/measures/candidates/{candidate_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Measure Candidates Approve
+         * @description Owner-only: promote a candidate into the live governed measure overlay.
+         */
+        post: operations["measure_candidates_approve_api_measures_candidates__candidate_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/measures/candidates/{candidate_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Measure Candidates Dismiss
+         * @description Owner-only: dismiss a candidate definition from the review queue.
+         */
+        post: operations["measure_candidates_dismiss_api_measures_candidates__candidate_id__dismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3764,8 +4211,6 @@ export type components = {
              * @description Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.
              */
             assistant_unavailable?: string | null;
-            /** @description What the answer took an open question to mean, with the other readings to change it. */
-            assumption?: components["schemas"]["Assumption"] | null;
             /**
              * Attachments
              * @description The question's attachments: what was read and what was not, and why.
@@ -3872,6 +4317,11 @@ export type components = {
              * @description Figures, dates or record numbers in the answer that no result of its own (nor the person's words) holds (Ask plan A2c).
              */
             untraced?: string[];
+            /**
+             * Work Items
+             * @description The items the answer lists, grouped by what the person must do, each with its source, who and when, what is needed and a link that opens it.
+             */
+            work_items?: components["schemas"]["WorkGroup"][];
             /**
              * Working
              * @description Each figure the host computed for the answer, as 'expression = value, from <the result>', so it can be checked by hand (Ask plan 16 M6).
@@ -4266,6 +4716,37 @@ export type components = {
             /** Chats */
             chats: components["schemas"]["AskChat"][];
         };
+        /** AskDay */
+        AskDay: {
+            /** Answered */
+            answered: number;
+            /**
+             * Cost Answers
+             * @description How many of the day's answers kept a cost (the others were answered before it was kept; they are not counted as zero).
+             * @default 0
+             */
+            cost_answers: number;
+            /**
+             * Cost Usd
+             * @description The model runs' cost as each run reports it, summed over the answers that kept one.
+             */
+            cost_usd?: string | null;
+            /** Day */
+            day: string;
+            /** Failed */
+            failed: number;
+            /** Median Ms */
+            median_ms?: number | null;
+            /** Median Steps */
+            median_steps?: number | null;
+            /** Slowest Ms */
+            slowest_ms?: number | null;
+            /**
+             * Unavailable
+             * @description Answers given without the assistant (its limit, sign-in or time).
+             */
+            unavailable: number;
+        };
         /**
          * AskDocument
          * @description A file the Ask made for you: its name, kind, size and download link; for an edited
@@ -4380,6 +4861,35 @@ export type components = {
              */
             to?: string | null;
         };
+        /** AskFailure */
+        AskFailure: {
+            /** At */
+            at: string;
+            /**
+             * Error
+             * @description Only for the owner (error text can quote the question).
+             */
+            error?: string | null;
+            /**
+             * Question
+             * @description Only for the owner.
+             */
+            question?: string | null;
+        };
+        /**
+         * AskObserved
+         * @description How the Ask has been doing, per day, from what each answer kept; the owner and the
+         *     admins. ``available`` false while the log cannot be read (the people exclusion is not
+         *     loaded).
+         */
+        AskObserved: {
+            /** Available */
+            available: boolean;
+            /** Days */
+            days: components["schemas"]["AskDay"][];
+            /** Failures */
+            failures: components["schemas"]["AskFailure"][];
+        };
         /** AskRequest */
         AskRequest: {
             /**
@@ -4387,7 +4897,7 @@ export type components = {
              * @description Files and images the person attached (PDF, .xlsx, .csv, .docx, .pptx, text, PNG, JPEG, GIF, WebP): any number.
              */
             attachments?: components["schemas"]["AskAttachment"][];
-            /** @description An answer to the question an earlier answer asked back (or another reading of its assumption): continues that question. */
+            /** @description An answer to the question an earlier answer asked back: continues that question. */
             clarified?: components["schemas"]["ClarifyReply"] | null;
             /** @description The page the box was opened on (a meeting, an autopilot item, a page); an email or file goes in ``source``, a record in ``object_id``. */
             context?: components["schemas"]["InstructContext"] | null;
@@ -4435,6 +4945,511 @@ export type components = {
             size: number;
         };
         /**
+         * AskWarmStatus
+         * @description Whether a warm Ask session is ready or starting for this reader (Ask spec 19 S3).
+         */
+        AskWarmStatus: {
+            /** Ready */
+            ready: boolean;
+            /** Warming */
+            warming: boolean;
+        };
+        /**
+         * AssistJob
+         * @description A job: its state folded from its log rows. Nothing is sent or written until the person confirms a
+         *     change on its own card.
+         */
+        AssistJob: {
+            /** Checklist */
+            checklist?: components["schemas"]["AssistJobChecklistItem"][];
+            /** Fallbacks */
+            fallbacks?: string[];
+            /**
+             * Found
+             * @default
+             */
+            found: string;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Not Found
+             * @default
+             */
+            not_found: string;
+            /**
+             * Nothing
+             * @default
+             */
+            nothing: string;
+            /** Pieces */
+            pieces?: components["schemas"]["AssistJobPiece"][];
+            /** Plan Reads */
+            plan_reads?: string[];
+            /**
+             * Planned
+             * @default 0
+             */
+            planned: number;
+            /**
+             * Progress
+             * @default
+             */
+            progress: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Requested At */
+            requested_at: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "stopping" | "stopped" | "finished" | "failed";
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Text */
+            text: string;
+            /** Unread */
+            unread?: string[];
+            /**
+             * Unread Reads
+             * @description Reads of the plan the screens kept from use (each says why); the plan stands on the others.
+             */
+            unread_reads?: {
+                [key: string]: unknown;
+            }[];
+            /** Usd */
+            usd?: number | null;
+        };
+        /** AssistJobChecklistItem */
+        AssistJobChecklistItem: {
+            /**
+             * Piece
+             * @description The piece it belongs to.
+             */
+            piece?: number | null;
+            /** Text */
+            text: string;
+        };
+        /** AssistJobDecision */
+        AssistJobDecision: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approved" | "dismissed" | "edited";
+            /**
+             * Edits
+             * @description Change index -> field -> the person's value (a message's body).
+             */
+            edits?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
+            /**
+             * Text
+             * @description The person's own words for the piece (edited).
+             * @default
+             */
+            text: string;
+        };
+        /**
+         * AssistJobPiece
+         * @description One prepared piece of a job: a message or system change to review (``proposals``), a question with
+         *     real choices (``ask``), a to-do, or nothing (with the record that shows it done). ``reads`` and
+         *     ``tool_reads`` are what it was prepared from; ``records_unread`` the records the plan named that no
+         *     read of the piece shows.
+         */
+        AssistJobPiece: {
+            /** Ask */
+            ask?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Changes Over Limit
+             * @description How many proposed changes on this piece exceed the desk's per-piece limit (4); all changes stay shown.
+             * @default 0
+             */
+            changes_over_limit: number;
+            /**
+             * Decision
+             * @default
+             * @enum {string}
+             */
+            decision: "" | "approved" | "dismissed" | "edited";
+            /**
+             * Edited Text
+             * @default
+             */
+            edited_text: string;
+            /** Held Back */
+            held_back?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Instruction
+             * @default
+             */
+            instruction: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** N */
+            n: number;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Nothing
+             * @default
+             */
+            nothing: string;
+            /** Planned Records */
+            planned_records?: string[];
+            /**
+             * Prepared Ids
+             * @description Change index -> the prepared write it became (its card takes the confirm).
+             */
+            prepared_ids?: {
+                [key: string]: string;
+            };
+            /** Proposals */
+            proposals?: {
+                [key: string]: unknown;
+            }[];
+            /** Reads */
+            reads?: string[];
+            /**
+             * Reads Traced
+             * @default true
+             */
+            reads_traced: boolean;
+            /** Records Unread */
+            records_unread?: string[];
+            /**
+             * Reply
+             * @default
+             */
+            reply: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "prepared" | "nothing" | "failed" | "screened" | "stopped";
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Title */
+            title: string;
+            /** Todos */
+            todos?: {
+                [key: string]: unknown;
+            }[];
+            /** Tool Reads */
+            tool_reads?: {
+                [key: string]: unknown;
+            }[];
+            /** Unread Reads */
+            unread_reads?: {
+                [key: string]: unknown;
+            }[];
+            /** Usd */
+            usd?: string | null;
+            /**
+             * Warning
+             * @default
+             */
+            warning: string;
+            /**
+             * Why
+             * @default
+             */
+            why: string;
+        };
+        /**
+         * AssistJobRequest
+         * @description A whole job handed to Assist, in the person's own words.
+         */
+        AssistJobRequest: {
+            /**
+             * Text
+             * @description The job, as typed.
+             */
+            text: string;
+        };
+        /** AssistJobs */
+        AssistJobs: {
+            /** Jobs */
+            jobs?: components["schemas"]["AssistJob"][];
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "not_run";
+        };
+        /**
+         * AssistMinedRoutine
+         * @description A mined routine of the signed-in person from ``assist.routines``.
+         */
+        AssistMinedRoutine: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Kind */
+            kind: string;
+            /** Mined */
+            mined?: {
+                [key: string]: unknown;
+            };
+            /** Routine Id */
+            routine_id: string;
+            /**
+             * Status
+             * @default candidate
+             */
+            status: string;
+            /**
+             * Suggested Name
+             * @default
+             */
+            suggested_name: string;
+            /**
+             * Suggested Trigger Summary
+             * @default
+             */
+            suggested_trigger_summary: string;
+            /** Trigger */
+            trigger?: {
+                [key: string]: unknown;
+            };
+            /** Validated */
+            validated?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * AssistWorkflow
+         * @description One workflow owned by the signed-in person, folded from ``assist.workflow_log``.
+         */
+        AssistWorkflow: {
+            /** Backoff Until */
+            backoff_until?: string | null;
+            /**
+             * Consecutive Failures
+             * @default 0
+             */
+            consecutive_failures: number;
+            /** Created At */
+            created_at: string;
+            /** Instruction */
+            instruction: string;
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /** Last Fired At */
+            last_fired_at?: string | null;
+            /** Name */
+            name: string;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /**
+             * Pause Reason
+             * @default
+             */
+            pause_reason: string;
+            /** Runs */
+            runs?: components["schemas"]["AssistWorkflowRun"][];
+            /**
+             * Source Kind
+             * @enum {string}
+             */
+            source_kind: "plain_language" | "routine" | "template";
+            /**
+             * Source Ref
+             * @default
+             */
+            source_ref: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "paused" | "stopped";
+            /** Trigger */
+            trigger?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Trigger Kind
+             * @enum {string}
+             */
+            trigger_kind: "schedule" | "event" | "manual";
+            /** Trigger Summary */
+            trigger_summary: string;
+            /** Updated At */
+            updated_at: string;
+            /** Workflow Id */
+            workflow_id: string;
+        };
+        /**
+         * AssistWorkflowCreate
+         * @description Create a workflow from plain language, a mined routine, a template, or explicit fields.
+         */
+        AssistWorkflowCreate: {
+            /** Instruction */
+            instruction?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Plain Text */
+            plain_text?: string | null;
+            /** Routine Id */
+            routine_id?: string | null;
+            /** Template Id */
+            template_id?: string | null;
+            /** Trigger */
+            trigger?: {
+                [key: string]: unknown;
+            } | null;
+            /** Trigger Kind */
+            trigger_kind?: ("schedule" | "event" | "manual") | null;
+        };
+        /**
+         * AssistWorkflowParseRequest
+         * @description Plain-language workflow text to preview its parsed trigger and instruction.
+         */
+        AssistWorkflowParseRequest: {
+            /** Text */
+            text: string;
+        };
+        /** AssistWorkflowParsed */
+        AssistWorkflowParsed: {
+            /** Instruction */
+            instruction: string;
+            /** Name */
+            name: string;
+            /** Trigger */
+            trigger?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Trigger Kind
+             * @enum {string}
+             */
+            trigger_kind: "schedule" | "event" | "manual";
+            /** Trigger Summary */
+            trigger_summary: string;
+        };
+        /**
+         * AssistWorkflowRun
+         * @description One run of a workflow, pointing to its ``assist.job_log`` job.
+         */
+        AssistWorkflowRun: {
+            job?: components["schemas"]["AssistJob"] | null;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "fired" | "run_now";
+            /**
+             * Trigger Note
+             * @default
+             */
+            trigger_note: string;
+            /** Triggered At */
+            triggered_at: string;
+        };
+        /** AssistWorkflowRunResult */
+        AssistWorkflowRunResult: {
+            job: components["schemas"]["AssistJob"];
+            workflow: components["schemas"]["AssistWorkflow"];
+        };
+        /** AssistWorkflowTemplate */
+        AssistWorkflowTemplate: {
+            /** Description */
+            description: string;
+            /** Instruction */
+            instruction: string;
+            /** Name */
+            name: string;
+            /** Template Id */
+            template_id: string;
+            /** Trigger */
+            trigger?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Trigger Kind
+             * @enum {string}
+             */
+            trigger_kind: "schedule" | "event" | "manual";
+            /** Trigger Summary */
+            trigger_summary: string;
+        };
+        /**
+         * AssistWorkflowUpdate
+         * @description Edit a workflow's name, instruction or trigger.
+         */
+        AssistWorkflowUpdate: {
+            /** Instruction */
+            instruction?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Trigger */
+            trigger?: {
+                [key: string]: unknown;
+            } | null;
+            /** Trigger Kind */
+            trigger_kind?: ("schedule" | "event" | "manual") | null;
+        };
+        /** AssistWorkflows */
+        AssistWorkflows: {
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Routines */
+            routines?: components["schemas"]["AssistMinedRoutine"][];
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "not_run";
+            /** Templates */
+            templates?: components["schemas"]["AssistWorkflowTemplate"][];
+            /** Workflows */
+            workflows?: components["schemas"]["AssistWorkflow"][];
+        };
+        /**
          * AssistWorking
          * @description A draft asked for: it is being prepared; the list shows it when ready.
          */
@@ -4444,17 +5459,6 @@ export type components = {
              * @constant
              */
             status: "working";
-        };
-        /**
-         * Assumption
-         * @description What the answer took the question to mean, in one line, and the other readings:
-         *     picking one asks it again under that reading (``AskRequest.clarified.option``).
-         */
-        Assumption: {
-            /** Options */
-            options?: components["schemas"]["ClarifyOption"][];
-            /** Text */
-            text: string;
         };
         /** AtRisk */
         AtRisk: {
@@ -5531,11 +6535,16 @@ export type components = {
              * @description On a "your call" card: the replies written for each choice you could make; pick one to edit and confirm.
              */
             options?: components["schemas"]["AutopilotOption"][];
+            /**
+             * Plan At
+             * @description When the drafting worker last finished a run for this item.
+             */
+            plan_at?: string | null;
             /** Plan Reason */
             plan_reason?: string | null;
             /**
              * Plan Status
-             * @description none, planned, drafted, needs_you, deferred (draft on request) or failed (``plan_reason`` says why; ask again).
+             * @description none, planned, drafted, needs_you, working, deferred (draft on request) or failed (``plan_reason`` says why; ask again).
              */
             plan_status?: string | null;
             /**
@@ -5550,6 +6559,11 @@ export type components = {
              * @default false
              */
             redo: boolean;
+            /**
+             * Requested At
+             * @description When a draft or reply-from-line was last asked for.
+             */
+            requested_at?: string | null;
             /** Sender */
             sender: string;
             /**
@@ -6954,7 +7968,7 @@ export type components = {
         };
         /**
          * ClarifyReply
-         * @description The person's answer to an earlier answer's ``clarify`` question or ``assumption``:
+         * @description The person's answer to an earlier answer's ``clarify`` question:
          *     the answer it replies to, and an option's index or their own words.
          */
         ClarifyReply: {
@@ -7536,6 +8550,64 @@ export type components = {
             /** @description The cited value it rests on, opened for this reader. */
             source: components["schemas"]["Source"];
         };
+        /**
+         * EmailDraftPrepared
+         * @description A prepared brief/answer email card ready for /api/actions/preview and confirm.
+         */
+        EmailDraftPrepared: {
+            /** Attachment Name */
+            attachment_name?: string | null;
+            /** Body */
+            body: string;
+            /** Card Id */
+            card_id: string;
+            /**
+             * Kind
+             * @default send_email
+             * @constant
+             */
+            kind: "send_email";
+            /** Subject */
+            subject: string;
+            /** To */
+            to?: string | null;
+            /** Upload Id */
+            upload_id?: string | null;
+        };
+        /**
+         * EmailDraftRequest
+         * @description Draft an email carrying a brief or answer and its chart(s), for confirm-before-send.
+         */
+        EmailDraftRequest: {
+            /**
+             * Attach File
+             * @default false
+             */
+            attach_file: boolean;
+            /** Charts */
+            charts?: {
+                [key: string]: unknown;
+            }[];
+            /** Citations */
+            citations?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Format
+             * @default xlsx
+             * @enum {string}
+             */
+            format: "xlsx" | "docx" | "pptx" | "pdf";
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Title */
+            title: string;
+            /** To */
+            to?: string | null;
+        };
         /** EntraConfig */
         EntraConfig: {
             /**
@@ -7841,6 +8913,55 @@ export type components = {
             /** Type */
             type: string;
         };
+        /**
+         * ExportTable
+         * @description One table to include as a formatted worksheet in an Excel export.
+         */
+        ExportTable: {
+            /** As Of */
+            as_of?: string | null;
+            /** Columns */
+            columns?: string[];
+            /** Records */
+            records?: number | null;
+            /** Rows */
+            rows?: (string | null)[][];
+            /** Sql */
+            sql?: string | null;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Total Rows */
+            total_rows?: number | null;
+            /** Truncated */
+            truncated?: boolean;
+        };
+        /**
+         * ExportXlsxRequest
+         * @description Export any chart, table or answer into one formatted Excel workbook.
+         */
+        ExportXlsxRequest: {
+            /** Charts */
+            charts?: components["schemas"]["AskChart"][];
+            /** Citations */
+            citations?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Tables */
+            tables?: components["schemas"]["ExportTable"][];
+            /**
+             * Title
+             * @default Export
+             */
+            title: string;
+        };
         /** Fact */
         Fact: {
             /**
@@ -7944,6 +9065,11 @@ export type components = {
             rating?: number | null;
             /** Reader Name */
             reader_name?: string | null;
+            /**
+             * Review Requested
+             * @default false
+             */
+            review_requested: boolean;
             /** Served Version */
             served_version?: string | null;
             /**
@@ -8011,6 +9137,11 @@ export type components = {
              * @enum {integer}
              */
             rating: 1 | -1;
+            /**
+             * Review
+             * @description Ask a person to review this answer (a thumbs-down only); 'The right answer is' is the fix proposed for them to approve.
+             */
+            review?: boolean;
         };
         /** FeedbackResponse */
         FeedbackResponse: {
@@ -8260,6 +9391,43 @@ export type components = {
              */
             system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC" | "Calendar" | "Planner";
         };
+        /**
+         * GapList
+         * @description The gap list (``operating.gap_list``), most asked first; the owner and the admins.
+         */
+        GapList: {
+            /** Gaps */
+            gaps: components["schemas"]["GapRow"][];
+            /**
+             * On
+             * @description False when this server does not keep the list.
+             */
+            on: boolean;
+        };
+        /**
+         * GapRow
+         * @description One thing Ask or Genie asked for that nothing defines: how often, first and last.
+         */
+        GapRow: {
+            /** Asked */
+            asked: number;
+            /**
+             * Defined
+             * @description A view or measure of this name exists now (the gap was closed after it was asked).
+             */
+            defined: boolean;
+            /** First */
+            first: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "view" | "measure";
+            /** Last */
+            last: string;
+            /** Name */
+            name: string;
+        };
         /** GraphRequest */
         GraphRequest: {
             /** Body */
@@ -8408,6 +9576,224 @@ export type components = {
              * @description Set when the server could not read this page in time and serves the last page it read for this same reader instead: when that page was read (ISO). It is refreshed in the background.
              */
             stale_since?: string | null;
+        };
+        /**
+         * HomeNeedFacet
+         * @description One filter choice and how many items of the unified list match it.
+         */
+        HomeNeedFacet: {
+            /** Count */
+            count: number;
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * HomeNeedItem
+         * @description One thing that needs this person in Home's unified Needs-you list. Every field is typed
+         *     data from its source: due date, last activity, quiet state, and cited amount.
+         */
+        HomeNeedItem: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "reply" | "approve" | "answer" | "do" | "decide" | "check" | "close";
+            /** Action Label */
+            action_label: string;
+            /** @description A cited amount this reader may open; never a suspect total. */
+            amount?: components["schemas"]["Money"] | null;
+            /**
+             * Ask
+             * @description The question only this person can answer, when one is prepared.
+             */
+            ask?: string | null;
+            /**
+             * Basis At
+             * @description When the fact it rests on last moved (ISO).
+             */
+            basis_at?: string | null;
+            /**
+             * Body
+             * @description The prepared draft, when one is ready.
+             */
+            body?: string | null;
+            /** Days Late */
+            days_late?: number | null;
+            /**
+             * Draft Ready
+             * @default false
+             */
+            draft_ready: boolean;
+            /** Due At */
+            due_at?: string | null;
+            /**
+             * Href
+             * @description Where the item opens in the app.
+             */
+            href: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "reply" | "approve" | "question" | "task" | "waiting" | "alert" | "late_po" | "routine" | "feedback" | "gap";
+            /**
+             * Line
+             * @description What needs doing next, in plain words.
+             */
+            line: string;
+            /**
+             * Matter Id
+             * @description Its Assist matter id when it is one.
+             */
+            matter_id?: string | null;
+            /**
+             * Next Act
+             * @description The matter's typed next act.
+             */
+            next_act?: string | null;
+            /** Object Id */
+            object_id?: string | null;
+            /** Object Type */
+            object_type?: string | null;
+            /**
+             * Person
+             * @description Who it is from or who it waits on, when known.
+             */
+            person?: string | null;
+            /** Plan Status */
+            plan_status?: string | null;
+            /**
+             * Quote
+             * @description The message or quote the matter rests on.
+             */
+            quote?: string | null;
+            /**
+             * Rank
+             * @description Its place in the unified list, 1 first.
+             */
+            rank: number;
+            /**
+             * Rank Reasons
+             * @description Why it is there, in words.
+             */
+            rank_reasons?: string[];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "mail" | "teams" | "mc" | "planner" | "alerts" | "pos" | "feedback" | "gaps" | "system";
+            /** Source Label */
+            source_label: string;
+            /**
+             * State
+             * @default open
+             * @enum {string}
+             */
+            state: "open" | "unverified" | "uncertain";
+            /**
+             * Still Open
+             * @description Nothing has happened on it since it was due.
+             * @default false
+             */
+            still_open: boolean;
+            /** Title */
+            title: string;
+            /**
+             * To
+             * @description The prepared draft's recipients.
+             */
+            to?: string[];
+            /** Verified At */
+            verified_at?: string | null;
+        };
+        /**
+         * HomeNeedPart
+         * @description One source's reading state behind the unified list: a source off, stale or unreadable
+         *     is reported honestly, never shown as an empty list.
+         */
+        HomeNeedPart: {
+            /** As Of */
+            as_of?: string | null;
+            /** Label */
+            label: string;
+            /** Note */
+            note?: string | null;
+            /** Source */
+            source: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "cut" | "stale" | "unknown" | "not_run" | "off" | "failed";
+            /** Total */
+            total?: number | null;
+        };
+        /**
+         * HomeNeeds
+         * @description Home's unified Needs-you read: Assist matters, alerts, late POs, and (for the owner)
+         *     new feedback and undefined gap alerts, merged and ranked server-side. Items older than
+         *     ``older_after_days`` fold into ``older_items`` rather than being dropped.
+         */
+        HomeNeeds: {
+            /** As Of */
+            as_of?: string | null;
+            /**
+             * Items
+             * @description The current main list.
+             */
+            items?: components["schemas"]["HomeNeedItem"][];
+            /** Kinds */
+            kinds?: components["schemas"]["HomeNeedFacet"][];
+            /**
+             * Older After Days
+             * @description Age threshold in days for the older fold.
+             */
+            older_after_days: number;
+            /**
+             * Older Items
+             * @description Items older than older_after_days, folded away rather than dropped.
+             */
+            older_items?: components["schemas"]["HomeNeedItem"][];
+            /**
+             * Older Total
+             * @description Count of items in the collapsed older group.
+             */
+            older_total: number;
+            /** Parts */
+            parts?: components["schemas"]["HomeNeedPart"][];
+            /** People */
+            people?: components["schemas"]["HomeNeedFacet"][];
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /** Sources */
+            sources?: components["schemas"]["HomeNeedFacet"][];
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this reader while refreshing in the background (ISO).
+             */
+            stale_since?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "cut" | "stale" | "unknown" | "not_run" | "off" | "failed";
+            /**
+             * Total
+             * @description Count of current items in the main list.
+             */
+            total: number;
+            /**
+             * Why
+             * @description Why the status is not ok, in plain words.
+             */
+            why?: string | null;
         };
         /**
          * ImpactCause
@@ -8589,10 +9975,42 @@ export type components = {
             /** @description The number it watches (notify crosses). */
             watch?: components["schemas"]["InsightWatch"] | null;
         };
+        /**
+         * InsightLayout
+         * @description A person's own arrangement of their dashboard: the order of their charts and the ones
+         *     they took off (kept whole, per person).
+         */
+        InsightLayout: {
+            /**
+             * Hidden
+             * @description Chart ids taken off.
+             */
+            hidden?: string[];
+            /**
+             * Order
+             * @description Chart ids in the order they are shown.
+             */
+            order: string[];
+        };
         /** InsightList */
         InsightList: {
+            /**
+             * Customised
+             * @description Whether the order or the charts are your own.
+             */
+            customised?: boolean;
+            /**
+             * Hidden
+             * @description Charts you may be shown that you took off your dashboard (add one back from here).
+             */
+            hidden?: components["schemas"]["InsightInfo"][];
             /** Items */
             items: components["schemas"]["InsightInfo"][];
+            /**
+             * Layout Problem
+             * @description Your own arrangement could not be read: the standard one is shown, and this says so.
+             */
+            layout_problem?: string | null;
             /**
              * Measures
              * @description The agreed measures Ask and the charts use, with their definitions.
@@ -9759,6 +11177,189 @@ export type components = {
             sign_in?: "microsoft" | "access_link" | "demo";
             /** Tenant */
             tenant: string;
+        };
+        /**
+         * MeasureCandidate
+         * @description A candidate shared business measure captured from usage or proposed for owner review.
+         */
+        MeasureCandidate: {
+            /** Approved Measure Id */
+            approved_measure_id?: string | null;
+            /** Dismiss Reason */
+            dismiss_reason?: string | null;
+            /** First Seen At */
+            first_seen_at: string;
+            /** Id */
+            id: string;
+            /** Last Seen At */
+            last_seen_at: string;
+            /**
+             * Proposed Date
+             * @default
+             */
+            proposed_date: string;
+            /** Proposed Description */
+            proposed_description?: string | null;
+            /** Proposed Dimensions */
+            proposed_dimensions?: string[];
+            /** Proposed Grain */
+            proposed_grain: string;
+            /** Proposed Id */
+            proposed_id: string;
+            /** Proposed Name */
+            proposed_name: string;
+            /** Proposed Owner */
+            proposed_owner: string;
+            /**
+             * Proposed Per
+             * @default
+             */
+            proposed_per: string;
+            /** Proposed Unit */
+            proposed_unit: string;
+            /**
+             * Proposed Value
+             * @default
+             */
+            proposed_value: string;
+            /**
+             * Proposed View
+             * @default
+             */
+            proposed_view: string;
+            /**
+             * Proposed Where
+             * @default
+             */
+            proposed_where: string;
+            /** Proposer Name */
+            proposer_name?: string | null;
+            /** Question */
+            question?: string | null;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Reviewed By */
+            reviewed_by?: string | null;
+            /** Signature */
+            signature: string;
+            /**
+             * Source Kind
+             * @enum {string}
+             */
+            source_kind: "accepted_answer" | "saved_tile" | "manual";
+            /** Source Ref */
+            source_ref?: string | null;
+            /** Sql */
+            sql?: string | null;
+            /**
+             * Sql Mode
+             * @default custom_sql
+             * @enum {string}
+             */
+            sql_mode: "structured" | "custom_sql";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "approved" | "dismissed";
+            /** Tile Title */
+            tile_title?: string | null;
+            /** Usage Count */
+            usage_count: number;
+            /** Views */
+            views?: string[];
+            /** Withheld */
+            withheld?: string[];
+        };
+        /**
+         * MeasureCandidateApprove
+         * @description Optional owner edits when promoting a candidate into the live governed definitions.
+         */
+        MeasureCandidateApprove: {
+            /** Date */
+            date?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Dimensions */
+            dimensions?: string[] | null;
+            /** Grain */
+            grain?: string | null;
+            /** Id */
+            id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Owner */
+            owner?: string | null;
+            /** Per */
+            per?: string | null;
+            /** Unit */
+            unit?: string | null;
+            /** Value */
+            value?: string | null;
+            /** View */
+            view?: string | null;
+            /** Where */
+            where?: string | null;
+        };
+        /**
+         * MeasureCandidateDismiss
+         * @description Optional owner reason when dismissing a candidate definition.
+         */
+        MeasureCandidateDismiss: {
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * MeasureCandidateList
+         * @description Candidate measure definitions queued for review or already reviewed (no silent cap).
+         */
+        MeasureCandidateList: {
+            /**
+             * Can Review
+             * @description True only for the owner (who can approve or dismiss).
+             */
+            can_review: boolean;
+            /** Candidates */
+            candidates: components["schemas"]["MeasureCandidate"][];
+            /**
+             * Counts
+             * @description Candidate count per status.
+             */
+            counts: {
+                [key: string]: number;
+            };
+            /** Total */
+            total: number;
+        };
+        /**
+         * MeasureCandidatePropose
+         * @description Propose or capture a candidate definition from SQL, a saved tile, or an accepted answer.
+         */
+        MeasureCandidatePropose: {
+            /** Answer Id */
+            answer_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Insight Id */
+            insight_id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Owner */
+            owner?: string | null;
+            /** Question */
+            question?: string | null;
+            /**
+             * Source Kind
+             * @default manual
+             * @enum {string}
+             */
+            source_kind: "accepted_answer" | "saved_tile" | "manual";
+            /** Source Ref */
+            source_ref?: string | null;
+            /** Sql */
+            sql?: string | null;
+            /** Title */
+            title?: string | null;
         };
         /**
          * MeasureCited
@@ -13800,6 +15401,49 @@ export type components = {
             /** Unread */
             unread: number;
         };
+        /**
+         * WorkGroup
+         * @description Items grouped by what the person must do (Decide, Reply, Follow up, Heads up).
+         */
+        WorkGroup: {
+            /** Items */
+            items?: components["schemas"]["WorkItem"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * WorkItem
+         * @description One thing the answer lists (the model's ``items`` block): where it comes from, who and
+         *     when, what is needed, and the link that opens the message or record (only when a result
+         *     of this conversation showed it).
+         */
+        WorkItem: {
+            /**
+             * Open Url
+             * @default null
+             */
+            open_url: string | null;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /** Text */
+            text: string;
+            /**
+             * When
+             * @default
+             */
+            when: string;
+            /**
+             * Who
+             * @default
+             */
+            who: string;
+        };
         /** WorkLogEvent */
         WorkLogEvent: {
             /** At */
@@ -14588,6 +16232,82 @@ export interface operations {
             };
         };
     };
+    answer_gaps_api_answers_gaps_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GapList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    answers_observed_api_answers_observed_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskObserved"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     approvals_queue_api_approvals_get: {
         parameters: {
             query?: never;
@@ -14880,6 +16600,748 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_warm_api_ask_warm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskWarmStatus"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    jobs_list_api_assist_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistJobs"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    job_request_api_assist_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistJob"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    piece_prepare_api_assist_jobs__job_id__pieces__n__changes__index__prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                n: number;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedWrite"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    piece_decide_api_assist_jobs__job_id__pieces__n__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistJobDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistJob"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    job_stop_api_assist_jobs__job_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistJob"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflows_list_api_assist_workflows_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflows"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_create_api_assist_workflows_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistWorkflowCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_parse_api_assist_workflows_parse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistWorkflowParseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflowParsed"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_update_api_assist_workflows__workflow_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistWorkflowUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_pause_api_assist_workflows__workflow_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_resume_api_assist_workflows__workflow_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_run_now_api_assist_workflows__workflow_id__run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflowRunResult"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_stop_api_assist_workflows__workflow_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -17207,6 +19669,66 @@ export interface operations {
             };
         };
     };
+    prepare_email_draft_api_email_draft_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailDraftPrepared"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     entry_view_api_entries__entry_id__get: {
         parameters: {
             query?: never;
@@ -17409,6 +19931,85 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_xlsx_api_export_xlsx_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportXlsxRequest"];
+            };
+        };
+        responses: {
+            /** @description Excel workbook. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -17795,6 +20396,35 @@ export interface operations {
             };
         };
     };
+    home_needs_api_home_needs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HomeNeeds"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     insight_news_api_insight_news_get: {
         parameters: {
             query?: never;
@@ -18009,7 +20639,9 @@ export interface operations {
     };
     insights_stream_api_insights_all_stream_get: {
         parameters: {
-            query?: never;
+            query?: {
+                eager?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -18025,6 +20657,93 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    insight_layout_api_insights_layout_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InsightLayout"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18350,7 +21069,12 @@ export interface operations {
     };
     insight_why_api_insights__insight_id__why_get: {
         parameters: {
-            query?: never;
+            query?: {
+                drill?: string | null;
+                period?: string | null;
+                against?: string | null;
+                filter?: string | null;
+            };
             header?: never;
             path: {
                 insight_id: string;
@@ -18950,6 +21674,248 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    measure_candidates_list_api_measures_candidates_get: {
+        parameters: {
+            query?: {
+                status?: ("pending" | "approved" | "dismissed") | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasureCandidateList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    measure_candidates_propose_api_measures_candidates_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeasureCandidatePropose"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasureCandidate"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    measure_candidates_approve_api_measures_candidates__candidate_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MeasureCandidateApprove"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasureCandidate"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    measure_candidates_dismiss_api_measures_candidates__candidate_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MeasureCandidateDismiss"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasureCandidate"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

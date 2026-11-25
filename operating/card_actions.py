@@ -159,7 +159,9 @@ def offers(card: Mapping[str, Any]) -> list[dict[str, Any]]:
         kinds.append("send_email")
     if thread_handle(card):
         kinds += ["reply_in_thread", "forward"]
-    kinds += ["teams_message", *LOCAL]
+    if not card.get("email_only"):
+        kinds.append("teams_message")
+    kinds += list(LOCAL)
     return [{"kind": k, "label": LABELS[k], "outbound": k in OUTBOUND} for k in kinds]
 
 

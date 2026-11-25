@@ -7,9 +7,11 @@ A. none / all / only without a read that covers the whole set it speaks of;
 B. rows given to a named party that the read neither filters on nor shows per row;
 C. a count or total stated without a condition its own read carries.
 
-Each listed sentence goes back to the asking session as "run the read that settles this,
-then replace that sentence or say it stands" (``ask_patch``); the host swaps that sentence
-only. A flag that proves wrong costs one read and changes nothing. The prompt is Fable's
+The listed sentences go back to the asking session as one turn: run the read that settles
+each, then write the whole answer again (or say ``stands``). The host never writes into
+the answer itself: no sentence of its own, none of the model's reply spliced into the
+old text (11-24: a reply that began "stands." was spliced into a bullet). A flag that proves
+wrong costs one read and changes nothing. The prompt is Fable's
 probe, verbatim (/data/scratch/ask7-1123/finder-probe-p.py): it reads statements and counts,
 never words of the question, and names no type of question.
 
@@ -35,7 +37,7 @@ Find only these three kinds of statement in the answer:
 A. NONE / ALL / ONLY: the answer says something does not exist, was not found, or that all, every, only, none or both of some set are one way. It is BACKED only if a read's statement covers that whole set (its WHERE is no narrower than the claim, it did not stop at its own LIMIT) and its row count or value counts show it. Otherwise it is unbacked.
 B. PARTY: the answer says rows (orders, invoices, items, messages) belong to a named customer or supplier. It is BACKED only if the read those rows came from filters on that party or shows the party per row. A read that selects by item, description or number alone, with no party filter and no party column, does not back it.
 C. COUNT WITH A HIDDEN FILTER: the answer states a count or total as if of a whole set, and the read it comes from has an extra condition the sentence does not mention (an exclusion like <> or NOT, a date bound, a status), or another read in the list over the same set without that condition holds a different number.
-Ignore everything else (wording, other figures, message content). Reply with ONLY a JSON object: {"flags": [{"kind": "A|B|C", "sentence": "<the answer's sentence, exact>", "why": "<the read number and what it lacks, short>", "would_settle": "<the one read that would settle it>"}]}. An empty list is a good result."""
+Ignore everything else (wording, other figures, message content). Reply with ONLY a JSON object: {"flags": [{"kind": "A|B|C", "sentence": "<the answer's sentence, exact>", "why": "<what the read does not show, in plain words, short; no read numbers and no tool names>", "would_settle": "<the one read that would settle it>"}]}. An empty list is a good result."""
 
 
 @dataclass
@@ -157,29 +159,38 @@ def check(asker: Any, question: str, answer: str, events: Sequence[Mapping[str, 
     return Cover("not_checked", [], time.monotonic() - started, why)
 
 
-def patches(printed: str, written: str, cover: Cover) -> list[ask_patch.Patch]:
-    """One patch per listed sentence the answer holds, the flags of one sentence together.
-    The check read the answer as the person reads it (``printed``, references printed); the
-    patch is on the text the session wrote (``written``): the same sentence by its place when
-    both split into as many sentences. A quoted sentence not found, or text that does not
-    line up, is skipped and logged: nothing is swapped on a guess."""
-    shown, wrote = ask_patch.spans(printed), ask_patch.spans(written)
-    by: dict[int, list[Mapping[str, Any]]] = {}
+def sentences(printed: str, cover: Cover) -> list[Mapping[str, Any]]:
+    """The listed sentences the answer really holds, each flag with the sentence as the
+    answer has it (the check read the answer as the person reads it, references printed). A
+    quoted sentence not found is skipped and logged: nothing is flagged on a guess."""
+    out = []
     for f in cover.flags:
         at = ask_patch.find(printed, f["sentence"])
-        if at is None or at not in shown or len(shown) != len(wrote):
+        if at is None:
             LOG.info(json.dumps({"ask_cover_unplaced": f["kind"]}))
             continue
-        by.setdefault(shown.index(at), []).append(f)
-    return [ask_patch.Patch(wrote[i][0], wrote[i][1], written[wrote[i][0]:wrote[i][1]],
-                            "; ".join(f"{f['why']} (kind {f['kind']})" for f in fs),
-                            "; ".join(f["would_settle"] for f in fs if f["would_settle"]))
-            for i, fs in sorted(by.items())]
+        out.append({**f, "sentence": printed[at[0]:at[1]].strip()})
+    return out
 
 
-def message(patched: Sequence[ask_patch.Patch]) -> str:
-    return ask_patch.message(
-        patched, "A check of your answer against the scope of your own reads lists these "
-        "sentences: each says something wider than the read behind it covers.",
-        "For each one run the read that settles it, then say what the whole set holds. "
-        "Give every figure as a reference to the result it comes from.")
+STANDS = "stands"
+
+
+def message(flags: Sequence[Mapping[str, Any]]) -> str:
+    """The turn that sends the flags back. The session writes the whole answer again (the
+    host never writes into it): every flagged sentence corrected from the read that settles
+    it, every other sentence as it was. ``stands`` alone: every flag proved wrong, the
+    answer stays as it is."""
+    lines = ["A check of your answer against what you read lists these sentences: each says "
+             "something wider than the reading behind it covers."]
+    for n, f in enumerate(flags, 1):
+        lines.append(f'{n}. "{f["sentence"]}"\n   Why: {f["why"]}'
+                     + (f'\n   Settle it with: {f["would_settle"]}' if f["would_settle"] else ""))
+    lines.append("For each one run the read that settles it. Then write the complete answer "
+                 "again for the person: each of these sentences corrected, or kept where the "
+                 "read shows it holds, every other sentence as it was. Give every figure as a "
+                 "reference to the result it comes from. Write only the answer: no mention of "
+                 "this check, of reads, parts, tools, handles or references, and nothing "
+                 "about what you did to produce it. If every sentence holds as written, reply "
+                 f"with the single word {STANDS}.")
+    return "\n".join(lines)

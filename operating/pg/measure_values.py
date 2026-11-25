@@ -222,7 +222,9 @@ def build(read_dsn: str, write_dsn: str | None, names: Sequence[str] | None = No
         as_of = conn.execute("SELECT now()").fetchone()[0]
         for name in names:
             m = catalogue[name]
-            why = servable(m, door_of(conn, m["view"]))
+            why = ("a measure over records is read by its statement through the door "
+                   "(its rows are not pre-summed)") if m.get("source") \
+                else servable(m, door_of(conn, m["view"]))
             if why:
                 out[name] = {"served": "statement", "why": why}
                 continue
@@ -246,21 +248,340 @@ def build(read_dsn: str, write_dsn: str | None, names: Sequence[str] | None = No
     return out
 
 
-def write(dsn: str, made: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
+def write(dsn: str, made: Mapping[str, Sequence[Mapping[str, Any]]],
+          schema: str = "biz") -> None:
     """Replace each measure's rows in one transaction (a reader sees the old set or the
-    new one)."""
+    new one) and refresh ``class_counts`` for ``measure_values`` so the door tracks every
+    ``col_class`` present."""
     import psycopg
+    from operating.pg import door
     with psycopg.connect(dsn) as conn:
         with conn.transaction():
-            conn.execute("DELETE FROM biz.measure_values WHERE measure = ANY(%s)",
+            conn.execute(f"DELETE FROM {schema}.measure_values WHERE measure = ANY(%s)",
                          (list(made),))
-            with conn.cursor().copy(f"COPY biz.measure_values ({', '.join(COLS)}) FROM STDIN"
+            with conn.cursor().copy(f"COPY {schema}.measure_values ({', '.join(COLS)}) FROM STDIN"
                                     ) as cp:
                 for name, got in made.items():
                     for r in got:
                         cp.write_row([r["measure"], r["version"], json.dumps(r["dims"]),
                                       r["period"], r["access_class"], r["col_class"], r["n"],
                                       r["sum"], r["as_of"]])
+            if door.present(conn, schema):
+                door.recount(conn, schema, "measure_values")
+
+
+# ---------------------------------------------------------------------- stored drill (GI5)
+
+_DAY_BUFFER = 2   # stay 2 days inside DAY_PERIODS so timezone/midnight boundaries never drop a day
+
+
+def period_keys(start: Any, end: Any, *, today: Any = None) -> list[str] | None:
+    """Exact stored ``period`` keys (``month:YYYY-MM`` and ``day:YYYY-MM-DD``) covering the
+    half-open date range ``[start, end)`` without overlap; None when any partial-month day
+    falls older than ``DAY_PERIODS - _DAY_BUFFER`` days (caller falls back to statement)."""
+    import datetime as dt
+    from operating import measures as M
+    if start >= end:
+        return []
+    now_day = today or M.business_today()
+    day_floor = now_day - dt.timedelta(days=DAY_PERIODS - _DAY_BUFFER)
+    out: list[str] = []
+    cur = start
+    while cur < end:
+        nxt_month = M._months_on(cur, 1) if cur.day == 1 else None
+        if nxt_month is not None and nxt_month <= end:
+            out.append(f"month:{cur.year:04d}-{cur.month:02d}")
+            cur = nxt_month
+        else:
+            if cur <= day_floor:
+                return None
+            out.append(f"day:{cur.isoformat()}")
+            cur += dt.timedelta(days=1)
+    return out
+
+
+def _round1(val: Decimal) -> Decimal:
+    from decimal import ROUND_HALF_UP
+    return val.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def _round2(val: Decimal) -> Decimal:
+    from decimal import ROUND_HALF_UP
+    return val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _fmt(val: Any) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    return str(val)
+
+
+def _stored_value(acc: Mapping[str, list], fn: str, rate: bool) -> Any:
+    if rate:
+        num = acc.get("num")
+        den = acc.get("den")
+        if not den:
+            return None
+        d_val = den[1] if fn == "sum" else Decimal(den[0])
+        if not d_val:
+            return None
+        n_val = Decimal(0) if not num else (num[1] or Decimal(0) if fn == "sum" else Decimal(num[0]))
+        return _round2(Decimal(100) * n_val / Decimal(d_val))
+    den = acc.get("den")
+    if den is None:
+        return 0 if fn == "count" else None
+    return den[1] if fn == "sum" else den[0]
+
+
+def _stored_rows_count(acc: Mapping[str, list]) -> int:
+    den = acc.get("den")
+    return int(den[0]) if den is not None else 0
+
+
+def _compare_periods(m: Mapping[str, Any], period: Any, against: Any, days: Any
+                     ) -> tuple[list[str], list[str], list[str] | None, Any, str] | None:
+    """(cur_keys, prev_keys, prev_full_keys, earliest_start, period_text) or None when the
+    requested periods cannot be answered from stored day/month keys."""
+    import datetime as dt
+    from operating import measures as M
+    today = M.business_today()
+    if period is not None:
+        named = M._period(period, "period")
+        if against == M.SAME_LAST_YEAR:
+            earlier = M._year_before(named)
+        else:
+            earlier = M._period(against, "against") if against is not None else M._before(named)
+        if earlier[0] < named[1] and named[0] < earlier[1]:
+            return None
+        earlier, full_earlier = M._aligned(named, earlier)
+        cur_start, cur_end = named[0], named[1]
+        prev_start, prev_end = earlier[0], earlier[1]
+        full_start, full_end = (full_earlier[0], full_earlier[1]) if full_earlier else (None, None)
+        earliest = min(cur_start, prev_start)
+        _, cite = M.statement(m["id"], period=period, against=against, compare=True, unchecked=True)
+        said = cite.get("period") or ""
+    else:
+        n = M._days(days, int(m.get("days", 30)))
+        cur_start = today - dt.timedelta(days=n - 1)
+        cur_end = today + dt.timedelta(days=1)
+        prev_start = cur_start - dt.timedelta(days=n)
+        prev_end = cur_start
+        full_start = full_end = None
+        earliest = prev_start
+        _, cite = M.statement(m["id"], days=days, compare=True, unchecked=True)
+        said = cite.get("period") or ""
+    cur_keys = period_keys(cur_start, cur_end, today=today)
+    prev_keys = period_keys(prev_start, prev_end, today=today)
+    full_keys = period_keys(full_start, full_end, today=today) if full_start is not None else None
+    if cur_keys is None or prev_keys is None or (full_start is not None and full_keys is None):
+        return None
+    return cur_keys, prev_keys, full_keys, earliest, said
+
+
+def stored_compare(pg: Any, door: Any, measure_id: str, *, by: str | None = None,
+                   period: str | None = None, against: str | None = None,
+                   days: int | None = None, why: bool = False,
+                   seconds: float = 5.0) -> dict[str, Any] | None:
+    """Answer a measure's comparison, single-dimension drill (``by``), or dimension ranking
+    (``why=True``) from ``biz_page.measure_values`` through the reader's door
+    (``scoped_read(..., person=True)``). Returns ``{"columns", "rows", "period", "as_of",
+    "source": "stored"}`` or None when the stored table cannot answer it completely and
+    exact equality requires falling back to the live statement (e.g. unstored measure,
+    ``dclasses`` held, ``measure_values`` refused, rows withheld by ``col_class``, uncovered
+    history or period)."""
+    import datetime as dt
+    from operating import measures as M
+    from operating.ontology_tools_sql import Door, ToolError, scoped_read
+    m = M.typed().get(measure_id)
+    if m is None or not m.get("date"):
+        return None
+    if servable(m, "class") is not None:
+        return None
+    if by is not None and by not in (m.get("dimensions") or ()):
+        return None
+    try:
+        if not M._is_day_column(m["view"], m["date"]):
+            return None
+        spec = _compare_periods(m, period, against, days)
+    except (ToolError, ValueError, KeyError):
+        return None
+    if spec is None:
+        return None
+    cur_keys, prev_keys, full_keys, earliest, period_text = spec
+    all_keys = sorted(set(cur_keys) | set(prev_keys) | set(full_keys or ()))
+    ver = M.version(m)
+    fn, _dist, _col = parse_value(m["value"])
+    rate = M.is_rate(m)
+    per = m.get("per") or ""
+    dims_list = list(m.get("dimensions") or ())
+    early_prev_month = M._months_on(dt.date(earliest.year, earliest.month, 1), -1)
+    early_m = f"month:{early_prev_month.year:04d}-{early_prev_month.month:02d}"
+    early_d = f"day:{earliest.isoformat()}"
+
+    def work(conn: Any) -> Any:
+        decided = getattr(scoped_door, "decided", None) or {}
+        if "measure_values" in (decided.get("refused") or ()):
+            return None
+        settings = decided.get("settings") or {}
+        if settings.get("plx.dclasses") not in (None, "", "{}"):
+            return None
+        if conn.execute("SELECT to_regclass('measure_values')").fetchone()[0] is None:
+            return None
+        has_any, covered = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM measure_values WHERE measure = %s AND version = %s), "
+            "EXISTS (SELECT 1 FROM measure_values WHERE measure = %s AND version = %s AND "
+            "((period LIKE 'month:%%' AND period <= %s) OR (period LIKE 'day:%%' AND period <= %s)))",
+            (measure_id, ver, measure_id, ver, early_m, early_d)).fetchone()
+        if not has_any or not covered:
+            return None
+        if why:
+            where_dim = "AND (dims - '_per' - '_part') <> '{}'::jsonb"
+            params: tuple[Any, ...] = (measure_id, ver, all_keys)
+        elif by is not None:
+            where_dim = "AND (dims ? %s)"
+            params = (measure_id, ver, all_keys, by)
+        else:
+            where_dim = "AND (dims - '_per' - '_part') = '{}'::jsonb"
+            params = (measure_id, ver, all_keys)
+        got = conn.execute(
+            f"SELECT period, dims, n, sum, as_of, cardinality(withheld) > 0 "
+            f"FROM measure_values WHERE measure = %s AND version = %s AND period = ANY(%s) "
+            f"{where_dim}", params).fetchall()
+        return got
+
+    scoped_door = Door(door.grant)
+    try:
+        raw = scoped_read(pg, scoped_door, work, seconds, person=True)
+    except ToolError:
+        return None
+    if raw is None:
+        return None
+    if any(r[5] for r in raw):
+        return None   # masked cells: fall back to live statement for exact unread_cells / incomplete
+
+    cur_set, prev_set = set(cur_keys), set(prev_keys)
+    full_set = set(full_keys) if full_keys is not None else None
+    as_of = min((r[4] for r in raw if r[4] is not None), default=None)
+
+    def _accumulate(rows_in: Sequence[Any], dim_name: str | None) -> dict[tuple[Any, ...], dict[str, dict[str, list]]]:
+        buckets: dict[tuple[Any, ...], dict[str, dict[str, list]]] = {}
+        for p, dims_val, n_val, s_val, _as_of, _wh in rows_in:
+            d = dims_val if isinstance(dims_val, Mapping) else json.loads(dims_val or "{}")
+            if dim_name is not None and dim_name not in d:
+                continue
+            part = d.get("_part", "den")
+            per_v = (d.get("_per") or None) if per else None
+            key = ((d.get(dim_name),) if dim_name is not None else ()) + ((per_v,) if per else ())
+            slot = buckets.setdefault(key, {"cur": {}, "prev": {}, "full": {}})
+            checks = (("cur", cur_set), ("prev", prev_set)) + (
+                (("full", full_set),) if full_set is not None else ())
+            for which, pset in checks:
+                if p in pset:
+                    a = slot[which].setdefault(part, [0, None])
+                    if n_val is not None:
+                        a[0] += int(n_val)
+                    if s_val is not None:
+                        a[1] = (a[1] or Decimal(0)) + Decimal(str(s_val))
+        return buckets
+
+    def _build_compare(buckets: Mapping[tuple[Any, ...], dict[str, dict[str, list]]],
+                       dim_name: str | None) -> list[dict[str, Any]]:
+        out_rows = []
+        for key, slot in buckets.items():
+            cur_v = _stored_value(slot["cur"], fn, rate)
+            prev_v = _stored_value(slot["prev"], fn, rate)
+            full_v = _stored_value(slot["full"], fn, rate) if full_set is not None else None
+            cur_n = _stored_rows_count(slot["cur"])
+            prev_n = _stored_rows_count(slot["prev"])
+            if (cur_v is None and cur_n > 0) or (prev_v is None and prev_n > 0):
+                chg = None
+            else:
+                chg = Decimal(str(cur_v or 0)) - Decimal(str(prev_v or 0))
+            rec: dict[str, Any] = {
+                "current": cur_v, "previous": prev_v,
+                "current_rows": cur_n, "previous_rows": prev_n,
+                "unread_cells": 0, "data_from": None, "covered": True,
+                "change": chg, "incomplete": False,
+            }
+            if full_set is not None:
+                rec["previous_full"] = full_v
+            idx = 0
+            if dim_name is not None:
+                rec[dim_name] = key[idx]
+                idx += 1
+            if per:
+                rec[per] = key[idx]
+            out_rows.append(rec)
+        # shares per currency/unit
+        by_per: dict[Any, Decimal] = {}
+        for r in out_rows:
+            if r["change"] is not None:
+                pk = r.get(per) if per else ""
+                by_per[pk] = by_per.get(pk, Decimal(0)) + r["change"]
+        for r in out_rows:
+            if rate or r["change"] is None:
+                r["share_of_change_pct"] = None
+            else:
+                whole = by_per.get(r.get(per) if per else "", Decimal(0))
+                r["share_of_change_pct"] = _round1(Decimal(100) * r["change"] / whole) if whole else None
+        if dim_name is not None:
+            out_rows.sort(key=lambda r: (
+                0 if r["change"] is None else 1,
+                -(abs(r["change"]) if r["change"] is not None else Decimal(0)),
+                "" if r[dim_name] is None else str(r[dim_name])))
+        return out_rows
+
+    if why:
+        cols = ["dimension", *([per] if per else []), "parts", "parts_for_half",
+                "concentration_pct", "top_part", "top_change", "whole_change",
+                "top_share_of_change_pct", "unknown_parts"]
+        ranked_rows = []
+        for dim_name in dims_list:
+            comp = _build_compare(_accumulate(raw, dim_name), dim_name)
+            if not comp:
+                continue
+            groups: dict[Any, list[dict[str, Any]]] = {}
+            for r in comp:
+                groups.setdefault(r.get(per) if per else "", []).append(r)
+            for pk, items in sorted(groups.items(), key=lambda kv: "" if kv[0] is None else str(kv[0])):
+                items.sort(key=lambda r: (
+                    1 if r["change"] is None else 0,
+                    -(abs(r["change"]) if r["change"] is not None else Decimal(0)),
+                    "" if r[dim_name] is None else str(r[dim_name])))
+                parts_n = len(items)
+                moved = sum((abs(r["change"]) for r in items if r["change"] is not None), Decimal(0))
+                whole_chg = sum((r["change"] for r in items if r["change"] is not None), Decimal(0))
+                run_abs = Decimal(0)
+                parts_half = None
+                for rn, r in enumerate(items, 1):
+                    if r["change"] is not None:
+                        run_abs += abs(r["change"])
+                        if run_abs * 2 >= moved and parts_half is None:
+                            parts_half = rn
+                conc = _round1(Decimal(100) * Decimal(parts_half) / Decimal(parts_n)) \
+                    if parts_half is not None and parts_n else None
+                top = items[0]
+                top_share = (_round1(Decimal(100) * top["change"] / whole_chg)
+                             if top["change"] is not None and whole_chg else None)
+                unknown = sum(1 for r in items if r["change"] is None)
+                ranked_rows.append((
+                    (conc is None, conc if conc is not None else Decimal(0), dim_name,
+                     "" if pk is None else str(pk)),
+                    [dim_name, *([_fmt(pk)] if per else []), _fmt(parts_n), _fmt(parts_half),
+                     _fmt(conc), _fmt(top[dim_name]), _fmt(top["change"]), _fmt(whole_chg),
+                     _fmt(top_share), _fmt(unknown)]))
+        ranked_rows.sort(key=lambda x: x[0])
+        return {"columns": cols, "rows": [r[1] for r in ranked_rows], "period": period_text,
+                "as_of": _fmt(as_of), "source": "stored"}
+
+    comp = _build_compare(_accumulate(raw, by), by)
+    cols = [*([by] if by else []), *([per] if per else []), "current", "previous",
+            *(["previous_full"] if full_set is not None else []), "current_rows", "previous_rows",
+            "unread_cells", "data_from", "covered", "change", "share_of_change_pct", "incomplete"]
+    return {"columns": cols, "rows": [[_fmt(r.get(c)) for c in cols] for r in comp],
+            "period": period_text, "as_of": _fmt(as_of), "source": "stored"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -69,45 +69,6 @@ _PREWARMED: dict[str, float] = {}
 _PREWARMED_LOCK = threading.Lock()
 
 
-# The app's reader is a business user: the words around the answer block say what the
-# sources show and what could not be confirmed, never how the check works. Only the app's
-# Ask adds it (``app_prompt``); the scoreboard's cards are asked ``ask_prompt`` alone.
-APP_READER_RULE = (
-    "Who reads your reply: a PLX employee in the Workbench app, not an engineer. Outside "
-    "the json block (and in its \"text\"), write plain business sentences: name records "
-    "as the business does (a PO by its number, a document by its title, a customer or "
-    "vendor by the party_name a tool gave for its code, written exactly as given with "
-    "the code in brackets; a code with no party_name stays a code) "
-    "and every amount with its currency exactly as the tool gave it: the code after the "
-    "figure (\"1,500.00 CAD\"), then \"(from customer/vendor record)\" when its "
-    "currency_basis is counterparty_record, or \"$ (currency not stated)\" after the "
-    "figure when the tool gave no currency; never a currency guessed or converted. "
-    "Write fields in words (the PO line's description, the expected receipt date). Never "
-    "mention the answer gate, checks, claims, quotes, null values, answer values, field "
-    "paths (row.<column>, text), citation handles (original://, bc://, api://) or gap "
-    "codes (snake_case). Where you could not confirm something, say \"I couldn't confirm "
-    "<what> from a source you can open\" and nothing about why the check refused it. "
-    "A value or quote taken from a document is copied exactly as the page writes it, its "
-    "capital letters included (\"The supplier map ...\", not \"the supplier map ...\"); "
-    "lower-case it only in your own sentence, never in the json block. "
-    "This changes only your wording; the json block and every rule above stay as they "
-    "are.")
-
-
-PREREAD_HEADING = ("Tool output already read for you, as this reader, before the session "
-                   "(treat it as any tool result: state a value from it only through a "
-                   "claim the answer gate passes, citing the record it names):\n")
-
-
-def app_prompt(question: str, route: str | None = None) -> str:
-    """The app's Ask task: the scoreboard's ``ask_prompt`` unchanged, then
-    ``APP_READER_RULE`` and the house prose style (``prose_style.PROSE_STYLE_RULE``)."""
-    from operating import agent_session as runner
-    from operating.prose_style import PROSE_STYLE_RULE
-    return (runner.ask_prompt(question, route) + "\n\n" + APP_READER_RULE + "\n\n"
-            + PROSE_STYLE_RULE)
-
-
 class ReaderRefused(LookupError):
     """The reader cannot run the agent path (no employee identity); a code, no identity."""
 
@@ -138,25 +99,6 @@ def ticket_claims(session: Any) -> dict[str, str]:
     return {"uid": str(getattr(session, "portal_user_id", None) or employee.object_id),
             "email": email, "entraTenantId": employee.tenant_id,
             "entraObjectId": employee.object_id}
-
-
-@dataclass
-class AskRun:
-    """One Ask's session: the gated reply, its parsed answer, the session's events and the
-    last gate decision (envelopes removed), whether it was stopped at the cap."""
-    final_text: str
-    answer: Optional[dict[str, Any]]
-    events: list[dict[str, Any]]
-    decision: Optional[dict[str, Any]]
-    stopped: bool
-    seconds: float
-    usage: dict[str, Any] = field(default_factory=dict)
-    final_reply: dict[str, Any] = field(default_factory=dict)
-    # why the session itself failed (``session_failure``): the assistant was unavailable,
-    # which is never "no records answer this"; None for a session that ran
-    failure: Optional[str] = None
-    # the session's own budget (``deep_investigation.question_budget`` under the cap)
-    budget: Optional[float] = None
 
 
 # The Claude Code CLI's own words when the login's quota is spent ("You've hit your weekly
@@ -198,23 +140,6 @@ def session_failure(final_text: str, usage: Mapping[str, Any], events: list,
     if CONTEXT_FULL_MESSAGE in text.lower():
         return "context_full"
     return "error" if errored else None
-
-
-def last_decision(events: list[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
-    """The session's last readable answer-gate decision (``plx.case_get`` answer mode)
-    that passed at least one claim, envelopes removed; None when there is none."""
-    from operating import agent_session as runner
-
-    found = None
-    for event in events:
-        arguments = event.get("arguments")
-        result = event.get("result")
-        if event.get("type") == "tool_call" and event.get("name") == runner.ANSWER_GATE_TOOL \
-                and isinstance(arguments, Mapping) and "answer" in arguments \
-                and not event.get("is_error") and isinstance(result, Mapping) \
-                and isinstance(result.get("claims"), list) and result["claims"]:
-            found = plain_tree(result)
-    return found
 
 
 class _Catalogued:
@@ -317,20 +242,6 @@ class AgentAsk:
                                         extra_env=extra, agent=AGENT)
         return _Catalogued(host, (str(self.host_config), AGENT, claims["entraObjectId"]))
 
-    def agent_for(self, on_line: Callable[[str], None], seconds: float | None = None) -> Any:
-        if self._agent_for is not None:
-            return self._agent_for(on_line)
-        seconds = self.seconds if seconds is None else seconds
-        from operating import agent_session as runner
-        # The deep-investigation budget is the Ask's own cap: research ends before it, so
-        # the session submits what it established rather than being stopped mid-search.
-        return runner.ClaudeCodeAgent(binary=self.claude_bin, model=self.model,
-                                      timeout=int(seconds), max_turns=self.max_turns,
-                                      # no card number or credential in the task
-                                      spawn=masked_spawn(runner.streaming_spawn(on_line)),
-                                      budget_seconds=seconds, max_steps=MAX_STEPS,
-                                      helpers=host_helpers())
-
     def prewarm(self, session: Any) -> bool:
         """Take the reader's first Ask's start-up off its path, in the background: list
         their tool catalog (``_Catalogued``, kept an hour) and start their spare host
@@ -392,158 +303,6 @@ class AgentAsk:
         if got.get("error") or got.get("status") not in ("resolved", "changed_since"):
             raise RecordNotFound("citation_unresolvable_for_actor")
         return dict(got)
-
-    # ---- one Ask ---------------------------------------------------------------------
-
-    def run(self, session: Any, question: str,
-            emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
-            context: str = "", route: Optional[str] = None,
-            roots: Sequence[Mapping[str, Any]] = (),
-            entities: Optional[Sequence[Mapping[str, Any]]] = None,
-            looked: Optional[Mapping[str, Any]] = None,
-            cancel: Optional[threading.Event] = None,
-            memory: Optional[tuple[str, Any]] = None) -> AskRun:
-        """``cancel``: set when nobody waits for the answer any more (the reader left or
-        the Ask timed out): the session's process is ended at its next line.
-
-        One question as the reader (``ReaderRefused`` before any session for a reader
-        with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
-        each tool call starts; ``("result", {"tool", "step"})`` as another tool's result
-        comes back (``step``: its plain-words step, ``ask_progress.result_step``, or None);
-        ``("gate", {"outcome", "verdict", "citations"})`` as each gate decision returns
-        (``verdict``: an ``answered`` decision's first sentence, ``ask_progress.verdict``;
-        ``citations``: what its passed claims cite, for the caller to decide for the
-        reader before showing it). ``entities``: the things the question names as the
-        app resolved them before the session (``objective_runner.resolve_entities``), so
-        the session's answer gate never searches for them; None: it resolves them.
-        ``looked``: what the app already looked up for the question as this reader
-        (``session_prefetch.first_reads``): the session does not look it up again.
-        ``memory``: the reader's memory for this turn (``operator_api.memory``): the
-        context put before the task (core memory, the conversation so far, what is
-        relevant from earlier ones; "" for none) and the ``plx.memory`` tool bound to the
-        reader, which the session's gate answers itself (``agent_session.LocalTool``)."""
-        from operating import agent_session as runner
-        from . import ask_progress as progress
-
-        host = self.host_for(session)   # ReaderRefused first: no process for a non-employee
-        started = time.monotonic()
-        pending: dict[str, tuple[str, Any]] = {}
-        refused: list[Any] = []
-
-        def on_line(line: str) -> None:
-            message = json.loads(line) if line.strip().startswith("{") else {}
-            kind = message.get("type")
-            content = (message.get("message") or {}).get("content")
-            for block in content if isinstance(content, list) else ():
-                if not isinstance(block, Mapping):
-                    continue
-                if kind == "assistant" and block.get("type") == "tool_use":
-                    raw = str(block.get("name") or "")
-                    name = raw.split("__", 2)[-1].replace("_", ".", 1) if raw.startswith(
-                        "mcp__") else raw
-                    pending[str(block.get("id"))] = (name, block.get("input"))
-                    emit("call", {"tool": name})
-                elif kind == "user" and block.get("type") == "tool_result":
-                    name, arguments = pending.pop(str(block.get("tool_use_id")), ("", None))
-                    if name != runner.ANSWER_GATE_TOOL:
-                        if name:
-                            emit("result", {"tool": name, "step": progress.result_step(
-                                name, arguments, block.get("content"),
-                                block.get("is_error"))})
-                        continue
-                    body = block.get("content")
-                    if isinstance(body, list):
-                        body = "".join(str(part.get("text") or "") for part in body
-                                       if isinstance(part, Mapping))
-                    try:
-                        parsed = json.loads(body) or {}
-                        outcome = parsed.get("outcome")
-                        note = parsed.get(deep.BUDGET_KEY)
-                        if isinstance(note, Mapping) and note.get(deep.CONTINUE_KEY):
-                            # sent back with its open parts (``Budget.after_answer``):
-                            # research goes on, so nothing of it is shown yet
-                            outcome = "continue"
-                    except (TypeError, ValueError, AttributeError):
-                        parsed, outcome = {}, None
-                    told = None
-                    if isinstance(parsed, Mapping) and not block.get("is_error"):
-                        refused.extend(parsed.get("unsupported_claims") or ())
-                        told = progress.verdict(parsed, question, refused)
-                    emit("gate", {"outcome": outcome if isinstance(outcome, str) else None,
-                                  "verdict": told, "citations": progress.citations(parsed)
-                                  if told else None})
-
-        try:
-            # ``context``: what the app read for the agent before the session (a tool
-            # output, ``operator_api.preread``). It goes into the task, never into the
-            # question the final reply is screened against: a number or id in it is
-            # stated only through a claim the gate passed, like any other tool output's.
-            prompt = app_prompt(question, route) + (
-                "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
-            if memory is not None:
-                from .memory import MEMORY_RULE
-                remembered, recall_tool = memory
-                prompt += "\n\n" + MEMORY_RULE + (
-                    "\n\n" + remembered.strip() if remembered and remembered.strip() else "")
-            budget = deep.question_budget(question, self.seconds)
-            agent = self.agent_for(on_line, budget)
-            if cancel is not None:
-                agent.cancel_event = cancel
-            if memory is not None and memory[1] is not None \
-                    and hasattr(agent, "local_tools"):
-                agent.local_tools = {**agent.local_tools, memory[1].spec["name"]: memory[1]}
-            if entities is not None and hasattr(agent, "question_entities"):
-                agent.question_entities = [dict(entity) for entity in entities]
-            # the sources the pre-read brief names are read in the session itself, so
-            # what the agent cites of them is evidence the session returned
-            agent.quiet_reads = runner.told_reads(context)
-            # the records the Ask found for the question (``roots``: object_id,
-            # object_type, same_as) are the session's first reads, not looked up again
-            agent.known_roots = [dict(root) for root in roots if isinstance(root, Mapping)]
-            if looked is not None and hasattr(agent, "looked_up"):
-                agent.looked_up = dict(looked)
-            # the Ask resolved records the question names (the brief's roots): a text
-            # search waits for the agent's first record read
-            agent.records_named = bool(re.search(r'" names (?:one |the record)', context))
-            try:
-                run = runner.gated_run(agent, prompt, host, question)
-            except runner.ToolsUnattached:
-                # never an answer written without the plx tools: busy, ask again
-                from .errors import ASK_TOOLS_STARTING
-                raise ASK_TOOLS_STARTING from None
-        finally:
-            close = getattr(host, "close", None)
-            if close is not None:
-                close()
-        from operating.answer_contract import parse_answer
-        answer, _error = parse_answer(run.final_text)
-        stopped = run.usage.get("subtype") == "timeout"
-        reply = dict(run.agent.get("final_reply") or {})
-        # One line per Ask for whoever runs the app: counts and enums only, never the
-        # question, a value, a citation or the reader.
-        logging.getLogger("operator_api.ask").info(json.dumps({
-            "seconds": round(time.monotonic() - started, 1), "stopped": stopped,
-            "subtype": run.usage.get("subtype"), "turns": run.usage.get("num_turns"),
-            "tool_calls": len(run.events), "answer_parsed": answer is not None,
-            "steps": (run.agent.get("budget") or {}).get("steps_used"),
-            "refused_after_budget": (run.agent.get("budget") or {}).get(
-                "refused_after_budget"),
-            "gate": (run.agent.get("answer_gate") or {}).get("outcomes"),
-            "removed_sentences": reply.get("removed_sentences"),
-            "withheld_values": len(reply.get("withheld") or ()),
-            "prose_chars": len(reply_prose(run.final_text, answer)),
-            "timing": run.agent.get("timing")}))
-        # the CLI's own message (a limit or sign-in notice) before the gate screened it
-        failure = session_failure(str(reply.get("agent_final_text") or run.final_text or ""),
-                                  run.usage, run.events, answer)
-        if failure is not None:
-            logging.getLogger("operator_api.ask").warning(json.dumps(
-                {"session_failed": failure, "subtype": run.usage.get("subtype"),
-                 "exit_code": run.usage.get("exit_code")}))
-        return AskRun(final_text=run.final_text, answer=answer, events=run.events,
-                      decision=last_decision(run.events), stopped=stopped,
-                      seconds=time.monotonic() - started, usage=dict(run.usage),
-                      final_reply=reply, failure=failure, budget=budget)
 
 
 def reply_prose(final_text: str, answer: Optional[Mapping[str, Any]]) -> str:

@@ -82,6 +82,14 @@ class Answers(unittest.TestCase):
         out = sa.answer_payload(failed, "q", "c", 1, "d" * 24)
         self.assertEqual((out.clarify, out.not_found), (None, []))
 
+    def test_the_items_reach_the_answer_payload_and_every_session_is_told_the_block(self):
+        groups = [{"title": "Reply", "items": [{"source": "Mail", "who": "Dana", "text": "Ship date?",
+                                                "open_url": "/source?handle=x"}]}]
+        got = sa.answer_payload(run("Two things.", work_items=groups), "q", "c", 1, "e" * 24)
+        self.assertEqual(got.work_items[0].items[0].open_url, "/source?handle=x")
+        self.assertEqual(sa.answer_payload(run("Two."), "q", "c", 1, "f" * 24).work_items, [])
+        self.assertIn(ab.ITEMS_LINE, sa.system_prompt())
+
     def test_the_person_s_pick_continues_the_same_question(self):
         backend = SimpleNamespace(_lock=threading.Lock(), _answers={}, _recent={},
                                   journal_full_read=lambda *a: None,
@@ -101,6 +109,53 @@ class Answers(unittest.TestCase):
         # another reader's pick on the same answer id is answered as its own words
         other = SimpleNamespace(session=SimpleNamespace(), key="plx:staff:ben")
         self.assertEqual(AskMixin._clarified(backend, other, pick).question, "Croda Canada")
+
+
+class ItemsBlock(unittest.TestCase):
+    HANDLE = "graph-mail://" + "ab12" * 20
+
+    def block(self, groups):
+        import json
+        return "Two things need you.\n```items\n" + json.dumps({"groups": groups}) + "\n```\nBye."
+
+    def test_the_block_leaves_the_text_and_its_groups_are_taken_whole(self):
+        text, groups = ab.take_items(self.block([
+            {"title": "Reply", "items": [{"source": "Mail", "who": "Dana", "when": "9:12 AM",
+                                          "ref": "x://y", "text": "Asks for the ship date."}]},
+            {"title": "Decide", "items": [{"text": "Approve the quote."}]}]))
+        self.assertEqual(text, "Two things need you.\nBye.")
+        self.assertEqual([g["title"] for g in groups], ["Reply", "Decide"])
+        self.assertEqual(groups[1]["items"][0]["text"], "Approve the quote.")
+
+    def test_a_block_that_is_not_the_shape_stays_in_the_text_nothing_lost(self):
+        for bad in ("```items\nnot json\n```", '```items\n{"groups": []}\n```',
+                    '```items\n{"groups": [{"title": "A", "items": [{"who": "x"}]}]}\n```'):
+            text, groups = ab.take_items("Intro\n" + bad)
+            self.assertEqual(groups, [])
+            self.assertIn("```items", text)
+
+    def test_a_link_only_for_a_ref_a_result_of_the_conversation_showed(self):
+        from operating import open_refs
+        ref = open_refs.short(self.HANDLE)
+        events = [{"type": "tool_call", "name": "plx.search", "result": __import__("json").dumps(
+            {"documents": [{"citation": self.HANDLE, "ref": ref}]})}]
+        groups = [{"title": "Reply", "items": [
+            {"source": "Whatever", "who": "Dana", "when": None, "ref": ref, "text": "a"},
+            {"source": "Teams", "who": None, "when": None,
+             "ref": "graph-mail://r.zzzzzzzzzz", "text": "b"},   # invented: no link
+            {"source": "Planner", "who": None, "when": None, "ref": None, "text": "c"}]}]
+        got = ab.link_items(groups, events)[0]["items"]
+        self.assertIn("/source?handle=graph-mail%3A%2F%2F", got[0]["open_url"])
+        self.assertEqual(got[0]["source"], "Mail")      # the handle's own scheme names the source
+        self.assertNotIn("open_url", got[1])
+        self.assertEqual(got[1]["source"], "Teams")      # the answer's own word stays
+        self.assertNotIn("open_url", got[2])
+
+    def test_no_limit_on_how_many_items_and_none_lost_at_1_10_60(self):
+        for n in (1, 10, 60):
+            items = [{"text": f"item {i}"} for i in range(n)]
+            _, groups = ab.take_items(self.block([{"title": "Reply", "items": items}]))
+            self.assertEqual([i["text"] for i in groups[0]["items"]], [f"item {i}" for i in range(n)])
 
 
 if __name__ == "__main__":

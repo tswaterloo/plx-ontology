@@ -1534,7 +1534,10 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   const total = head.stats.find((s) => s.label.startsWith("Total"));
   const so = isSalesOrder ? salesFigures(obj) : null;
   const ordered = isPo ? dayOf(f.get("order_date")?.value ?? f.get("document_date")?.value) : (so?.ordered ?? null);
-  const neededIso = isPo ? neededOf(obj) : null;
+  const trailNeeded = isPo ? neededOf(obj) : null;
+  const doorNeeded = isPo && !trailNeeded ? doorNeededOf(door) : null;
+  const neededIso = trailNeeded ?? doorNeeded?.iso ?? null;
+  const neededFromLines = !trailNeeded && !!doorNeeded?.fromLines;
   const needed = isPo ? dayOf(neededIso) : (so?.needed ?? null);
   // a supplier whose lateness was not established is not said to have none late
   const unknownLate = isSupplier && obj.status?.state === "not_established" && !(obj.late_lines ?? []).length;
@@ -1604,7 +1607,6 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
             </span>
           )}
         </h1>
-        <span aria-hidden className="mt-1.5 mb-1 block h-[2px] w-10 bg-accent" data-testid="title-rule" />
         {subline && (
           <p className={cn("mt-0.5 leading-5 text-muted", isCustomer ? "text-[12px]" : "text-[13px]")} data-testid="object-subline">
             {subline}
@@ -1697,7 +1699,13 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       </div>
       {((isPo && (ordered != null || needed != null) && !trailPending) || (isSalesOrder && needed != null)) && (
         <div>
-          <OrderLine ordered={ordered} needed={needed} daysLate={isPo && trail?.state === "late" ? trail.days_late : null} saidAbove={isPo && badges.some((b) => b.status === "late")} />
+          <OrderLine
+            ordered={ordered}
+            needed={needed}
+            neededLabel={neededFromLines ? "Needed by (from lines)" : undefined}
+            daysLate={isPo && trail?.state === "late" ? trail.days_late : null}
+            saidAbove={isPo && badges.some((b) => b.status === "late")}
+          />
         </div>
       )}
       {isPo && trailPending && <div className="skeleton h-[6px] rounded-full" />}
@@ -1939,4 +1947,37 @@ function neededOf(obj: ObjectPage): string | null {
   }
   const m = /needed-by date (\d{4}-\d{2}-\d{2})|requested-by date (\d{4}-\d{2}-\d{2})/.exec(t?.verdict ?? "");
   return m ? (m[1] ?? m[2]) : null;
+}
+
+/** Fallback needed-by date from the PO's business page: its header fact, its line-derived fact,
+ * or the earliest expected receipt date across open lines (falling back to all lines). */
+export function doorNeededOf(door: BizPage | null | undefined): { iso: string; fromLines: boolean } | null {
+  if (!door || door.kind !== "purchase_order") return null;
+  const headerDay = door.facts.find((f) => f.label === "Needed by" && f.value.day)?.value.day;
+  if (headerDay) return { iso: headerDay, fromLines: false };
+  const lineFactDay = door.facts.find((f) => f.label === "Needed by (from lines)" && f.value.day)?.value.day;
+  if (lineFactDay) return { iso: lineFactDay, fromLines: true };
+  const lines = door.sections.find((s) => s.key === "lines" && s.rows.length > 0);
+  if (!lines) return null;
+  const expIdx = lines.columns.findIndex((c) => /^expected$/i.test(c.trim()));
+  if (expIdx < 0) return null;
+  const ordIdx = lines.columns.findIndex((c) => /^ordered$/i.test(c.trim()));
+  const recIdx = lines.columns.findIndex((c) => /^received$/i.test(c.trim()));
+  const openDates: string[] = [];
+  const allDates: string[] = [];
+  for (const row of lines.rows) {
+    const cell = row[expIdx];
+    const day = cell && !cell.hidden ? cell.day : null;
+    if (!day) continue;
+    const iso = day.slice(0, 10);
+    allDates.push(iso);
+    const ord = ordIdx >= 0 ? row[ordIdx]?.number : null;
+    const rec = recIdx >= 0 ? row[recIdx]?.number : null;
+    const isOpen = ord == null || rec == null || Number(rec) < Number(ord);
+    if (isOpen) openDates.push(iso);
+  }
+  const chosen = openDates.length > 0 ? openDates : allDates;
+  if (chosen.length === 0) return null;
+  chosen.sort();
+  return { iso: chosen[0], fromLines: true };
 }

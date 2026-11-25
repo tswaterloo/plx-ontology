@@ -114,7 +114,7 @@ describe("Related panel", () => {
     expect(screen.getAllByTestId("related-run-row")).toHaveLength(1);
     expect(log).toHaveTextContent("Prepared");
     expect(log).not.toHaveTextContent("Rejected");
-    expect(screen.getByRole("link", { name: "Audit log" }).getAttribute("href")).toBe("/autopilot-log");
+    expect(screen.getByRole("link", { name: "Audit log" }).getAttribute("href")).toBe("/assist?show=log");
   });
 
   it("viewing as someone reads none of their memory, templates or log", () => {

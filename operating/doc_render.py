@@ -32,6 +32,7 @@ from typing import Any, Mapping, Optional, Sequence
 from xml.sax.saxutils import escape
 
 CHART_AT = re.compile(r"^\s*\[chart\s+([1-9][0-9]?)\]\s*$", re.I)
+TABLE_CITE_AT = re.compile(r"^\s*\[table-cite\s+([0-9]+)\]\s*$")
 HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
 BULLET = re.compile(r"^(\s*)[-*\u2022]\s+(.*)$")
 RULE_ROW = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
@@ -96,6 +97,10 @@ def blocks(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> list[tuple
             if n < len(charts) and n not in used:
                 used.add(n)
                 out.append(("chart", charts[n]))
+            continue
+        ct = TABLE_CITE_AT.match(line)
+        if ct:
+            out.append(("cite", int(ct.group(1))))
             continue
         if not line.strip():
             continue
@@ -410,13 +415,18 @@ def column(n: int) -> str:
         n -= 1
 
 
-def xlsx_sheet(rows: Sequence[Sequence[str]], max_cols: int) -> str:
+def xlsx_sheet(rows: Sequence[Sequence[str]], max_cols: Optional[int] = None, *,
+               literal: bool = False) -> str:
     """A worksheet of ``rows`` (each a list of cell texts) with typed cells, a styled and
-    frozen header row and column widths from the content (module doc, **Excel**)."""
-    rows = [list(r)[:max_cols] for r in rows]
+    frozen header row and column widths from the content (module doc, **Excel**).
+    ``literal`` keeps cell text verbatim without Markdown inline parsing."""
+    def text_of(raw: str) -> str:
+        return raw if literal else plain(raw)
+
+    rows = [list(r)[:max_cols] if max_cols is not None else list(r) for r in rows]
     header_at = None
     for i, r in enumerate(rows[:6]):
-        texts = [plain(c).strip() for c in r]
+        texts = [text_of(c).strip() for c in r]
         if len([t for t in texts if t]) >= 2 and all(cell_value(t)[0] == "s" for t in texts if t) \
                 and i + 1 < len(rows) and len(rows[i + 1]) >= 2:
             header_at = i
@@ -424,7 +434,7 @@ def xlsx_sheet(rows: Sequence[Sequence[str]], max_cols: int) -> str:
     decimals: dict[int, int] = {}
     for r, row in enumerate(rows):
         for c, raw in enumerate(row):
-            kind, _v, fmt = cell_value(plain(raw))
+            kind, _v, fmt = cell_value(text_of(raw))
             if kind == "n" and fmt.startswith("dec") and r != header_at:
                 decimals[c] = max(decimals.get(c, 0), int(fmt[3:]), 2)
     widths: dict[int, int] = {}
@@ -433,13 +443,15 @@ def xlsx_sheet(rows: Sequence[Sequence[str]], max_cols: int) -> str:
         xml = []
         single = len([c for c in row if c.strip()]) == 1 and len(row) == 1
         for c, raw in enumerate(row):
-            text = plain(raw)
+            text = text_of(raw)
             ref = f"{column(c)}{r}"
             if not text.strip():   # a blank the line holds (a form's "Label:|") stays a cell
                 xml.append(f'<c r="{ref}" t="inlineStr"><is><t></t></is></c>')
                 continue
-            bold = any("b" in m for _, m in runs(raw)) and all(
-                "b" in m for t, m in runs(raw) if t.strip())
+            bold = False if literal else (
+                any("b" in m for _, m in runs(raw))
+                and all("b" in m for t, m in runs(raw) if t.strip())
+            )
             kind, value, fmt = cell_value(text)
             if kind == "n" and fmt in ("", "int") or fmt.startswith("dec"):
                 fmt = f"dec{decimals[c]}" if decimals.get(c) else fmt
@@ -503,7 +515,9 @@ def _pdf_markup(text: str) -> str:
     return "".join(out)
 
 
-def pdf(content: str, charts: Sequence[Mapping[str, Any]] = (), title: str = "") -> bytes:
+def pdf(content: str, charts: Sequence[Mapping[str, Any]] = (), title: str = "",
+        table_notes: Mapping[int, Sequence[str]] = (),
+        citations: Sequence[Sequence[str]] = ()) -> bytes:
     """The content as a laid-out PDF (module doc, **PDF**). ImportError without
     reportlab (the caller refuses the kind)."""
     from reportlab.lib import colors
@@ -597,10 +611,18 @@ def pdf(content: str, charts: Sequence[Mapping[str, Any]] = (), title: str = "")
                                     spaceAfter=6))
         elif kind == "table":
             story += [table(block[1], block[2]), Spacer(1, 8)]
+        elif kind == "cite":
+            lines = table_notes.get(block[1]) if isinstance(table_notes, Mapping) else ()
+            if lines:
+                story += [Paragraph(escape(ln), note) for ln in lines] + [Spacer(1, 6)]
         elif kind == "chart":
             notes = chart_notes(block[1])
             story.append(KeepTogether([ChartFlowable(block[1])] + notes[:2]))
             story += notes[2:] + [Spacer(1, 10)]
+    if citations:
+        story.append(Paragraph("Sources and statements", heads[2]))
+        for entry in citations:
+            story += [Paragraph(escape(ln), note) for ln in entry] + [Spacer(1, 4)]
 
     def footer(canvas: Any, doc: Any) -> None:
         canvas.saveState()

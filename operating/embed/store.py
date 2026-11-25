@@ -436,18 +436,33 @@ def texts_for(conn: Any, shas: Sequence[str]) -> list[tuple[str, str]]:
 
 
 def store_embeddings(conn: Any, model: str, dim: int, shas: Sequence[str],
-                     vectors: np.ndarray) -> int:
+                     vectors: np.ndarray, row_cap: int | None = None) -> int:
     """Store each hash's vector for every chunk holding it: appended to the narrow table
     in 'narrow' mode (``operating.pg.chunk_vectors``: no UPDATE of the wide row), else
-    into ``search.chunks.embedding``. The chunk rows served."""
+    into ``search.chunks.embedding``. The chunk rows written. In the wide-table mode only
+    rows still missing this model are updated; ``row_cap`` bounds that UPDATE's rows (a
+    hash left partly unwritten stays pending and continues on the next pass)."""
     from operating.pg import chunk_vectors
     texts = [vector_text(v, dim) for v in vectors]
     if chunk_vectors.narrow(conn):
         return chunk_vectors.store(conn, model, dim, shas, texts)
-    n = conn.execute(
-        f"UPDATE search.chunks c SET embedding = u.vec::halfvec({dim}), embed_model = %s "
-        "FROM unnest(%s::text[], %s::text[]) AS u(sha, vec) WHERE c.content_sha = u.sha",
-        (model, list(shas), texts)).rowcount
+    params = {"model": model, "shas": list(shas), "texts": texts, "cap": row_cap}
+    if row_cap is None:
+        n = conn.execute(
+            f"UPDATE search.chunks c SET embedding = u.vec::halfvec({dim}), "
+            "embed_model = %(model)s FROM unnest(%(shas)s::text[], %(texts)s::text[]) "
+            "AS u(sha, vec) WHERE c.content_sha = u.sha AND (c.embedding IS NULL OR "
+            "c.embed_model IS DISTINCT FROM %(model)s)", params).rowcount
+    else:
+        n = conn.execute(
+            "WITH u AS (SELECT sha, vec, ord FROM unnest(%(shas)s::text[], "
+            "%(texts)s::text[]) WITH ORDINALITY AS x(sha, vec, ord)), targets AS ("
+            "SELECT c.chunk_id, u.sha, u.vec FROM u JOIN search.chunks c ON "
+            "c.content_sha = u.sha WHERE (c.embedding IS NULL OR c.embed_model IS "
+            "DISTINCT FROM %(model)s) ORDER BY u.ord, c.chunk_id LIMIT %(cap)s) "
+            f"UPDATE search.chunks c SET embedding = u.vec::halfvec({dim}), "
+            "embed_model = %(model)s FROM targets u WHERE c.chunk_id = u.chunk_id",
+            params).rowcount
     conn.commit()
     return n
 

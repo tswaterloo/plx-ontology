@@ -97,7 +97,8 @@ def requested(pg: Any) -> list[dict[str, Any]]:
 def outcome(rows: Optional[Sequence[Mapping[str, Any]]], matter: Mapping[str, Any],
             meta: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
     """The matter's new plan from what the Assistant gave (``reply_drafts.line_draft`` rows);
-    ``meta`` (a prepared session's reads and unread sources) is kept on the plan's ``prepared``."""
+    ``meta`` (a prepared session's reads, unread sources, and dry-run write intents) is kept
+    on the plan's ``prepared``."""
     res = _outcome(rows, matter)
     if res["status"] == "failed" and res["reason"] == "nothing_to_do" and (meta or {}).get("nothing"):
         # a prepared session found the matter done and named the record that shows it: kept as the
@@ -107,6 +108,12 @@ def outcome(rows: Optional[Sequence[Mapping[str, Any]]], matter: Mapping[str, An
         res = {"status": "planned", "reason": "", "plan": {
             "ver": 1, "acts": [none], "why": str(meta["nothing"]),
             "prepared": {k: v for k, v in meta.items() if k != "usd"}}, }
+        return res
+    if res["status"] == "failed" and res["reason"] == "changes_prepared" and (meta or {}).get("write_intents"):
+        # a prepared session produced validated dry-run system write intents with no reply needed
+        res = {"status": "drafted", "reason": "", "plan": {
+            "prepared": {k: v for k, v in (meta or {}).items() if k != "usd"},
+            "drafted_by": "model"}}
         return res
     if meta and isinstance(res.get("plan"), dict) and isinstance(res["plan"].get("prepared"), dict):
         res["plan"]["prepared"].update(meta)

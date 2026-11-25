@@ -169,6 +169,7 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
         lines = [str(t) for t in slide.get("lines") or ()]
         body_top = 1050000
         table = slide.get("table")
+        slide_notes = [str(t) for t in slide.get("notes") or () if str(t).strip()]
         if table and not chart:   # a slide's own table under its few lines
             top, width = body_top, SLIDE_W - 2 * MARGIN
             if lines:
@@ -177,14 +178,23 @@ def pptx(slides: Sequence[Mapping[str, Any]]) -> bytes:
                                       [_para(t[2:] if t.startswith("- ") else t, 1600,
                                              bullet=t.startswith("- ")) for t in lines[:4]]))
                 top += lead + 120000
+            foot_h = 720000 if slide_notes else MARGIN
             tree.append(table_frame(4, table["header"], table["rows"], [], MARGIN, top,
-                                    width, SLIDE_H - top - MARGIN, right=table["right"],
+                                    width, SLIDE_H - top - foot_h, right=table["right"],
                                     widths=table["widths"]))
+            if slide_notes:
+                face = " ".join(t for t in slide_notes if not t.startswith("Statement: "))
+                if face:
+                    tree.append(_text_box(5, "Source", MARGIN, SLIDE_H - 680000, width,
+                                          520000, [_para(face, 900, color=MUTED)]))
+                notes[n] = slide_notes
         elif lines and not chart:
             tree.append(_text_box(3, "Body", MARGIN, body_top, SLIDE_W - 2 * MARGIN,
                                   SLIDE_H - body_top - MARGIN,
                                   [_para(t[2:] if t.startswith("- ") else t, 1800,
                                          bullet=t.startswith("- ")) for t in lines[:14]]))
+            if slide_notes:
+                notes[n] = slide_notes
         if chart:
             top, height = body_top, SLIDE_H - body_top - 900000
             width = SLIDE_W - 2 * MARGIN

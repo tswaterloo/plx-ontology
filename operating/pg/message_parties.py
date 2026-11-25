@@ -208,7 +208,7 @@ def domain_hits(conn: Any, index: PartyIndex, table: str, where: str) -> dict[st
     ``domains`` column."""
     from ontology import mentions
     seen: dict[str, tuple] = {}
-    for (d,) in conn.execute(f"SELECT DISTINCT unnest(domains) FROM {table} WHERE {where}"):
+    for (d,) in conn.execute(f"SELECT DISTINCT unnest(t.domains) FROM {table} t WHERE {where}"):
         reg = mentions.registrable_domain(d.lower())
         if reg in index.domains:
             seen[d] = index.domains[reg]
@@ -229,12 +229,33 @@ def domain_hits(conn: Any, index: PartyIndex, table: str, where: str) -> dict[st
     return out
 
 
+def _has_col(conn: Any, table: str, col: str) -> bool:
+    schema, _, name = table.partition(".")
+    if not name:
+        schema, name = "biz", schema
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = %s "
+        "AND table_name = %s AND column_name = %s)", (schema, name, col)).fetchone()
+    return isinstance(row, (tuple, list)) and bool(row) and row[0] is True
+
+
 def _texts(conn: Any, view: str, table: str, where: str) -> Iterator[tuple[str, str]]:
-    """(object id, text) of the rows: a mail's subject, a Teams message's own text (the
-    version's unmarked document text, as ``comms_search`` opens it)."""
+    """(object id, text) of the rows: a mail's subject, a Teams message's own text (``said``,
+    ``subject`` and ``chat_topic`` when carried by the table, else the version's unmarked
+    document text as ``comms_search`` opens it)."""
     if view == "emails":
-        yield from conn.execute(f"SELECT object_ids[1], subject FROM {table} WHERE {where} "
-                                "AND subject IS NOT NULL")
+        yield from conn.execute(f"SELECT t.object_ids[1], t.subject FROM {table} t WHERE {where} "
+                                "AND t.subject IS NOT NULL")
+        return
+    if _has_col(conn, table, "said"):
+        topic_expr = "t.chat_topic" if _has_col(conn, table, "chat_topic") else "NULL::text"
+        for oid, subj, topic, said in conn.execute(
+                f"SELECT t.object_ids[1], t.subject, {topic_expr}, t.said FROM {table} t "
+                f"WHERE {where} AND (t.said IS NOT NULL OR t.subject IS NOT NULL OR "
+                f"{topic_expr} IS NOT NULL)"):
+            parts = [p for p in (subj, topic, own_text(said) if said else None) if p]
+            if parts:
+                yield oid, "\n".join(parts)
         return
     cur = conn.execute(
         f"SELECT t.object_ids[1], c.body FROM {table} t JOIN ontology.text_fields fd ON "
@@ -302,7 +323,9 @@ def infer(conn: Any, view: str, table: str, where: str = "true", index: PartyInd
         common = sorted(common_names(conn, index.names))
         index.drop(common)
         index.drop(drop_names)
-    got = domain_hits(conn, index, table, where) if view == "emails" else {}
+    got = (domain_hits(conn, index, table, where)
+           if (view == "emails" or (view == "teams_messages" and _has_col(conn, table, "domains")))
+           else {})
     by_name, dropped = name_hits(conn, index, view, table, where)
     n_dom = len(got)
     basis: dict[tuple, tuple] = {}
@@ -419,6 +442,9 @@ def redo(write: Any, view: str) -> dict[str, Any]:
     t = f"{bc.bv.SCHEMA}.{view}"
     with write.transaction():
         out = relink(write, view)
+        if view == "teams_messages":
+            from operating.pg import teams_links
+            out["teams_links"] = teams_links.apply(write, t)
         out.update(apply(write, view, t))
         write.execute(f"UPDATE {bc.bv.SCHEMA}.state SET notes = jsonb_set(jsonb_set(notes, "
                       "'{marks,links}', to_jsonb(%s::text)), '{marks,dropped}', %s::jsonb) "

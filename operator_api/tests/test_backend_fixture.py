@@ -1809,47 +1809,6 @@ class OrdersAtRiskTests(unittest.TestCase):
                       "risk).", po_fact.text)
         self.assertNotIn("470", po_fact.text)
 
-    def test_which_orders_are_at_risk_and_whats_late_for_one_order_or_customer(self):
-        for question in ("which customer orders are at risk from late POs?",
-                         "any sales orders held up by late materials"):
-            self.assertTrue(be.orders_at_risk_question(question), question)
-        self.assertFalse(be.orders_at_risk_question("which POs are late?"))
-        self.assertEqual(be.late_for_target("what's late for SO 470?"), "SO 470")
-        self.assertEqual(be.late_for_target("which materials are late for customer Three "
-                                            "Ships"), "Three Ships")
-        self.assertIsNone(be.late_for_target("is Three Ships profitable"))
-        ask = lambda q, view: be.at_risk_answer(self.backend(), view, m.AskRequest(
-            question=q), self.inbox(), "c1", lambda: 0)
-        answer = ask("which customer orders are at risk from late POs?", self.view())
-        self.assertTrue(answer.direct_answer.startswith(
-            "1 customer order you can see is at risk from late purchase orders as of "
-            "2026-11-03: Customer order 470 (Three Ships) is 59 days at risk from late PO "
-            "PO100099."),
-                        answer.direct_answer)
-        self.assertEqual([s.handle for s in answer.facts[0].sources][-1],
-                         "api://public.order_entry/470@1")
-        # by the order's or customer's own label (no search), else by the reader's plx.find
-        by_label = ask("what's late for SO 470", self.view())
-        by_name = ask("what's late for customer three ships?", self.view())
-        by_order = ask("what's late for S-ORD470", self.view(found=[
-            {"object_id": self.SO, "object_type": "SalesOrder", "display": "S-ORD470"}]))
-        by_customer = ask("what's late for Three Ships Inc", self.view(found=[
-            {"object_id": self.CUSTOMER, "object_type": "Customer",
-             "display": "Three Ships Inc"}]))
-        for got in (by_label, by_name, by_order, by_customer):
-            self.assertEqual([s.object_id for s in got.subjects], [self.SO])
-        # a customer with no order at risk: the agent walks its materials, never "none"
-        self.assertIsNone(ask("what's late for Other Co", self.view(found=[
-            {"object_id": "Customer:portal.customer:c9", "object_type": "Customer",
-             "display": "Other Co"}])))
-        none = be.at_risk_answer(self.backend(), self.view(), m.AskRequest(
-            question="which customer orders are at risk from late POs?"),
-            {**self.inbox(order_visible=False), "detectors": {"orders_at_risk": "truncated"}},
-            "c1", lambda: 0)
-        self.assertEqual(none.direct_answer, "No customer order you can see is at risk from a "
-                         "late purchase order as of 2026-11-03 in the orders the check covered.")
-        self.assertEqual(len(none.not_found), 1)
-
 
 class SuggestionRankingTests(unittest.TestCase):
     """The typeahead's ranking and collapsing (``backend.suggestions``) over rows as

@@ -29,26 +29,34 @@ const HOME = {
 };
 
 describe("Ask's start page", () => {
-  it("is the box and the reader's recent questions, newest first, each once", async () => {
-    reads.home = HOME;
+  it("greets by name, offers starters from the reader's own work, and lists their last chats", async () => {
+    reads.home = {
+      ...HOME,
+      needs_attention: { late_pos: [{ label: "PO 90412", object_id: "po:90412" }], at_risk: [] },
+    };
     render(<AskRoute />);
     expect(screen.getByTestId("ask-box")).toBeInTheDocument();
+    expect(await screen.findByText(/^Good (morning|afternoon|evening), A$/)).toBeInTheDocument();
+    const starters = within(await screen.findByTestId("ask-starters")).getAllByRole("button");
+    expect(starters.map((b) => b.textContent)).toEqual([
+      "What do I need to do today?",
+      "Why is PO 90412 late?",
+      "Landed cost of PO 90388",
+    ]);
     const recent = await screen.findByTestId("ask-recent");
+    // chats only (those with a conversation), each once, newest first
     const rows = within(recent).getAllByRole("listitem");
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent(/^Landed cost of PO 90388/);
-    expect(within(rows[1]).getByRole("link")).toHaveAttribute("href", "/ask?c=c1");
-    // nothing else: no late list, no source freshness, no examples
+    expect(within(rows[0]).getByRole("link")).toHaveAttribute("href", "/ask?c=c1");
     expect(reads.late).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Late orders|No late POs|Sources, last read|partly read|last read failed|Try asking/)).toBeNull();
-    expect(screen.queryByTestId("ask-reads")).toBeNull();
   });
 
-  it("shows just the box when the recent questions can't be read", async () => {
+  it("shows the greeting and the day's starter when Home can't be read", async () => {
     reads.home = null;
     render(<AskRoute />);
     expect(screen.getByTestId("ask-box")).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByRole("button", { name: "What do I need to do today?" })).toBeInTheDocument();
     expect(screen.queryByTestId("ask-recent")).toBeNull();
     expect(screen.queryByText(/didn.t load|Couldn.t read/)).toBeNull();
   });

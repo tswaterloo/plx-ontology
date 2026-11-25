@@ -1136,6 +1136,22 @@ class ReaderWrites(unittest.TestCase):
         self.assertEqual({w[1] for w in wrote}, {None})   # any other write: every screen
         self.assertEqual(again, [])   # nothing read ahead after a write of every screen
 
+    def test_ask_warm_does_not_call_reader_wrote(self):
+        wrote: list = []
+
+        class Recording(MockBackend):
+            def reader_wrote(self, reader, screens=None):
+                wrote.append((reader.key, screens))
+
+        app = create_app(Recording(), DevAuth(fixture_identity("plx", ["staff:demo"]),
+                                              mode="mock"), secure_cookie=False)
+        client = TestClient(app, base_url="http://testserver")
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        wrote.clear()
+        warmed = client.post("/api/ask/warm")
+        self.assertEqual(warmed.status_code, 200, warmed.text)
+        self.assertEqual(wrote, [])
+
 
 class BriefingPagesAtOnce(unittest.TestCase):
     """Home's groups' first pages in one request (they were one request per group)."""

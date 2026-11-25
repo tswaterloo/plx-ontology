@@ -34,12 +34,29 @@ from .proactive_engine_drafts import PROMISE_CAVEAT, PROMISE_CAVEAT_TEXT
 from .proactive_engine_findings import _checked
 
 
-def _read_cache(inbox: Path) -> dict[str, dict[str, Any]]:
+def _read_cache(inbox: Path, *, readonly: bool = False) -> dict[str, dict[str, Any]]:
     """The incremental detectors' last readings (``event_cache``): detector -> root ->
     reading. None stored (or no inbox yet): every root is read."""
     if not inbox.is_file():
         return {}
     out: dict[str, dict[str, Any]] = defaultdict(dict)
+    if readonly:
+        try:
+            conn = sqlite3.connect(f"file:{inbox.resolve()}?mode=ro", uri=True, timeout=30)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error:
+            return {}
+        try:
+            for row in conn.execute("SELECT detector, root, reading FROM event_cache"):
+                try:
+                    out[row["detector"]][row["root"]] = json.loads(row["reading"])
+                except ValueError:
+                    continue   # an unreadable reading is read again
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        return dict(out)
     with closing(_open_inbox(inbox)) as conn:
         for row in conn.execute("SELECT detector, root, reading FROM event_cache"):
             try:

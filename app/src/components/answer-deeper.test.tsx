@@ -22,19 +22,19 @@ const answer: Answer = {
 
 const done = (extra: Turn["request"] = { files: [], extra: {} }): Turn => ({ id: "t1", question: answer.question, phase: "done", streamed: "", answer, request: extra });
 
-describe("Think it through", () => {
+describe("Deep research", () => {
   it("asks a finished answer's question again, thought through", async () => {
     const deeper = vi.fn();
     render(<AnswerCard turn={done()} onDeeper={deeper} />);
-    await userEvent.click(screen.getByRole("button", { name: "Think it through" }));
+    await userEvent.click(screen.getByRole("button", { name: "Deep research" }));
     expect(deeper).toHaveBeenCalledTimes(1);
   });
   it("is not offered on an answer that was already thought through, while answering, or when the page is busy", () => {
     const { rerender } = render(<AnswerCard turn={done({ files: [], extra: { deep: true } })} onDeeper={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "Think it through" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deep research" })).toBeNull();
     rerender(<AnswerCard turn={{ ...done(), phase: "streaming", answer: undefined, streamed: "CAD sales" }} onDeeper={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "Think it through" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deep research" })).toBeNull();
     rerender(<AnswerCard turn={done()} />);
-    expect(screen.queryByRole("button", { name: "Think it through" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deep research" })).toBeNull();
   });
 });

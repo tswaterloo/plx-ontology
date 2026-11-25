@@ -77,6 +77,19 @@ class OpenWork(unittest.TestCase):
         self.assertEqual(out["notes"][0]["about"], ["Customer:x:1"])   # about a record first
         self.assertIsNone(mem.asked[0]["limit"])         # all the notes, not 200
 
+    def test_a_matter_carries_the_ref_of_the_message_it_rests_on(self):
+        from operating import open_refs
+        handle = "graph-mail://" + "ab12" * 20
+        item = {**matter(1), "citations": [handle]}
+        out, _ = run(Backend(), [item, {**matter(2), "citations": []}])
+        first, second = out["matters"]
+        self.assertEqual((first["open"], first["ref"]), (handle, open_refs.short(handle)))
+        self.assertNotIn("open", second)
+        # both are in the result, so the session learns the ref for the answer's links
+        learnt = {}
+        open_refs.learn(str(out), learnt)
+        self.assertEqual(learnt.get(first["ref"]), handle)
+
     def test_nothing_is_dropped_between_pages(self):
         items = [matter(n) for n in range(1, 301)]
         seen_ids, offset = [], 0

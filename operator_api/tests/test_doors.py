@@ -67,6 +67,57 @@ class DoorsAhead(unittest.TestCase):
         self.assertEqual(len(keys), 5)
         self.assertIsNone(d.reader_key(SimpleNamespace(session=SimpleNamespace(principals=()))))
 
+    def test_access_mark_is_the_current_decided_door_only(self):
+        from operating.ontology_tools_sql import Door
+
+        class DoorWorker(Worker):
+            def run(self, who, job, timeout=None):
+                key = ",".join(sorted(who.session.principals))
+                self.ran.append(key)
+                door_obj = Door(SimpleNamespace(digest=key))
+                door_obj.decided = {"access_mark": key + "-access"}
+                return door_obj, "dsn", 7, {}
+
+        doors = self.doors(DoorWorker())
+        a = reader({"a"})
+        self.assertIsNone(doors.access_mark(a))       # none yet: no header, never a guess
+        doors.decide(a)
+        self.assertEqual(doors.access_mark(a), "a-access")
+        doors._stamp = 8
+        self.assertIsNone(doors.access_mark(a))       # stale while it is decided again
+
+        # empty mark or missing/non-dict decided fails closed to None
+        doors._stamp = 7
+        doors._held[d.reader_key(a)].door.decided = {"access_mark": ""}
+        self.assertIsNone(doors.access_mark(a))
+        doors._held[d.reader_key(a)].door.decided = None
+        self.assertIsNone(doors.access_mark(a))
+        # raw dict shape also supported
+        doors._held[d.reader_key(a)].door = {"access_mark": "raw-access"}
+        self.assertEqual(doors.access_mark(a), "raw-access")
+
+    def test_older_stamp_decision_does_not_regress_held_door(self):
+        from operating.ontology_tools_sql import Door
+        stamps = [8, 7]
+
+        class OutOfOrderWorker(Worker):
+            def run(self, who, job, timeout=None):
+                s = stamps.pop(0)
+                door_obj = Door(SimpleNamespace(digest=f"stamp-{s}"))
+                door_obj.decided = {"access_mark": f"mark-{s}"}
+                return door_obj, "dsn", s, {}
+
+        doors = d.Doors(SimpleNamespace(access_worker=OutOfOrderWorker()))
+        a = reader({"a"})
+        self.assertTrue(doors.decide(a))
+        self.assertEqual(doors._stamp, 8)
+        self.assertEqual(doors.access_mark(a), "mark-8")
+        # a slower decision from stamp 7 finishes late: must not overwrite stamp 8
+        self.assertTrue(doors.decide(a))
+        self.assertEqual(doors._stamp, 8)
+        self.assertEqual(doors._held[d.reader_key(a)].stamp, 8)
+        self.assertEqual(doors.access_mark(a), "mark-8")
+
     def test_aged_or_moved_stamp_is_never_served(self):
         doors = self.doors(Worker())
         a = reader({"a"})
@@ -124,8 +175,9 @@ class DoorsAhead(unittest.TestCase):
 
         def scoped(pg, got, work, seconds, **kw):
             seen.update(grant=got.grant, seconds=seconds, person=kw.get("person"))
-            return ('{"header": [{"v": {"po": 1}, "withheld": [], "col": null}]}',
-                    datetime(2026, 11, 23, 20, 0, tzinfo=timezone.utc), None, 1), None
+            return (('{"header": [{"v": {"po": 1}, "withheld": [], "col": null}]}',
+                     datetime(2026, 11, 23, 20, 0, tzinfo=timezone.utc), None, 1),
+                    (False, False), (None, []))
         pool = mock.MagicMock()
         with mock.patch("operating.ontology_tools_sql.scoped_read", scoped), \
                 mock.patch("operating.page_reads.pool_for", return_value=pool):

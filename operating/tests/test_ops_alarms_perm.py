@@ -106,8 +106,8 @@ class PassTest(unittest.TestCase):
         self.run_at(fake, 5)
         opened = [m for m in self.box if "OPEN" in m["subject"]]
         self.assertEqual([m["subject"] for m in opened],
-                         ["[PLX ops] OPEN critical: plx-api.service (system): failed "
-                          "(exit-code)"])
+                         ["[PLX ops] OPEN critical: plx-api.service (system): failed: "
+                          "it ended with an error"])
         self.assertEqual(status["open"][0]["level"], "critical")
         self.assertTrue(status["notify"]["sending"])
 

@@ -36,7 +36,12 @@ const BY_CODE: Record<string, string> = {
   busy: "The server is busy. Try again in a minute.",
   action_refused: "That action can't be done as it stands. Review it again to see what needs changing.",
   ask_not_served: "Ask is off on this server. Today and record pages still work.",
+  invalid_measure_id: "The measure id must be lowercase letters, numbers, or underscores starting with a letter.",
+  measure_id_exists: "A built-in definition with that id already exists. Choose another name.",
+  invalid_measure: "That definition is missing a required field or references an unknown column.",
+  excluded_content: "This statement names a person or value that cannot be saved as a shared definition.",
   // app-side codes
+  canary_route_refused: "This section isn't available in a read-only session.",
   forbidden: "You don't have access to this. Ask the owner or your team lead if you need it.",
   rate_limited: "Too many questions at once. Try again in a few seconds.",
   timeout: "Timed out. Try a narrower question, or try again in a moment.",
@@ -59,9 +64,9 @@ export const INSIGHT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /** Errors a second try cannot change (the record is missing, or the reader may not see it). */
-export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden, BY_CODE.alerts_not_read, BY_CODE.view_as_refused]);
+export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden, BY_CODE.alerts_not_read, BY_CODE.view_as_refused, BY_CODE.canary_route_refused]);
 /** Not a failure: a note on what this view covers (viewing as someone), said calmly, never in red. */
-export const ACCESS_NOTES: ReadonlySet<string> = new Set([BY_CODE.view_as_refused]);
+export const ACCESS_NOTES: ReadonlySet<string> = new Set([BY_CODE.view_as_refused, BY_CODE.canary_route_refused]);
 
 const BY_STATUS: Record<number, string> = {
   401: BY_CODE.sign_in_required,

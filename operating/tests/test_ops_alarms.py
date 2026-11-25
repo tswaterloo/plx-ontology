@@ -53,6 +53,7 @@ class Fake:
         self.mem_gb, self.disk_gb = mem_gb, disk_gb
         self.load = 3.0   # the 1-minute load average on a 16-core host
         self.notes: list = []   # search.query_log notes, newest first
+        self.journal_text: dict = {}
 
     def systemctl(self, scope, args):
         if self.units[scope] is None:
@@ -67,9 +68,12 @@ class Fake:
             raise self.pg_value
         return self.pg_value
 
+    def journal(self, scope, uid):
+        return self.journal_text.get((scope, uid), "")
+
     def probes(self):
         return ops_alarms.Probes(
-            systemctl=self.systemctl, pg=self.pg,
+            systemctl=self.systemctl, journal=self.journal, pg=self.pg,
             meminfo=lambda: f"MemTotal: 1 kB\nMemAvailable: {int(self.mem_gb * 1024 ** 2)} kB\n",
             disk_free=lambda path: int(self.disk_gb * GB), pg_follow=False,
             consumers=self.consumers, loadavg=lambda: (self.load, self.load, self.load),
@@ -111,6 +115,23 @@ class AlarmPassTest(unittest.TestCase):
             return ops_alarms.run_pass(self.root, now=NOW + timedelta(minutes=minutes),
                                        environ=environ or {}, probes=fake.probes(),
                                        dsn="dbname=x")
+
+    def test_an_autopilot_restart_for_a_new_release_is_not_a_failure(self) -> None:
+        """``release_moved`` ends the fast feed on purpose so its restart runs the new
+        release; every other restart reason, and a journal that cannot say, still alarms."""
+        uid = "plx-autopilot-fast-serve.service"
+        system = healthy_units() + [unit(uid, "activating", "auto-restart", NRestarts="42")]
+        fake = Fake(system=system)
+        key = "unit:" + uid
+        fake.journal_text[("system", uid)] = json.dumps(
+            {"schema": "plx-autopilot-feed/v1", "feed": "fast", "status": "restart",
+             "reason": "release_moved"})
+        self.assertNotIn(key, {i["key"] for i in self.run_at(fake)["open"]})
+        for text in (json.dumps({"status": "restart", "reason": "env_changed"}),
+                     "systemd message only", ""):
+            fake.journal_text[("system", uid)] = text
+            lines = {i["key"]: i["line"] for i in self.run_at(fake, 5)["open"]}
+            self.assertIn("restarting again and again (42 restarts)", lines.get(key, ""), text)
 
     def test_each_kind_of_stop_opens_an_incident(self) -> None:
         stale = make_state(Path(self.tmp.name) / "stale", delta_built="2030-01-01T20:00:00Z",
@@ -404,10 +425,10 @@ class AlarmPassTest(unittest.TestCase):
         lines = {i["key"]: i["line"] for i in status["open"]}
         self.assertEqual(set(lines), {"unit:plx-caddy.service", "unit:plx-web.service",
                                       "unit:plx-delta.service"})
-        self.assertIn("enabled but not running for 5 h (it exited cleanly",
+        self.assertIn("switched on but not running for 5 h (it ended normally",
                       lines["unit:plx-caddy.service"])
         # minutes, not "for 0 h"
-        self.assertIn("enabled but not running for under an hour (it exited cleanly",
+        self.assertIn("switched on but not running for under an hour (it ended normally",
                       lines["unit:plx-web.service"])
         self.assertIn("still starting after 3 h", lines["unit:plx-delta.service"])
 

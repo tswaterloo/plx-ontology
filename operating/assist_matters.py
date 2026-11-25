@@ -49,6 +49,21 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 LOG = logging.getLogger(__name__)
 
 SCHEMA = "assist"
+
+# Mission Control approvals (owner 11-24: Vince decides them in Mission Control itself): the
+# matter kind made from the MCApproval objects and the queue workflows that prepare the
+# registry's ``approval.requested`` event. One definition: the list, the counts and the
+# runners (plan and prepared tiers) all leave these out; Mission Control questions stay.
+MC_APPROVAL_KIND = "approval"
+MC_APPROVAL_EVENT = "approval.requested"
+
+
+def mc_approval_workflows() -> frozenset[str]:
+    """The queue workflows made from a Mission Control approval request (the registry's
+    entries on ``approval.requested``): never listed in Prepared."""
+    from operating import autopilot as ap
+    return frozenset(a["id"] for a in ap.load_registry()["autopilots"]
+                     if a.get("on") == MC_APPROVAL_EVENT)
 KINDS = ("conversation", "approval", "task", "record", "routine", "meeting", "promise", "wait")
 LIST_DAYS = 14            # a list's default window by basis; the rest is counted and reachable
 LOCK = 41049              # one matters cycle at a time
@@ -897,17 +912,171 @@ def _channel(source: Optional[str]) -> str:
     return {"emails": "mail", "teams_messages": "teams"}.get(source or "", "system")
 
 
-def _sender(row: Mapping[str, Any]) -> str:
+_HEX_OPAQUE = re.compile(r"[0-9a-f-]{16,}", re.IGNORECASE)
+_PROTECTED_TOKEN = re.compile(r"(?:[a-z][a-z0-9+.-]*://\S+|\S+@\S+)", re.IGNORECASE)
+_COMMA_NO_SPACE = re.compile(r",([A-Za-z])")
+_PERIOD_NO_SPACE = re.compile(r"([a-z]{2,})\.([A-Z][a-z])")
+_RAW_REASON_CODE = re.compile(r"^(?:[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))$")
+UNKNOWN_OWNER = "another team member"  # guard-ok: display fallback for an unresolved owner id, decides nothing
+
+
+def clean_note_spacing(text: Any) -> str:
+    """Fix missing spaces after commas and sentence periods in Assist card notes (such as
+    already-stored rows reading 'list,not yours.Only you can see this.'), while leaving URLs,
+    email addresses, decimals, and line breaks intact."""
+    raw = str(text or "")
+    if not raw:
+        return ""
+    lines: list[str] = []
+    for line in raw.split("\n"):
+        parts: list[str] = []
+        pos = 0
+        for match in _PROTECTED_TOKEN.finditer(line):
+            seg = line[pos:match.start()]
+            seg = _COMMA_NO_SPACE.sub(r", \1", seg)
+            seg = _PERIOD_NO_SPACE.sub(r"\1. \2", seg)
+            parts.append(seg)
+            parts.append(match.group(0))
+            pos = match.end()
+        tail = line[pos:]
+        tail = _COMMA_NO_SPACE.sub(r", \1", tail)
+        tail = _PERIOD_NO_SPACE.sub(r"\1. \2", tail)
+        parts.append(tail)
+        lines.append("".join(parts))
+    return "\n".join(lines)
+
+
+def name_from_token(raw: str) -> str:
+    """A human name derived from a plain name token or email local part, else '' (rejects
+    UUIDs, digits, opaque hex strings, and object handles)."""
+    from operating.autopilot_engine import person_name
+    text = str(raw or "").strip()
+    if not text or "://" in text or "{" in text or "}" in text or "/" in text:
+        return ""
+    if _HEX_OPAQUE.fullmatch(text):
+        return ""
+    words = text.replace(".", " ").replace("_", " ").strip()
+    if not words or not person_name(words):
+        return ""
+    if any(not person_name(part) or _HEX_OPAQUE.fullmatch(part) for part in words.split()):
+        return ""
+    return words.title()
+
+
+def _name_from_address(addr: str) -> str:
+    text = str(addr or "").strip()
+    return name_from_token(text.split("@", 1)[0]) if "@" in text else ""
+
+
+def _staff_names(pg: Any) -> dict[str, str]:
+    """Lower-case staff id and unambiguous staff address -> human display name, read once
+    from ``biz.staff`` (``assist_readings.staff_of``: one directory definition)."""
+    from operating import assist_readings as ar
+    from operating.autopilot_engine import person_name
+    staff = ar.staff_of(pg, "biz")
+    out: dict[str, str] = {}
+    for pid, (name, addr) in staff.by_id.items():
+        shown = person_name(name) or _name_from_address(addr)
+        if shown:
+            out[pid.strip().lower()] = shown
+    for addr, pids in staff.by_address.items():
+        if len(pids) == 1:
+            shown = out.get(pids[0].strip().lower())
+            if shown:
+                out[addr.strip().lower()] = shown
+    return out
+
+
+def _unresolved_ids(rows: Sequence[Mapping[str, Any]], *, mine: set[str], owner_view: bool,
+                    names: Mapping[str, str]) -> list[str]:
+    """Ids needed to render ``rows`` that ``biz.staff`` did not name: other owners (when
+    ``owner_view``) and Teams or non-email senders without a stated display name."""
+    from operating.autopilot_engine import person_name
+    need: set[str] = set()
+    for r in rows:
+        owner = str(r.get("owner_person") or "").strip().lower()
+        if owner_view and owner and owner not in mine:
+            tail = owner.rsplit(":", 1)[-1]
+            if owner not in names and tail not in names:
+                need.add(tail)
+        if r.get("source") == "teams_messages":
+            try:
+                got = json.loads(r.get("tsender") or "{}")
+            except ValueError:
+                got = {}
+            if isinstance(got, Mapping) and not person_name(got.get("display_name")):
+                sid = str(got.get("id") or "").strip().lower()
+                if sid and sid not in names:
+                    need.add(sid)
+        else:
+            raw = str(r.get("sender") or "").strip().lower()
+            if raw and "@" not in raw and raw not in names:
+                need.add(raw)
+    return sorted(need)
+
+
+def _sender(row: Mapping[str, Any], names: Optional[Mapping[str, str]] = None) -> str:
+    from operating.autopilot_engine import person_name
     if row["source"] == "teams_messages":
         try:
             got = json.loads(row["tsender"] or "{}")
         except ValueError:
             got = {}
-        return str(got.get("display_name") or "") if isinstance(got, Mapping) else ""
-    return str(row["sender"] or "")
+        if not isinstance(got, Mapping):
+            return ""
+        shown = person_name(got.get("display_name"))
+        if shown:
+            return shown
+        sid = str(got.get("id") or "").strip().lower()
+        if sid and names:
+            found = person_name(names.get(sid))
+            if found:
+                return found
+        return ""
+    raw = str(row["sender"] or "").strip()
+    if not raw:
+        return ""
+    if "@" in raw:
+        return raw
+    if names:
+        found = person_name(names.get(raw.lower()))
+        if found:
+            return found
+    if "://" in raw or "{" in raw or "}" in raw or _HEX_OPAQUE.fullmatch(raw):
+        return ""
+    return person_name(raw)
 
 
-def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False,
+def person_label(owner: str, names: Optional[Mapping[str, str]] = None) -> str:
+    """How a matter's owner reads on a card that is not the reader's: their display name
+    from the staff directory (``names``), a role pool's name (``pool:quality`` ->
+    ``the Quality team``), a plain name or email local part when the id itself carries
+    one (``tenant:pat`` -> ``Pat``), or ``another team member`` when the id is an opaque
+    token or UUID with no known name."""
+    from operating.autopilot_engine import person_name
+    from operating.autopilot_queue import pool_role
+    raw = str(owner or "").strip()
+    if not raw:
+        return UNKNOWN_OWNER
+    key = raw.lower()
+    if names:
+        for candidate in (key, key.rsplit(":", 1)[-1]):
+            found = person_name(names.get(candidate))
+            if found:
+                return found
+    role = pool_role(raw)
+    if role:
+        shown = name_from_token(role)
+        return f"the {shown} team" if shown else UNKNOWN_OWNER
+    if "://" in raw or "{" in raw or "}" in raw:
+        return UNKNOWN_OWNER
+    if "@" in raw:
+        return _name_from_address(raw) or UNKNOWN_OWNER
+    return name_from_token(raw.rsplit(":", 1)[-1]) or UNKNOWN_OWNER
+
+
+def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False, theirs: bool = False,
+            names: Optional[Mapping[str, str]] = None,
             now: Optional[dt.datetime] = None) -> dict[str, Any]:
     """A matter in the shape ``/api/autopilot/drafts`` lists (``m.AutopilotPrepared``), with
     its ``state``, ``verified_at``, ``plan_status`` and ``plan_reason``, and the door's
@@ -919,40 +1088,57 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False,
     note = row["detail"] or act
     drafting = False
     if row["state"] == "unverified":
-        note = f"This {UNVERIFIED_WORDS} ({row['verify_note']})."
+        vnote = str(row.get("verify_note") or "").strip()
+        if vnote and not _RAW_REASON_CODE.match(vnote.split(":", 1)[0].strip()):
+            note = f"This {UNVERIFIED_WORDS} ({vnote})."
+        else:
+            note = f"This {UNVERIFIED_WORDS}."
     elif (row.get("requested_at") is not None and row["requested_at"] > (
-            row.get("plan_at") or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
-            and row["plan_status"] in ("none", "deferred", "failed")):
+            row.get("plan_at") or dt.datetime.min.replace(tzinfo=dt.timezone.utc))):
         note = "Drafting. It shows here when it is ready."     # asked for, not yet answered
         drafting = True
     elif row["plan_status"] == "failed":
-        note = (f"The draft could not be prepared ({row['plan_reason'].split(':', 1)[0]}). "
-                "Ask for it again.")
+        note = "Could not prepare a draft for this item. Ask for it again, or handle it directly."
     elif row["plan_status"] == "deferred":
         note = "Draft on request."
     now = now or dt.datetime.now(dt.timezone.utc)
     from operating import assist_activity
     silent = assist_activity.still_open(row["due_at"], row.get("touched_at"), row["basis_at"], now)
     if silent and not drafting:   # nothing since it was due (a draft just asked for is the person acting)
-        note = f"Still open? Nothing has happened on it since it was due {row['due_at']:%Y-%m-%d}. {note}"
-    if mark_unshown:
-        note = f"{note} Only you can see this."
+        lead = f"Still open? Nothing has happened on it since it was due {row['due_at']:%Y-%m-%d}."
+        note = f"{lead} {note}" if note else lead
+    # the card's own words first; what only the owner's reading adds goes on its own line, so
+    # it never runs into the sentence before it
+    base = clean_note_spacing(note.strip())
+    if theirs:
+        owner_text = person_label(row["owner_person"], names)
+        label = f"This is on {owner_text}'s list, not yours. Only you can see this."
+        note = f"{base}\n{label}" if base else f"\n{label}"
+    elif mark_unshown:
+        label = "Only you can see this."
+        note = f"{base}\n{label}" if base else f"\n{label}"
+    else:
+        note = base
+    note = clean_note_spacing(note)
     body = str((draft or {}).get("body") or "") if isinstance(draft, Mapping) else ""
     call = (prepared or {}).get("your_call") if isinstance(prepared, Mapping) else None
     ask = str(call.get("ask") or "") if isinstance(call, Mapping) else ""
     return {
         "item_id": row["matter_id"], "owner": row["owner_person"], "kind_of_matter": row["kind"],
-        "sender": _sender(row), "channel": _channel(row["source"]),
+        "sender": _sender(row, names), "channel": _channel(row["source"]),
         "subject": str(row["subject"] or row["title"] or ""),
         "message": str(row["quote"] or ""),
         "kind": "reply" if body else "your_call" if ask else "todo", "ask": ask, "summary": str(row["title"] or ""),
+        "next_act": str(row["next_act"] or ""),
         "note": note, "body": body, "still_open": silent,
         "to": [str(t) for t in (draft or {}).get("to") or ()] if isinstance(draft, Mapping) else [],
         # a matter made from a queue item is listed as that item's own card
         "queue_card": bool(row["legacy_item_id"]),
         "state": row["state"], "verified_at": row["verified_at"],
         "plan_status": "working" if drafting else row["plan_status"],
-        "plan_reason": row["plan_reason"], "basis_at": row["basis_at"], "due_at": row["due_at"],
+        "plan_reason": row["plan_reason"], "plan_at": row.get("plan_at"),
+        "requested_at": row.get("requested_at"), "basis_at": row["basis_at"], "due_at": row["due_at"],
+        "sources_detail": dict(row["sources"] or {}),
         "audiences": list(row["audiences"] or []), "markings": list(row["markings"] or []),
         "citations": sorted(set(row["handles"] or [])
                             | {str(h) for h in (row["sources"] or {}).get("records") or ()
@@ -963,6 +1149,7 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False,
 def as_items(pg: Any, owners: Iterable[str], *, shown: Optional[bool], owner_view: bool = False,
              everyone: bool = False, all_ages: bool = False,
              door: Callable[[Sequence[Mapping[str, Any]]], set] = lambda _items: set(),
+             names_of: Optional[Callable[[Iterable[str]], Mapping[str, str]]] = None,
              now: Optional[dt.datetime] = None) -> dict[str, Any]:
     """A person's open and unverified matters as the C1 list envelope ``{items, total,
     next, status, as_of, older, reason}`` (``stale`` when the newest cycle is older than
@@ -979,7 +1166,19 @@ def as_items(pg: Any, owners: Iterable[str], *, shown: Optional[bool], owner_vie
     cur = pg.execute(_ITEMS, {"everyone": everyone, "owners": sorted(set(owners))})
     cols = [d.name for d in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    candidates = [item_of(r, mark_unshown=owner_view and not shown, now=now) for r in rows]
+    mine = {str(o).strip().lower() for o in owners}
+    names = _staff_names(pg) if rows else {}
+    if names_of is not None and rows:
+        missing = _unresolved_ids(rows, mine=mine, owner_view=owner_view, names=names)
+        if missing:
+            for k, v in (names_of(missing) or {}).items():
+                kl = str(k or "").strip().lower()
+                if kl and kl not in names and v:
+                    names[kl] = str(v)
+    candidates = [item_of(r, mark_unshown=owner_view and not shown,
+                          theirs=owner_view and str(r["owner_person"] or "").strip().lower() not in mine,
+                          names=names, now=now)
+                  for r in rows]
     allowed = door(candidates) if candidates else set()
     since = now - dt.timedelta(days=LIST_DAYS)
     items, older = [], 0

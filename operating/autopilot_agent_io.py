@@ -309,11 +309,11 @@ def agent_output(got: Any, event: Mapping[str, Any], owner: str, text: str,
             got.warning = ("Check before sending: " + ob.reason_text(stop, sender)) if stop \
                 else got.warning or WARN_FIGURE
             stop, quality = "", ""
-        elif getattr(got, "warning", ""):
-            # the support check flagged the reply and nobody reads it first: open question
-            from .autopilot_check import ASK_PLAIN
-            got.reply, got.warning = "", ""
-            got.ask = {"question": ASK_PLAIN, "options": []}
+        elif getattr(got, "warning", "") and not (stop or quality):
+            # the support check flagged the reply: it stays with what to check, never an empty
+            # "What should the reply say?" card. The person reads every card before anything
+            # goes, and Auto never sends a flagged draft (``autopilot_write.routine``).
+            pass
         if stop:
             keep = got.ask["options"] if got.ask else []
             got.ask = {"question": "I held back the reply: " + ob.reason_text(stop, sender)

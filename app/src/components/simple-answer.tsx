@@ -1,5 +1,6 @@
 "use client";
 
+import { Brain } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { formatDate, plural } from "@/lib/format";
 import { useReveal } from "@/lib/reveal";
@@ -7,10 +8,14 @@ import { parseMarkdown } from "@/lib/markdown";
 import type { Answer, StatementRead } from "@/lib/types";
 import { readStatement } from "@/lib/api";
 import { ShowWork } from "./query-work";
+import { EmailDraftButton } from "./email-draft-button";
+import { ExcelExportButton } from "./excel-export-button";
 import { Disclosure } from "./answer-parts";
 import { DefinitionLines } from "./definition-lines";
 import { AnswerCharts, withoutChartBlocks } from "./answer-chart";
 import { AskDrafts } from "./ask-drafts";
+import { AskNote } from "./ask-note";
+import { WorkItems } from "./work-items";
 import { Feedback } from "./feedback";
 import { PreparedChanges } from "./prepared-change";
 import { ProposalCards } from "./proposal-cards";
@@ -59,23 +64,37 @@ export function sourceCount(cited: Cited[] | null | undefined): number {
 }
 
 /** ``written``: a table the answer wrote (its cells' **bold** is bold, never shown as asterisks); else rows as read from the records, shown as they are. */
-// a code, number, amount or date (one short token) stays on one line: the table scrolls instead
-// of breaking PO100415 into "PO1004 / 15" in a narrow column
-const ONE_TOKEN = /^\S{1,24}$/;
+// a code, number, currency amount, date, or short status stays on one line: the table scrolls
+// instead of breaking "16,704.00 CAD" or "Nothing yet" onto two lines
+const NOWRAP_CELL = /^(?:[-+(]?[$€£]?\d[\d,]*(?:\.\d+)?%?\)?(?:\s+[A-Za-z]{1,4})?|\d{1,2}\s+[A-Za-z]{3}\s+\d{4}|\S{1,24}|[A-Za-z0-9][A-Za-z0-9 .,'/-]{0,17})$/;
 
-function Table({ head, rows, caption, written = false }: { head: string[]; rows: (string | null)[][]; caption?: ReactNode; written?: boolean }) {
+// a column whose every filled cell is a number (an amount, a count, a percentage, a duration
+// with a unit) lines up on the right, in the page's own font with tabular digits
+const NUMBER_CELL = /^[-+(]?[$€£]?\d[\d,]*(\.\d+)?%?\)?(\s?[A-Za-z]{1,4}\b)?(\s\(unverified\))?$/;
+const numericColumn = (rows: (string | null)[][], j: number) => {
+  const cells = rows.map((r) => (r[j] ?? "").replace(/\*\*/g, "").trim()).filter((c) => c !== "");
+  return cells.length > 0 && cells.every((c) => NUMBER_CELL.test(c));
+};
+
+function Table({ head, rows, caption, written = false, exportTitle, sql, asOf, totalRows, truncated }: {
+  head: string[]; rows: (string | null)[][]; caption?: ReactNode; written?: boolean;
+  exportTitle?: string; sql?: string | null; asOf?: string | null;
+  totalRows?: number | null; truncated?: boolean;
+}) {
   const cell = (text: string) => (written ? <Inlines xs={inlines(text)} /> : checked(text));
   // a long table shows its first rows and "Show all N rows" opens the rest
   const [all, setAll] = useState(false);
+  const right = head.map((_, j) => numericColumn(rows, j));
   const shown = all ? rows : rows.slice(0, FIRST_ROWS); // guard-ok: the first rows; the control below shows all
+  const tabTitle = exportTitle || (typeof caption === "string" ? caption : "Table");
   return (
-    <div className="max-w-full overflow-x-auto">
-      <table className="w-full border-collapse text-[13px]">
-        {caption && <caption className="pb-1.5 text-left text-[12px] text-muted">{caption}</caption>}
+    <div className="max-w-full overflow-x-auto rounded-lg border border-border bg-surface/40">
+      <table className="w-full border-collapse text-[13.5px]">
+        {caption && <caption className="border-b border-border/70 bg-surface/70 px-3 py-2 text-left text-[12px] text-muted">{caption}</caption>}
         <thead>
-          <tr>
+          <tr className="bg-surface/70">
             {head.map((h, i) => (
-              <th key={i} className="border-b border-border px-2 py-1 text-left font-medium whitespace-nowrap">
+              <th key={i} className={`border-b border-border px-3 py-2.5 text-[12px] font-medium text-muted whitespace-nowrap ${right[i] ? "text-right" : "text-left"}`}>
                 {written ? <Inlines xs={inlines(h)} /> : h}
               </th>
             ))}
@@ -83,20 +102,45 @@ function Table({ head, rows, caption, written = false }: { head: string[]; rows:
         </thead>
         <tbody>
           {shown.map((r, i) => (
-            <tr key={i} className="border-b border-border/60 last:border-0">
-              {head.map((_, j) => (
-                <td key={j} className={`num px-2 py-1 align-top${ONE_TOKEN.test(r[j] ?? "") ? " whitespace-nowrap" : ""}`}>
-                  {cell(r[j] ?? "")}
-                </td>
-              ))}
+            <tr key={i} className="border-b border-border/60 last:border-0 hover:bg-hover/40">
+              {head.map((_, j) => {
+                const raw = (r[j] ?? "").replace(/\*\*/g, "").trim();
+                const nowrap = right[j] || NOWRAP_CELL.test(raw);
+                return (
+                  <td key={j} className={`px-3 py-2.5 align-top tabular-nums${right[j] ? " text-right" : ""}${nowrap ? " whitespace-nowrap" : ""}`}>
+                    {cell(r[j] ?? "")}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
       </table>
-      {rows.length > FIRST_ROWS && (
-        <button type="button" className="cursor-pointer text-[12px] text-accent underline-offset-2 hover:underline" aria-expanded={all} onClick={() => setAll((a) => !a)}>
-          {all ? "Show fewer rows" : `Show all ${rows.length.toLocaleString("en-US")} rows`}
-        </button>
+      {(rows.length > FIRST_ROWS || (!written && rows.length > 0)) && (
+        <div className="flex flex-wrap items-center gap-x-3 border-t border-border/70 bg-surface/50 px-3 py-2">
+          {rows.length > FIRST_ROWS && (
+            <button type="button" className="cursor-pointer text-[12px] font-medium text-accent underline-offset-2 hover:underline" aria-expanded={all} onClick={() => setAll((a) => !a)}>
+              {all ? "Show fewer rows" : `Show all ${rows.length.toLocaleString("en-US")} rows`}
+            </button>
+          )}
+          {!written && rows.length > 0 && (
+            <ExcelExportButton
+              title={tabTitle}
+              req={() => ({
+                title: tabTitle,
+                tables: [{
+                  title: tabTitle,
+                  columns: head,
+                  rows,
+                  sql: sql ?? null,
+                  as_of: asOf ?? null,
+                  total_rows: totalRows ?? null,
+                  truncated: Boolean(truncated || (totalRows != null && rows.length < totalRows)),
+                }],
+              })}
+            />
+          )}
+        </div>
       )}
     </div>
   );
@@ -110,9 +154,21 @@ function CitedSource({ t }: { t: Cited }) {
   const caption = again
     ? `Read again with your filters: ${plural(again.row_count, "row")}${again.truncated ? " (more not shown)" : ""}${again.as_of ? `, as of ${formatDate(again.as_of)}` : ""}`
     : `${t.about}${t.as_of ? `, as of ${formatDate(t.as_of)}` : ""}${t.rows.length < t.records ? ` (first ${t.rows.length} of ${t.records})` : ""}`;
+  const rows = again ? again.rows : t.rows;
+  const totalRows = again ? (again.total_rows ?? (again.truncated ? null : again.row_count)) : t.records;
+  const truncated = again ? (again.truncated || (again.total_rows != null && again.rows.length < again.total_rows)) : t.rows.length < t.records;
   return (
     <div className="space-y-1">
-      <Table head={again ? again.columns : t.columns} rows={again ? again.rows : t.rows} caption={caption} />
+      <Table
+        head={again ? again.columns : t.columns}
+        rows={rows}
+        caption={caption}
+        exportTitle={t.about}
+        sql={again ? again.sql : t.query}
+        asOf={again ? again.as_of : t.as_of}
+        totalRows={totalRows}
+        truncated={truncated}
+      />
       {t.query && t.work && (
         <ShowWork
           work={t.work}
@@ -161,15 +217,34 @@ export function AnswerText({ text, muted = false }: { text: string; muted?: bool
   );
 }
 
-/** The simple Ask's answer: the answer, then one collapsed "Sources (n records)" line that opens to the rows it read. */
-export function SimpleAnswer({ answer, streamed, busy, status, progress }: { answer?: Answer; streamed: string; busy: boolean; status?: string; progress?: ReactNode }) {
+/** The simple Ask's answer: the answer, then one collapsed "Sources (n records)" line and a unified horizontal action bar. */
+export function SimpleAnswer({
+  answer,
+  streamed,
+  busy,
+  status,
+  progress,
+  onDeeper,
+  noteRecord,
+  showNote = false,
+}: {
+  answer?: Answer;
+  streamed: string;
+  busy: boolean;
+  status?: string;
+  progress?: ReactNode;
+  onDeeper?: () => void;
+  noteRecord?: string;
+  showNote?: boolean;
+}) {
   // written out from the top as it comes (``useReveal``: the reply reaches the browser whole)
   const text = useReveal(answer ? answer.direct_answer : withoutChartBlocks(streamed), busy);
   const cited = answer?.cited ?? [];
   const n = sourceCount(cited);
   return (
-    <article className="min-w-0 space-y-5 [overflow-wrap:anywhere]" aria-busy={busy} data-testid="simple-answer">
+    <article className="min-w-0 space-y-4 [overflow-wrap:anywhere]" aria-busy={busy} data-testid="simple-answer">
       {text ? <AnswerText text={text} /> : busy && !progress && <p className="text-[13px] text-muted">{status ?? "Working on it"}</p>}
+      {answer && (answer.work_items ?? []).length > 0 && <WorkItems groups={answer.work_items ?? []} />}
       {busy && progress}
       {busy && !progress && text && status && <p className="text-[12px] text-muted">{status}</p>}
       {answer && (answer.charts ?? []).length > 0 && <AnswerCharts charts={answer.charts ?? []} question={answer.question} />}
@@ -248,8 +323,50 @@ export function SimpleAnswer({ answer, streamed, busy, status, progress }: { ans
       )}
       {answer && (answer.prepared ?? []).length > 0 && <PreparedChanges ids={answer.prepared ?? []} />}
       {answer && !answer.assistant_unavailable && (
-        <footer className="flex items-center gap-1">
+        <footer className="flex flex-wrap items-center gap-1.5 border-t border-border/70 pt-3" data-testid="simple-answer-footer">
+          {!answer.clarify && (answer.direct_answer || cited.length > 0 || (answer.charts ?? []).length > 0) && (
+            <>
+              <ExcelExportButton
+                title={answer.question || "Workbench answer"}
+                req={() => ({
+                  title: answer.question || "Workbench answer",
+                  summary: answer.direct_answer || "",
+                  tables: cited.map((t) => ({
+                    title: t.about,
+                    columns: t.columns,
+                    rows: t.rows,
+                    sql: t.query ?? null,
+                    as_of: t.as_of ?? null,
+                    total_rows: t.records,
+                    records: t.records,
+                    truncated: t.rows.length < t.records,
+                  })),
+                  charts: answer.charts ?? [],
+                })}
+              />
+              <EmailDraftButton
+                title={answer.question || "Workbench answer"}
+                summary={answer.direct_answer || ""}
+                charts={(answer.charts ?? []) as unknown as Record<string, unknown>[]}
+                citations={cited.filter((t) => t.query).map((t) => ({ label: t.about, sql: t.query, count: t.records ?? t.rows?.length ?? 0 }))}
+                format={(answer.charts ?? []).length > 0 ? "xlsx" : "docx"}
+                label="Send by email"
+              />
+            </>
+          )}
           <Feedback answerId={answer.answer_id} />
+          {onDeeper && (
+            <button
+              type="button"
+              onClick={onDeeper}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-accent hover:border-accent/50 hover:bg-hover cursor-pointer"
+              title="Takes longer and uses deeper analysis"
+            >
+              <Brain className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+              Deep research
+            </button>
+          )}
+          {showNote && <AskNote record={noteRecord} inline />}
         </footer>
       )}
     </article>

@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { FINAL_ERRORS, type NoticeKind } from "@/lib/errors";
 import type { TurnRequest } from "@/lib/thread";
-import { formatDate, internalType, objectHref, plural, proseMoney, readable, recordKind, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
+import { formatDate, internalType, objectHref, plural, proseMoney, readable, recordKind, recordLabel, safeHref, scrubProgressUuids, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { fieldPairs, parseMarkdown, type Block } from "@/lib/markdown";
 import { lastPick, rememberPick } from "@/lib/picks";
 import { toggleSaved, useSaved } from "@/lib/saved";
@@ -16,10 +16,12 @@ import { CheckedList, ConflictCard, conflictField, Disclosure, FactList, Freshne
 import { ProfitabilityView } from "./cost-breakdown";
 import { EvidenceTrailCard, trailNextAction, trailStepCount } from "./evidence-trail";
 import { Feedback } from "./feedback";
+import { EmailDraftButton } from "./email-draft-button";
+import { ExcelExportButton } from "./excel-export-button";
 import { ProposalCards } from "./proposal-cards";
 import { AskDrafts, AttachmentNotes } from "./ask-drafts";
 import { InstructionPart, type InstructAsk } from "./instruction-part";
-import { AssumptionLine, ClarifyPart, type ClarifyReply } from "./clarify-part";
+import { ClarifyPart, type ClarifyReply } from "./clarify-part";
 import { AskOrganizer } from "./ask-organize";
 import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-chip";
@@ -219,7 +221,9 @@ function Progress({ turn }: { turn: Turn }) {
   const elapsed = useElapsed(true);
   const understood = (turn.understanding?.entities ?? []).filter((e) => e.resolved && !e.ambiguous).map((e) => recordLabel(e.resolved!.type, e.resolved!.label));
   // the work's own steps, in plain words, each once; the latest is the one in progress
-  const work = (turn.steps ?? []).filter((t) => t !== "Reading your question" && t !== "Writing the answer").map((t) => readable(t).replace(/…$/, ""));
+  const work = (turn.steps ?? [])
+    .filter((t) => t !== "Reading your question" && t !== "Writing the answer")
+    .map((t) => scrubProgressUuids(readable(t).replace(/…$/, "")));
   const writing = (turn.phase === "streaming" && !!turn.streamed) || !!turn.verdict;
   const found = turn.sourcesFound ? plural(turn.sourcesFound, "source") : null;
   const steps: { label: string; state: "done" | "active"; tiles?: boolean }[] = [
@@ -661,7 +665,7 @@ function whoToAsk(a: Answer): string | null {
 /** Words of a read that failed, as an answer or its not-found list says them. */
 const READ_FAILED = /could(?:n['\u2019]t| not) be read|\b(?:execution|lookup|read|search|query) failed\b|\btimed out\b/i;
 
-type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void; onDeeper?: () => void };
+type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void; onDeeper?: () => void; noteRecord?: string; showNote?: boolean };
 
 /** Pure: the turn is the simple Ask's (its answer carries ``cited``, or its words streamed whole). */
 export function isSimple(turn: Turn): boolean {
@@ -670,24 +674,24 @@ export function isSimple(turn: Turn): boolean {
 
 /** The simple Ask's turn shows the answer and its Sources line alone; every other turn the full card. */
 export function AnswerCard(props: CardProps) {
-  const { turn, onRetry, onDeeper } = props;
+  const { turn, onRetry, onDeeper, noteRecord, showNote } = props;
   if (!isSimple(turn)) return <FullAnswerCard {...props} />;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
+  const canDeeper = turn.phase === "done" && !!onDeeper && !turn.request?.extra?.deep && !turn.answer?.assistant_unavailable;
   return (
     <>
-      <SimpleAnswer answer={turn.answer} streamed={turn.streamed} busy={busy} status={turn.status} progress={busy ? <Progress turn={turn} /> : undefined} />
+      <SimpleAnswer
+        answer={turn.answer}
+        streamed={turn.streamed}
+        busy={busy}
+        status={turn.status}
+        progress={busy ? <Progress turn={turn} /> : undefined}
+        onDeeper={canDeeper ? onDeeper : undefined}
+        noteRecord={noteRecord}
+        showNote={showNote && turn.phase === "done"}
+      />
       {turn.phase === "done" && turn.answer?.clarify && <div className="mt-3 space-y-2"><p className="text-[15px] font-medium">{turn.answer.clarify.question}</p><ClarifyPart a={turn.answer} onReply={props.onClarify} /></div>}
       {turn.phase === "error" && <ErrorNotice message={turn.error ?? "This answer didn't finish. Try again."} tone={turn.notice ? "notice" : "error"} onRetry={turn.notice === "off" ? undefined : onRetry} />}
-      {turn.phase === "done" && onDeeper && !turn.request?.extra?.deep && !turn.answer?.assistant_unavailable && (
-        <button
-          type="button"
-          onClick={onDeeper}
-          className="mt-3 text-[13px] font-medium text-accent hover:underline"
-          title="Asks again: plans the reads, checks the key figures a second way and shows the evidence for each part. Takes a few minutes."
-        >
-          Think it through
-        </button>
-      )}
     </>
   );
 }
@@ -762,7 +766,6 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
           ))}
 
           {a && !a.clarify && <Confidence a={a} systems={usedSystems} />}
-          {a && <AssumptionLine a={a} onReply={onClarify} />}
 
           {composed || lead.length > 0 ? (
             <div
@@ -920,12 +923,41 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
       )}
 
       {a && (
-        <footer className="flex min-w-0 flex-wrap items-center gap-x-0.5 gap-y-3 xl:col-start-1">
+        <footer className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/70 pt-3 xl:col-start-1">
           <div className="order-last w-full min-w-0">
             <FreshnessLabel freshness={a.freshness} used={usedSystems} />
           </div>
           {!a.clarify && <SaveButton question={turn.question} href={`/ask?c=${encodeURIComponent(a.conversation_id)}`} />}
           {!a.clarify && <AskOrganizer conversationId={a.conversation_id} records={a.subjects ?? []} />}
+          {!a.clarify && (
+            <>
+              <EmailDraftButton
+                title={turn.question || "Workbench answer"}
+                summary={a.direct_answer || ""}
+                charts={(a.charts ?? []) as unknown as Record<string, unknown>[]}
+                citations={(a.cited ?? []).filter((t) => t.query).map((t) => ({ label: t.about, sql: t.query, count: t.records ?? t.rows?.length ?? 0 }))}
+                format={(a.charts ?? []).length > 0 ? "xlsx" : "docx"}
+              />
+              <ExcelExportButton
+                title={turn.question || "Workbench answer"}
+                req={() => ({
+                  title: turn.question || "Workbench answer",
+                  summary: a.direct_answer || "",
+                  tables: (a.cited ?? []).map((t) => ({
+                    title: t.about,
+                    columns: t.columns,
+                    rows: t.rows,
+                    sql: t.query ?? null,
+                    as_of: t.as_of ?? null,
+                    total_rows: t.records,
+                    records: t.records,
+                    truncated: t.rows.length < t.records,
+                  })),
+                  charts: a.charts ?? [],
+                })}
+              />
+            </>
+          )}
           <Feedback answerId={a.answer_id} facts={(a.facts ?? []).map((f) => f.text)} />
           {primary && (
             <Link

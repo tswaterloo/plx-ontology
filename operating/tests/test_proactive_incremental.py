@@ -712,5 +712,307 @@ class BaseNeighbours(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT count(*) FROM layers").fetchone()[0], 0)
 
 
+class SplitRoundtrip(unittest.TestCase):
+    """Split Spark compute + box apply equals the fused incremental pass, writes nothing
+    during compute, handles stale/bad folds loudly, and never regresses watermarks."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        patch = mock.patch.object(pe, "declared_qc_links", lambda: (QC_LINK,))
+        patch.start()
+        self.addCleanup(patch.stop)
+        pi.INPUTS.clear()
+        self.addCleanup(pi.INPUTS.clear)
+        pi._declared()
+        self.rules = [r for r in pi.STORE_ONLY if r not in pi.NOT_INCREMENTAL]
+
+    def _build(self, w: World, name: str, digest: str | None = None) -> Path:
+        path = self.dir / name / "store.sqlite"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        w.build(path)
+        if digest is not None:
+            with sqlite3.connect(path) as conn:
+                conn.execute("UPDATE store_meta SET value = ? WHERE key = 'content_digest'",
+                             (digest,))
+        return path
+
+    def _compare_split(self, w: World, change, *, as_of=AS_OF, moves: bool = False) -> tuple[dict, Path, Path]:
+        before = self._build(w, "before")
+        pe.run(before, pe.inbox_path(before), AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(before) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        change(w)
+        fused = self._build(w, "fused", digest)
+        split = self._build(w, "split", digest)
+        for target in (fused, split):
+            shutil.copy(pe.inbox_path(before), pe.inbox_path(target))
+        prints = []
+        for path in (before, split):
+            st = pe._Store(path)
+            try:
+                ids = [r[0] for r in st.conn.execute("SELECT object_id FROM objects")]
+                prints.append(pi.fingerprints(st, ids))
+            finally:
+                st.close()
+        moved = {oid for oid in set(prints[0]) | set(prints[1])
+                 if (prints[0].get(oid) or ("absent",))[0] != (prints[1].get(oid) or ("absent",))[0]}
+        fused_summary = pi.run_pass(fused, as_of=as_of, clock=lambda: MOMENT, changed=moved,
+                                    base=before, people=people(), wait=True)
+        self.assertEqual(fused_summary["state"], "ran", fused_summary)
+
+        export = self.dir / "export"
+        split_inbox = pe.inbox_path(split)
+        before_bytes = split_inbox.read_bytes()
+        compute_summary = pi.compute(split, export, as_of=as_of, clock=lambda: MOMENT,
+                                     changed=moved, base=before, people=people())
+        self.assertEqual(compute_summary["state"], "ran", compute_summary)
+        # compute makes zero box writes
+        self.assertEqual(split_inbox.read_bytes(), before_bytes)
+        self.assertFalse(pi.changes_path(split_inbox).exists())
+        self.assertTrue(list(export.glob("inc-*.json")))
+
+        applied = pi.apply_fold_payloads(split, export, clock=lambda: MOMENT,
+                                         people=people(), wait=True)
+        self.assertEqual(applied["stale"], 0, applied)
+        self.assertEqual(applied["bad"], 0, applied)
+        self.assertEqual(applied["left"], 0, applied)
+        self.assertGreater(applied["applied"], 0, applied)
+
+        self.assertEqual(open_gaps(pe.inbox_path(split), self.rules),
+                         open_gaps(pe.inbox_path(fused), self.rules))
+        with sqlite3.connect(pi.changes_path(pe.inbox_path(fused))) as fc, \
+                sqlite3.connect(pi.changes_path(split_inbox)) as sc:
+            self.assertEqual(
+                sorted(fc.execute("SELECT object_id, print, neighbors FROM prints").fetchall()),
+                sorted(sc.execute("SELECT object_id, print, neighbors FROM prints").fetchall()))
+            self.assertEqual(
+                sorted(fc.execute("SELECT key, value FROM meta").fetchall()),
+                sorted(sc.execute("SELECT key, value FROM meta").fetchall()))
+        if moves:
+            self.assertNotEqual(open_gaps(split_inbox, self.rules),
+                                open_gaps(pe.inbox_path(before), self.rules))
+        return applied, fused, split
+
+    def test_compute_and_apply_equal_fused_pass_across_changes_new_day_and_populations(self):
+        # 1. Scoped line change
+        w, ids = world()
+
+        def resolve_overdue(w):
+            line = next(l["from_object"] for l in w.rows["links"]
+                        if l["link_type"] == "PurchaseOrderLine.line_of"
+                        and l["to_object"] == ids["overdue"])
+            set_value(w, line, "received_quantity", ("10", "ea", "received"))
+        self._compare_split(w, resolve_overdue, moves=True)
+
+        # 2. New day: dated rules judged whole
+        shutil.rmtree(self.dir)
+        self.dir.mkdir()
+        w2, _ids2 = world()
+        self._compare_split(w2, lambda w: None, as_of=AS_OF + timedelta(days=12))
+
+        # 3. Moved population: scoped run triggers whole rule during compute
+        shutil.rmtree(self.dir)
+        self.dir.mkdir()
+        w3, _ids3 = world()
+
+        def move_pop(w):
+            for _ in range(12):
+                w.obj("PurchaseOrder", {"status": "Pending", "expected_date": "2026-10-10",
+                                        "order_date": "2026-10-09"})
+        self._compare_split(w3, move_pop)
+
+    def test_compute_and_apply_preserve_watchlists_and_write_nothing_on_compute(self):
+        from operating import watchlists as wl
+        w, ids = world()
+        before = self._build(w, "before")
+        pe.run(before, pe.inbox_path(before), AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(before) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        fused = self._build(w, "fused", digest)
+        split = self._build(w, "split", digest)
+        for target in (fused, split):
+            shutil.copy(pe.inbox_path(before), pe.inbox_path(target))
+            ws = wl.WatchStore(wl.watch_path(target), clock=lambda: MOMENT)
+            ws.follow("plx:employee:owner", ids["overdue"], "PurchaseOrder", "PO-overdue")
+            # baseline the follow on the before state
+            st = pe._Store(before)
+            try:
+                wl.evaluate(st, wl.watch_path(target), (), clock=lambda: MOMENT)
+            finally:
+                st.close()
+        line = next(l["from_object"] for l in w.rows["links"]
+                    if l["link_type"] == "PurchaseOrderLine.line_of"
+                    and l["to_object"] == ids["overdue"])
+        set_value(w, line, "received_quantity", ("10", "ea", "received"))
+        for target, name in ((fused, "fused"), (split, "split")):
+            self._build(w, name, digest)
+        changed = {line}
+        pi.run_pass(fused, as_of=AS_OF, clock=lambda: MOMENT, changed=changed,
+                    base=before, people=people(), wait=True)
+        export = self.dir / "w_export"
+        watch_before = wl.watch_path(split).read_bytes()
+        pi.compute(split, export, as_of=AS_OF, clock=lambda: MOMENT, changed=changed,
+                   base=before, people=people())
+        self.assertEqual(wl.watch_path(split).read_bytes(), watch_before)
+        pi.apply_fold_payloads(split, export, clock=lambda: MOMENT, people=people(), wait=True)
+        self.assertEqual(wl.WatchStore(wl.watch_path(split)).raw_alerts("plx:employee:owner", 50),
+                         wl.WatchStore(wl.watch_path(fused)).raw_alerts("plx:employee:owner", 50))
+
+    def test_prepare_context_compute_and_apply_roundtrip(self):
+        from operating.host import projection_path
+        w, ids = world()
+        state = self.dir / "state"
+        store = projection_path(state)
+        store.parent.mkdir(parents=True)
+        w.build(store)
+        pe.run(store, pe.inbox_path(store), AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(store) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        delta = store.parent / "delta"
+        delta.mkdir()
+        layer = delta / "delta-1.sqlite"
+        with sqlite3.connect(layer) as conn:
+            conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+            conn.executemany("INSERT INTO delta_owned VALUES (?)",
+                             [(ids["unconfirmed"],), (ids["overdue"],)])
+        (delta / "CURRENT.json").write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": str(layer),
+            "layers": [{"store": str(layer), "owned": 2}]}))
+        # mutate store in place as a delta layer would
+        line = next(l["from_object"] for l in w.rows["links"]
+                    if l["link_type"] == "PurchaseOrderLine.line_of"
+                    and l["to_object"] == ids["overdue"])
+        w.link("SupplierConfirmation.confirms",
+               w.obj("SupplierConfirmation", {"delivery_date": "2026-10-09"}),
+               ids["unconfirmed"])
+        set_value(w, line, "received_quantity", ("10", "ea", "received"))
+        base = self.dir / "base.sqlite"
+        shutil.copy(store, base)
+        w.build(store)
+        with sqlite3.connect(store) as conn:
+            conn.execute("UPDATE store_meta SET value = ? WHERE key = 'content_digest'", (digest,))
+
+        ship = self.dir / "ship"
+        export = self.dir / "export"
+        prep = pi.prepare(state, ship, wait=True)
+        self.assertEqual(prep["state"], "prepared")
+        self.assertTrue((ship / "context.json").is_file())
+        self.assertTrue((ship / "layer-owned.json.gz").is_file())
+
+        summary = pi.compute(store, export, as_of=AS_OF, clock=lambda: MOMENT,
+                             base=base, people=people(), holds_layers=True, context_dir=ship)
+        self.assertEqual((summary["state"], summary["changed"]), ("ran", 2))
+        self.assertFalse(pi.changes_path(pe.inbox_path(store)).exists())
+
+        applied = pi.apply_fold_payloads(store, export, clock=lambda: MOMENT,
+                                         people=people(), wait=True)
+        self.assertEqual((applied["stale"], applied["bad"], applied["left"]), (0, 0, 0))
+        with sqlite3.connect(pi.changes_path(pe.inbox_path(store))) as conn:
+            self.assertEqual({Path(r[0]).name for r in conn.execute("SELECT layer FROM layers")},
+                             {"delta-1.sqlite"})
+
+    def test_stale_and_bad_folds_fail_loudly_and_leave_files(self):
+        from operating.host import projection_path
+        w, _ids = world()
+        state = self.dir / "state"
+        store = projection_path(state)
+        store.parent.mkdir(parents=True)
+        w.build(store)
+        inbox = pe.inbox_path(store)
+        pe.run(store, inbox, AS_OF, clock=lambda: MOMENT, people=people())
+
+        export = self.dir / "export"
+        export.mkdir()
+        # empty export dir exits 0
+        self.assertEqual(pi.main(["--state-dir", str(state), "--apply-folds", str(export)]), 0)
+
+        # stale + bad standalone folds exit 1 and leave files
+        (export / "fold-1.json").write_text(json.dumps({
+            "fold_transport": 1, "digest": "sha256:stale", "results": {},
+            "gaps": {}, "populations": {}, "scope_rows": [], "seconds": {},
+            "not_due": [], "abandoned": [], "code": "c", "started_at": {},
+            "run_at": MOMENT.isoformat(), "as_of": AS_OF.isoformat(),
+            "record_run": False, "whole_scope": False,
+        }))
+        (export / "fold-2.json").write_text("{bad json")
+        with mock.patch("ontology.window_lock.skip_report", return_value=None):
+            rc = pi.main(["--state-dir", str(state), "--apply-folds", str(export)])
+        self.assertEqual(rc, 1)
+        self.assertTrue((export / "fold-1.json").is_file())
+        self.assertTrue((export / "fold-2.json").is_file())
+
+        # an inc payload referencing a missing fold refuses to advance watermarks
+        for p in export.iterdir():
+            p.unlink()
+        digest = pe.served_generation(store, inbox)
+        (export / "inc-1.json").write_text(json.dumps({
+            "inc_transport": 1, "generation": digest, "stamp": digest,
+            "reader": "store_with_layers", "print_format": pi.PRINT_FORMAT,
+            "as_of": AS_OF.isoformat(), "moment": MOMENT.isoformat(),
+            "prints": {}, "taken": ["delta-x.sqlite"], "waiting_for_postgres": False,
+            "watch_moved": [], "audience_keys_held": None, "day_completed": True,
+            "feed": None, "fold_files": ["fold-missing.json"], "summary": {"state": "ran"},
+        }))
+        with mock.patch("ontology.window_lock.skip_report", return_value=None):
+            rc = pi.main(["--state-dir", str(state), "--apply-folds", str(export)])
+        self.assertEqual(rc, 1)
+        self.assertFalse(pi.changes_path(inbox).exists())
+        self.assertTrue((export / "inc-1.json").is_file())
+
+    def test_standby_lag_never_regresses_day_or_marks_unapplied_layers(self):
+        w, ids = world()
+        store = self._build(w, "store")
+        inbox = pe.inbox_path(store)
+        pe.run(store, inbox, AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(store) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        delta = store.parent / "delta"
+        delta.mkdir()
+        layers: list[dict] = []
+        for name, oids in (("delta-1.sqlite", [ids["unconfirmed"]]),
+                           ("delta-2.sqlite", [ids["overdue"]])):
+            layer = delta / name
+            with sqlite3.connect(layer) as conn:
+                conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+                conn.executemany("INSERT INTO delta_owned VALUES (?)", [(o,) for o in oids])
+            layers.insert(0, {"store": str(layer), "owned": len(oids)})
+        (delta / "CURRENT.json").write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": layers[0]["store"],
+            "layers": layers}))
+
+        # Standby only has delta-1 replayed; delta-2 is NOT in standby load_state
+        applied_pg = {"delta-1.sqlite"}
+        real_meta = pe._Store.meta
+        with mock.patch.object(pe._Store, "meta", lambda st, k: f"{real_meta(st, k)}@100"
+                               if k == "content_digest" else real_meta(st, k)), \
+                mock.patch.object(pi, "_applied", lambda _s: set(applied_pg)), \
+                mock.patch.object(pi, "_pg_neighbors", lambda i, o, target=None, types=None:
+                                  pi._file_neighbors(store, i, o, types=types)):
+            export = self.dir / "lag_export"
+            out = pi.compute(store, export, as_of=AS_OF, clock=lambda: MOMENT, people=people())
+            self.assertTrue(out["waiting_for_postgres"])
+            pi.apply_fold_payloads(store, export, clock=lambda: MOMENT, people=people(), wait=True)
+            with sqlite3.connect(pi.changes_path(inbox)) as conn:
+                taken = {Path(r[0]).name for r in conn.execute("SELECT layer FROM layers")}
+                self.assertEqual(taken, {"delta-1.sqlite"})
+            # Advance day to future date, then apply an older-day payload: day must not regress
+            with sqlite3.connect(pi.changes_path(inbox)) as conn:
+                pi._set_meta(conn, "day", "2026-10-25")
+            applied_pg.add("delta-2.sqlite")
+            export2 = self.dir / "lag_export2"
+            pi.compute(store, export2, as_of=AS_OF, clock=lambda: MOMENT, people=people())
+            pi.apply_fold_payloads(store, export2, clock=lambda: MOMENT, people=people(), wait=True)
+            with sqlite3.connect(pi.changes_path(inbox)) as conn:
+                self.assertEqual(pi._meta(conn, "day"), "2026-10-25")
+                taken = {Path(r[0]).name for r in conn.execute("SELECT layer FROM layers")}
+                self.assertEqual(taken, {"delta-1.sqlite", "delta-2.sqlite"})
+
+
 if __name__ == "__main__":
     unittest.main()

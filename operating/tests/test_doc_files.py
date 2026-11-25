@@ -199,5 +199,100 @@ class EditsTest(unittest.TestCase):
             doc_edit.redline("v1.docx", old, "v2.pptx", new)
 
 
+class DocumentCitationsTest(unittest.TestCase):
+    def test_word_pptx_xlsx_and_pdf_cite_each_table_and_figure_statement_whole(self):
+        sql = "SELECT supplier, sum(total) AS spend FROM purchase_orders WHERE status = 'open' GROUP BY supplier"
+        fig_sql = "SELECT count(*) AS open_pos FROM purchase_orders WHERE status = 'open'"
+        measure = {"name": "Purchases ordered", "owner": "Purchasing", "version": "v12345678"}
+        tbl = files.table("Open POs by supplier", ["Supplier", "Spend"], [["Acme", "12500.00"]],
+                          sql=sql, as_of="2026-11-24T12:00:00Z", measure=measure)
+        cites = [{"label": "Open PO headline", "count": 14, "as_of": "2026-11-24", "sql": fig_sql,
+                  "measure": measure}]
+
+        # Word: table footnote + Sources and statements section carry both full statements
+        wparts = parts(files.make("docx", "# Summary\n14 open POs.\n[table 1]", tables=[tbl],
+                                  citations=cites))
+        wbody = wparts["word/document.xml"]
+        self.assertIn("Source: 1 record, as of 2026-11-24.", wbody)
+        self.assertIn("Measure: Purchases ordered (Purchasing, v12345678).", wbody)
+        self.assertIn("Statement: " + sql, wbody)
+        self.assertIn("Sources and statements", wbody)
+        self.assertIn("Statement: " + fig_sql, wbody)
+        self.assertNotIn("[table-cite", wbody)
+
+        # PowerPoint: source on slide face, full statements in speaker notes (never on slide face)
+        pparts = parts(files.make("pptx", "# Open POs\n[table 1]", tables=[tbl], citations=cites))
+        self.assertNotIn("SELECT supplier", pparts["ppt/slides/slide1.xml"])
+        self.assertIn("Source: 1 record, as of 2026-11-24.", pparts["ppt/slides/slide1.xml"])
+        self.assertIn("Statement: " + sql, pparts["ppt/notesSlides/notesSlide1.xml"])
+        self.assertIn("Sources", pparts["ppt/slides/slide2.xml"])
+        self.assertIn("Statement: " + fig_sql, pparts["ppt/notesSlides/notesSlide2.xml"])
+
+        # Excel: Sources sheet carries both table and figure statements whole
+        xparts = parts(files.make("xlsx", "[table 1]", tables=[tbl], citations=cites))
+        self.assertIn('name="Sources"', xparts["xl/workbook.xml"])
+        src_sheet = xparts["xl/worksheets/sheet2.xml"]
+        self.assertIn(sql, src_sheet)
+        self.assertIn(fig_sql, src_sheet)
+        self.assertIn("Purchases ordered (Purchasing, v12345678)", src_sheet)
+
+        # CSV stays pure rows (never polluted with citation markers)
+        csv_text = files.make("csv", "[table 1]", tables=[tbl], citations=cites).decode("utf-8-sig")
+        self.assertNotIn("table-cite", csv_text)
+        self.assertNotIn("SELECT", csv_text)
+
+        # PDF cites both full statements when reportlab + pypdf are installed
+        try:
+            from pypdf import PdfReader
+            pdf_bytes = files.make("pdf", "# Summary\n[table 1]", tables=[tbl], citations=cites)
+            pdf_text = "".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf_bytes)).pages)
+            self.assertIn("Open PO headline", pdf_text)
+            self.assertIn("purchase_orders", pdf_text)
+        except (ImportError, files.FileRefused):
+            pass
+
+    def test_excel_sources_sheet_preserves_sql_verbatim_without_markdown_mangling(self):
+        sql = ("SELECT count(*) AS n, sum(qty * unit_price) AS total "
+               "FROM purchase_orders WHERE note NOT LIKE '~~old~~' AND tag != '{--x--}' "
+               "AND flag != '**y**'")
+        cites = [{"title": "PO **totals**", "count": 4, "as_of": "2026-11-24", "sql": sql}]
+        xparts = parts(files.make("xlsx", "# Summary\n4 POs", citations=cites))
+        src_sheet = xparts["xl/worksheets/sheet2.xml"]
+        self.assertIn("SELECT count(*) AS n, sum(qty * unit_price) AS total", src_sheet)
+        self.assertIn("~~old~~", src_sheet)
+        self.assertIn("{--x--}", src_sheet)
+        self.assertIn("PO **totals**", src_sheet)
+
+    def test_non_integer_count_is_handled_cleanly(self):
+        for bad in ("approx 5", True, False, 3.5, {"n": 1}, [1], -2):
+            with self.subTest(count=bad):
+                cites = [{"title": "Open POs", "count": bad, "sql": "SELECT 1"}]
+                tbl = {"title": "Orders", "lines": "| a |\n| 1 |", "count": bad, "sql": "SELECT 1"}
+                for kind in ("docx", "xlsx", "pptx"):
+                    data = files.make(kind, "# Report\n[table 1]", tables=[tbl], citations=cites)
+                    self.assertGreater(len(data), 0)
+
+    def test_mask_served_masks_chart_measure_panel_series_and_citation_fields(self):
+        card = "4111-1111-1111-1111"
+        chart = {
+            "kind": "bar", "title": "Spend", "x": "dept", "labels": ["Ops"],
+            "series": [{"name": "Spend", "values": [10.0]}],
+            "panels": [{"title": "Panel A", "labels": ["Ops"],
+                        "series": [{"name": f"Card {card}", "values": [10.0]}]}],
+            "sql": f"SELECT '{card}' AS x",
+            "measure": {"id": f"m_{card}", "name": f"M {card}", "owner": f"o {card}",
+                        "version": "v1", "definition": "secret=hunter2_secret_value_123456"},
+        }
+        cite = {"title": f"C {card}", "sql": f"SELECT '{card}'",
+                "measure": {"id": "m1", "name": f"N {card}", "owner": "Ops",
+                            "version": "v1", "definition": f"Ref {card}"}}
+        wparts = parts(files.make("docx", "# Report", charts=[chart], citations=[cite]))
+        all_xml = "".join(wparts.values())
+        self.assertNotIn("4111-1111-1111-1111", all_xml)
+        self.assertNotIn("hunter2_secret_value_123456", all_xml)
+        self.assertIn("1111", wparts["word/charts/chart1.xml"])
+        self.assertIn("1111", wparts["word/document.xml"])
+
+
 if __name__ == "__main__":
     unittest.main()

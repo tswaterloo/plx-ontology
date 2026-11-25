@@ -52,7 +52,7 @@ class AnswerFormTest(unittest.TestCase):
             self.assertIn(rule, line)
         self.assertNotIn("150 words", line)
         self.assertEqual(1, sa.system_prompt().count("- The answer:"))
-        self.assertLess(len(sa.system_prompt()), 32000)   # the prompt's budget (spec 7; 11-24 +1,000 for the name-finder method line)
+        self.assertLess(len(sa.system_prompt()), 36000)   # the prompt's budget (spec 7; 11-24 +1,000 name-finder line, +2,000 six measures over records, +1,900 whole-period paging, items block, calendar line)
 
 
 class ChartTest(unittest.TestCase):
@@ -245,6 +245,18 @@ class SessionTest(unittest.TestCase):
                            events=[timeout, OCT], seconds=1.0, stopped=False, failure=None)
         self.assertEqual(sa.answer_payload(ran, "q", "c", 1, "e" * 24).outcome, "answered")
 
+    def test_the_method_derives_an_unstored_measure_and_charts_what_is_asked_to_plot(self):
+        """An unstored score is derived from read inputs with its definition shown and
+        cited arithmetic ("not recorded" only for what cannot be derived); a plot request
+        gets a chart block from a result. The method says both, and stays in budget."""
+        method = sa.METHOD
+        for phrase in ("derive it from what is stored", "definition (inputs, weights, period) and limits",
+                       "only from results of this conversation", "derived, never recorded",
+                       "only for the part that cannot be derived",
+                       "plot, chart or graph, include at least one chart block"):
+            self.assertIn(phrase, method)
+        self.assertLessEqual(len(sa.METHOD), 14_000)
+
     def test_the_prompt_is_an_index_of_the_views_within_its_size(self):
         """A5 (the prompt was 99,930 characters, ~42,000 tokens every turn): the prompt
         names every view with its purpose and its columns (a column most views share once,
@@ -263,7 +275,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(system.count("    handle: "), 1)
         self.assertNotIn("    customer_code: ", system)   # column meanings: describe
         self.assertLessEqual(len(system), sa.PROMPT_MOST)
-        self.assertLessEqual(sa.PROMPT_MOST, 32_000)
+        self.assertLessEqual(sa.PROMPT_MOST, 36_000)
         # A5b: no verdict on which system is of record or a pilot, nothing 'official'
         # (the view docs the model reads come through DOC_UNTIL_TRAIN until train B)
         for word in ("system of record", "pilot data", "is still a pilot", "not used",
@@ -367,7 +379,7 @@ class SessionTest(unittest.TestCase):
             self.assertNotIn("record", sa.search_line(broken).split("plx.open")[1])
 
     def test_session_is_the_two_tool_agent_on_the_default_model_with_the_dictionary(self):
-        unset = {name: "" for name in (sa.EFFORT_ENV, sa.MODEL_ENV, *sa.OLD_ENV.values())}
+        unset = {name: "" for name in (sa.EFFORT_ENV, sa.MODEL_ENV)}
         with mock.patch.dict("os.environ", unset):
             agent = sa.agent_for(SimpleNamespace(claude_bin="claude"), lambda line: None)
         argv = agent.argv("task", "/x/mcp.json", ["plx.sql", "plx.search"])
@@ -382,7 +394,7 @@ class SessionTest(unittest.TestCase):
             self.assertNotIn(word, system)
         for word in ("sales_invoices", "customer_balances", "Columns most views have",
                      "plx.search", "currency", "digits for counts", "in one turn",
-                     "what you did not read", "emails.received_at", "plx.legs"):
+                     "Say what you could not read", "emails.received_at", "plx.legs"):
             self.assertIn(word, system)
         self.assertEqual(system, sa.system_prompt())
         # no minutes of extended thinking by default: low effort (adaptive thinking stays)
@@ -403,16 +415,9 @@ class SessionTest(unittest.TestCase):
         for env, want in (({}, ("claude-sonnet-5-5", "low")),
                           ({sa.MODEL_ENV: "claude-opus-5-5", sa.EFFORT_ENV: "high"},
                            ("claude-opus-5-5", "high")),
-                          # the earlier names still run what a bench script says
-                          ({"PLX_ASK_SIMPLE_MODEL": "claude-opus-5-5",
-                            "PLX_ASK_SIMPLE_EFFORT": "medium"}, ("claude-opus-5-5", "medium")),
-                          # the new name wins over the old
-                          ({sa.MODEL_ENV: "claude-sonnet-5-5",
-                            "PLX_ASK_SIMPLE_MODEL": "claude-opus-5-5"},
-                           ("claude-sonnet-5-5", "low")),
                           # an unreadable model name is the default, never passed on
                           ({sa.MODEL_ENV: "opus; rm -rf /"}, ("claude-sonnet-5-5", "low"))):
-            full = {name: "" for name in (sa.EFFORT_ENV, sa.MODEL_ENV, *sa.OLD_ENV.values())}
+            full = {name: "" for name in (sa.EFFORT_ENV, sa.MODEL_ENV)}
             full.update(env)
             with self.subTest(env=env), mock.patch.dict("os.environ", full):
                 self.assertEqual(sa.settings(), want)
@@ -572,11 +577,6 @@ class SessionTest(unittest.TestCase):
         self.assertEqual([a.name for a in answer.attachments], ["q.csv"])
         self.assertIn("Reading your attachment", [s.message for k, s in steps
                                                    if k == "status"])
-
-    def test_the_one_ask_path_whatever_the_old_switch_says(self):
-        # owner 11-22: no rollback path; PLX_ASK_SIMPLE is no longer read
-        for environ in ({}, {"PLX_ASK_SIMPLE": "0"}, {"PLX_ASK_SIMPLE": "1"}):
-            self.assertTrue(sa.enabled(environ), environ)
 
 
 def _delta(text):
@@ -1701,6 +1701,59 @@ class HistoryBudgetTest(unittest.TestCase):
                 self.assertIn(f"({n - len(told)} earlier turns not shown", prompt)
             else:
                 self.assertNotIn("earlier turns not shown", prompt)
+
+    def test_cancelled_ask_worker_does_not_raise_invalid_state_error(self):
+        import threading
+        from concurrent.futures import Future
+        from types import SimpleNamespace
+
+        unhandled: list[BaseException] = []
+        orig_hook = threading.excepthook
+
+        def capture(args):
+            unhandled.append(args.exc_value)
+
+        threading.excepthook = capture
+        try:
+            started = threading.Event()
+            release = threading.Event()
+
+            def fake_run(*args, **kwargs):
+                started.set()
+                release.wait(timeout=2)
+                return sa.SimpleRun(text="late", agent_text="late", unverified=[], events=[],
+                                    seconds=0.1, stopped=True, failure=None)
+
+            def fake_drain(events, done: Future, timeout, cancel):
+                started.wait(timeout=2)
+                cancel.set()
+                done.cancel()
+                release.set()
+                if False:
+                    yield
+
+            backend = SimpleNamespace(
+                _sessions=threading.Semaphore(1),
+                agent_ask=SimpleNamespace(),
+                _drain=fake_drain,
+                _memory_turn=lambda *a, **k: None,
+            )
+            reader = SimpleNamespace(session=SimpleNamespace(), key="r1")
+            req = SimpleNamespace(question="hi", history=[], clarified=None, deep=False)
+            gen = sa.ask(backend, reader, req, "conv-1", lambda: 1)
+            with mock.patch.object(sa, "run", side_effect=fake_run), \
+                    mock.patch.object(sa, "stated", return_value=None), \
+                    mock.patch.object(sa, "write_tools", return_value=[]), \
+                    mock.patch.object(sa.brief_context, "lines", return_value=[]):
+                with self.assertRaises(Exception):
+                    list(gen)
+            # Let daemon thread finish cleanly; it must not crash with InvalidStateError.
+            for t in threading.enumerate():
+                if t.name == "app-ask-simple":
+                    t.join(timeout=2)
+            self.assertEqual(unhandled, [])
+        finally:
+            threading.excepthook = orig_hook
 
 
 if __name__ == "__main__":

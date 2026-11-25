@@ -2,80 +2,26 @@
 
 import { AskNote } from "@/components/ask-note";
 import { MessagesSquare, SquarePen } from "lucide-react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
-import { AnswerCard } from "@/components/answer-card";
+import { AnswerCard, isSimple } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
 import { AskChatList } from "@/components/ask-chats";
-import { loadHome } from "@/components/shell";
+import { AskStart } from "@/components/ask-start";
+import { PageIntro } from "@/components/ui/page-intro";
 import { ErrorNotice } from "@/components/ui/notice";
 import { Sheet } from "@/components/ui/sheet";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
-import { PageIntro } from "@/components/ui/page-intro";
 import { cn } from "@/lib/cn";
-import { ago, formatDateTime } from "@/lib/format";
 import { takePending } from "@/lib/pending";
 import { askUrlKey, conversationOf, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
 import { FINAL_ERRORS, plainError } from "@/lib/errors";
-import type { Answer, RecentQuestion } from "@/lib/types";
+import type { Answer } from "@/lib/types";
 
 /** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
 const FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
 const COLUMN = "xl:pr-[296px]";
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h2 className="mb-2 text-[12px] leading-4 font-medium text-muted">{children}</h2>;
-}
-
-/** The start page under the box: the reader's own recent questions, newest first, each once. Nothing while they load or if they can't be read: the box works without them. */
-function RecentQuestions({ onAsk }: { onAsk: (q: string, objectId?: string) => void }) {
-  const [recent, setRecent] = useState<RecentQuestion[]>([]);
-
-  useEffect(() => {
-    let live = true;
-    loadHome()
-      .then((h) => {
-        if (!live) return;
-        setRecent(
-          [...(h.recent_questions ?? [])]
-            .sort((a, b) => b.asked_at.localeCompare(a.asked_at))
-            .filter((r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i)
-            .slice(0, 8),
-        );
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  if (recent.length === 0) return null;
-  const row = "group flex min-h-9 w-full items-center gap-3 rounded-lg px-2 py-1 text-left text-[13px] hover:bg-hover cursor-pointer";
-  return (
-    <section data-testid="ask-recent" className="max-w-[640px]">
-      <SectionTitle>Asked lately</SectionTitle>
-      <ul className="-mx-2" aria-label="Your recent questions">
-        {recent.map((r) => (
-          <li key={`${r.asked_at}-${r.question}`}>
-            {r.conversation_id ? (
-              <Link href={`/ask?c=${encodeURIComponent(r.conversation_id)}`} className={row} title={`Asked ${formatDateTime(r.asked_at)}: open the answer`}>
-                <span className="min-w-0 flex-1 truncate">{r.question}</span>
-                <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
-              </Link>
-            ) : (
-              <button type="button" onClick={() => onAsk(r.question)} className={row} title={`Asked ${formatDateTime(r.asked_at)}: ask again`}>
-                <span className="min-w-0 flex-1 truncate">{r.question}</span>
-                <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
 
 function Ask() {
   const params = useSearchParams();
@@ -166,8 +112,10 @@ function Ask() {
     <AskBox
       size={empty ? "lg" : "md"}
       dropUp={!empty}
-      onSubmit={(question, pins, files) => run(question, pins[0]?.object_id, pins.length ? undefined : source, files, pins.length ? {} : page)}
+      onSubmit={(question, pins, files, opts) => run(question, pins[0]?.object_id, pins.length ? undefined : source, files, { ...(pins.length ? {} : page), ...(opts?.deep ? { deep: true } : {}) })}
       attachable
+      deepable
+      draftKey="plx.ask.draft"
       busy={busy}
       onStop={stop}
       autoFocus={!q}
@@ -199,24 +147,20 @@ function Ask() {
         <aside className="hidden w-[248px] shrink-0 border-r border-border md:flex" data-testid="ask-chats-rail">
           <AskChatList current={current} refreshKey={`${current}#${answered}`} onNew={newChat} className="w-full" />
         </aside>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {/* relative: the thread's screen-reader lines (absolute) belong to this scroller, so they
               never stretch the page under it and make it scroll as a whole on a phone */}
           <div ref={scroller} className="relative min-h-0 flex-1 overflow-y-auto">
             {empty ? (
-              <div className={cn(FRAME, "flex min-h-full max-w-[920px] flex-col justify-center pt-6 pb-[max(48px,8vh)]")}>
-                <h1 className="sr-only">Ask</h1>
+              <div className={cn(FRAME, "flex min-h-full max-w-[768px] flex-col justify-center pt-6 pb-[max(48px,12vh)]")}>
                 {resumeFailed && resumeId && !q && (
                   <ErrorNotice className="mb-6" message={`This conversation couldn't be opened. ${resumeFailed}`} onRetry={FINAL_ERRORS.has(resumeFailed) ? undefined : () => setResumeTry((n) => n + 1)} />
                 )}
-                <PageIntro path="/ask" className="mb-3 px-0 pt-0 lg:px-0" />
-                {composer}
-                <div className="mt-10 md:hidden">
-                  <RecentQuestions onAsk={(question, objectId) => run(question, objectId)} />
-                </div>
+                <AskStart onAsk={(question, objectId) => run(question, objectId)}>{composer}</AskStart>
+                <PageIntro path="/ask" className="mt-8 px-3 pt-0 text-center lg:px-3" />
               </div>
             ) : (
-              <div className={cn(FRAME, "pt-7 pb-10")} aria-live="off">
+              <div className={cn(FRAME, "pt-5 pb-24")} aria-live="off">
                 <h1 className="sr-only">Ask</h1>
                 {turns.map((t, i) => (
                   <section
@@ -235,8 +179,10 @@ function Ask() {
                       onInstruct={busy ? undefined : (next, extra) => run(next, extra.object_id ?? undefined, extra.source ?? undefined, [], { context: extra.context, mode: extra.mode, instruction: extra.instruction })}
                       onClarify={busy ? undefined : (words, reply) => run(words, undefined, undefined, [], { clarified: reply })}
                       onDeeper={busy ? undefined : () => deeper(t)}
+                      noteRecord={t.request?.objectId ?? scope ?? undefined}
+                      showNote
                     />
-                    {t.phase === "done" && <AskNote record={t.request?.objectId ?? scope ?? undefined} />}
+                    {t.phase === "done" && !isSimple(t) && <AskNote record={t.request?.objectId ?? scope ?? undefined} />}
                   </section>
                 ))}
                 {turns[turns.length - 1]?.phase === "done" && (
@@ -248,7 +194,7 @@ function Ask() {
             )}
           </div>
           {!empty && (
-            <div className="relative shrink-0 border-t border-border bg-bg pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4" data-testid="composer-dock">
+            <div className="relative z-10 shrink-0 border-t border-border bg-bg pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3.5" data-testid="composer-dock">
               <div className={FRAME}>
                 <div className={COLUMN}>{composer}</div>
               </div>

@@ -127,6 +127,29 @@ export function formatMoney(amount: string, currency: string, locale = "en-CA"):
   return `${neg ? "-" : ""}${symbol}${grouped}.${cents}${code ? ` ${code}` : ""}`;
 }
 
+/**
+ * Exact decimal-string money rounded half-up to 2 decimal places ("9923.208" + "CAD" ->
+ * "$9,923.21 CAD"): never uses floats, for order/invoice totals in list tables.
+ */
+export function formatMoneyCents(amount: string, currency: string, locale = "en-CA"): string {
+  const a = withoutFloatNoise(amount.trim());
+  const code = currencyCode(currency);
+  if (!DECIMAL.test(a)) return `${a} ${code}`.trim();
+  const neg = a.startsWith("-");
+  const [intRaw, fracRaw = ""] = (neg ? a.slice(1) : a).split(".");
+  if (fracRaw.length <= 2) return formatMoney(a, currency, locale);
+  const whole = BigInt(intRaw || "0");
+  const centsPart = BigInt(fracRaw.slice(0, 2));
+  const roundUp = Number(fracRaw[2]) >= 5;
+  const totalCents = whole * BigInt(100) + centsPart + (roundUp ? BigInt(1) : BigInt(0));
+  const finalInt = (totalCents / BigInt(100)).toString();
+  const finalCents = (totalCents % BigInt(100)).toString().padStart(2, "0");
+  const grouped = finalInt.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const symbol = currencySymbol(code, locale);
+  const sign = neg && totalCents !== BigInt(0) ? "-" : "";
+  return `${sign}${symbol}${grouped}.${finalCents}${code ? ` ${code}` : ""}`;
+}
+
 function currencySymbol(currency: string, locale: string): string {
   try {
     const parts = new Intl.NumberFormat(locale, { style: "currency", currency, currencyDisplay: "narrowSymbol" }).formatToParts(0);
@@ -381,13 +404,13 @@ export function isInternalField(key: string): boolean {
 
 const ISO_STAMP = /\b(\d{4}-\d{2}-\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g;
 
-/** Every ISO date or timestamp in a text as "Jul 14, 2026" (the day it states). */
-export function plainDates(text: string): string {
+/** Every ISO date or timestamp in a text as "14 Jul 2026" (or "14 Jul" with `short`). */
+export function plainDates(text: string, opts: { short?: boolean; now?: Date } = {}): string {
   // a timestamp is the Toronto day it falls on (02:00Z on Nov 1 is Oct 31 there); a
   // date with no time is its own day
   return text.replace(ISO_STAMP, (whole, day: string) => {
     const timed = whole.length > day.length && /[zZ]|[+-]\d{2}:?\d{2}$/.test(whole);
-    const shown = formatDate(timed ? whole : day);
+    const shown = formatDate(timed ? whole : day, opts);
     if (!shown || shown === day || shown === whole) return whole;
     // a local time with no zone ("2026-11-23 12:48 PM ET") keeps its time: only the day is said
     return timed ? shown : shown + whole.slice(day.length).replace(/^T/, " ");
@@ -445,19 +468,32 @@ export function countedWords(text: string): string {
 
 /**
  * A server sentence as a business reader reads it: escapes decoded (_x0020_), object keys
- * as their kind, codes (LINE_NOT_INVOICED) as words, ISO dates as dates. Display only.
+ * as their kind, codes (LINE_NOT_INVOICED) as words, ISO dates as dates, percent spacing tightened.
+ * Display only.
  */
-export function readable(text: string | null | undefined): string {
+export function readable(text: string | null | undefined, opts?: { shortDates?: boolean; now?: Date }): string {
   if (!text) return "";
   return plainDates(
     plainReasons(withoutFloatNoise(countedWords(text)))
       .replace(/_x([0-9A-Fa-f]{4})_/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
       // "PO PO100109": the number already says what it is
       .replace(/\b(PO|SO) (?=\1-?\d)/g, "")
+      // "28 % below" -> "28% below"
+      .replace(/(\d)\s+%/g, "$1%")
       .replace(OBJECT_KEY, (_m, type: string) => typeLabel(type))
       .replace(/\b[A-Z]{2,}(?:_[A-Z]{2,})+:\s+(?=\w)/g, "")
       .replace(/\b[A-Z]{2,}(?:_[A-Z]{2,})+\b/g, (code) => code.replace(/_/g, " ").toLowerCase()),
+    { short: opts?.shortDates, now: opts?.now },
   );
+}
+
+const PROGRESS_UUID = /["“']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["”']?/gi;
+
+/** Never show raw UUIDs in live progress lines. */
+export function scrubProgressUuids(text: string): string {
+  if (!PROGRESS_UUID.test(text)) return text;
+  PROGRESS_UUID.lastIndex = 0;
+  return text.replace(PROGRESS_UUID, "that record").replace(/\s{2,}/g, " ").trim();
 }
 
 /** Business Central's OData escapes ("Sales_x0020_Shipment", a blank "_x0020_") decoded as UTF-16 code units. */

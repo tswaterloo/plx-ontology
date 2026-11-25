@@ -152,6 +152,17 @@ def present(pg: Any, guarded: str, *, opening: bool = False) -> list[str]:
             and not (opening and v in SEARCH_ONLY)]
 
 
+def teams_members_ready(pg: Any, schema: str) -> bool:
+    """Whether ``schema.teams_messages`` carries the conversation member columns
+    (``members``, ``addresses``, ``domains``, ``chat_topic``): safe before and after the
+    Teams members train swaps."""
+    row = pg.execute(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema = %s "
+        "AND table_name = 'teams_messages' AND column_name = ANY(%s)",
+        (schema, ["members", "addresses", "domains", "chat_topic"])).fetchone()
+    return bool(row and int(row[0]) == 4)
+
+
 # rows of one table (its newest, in the dates) whose reader's rows are walked newest first
 # for text matches before the word index's whole match is read (``search_sql``): a common
 # word ("purchase order": 263,186 matched mails, 20.7 s to read them all) fills the page
@@ -161,8 +172,17 @@ WALK_ROWS = 4000
 # the walk is for a common word only: the planner's estimate of the word index's whole
 # match (its column statistics, no row read, 0.5 ms) at or past this many text chunks.
 # A rarer one reads that match at once (``PO100109``: 9,072 estimated, 0.2 s; walked, its
-# 4,000 rows' own checks took 6.3 s); "purchase order" (121,662) or "invoice" walk.
-COMMON_CHUNKS = 50000
+# 4,000 rows' own checks took 6.3 s); "purchase order" (121,662) or "invoice" walk. The
+# planner's conjunction estimates run low (a 42,628 estimate read 274,600 chunks live), so
+# the cut sits under the mid-frequency band rather than just inside it.
+COMMON_CHUNKS = 30000
+
+# attachment walks keep the old, higher cut: scanning mail row by row for a mid-frequency
+# attachment word costs far more than reading its index match, while the rarer direct match
+# is still small enough ("Croda": 36,867 estimated; walking its mails took half a minute).
+ATTACH_COMMON_CHUNKS = 50000
+
+
 # a second walk stage, DEEPER times as deep, for a word the first stage found too few of
 # but often enough to fill the page there ("purchase order" in Teams: 5 in its newest
 # 4,000 messages; the word index's whole match, every document's chunks, took 18 s)
@@ -184,18 +204,20 @@ PARTY_ROWS = 2000
 OWN_TEXT_VIEWS = frozenset({"teams_messages"})
 
 
-def walk_rows(pg: Any, q: str | None) -> int:
+def walk_rows(pg: Any, q: str | None, common_chunks: int | None = None) -> int:
     """The ``walk`` parameter of ``search_sql`` for the tsquery ``q``: ``WALK_ROWS`` for
     a common word (``COMMON_CHUNKS``), else 1 (the newest row; the word index then reads
     the rest). Either gives the same rows in the same order: only the time differs."""
-    if q is None or COMMON_CHUNKS <= 0:
+    if common_chunks is None:
+        common_chunks = COMMON_CHUNKS
+    if q is None or common_chunks <= 0:
         return WALK_ROWS
     plan = pg.execute("EXPLAIN (FORMAT JSON) SELECT 1 FROM ontology.chunk_words w WHERE "
                       "w.words @@ %s::tsquery", (q,)).fetchone()[0]
     if isinstance(plan, str):
         import json
         plan = json.loads(plan)
-    return WALK_ROWS if plan[0]["Plan"]["Plan Rows"] >= COMMON_CHUNKS else 1
+    return WALK_ROWS if plan[0]["Plan"]["Plan Rows"] >= common_chunks else 1
 
 
 # a view's header tier, or the text tier of a view whose text sits in the sidecar, is read
@@ -322,10 +344,17 @@ def _side_pieces(view: str, biz: str, when: str, ops: Sequence[tuple[str, str]],
 def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
               until: bool, side: frozenset[str] = frozenset()) -> str:
     """One statement (named parameters q, since, until) counting every row of ``views``
-    the reader may read (through ``guarded``) that holds every query word in its header
-    or its text, in the dates: how many a word search matched in all, read from the word
-    indexes (handles only, never a row). Files (``SEARCH_ONLY``) are re-gated row by row
-    after the statement, so they are not counted here (the caller says so)."""
+    the reader may read that holds every query word in its header or its text, in the
+    dates: how many a word search matched in all, read from the word indexes (handles
+    only, never a row). The read rule is ``business_comms._where`` over the comms table,
+    the same definition the guarded view is made from; counting through the view itself
+    paid its security-barrier predicate once for every matched handle (minutes for a
+    common name). Files (``SEARCH_ONLY``) are re-gated row by row after the statement,
+    so they are not counted here (the caller says so)."""
+    from operating.pg import business_comms as bc
+    from operating.pg import business_views as bv
+    from operating.pg import sql_views
+    ai = guarded == sql_views.guarded_schema(biz)
     parts = []
     for view in views:
         if view in SEARCH_ONLY:
@@ -346,19 +375,18 @@ def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
                 words_from="ontology.chunk_words w")[0]
         dates = "".join(f" AND e.{when} {op} %({name})s" for on, op, name in (
             (since, ">=", "since"), (until, "<", "until")) if on)
-        # the match's handles read once (an init plan), then the reader's view by its handle
-        # index: ``handle IN (<union>)`` let the planner scan the reader's whole view with the
-        # access check on every row (live 11-24: 233 s and more for one word over 3 months of
-        # mail, 15 minutes of a search that held a page of 25)
-        parts.append(f"(SELECT count(*) FROM {guarded}.{view} e WHERE e.{when} IS NOT NULL"
-                     f"{dates} AND e.handle = ANY(ARRAY({header} UNION {text})))")
+        where, join = bc._where(bv.VIEWS[view], biz, guarded, ai=ai, a="e")
+        parts.append(f"(SELECT count(*) FROM {biz}.{view} e{join} WHERE e.{when} IS NOT NULL"
+                     f"{dates} AND " + " AND ".join(where) +
+                     f" AND e.handle = ANY(ARRAY({header} UNION {text})))")
     return ("SELECT " + " + ".join(parts)) if parts else ""
 
 
 def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
                party_kind: str | None, since: bool, until: bool, cursor: bool,
                cursor_tier: int = 0, side: frozenset[str] = frozenset(),
-               direct: frozenset[tuple[str, int]] = frozenset()) -> str:
+               direct: frozenset[tuple[str, int]] = frozenset(),
+               teams_members: bool = False) -> str:
     """The one statement (named parameters: q, party, since, until, c_at, c_h, k, k_own,
     walk; ``k_own`` <= ``k``: the rows read of mail and Teams, ``k`` of the files and in all).
     Its rows end with ``tier`` (1: the header holds every query word; 0: the text does, or
@@ -395,7 +423,7 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
         checked = " AND b.ai_ok" if view in SEARCH_ONLY else ""
         conds = []
         if party_kind is not None:
-            if not mail:
+            if not (mail or (teams_members and view == "teams_messages")):
                 continue
             conds.append(_PARTY[party_kind])
         # the dates (the walk's floor is read in them, never under a party's: a rare
@@ -404,7 +432,7 @@ def search_sql(views: Sequence[str], *, guarded: str, biz: str, query: bool,
             [f"e.{when} < %(until)s"] if until else []) + [f"e.{when} IS NOT NULL"]
         conds += dates
         after = f"(e.{when} < %(c_at)s OR (e.{when} = %(c_at)s AND e.handle < %(c_h)s))"
-        cols = _cols(view)
+        cols = _cols(view, teams_members=teams_members)
         newest = f"ORDER BY e.{when} DESC, e.handle DESC"
 
         def part(tier: int, where: Sequence[str], source: str = f"{guarded}.{view} e",
@@ -697,7 +725,7 @@ def words_held(row: Sequence[Any], words: Sequence[str]) -> int:
 
 
 def meaning_sql(views: Sequence[str], *, guarded: str, biz: str, party_kind: str | None,
-                since: bool, until: bool) -> str:
+                since: bool, until: bool, teams_members: bool = False) -> str:
     """The rows of ``views`` the reader's guarded views hold for the objects a meaning
     search ranked (parameter ids: their object ids; q: the tsquery whose chunk is quoted
     first; q_all: the word search's own every-word tsquery), each with its quoted chunk
@@ -709,7 +737,8 @@ def meaning_sql(views: Sequence[str], *, guarded: str, biz: str, party_kind: str
     parts = []
     for view in views:
         kind, when, _ = VIEWS[view]
-        if party_kind is not None and view != "emails":
+        if party_kind is not None and not (view == "emails"
+                                           or (teams_members and view == "teams_messages")):
             continue
         # the ranked objects' rows by the table's object id index (an init plan), then
         # read through the view by handle
@@ -728,7 +757,7 @@ def meaning_sql(views: Sequence[str], *, guarded: str, biz: str, party_kind: str
                  f"{biz}.{view} b ON b.handle = fd.version_handle AND b.object_ids[1] = "
                  "fd.object_id WHERE b.handle = e.handle AND w.words @@ %(q_all)s::tsquery "
                  f"AND fd.markings = '[]'{ok}))")
-        parts.append(f"(SELECT {_cols(view)}, 0 AS tier, {every} AS every, {oid} AS oid FROM "
+        parts.append(f"(SELECT {_cols(view, teams_members=teams_members)}, 0 AS tier, {every} AS every, {oid} AS oid FROM "
                      f"{guarded}.{view} e WHERE "
                      + " AND ".join(conds) + ")")
     if not parts:
@@ -741,12 +770,19 @@ _PARTY = {"address": "e.addresses @> ARRAY[%(party)s]::text[]",
           "record": "(e.customers && %(party)s::text[] OR e.suppliers && %(party)s::text[])"}
 
 
-def _cols(view: str) -> str:
+def _cols(view: str, *, teams_members: bool = False) -> str:
     """A search row's columns of the guarded view's row ``e``."""
     when = VIEWS[view][1]
-    addresses = ("e.sender_domain, e.addresses" if view == "emails" else
-                 "NULL::text AS sender_domain, NULL::text[] AS addresses")
-    return (f"'{view}'::text AS view, e.handle, {_TITLE.get(view, 'e.subject')} AS "
+    if view == "emails":
+        addresses = "e.sender_domain, e.addresses"
+    elif teams_members and view == "teams_messages":
+        addresses = "NULL::text AS sender_domain, e.addresses"
+    else:
+        addresses = "NULL::text AS sender_domain, NULL::text[] AS addresses"
+    title = ("coalesce(nullif(btrim(e.subject), ''), e.chat_topic)"
+             if teams_members and view == "teams_messages"
+             else _TITLE.get(view, "e.subject"))
+    return (f"'{view}'::text AS view, e.handle, {title} AS "
             f"title, {_SENDER.get(view, 'e.sender')} AS sender, e.{when} AS at, {addresses}")
 
 
@@ -827,15 +863,23 @@ def _objects(views: Sequence[str], biz: str, row: str) -> str:
         for view in views)
 
 
-def open_sql(views: Sequence[str], *, guarded: str, biz: str) -> str:
+def open_sql(views: Sequence[str], *, guarded: str, biz: str,
+             teams_members: bool = False) -> str:
     """One row by its handle through the guarded views and its document text (parameter
     h): no visible row, no text."""
     parts = []
     for view in views:
         kind, when, _ = VIEWS[view]
-        cols = ("e.to_addresses, e.cc_addresses" if view == "emails"
-                else "NULL::text[], NULL::text[]")
-        parts.append(f"SELECT '{view}'::text AS view, e.handle, e.subject, "
+        if view == "emails":
+            cols = "e.to_addresses, e.cc_addresses"
+            subj = "e.subject"
+        elif teams_members and view == "teams_messages":
+            cols = "e.members, e.addresses"
+            subj = "coalesce(nullif(btrim(e.subject), ''), e.chat_topic)"
+        else:
+            cols = "NULL::text[], NULL::text[]"
+            subj = "e.subject"
+        parts.append(f"SELECT '{view}'::text AS view, e.handle, {subj} AS subject, "
                      f"{_SENDER.get(view, 'e.sender')} AS sender, "
                      f"e.{when} AS at, {cols} FROM {guarded}.{view} e WHERE e.handle = %(h)s")
     return ("SELECT g.*, t.field_id, t.start, t.body, t.sender_class, t.field_path, "
@@ -904,9 +948,12 @@ def hits(rows: Sequence[Sequence[Any]], *, words: Sequence[str], party_: Party |
             if got[1]:
                 hit["snippet"]["truncated"] = True
         if party_ is not None and party_.kind in ("address", "domain"):
-            mine = (sender == party_.value if party_.kind == "address"
-                    else sender_domain == party_.value)
-            hit["direction"] = "from_them" if mine else "to_them"
+            if view == "teams_messages":
+                hit["direction"] = "in_chat"
+            else:
+                mine = (sender == party_.value if party_.kind == "address"
+                        else sender_domain == party_.value)
+                hit["direction"] = "from_them" if mine else "to_them"
             hit["matched_by"] = party_.kind
         out.append(hit)
     return out
@@ -1102,10 +1149,16 @@ def opened(rows: Sequence[Sequence[Any]], *, offset: int, most: int,
                            "text_offset": offset, "text_chars": len(text)}
     if len(pieces) > 1:
         out["head_chars"] = len(window) - (pieces[-1][1] - pieces[-1][0])
-    if to:
-        out["to"] = list(to)
-    if cc:
-        out["cc"] = list(cc)
+    if view == "teams_messages":
+        if to:
+            out["members"] = list(to)
+        if cc:
+            out["member_addresses"] = list(cc)
+    else:
+        if to:
+            out["to"] = list(to)
+        if cc:
+            out["cc"] = list(cc)
     if near and not out.get("near_found"):
         out["near_found"] = found is not None
     if offset + most < len(text):
@@ -1179,4 +1232,4 @@ __all__ = ["Party", "SEARCH_ONLY", "depth_said", "SearchInputError", "VIEWS", "a
            "attachment_blocked_sql", "attach_cursor", "read_attach_cursor", "attachment_floor_sql", "attachment_mails_sql", "attachment_sql", "listed_sql", "cursor_of", "exists_sql",
            "meaning_cursor", "read_meaning_cursor", "meaning_sql", "tsquery_any", "words_held",
            "hits", "instant", "open_sql", "opened", "party", "present", "read_cursor",
-           "search_sql", "searched", "snippet", "terms", "tsquery"]
+           "search_sql", "searched", "snippet", "teams_members_ready", "terms", "tsquery"]

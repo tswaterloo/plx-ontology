@@ -26,7 +26,7 @@ import zlib
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import AbstractSet, Any, Iterable, Iterator, Mapping, Sequence
 
 from ontology import identifiers as ids
 from ontology.mentions import cited_page
@@ -834,26 +834,51 @@ def _sender_clear(who: Any, prop: str, exclusion: Exclusion) -> bool:
     return isinstance(who, str) and bool(who.strip()) and bool(exclusion.identity_clear(who))
 
 
-def withheld_messages(conn: sqlite3.Connection, exclusion: Exclusion) -> set[str]:
+def withheld_messages(conn: Any, exclusion: Exclusion,
+                      objects: AbstractSet[str] | None = None) -> set[str]:
     """Object ids of every mail or Teams message whose sender the exclusion does not clear
     (excluded, undecidable, absent), and of the attachments and container members carried
     by such a mail, in whichever unit they sit: what an incremental run purges from the
     store before writing, so an excluded sender's message never stays in a colleague's
     mailbox or chat (``purge_withheld``). Values are read at any marking: this decides
-    only what is removed."""
+    only what is removed. ``objects``: when given, inspect only those objects (a delta
+    layer's own) instead of scanning every message in the store."""
     # Set-based: one pass over each type's objects and one over the sender property's
     # cells. A per-message lookup through the ``object_values`` view is planned from the
     # property's whole layout (every sender cell per message), quadratic in the messages:
     # a 335k-object delta layer never finished it within an hour.
+    if objects is not None and not objects:
+        return set()
     every: set[str] = set()
     verdict: dict[str, bool] = {}
+    wanted = sorted(objects) if objects is not None else None
     for object_type, prop in _MESSAGES.items():
-        ids = {row[0] for row in conn.execute(
-            "SELECT object_id FROM objects WHERE object_type = ?", (object_type,))}
-        every |= ids
-        for oid, who in conn.execute(
+        if wanted is None:
+            ids = {row[0] for row in conn.execute(
+                "SELECT object_id FROM objects WHERE object_type = ?", (object_type,))}
+            every |= ids
+            rows = conn.execute(
                 "SELECT object_id, value FROM object_values WHERE property = ? "
-                "AND superseded_at IS NULL", (prop,)):
+                "AND superseded_at IS NULL", (prop,))
+        else:
+            ids = set()
+            for start in range(0, len(wanted), 500):
+                ids |= {row[0] for row in conn.execute(
+                    "SELECT object_id FROM objects WHERE object_type = ? AND object_id IN "
+                    "(SELECT value FROM json_each(?))",
+                    (object_type, json.dumps(wanted[start:start + 500])))}
+            every |= ids
+            if not ids:
+                continue
+            rows_list: list[Any] = []
+            id_list = sorted(ids)
+            for start in range(0, len(id_list), 500):
+                rows_list.extend(conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE property = ? "
+                    "AND superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?))",
+                    (prop, json.dumps(id_list[start:start + 500]))))
+            rows = rows_list
+        for oid, who in rows:
             if oid not in ids:
                 continue
             # every current sender value must clear (two disagreeing values: withheld)

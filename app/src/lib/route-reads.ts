@@ -9,7 +9,7 @@ import { readAhead } from "./use-read";
 // test holds each to its table entry. Reads are looked up when called, not when this module loads.
 
 /** Routes whose page draws its main read from the kept reads (`useRead`, keyed by that URL). */
-export const STORED_ROUTES: readonly string[] = ["/assist", "/ops", "/trust", "/activity", "/templates", "/meetings", "/team"];
+export const STORED_ROUTES: readonly string[] = ["/assist", "/ops", "/data-health", "/activity", "/templates", "/meetings", "/team", "/orders", "/customers", "/suppliers", "/products", "/more"];
 
 /** The path of `href` without its query or fragment. */
 const routeOf = (href: string): string => href.split(/[?#]/)[0];

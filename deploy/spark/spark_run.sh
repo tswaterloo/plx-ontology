@@ -4,7 +4,7 @@
 # Spark's 20 cores).
 #   spark_run.sh [--host s7d3d|sb4ec] [--sha <commit>] [--ship <path>]... [--out <dir>]...
 #                [--env NAME]... [--state copy|none] [--pg box|standby] [--name <label>] [--spark-out <dir>]...
-#                -- <command> [args...]
+#                [--cleanup-ship] -- <command> [args...]
 # Postgres: every run logs in as plx_eval, a FULL reader (read-only): fine for owner-level evals
 #   and benches. Evals as a staff or restricted reader stay on the box until a scoped Spark
 #   role exists (the relay maps every Spark login to plx_eval).
@@ -42,12 +42,13 @@
 set -uo pipefail
 here=$(dirname "$(readlink -f "$0")")
 ssh_cfg=${PLX_SPARK_SSH_CONFIG:-/data/plx-state/ts-petra/ssh_config}
-host=${SPARK_HOST:-s7d3d} sha="" state=copy pg=${SPARK_PG:-box} name="" sandbox=auto ships=() outs=() envs=() sparkouts=()
+host=${SPARK_HOST:-s7d3d} sha="" state=copy pg=${SPARK_PG:-box} name="" sandbox=auto cleanup_ship=0 ships=() outs=() envs=() sparkouts=()
 while [ $# -gt 0 ]; do case "$1" in
   --host) host=$2; shift 2 ;; --sha) sha=$2; shift 2 ;; --ship) ships+=("$2"); shift 2 ;;
   --out) outs+=("$2"); shift 2 ;; --env) envs+=("$2"); shift 2 ;; --state) state=$2; shift 2 ;;
   --pg) pg=$2; shift 2 ;; --spark-out) sparkouts+=("$2"); shift 2 ;;
-  --name) name=$2; shift 2 ;; --no-sandbox) sandbox=never; shift ;; --sandbox) sandbox=always; shift ;; --) shift; break ;; -h|--help) sed -n 2,40p "$0"; exit 2 ;;
+  --name) name=$2; shift 2 ;; --no-sandbox) sandbox=never; shift ;; --sandbox) sandbox=always; shift ;;
+  --cleanup-ship) cleanup_ship=1; shift ;; --) shift; break ;; -h|--help) sed -n 2,40p "$0"; exit 2 ;;
   *) echo "spark_run: unknown option $1 (the command goes after --)" >&2; exit 2 ;; esac; done
 [ $# -gt 0 ] || { echo "usage: spark_run.sh [options] -- <command> [args...]" >&2; exit 2; }
 case "$host" in s7d3d|sb4ec) ;; *) echo "spark_run: --host is s7d3d or sb4ec" >&2; exit 2 ;; esac
@@ -102,8 +103,26 @@ $R "test -s ~/plx-run/r-$rh/spark_run_remote.py" 2>/dev/null || {
     && scp -q -F "$ssh_cfg" "$here/pathmap.c" "$host:plx-run/r-$rh/.pathmap.$$" \
     && scp -q -F "$ssh_cfg" "$here/spark_run_remote.py" "$host:plx-run/r-$rh/.remote.$$" \
     && $R "mv -f ~/plx-run/r-$rh/.pathmap.$$ ~/plx-run/r-$rh/pathmap.c && mv -f ~/plx-run/r-$rh/.guard.$$ ~/plx-run/r-$rh/standby_guard.py && mv -f ~/plx-run/r-$rh/.remote.$$ ~/plx-run/r-$rh/spark_run_remote.py"; } || { echo "spark_run: copy to $host failed" >&2; exit 97; }
+shipped_clean=()
+errlog=""
+cleanup() {
+  [ -n "$errlog" ] && rm -f "$errlog"
+  if [ "$cleanup_ship" = 1 ] && [ "${#shipped_clean[@]}" -gt 0 ]; then
+    local q="" r
+    for r in "${shipped_clean[@]}"; do
+      q="$q ~/plx-run/files$r"
+    done
+    $R "rm -rf --$q" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 for r in "${paths[@]+"${paths[@]}"}"; do
   [ -e "$r" ] || continue
+  if [ "$cleanup_ship" = 1 ]; then
+    for s in "${ship_paths[@]+"${ship_paths[@]}"}"; do
+      if [ "$s" = "$r" ]; then shipped_clean+=("$r"); break; fi
+    done
+  fi
   $R "mkdir -p -m 700 ~/plx-run/files$(dirname "$r")" && \
   rsync -a --delete -e "ssh -F $ssh_cfg -o BatchMode=yes" "$r" "$host:plx-run/files$(dirname "$r")/" \
     || { echo "spark_run: shipping $r failed" >&2; exit 97; }
@@ -129,6 +148,7 @@ rc=$?
 sleep 0.3
 python3 "$here/standby_settings_alarm.py" "$host" "$errlog" $([ "$pg" = standby ] && echo --asked) || true
 rm -f "$errlog"
+errlog=""
 for o in "${outs[@]+"${outs[@]}"}"; do
   r=$(norm "$o")
   rsync -a -e "ssh -F $ssh_cfg -o BatchMode=yes" "$host:plx-run/files$r/" "$r/" || { echo "spark_run: copying $r back failed" >&2; [ $rc != 0 ] || rc=97; }

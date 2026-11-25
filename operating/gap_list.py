@@ -90,6 +90,15 @@ def counts() -> list[dict[str, Any]]:
     return sorted(got.values(), key=lambda g: (-g["asked"], g["kind"], g["name"]))
 
 
+def defined(kind: str, name: str) -> bool:
+    """Whether a ``kind`` of ``name`` exists now (a gap that was closed after it was asked)."""
+    if kind == "measure":
+        from operating import measures
+        return name in measures.measures() or name in measures.reports()
+    from operating.ontology_tools_sql import _dictionary
+    return name in _dictionary()
+
+
 def said(kind: str, name: str, got: dict[str, Any]) -> str:
     """The sentence the reader's error carries."""
     what = f"No {kind} named {name!r} exists."

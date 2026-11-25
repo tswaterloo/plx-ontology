@@ -20,7 +20,8 @@ what changed since its last run:
   already holds; the rows an object had for its earlier version deleted
   (``store.delete_replaced``); new people added (a stored person is left as it is).
   Recorded per layer. Then **embedding**: pending rows, newest first, for at most
-  ``--embed-seconds`` (left to ``operating.embed.backfill`` while one runs).
+  ``--embed-seconds`` and inside the rolling ``--embed-write-mb-per-hour`` WAL budget
+  (left to ``operating.embed.backfill`` while one runs).
 
 ``--mode all`` does both in one run. The people exclusion is loaded first; without it
 nothing is written (exit 2). Prints one JSON report (counts and timings only). Exit: 0
@@ -40,6 +41,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -85,6 +87,32 @@ def delta_layers(state: Path, digest: str) -> list[str]:
     if not pointer or pointer.get("base_digest") != digest:
         return []
     return list(reversed(pointer["layers"]))
+
+
+_LAYER_STAMP = re.compile(r"delta-(\d{8})T(\d{6})")
+
+
+def layer_lag(layers: Sequence[str], indexed: set[str], *,
+              now: dt.datetime | None = None) -> dict[str, Any]:
+    """The search index's capture lag from the oldest published layer not yet indexed.
+
+    ``layers`` are oldest first and carry the delta cycle's UTC time in their filenames.
+    A missing/unparseable oldest name is reported as unknown rather than read as caught up.
+    """
+    left = [layer for layer in layers if layer not in indexed]
+    if not left:
+        return {"seconds": 0, "within_60_minutes": True, "unindexed_layers": 0}
+    oldest = left[0]
+    match = _LAYER_STAMP.search(Path(oldest).name)
+    if not match:
+        return {"seconds": None, "within_60_minutes": None, "unindexed_layers": len(left),
+                "oldest_layer": Path(oldest).name}
+    stamp = dt.datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").replace(
+        tzinfo=dt.timezone.utc)
+    now = now or dt.datetime.now(dt.timezone.utc)
+    seconds = max(0, int((now - stamp).total_seconds()))
+    return {"seconds": seconds, "within_60_minutes": seconds <= 3600,
+            "unindexed_layers": len(left), "oldest_layer": Path(oldest).name}
 
 
 def delta_running(state: Path, locks: Path = Path("/proc/locks")) -> bool:
@@ -519,6 +547,7 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
             partial = {}
             save_cursor(cursor_path, cursor)
         report["layers_behind"] = len([x for x in layers if x not in indexed])
+        report["search_lag"] = layer_lag(layers, set(indexed))
         wrote = any(layer.get("inserted") or layer.get("updated")
                     for layer in report["layers"].values())
         low = args.min_free_gb and _free_gb(state) < args.min_free_gb
@@ -555,11 +584,28 @@ def _embed_spark_first(args: argparse.Namespace, state: Path, conn: Any,
                        values: dict[str, str], embed: Callable[..., dict[str, Any]]
                        ) -> dict[str, Any]:
     """Step 3 on a fit Spark GPU (``spark_embed``) unless ``--embed-here``; no fit host, none
-    that starts, or one failing part way: here, on the box's CPU, for the budget left."""
+    that starts, or one failing part way: here, on the box's CPU, for the budget left.
+    ``--embed-write-mb-per-hour`` is a rolling WAL budget persisted across the one-shot
+    runs; once full, no remote host is started and no embedding batch begins."""
     from . import spark_embed
     budget = float(args.embed_seconds)
     started = _clock()
-    kw = dict(kinds=None, limit=None, order="recent", workers=1, bulk=False)
+    write_budget = None
+    write_mb = float(getattr(args, "embed_write_mb_per_hour", 0.0) or 0.0)
+    if write_mb > 0:
+        from .write_budget import RollingWriteBudget, WriteBudgetError
+        try:
+            write_budget = RollingWriteBudget(
+                state / "search" / "embed-write-budget.json", write_mb * 1024 * 1024)
+            write_budget.save()      # prove the accounting writable before any batch
+        except WriteBudgetError as exc:
+            return {"skipped": str(exc), "on": "not_started"}
+        if write_budget.blocked():
+            return {"skipped": "write_budget_exhausted", "on": "not_started",
+                    "write_budget": write_budget.status()}
+    kw = dict(kinds=None, limit=None, order="recent", workers=1, bulk=False,
+              batch_size=getattr(args, "embed_batch", None) or None,
+              row_cap=getattr(args, "embed_rows", None) or None, write_budget=write_budget)
     events: list[dict] = []
     hosts = [] if getattr(args, "embed_here", False) else spark_embed.fit_hosts(state)
     model = values.get("PLX_EMBED_MODEL") or config.DEFAULT_MODEL
@@ -707,6 +753,16 @@ def parser() -> argparse.ArgumentParser:
                         "runs one model in the follower's own process)")
     p.add_argument("--embed-seconds", type=float, default=900.0,
                    help="embed for at most this long per run (0: do not embed)")
+    p.add_argument("--embed-batch", type=int, default=0,
+                   help="hashes in one committed embedding batch (0: the default batch); "
+                        "small batches let the write budget stop close to its line")
+    p.add_argument("--embed-rows", type=int, default=0,
+                   help="wide-table chunk rows one committed embedding batch may update "
+                        "(0: no row cap); bounds the worst case when one hash is shared "
+                        "by many chunks")
+    p.add_argument("--embed-write-mb-per-hour", type=float, default=0.0,
+                   help="rolling WAL budget for embedding writes, MiB/hour across runs "
+                        "(0: unbounded); measured around each committed batch")
     p.add_argument("--embed-here", action="store_true",
                    help="embed on this machine's CPU even when a Spark GPU is fit")
     p.add_argument("--wait-seconds", type=float, default=0.0,
@@ -719,11 +775,27 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--embedded-gate-now", action="store_true",
                    help="recompute the embedded share now (default: reuse the result of the "
                         "last hour; the scan reads every chunk row)")
+    p.add_argument("--prepare-dir",
+                   help="prepare a compact snapshot here on the box for Spark compute")
+    p.add_argument("--export-dir",
+                   help="run read-only compute and export chunks, entities and vectors here")
+    p.add_argument("--context-dir",
+                   help="read prepared manifest and delta_owned snapshot from here (--export-dir)")
+    p.add_argument("--apply-dir",
+                   help="apply exported chunks, entities and vectors from this folder on the box")
     return p
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    p = parser()
+    args = p.parse_args(argv)
+    modes = sum(x is not None for x in (args.prepare_dir, args.export_dir, args.apply_dir))
+    if modes > 1:
+        p.error("--prepare-dir, --export-dir and --apply-dir are mutually exclusive")
+    if args.context_dir is not None and args.export_dir is None:
+        p.error("--context-dir requires --export-dir")
+    if modes == 1 and args.mode != "layers":
+        p.error("--prepare-dir, --export-dir and --apply-dir require --mode layers")
     try:   # a broken window lock never stops the job
         from ontology import window_lock
         held = window_lock.skip_report("search-follow", state_dir=args.state)
@@ -734,14 +806,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(held, indent=1, sort_keys=True))
         return 0
     try:
-        report = follow(args)
+        if args.prepare_dir is not None:
+            from . import follow_transport
+            report = follow_transport.prepare(args, Path(args.state))
+        elif args.export_dir is not None:
+            from . import follow_transport
+            report = follow_transport.compute(args, Path(args.state))
+        elif args.apply_dir is not None:
+            from . import follow_transport
+            report = follow_transport.apply(args, Path(args.state))
+        else:
+            report = follow(args)
     except st.SchemaMissing as missing:
         print(json.dumps({"refused": str(missing)}))
         return 2
     print(json.dumps(report, indent=1, sort_keys=True, default=str))
     if report.get("refused"):
         return 2
-    if report.get("layer_failed"):
+    if report.get("layer_failed") or report.get("bad") or report.get("stale"):
         return 1
     # A failing embedded share is a failed report line (the JSON above says so); it fails
     # the run only on request, so the timer does not flap while DI-06 is pending.

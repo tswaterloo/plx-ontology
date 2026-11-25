@@ -137,7 +137,14 @@ def apply(pg: Any, kind: str, stage_table: str, *, keys: Sequence[str] | None, c
             "FROM (EXCLUDED.object_ids, EXCLUDED.read_ids, EXCLUDED.col_objects, "
             "EXCLUDED.systems, EXCLUDED.copies)", (TABLE,))
         # 2. the staged rows decided against the people exclusion where they are
-        door.exclude(pg, s, only=TABLE, record=False, staged=(stage_table, f"{s}.lineage"))
+        staged_gone = door.exclude(pg, s, only=TABLE, record=False,
+                                   staged=(stage_table, f"{s}.lineage"))
+        revoked = door.present(pg, s) and (
+            door.classes_changed(pg, s, TABLE, stage_table)
+            or (bool(staged_gone) and bool(pg.execute(
+                f"SELECT EXISTS (SELECT 1 FROM {s}.{TABLE} o JOIN {stage_table} st "
+                "ON st.handle = o.handle WHERE o.payload IS NOT NULL AND st.payload IS NULL)"
+            ).fetchone()[0])))
         # 3. items of this kind (and these keys) the stage no longer has
         gone = [r[0] for r in pg.execute(
             f"DELETE FROM {s}.{TABLE} t WHERE t.page_kind = %s AND (%s::text[] IS NULL OR "
@@ -170,6 +177,8 @@ def apply(pg: Any, kind: str, stage_table: str, *, keys: Sequence[str] | None, c
         door.recount(pg, s, TABLE)
         if _pairs(pg, s) != before:
             gv.make_views(pg, s, follow=False)
+        if revoked:
+            door.bump_revoked(pg, s)
         inserted = sum(1 for x in made if x)
         out = {"staged": staged, "inserted": inserted, "updated": len(made) - inserted,
                "deleted": len(gone), "unchanged": staged - len(made), "masked": masked}

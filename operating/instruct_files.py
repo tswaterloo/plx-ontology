@@ -110,10 +110,43 @@ _RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
          'relationships/officeDocument" Target="{target}"/></Relationships>')
 
 
-def _docx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+def _int_count(raw: Any) -> Optional[int]:
+    """A non-negative whole record count, or None when absent or malformed."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def _table_notes(t: Mapping[str, Any]) -> list[str]:
+    if not (t.get("sql") or t.get("as_of") or t.get("measure")):
+        return []
+    from operating import chart_ooxml as ox
+    return ox.statement_provenance(
+        count=_int_count(t.get("count")),
+        as_of=t.get("as_of"), sql=str(t.get("sql") or ""), measure=t.get("measure"))
+
+
+def _citation_notes(c: Mapping[str, Any]) -> list[str]:
+    from operating import chart_ooxml as ox
+    return ox.statement_provenance(
+        count=_int_count(c.get("count")),
+        as_of=c.get("as_of"), sql=str(c.get("sql") or ""), measure=c.get("measure"),
+        title=str(c.get("label") or c.get("title") or ""))
+
+
+def _docx(content: str, charts: Sequence[Mapping[str, Any]] = (),
+          table_notes: Mapping[int, Sequence[str]] = (),
+          citations: Sequence[Sequence[str]] = ()) -> bytes:
     """A Word document of the content's blocks (``doc_render``: real heading styles, a
     styles part, letter pages, shaded header rows, numbers aligned, tracked changes for a
-    redline's marks) with each chart a native Word chart where it is placed."""
+    redline's marks) with each chart a native Word chart where it is placed and each cited
+    table or figure carrying its statement."""
     from operating import chart_docs, doc_render as dr
     from operating import chart_ooxml as ox
     parts: list[str] = []
@@ -130,7 +163,20 @@ def _docx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
             relations += chart_rels
             overrides.update(chart_types)
             continue
+        if block[0] == "cite":
+            lines = table_notes.get(block[1]) if isinstance(table_notes, Mapping) else ()
+            if lines:
+                parts.append("".join(
+                    f"<w:p>{chart_docs._w_run(ln, size=16, color=chart_docs.MUTED)}</w:p>"
+                    for ln in lines))
+            continue
         parts.append(dr.docx_block(block, ids))
+    if citations:
+        parts.append(dr.docx_block(("heading", 2, "Sources and statements"), ids))
+        for entry in citations:
+            parts.append("".join(
+                f"<w:p>{chart_docs._w_run(ln, size=16, color=chart_docs.MUTED)}</w:p>"
+                for ln in entry))
     while parts and parts[-1] == "<w:p/>":
         parts.pop()
     body = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -151,14 +197,60 @@ def _docx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
                          "word/_rels/document.xml.rels": ox.rels(relations), **extra})
 
 
-def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_ROWS
-          ) -> bytes:
+def _sources_rows(tables: Sequence[Mapping[str, Any]], charts: Sequence[Mapping[str, Any]],
+                  citations: Sequence[Mapping[str, Any]]) -> list[list[str]]:
+    """Rows for the Excel 'Sources' worksheet: every cited table, chart and prose figure
+    with its record count, as-of date, governed measure and full uncut SQL statement."""
+    rows: list[list[str]] = [["Item", "Records", "As of", "Measure", "Statement"]]
+
+    def _m_text(m: Any) -> str:
+        if not isinstance(m, Mapping):
+            return ""
+        name = str(m.get("name") or m.get("id") or "").strip()
+        bits = [str(m.get(k) or "").strip() for k in ("owner", "version") if m.get(k)]
+        return f"{name} ({', '.join(bits)})" if name and bits else name
+
+    for idx, t in enumerate(tables, 1):
+        if t.get("sql") or t.get("as_of") or t.get("measure"):
+            cnt = _int_count(t.get("count"))
+            rows.append([
+                str(t.get("title") or f"Table {idx}"),
+                str(cnt) if cnt is not None else "",
+                str(t.get("as_of") or "")[:10],   # guard-ok: ISO date prefix YYYY-MM-DD
+                _m_text(t.get("measure")),
+                " ".join(str(t.get("sql") or "").split()),
+            ])
+    for idx, ch in enumerate(charts, 1):
+        if ch.get("sql") or ch.get("as_of") or ch.get("measure"):
+            rows.append([
+                str(ch.get("title") or f"Chart {idx}"),
+                str(ch.get("rows") or len(ch.get("labels") or ())),
+                str(ch.get("as_of") or "")[:10],   # guard-ok: ISO date prefix YYYY-MM-DD
+                _m_text(ch.get("measure")),
+                " ".join(str(ch.get("sql") or "").split()),
+            ])
+    for idx, c in enumerate(citations, 1):
+        cnt = _int_count(c.get("count"))
+        rows.append([
+            str(c.get("label") or c.get("title") or f"Figure {idx}"),
+            str(cnt) if cnt is not None else "",
+            str(c.get("as_of") or "")[:10],   # guard-ok: ISO date prefix YYYY-MM-DD
+            _m_text(c.get("measure")),
+            " ".join(str(c.get("sql") or "").split()),
+        ])
+    return rows
+
+
+def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_ROWS,
+          tables: Sequence[Mapping[str, Any]] = (),
+          citations: Sequence[Mapping[str, Any]] = ()) -> bytes:
     """One row per line, cells split on "|" (a Markdown table's outer pipes and rule row
     dropped), typed and formatted as a person would (``doc_render.xlsx_sheet``); each chart
-    its rows and native chart on a sheet of its own."""
+    its rows and native chart on a sheet of its own; a 'Sources' sheet when any table or
+    citation carries its statement."""
     from operating import chart_ooxml as ox, doc_render as dr
     lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
-             and not _RULE_ROW.match(ln)]
+             and not dr.TABLE_CITE_AT.match(ln) and not _RULE_ROW.match(ln)]
     rows = []
     for line in lines[:cap]:
         row = line.strip()
@@ -174,27 +266,47 @@ def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX
         parts, types, made = ox.sheet_parts(chart, n, first, name)
         sheets.append((name, parts, types))
         first += made
+    if any(t.get("sql") or t.get("as_of") or t.get("measure") for t in tables) or citations:
+        s_idx = len(sheets) + 1
+        src_xml = dr.xlsx_sheet(_sources_rows(tables, charts, citations), MAX_COLS, literal=True)
+        sheets.append(("Sources", {f"xl/worksheets/sheet{s_idx}.xml": src_xml},
+                       {f"/xl/worksheets/sheet{s_idx}.xml": ox.SHEET_CT}))
     return ox.workbook(sheets, styles=dr.XLSX_STYLES)
 
 
-def _pdf(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+def _pdf(content: str, charts: Sequence[Mapping[str, Any]] = (),
+         table_notes: Mapping[int, Sequence[str]] = (),
+         citations: Sequence[Sequence[str]] = ()) -> bytes:
     from operating import doc_render
     try:
-        return doc_render.pdf(content, charts)
+        return doc_render.pdf(content, charts, table_notes=table_notes, citations=citations)
     except ImportError:
         raise FileRefused("pdf_unavailable") from None
 
 
-def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
+def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = (),
+          table_notes: Mapping[int, Sequence[str]] = (),
+          citations: Sequence[Sequence[str]] = ()) -> bytes:
     """A deck: a slide per heading (its lines below it; the first lines before any heading
     a slide of their own), a slide per chart where it is placed (on its heading's slide
-    when that has a few lines only), and a Markdown table a native table on its slide."""
+    when that has a few lines only), and a Markdown table a native table on its slide.
+    Cited tables and figures carry their source line on the slide and full statements in
+    speaker notes."""
     from operating import chart_docs, doc_render as dr
     slides: list[dict[str, Any]] = []
     current: Optional[dict[str, Any]] = None
+    last_table_slides: list[dict[str, Any]] = []
     for block in dr.blocks(content, charts):
         kind = block[0]
+        if kind == "cite":
+            lines = list(table_notes.get(block[1]) or ()) if isinstance(table_notes, Mapping) else []
+            if lines:
+                for sl in last_table_slides:
+                    sl["notes"] = list(sl.get("notes") or ()) + lines
+            last_table_slides = []
+            continue
         if kind == "chart":
+            last_table_slides = []
             chart = block[1]
             if current is not None and current.get("chart") is None \
                     and not current.get("table") \
@@ -207,6 +319,7 @@ def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
                 slides.append(current)
             continue   # the lines after it (until a heading) are that slide's too
         if kind == "heading":
+            last_table_slides = []
             current = {"title": dr.plain(block[2]), "lines": []}
             slides.append(current)
             continue
@@ -226,6 +339,7 @@ def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
             body = [[dr.shown(c, kinds[n]) for n, c in enumerate(r)]
                     for r in (rows[1:] if header else rows)] or [[""] * width]
             title = current["title"]
+            last_table_slides = []
             for start in range(0, len(body), SLIDE_TABLE_ROWS):
                 if start:   # every row kept: the rest on slides of their own, header again
                     current = {"title": f"{title} (continued)".strip(), "lines": []}
@@ -236,9 +350,16 @@ def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = ()) -> bytes:
                     "right": [k is not None for k in kinds],
                     "widths": [max(3, min(40, max(len(r[n]) for r in rows)))
                                for n in range(width)]}
+                last_table_slides.append(current)
             continue
+        last_table_slides = []
         text = dr.plain(block[2] if kind == "bullet" else block[1])
         current["lines"].append(("- " + text) if kind == "bullet" else text)
+    if citations:
+        summary_lines = [ln for entry in citations for ln in entry if not ln.startswith("Statement: ")]
+        all_notes = [ln for entry in citations for ln in entry]
+        slides.append({"title": "Sources", "lines": summary_lines or ["Statements in speaker notes."],
+                       "notes": all_notes})
     return chart_docs.pptx(slides)
 
 
@@ -250,15 +371,35 @@ def data_rows(content: str) -> int:
                and not _TABLE_AT.match(ln) and not _RULE_ROW.match(ln))
 
 
+def _mask_measure(measure: Any) -> Any:
+    if not isinstance(measure, Mapping):
+        return measure
+    from operating.doc_render import without_doubt_marks
+    return {k: (without_doubt_marks(mask_served(v)) if isinstance(v, str) else v)
+            for k, v in measure.items()}
+
+
+def _masked_citation(c: Mapping[str, Any]) -> dict[str, Any]:
+    from operating.doc_render import without_doubt_marks
+    out = dict(c)
+    for k in ("label", "title", "sql"):
+        if isinstance(out.get(k), str):
+            out[k] = without_doubt_marks(mask_served(out[k]))
+    if isinstance(out.get("measure"), Mapping):
+        out["measure"] = _mask_measure(out["measure"])
+    return out
+
+
 def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
-         tables: Sequence[Mapping[str, Any]] = ()) -> bytes:
+         tables: Sequence[Mapping[str, Any]] = (),
+         citations: Sequence[Mapping[str, Any]] = ()) -> bytes:
     """The file of ``kind`` holding ``content`` (lines; a docx reads its Markdown headings,
     bullets, bold and tables; an xlsx row's cells split on "|"; a pptx a slide per
     heading), ``charts`` (drawn charts, ``models.AskChart`` dicts, at most
-    ``MAX_DOC_CHARTS``) where "[chart N]" lines place them, and ``tables`` (``table``:
+    ``MAX_DOC_CHARTS``) where "[chart N]" lines place them, ``tables`` (``table``:
     every row of a statement read as the person) where "[table N]" lines place them (the
-    rest at the end). Content of more rows than an Excel or CSV file takes is refused,
-    never cut."""
+    rest at the end), and ``citations`` (statements behind prose figures). Content of more
+    rows than an Excel or CSV file takes is refused, never cut."""
     if kind not in KINDS:
         raise FileRefused("kind_unknown")
     if len(content) > MAX_CONTENT or not (content.strip() or charts or tables):
@@ -268,46 +409,66 @@ def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
     if kind in ("xlsx", "csv") and data_rows(content) > MAX_ROWS:
         raise FileRefused("content_size")
     held = MAX_TABLE_ROWS[kind]
-    if held is not None and any(int(t.get("count") or 0) > held for t in tables):
+    if held is not None and any((_int_count(t.get("count")) or 0) > held for t in tables):
         raise FileRefused("table_size")
-    content, cap = _with_tables(kind, content, tables)
+    clean_tables = [_masked_citation(t) for t in tables]
+    clean_cites = [_masked_citation(c) for c in citations]
+    table_notes = {i: n for i, t in enumerate(clean_tables) if (n := _table_notes(t))}
+    cite_notes = [n for c in clean_cites if (n := _citation_notes(c))]
+    content, cap = _with_tables(kind, content, clean_tables, table_notes)
     content = mask_served(content)   # an exported file never holds a card or a secret
     from operating.doc_render import without_doubt_marks
     content = without_doubt_marks(content)   # "(unverified)" is the chat's, not the file's
     charts = [_masked(c) for c in list(charts)[:MAX_DOC_CHARTS]]
-    if kind in ("xlsx", "csv"):
-        return {"xlsx": _xlsx, "csv": _csv}[kind](content, charts, cap)
-    return {"docx": _docx, "pdf": _pdf, "pptx": _pptx}[kind](content, charts)
+    if kind == "xlsx":
+        return _xlsx(content, charts, cap, clean_tables, clean_cites)
+    if kind == "csv":
+        return _csv(content, charts, cap)
+    return {"docx": _docx, "pdf": _pdf, "pptx": _pptx}[kind](
+        content, charts, table_notes, cite_notes)
 
 
-def table(title: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]]
+def table(title: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]],
+          *, sql: str = "", as_of: Any = None, measure: Optional[Mapping[str, Any]] = None
           ) -> dict[str, Any]:
-    """A table for ``make``: its title and its header and rows as Markdown table lines
-    (a cell's "|" and line breaks read as "/" and spaces, so no cell splits)."""
+    """A table for ``make``: its title, its header and rows as Markdown table lines
+    (a cell's "|" and line breaks read as "/" and spaces, so no cell splits), and its
+    optional statement citation (``sql``, ``as_of``, ``measure``)."""
     def cell(value: Any) -> str:
         return re.sub(r"\s*[\r\n]+\s*", " ", str(value)).replace("|", "/").strip()
     lines = ["| " + " | ".join(cell(c) for c in columns[:MAX_COLS]) + " |"]
     lines += ["| " + " | ".join(cell(c) for c in list(r)[:MAX_COLS]) + " |" for r in rows]
-    return {"title": str(title or "").strip(), "lines": "\n".join(lines),
-            "count": len(rows)}
+    out: dict[str, Any] = {"title": str(title or "").strip(), "lines": "\n".join(lines),
+                           "count": len(rows)}
+    if sql and str(sql).strip():
+        out["sql"] = str(sql).strip()
+    if as_of:
+        out["as_of"] = str(as_of)
+    if isinstance(measure, Mapping):
+        out["measure"] = dict(measure)
+    return out
 
 
-def _with_tables(kind: str, content: str, tables: Sequence[Mapping[str, Any]]
+def _with_tables(kind: str, content: str, tables: Sequence[Mapping[str, Any]],
+                 table_notes: Mapping[int, Sequence[str]] = ()
                  ) -> tuple[str, int]:
     """``content`` with each table's lines where its "[table N]" line stands (unplaced ones
     at the end; a line naming no table dropped), and the rows an Excel or CSV file may
     then hold. A title goes above its table (a heading; in Excel a row of its own when the
-    sheet holds more than the table; a CSV holds rows only)."""
+    sheet holds more than the table; a CSV holds rows only). For Word, PDF and PowerPoint,
+    a table with statement provenance emits a ``[table-cite i]`` marker right below it."""
     if not tables:
         return content, MAX_ROWS
     own = [ln for ln in content.split("\n") if ln.strip() and not _TABLE_AT.match(ln)]
+    mark_cite = kind in ("docx", "pdf", "pptx")
 
-    def block(t: Mapping[str, Any], titled: bool = True) -> list[str]:
+    def block(idx: int, t: Mapping[str, Any], titled: bool = True) -> list[str]:
         title = str(t.get("title") or "") if titled else ""
         head = [] if not title or kind == "csv" or (kind == "xlsx" and not own and
                                                     len(tables) == 1) \
             else [title if kind == "xlsx" else f"## {title}"]
-        return head + str(t.get("lines") or "").split("\n") + [""]
+        tail = [f"[table-cite {idx}]", ""] if mark_cite and idx in table_notes else [""]
+        return head + str(t.get("lines") or "").split("\n") + tail
 
     out, used = [], set()
     for line in content.split("\n"):
@@ -318,13 +479,13 @@ def _with_tables(kind: str, content: str, tables: Sequence[Mapping[str, Any]]
                 used.add(n)
                 said = [ln for ln in out if ln.strip()]
                 # placed right under a heading: that heading is its title (never two)
-                out += block(tables[n], not (said and _HEADING_LINE.match(said[-1])))
+                out += block(n, tables[n], not (said and _HEADING_LINE.match(said[-1])))
             continue
         out.append(line)
     for n, t in enumerate(tables):
         if n not in used:
-            out += block(t)
-    held = sum(int(t.get("count") or 0) + 3 for t in tables)
+            out += block(n, t)
+    held = sum((_int_count(t.get("count")) or 0) + 3 for t in tables)
     return "\n".join(out), MAX_ROWS + held
 
 
@@ -359,19 +520,29 @@ def _csv(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX_
 
 def _masked(chart: Mapping[str, Any]) -> dict[str, Any]:
     """A chart's words as a file holds them: no card or secret in its title, labels,
-    series names or statement."""
+    series names, panels, measure or statement."""
     from operating.doc_render import without_doubt_marks
+    clean = lambda text: without_doubt_marks(mask_served(str(text)))
     out = dict(chart)
-    for key in ("title", "x", "sql"):
+    for key in ("title", "x", "sql", "currency", "open_period", "first_period"):
         if isinstance(out.get(key), str):
-            out[key] = without_doubt_marks(mask_served(out[key]))
-    out["labels"] = [mask_served(str(v)) for v in out.get("labels") or ()]
-    out["series"] = [{**s, "name": mask_served(str(s.get("name") or ""))}
+            out[key] = clean(out[key])
+    out["labels"] = [clean(v) for v in out.get("labels") or ()]
+    out["series"] = [{**s, "name": clean(s.get("name") or "")}
                      for s in out.get("series") or ()]
+    if isinstance(out.get("measure"), Mapping):
+        out["measure"] = _mask_measure(out["measure"])
     if out.get("panels"):
-        out["panels"] = [{**p, "title": mask_served(str(p.get("title") or "")),
-                          "labels": [mask_served(str(v)) for v in p.get("labels") or ()]}
-                         for p in out["panels"]]
+        out["panels"] = [
+            {
+                **p,
+                "title": clean(p.get("title") or ""),
+                "labels": [clean(v) for v in p.get("labels") or ()],
+                "series": [{**s, "name": clean(s.get("name") or "")}
+                           for s in p.get("series") or ()],
+            }
+            for p in out["panels"]
+        ]
     return out
 
 

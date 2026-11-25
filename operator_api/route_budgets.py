@@ -72,6 +72,7 @@ ROUTES: dict[str, Budget] = {
     "/api/object-impact/{mode}/{object_type}/{object_id:path}": _c(4),
     "/api/home": _c(5, (20, 657)),
     "/api/home/bundle": _c(5, (794, 3109)),
+    "/api/home/needs": _c(5),
     "/api/sidebar": _c(5, (15, 237)),
     "/api/briefing": _c(5, (34, 1515)),
     "/api/briefing/items": _c(5, (60, 479)),

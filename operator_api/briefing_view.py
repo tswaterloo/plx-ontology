@@ -65,6 +65,13 @@ def _answer_kept(answer: Any) -> dict[str, Any]:
     """What feedback on an answer attaches: its words, facts (with citations) and subjects,
     as served to its reader (bounded)."""
     try:
+        queries = [
+            {"title": c.title, "sql": c.sql, "measure_id": c.measure.id if c.measure else None}
+            for c in (getattr(answer, "charts", None) or ()) if getattr(c, "sql", None)
+        ] + [
+            {"title": ct.about, "sql": ct.query, "measure_id": ct.measure.id if ct.measure else None}
+            for ct in (getattr(answer, "cited", None) or ()) if getattr(ct, "query", None)
+        ]
         return {"answer": (answer.direct_answer or "")[:4000],
                 "conversation_id": answer.conversation_id,
                 "as_of": answer.freshness.as_of if answer.freshness else None,
@@ -72,7 +79,8 @@ def _answer_kept(answer: Any) -> dict[str, Any]:
                     {"system": s.system, "handle": s.handle, "label": s.label}
                     for s in f.sources[:8]]} for f in answer.facts[:30]],
                 "subjects": [{"type": o.type, "object_id": o.object_id, "label": o.label}
-                             for o in answer.subjects[:20]]}
+                             for o in answer.subjects[:20]],
+                "queries": queries}
     except Exception:  # noqa: BLE001 - the feedback keeps the question alone
         return {}
 

@@ -78,7 +78,6 @@ def _file(out: Path, item_id: str) -> Path:
 
 
 def ask_all(items: Sequence[Mapping[str, Any]], out: Path, api_args: str, mint: str, link: str, conc: int) -> int:
-    os.environ["PLX_ASK_SIMPLE"] = "1"   # the live Ask path, in this process only
     from scripts import eval_generative as eg
     from scripts import eval_live_ops as lo
     from scripts.eval_ask_general import answer_text

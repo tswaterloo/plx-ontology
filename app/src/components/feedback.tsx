@@ -21,10 +21,11 @@ export function feedbackNote(reasons: string[], note: string): string | undefine
 }
 
 /** The thumbs-down body: reasons and words, the claims marked wrong, the right answer. */
-export function downBody(answerId: string, reasons: string[], note: string, claims: number[], expected: string): FeedbackRequest {
+export function downBody(answerId: string, reasons: string[], note: string, claims: number[], expected: string, review = false): FeedbackRequest {
   const body: FeedbackRequest = { answer_id: answerId, rating: -1, note: feedbackNote(reasons, note) };
   if (claims.length) body.claims = [...claims].sort((a, b) => a - b);
   if (expected.trim()) body.expected = expected.trim().slice(0, FEEDBACK_MAX);
+  if (review) body.review = true;
   return body;
 }
 
@@ -40,6 +41,7 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
   const [note, setNote] = useState("");
   const [claims, setClaims] = useState<number[]>([]);
   const [expected, setExpected] = useState("");
+  const [review, setReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const noteId = useId();
   const expectedId = useId();
@@ -49,7 +51,7 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
     const prev = state;
     setState("sending");
     try {
-      await sendFeedback(rating === -1 ? downBody(answerId, reasons, note, claims, expected) : { answer_id: answerId, rating });
+      await sendFeedback(rating === -1 ? downBody(answerId, reasons, note, claims, expected, review) : { answer_id: answerId, rating });
       setState(rating === 1 ? "up-sent" : "down-sent");
     } catch (e) {
       setError(plainError(e));
@@ -164,6 +166,10 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
               className="h-8 w-full rounded-lg bg-surface px-3 text-[13px] placeholder:text-faint focus:outline-2 focus:outline-ring"
             />
           </div>
+          <label className="flex items-center gap-2 text-[12px] text-muted">
+            <input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} />
+            Ask a person to review this answer (the right answer above is the fix they are asked to approve)
+          </label>
           <div className="flex items-center justify-end gap-1">
             <button type="button" onClick={() => setState("idle")} className="inline-flex h-8 items-center rounded-lg px-3 text-[13px] text-muted hover:bg-hover hover:text-fg cursor-pointer">
               Cancel

@@ -44,6 +44,7 @@ without a state directory), 0600 in a 0700 folder.
 
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 import logging
 import os
@@ -473,6 +474,60 @@ class WorkLog:
                 "e.reader AND t.thread = e.thread WHERE e.seq IN (SELECT value FROM "
                 "json_each(?)) ORDER BY e.seq DESC", (json.dumps(page),)).fetchall()
         return [self._event(r) for r in rows], matched
+
+    def observed(self) -> Optional[dict[str, Any]]:
+        """How the Ask has been doing, from what each answer kept beside it (``_review``: the
+        stream's time and the steps it took) and the questions that ended in an error: per day
+        the answers, the failures, the median and slowest time and the median steps, and every
+        failure with when, the question and the error. None while the people exclusion cannot
+        decide (fail closed). Nothing is sampled or cut: every ask is counted."""
+        guard = self.guard()
+        if guard is None or getattr(guard, "unavailable", "absent"):
+            return None
+        days: dict[str, dict[str, Any]] = {}
+        failures: list[dict[str, Any]] = []
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT e.seq, e.at, e.reader, e.people, e.verb, e.title, e.source_id, "
+                "json_extract(e.detail, '$._review.stream_ms') AS ms, "
+                "json_extract(e.detail, '$._review.error') AS err, "
+                "json_extract(e.detail, '$._review.cost.cost_usd_estimate') AS cost, "
+                "json_array_length(json_extract(e.detail, '$._review.steps')) AS steps, "
+                "json_extract(e.detail, '$.assistant_unavailable') AS unavailable "
+                "FROM event e WHERE e.kind = 'ask' AND e.source = 'ask' ORDER BY e.seq")
+            for r in cursor:
+                if _row_excluded(guard, r):
+                    continue
+                day = days.setdefault(str(r["at"])[:10], {"day": str(r["at"])[:10], "answered": 0,
+                                                          "failed": 0, "unavailable": 0, "ms": [],
+                                                          "steps": [], "costs": []})
+                if r["verb"] == "failed":
+                    day["failed"] += 1
+                    failures.append({"at": r["at"], "question": r["title"] or "",
+                                     "error": r["err"] or "unknown"})
+                    continue
+                day["answered"] += 1
+                if r["unavailable"]:
+                    day["unavailable"] += 1
+                if r["ms"] is not None:
+                    day["ms"].append(int(r["ms"]))
+                if r["steps"] is not None:
+                    day["steps"].append(int(r["steps"]))
+                if r["cost"] is not None:
+                    day["costs"].append(Decimal(str(r["cost"])))
+        out = []
+        for day in sorted(days.values(), key=lambda d: d["day"], reverse=True):
+            ms, steps = sorted(day.pop("ms")), sorted(day.pop("steps"))
+            costs = day.pop("costs")
+            out.append({**day,
+                        # the model run's own reported cost, summed over the answers that
+                        # carry one; the rest (answered before cost was kept) are not zeros
+                        "cost_usd": f"{sum(costs, Decimal(0)):.4f}" if costs else None,
+                        "cost_answers": len(costs),
+                        "median_ms": ms[len(ms) // 2] if ms else None,
+                        "slowest_ms": ms[-1] if ms else None,
+                        "median_steps": steps[len(steps) // 2] if steps else None})
+        return {"days": out, "failures": list(reversed(failures))}
 
     def ask_detail(self, reader_key: str, answer_id: str) -> Optional[dict[str, Any]]:
         """The reader's own Ask answer (its ``detail``) by answer id; None when it is not

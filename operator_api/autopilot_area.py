@@ -41,6 +41,7 @@ from operating import autopilot_queue
 from operating.autopilot_records import object_href
 from operating import learning
 from operating.alert_kinds import kind_prepared_by
+from operating.assist_matters import clean_note_spacing
 from .presentation import counted_words
 from operating import autopilot_write as aw
 from operating import workflows as wf
@@ -204,7 +205,7 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
         subject=title[:300], kind="alert", summary=summary[:600],
         alert_kind=kind_prepared_by(str(item.get("autopilot") or "")),
         message=counted_words(shown_message(prepared.get("context") or happened.get("snippet"))),
-        facts=facts[:ALERT_FACTS], note=counted_words(note[:300]), links=links[:4],
+        facts=facts[:ALERT_FACTS], note=clean_note_spacing(counted_words(note[:300])), links=links[:4],
         created_at=str(item["created_at"]))
 
 
@@ -402,9 +403,12 @@ def system_of(item: Mapping[str, Any]) -> str:
 
 
 def _person_name(role: str) -> str:
-    """A ``person:<address>`` role's person, by the address's first word."""
-    local = role[len("person:"):].split("@", 1)[0]
-    return local.replace(".", " ").replace("_", " ").strip().title()
+    """A ``person:<address>`` role's person, by the address's first word; '' for an opaque
+    id or UUID so the directory name lookup resolves it instead."""
+    from operating.assist_matters import name_from_token
+    raw = role[len("person:"):].strip()
+    local = raw.split("@", 1)[0] if "@" in raw else raw
+    return name_from_token(local)
 
 
 class AutopilotAreaMixin(AssistSwitchMixin):
@@ -1176,12 +1180,15 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         taken) is not here."""
         state = self._apa_state()
         hands, mine_ids = self._apa_handed(state), self._apa_me(reader)
+        from operating.assist_matters import mc_approval_workflows
+        no_mc = mc_approval_workflows()    # decided in Mission Control, never listed here
         # every queue trigger's own cards stay here until L1 deletes the triggers (ASSIST specs 5;
         # open-assist3-l1-draft-executor): a draft already prepared is never taken off the list.
         # A matter made from a queue item is listed as that item (``assist_routes``)
         items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
             reader, also=self._apa_to_me(hands, mine_ids), pools=self._apa_pools(reader)) or ()
-            if i["mine"] or i.get("handed") or i.get("pooled")]
+            if (i["mine"] or i.get("handed") or i.get("pooled"))
+            and i["autopilot"] not in no_mc]
         decisions = self._apa_decisions(state)
         never = self._apa_never(state, self._apa_me(reader))
         path = self._ap_queue_path()  # type: ignore[attr-defined]
@@ -1256,6 +1263,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                     cc=[str(t.get("address") if isinstance(t, Mapping) else t)
                         for t in envelope.get("cc") or ()],
                     body=body, edited=bool(again and dec.get("text")),
+                    note=clean_note_spacing(str(prepared.get("warning") or "")),
                     ask=str((card or {}).get("ask") or "") if isinstance(card, Mapping) else "",
                     facts=[str(f) for f in (card or {}).get("facts") or ()]
                     if isinstance(card, Mapping) else [],
@@ -1425,8 +1433,32 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             summary=str(prepared.get("summary") or "")[:300], jobs=jobs, todos=todos,
             # a decision the job came with (an MC approval): its recommendation, reasons
             # and where it is decided, on the same card as the proposed changes
-            facts=facts[:ALERT_FACTS], links=links[:4], note=note[:300],
+            facts=facts[:ALERT_FACTS], links=links[:4], note=clean_note_spacing(note[:300]),
             created_at=str(item["created_at"]))
+
+    def prepare_proposal(self, reader: Reader, proposal: Mapping[str, Any], *, origin: str,
+                         citations: Any = ()) -> str:
+        """One proposed change (``{"tool", "arguments"}``) prepared through the prepared-writes desk as the
+        reader (the record read from its system, before and after, could they make it themselves, the
+        people exclusion): the prepared id. The one step an autopilot job item and an Assist job piece
+        share; nothing is written here, the card takes the two-step confirm."""
+        from operating import autopilot_jobs as aj
+        desk, person = self._pw_desk(reader), self._pw_person(reader)  # type: ignore[attr-defined]
+        args = dict(proposal["arguments"])
+        cites = [*[c for c in args.pop("citations", None) or () if isinstance(c, str)], *citations][:20]
+        if proposal["tool"] == aj.DOC_TOOL_NAME:
+            got = self._pw_doc_tool(reader, desk, person).call(args)  # type: ignore[attr-defined]
+            if not isinstance(got, Mapping) or not got.get("prepared_id"):
+                raise UserFacing("action_refused", " ".join(
+                    str(x) for x in (got or {}).get("refused") or ["Refused."])[:600], 422)
+            return str(got["prepared_id"])
+        # the same step as the Ask's: a file only from the reader's own made files
+        args, refused = self._pw_resolve(reader, args)  # type: ignore[attr-defined]
+        if refused:
+            raise UserFacing("action_refused", refused, 422)
+        card = self._pw_do(lambda: desk.prepare(person, args, origin=origin,  # type: ignore[attr-defined]
+                                                citations=cites))
+        return str(card["prepared_id"])
 
     def autopilot_job_prepare(self, reader: Reader, item_id: str, index: int
                               ) -> m.PreparedWrite:
@@ -1461,25 +1493,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                 return self._pw_card(card)  # type: ignore[attr-defined]
             # expired, or confirmed with nothing written: prepared anew below (every check
             # again, the record read again), the job then answers the new change
-        proposal = proposals[index]
-        args = dict(proposal["arguments"])
-        cites = [*[c for c in args.pop("citations", None) or () if isinstance(c, str)],
-                 *[c for c in found.get("citations") or () if isinstance(c, str)]][:20]
-        origin = str(found.get("autopilot") or "autopilot")
-        if proposal["tool"] == aj.DOC_TOOL_NAME:
-            got = self._pw_doc_tool(reader, desk, person).call(args)  # type: ignore[attr-defined]
-            if not isinstance(got, Mapping) or not got.get("prepared_id"):
-                raise UserFacing("action_refused", " ".join(
-                    str(x) for x in (got or {}).get("refused") or ["Refused."])[:600], 422)
-            pid = str(got["prepared_id"])
-        else:
-            # the same step as the Ask's: a file only from the reader's own made files
-            args, refused = self._pw_resolve(reader, args)  # type: ignore[attr-defined]
-            if refused:
-                raise UserFacing("action_refused", refused, 422)
-            card = self._pw_do(lambda: desk.prepare(person, args, origin=origin,  # type: ignore[attr-defined]
-                                                    citations=cites))
-            pid = str(card["prepared_id"])
+        pid = self.prepare_proposal(reader, proposals[index], origin=str(found.get("autopilot") or "autopilot"),
+                                    citations=[c for c in found.get("citations") or () if isinstance(c, str)])
         with Journal(state / JOBS_FILE).locked() as held:
             last = [r.get("prepared_id") for r in held.rows
                     if r.get("item_id") == item_id and r.get("index") == index]
@@ -1905,15 +1920,17 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         latest = aw._outcomes(rows)
         undo_state = {of: latest.get(key) if key else "unknown"
                       for of, key in undo_key.items()}
+        audit_rows = [r for r in reversed(rows) if r.get("event") in AUDIT_EVENTS]
+        needed_ids = {str(r["item_id"]) for r in audit_rows if r.get("item_id")}
         titles: dict[str, str] = {}
         path = self._ap_queue_path()  # type: ignore[attr-defined]
-        if path is not None and path.exists():
+        if needed_ids and path is not None and path.exists():
             for it in self._ap_visible(reader, everyone=True) or ():  # type: ignore[attr-defined]
-                titles[it["item_id"]] = autopilot_engine.shown_item(it)["title"]
+                iid = str(it.get("item_id") or "")
+                if iid in needed_ids:
+                    titles[iid] = autopilot_engine.shown_item(it)["title"]
         out = []
-        for r in reversed(rows):
-            if r.get("event") not in AUDIT_EVENTS:
-                continue
+        for r in audit_rows:
             target = r.get("target")
             done = r.get("event") == "outcome" and r.get("status") == "done" and not r.get("of")
             status = r.get("status")

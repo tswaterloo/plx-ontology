@@ -40,7 +40,7 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/work-log": { icon: History, hue: "text-[var(--place-activity)]" },
   "/templates": { icon: FileText, hue: "text-[var(--place-activity)]" },
   "/ops": { icon: Activity, hue: "text-[var(--place-activity)]" },
-  "/trust": { icon: Gauge, hue: "text-[var(--place-activity)]" },
+  "/data-health": { icon: Gauge, hue: "text-[var(--place-activity)]" },
   "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },
   "/memory": { icon: BookMarked, hue: "text-[var(--place-ask)]" },
   "/records": { icon: Database, hue: "text-[var(--place-work)]" },

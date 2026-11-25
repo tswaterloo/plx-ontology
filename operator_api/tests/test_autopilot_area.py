@@ -1428,6 +1428,11 @@ class AlertCards(unittest.TestCase):
                        identity=lambda oid, seconds: None, excluded=lambda: (_ for _ in ()).throw(OSError("x")))
         self.assertEqual(v2.names_of([COLLEAGUE[1]]), {})
 
+    def test_person_role_name_rejects_raw_uuids(self):
+        from operator_api.autopilot_area import _person_name
+        self.assertEqual(_person_name("person:ann.lee@plx.example"), "Ann Lee")
+        self.assertEqual(_person_name("person:11111111-2222-4333-8444-555555555555"), "")
+
     def test_an_alert_passed_to_a_colleague_is_on_their_list_to_set_aside_only(self):
         from operator_api import view_as as va
         gone = {"sam": False}

@@ -1269,6 +1269,46 @@ class LiveCycleRepairTest(unittest.TestCase):
             forever.section_options(spec, {"budget_seconds": "soon"}, self.state,
                                     audience)
 
+    def test_mail_priority_is_a_scoped_fast_pass_beside_the_full_pass(self) -> None:
+        # OPS1-1: the Assist readers' narrow scope has its own source and cadence, not a
+        # place inside the full pass's ordering. It requires an explicit scope (never a
+        # silent all-mailbox fast pass) and does not yield to the full pass; capture_mail's
+        # per-mailbox locks make an accidental overlap skip rather than race a cursor.
+        spec = forever.SOURCES["mail_priority"]
+        self.assertEqual(spec.required, frozenset({"scope", "live_audience", "mailboxes",
+                                                   "budget_seconds"}))
+        self.assertEqual(spec.yields_to, ())
+        self.assertEqual(spec.writes(self.state), forever.SOURCES["mail"].writes(self.state))
+        audience = str(ROOT / "examples" / "ingest_all.capture-audience.json")
+        scope = self.state / "priority-scope.json"
+        self.state.mkdir(parents=True, exist_ok=True)
+        scope.write_text("{}", encoding="utf-8")
+        options = forever.section_options(spec, {"scope": str(scope), "budget_seconds": 45,
+                                                 "mailboxes": ["vince@petrasoap.com",
+                                                               "stephen@petrasoap.com"],
+                                                 "min_interval_seconds": 60,
+                                                 "freshness_target_seconds": 60},
+                                          self.state, {"live_audience": audience})
+        argv = spec.argv(self.state, options)
+        self.assertEqual(argv[1:4], ["-m", "integrations.graph_read", "mail-capture"])
+        self.assertEqual(argv[argv.index("--scope") + 1], str(scope))
+        self.assertEqual(argv[argv.index("--budget-seconds") + 1], "45")
+        self.assertEqual(argv[argv.index("--only-mailboxes") + 1],
+                         "vince@petrasoap.com,stephen@petrasoap.com")
+        self.assertEqual(forever.DEFAULT_FRESHNESS_TARGETS["mail_priority"], 60)
+        self.assertEqual(forever.SOURCE_MIN_INTERVALS["mail_priority"], 60)
+        # The one configured reader list is the ownership split: the full pass receives
+        # its complement internally, so deployment does not edit a second scope file.
+        sections = forever.partition_mail_priority({
+            "mail": {"scope": str(scope), "live_audience": audience},
+            "mail_priority": {"mailboxes": ["vince@petrasoap.com",
+                                            "stephen@petrasoap.com"]}})
+        full_argv = forever.SOURCES["mail"].argv(self.state, sections["mail"])
+        self.assertEqual(full_argv[full_argv.index("--skip-mailboxes") + 1],
+                         "vince@petrasoap.com,stephen@petrasoap.com")
+        self.assertNotIn("--only-mailboxes", full_argv)
+        self.assertNotIn("skip_mailboxes", sections["mail_priority"])
+
     def test_mail_backlog_passes_are_their_own_child_never_the_mail_capture(self) -> None:
         # 2026-11-13: the backlog passes ran inside the mail child, so a 2 h 22 min
         # deferred pass held fresh mail back. They are the ``mail_backlog`` source now:
@@ -1299,7 +1339,7 @@ class LiveCycleRepairTest(unittest.TestCase):
                             ("--image-ocr-seconds", "300"), ("--image-ocr-workers", "8")):
             self.assertEqual(argv[argv.index(flag) + 1], value, flag)
         self.assertEqual((backlog.yields_to, backlog.writes(self.state)),
-                         (("mail",), spec.writes(self.state)))
+                         (("mail", "mail_priority"), spec.writes(self.state)))
         # A bad value is refused when the config loads, never by every child; the
         # backlog's budget is required (its hard deadline).
         for bad in ({"deferred_workers": 17}, {"image_ocr_workers": 0},

@@ -115,7 +115,7 @@ def ship(train: str, name: str, expected: str) -> int:
 
 def swap(train: str, name: str) -> int:
     import psycopg
-    from operating.pg import business_views as bv, swap_lock
+    from operating.pg import business_views as bv, swap_dependents, swap_lock
     from operating.pg import business_views_code as code
     v, S, out = bv.VIEWS[name], bv.SCHEMA, f"{name}_ship"
     state = json.loads(state_file(train, name).read_text())
@@ -144,12 +144,15 @@ def swap(train: str, name: str) -> int:
                 def do() -> None:
                     if guarded is not None:
                         guarded.drop(box, name, S)
+                    leaning = swap_dependents.save(box, f"{S}.{name}")
+                    swap_dependents.drop(box, leaning)
                     box.execute(f"DROP TABLE IF EXISTS {S}.{name}_old")
                     box.execute(f"ALTER TABLE IF EXISTS {S}.{name} RENAME TO {name}_old")
                     box.execute(f"ALTER TABLE {S}.{out} RENAME TO {name}")
                     box.execute(f"DROP TABLE IF EXISTS {S}.{name}_old")
                     if guarded is not None:
                         guarded.create(box, v, S)
+                    swap_dependents.restore(box, leaning)
                     box.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
                                 f"'plx_api') THEN EXECUTE 'GRANT SELECT ON {S}.{name} TO plx_api'; "
                                 "END IF; END $$")

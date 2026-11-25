@@ -1,11 +1,12 @@
-# PLX Workbench comms text sidecar refresh: one run of `python3 -m operating.pg.comm_text refresh`
-# every 5 minutes (plx-comm-text.timer). Puts the text of mail and Teams messages that arrived
-# since the last run into biz.comm_text (the dated word index the Ask's mail and Teams search
-# reads), upserting by handle, and moves the state row's mark forward. Searches are correct
-# without this unit: they read the text newer than the mark the old way (slower as the tail
-# grows), so a failed or skipped run costs speed and never a hit. A run that fails exits 1 and
-# the unit shows failed; nothing is skipped silently. Writes only biz.comm_text(_state); reads
-# no business system. One at a time (Type=oneshot: a second start waits).
+# PLX Workbench comms text sidecar refresh: one run of `deploy/spark/comm_text.sh` (compute on
+# a Spark's hot standby, apply on the box) every 5 minutes (plx-comm-text.timer). Puts the text
+# of mail and Teams messages that arrived since the last run into biz.comm_text (the dated word
+# index the Ask's mail and Teams search reads), upserting by handle, and moves the state row's
+# mark forward. Searches are correct without this unit: they read the text newer than the mark
+# the old way (slower as the tail grows), so a failed or skipped run costs speed and never a
+# hit. A run that fails exits non-zero and the unit shows failed; nothing is skipped silently.
+# Writes only biz.comm_text(_state); reads no business system. One at a time (Type=oneshot: a
+# second start waits).
 [Unit]
 Description=PLX comms text sidecar refresh (one run)
 After=postgresql.service
@@ -24,7 +25,7 @@ Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PGAPPNAME=%N
 Environment=PLX_ONTOLOGY_PG=only
 ExecCondition=/bin/sh -c '/data/venv/bin/python3 -c "import ontology.window_lock" 2>/dev/null || exit 0; exec /data/venv/bin/python3 -m ontology.window_lock check delta'
-ExecStart=/data/venv/bin/python3 -m operating.pg.comm_text refresh
+ExecStart=@PLX_CURRENT@/deploy/spark/comm_text.sh /data/scratch/plx-comm-text
 MemoryHigh=1500M
 MemoryMax=2G
 TimeoutStartSec=30min

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
 from datetime import date
 import json
 from pathlib import Path
@@ -149,6 +150,66 @@ def _note_stage(inbox: Path, day: date, found: Mapping[str, Any]) -> None:
 SKIPPED_PASS_RUNNING = "scheduled_pass_running"
 
 
+class FoldExport:
+    """Write one fold payload atomically per engine group (the Spark pass's transport)."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = Path(folder)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.count = 0
+
+    def __call__(self, payload: Mapping[str, Any]) -> None:
+        self.count += 1
+        name = f"fold-{time.time_ns()}-{os.getpid()}-{self.count}.json"
+        tmp = self.folder / ("." + name)
+        tmp.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                       encoding="utf-8")
+        tmp.replace(self.folder / name)
+
+
+def apply_fold_payloads(state_dir: Path, folder: Path) -> dict[str, Any]:
+    """Apply exported whole-pass folds to the live inbox, oldest name first.
+
+    Only payloads whose rules are all ``WHOLE_PASS`` and whose checkpoint generation is
+    the generation served now are applied. Each fold goes through
+    ``proactive_engine.write_fold_payload`` (the same transaction definition the pass
+    itself uses) under the inbox's pass lock. Applied files are removed; stale or bad
+    files stay for an operator to inspect, so a wrong transport never writes the inbox.
+    """
+    from . import proactive_engine as pe
+    from .host import projection_path
+
+    store = projection_path(state_dir)
+    inbox = pe.inbox_path(store)
+    files = sorted(Path(folder).glob("fold-*.json"))
+    out = {"files": len(files), "applied": 0, "stale": 0, "bad": 0, "left": 0}
+    if not files:
+        return out
+    with pe.pass_lock(inbox) as held:
+        if not held:
+            return {**out, "skipped": "pass_running", "left": len(files)}
+        generation = pe.served_generation(store, inbox)
+        for path in files:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                results = payload.get("results")
+                record = payload.get("checkpoint_record") or {}
+                if payload.get("fold_transport") != 1 or not isinstance(results, dict) \
+                        or not set(results) <= set(WHOLE_PASS):
+                    raise ValueError("not_a_whole_pass_fold")
+                if record.get("generation") != generation:
+                    out["stale"] += 1
+                    continue
+                pe.write_fold_payload(inbox, payload)
+            except (OSError, ValueError, TypeError, KeyError):
+                out["bad"] += 1
+                continue
+            path.unlink()
+            out["applied"] += 1
+    out["left"] = len(list(Path(folder).glob("fold-*.json")))
+    return out
+
+
 def scheduled_lock_path(state_dir: Path) -> Path:
     """The scheduled passes' own lock (``<inbox>.pass.lock`` beside the inbox's fold lock):
     held by one ``run_pass`` for its whole length, so two scheduled passes (the 4-hourly
@@ -181,8 +242,10 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
 def _run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
               as_of: date | None = None, environ: Mapping[str, str] | None = None,
               refresh_new: bool = True, monotonic: Callable[[], float] = time.monotonic,
-              refresh: str | None = None, refresh_seconds: float | None = None
-              ) -> dict[str, Any]:
+              refresh: str | None = None, refresh_seconds: float | None = None,
+              fold_export: Callable[[Mapping[str, Any]], None] | None = None,
+              stop_after_refresh: bool = False,
+              whole_rules: Sequence[str] | None = None) -> dict[str, Any]:
     """One vendor-mail pass over the served projection of ``state_dir``; counts only.
     ``refresh``: ``new`` (the default; ``refresh_new=False``: ``never``) runs the full
     engine first (``proactive_engine.refresh``) when the served generation is not the one
@@ -231,7 +294,8 @@ def _run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             # leaves to this one (the tool-call rules and the Portal mirror's customer PO
             # scan); the store-only rules follow every delta cycle there
             # (``operating.proactive_incremental``)
-            only = (sorted(CALLING_PASS) if mode == "calling" and not behind
+            only = (sorted(whole_rules) if mode == "whole" and whole_rules
+                    else sorted(CALLING_PASS) if mode == "calling" and not behind
                     else sorted(WHOLE_PASS) if mode == "whole" and not behind else None)
             try:
                 # group by group, each folded with the pass's checkpoint: a pass cut short
@@ -242,7 +306,7 @@ def _run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
                                       reserve=pe.AMOUNTS_RESERVE_SECONDS,
                                       captures=state_dir,
                                       scan_coverage="portal" in config.sources,
-                                      vendor_bound=0, pool=pool)
+                                      vendor_bound=0, pool=pool, fold_export=fold_export)
             except Exception as error:  # noqa: BLE001 - the vendor checks still run
                 full = {"state": "failed", "error": type(error).__name__}
             else:
@@ -258,6 +322,8 @@ def _run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
                 runtime.close()
                 runtime = new_runtime()
                 gc.collect()
+        if stop_after_refresh:
+            return {"full_refresh": full, "refresh_only": True}
         left = seconds - (monotonic() - started)
         session = live._Session(runtime, actor, audience, store, captures=state_dir,
                                 marking_grants=pe.engine_marking_grants(actor))
@@ -320,6 +386,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pass-wait-seconds", type=float, default=0.0,
                         help="how long to wait for another scheduled pass to end before "
                              "skipping this one (default 0: skip at once, exit 0)")
+    parser.add_argument("--whole-export-dir", type=Path, default=None,
+                        help="write each whole-pass fold payload here as well as to the "
+                             "local inbox copy (the Spark side of the transport)")
+    parser.add_argument("--stop-after-refresh", action="store_true",
+                        help="end after the whole-rule refresh: no vendor stage, meetings "
+                             "follow-up or feed commit on this host")
+    parser.add_argument("--apply-folds", type=Path, default=None,
+                        help="apply exported whole-pass fold payloads from this folder to "
+                             "the live inbox, then exit")
+    parser.add_argument("--whole-rules", default=None,
+                        help="comma-separated rehearsal subset of the whole-pass rules "
+                             "(default: every whole-pass rule)")
     args = parser.parse_args(argv)
     if args.budget_seconds <= 0 or args.bound < 0 or args.pass_wait_seconds < 0 or (
             args.refresh_seconds is not None and args.refresh_seconds <= 0):
@@ -333,12 +411,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if held:
         print(json.dumps(held, indent=1, sort_keys=True))
         return 0
+    whole_rules = None
+    if args.whole_rules is not None:
+        whole_rules = [x.strip() for x in args.whole_rules.split(",") if x.strip()]
+        if not whole_rules or not set(whole_rules) <= set(WHOLE_PASS):
+            parser.error("--whole-rules must name whole-pass rules")
     config = HostConfig.from_file(args.config)
+    if args.apply_folds is not None:
+        applied = apply_fold_payloads(args.state_dir, args.apply_folds)
+        print(json.dumps(applied, indent=1, sort_keys=True))
+        failed_only = applied["applied"] == 0 and applied["stale"] + applied["bad"] > 0
+        return 1 if failed_only else 0
+    exporter = FoldExport(args.whole_export_dir) if args.whole_export_dir is not None else None
     print(json.dumps(run_pass(args.state_dir, config, seconds=args.budget_seconds,
                               bound=args.bound, as_of=args.as_of,
                               refresh_new=not args.no_refresh_new, refresh=args.refresh,
                               refresh_seconds=args.refresh_seconds,
-                              pass_wait=args.pass_wait_seconds),
+                              pass_wait=args.pass_wait_seconds, fold_export=exporter,
+                              stop_after_refresh=args.stop_after_refresh,
+                              whole_rules=whole_rules),
                      indent=1, sort_keys=True))
     return 0
 

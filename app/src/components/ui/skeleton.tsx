@@ -88,7 +88,7 @@ export function Skeleton({ className }: { className?: string }) {
  * never flashes its words, nor sits in the page as a second loading line). */
 /** ``limit``: after this long the wait stops and says so, with Retry (``onRetry``, else the page
  * is read again). */
-export function Pending({ label, className, testId, page, after = 0, limit = LIMIT_MS, onRetry }: { label: string; className?: string; testId?: string; page?: boolean; after?: number; limit?: number | null; onRetry?: () => void }) {
+export function Pending({ label, className, testId, page, after = 0, limit = LIMIT_MS, onRetry, bars = 3 }: { label: string; className?: string; testId?: string; page?: boolean; after?: number; limit?: number | null; onRetry?: () => void; bars?: number }) {
   const slow = useSlow();
   const shown = useSlow(after) || after <= 0;
   // ``limit={null}``: the wait never stops (a read that has no deadline, Guardrail 1); it says
@@ -98,18 +98,26 @@ export function Pending({ label, className, testId, page, after = 0, limit = LIM
   const waited = useElapsed(limit == null);
   useWaiting(!over);   // a placeholder (shown or not yet shown) means the page is not ready
   if (!shown) return null;
+  const widths = ["w-[78%]", "w-[62%]", "w-[48%]", "w-[68%]"];
   return (
-    <p
+    <div
       role="status"
       aria-label={label}
-      className={cn("py-2 text-meta text-muted", page && "flex min-h-[40vh] flex-col items-center justify-center text-center", className)}
+      className={cn("py-3 text-meta text-muted", page && "flex min-h-[40vh] flex-col items-center justify-center text-center", className)}
       data-testid={testId}
       data-pending=""
     >
-      <span>{label}</span>
+      {bars > 0 && (
+        <div className={cn("mb-3 space-y-2.5", page ? "w-full max-w-sm" : "max-w-lg")} aria-hidden>
+          {Array.from({ length: bars }, (_, i) => (
+            <div key={i} className={cn("skeleton h-3.5", widths[i % widths.length], page && "mx-auto")} />
+          ))}
+        </div>
+      )}
+      <span className="text-[12px] text-muted">{label}</span>
       {slow && !over && <span className="mt-1 block text-faint" data-testid="slow-note">{SLOW_WORDS}{waited > 0 ? ` ${waited} s so far.` : ""}</span>}
       {over && <StillReading label={label} onRetry={onRetry} since={Date.now() - limit} />}
-    </p>
+    </div>
   );
 }
 

@@ -11,12 +11,14 @@ import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
+import { StoredAge } from "@/components/ui/stored-age";
 import { RecordList } from "@/components/record-list";
 import { getRecordViews, suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDateTime, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { useRecentRecords, useSaved } from "@/lib/saved";
+import { useRead } from "@/lib/use-read";
 import type { RecordViews, SuggestResponse } from "@/lib/types";
 
 /** Every record ("All", the first tab), then the four kinds people look for and the record types each one holds. */
@@ -48,21 +50,15 @@ function savedType(key: string): string | null {
 
 /** Every business view as a list: one picker over the views the server offers, then the list. */
 function AllLists({ view, onView }: { view: string; onView: (v: string) => void }) {
-  const [views, setViews] = useState<RecordViews["views"] | null>(null);
-  const [problem, setProblem] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setProblem(null);
-    getRecordViews(ctl.signal).then((r) => setViews(r.views), (e) => !ctl.signal.aborted && setProblem(e));
-    return () => ctl.abort();
-  }, [round]);
-  if (problem) return <LoadProblem message={plainError(problem)} onRetry={() => setRound((n) => n + 1)} />;
+  const { data, error, retry, at } = useRead<RecordViews>("/api/records/views", getRecordViews);
+  const views = data?.views ?? null;
+  if (error) return <LoadProblem message={plainError(error)} onRetry={retry} />;
   if (!views) return <Pending label="Reading the lists" />;
   const current = views.find((v) => v.view === view) ?? views[0];
   if (!current) return <p className="text-[13px] text-muted">No list is available to you yet.</p>;
   return (
     <div>
+      <StoredAge at={at} />
       <label className="flex flex-col gap-1 text-[12px] text-muted">
         List
         <select aria-label="List" value={current.view} onChange={(e) => onView(e.target.value)} className="h-8 w-64 max-w-full cursor-pointer rounded-md border border-border bg-bg px-2 text-[13px] text-fg">
@@ -79,6 +75,16 @@ function AllLists({ view, onView }: { view: string; onView: (v: string) => void 
     </div>
   );
 }
+
+const BROWSE_CARDS: { key: string; label: string; description: string }[] = [
+  { key: "orders", label: "Orders", description: "Purchase orders, customer orders, due dates and late status." },
+  { key: "customers", label: "Customers", description: "Accounts, open balances, orders and invoice history." },
+  { key: "suppliers", label: "Suppliers", description: "Supplier accounts, open purchase orders and delivery history." },
+  { key: "products", label: "Products", description: "Items, SKUs, lots and pricing records." },
+  { key: "documents", label: "Documents", description: "Sales invoices, receipts, shipments and credit notes." },
+  { key: "production", label: "Production", description: "Manufacturing batches, quality holds and lot status." },
+  { key: "lists", label: "All lists", description: "Browse every table and business view available to you." },
+];
 
 function Records({ place }: { place?: Place }) {
   const params = useSearchParams();
@@ -150,7 +156,7 @@ function Records({ place }: { place?: Place }) {
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar heading title={place ? PLACE_TITLE[place] : "Data"} pin={`${place ? PLACE_TITLE[place] : "Data"}: ${kind.label}`} />
       <PageIntro path={place ? `/${place}` : "/records"} />
-      <div className={cn("w-full overflow-y-auto px-6 py-5", "list" in kind || kind.key === "lists" ? "max-w-[1280px]" : "max-w-[880px]")}>
+      <div className={cn("w-full overflow-y-auto py-5", "list" in kind || kind.key === "lists" ? "max-w-[1440px] px-5" : "max-w-[880px] px-6")}>
         {(!place || place === "more") && <div role="tablist" aria-label="Kind of record" className="flex h-9 gap-5 overflow-x-auto whitespace-nowrap border-b border-border">
           {RECORD_KINDS.filter((k) => !place || MORE_KINDS.includes(k.key)).map((k) => (
             <button
@@ -213,6 +219,26 @@ function Records({ place }: { place?: Place }) {
             )
           ) : (
             <>
+            {kind.key === "all" && (
+              <section aria-labelledby="records-browse-heading" className="mb-6" data-testid="records-browse">
+                <h2 id="records-browse-heading" className="text-[13px] font-semibold">
+                  Browse by record type
+                </h2>
+                <div className="mt-2 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                  {BROWSE_CARDS.map((card) => (
+                    <button
+                      key={card.key}
+                      type="button"
+                      onClick={() => go(card.key)}
+                      className="flex flex-col items-start rounded-md border border-border bg-bg p-3 text-left transition-colors hover:border-border-strong hover:bg-hover cursor-pointer"
+                    >
+                      <span className="text-[13.5px] font-medium text-fg">{card.label}</span>
+                      <span className="mt-0.5 text-[12px] leading-4 text-muted">{card.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
             {recent.length > 0 && (
               <section aria-labelledby="records-recent" className="mb-6">
                 <h2 id="records-recent" className="text-[13px] font-semibold">
@@ -260,9 +286,30 @@ function Records({ place }: { place?: Place }) {
                 ))}
               </div>
             )}
-            {listView && <div className="mb-6"><RecordList key={listView} view={listView} initialSort={listView === "purchase_orders" && "sort" in kind ? kind.sort : undefined} /></div>}
+            {listView && (
+              <div className="mb-6">
+                <RecordList
+                  key={listView}
+                  view={listView}
+                  initialSort={listView === "purchase_orders" && "sort" in kind ? kind.sort : undefined}
+                  externalQuery={q}
+                  onClearExternalQuery={() => setQ("")}
+                />
+              </div>
+            )}
             {kind.key === "lists" && <AllLists view={params.get("view") ?? ""} onView={(v) => { const next = new URLSearchParams(params.toString()); next.set("view", v); router.replace(`${path}?${next.toString()}`); }} />}
             </>
+          )}
+          {query && listView && (
+            <div className="mt-5">
+              <RecordList
+                key={listView}
+                view={listView}
+                initialSort={listView === "purchase_orders" && "sort" in kind ? kind.sort : undefined}
+                externalQuery={q}
+                onClearExternalQuery={() => setQ("")}
+              />
+            </div>
           )}
         </div>
       </div>

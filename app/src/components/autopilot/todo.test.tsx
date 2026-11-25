@@ -57,4 +57,43 @@ describe("a to-do item", () => {
     expect(within(card).getByText("Note the new ship date")).toBeTruthy();
     expect(screen.queryByTestId("prepared-todo")).toBeNull();
   });
+
+  it("shows owner list labels with a human name or plain fallback and proper sentence spacing", () => {
+    const named: PreparedItem = {
+      ...todo,
+      item_id: "ap_named",
+      note: "Draft on request.\nThis is on Pat Mercer's list, not yours. Only you can see this.",
+    };
+    const fallback: PreparedItem = {
+      ...reply,
+      item_id: "ap_fallback",
+      note: "\nThis is on another team member's list, not yours. Only you can see this.",
+    };
+    render(<PreparedView items={[named, fallback]} empty="none" onGone={() => undefined} onChanged={() => undefined} />);
+    const labels = screen.getAllByTestId("prepared-label").map((el) => el.textContent);
+    expect(labels).toEqual([
+      "This is on Pat Mercer's list, not yours. Only you can see this.",
+      "This is on another team member's list, not yours. Only you can see this.",
+    ]);
+    for (const text of labels) {
+      expect(text).not.toContain("not yours.Only");
+    }
+  });
+
+  it("repairs legacy compressed scope strings and deduplicates repeated subject/summary lines", () => {
+    const legacy: PreparedItem = {
+      ...todo,
+      item_id: "ap_legacy",
+      subject: "Follow up on PO 5416",
+      summary: "Follow up on PO 5416",
+      message: "Follow up on PO 5416",
+      note: "Follow up on PO 5416\nThis is on Sam's list,not yours.Only you can see this.",
+    };
+    render(<PreparedView items={[legacy]} empty="none" onGone={() => undefined} onChanged={() => undefined} />);
+    const card = screen.getByTestId("prepared-todo");
+    expect(within(card).getAllByText("Follow up on PO 5416")).toHaveLength(1);
+    expect(within(card).getByTestId("prepared-label")).toHaveTextContent(
+      "This is on Sam's list, not yours. Only you can see this.",
+    );
+  });
 });

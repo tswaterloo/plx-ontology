@@ -157,7 +157,7 @@ const short = (t: number) => formatDate(new Date(t).toISOString().slice(0, 10), 
  * hatched; with no needed-by date the line after the order is left open. `saidAbove`: the page
  * header already says how late, so the label is read aloud only, never drawn a second time.
  */
-export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today", saidAbove = false }: { ordered: number | null; needed: number | null; daysLate?: number | null; end?: string; saidAbove?: boolean }) {
+export function OrderLine({ ordered, needed, neededLabel = "Needed by", daysLate, end: endLabel = "Today", saidAbove = false }: { ordered: number | null; needed: number | null; neededLabel?: string; daysLate?: number | null; end?: string; saidAbove?: boolean }) {
   const now = Date.now();
   if (ordered == null && needed == null) return null;
   const start = ordered ?? needed!;
@@ -209,8 +209,8 @@ export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today", 
         )}
         {needed != null && neededAt != null && (
           <span className="absolute top-0 -translate-x-1/2 text-center" style={{ left: `${Math.min(70, Math.max(neededAt, 30))}%` }}>
-            <span className="block text-muted">Needed by</span>
-            <span className="block font-medium">{short(needed)}</span>
+            <span className="block whitespace-nowrap text-muted">{neededLabel}</span>
+            <span className="block whitespace-nowrap font-medium">{short(needed)}</span>
           </span>
         )}
         {needed == null && (

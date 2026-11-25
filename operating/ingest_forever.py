@@ -94,6 +94,9 @@ MAX_PARALLEL = 8   # capture children at once (``ingest.max_parallel``; default:
 # (``min_interval_seconds`` of its section); a failed or blocked one waits twice as long
 # per failure in a row, at most ``MAX_RETRY_SECONDS``.
 DEFAULT_MIN_INTERVAL_SECONDS, MAX_RETRY_SECONDS = 120, 3600
+# A section may set a
+# longer interval explicitly, but it never inherits the two-minute background default.
+SOURCE_MIN_INTERVALS = {"mail_priority": 60}
 # Graceful drain (``run_source`` ``drain``): a child asked to stop gets this long to end
 # its run at a safe point before its process group is killed (``ingest.drain_seconds``).
 DEFAULT_DRAIN_SECONDS, MAX_DRAIN_SECONDS = 60, 600
@@ -103,7 +106,7 @@ DEFAULT_DRAIN_SECONDS, MAX_DRAIN_SECONDS = 60, 600
 # Portal: 1 hour (owner, 11-13; the ``capture:portal:progress`` alarm's bound). Without
 # a target the Portal was a background source: it re-ran only its 2 h cadence after each
 # ~25 min run, so it made progress every ~145 min and the alarm stayed open (11-15).
-DEFAULT_FRESHNESS_TARGETS = {"mail": 900, "portal": 3600}
+DEFAULT_FRESHNESS_TARGETS = {"mail": 900, "mail_priority": 60, "portal": 3600}
 STOPPED = "ingest_stopped"   # a child stopped by the stop file, the disk guard or a signal
 GAP_LOCK_NOT_HELD = "gap_lock_not_held"   # a stop came in a maintenance gap: lock not taken back
 POLL_SECONDS = 0.5
@@ -228,7 +231,9 @@ class SourceSpec:
     # The sources this one never runs beside and gives way to (:class:`Continuous`): it
     # does not start while one of them runs or is due, and once one of them is due while
     # it runs it is drained (``run_source`` ``drain``). The mail backlog writes the mail
-    # store, which keeps one writer, and never holds fresh mail back.
+    # store and never holds fresh mail back. Mail captures of disjoint mailbox scopes may
+    # run beside each other (their per-mailbox locks skip an overlap); the backlog still
+    # gives way to either mail capture, so no backlog write runs beside a capture write.
     yields_to: tuple[str, ...] = ()
     # The units the CLI captures by default that a section's explicit list leaves out
     # (options -> names): each one is a config warning (``<name>.<key>:unlisted:<unit>``),
@@ -312,6 +317,10 @@ def _graph_argv(command: str) -> Callable[[Path, Mapping[str, Any]], list[str]]:
         args += ["--runs-only"] if command == "mail-capture" else []
         if options.get("scope"):
             args += ["--scope", options["scope"]]
+        if command == "mail-capture" and options.get("mailboxes"):
+            args += ["--only-mailboxes", ",".join(options["mailboxes"])]
+        if command == "mail-capture" and options.get("skip_mailboxes"):
+            args += ["--skip-mailboxes", ",".join(options["skip_mailboxes"])]
         if options.get("page_size"):
             args += ["--page-size", str(options["page_size"])]
         if options.get("registry"):
@@ -634,17 +643,27 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
                frozenset({"live_audience"}), BC_ENV, projected="bc",
                writes=_state_store("bc"), unlisted=_bc_unlisted),
     SourceSpec("mail", "microsoft-graph", _graph_argv("mail-capture"), summarize_mail,
-               {**_GRAPH_FIELDS, "page_size": "int", "principal": "str"},
+               {**_GRAPH_FIELDS, "page_size": "int", "principal": "str",
+                "skip_mailboxes": "strs"},
                frozenset({"live_audience"}),
+               GRAPH_ENV, projected="graph_mail", writes=_state_store("graph_mail")),
+    # The Assist readers' narrow mail scope, polled on its own fast cadence beside the
+    # full pass. The host automatically excludes its mailboxes from the full pass
+    # (``partition_mail_priority``); the capture's per-mailbox locks still make any
+    # accidental overlap skip rather than race a cursor.
+    SourceSpec("mail_priority", "microsoft-graph", _graph_argv("mail-capture"), summarize_mail,
+               {**_GRAPH_FIELDS, "page_size": "int", "principal": "str", "mailboxes": "strs"},
+               frozenset({"scope", "live_audience", "mailboxes", "budget_seconds"}),
                GRAPH_ENV, projected="graph_mail", writes=_state_store("graph_mail")),
     # The mail store's backlogs (attachments the OCR backlog deferred, the fast path's
     # readings, unread images) as their own child with its own hard budget: never on the
-    # mail capture's path, never beside it (one writer), drained once mail is due.
+    # mail capture's path and drained once mail is due, so backlog work never holds fresh
+    # mail back.
     SourceSpec("mail_backlog", "microsoft-graph", _backlog_argv, summarize_backlog,
                {"live_audience": "path", "principal": "str", "budget_seconds": "seconds",
                 **_BACKLOG_FIELDS},
                frozenset({"live_audience", "budget_seconds"}), GRAPH_ENV,
-               writes=_state_store("graph_mail"), yields_to=("mail",)),
+               writes=_state_store("graph_mail"), yields_to=("mail", "mail_priority")),
     SourceSpec("sharepoint", "microsoft-graph", _graph_argv("sharepoint-capture"),
                summarize_sharepoint, {**_GRAPH_FIELDS, "registry": "path", "principal": "str",
                                      # the host check's coverage census (not the CLI's)
@@ -1377,6 +1396,27 @@ def _guarded_run(spec: SourceSpec, options: Mapping[str, Any], state: Path,
     return surface_exclusion(spec, result)
 
 
+def partition_mail_priority(sections: Mapping[str, Mapping[str, Any]]
+                            ) -> Mapping[str, Mapping[str, Any]]:
+    """
+    ``mail_priority.mailboxes`` is the one configured list. When the full ``mail``
+    capture is configured beside it, those addresses are added to the full capture's
+    ``skip_mailboxes`` before any child starts, so its scope becomes the complement.
+    An accidental
+    overlap is still skipped by the capture's per-mailbox lock.
+    """
+    mail, priority = sections.get("mail"), sections.get("mail_priority")
+    if not isinstance(mail, Mapping) or not isinstance(priority, Mapping):
+        return sections
+    mailboxes = priority.get("mailboxes")
+    if not isinstance(mailboxes, list) or not mailboxes:
+        return sections
+    configured = mail.get("skip_mailboxes")
+    skipped = list(configured) if isinstance(configured, list) else []
+    skipped += [a for a in mailboxes if a not in skipped]
+    return {**sections, "mail": {**mail, "skip_mailboxes": skipped}}
+
+
 def read_sources(table: Mapping[str, SourceSpec], sections: Mapping[str, Mapping[str, Any]],
                  state: Path, environ: Mapping[str, str], *, grace: float,
                  children: Any = None, cwd: Path = ROOT, parallel: int = 1,
@@ -1389,6 +1429,7 @@ def read_sources(table: Mapping[str, SourceSpec], sections: Mapping[str, Mapping
     source blocked. ``on_outcome(name, outcome)``: called with a source's outcome as its
     child ends, not when the slowest one does (the returned dict is that same object);
     a failure in it is skipped."""
+    sections = partition_mail_priority(sections)
     refusal = exclusion_refusal(environ)
     results: dict[str, Any] = {}
     run = [name for name in table if name in sections and refusal is None]
@@ -1510,6 +1551,7 @@ class Continuous:
         self.on_outcome, self.gap = on_outcome, gap
         self.wakes, self.clock = wakes, clock
         self.table, self.state, self.environ = table, state, environ
+        sections = partition_mail_priority(sections)
         self.sections = {name: sections[name] for name in table if name in sections}
         self.grace, self.children, self.cwd = grace, children, cwd
         self.parallel = max(1, parallel)
@@ -1519,7 +1561,8 @@ class Continuous:
         self.drain_seconds = drain_seconds
 
     def _interval(self, name: str, failures: int) -> float:
-        base = self.sections[name].get("min_interval_seconds", DEFAULT_MIN_INTERVAL_SECONDS)
+        base = self.sections[name].get(
+            "min_interval_seconds", SOURCE_MIN_INTERVALS.get(name, DEFAULT_MIN_INTERVAL_SECONDS))
         return base if not failures else min(base * 2 ** failures, MAX_RETRY_SECONDS)
 
     def target(self, name: str) -> float | None:

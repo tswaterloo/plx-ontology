@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
+import { JobsView } from "@/components/autopilot/jobs";
+import { AssistWorkflowsView, MinedRoutinesSection } from "@/components/autopilot/assist-workflows";
 import { AuditView } from "@/components/autopilot/audit";
 import { AutopilotView } from "@/components/autopilot/area";
 import { PreparedView } from "@/components/autopilot/prepared";
@@ -22,10 +24,10 @@ import type { AutopilotArea } from "@/lib/types";
 import { useRead } from "@/lib/use-read";
 
 // Assist: where a person sees and controls what the Workbench prepares for them. Prepared work
-// (each item with its plan) and the drafts waiting for their OK, their routines, what Assist did
-// for them, and the switches. A send is still confirmed by the named sender in the app.
-type Show = "prepared" | "routines" | "log" | "switches";
-const SHOWS: Show[] = ["prepared", "routines", "log", "switches"];
+// (each item with its plan) and the drafts waiting for their OK, their workflows, their routines,
+// what Assist did for them, and the switches. A send is still confirmed by the named sender in the app.
+type Show = "prepared" | "workflows" | "routines" | "log" | "switches";
+const SHOWS: Show[] = ["prepared", "workflows", "routines", "log", "switches"];
 
 export default function AssistPage() {
   return (
@@ -45,7 +47,19 @@ function Assist() {
       <SectionTabs section="assist" />
       <PageIntro path="/assist" />
       <div className="w-full px-6 py-5" data-testid={`assist-${show}`}>
-        {show === "prepared" ? <PreparedTab linked={params.get("item")} /> : show === "routines" ? <RecurringView /> : show === "log" ? <LogTab /> : <SwitchesTab />}
+        {show === "prepared" ? (
+          <>
+            <JobsView />
+            <PreparedTab linked={params.get("item")} />
+          </>
+        ) : show === "workflows" ? (
+          <AssistWorkflowsView />
+        ) : show === "routines" ? (
+          <>
+            <MinedRoutinesSection />
+            <RecurringView />
+          </>
+        ) : show === "log" ? <LogTab /> : <SwitchesTab />}
       </div>
     </div>
   );

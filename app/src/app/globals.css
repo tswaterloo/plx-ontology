@@ -25,8 +25,8 @@
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
-    font-size: 13px;
-    line-height: 20px;
+    font-size: 14px;
+    line-height: 22px;
     letter-spacing: -0.006em;
     font-variant-numeric: lining-nums tabular-nums;
   }
@@ -39,6 +39,13 @@
     outline: 2px solid var(--ring);
     outline-offset: 2px;
     border-radius: 2px;
+  }
+  /* controls feel alive: a quick colour change on hover and focus, a pointer on anything pressable */
+  button, a, summary, select, input, [role="button"], [role="tab"] {
+    transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease, opacity 100ms ease, box-shadow 100ms ease;
+  }
+  button:not(:disabled), [role="button"], [role="tab"], summary, select {
+    cursor: pointer;
   }
   ::selection {
     background: var(--accent-soft);
@@ -80,10 +87,11 @@
   scroll-margin-bottom: 12px;
 }
 
-/* A placeholder bar: still and faint. */
+/* A placeholder bar: subtle rounded shimmer. */
 .skeleton {
   background: var(--surface-2);
-  border-radius: 2px;
+  border-radius: 6px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
 }
 
 /* Phone width (390 px): nothing makes the page scroll sideways, and every control that is not
@@ -148,3 +156,19 @@
 .cv-tile {
   contain-intrinsic-size: auto 280px;
 }
+
+/* Charts draw in on first sight only (ChartView sets data-draw="in" once per chart): bars grow
+   from their baseline, lines draw along their length, values and dots fade up. Reduced motion
+   is cut to nothing by the rule at the top of this file. */
+@keyframes chart-grow { from { transform: scaleY(0); } to { transform: none; } }
+@keyframes chart-grow-x { from { transform: scaleX(0); } to { transform: none; } }
+@keyframes chart-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes chart-fade { from { opacity: 0; } to { opacity: 1; } }
+[data-draw="in"] .chart-bar { transform-box: fill-box; transform-origin: center bottom; animation: chart-grow 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+[data-draw="in"] .chart-bar-h { transform-box: fill-box; transform-origin: left center; animation: chart-grow-x 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+[data-draw="in"] .chart-line { stroke-dasharray: 1; animation: chart-draw 480ms ease-out both; }
+[data-draw="in"] .chart-value { animation: chart-fade 260ms ease-out 300ms both; }
+
+/* A placeholder's gentle shimmer: a slow brightness pulse, no travelling gradient. */
+@keyframes skeleton-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.skeleton-shimmer { animation: skeleton-pulse 1.4s ease-in-out infinite; }

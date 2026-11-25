@@ -288,7 +288,7 @@ class RemotePassTests(unittest.TestCase):
 
     # --- the search follower's step 3 on a Spark GPU (operating.embed.spark_embed) ----
 
-    def follow_embed(self, workers, *, hosts=("a",), budget=60.0):
+    def follow_embed(self, workers, *, hosts=("a",), budget=60.0, **fields):
         """``follow._embed_spark_first`` over the pending rows: the Spark path through the
         real ``embed`` with the played host; the box path recorded (no CPU model here)."""
         import argparse
@@ -303,7 +303,10 @@ class RemotePassTests(unittest.TestCase):
                 return {"local": True}
             return real_embed(conn, values, embedder=embedder, **kw)
         opened = functools.partial(spark_embed.embedder, local_cmd=workers)
-        args = argparse.Namespace(embed_seconds=budget, embed_here=False)
+        options = {"embed_seconds": budget, "embed_here": False, "embed_batch": 0,
+                   "embed_rows": 0, "embed_write_mb_per_hour": 0.0}
+        options.update(fields)
+        args = argparse.Namespace(**options)
         with mock.patch.object(spark_embed, "fit_hosts", lambda state: list(hosts)), \
                 mock.patch.object(spark_embed, "embedder", opened):
             got = follow._embed_spark_first(args, self.tmp, self.conn,
@@ -321,6 +324,48 @@ class RemotePassTests(unittest.TestCase):
                 self.assertEqual(got.get("on"), "spark", got)
                 self.assertEqual(local, [])
                 self.assert_embedded(texts)          # no row lost, each its own vector
+
+    def test_the_followers_write_budget_bounds_rows_and_persists_across_runs(self):
+        """One hash shared by six chunks can be a write burst by itself (every wide row takes
+        the vector). A one-row batch cap writes exactly one row; the measured WAL fills the
+        tiny rolling budget, and the next one-shot run starts no host and writes nothing."""
+        for n in (0, 7, 14, 21, 28, 35):       # equal headers and bodies: one content hash
+            self.add(n, "shared across recipients")
+        fields = {"embed_batch": 1, "embed_rows": 1, "embed_write_mb_per_hour": 0.000001}
+        got, local = self.follow_embed([self.worker()], **fields)
+        self.assertEqual((got.get("on"), got.get("texts_embedded"), got.get("rows_updated")),
+                         ("spark", 1, 1), got)
+        self.assertGreater(got.get("wal_bytes") or 0, 0, got)
+        self.assertTrue(got["write_budget"]["blocked"], got)
+        self.assertEqual(got["pending_after"], 1, got)       # five rows of the hash remain
+        self.assertEqual(local, [])
+        stored = [cid for cid, (vec, _model) in self.vectors().items() if vec is not None]
+        self.assertEqual(len(stored), 1)
+        (self.tmp / "calls.log").unlink(missing_ok=True)
+        again, local = self.follow_embed([self.worker()], **fields)
+        self.assertEqual(again.get("skipped"), "write_budget_exhausted", again)
+        self.assertEqual(local, [])
+        log = self.tmp / "calls.log"
+        self.assertFalse(log.exists() and log.read_text())   # no host, no text sent
+        stored_again = [cid for cid, (vec, _model) in self.vectors().items()
+                        if vec is not None]
+        self.assertEqual(stored_again, stored)
+
+    def test_the_write_budget_defers_the_unbounded_reuse_update(self):
+        """A duplicate of an already embedded hash is normally copied by one unbounded UPDATE.
+        Under the write budget it is encoded again in a bounded batch instead; only the rows
+        still missing the model are written."""
+        body = "same body in two inboxes"
+        full = "Source: x\nTitle: T0" + "\n\n" + body
+        self.add(0, body, vector=expected(full))
+        self.add(7, body)                                   # same header and body
+        got, _local = self.follow_embed([self.worker()], embed_batch=16, embed_rows=32,
+                                        embed_write_mb_per_hour=256)
+        self.assertEqual((got.get("reused_rows"), got.get("rows_updated")), (0, 1), got)
+        self.assertEqual(got.get("reuse_deferred"), "write_budget", got)
+        sent = [json.loads(x) for x in (self.tmp / "calls.log").read_text().split()]
+        self.assertEqual(sent, [1, 1])                      # parity probe, then the hash
+        self.assertTrue(all(vec is not None for vec, _ in self.vectors().values()))
 
     def test_a_host_unlike_this_box_or_off_in_parity_is_not_used_and_the_box_embeds(self):
         self.add(1, "pending")

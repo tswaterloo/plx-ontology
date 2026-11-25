@@ -32,9 +32,10 @@ derives its fulfillment code from the header and the summed line quantities
   or Cancel header closes by itself and states no quantity); it never rolls up over a receipt the Portal lines record. The QC receiving log's ``sumqty`` is never
   read as a quantity: on the mirror it is a FileMaker running total across the whole log
   (each export's rows in id order), not one receipt's quantity;
-* a null or unmapped word (Revised, Generated, anything new), quantities that are not
+* a null or unmapped word (Generated or anything new), quantities that are not
   readable in one unit, or no ordered quantity at all is **unknown**, with its reason,
-  and counted by every reader, never guessed;
+  and counted by every reader, never guessed. ``Revised`` is a FileMaker order revised
+  after issue, never cancelled or closed, so it is an issued word whose quantities decide;
 * a BC order reads its own ``status`` (Draft: not issued) and its own lines: open while
   any line has an outstanding quantity, received once none has; ``fullyReceived`` only
   when no line is readable;
@@ -119,7 +120,7 @@ DRAFT_WORDS = frozenset({"DRAFT"})
 # Issued words: their quantities decide open or closed. The FileMaker words the Portal
 # header holds, the Portal's own codes (a PO the Portal created) and ORDERED, which the
 # purchase-order-sent hook writes on a send (purchase-order-sent.ts@4af6957:89-92).
-ISSUED_WORDS = frozenset({"PENDING", "B.ORDER", COMPLETE, "ORDERED",
+ISSUED_WORDS = frozenset({"PENDING", "B.ORDER", COMPLETE, "ORDERED", "REVISED",
                           SUBMITTED, PARTIAL, RECEIVED})
 # purchase-order-sent.ts@4af6957:89-92 PAST_ORDERED (ORDERED included): the hook leaves these.
 PAST_ORDERED = frozenset({
@@ -934,8 +935,10 @@ def _read_side(source: Any, records: Sequence[str],
             totals = line_totals(lines) if lines is not None else (None, None)
             if fm and totals[1] is not None and totals[1] <= EPS:
                 fm_lines = _one_log([logs[twin] for twin in fm])
-        if fm and not issued_bc and values.get("status") and _all_received(lines) \
-                and _fm_orders_the_same(lines, [logs[twin] for twin in fm]):
+        portal_full = bool(fm) and not issued_bc and bool(values.get("status")) and \
+            _all_received(lines)
+        fm_same = portal_full and _fm_orders_the_same(lines, [logs[twin] for twin in fm])
+        if fm_same:
             gold_received = True
             statuses.append(PoStatus(CLOSED, RECEIVED))
             from_fm.append(False)
@@ -947,7 +950,9 @@ def _read_side(source: Any, records: Sequence[str],
             statuses.append(fm_status)   # FileMaker's mirror: FileMaker's items decide
             from_fm.append(True)
         else:
-            statuses.append(record(values, lines, fm_lines))
+            # Portal lines received in full close an FM mirror only when FileMaker's
+            # items order the same total; otherwise they do not speak for the whole order.
+            statuses.append(record(values, None if portal_full else lines, fm_lines))
             from_fm.append(False)
         if notes is not None:
             notes.append((values, lines, fm_lines if fm_lines is not None

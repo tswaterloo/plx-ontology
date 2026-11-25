@@ -52,8 +52,16 @@ class DeployFilesTest(unittest.TestCase):
         # must skip (exit 0), never wait on the lock
         for name in ("plx-proactive", "plx-proactive-whole", "plx-proactive-nightly"):
             unit = (ROOT / f"deploy/systemd/{name}.service").read_text()
-            budget = float(re.search(r"--budget-seconds (\d+)", unit).group(1))
-            share = float(re.search(r"--refresh-seconds (\d+)", unit).group(1))
+            if name == "plx-proactive-whole":
+                # the Spark transport carries the pass flags in its runner, not the unit
+                runner = (ROOT / "deploy/spark/proactive_whole.sh").read_text()
+                budget = float(re.search(r"budget=\$\{WHOLE_BUDGET_SECONDS:-(\d+)\}",
+                                         runner).group(1))
+                share = float(re.search(r"refresh=\$\{WHOLE_REFRESH_SECONDS:-(\d+)\}",
+                                        runner).group(1))
+            else:
+                budget = float(re.search(r"--budget-seconds (\d+)", unit).group(1))
+                share = float(re.search(r"--refresh-seconds (\d+)", unit).group(1))
             timeout = float(re.search(r"(?m)^TimeoutStartSec=(\d+)$", unit).group(1))
             workers = int(re.search(r"(?m)^Environment=PLX_PROACTIVE_WORKERS=(\d+)$",
                                     unit).group(1))
@@ -127,10 +135,30 @@ class DeployFilesTest(unittest.TestCase):
                 text = (out / name).read_text()
                 self.assertIn("User=someone", text, name)
                 self.assertIn("WorkingDirectory=/srv/rel/current", text, name)
+            inc = (out / "plx-proactive-inc.service").read_text()
+            self.assertIn("ExecStart=/srv/rel/current/deploy/spark/proactive_inc.sh", inc)
+            self.assertRegex(inc, r"(?m)^MemoryHigh=2G$")
+            self.assertRegex(inc, r"(?m)^MemoryMax=3G$")
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=only", inc)
+            inc_mem = (out / "plx-proactive-inc.service.d" / "memory.conf").read_text()
+            self.assertRegex(inc_mem, r"(?m)^MemoryHigh=2G$")
+            self.assertRegex(inc_mem, r"(?m)^MemoryMax=3G$")
+            self.assertRegex((out / "plx-proactive-inc.service.d" / "zzz-limits.conf").read_text(),
+                             r"(?m)^MemoryMax=3G$")
+            inc_runner = (ROOT / "deploy/spark/proactive_inc.sh").read_text()
+            self.assertIn("--prepare-dir", inc_runner)
+            self.assertIn("--export-dir", inc_runner)
+            self.assertIn("--apply-folds", inc_runner)
+            self.assertIn("--pg standby", inc_runner)
+            self.assertIn("--cleanup-ship", inc_runner)
+            self.assertIn("INC_APPLY", inc_runner)
+            self.assertIn("RELEASE.json", inc_runner)
             self.assertTrue((out / "plx-proactive-inc.path").is_file())
             self.assertTrue((out / "plx-proactive-nightly.timer").is_file())
             whole = (out / "plx-proactive-whole.service").read_text()
-            self.assertIn("--refresh whole", whole)
+            self.assertIn("deploy/spark/proactive_whole.sh", whole)
+            runner = (ROOT / "deploy/spark/proactive_whole.sh").read_text()
+            self.assertIn("--refresh whole", runner)
             self.assertIn("Environment=PLX_ONTOLOGY_PG=only", whole)
             self.assertIn("User=someone", whole)
             self.assertIn("01,05,09,13,17,21:15:00",
@@ -145,6 +173,44 @@ class DeployFilesTest(unittest.TestCase):
                     text = path.read_text()
                     self.assertNotIn(str(Path.home()), text, path)
                     self.assertNotIn("/data/OntologyProject", text, path)
+
+    def test_the_search_followers_embedding_writes_are_batch_and_hour_bounded(self) -> None:
+        unit = (ROOT / "deploy/systemd/plx-search-follow.service").read_text()
+        self.assertIn("deploy/spark/search_follow.sh", unit)
+        self.assertRegex(unit, r"(?m)^MemoryHigh=2G$")
+        self.assertRegex(unit, r"(?m)^MemoryMax=3G$")
+        self.assertRegex(unit, r"(?m)^Nice=10$")
+        self.assertRegex(unit, r"(?m)^CPUWeight=15$")
+        self.assertRegex(unit, r"(?m)^UMask=0077$")
+        runner = (ROOT / "deploy/spark/search_follow.sh").read_text()
+        self.assertIn("SEARCH_FOLLOW_EMBED_BATCH:-16", runner)
+        self.assertIn("SEARCH_FOLLOW_EMBED_ROWS:-32", runner)
+        self.assertIn("SEARCH_FOLLOW_EMBED_WRITE_MB_PER_HOUR:-256", runner)
+        self.assertIn("SEARCH_FOLLOW_LAYER_SECONDS:-600", runner)
+        self.assertIn("SEARCH_FOLLOW_MIN_FREE_GB:-60", runner)
+        self.assertIn("--prepare-dir", runner)
+        self.assertIn("--export-dir", runner)
+        self.assertIn("--apply-dir", runner)
+        self.assertIn("--pg standby", runner)
+        self.assertIn("--cleanup-ship", runner)
+        self.assertIn("SEARCH_FOLLOW_APPLY", runner)
+        self.assertIn("RELEASE.json", runner)
+
+    def test_the_search_follower_host_dropin_keeps_the_write_budget_effective(self) -> None:
+        """The host drop-in must keep ExecStart on search_follow.sh (never falling back to
+        in-process bge-m3 on the box) and keep the runner's bounded defaults active."""
+        unit = (ROOT / "deploy/systemd/plx-search-follow.service").read_text()
+        dropin = (ROOT / "deploy/systemd/host/plx-search-follow.service.d" /
+                  "chunk-workers.conf").read_text()
+        effective = ""
+        for line in (*unit.splitlines(), *dropin.splitlines()):
+            if line == "ExecStart=":
+                effective = ""
+            elif line.startswith("ExecStart="):
+                effective = line.removeprefix("ExecStart=")
+        self.assertIn("deploy/spark/search_follow.sh", effective)
+        self.assertNotIn("operating.embed", effective)
+        self.assertIn("SEARCH_FOLLOW_CHUNK_WORKERS=4", dropin)
 
     def test_upkeep_units_render_bounded_and_carry_no_secret(self) -> None:
         """The units that keep data current: each has Nice and MemoryMax, the ones that read
@@ -245,9 +311,12 @@ class DeployFilesTest(unittest.TestCase):
                              r"(?m)^OnCalendar=")
             self.assertIn("plx-alerts", install.split('\nSYS_UNITS="', 1)[1].split('"', 1)[0]
                           .split())
-            # the comms text sidecar's refresh: its own timer, the refresh command, installed
+            # the comms text sidecar's refresh: its own timer, Spark runner (compute + apply), installed
             ct = Path(tmp, "s", "plx-comm-text.service").read_text()
-            self.assertIn("-m operating.pg.comm_text refresh", ct)
+            self.assertIn("deploy/spark/comm_text.sh", ct)
+            ct_runner = (ROOT / "deploy/spark/comm_text.sh").read_text()
+            self.assertIn("-m operating.pg.comm_text compute", ct_runner)
+            self.assertIn("-m operating.pg.comm_text apply", ct_runner)
             self.assertRegex(ct, r"(?m)^Type=oneshot$")
             self.assertRegex(ct, r"(?m)^TimeoutStartSec=")
             self.assertRegex(Path(tmp, "s", "plx-comm-text.timer").read_text(),
@@ -1176,6 +1245,284 @@ class ReleaseRestart(unittest.TestCase):
         self.assertNotEqual(got.returncode, 0)
         self.assertEqual(self.current, "new")
 
+
+class ProactiveIncRunnerTest(unittest.TestCase):
+    """deploy/spark/proactive_inc.sh: fails loudly when RELEASE.json cannot be read or sha is
+    empty, cleans temporary shipped files, clears stale output files, and skips apply on
+    INC_APPLY=0."""
+
+    def _setup(self, tmp: Path, release_text: str | None) -> tuple[Path, Path, Path, Path]:
+        # Copy proactive_inc.sh into an isolated root so RELEASE.json is controlled
+        root = tmp / "rel"
+        spark = root / "deploy" / "spark"
+        spark.mkdir(parents=True)
+        runner = spark / "proactive_inc.sh"
+        runner.write_text((ROOT / "deploy" / "spark" / "proactive_inc.sh").read_text())
+        runner.chmod(0o755)
+        if release_text is not None:
+            (root / "RELEASE.json").write_text(release_text)
+        calls = tmp / "calls.log"
+        py_stub = tmp / "py-stub"
+        py_stub.write_text(
+            f'#!/bin/bash\necho "py $*" >> {calls}\n'
+            'prev=""\n'
+            'for a in "$@"; do\n'
+            '  if [ "$prev" = "--prepare-dir" ]; then\n'
+            '    mkdir -p "$a"\n'
+            '    echo \'{"state":"prepared"}\' > "$a/context.json"\n'
+            '  fi\n'
+            '  prev="$a"\n'
+            'done\n',
+            encoding="utf-8",
+        )
+        py_stub.chmod(0o755)
+        spark_stub = tmp / "spark-stub"
+        spark_stub.write_text(
+            f'#!/bin/bash\necho "spark $*" >> {calls}\n'
+            'prev=""; out_dir=""\n'
+            'for a in "$@"; do\n'
+            '  if [ "$prev" = "--out" ]; then out_dir="$a"; fi\n'
+            '  prev="$a"\n'
+            'done\n'
+            'echo \'{}\' > "$out_dir/inc-1.json"\n',
+            encoding="utf-8",
+        )
+        spark_stub.chmod(0o755)
+        return runner, calls, py_stub, spark_stub
+
+    def test_missing_or_empty_release_sha_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            for idx, content in enumerate((None, "{bad", json.dumps({"sha": ""}))):
+                runner, _calls, py_stub, spark_stub = self._setup(tmp / f"c{idx}", content)
+                env = {**os.environ, "INC_PYTHON": str(py_stub),
+                       "INC_SPARK_RUN": str(spark_stub)}
+                env.pop("INC_SHA", None)
+                got = subprocess.run(["bash", str(runner), str(tmp / "state"),
+                                      str(tmp / f"out{idx}")],
+                                     env=env, capture_output=True, text=True)
+                self.assertEqual(got.returncode, 2, (idx, got.stderr))
+                self.assertIn("sha", got.stderr)
+
+    def test_rehearsal_and_normal_cleanup_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            runner, calls, py_stub, spark_stub = self._setup(
+                tmp / "r", json.dumps({"sha": "a" * 40}))
+            out = tmp / "out"
+            (out / "back").mkdir(parents=True)
+            (out / "back" / "stale.json").write_text("stale")
+            (out / "ship").mkdir(parents=True)
+            (out / "ship" / "old.txt").write_text("old")
+
+            env = {**os.environ, "INC_PYTHON": str(py_stub), "INC_SPARK_RUN": str(spark_stub),
+                   "INC_APPLY": "0"}
+            dry = subprocess.run(["bash", str(runner), str(tmp / "state"), str(out)],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertFalse((out / "back" / "stale.json").exists())
+            self.assertTrue((out / "back" / "inc-1.json").is_file())
+            self.assertFalse((out / "ship").exists())
+            log = calls.read_text()
+            self.assertIn("--prepare-dir", log)
+            self.assertIn("--cleanup-ship", log)
+            self.assertNotIn("--apply-folds", log)
+
+            calls.write_text("")
+            env["INC_APPLY"] = "1"
+            live = subprocess.run(["bash", str(runner), str(tmp / "state"), str(out)],
+                                  env=env, capture_output=True, text=True)
+            self.assertEqual(live.returncode, 0, live.stderr)
+            log2 = calls.read_text()
+            self.assertIn("--prepare-dir", log2)
+            self.assertIn("--cleanup-ship", log2)
+            self.assertIn("--apply-folds", log2)
+            self.assertFalse((out / "ship").exists())
+
+
+class SearchFollowRunnerTest(unittest.TestCase):
+    """deploy/spark/search_follow.sh: fails loudly on unreadable/empty RELEASE.json, skips
+    Spark when prepare leaves no manifest, honors SEARCH_FOLLOW_APPLY=0, cleans $ship on exit,
+    and discards $back on Spark setup failure."""
+
+    def _setup(self, tmp: Path, release_text: str | None, *, write_manifest: bool = True,
+               spark_rc: int = 0) -> tuple[Path, Path, Path, Path]:
+        root = tmp / "rel"
+        spark = root / "deploy" / "spark"
+        spark.mkdir(parents=True)
+        runner = spark / "search_follow.sh"
+        runner.write_text((ROOT / "deploy" / "spark" / "search_follow.sh").read_text())
+        runner.chmod(0o755)
+        if release_text is not None:
+            (root / "RELEASE.json").write_text(release_text)
+        calls = tmp / "calls.log"
+        py_stub = tmp / "py-stub"
+        manifest_snippet = (
+            '    mkdir -p "$a"\n    echo \'{"transport_version":1}\' > "$a/manifest.json"\n'
+            if write_manifest else "")
+        py_stub.write_text(
+            f'#!/bin/bash\necho "py $*" >> {calls}\n'
+            'prev=""\n'
+            'for a in "$@"; do\n'
+            '  if [ "$prev" = "--prepare-dir" ]; then\n'
+            f'{manifest_snippet}'
+            '    true\n'
+            '  fi\n'
+            '  prev="$a"\n'
+            'done\n',
+            encoding="utf-8",
+        )
+        py_stub.chmod(0o755)
+        spark_stub = tmp / "spark-stub"
+        spark_stub.write_text(
+            f'#!/bin/bash\necho "spark $*" >> {calls}\n'
+            'prev=""; out_dir=""\n'
+            'for a in "$@"; do\n'
+            '  if [ "$prev" = "--out" ]; then out_dir="$a"; fi\n'
+            '  prev="$a"\n'
+            'done\n'
+            f'if [ "{spark_rc}" = 0 ]; then\n'
+            '  echo \'{"search_follow_transport":1}\' > "$out_dir/export.json"\n'
+            'fi\n'
+            f'exit {spark_rc}\n',
+            encoding="utf-8",
+        )
+        spark_stub.chmod(0o755)
+        return runner, calls, py_stub, spark_stub
+
+    def test_missing_or_empty_release_sha_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            for idx, content in enumerate((None, "{bad", json.dumps({"sha": ""}))):
+                runner, _calls, py_stub, spark_stub = self._setup(tmp_p / f"c{idx}", content)
+                env = {**os.environ, "SEARCH_FOLLOW_PYTHON": str(py_stub),
+                       "SEARCH_FOLLOW_SPARK_RUN": str(spark_stub)}
+                env.pop("SEARCH_FOLLOW_SHA", None)
+                got = subprocess.run(["bash", str(runner), str(tmp_p / "state"),
+                                      str(tmp_p / f"out{idx}")],
+                                     env=env, capture_output=True, text=True)
+                self.assertEqual(got.returncode, 2, (idx, got.stderr))
+                self.assertIn("sha", got.stderr)
+
+    def test_idle_prepare_skips_spark_and_cleans_ship(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            runner, calls, py_stub, spark_stub = self._setup(
+                tmp_p / "r", json.dumps({"sha": "a" * 40}), write_manifest=False)
+            out = tmp_p / "out"
+            env = {**os.environ, "SEARCH_FOLLOW_PYTHON": str(py_stub),
+                   "SEARCH_FOLLOW_SPARK_RUN": str(spark_stub)}
+            got = subprocess.run(["bash", str(runner), str(tmp_p / "state"), str(out)],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(got.returncode, 0, got.stderr)
+            self.assertFalse((out / "ship").exists())
+            log = calls.read_text()
+            self.assertIn("--prepare-dir", log)
+            self.assertNotIn("spark ", log)
+            self.assertNotIn("--apply-dir", log)
+
+    def test_rehearsal_and_normal_apply_and_spark_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            runner, calls, py_stub, spark_stub = self._setup(
+                tmp_p / "r", json.dumps({"sha": "a" * 40}))
+            out = tmp_p / "out"
+            (out / "back").mkdir(parents=True)
+            (out / "back" / "stale.json").write_text("stale")
+            (out / "ship").mkdir(parents=True)
+            (out / "ship" / "old.txt").write_text("old")
+
+            env = {**os.environ, "SEARCH_FOLLOW_PYTHON": str(py_stub),
+                   "SEARCH_FOLLOW_SPARK_RUN": str(spark_stub), "SEARCH_FOLLOW_APPLY": "0"}
+            dry = subprocess.run(["bash", str(runner), str(tmp_p / "state"), str(out)],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertFalse((out / "back" / "stale.json").exists())
+            self.assertTrue((out / "back" / "export.json").is_file())
+            self.assertFalse((out / "ship").exists())
+            log = calls.read_text()
+            self.assertIn("--prepare-dir", log)
+            self.assertIn("--cleanup-ship", log)
+            self.assertIn("--pg standby", log)
+            self.assertNotIn("--apply-dir", log)
+
+            calls.write_text("")
+            env["SEARCH_FOLLOW_APPLY"] = "1"
+            live = subprocess.run(["bash", str(runner), str(tmp_p / "state"), str(out)],
+                                  env=env, capture_output=True, text=True)
+            self.assertEqual(live.returncode, 0, live.stderr)
+            log2 = calls.read_text()
+            self.assertIn("--apply-dir", log2)
+            self.assertFalse((out / "ship").exists())
+
+            # Spark failure discards back and skips apply
+            runner_f, calls_f, py_f, spark_f = self._setup(
+                tmp_p / "rf", json.dumps({"sha": "b" * 40}), spark_rc=96)
+            out_f = tmp_p / "out_f"
+            (out_f / "back").mkdir(parents=True)
+            (out_f / "back" / "old.json").write_text("old")
+            env_f = {**os.environ, "SEARCH_FOLLOW_PYTHON": str(py_f),
+                     "SEARCH_FOLLOW_SPARK_RUN": str(spark_f)}
+            failed = subprocess.run(["bash", str(runner_f), str(tmp_p / "state"), str(out_f)],
+                                    env=env_f, capture_output=True, text=True)
+            self.assertEqual(failed.returncode, 96)
+            self.assertFalse((out_f / "back" / "old.json").exists())
+            self.assertNotIn("--apply-dir", calls_f.read_text())
+
+    def test_invoked_outside_root_sets_cwd_and_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            runner, calls, py_stub, spark_stub = self._setup(
+                tmp_p / "r", json.dumps({"sha": "c" * 40}))
+            rel_root = str((tmp_p / "r" / "rel").resolve())
+            env_log = tmp_p / "env.log"
+            py_stub.write_text(
+                f'#!/bin/bash\necho "py pwd=$PWD py=$PYTHONPATH" >> {env_log}\n'
+                f'echo "py $*" >> {calls}\n'
+                'prev=""\n'
+                'for a in "$@"; do\n'
+                '  if [ "$prev" = "--prepare-dir" ]; then\n'
+                '    mkdir -p "$a"\n'
+                '    echo \'{"transport_version":1}\' > "$a/manifest.json"\n'
+                '  fi\n'
+                '  prev="$a"\n'
+                'done\n',
+                encoding="utf-8",
+            )
+            spark_stub.write_text(
+                f'#!/bin/bash\necho "spark pwd=$PWD py=$PYTHONPATH" >> {env_log}\n'
+                f'echo "spark $*" >> {calls}\n'
+                'prev=""; out_dir=""\n'
+                'for a in "$@"; do\n'
+                '  if [ "$prev" = "--out" ]; then out_dir="$a"; fi\n'
+                '  prev="$a"\n'
+                'done\n'
+                'echo \'{"search_follow_transport":1}\' > "$out_dir/export.json"\n',
+                encoding="utf-8",
+            )
+            out = tmp_p / "out"
+            env_unset = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+            env_unset.update({"SEARCH_FOLLOW_PYTHON": str(py_stub),
+                              "SEARCH_FOLLOW_SPARK_RUN": str(spark_stub)})
+            got1 = subprocess.run(["bash", str(runner), str(tmp_p / "state"), str(out)],
+                                  cwd="/tmp", env=env_unset, capture_output=True, text=True)
+            self.assertEqual(got1.returncode, 0, got1.stderr)
+            lines1 = env_log.read_text().splitlines()
+            self.assertEqual(len(lines1), 3)
+            for line in lines1:
+                self.assertIn(f"pwd={rel_root} ", line)
+                self.assertTrue(line.endswith(f"py={rel_root}"), line)
+
+            env_log.write_text("")
+            env_set = {**env_unset, "PYTHONPATH": "/existing/site"}
+            got2 = subprocess.run(["bash", str(runner), str(tmp_p / "state"), str(out)],
+                                  cwd="/tmp", env=env_set, capture_output=True, text=True)
+            self.assertEqual(got2.returncode, 0, got2.stderr)
+            lines2 = env_log.read_text().splitlines()
+            self.assertEqual(len(lines2), 3)
+            for line in lines2:
+                self.assertIn(f"pwd={rel_root} ", line)
+                self.assertTrue(line.endswith(f"py={rel_root}:/existing/site"), line)
 
 if __name__ == "__main__":
     unittest.main()

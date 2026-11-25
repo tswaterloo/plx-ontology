@@ -217,6 +217,85 @@ class CaptureScope:
         self.priority_mailboxes = tuple(dict.fromkeys(a.lower() for a in first))
         self.recent_days, self.active_days = days["recent_days"], days["active_days"]
 
+    def mailbox_subset(self, addresses: Sequence[str]) -> "CaptureScope":
+        """This scope reduced to ``addresses`` with every capture policy unchanged.
+
+        The fast Assist-reader pass runs beside the full pass from the same scope file:
+        each named mailbox keeps the full pass's window, folder set, history and OCR
+        policy, so making it a fast path never narrows what is captured. Mailbox-specific
+        folder lists are kept when the original scope names the mailbox; otherwise the
+        directory-wide folder set applies. The original priority order is preserved for
+        the named mailboxes.
+
+        A scope that captures every directory mailbox already authorizes these addresses
+        as directory entries. Deriving a fast path must not make them narrower than the
+        scope they came from merely because they are absent from the canonical list of
+        mailboxes a hand-written scope may name one by one; the subset therefore carries
+        an in-memory allowlist extended with just these addresses when the original
+        scope is directory-wide. People exclusion and the tenant directory lookup still
+        gate them first. A non-directory scope keeps the canonical named-mailbox rule.
+        """
+        if isinstance(addresses, (str, bytes)) or not addresses:
+            raise CaptureError("scope_subset_invalid")
+        wanted = []
+        for address in addresses:
+            if not isinstance(address, str) or not (
+                    _UPN.fullmatch(address.lower()) or grammar.TYPES["user_id"].valid(address)):
+                raise CaptureError("scope_subset_invalid")
+            if address.lower() in wanted:
+                raise CaptureError("scope_mailbox_duplicate")
+            wanted.append(address.lower())
+        named = {a.lower(): folders for a, folders in self.mailboxes}
+        entries = [{"address": a, "folders": list(named.get(a, self.all_mailbox_folders))}
+                   for a in wanted]
+        first = [a for a in self.priority_mailboxes if a in wanted]
+        first += [a for a in wanted if a not in first]
+        allowlist = self.allowlist
+        if self.all_mailboxes and not allowlist.is_unrestricted:
+            # Directory-wide capture already covers every member mailbox. Record that
+            # existing authority in the derived explicit scope without turning the
+            # deployment's canonical allowlist file into a second thing to edit.
+            allowlist = MailScope([*allowlist.addresses, *wanted],
+                                  internal_domains=allowlist.internal_domains,
+                                  excluded=allowlist.excluded, source=allowlist.source,
+                                  all_directory=allowlist.all_directory)
+        return CaptureScope(entries, window_days=self.window_days,
+                            internal_domains=self.internal_domains, all_mailboxes=False,
+                            all_mailbox_folders=self.all_mailbox_folders,
+                            allowlist=allowlist, exclude=self.excluded,
+                            history=self.history, ocr=self.ocr,
+                            priority={"mailboxes": first,
+                                      "recent_days": self.recent_days,
+                                      "active_days": self.active_days})
+
+    def without_mailboxes(self, addresses: Sequence[str]) -> "CaptureScope":
+        """
+        Explicit entries for them are removed and the directory-wide expansion excludes
+        every identity it is given for them. Every other capture policy is unchanged, so
+        the remaining mailboxes are captured exactly as before.
+        """
+        if isinstance(addresses, (str, bytes)) or not addresses:
+            raise CaptureError("scope_exclusion_invalid")
+        skipped = set()
+        for address in addresses:
+            if not isinstance(address, str) or not (
+                    _UPN.fullmatch(address.lower()) or grammar.TYPES["user_id"].valid(address)):
+                raise CaptureError("scope_exclusion_invalid")
+            skipped.add(address.lower())
+        entries = [{"address": a, "folders": list(f)} for a, f in self.mailboxes
+                   if a.lower() not in skipped]
+        priority = None
+        if self.prioritized:
+            priority = {"mailboxes": [a for a in self.priority_mailboxes if a not in skipped],
+                        "recent_days": self.recent_days, "active_days": self.active_days}
+        return CaptureScope(entries, window_days=self.window_days,
+                            internal_domains=self.internal_domains,
+                            all_mailboxes=self.all_mailboxes,
+                            all_mailbox_folders=self.all_mailbox_folders,
+                            allowlist=self.allowlist,
+                            exclude=[*self.excluded, *sorted(skipped)],
+                            history=self.history, ocr=self.ocr, priority=priority)
+
     def excludes(self, identities: Iterable[str]) -> bool:
         """Whether any of a mailbox's identities is on the exclusion list."""
         return any(str(i).lower() in self.excluded for i in identities)

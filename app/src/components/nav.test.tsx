@@ -31,12 +31,11 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(navFor({}).map((n) => n.href)).not.toContain("/team");
   });
 
-  it("Admin shows to an ops reader (Reliability, Trust) and to a feedback admin (triage only)", () => {
+  it("Admin shows to an ops reader (Reliability, Data health) and to a feedback admin (triage only)", () => {
     const ops = navSectionsFor({ ops_reader: true }).find((s) => s.key === "admin")!;
-    // the Autopilot log's API is the owner's alone: an ops reader is not shown a tab it refuses
-    expect(ops.children.map((c) => c.href)).toEqual(["/ops", "/data-health", "/trust"]);
+    expect(ops.children.map((c) => c.href)).toEqual(["/ops", "/data-health"]);
     const owner = navSectionsFor({ ops_reader: true, owner: true }).find((s) => s.key === "admin")!;
-    expect(owner.children.map((c) => c.href)).toEqual(["/ops", "/data-health", "/trust", "/autopilot-log"]);
+    expect(owner.children.map((c) => c.href)).toEqual(["/ops", "/data-health"]);
     const fb = navSectionsFor({ feedback_admin: true }).find((s) => s.key === "admin")!;
     expect(fb.children.map((c) => c.href)).toEqual(["/feedback"]);
     expect(fb.href).toBe("/feedback"); // its link goes where this reader may go
@@ -139,11 +138,11 @@ describe("the sidebar drawn on every page is identical", () => {
   const owner = { owner: true, ops_reader: true, feedback_admin: true, roles: ["purchasing"] };
   const PAGES: [string, string, string][] = [
     // path, #fragment, the one row that is highlighted
-    ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"], ["/data-health", "", "/ops"],
+    ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"],
     ["/ask", "", "/ask"], ["/memory", "", ""], ["/templates", "", ""],
     ["/assist", "", "/assist"], ["/assist?show=switches", "", "/assist"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
     ["/records", "", "/records"], ["/orders", "", "/records"], ["/customers", "", "/records"], ["/products", "", "/records"], ["/supplier/S-1", "", "/records"], ["/object/PurchaseOrder/x", "", "/records"],
-    ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"], ["/trust", "", "/ops"],
+    ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"],
     ["/feedback", "", "/ops"], ["/help", "", ""],
   ];
 

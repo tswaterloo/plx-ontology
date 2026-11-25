@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 const readStatement = vi.fn();
-vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), readStatement: (...a: unknown[]) => readStatement(...a) }));
+const exportXlsx = vi.fn();
+vi.mock("@/lib/api", async (orig) => ({
+  ...(await orig<typeof import("@/lib/api")>()),
+  readStatement: (...a: unknown[]) => readStatement(...a),
+  exportXlsx: (...a: unknown[]) => exportXlsx(...a),
+}));
 import { applyEvent } from "@/lib/thread";
 import type { Answer } from "@/lib/types";
 import { AnswerCard, type Turn } from "./answer-card";
@@ -35,6 +40,19 @@ describe("answer tables", () => {
     const note = screen.getByText("waiting on the carrier for two weeks").closest("td");
     expect(code?.className).toContain("whitespace-nowrap");
     expect(note?.className).not.toContain("whitespace-nowrap");
+  });
+});
+
+describe("answer table type", () => {
+  it("uses the page font (never the monospace data font) and right-aligns number columns only", () => {
+    render(<AnswerText text={"| Person | Replies |\n|---|---|\n| Ana | 12 |\n| Bo | 3.5% |"} />);
+    const name = screen.getByText("Ana").closest("td");
+    const count = screen.getByText("12").closest("td");
+    expect(name?.className).not.toMatch(/\bnum\b|font-mono/);
+    expect(count?.className).not.toMatch(/\bnum\b|font-mono/);
+    expect(count?.className).toContain("text-right");
+    expect(name?.className).not.toContain("text-right");
+    expect(screen.getByText("Replies").closest("th")?.className).toContain("text-right");
   });
 });
 
@@ -129,16 +147,16 @@ describe("simple Ask answer", () => {
     expect(screen.queryByText(/```gap/)).toBeNull();
   });
 
-  it("a run that failed shows no Correct/Wrong and no Think it through", () => {
+  it("a run that failed shows no Correct/Wrong and no Deep research", () => {
     const ok: Turn = { id: "t", question: "q", phase: "done", streamed: "", answer: simple };
     const { unmount } = render(<AnswerCard turn={ok} onDeeper={() => {}} />);
     expect(screen.queryByRole("button", { name: /this answer was right/i })).not.toBeNull();
-    expect(screen.queryByText("Think it through")).not.toBeNull();
+    expect(screen.queryByText("Deep research")).not.toBeNull();
     unmount();
     const failed: Turn = { ...ok, answer: { ...simple, assistant_unavailable: "usage_limit" } };
     render(<AnswerCard turn={failed} onDeeper={() => {}} />);
     expect(screen.queryByRole("button", { name: /this answer was right/i })).toBeNull();
-    expect(screen.queryByText("Think it through")).toBeNull();
+    expect(screen.queryByText("Deep research")).toBeNull();
   });
 
   it("links each file the answer made for download under its own name", () => {
@@ -248,5 +266,34 @@ describe("what was read", () => {
     expect(partLine({ reads: 2, found: 1200 })).toBe("read, 1,200 found");
     expect(partLine({ reads: 1, found: 0 })).toBe("read, nothing found");
     expect(partLine({ reads: 0, found: 0 })).toBe("not read");
+  });
+});
+
+describe("simple Ask Excel export", () => {
+  it("exports the whole answer from the footer and carries truncation metadata for previewed sources", async () => {
+    exportXlsx.mockReset().mockResolvedValue(new Blob(["xlsx"]));
+    if (!URL.createObjectURL) Object.defineProperty(URL, "createObjectURL", { value: () => "blob:x", configurable: true });
+    if (!URL.revokeObjectURL) Object.defineProperty(URL, "revokeObjectURL", { value: () => {}, configurable: true });
+    const preview: Answer = {
+      ...simple,
+      cited: [{ ...simple.cited![0], records: 250, query: "SELECT supplier, owed, currency FROM supplier_balances" }],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: preview }} />);
+    const buttons = screen.getAllByTestId("excel-export-btn");
+    // Last export button is in the SimpleAnswer footer (answer-level export)
+    await userEvent.click(buttons[buttons.length - 1]);
+    await waitFor(() => expect(exportXlsx).toHaveBeenCalledTimes(1));
+    expect(exportXlsx.mock.calls[0][0]).toMatchObject({
+      title: preview.question,
+      summary: preview.direct_answer,
+      tables: [
+        {
+          title: "supplier balances",
+          total_rows: 250,
+          records: 250,
+          truncated: true,
+        },
+      ],
+    });
   });
 });

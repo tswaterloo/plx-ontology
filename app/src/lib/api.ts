@@ -11,7 +11,7 @@ import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
 import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, RecordViews, Explore, LabourPage, LateList, PoClosure, RecordAsOf, RecordHistory,
-  FilterEdit, StatementRead, InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
+  AskObserved, EmailDraftPrepared, EmailDraftRequest, ExportXlsxRequest, FilterEdit, GapList, MeasureCandidate, MeasureCandidateApprove, MeasureCandidateDismiss, MeasureCandidateList, MeasureCandidatePropose, MeasureCandidateStatus, StatementRead, InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
   ActionPreview,
@@ -79,6 +79,7 @@ import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, RecordVi
   ItemFeedbackRequest,
   NoteFeedbackRequest,
   HomeResponse,
+  HomeNeeds,
   SidebarResponse,
   Me,
   ObjectPage,
@@ -879,6 +880,11 @@ export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
   return getRead<HomeResponse>("/api/home", signal);
 }
 
+/** Home's unified Needs-you list: every source merged and ranked server-side, never cut. */
+export function getHomeNeeds(signal?: AbortSignal): Promise<HomeNeeds> {
+  return getRead<HomeNeeds>("/api/home/needs", signal);
+}
+
 /** The sidebar's numbers (late count, the suppliers with the most, recent questions, as-of): small and kept per reader. */
 export function getSidebar(signal?: AbortSignal): Promise<SidebarResponse> {
   return getRead<SidebarResponse>("/api/sidebar", signal);
@@ -980,17 +986,26 @@ export function getRecordViews(signal?: AbortSignal): Promise<RecordViews> {
   return getJson<RecordViews>("/api/records/views", signal);
 }
 
-/** One Records list: its filters, text, sort and page. `facets` asks for the filters' choices (the first read of a list). */
-export function getRecordList(
-  view: string,
-  f: { filters?: Record<string, string>; q?: string; sort?: string; direction?: string; offset?: number; facets?: boolean },
-  signal?: AbortSignal,
-): Promise<RecordList> {
+type RecordListRead = { filters?: Record<string, string>; q?: string; sort?: string; direction?: string; offset?: number; facets?: boolean };
+
+/** The exact path of one Records list read. Filter keys are sorted so the same logical
+ * filters always make the same path (the read store keys by this string). */
+export function recordListPath(view: string, f: RecordListRead): string {
   const q = new URLSearchParams({ view, q: f.q ?? "", offset: String(Math.max(0, Math.floor(f.offset ?? 0))), facets: String(f.facets ?? true) });
   if (f.sort) q.set("sort", f.sort);
   if (f.direction) q.set("direction", f.direction);
-  for (const [k, v] of Object.entries(f.filters ?? {})) if (v) q.append("f", `${k}:${v}`);
-  return getJson<RecordList>(`/api/records/list?${q.toString()}`, signal);
+  const filters = Object.entries(f.filters ?? {}).filter(([, v]) => v).sort(([a], [b]) => a.localeCompare(b));
+  for (const [k, v] of filters) q.append("f", `${k}:${v}`);
+  return `/api/records/list?${q.toString()}`;
+}
+
+/** One Records list: its filters, text, sort and page. `facets` asks for the filters' choices (the first read of a list). */
+export function getRecordList(
+  view: string,
+  f: RecordListRead,
+  signal?: AbortSignal,
+): Promise<RecordList> {
+  return getJson<RecordList>(recordListPath(view, f), signal);
 }
 
 /** Where the findings download as a spreadsheet (all checks, or one). */
@@ -1040,6 +1055,11 @@ export async function previewAction(req: ActionRequest, signal?: AbortSignal): P
 /** Do the previewed action as yourself, once per idempotency key (a repeat returns the first result). */
 export async function confirmAction(req: ActionConfirm): Promise<ActionResult> {
   return (await (await call("/api/actions/confirm", { method: "POST", json: req })).json()) as ActionResult;
+}
+
+/** Draft an email for a brief or answer (with its chart attached) for confirm-before-send. */
+export async function prepareEmailDraft(req: EmailDraftRequest): Promise<EmailDraftPrepared> {
+  return (await (await call("/api/email-draft", { method: "POST", json: req })).json()) as EmailDraftPrepared;
 }
 
 /** The write entries you prepared or may approve (approve-to-write). */
@@ -1155,6 +1175,7 @@ export type PreparedItem = {
   handed_to?: string; handed_from?: string;
   /** On an Assist matter: open or unverified (its source could not be re-checked), when it was last re-checked, and the draft's state (deferred: draft on request; failed: ask again). */
   state?: "open" | "unverified" | null; verified_at?: string | null; plan_status?: string | null; plan_reason?: string | null;
+  plan_at?: string | null; requested_at?: string | null;
   /** On an item nobody is named for: the role whose list it is on until one of them takes it. */
   pooled?: string;
   auto_would?: string;
@@ -1186,6 +1207,105 @@ export type ProposedJob = {
 /** Review a proposed change: it is prepared as you (read from its system); confirm it on the card. */
 export async function prepareAutopilotJob(itemId: string, index: number): Promise<PreparedWrite> {
   return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/jobs/${index}/prepare`, { method: "POST" })).json()) as PreparedWrite;
+}
+
+/** A whole job handed to Assist (``/api/assist/jobs``): its plan, progress and prepared pieces. Nothing is
+ * sent or written until a change is confirmed on its own card. */
+export type AssistPiece = {
+  n: number; title: string; instruction: string; status: "prepared" | "nothing" | "failed" | "screened" | "stopped";
+  why: string; message: string; summary: string; reply: string;
+  ask: { question?: string; options?: { label: string; reply: string }[] } | null;
+  proposals: { tool: string; arguments: { system?: string; operation?: string; reason?: string; target?: Record<string, unknown>; change?: Record<string, unknown> } }[];
+  todos: { system?: string; record?: string; what?: string }[];
+  note: string; warning: string; nothing: string; held_back: { to?: string[]; why?: string }[];
+  reads: string[]; tool_reads: { tool?: string; arguments?: unknown; failed?: boolean }[]; reads_traced: boolean;
+  records_unread: string[]; unread_reads: { why?: string }[]; planned_records: string[];
+  decision: "" | "approved" | "dismissed" | "edited"; edited_text: string; prepared_ids: Record<string, string>;
+  changes_over_limit?: number; usd?: string | null;
+};
+export type AssistJob = {
+  job_id: string; text: string; status: "queued" | "running" | "stopping" | "stopped" | "finished" | "failed";
+  reason: string; message: string; progress: string; requested_at: string; summary: string;
+  checklist: { text: string; piece?: number | null }[]; found: string; not_found: string; nothing: string; planned: number;
+  unread: string[]; fallbacks: string[]; plan_reads: string[]; unread_reads: { why?: string }[]; pieces: AssistPiece[]; usd?: number | null;
+};
+export type AssistJobs = { jobs: AssistJob[]; status: "ok" | "not_run"; reason: string };
+
+export function getAssistJobs(signal?: AbortSignal): Promise<AssistJobs> {
+  return getJson<AssistJobs>("/api/assist/jobs", signal);
+}
+export async function requestAssistJob(text: string): Promise<AssistJob> {
+  return (await (await call("/api/assist/jobs", { method: "POST", json: { text } })).json()) as AssistJob;
+}
+export async function stopAssistJob(jobId: string): Promise<AssistJob> {
+  return (await (await call(`/api/assist/jobs/${encodeURIComponent(jobId)}/stop`, { method: "POST" })).json()) as AssistJob;
+}
+export async function decideAssistPiece(jobId: string, n: number, body: { decision: "approved" | "dismissed" | "edited"; text?: string; edits?: Record<string, Record<string, string>> }): Promise<AssistJob> {
+  return (await (await call(`/api/assist/jobs/${encodeURIComponent(jobId)}/pieces/${n}/decision`, { method: "POST", json: body })).json()) as AssistJob;
+}
+/** Review one proposed change of a piece: prepared as you (read from its system); confirm it on the card. */
+export async function prepareAssistChange(jobId: string, n: number, index: number): Promise<PreparedWrite> {
+  return (await (await call(`/api/assist/jobs/${encodeURIComponent(jobId)}/pieces/${n}/changes/${index}/prepare`, { method: "POST" })).json()) as PreparedWrite;
+}
+
+/** A person's own repeatable Assist workflows (``/api/assist/workflows``): schedule, event or on demand. */
+export type AssistWorkflowTriggerKind = "schedule" | "event" | "manual";
+export type AssistWorkflowRun = {
+  job_id: string; triggered_at: string; kind: "fired" | "run_now"; trigger_note: string; job?: AssistJob | null;
+};
+export type AssistWorkflow = {
+  workflow_id: string; name: string; instruction: string; trigger_kind: AssistWorkflowTriggerKind;
+  trigger: Record<string, unknown>; trigger_summary: string; source_kind: "plain_language" | "routine" | "template";
+  source_ref: string; status: "active" | "paused" | "stopped"; pause_reason: string;
+  created_at: string; updated_at: string; next_run_at?: string | null; last_fired_at?: string | null;
+  consecutive_failures: number; backoff_until?: string | null; last_error: string; runs: AssistWorkflowRun[];
+};
+export type AssistWorkflowTemplate = {
+  template_id: string; name: string; description: string; trigger_kind: AssistWorkflowTriggerKind;
+  trigger: Record<string, unknown>; trigger_summary: string; instruction: string;
+};
+export type AssistMinedRoutine = {
+  routine_id: string; kind: string; description: string; trigger: Record<string, unknown>;
+  mined: Record<string, unknown>; validated: Record<string, unknown>; status: string;
+  suggested_name: string; suggested_trigger_summary: string;
+};
+export type AssistWorkflows = {
+  workflows: AssistWorkflow[]; routines: AssistMinedRoutine[]; templates: AssistWorkflowTemplate[];
+  status: "ok" | "not_run"; reason: string;
+};
+export type AssistWorkflowParsed = {
+  name: string; instruction: string; trigger_kind: AssistWorkflowTriggerKind;
+  trigger: Record<string, unknown>; trigger_summary: string;
+};
+export type AssistWorkflowCreate = {
+  plain_text?: string; template_id?: string; routine_id?: string; name?: string; instruction?: string;
+  trigger_kind?: AssistWorkflowTriggerKind; trigger?: Record<string, unknown>;
+};
+export type AssistWorkflowRunResult = { workflow: AssistWorkflow; job: AssistJob };
+
+export function getAssistWorkflows(signal?: AbortSignal): Promise<AssistWorkflows> {
+  return getJson<AssistWorkflows>("/api/assist/workflows", signal);
+}
+export async function parseAssistWorkflow(text: string): Promise<AssistWorkflowParsed> {
+  return (await (await call("/api/assist/workflows/parse", { method: "POST", json: { text } })).json()) as AssistWorkflowParsed;
+}
+export async function createAssistWorkflow(body: AssistWorkflowCreate): Promise<AssistWorkflow> {
+  return (await (await call("/api/assist/workflows", { method: "POST", json: body })).json()) as AssistWorkflow;
+}
+export async function updateAssistWorkflow(id: string, body: { name?: string; instruction?: string; trigger_kind?: AssistWorkflowTriggerKind; trigger?: Record<string, unknown> }): Promise<AssistWorkflow> {
+  return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}`, { method: "PATCH", json: body })).json()) as AssistWorkflow;
+}
+export async function pauseAssistWorkflow(id: string): Promise<AssistWorkflow> {
+  return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}/pause`, { method: "POST" })).json()) as AssistWorkflow;
+}
+export async function resumeAssistWorkflow(id: string): Promise<AssistWorkflow> {
+  return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}/resume`, { method: "POST" })).json()) as AssistWorkflow;
+}
+export async function stopAssistWorkflow(id: string): Promise<AssistWorkflow> {
+  return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}/stop`, { method: "POST" })).json()) as AssistWorkflow;
+}
+export async function runAssistWorkflow(id: string): Promise<AssistWorkflowRunResult> {
+  return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}/run`, { method: "POST" })).json()) as AssistWorkflowRunResult;
 }
 
 /** Your own Teams sign-in, so a Teams reply you confirm posts as you (never the token). */
@@ -1621,6 +1741,50 @@ export async function getFeedback(
   return (await (await call(`/api/feedback${tail ? `?${tail}` : ""}`, { signal })).json()) as FeedbackList;
 }
 
+/** What Ask and Genie asked for that nothing defines, most asked first (the owner and the admins only). */
+export function getGaps(signal?: AbortSignal): Promise<GapList> {
+  return getJson<GapList>("/api/answers/gaps", signal);
+}
+
+/** Candidate shared measure definitions captured from usage or proposed for review. */
+export function getMeasureCandidates(status?: MeasureCandidateStatus, signal?: AbortSignal): Promise<MeasureCandidateList> {
+  const tail = status ? `?status=${encodeURIComponent(status)}` : "";
+  return getJson<MeasureCandidateList>(`/api/measures/candidates${tail}`, signal);
+}
+
+/** Propose a saved chart, accepted answer, or SQL statement as a shared measure definition. */
+export async function proposeMeasureCandidate(body: MeasureCandidatePropose): Promise<MeasureCandidate> {
+  const res = await call("/api/measures/candidates", { method: "POST", json: body });
+  return (await res.json()) as MeasureCandidate;
+}
+
+/** Owner-only: approve a candidate and promote it into live shared measure definitions. */
+export async function approveMeasureCandidate(id: string, body?: MeasureCandidateApprove): Promise<MeasureCandidate> {
+  const res = await call(`/api/measures/candidates/${encodeURIComponent(id)}/approve`, { method: "POST", json: body ?? {} });
+  return (await res.json()) as MeasureCandidate;
+}
+
+/** Owner-only: dismiss a candidate measure definition from the review queue. */
+export async function dismissMeasureCandidate(id: string, body?: MeasureCandidateDismiss): Promise<MeasureCandidate> {
+  const res = await call(`/api/measures/candidates/${encodeURIComponent(id)}/dismiss`, { method: "POST", json: body ?? {} });
+  return (await res.json()) as MeasureCandidate;
+}
+
+/** How the Ask has been doing per day: answers, failures, time and steps (the owner and the admins only). */
+export function getObserved(signal?: AbortSignal): Promise<AskObserved> {
+  return getJson<AskObserved>("/api/answers/observed", signal);
+}
+
+/** Every answer feedback entry of a status, paged through whole (the server pages by 200). */
+export async function getAllFeedback(filters: { kind: string; status?: string }, signal?: AbortSignal): Promise<FeedbackList> {
+  let out: FeedbackList | null = null;
+  for (;;) {
+    const page = await getFeedback({ ...filters, offset: out?.entries.length ?? 0, limit: 200 }, signal);
+    out = out ? { ...page, entries: [...out.entries, ...page.entries], offset: 0 } : page;
+    if (page.entries.length === 0 || out.entries.length >= page.total) return out;
+  }
+}
+
 /** Triage (the owner and the admins only). */
 export async function setFeedbackStatus(id: string, status: FeedbackStatus): Promise<FeedbackEntry> {
   return (await (await call(`/api/feedback/${encodeURIComponent(id)}/status`, { method: "POST", json: { status } })).json()) as FeedbackEntry;
@@ -1779,6 +1943,33 @@ export function getAskChats(q?: string, signal?: AbortSignal): Promise<AskChats>
   return getJson<AskChats>(`/api/ask/chats${q && q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`, signal);
 }
 
+/** Start a warm Ask session when the person opens or focuses the Ask box (throttled per tab). */
+const WARM_ASK_COOLDOWN_MS = 30_000;
+let lastWarmAskAt = 0;
+let warmAskRefused = false;
+
+export function resetWarmAsk(): void {
+  lastWarmAskAt = 0;
+  warmAskRefused = false;
+}
+onSessionReset(resetWarmAsk);
+
+export function warmAsk(): void {
+  if (warmAskRefused) return;
+  const now = Date.now();
+  if (now - lastWarmAskAt < WARM_ASK_COOLDOWN_MS) return;
+  lastWarmAskAt = now;
+  void (async () => {
+    try {
+      viewAsHeader("/api/ask/warm", "POST");
+      const res = await fetch("/api/ask/warm", { method: "POST", credentials: "same-origin", headers: await headers({}) });
+      if (res.status === 403 || res.status === 405) warmAskRefused = true;
+    } catch { // guard-ok: best-effort session warm-up on focus, never disrupts typing
+      return;
+    }
+  })();
+}
+
 /** Rename, pin or delete one of your Ask conversations; your chats list after. */
 export async function updateAskChat(conversationId: string, body: AskChatUpdate): Promise<AskChats> {
   return (await (await call(`/api/ask/chats/${encodeURIComponent(conversationId)}`, { method: "POST", json: body })).json()) as AskChats;
@@ -1832,6 +2023,10 @@ export function getInsights(signal?: AbortSignal): Promise<InsightList> {
   return getJson<InsightList>("/api/insights", signal);
 }
 
+/** How many tiles the one-response dashboard sends whole (about the first screen); the rest are
+ * read from their stored value as they near the view. */
+export const INSIGHTS_EAGER = 8;
+
 /** One line of the one-response dashboard: your list first, then each chart as it was read
  * (its result, or its own error: one chart failing never fails the others; `later`: a measure
  * chart with nothing kept for you, which reads itself once it nears the view). */
@@ -1871,7 +2066,9 @@ onSessionReset(() => {
 });
 
 async function readInsightsStream(run: InsightsRun): Promise<void> {
-  const res = await call("/api/insights/all/stream", { signal: run.ctl.signal });
+  // the first INSIGHTS_EAGER tiles come with their stored value; every other tile reads its own
+  // when it nears the view (the page was 484 KB for 40 charts drawn at once)
+  const res = await call(`/api/insights/all/stream?eager=${INSIGHTS_EAGER}`, { signal: run.ctl.signal });
   if (!res.body) throw new ApiError(502, "invalid_response");
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -1935,11 +2132,18 @@ export function streamInsights(on: (line: InsightsLine) => void, signal?: AbortS
 
 /** One step of "why did this change": what was read, its rows, and the best answer so far (stopping
  * after any step leaves a true answer). A step that could not be read has `error` and ends it. */
-export type WhyStep = { step: number; of: number; says: string; period?: string; columns?: string[]; rows?: (string | null)[][]; answer: string; error?: { code: string; message?: string; status: number } };
+export type WhyRank = { dimension: string | null; parts: string | null; parts_for_half: string | null; top_part: string | null; top_change: string | null; top_share_of_change_pct: string | null; whole_change: string | null; unknown_parts: string | null; concentration_pct: string | null; [unit: string]: string | null };
+export type WhyAsk = { drill?: string; period?: string; against?: string; filter?: Record<string, string | string[]> };
+export type WhyStep = { step: number; of: number; says: string; period?: string; columns?: string[]; rows?: (string | null)[][]; ranking?: WhyRank[]; answer: string; error?: { code: string; message?: string; status: number } };
 
 /** Stream the steps of a measure tile's "why did this change"; abort `signal` to stop early (Answer now). */
-export async function streamWhy(id: string, on: (step: WhyStep) => void, signal?: AbortSignal): Promise<void> {
-  const res = await call(`/api/insights/${encodeURIComponent(id)}/why`, { signal });
+export async function streamWhy(id: string, on: (step: WhyStep) => void, signal?: AbortSignal, ask: WhyAsk = {}): Promise<void> {
+  const q = new URLSearchParams();
+  if (ask.drill) q.set("drill", ask.drill);
+  if (ask.period) q.set("period", ask.period);
+  if (ask.against) q.set("against", ask.against);
+  if (ask.filter) q.set("filter", JSON.stringify(ask.filter));
+  const res = await call(`/api/insights/${encodeURIComponent(id)}/why${q.size ? `?${q}` : ""}`, { signal });
   if (!res.body) throw new ApiError(502, "invalid_response");
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -2011,6 +2215,13 @@ export async function readStatement(sql: string, edits: FilterEdit[]): Promise<S
   return (await res.json()) as StatementRead;
 }
 
+/** Keep your own arrangement of the dashboard (the order of your charts, the ones taken off);
+ * the dashboard comes back as it now is. */
+export async function saveInsightLayout(order: string[], hidden: string[]): Promise<InsightList> {
+  const res = await call("/api/insights/layout", { method: "PUT", json: { order, hidden } });
+  return (await res.json()) as InsightList;
+}
+
 /** Pin a chart (or save a statement) to your dashboard; it reads again when opened. */
 export async function saveInsight(body: InsightSave): Promise<InsightInfo> {
   const res = await call("/api/insights", { method: "POST", json: body });
@@ -2020,6 +2231,12 @@ export async function saveInsight(body: InsightSave): Promise<InsightInfo> {
 /** A chart you were shown as a file (Excel with a live chart over its rows, PowerPoint, Word or PDF). */
 export async function chartFile(chart: unknown, format: "xlsx" | "pptx" | "docx" | "pdf"): Promise<Blob> {
   const res = await call("/api/charts/file", { method: "POST", json: { chart, format } });
+  return res.blob();
+}
+
+/** Export any chart, table or answer into one formatted Excel (.xlsx) workbook. */
+export async function exportXlsx(req: ExportXlsxRequest): Promise<Blob> {
+  const res = await call("/api/export/xlsx", { method: "POST", json: req });
   return res.blob();
 }
 

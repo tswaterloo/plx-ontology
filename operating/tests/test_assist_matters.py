@@ -399,8 +399,108 @@ class Matters(unittest.TestCase):
                             door=self.everything, now=NOW)
         self.assertEqual(len(owner["items"]), 2)
         self.assertTrue(all("Only you can see this" in i["note"] for i in owner["items"]))
+        # the label is its own line, never run into the sentence before it, and a card that
+        # is on someone else's list says whose
+        for i in owner["items"]:
+            first, _, label = i["note"].partition("\n")
+            self.assertNotIn("Only you", first)
+            self.assertTrue(label.startswith("This is on "), i["note"])
+            self.assertIn("list, not yours. Only you can see this.", label)
         # the door's default is nothing
         self.assertEqual(am.as_items(self.pg, [ANN], shown=True, now=NOW)["items"], [])
+
+    def test_owner_card_labels_resolve_staff_names_and_never_leak_raw_ids(self):
+        known_uid = "11111111-2222-4333-8444-555555555555"
+        email_only_uid = "22222222-3333-4444-8555-666666666666"
+        unknown_uid = "99999999-8888-4777-8666-555555555555"
+        fallback_uid = "33333333-4444-4555-8666-777777777777"
+        self.pg.execute("INSERT INTO biz.staff VALUES (%s, %s, %s)",
+                        (known_uid, "pat.mercer@ours.example", "Pat Mercer"))
+        self.pg.execute("INSERT INTO biz.staff VALUES (%s, %s, %s)",
+                        (email_only_uid, "sam.reed@ours.example", ""))
+        t0 = NOW - dt.timedelta(hours=2)
+        for tid, uid, addr in (
+            ("t-known", known_uid, "pat.mercer@ours.example"),
+            ("t-email", email_only_uid, "sam.reed@ours.example"),
+            ("t-unknown", unknown_uid, "unknown@ours.example"),
+            ("t-fallback", fallback_uid, "fallback@ours.example"),
+        ):
+            h = self.mail(tid, OUT, [addr], box=uid, at=t0)
+            self.read(h, thread=tid, actor=uid, at=t0)
+        # Teams message whose sender carries only a raw UUID (no display_name)
+        self.pg.execute(
+            "INSERT INTO biz.teams_messages VALUES ('teams://c-uid/1', 'c-uid', %s, %s, "
+            "NULL, '{teams:chat:c-uid}', '{[]}', '{o:tu1}')",
+            (json.dumps({"id": known_uid, "display_name": ""}), t0))
+        self.read("teams://c-uid/1", source="teams_messages", thread="c-uid", actor=ANN,
+                  at=t0, basis="teams_id")
+        self.pg.execute(
+            "INSERT INTO biz.teams_messages VALUES ('teams://c-uid/2', 'c-uid2', %s, %s, "
+            "NULL, '{teams:chat:c-uid2}', '{[]}', '{o:tu2}')",
+            (json.dumps({"id": unknown_uid, "display_name": unknown_uid}), t0))
+        self.read("teams://c-uid/2", source="teams_messages", thread="c-uid2", actor=ANN,
+                  at=t0, basis="teams_id")
+        self.cycle()
+
+        asked_fallback: list[list[str]] = []
+
+        def names_of(oids):
+            asked_fallback.append(sorted(oids))
+            return {fallback_uid: "Dana Cole", known_uid: "Should Not Override"}
+
+        got = am.as_items(self.pg, [], shown=False, owner_view=True, everyone=True,
+                          door=self.everything, names_of=names_of, now=NOW)
+        by_owner = {i["owner"]: i for i in got["items"] if i["channel"] == "mail"}
+        # Known staff UUID resolves to their display name from biz.staff
+        self.assertIn("This is on Pat Mercer's list, not yours. Only you can see this.",
+                      by_owner[known_uid]["note"])
+        self.assertNotIn(known_uid.lower(), by_owner[known_uid]["note"].lower())
+        # Empty display name in biz.staff falls back cleanly to email local part
+        self.assertIn("This is on Sam Reed's list, not yours. Only you can see this.",
+                      by_owner[email_only_uid]["note"])
+        # Unknown raw UUID never leaks raw and uses clean plain English with proper spacing
+        self.assertIn("This is on another team member's list, not yours. Only you can see this.",
+                      by_owner[unknown_uid]["note"])
+        self.assertNotIn(unknown_uid.lower(), by_owner[unknown_uid]["note"].lower())
+        self.assertNotIn("not yours.Only", by_owner[unknown_uid]["note"])
+        # Caller fallback resolves an id absent from biz.staff without overriding biz.staff
+        self.assertIn("This is on Dana Cole's list, not yours. Only you can see this.",
+                      by_owner[fallback_uid]["note"])
+        self.assertEqual(len(asked_fallback), 1)
+        self.assertNotIn(known_uid, asked_fallback[0])
+        # Teams sender with raw UUID resolves from biz.staff and never leaks an unknown UUID
+        teams = {i["sender"]: i for i in got["items"] if i["channel"] == "teams"}
+        self.assertIn("Pat Mercer", teams)
+        self.assertIn("", teams)
+        self.assertFalse(any(unknown_uid.lower() in s.lower() for s in teams))
+
+    def test_person_label_and_empty_note_spacing(self):
+        uid = "99999999-8888-4777-8666-555555555555"
+        self.assertEqual(am.person_label(uid, {uid: "Pat Mercer"}), "Pat Mercer")
+        self.assertEqual(am.person_label(uid.upper(), {uid: "Pat Mercer"}), "Pat Mercer")
+        self.assertEqual(am.person_label(uid, {}), "another team member")
+        self.assertEqual(am.person_label(f"tenant:{uid}", {}), "another team member")
+        self.assertEqual(am.person_label(f"Person:graph_mail.people:{{\"person_key\":\"{uid}\"}}", {}),
+                         "another team member")
+        self.assertEqual(am.person_label("graph-mail://box/1", {}), "another team member")
+        self.assertEqual(am.person_label("pool:quality", {}), "the Quality team")
+        self.assertEqual(am.person_label("tenant:alex", {}), "Alex")
+        self.assertEqual(am.person_label(uid, {uid: uid}), "another team member")
+        # Empty base note still separates the quiet label with a newline and keeps sentence spacing
+        row = {
+            "matter_id": "m" * 24, "owner_person": uid, "kind": "conversation",
+            "source": None, "sender": None, "tsender": None, "subject": "Subj",
+            "title": "Title", "quote": "", "detail": "", "next_act": "",
+            "plan": None, "plan_status": "none", "plan_reason": "", "plan_at": None,
+            "requested_at": None, "basis_at": NOW, "due_at": None, "touched_at": None,
+            "state": "open", "verified_at": NOW, "verify_note": "", "legacy_item_id": None,
+            "sources": {}, "audiences": [], "markings": [], "handles": [],
+        }
+        item = am.item_of(row, mark_unshown=True, theirs=True, names={}, now=NOW)
+        first, sep, label = item["note"].partition("\n")
+        self.assertEqual((first, sep), ("", "\n"))
+        self.assertEqual(label,
+                         "This is on another team member's list, not yours. Only you can see this.")
 
     def test_the_api_role_reads_the_list_view_and_appends_log_rows_only(self):
         """As plx_api (not a superuser): the list's view and log appends, nothing else of

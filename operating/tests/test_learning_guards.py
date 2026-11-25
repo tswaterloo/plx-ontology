@@ -61,6 +61,26 @@ def ledger_with(tmp: str, signals, roles=None) -> Path:
     return directory
 
 
+class NoPlaceholders(unittest.TestCase):
+    """A decision lesson names only the parts a signal states: never "unknown" (the owner saw
+    "Usually acts on prepared items (job_approval, unknown, unknown)")."""
+
+    def acts(self, data, n=4):
+        return [L.Signal(kind="item_acted", person=ANA, at=L._iso(NOW - timedelta(days=1)),
+                         ref=f"item:act-{i}", data=data) for i in range(n)]
+
+    def test_an_approval_with_no_channel_or_side_is_about_its_workflow_alone(self):
+        got = lessons_of(self.acts({"autopilot": "job_approval"}))
+        text = [l.text for l in got.by[("person", ANA)].values() if l.kind == "decision"]
+        self.assertTrue(text, got.by)
+        self.assertEqual(text, ["Usually acts on prepared items (job approval)"])
+        self.assertFalse(any("unknown" in k for k in got.by[("person", ANA)]))
+
+    def test_a_signal_that_names_no_workflow_teaches_nothing_about_a_kind(self):
+        got = lessons_of(self.acts({"channel": "mail"}))
+        self.assertEqual([k for k in got.by.get(("person", ANA), {}) if k.startswith("decision:")], [])
+
+
 class SkipEdges(unittest.TestCase):
     def test_three_leaves_are_exactly_the_evidence_floor_two_are_not(self):
         three = lessons_of([leave(i) for i in range(3)])

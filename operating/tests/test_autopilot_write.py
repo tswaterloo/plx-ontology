@@ -630,6 +630,12 @@ class Routine(Base):
             clean = json.loads(json.dumps(action).replace(blank, "Ships on Friday"))
             self.assertNotIn("incomplete:placeholder", aw.routine(rules, item, clean, "x"),
                              action["kind"])
+        # a draft a check flagged is never routine: the person reads it, Auto does not send it
+        action = actions[0]
+        flagged = {"title": "", "body": {"prepared": {"warning": "Check before sending"},
+                                         "happened": {"sender": "a@customer.example"}}}
+        self.assertIn("incomplete:flagged", aw.routine(rules, flagged, action, "x"))
+        self.assertNotIn("incomplete:flagged", aw.routine(rules, item, action, "x"))
         for text in ("[EXTERNAL] Re: lot 2231", "Re: [External] lot", "see [1]", "[SPAM] offer",
                      "[cid:image001.png@01DA]", "[mailto:a@customer.example]",
                      "[https://portal.example/x]", "[image: logo]", "[a@customer.example]"):

@@ -3,22 +3,27 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { AnswerCharts } from "@/components/answer-chart";
+import { ExcelExportButton } from "@/components/excel-export-button";
 import { DefinitionLines } from "@/components/definition-lines";
 import { QueryToggle, ShowWork } from "@/components/query-work";
 import { LoadProblem } from "@/components/ui/notice";
+import { InsightsAsk } from "@/components/insights/ask-here";
 import { WhyDidItChange } from "@/components/insights/why";
+import { ChartSkeleton } from "@/components/charts/chart-skeleton";
 import { Pending } from "@/components/ui/skeleton";
-import { deleteInsight, getInsight, readInsightFiltered, setInsightSchedule } from "@/lib/api";
+import { deleteInsight, getInsight, proposeMeasureCandidate, readInsightFiltered, setInsightSchedule } from "@/lib/api";
 import { ApiError, noticeKind, plainError, tileError } from "@/lib/errors";
 import { ago, formatDate, isBeforeToday } from "@/lib/format";
 import { full, human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
-const quiet = "h-7 rounded-md px-2 text-[12px] font-medium hover:bg-hover cursor-pointer disabled:cursor-default disabled:opacity-50";
+// a button that looks like one: hairline, a warm hover, a pressed state, 13 px (legible, 32 px tall)
+const quiet = "h-8 rounded-md border border-border px-2.5 text-[13px] font-medium text-fg transition-colors duration-100 hover:border-control hover:bg-hover active:bg-surface-2 cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent";
+const primary = "h-9 rounded-md bg-accent px-4 text-[14px] font-semibold text-accent-fg transition-opacity duration-100 hover:opacity-90 active:opacity-80 cursor-pointer";
 
 // a chart with more names than this shows its first ones (the tile's own order: the largest
-// first) and a "Show all" switch; the slanted names of 48 people were cut off and unreadable
-export const TOP = 15;
+// first) and a "Show all" switch that opens the rest in the same tile; nothing is cut
+export const TOP = 8;
 type Drawn = NonNullable<InsightResult["drawn"]>;
 
 /** Pure: a chart cut to its first `n` names (bars, lines and their series alike); a chart
@@ -38,6 +43,10 @@ export function askAbout(title: string): string {
   return `About the Insights chart "${title}": what changed lately, and why?`;
 }
 
+function groupKey(i: InsightInfo): string {
+  return i.saved ? "Pinned by you" : i.group || "Other";
+}
+
 /** Pure: the dashboard's groups in the order they first appear, each with its insights. */
 export function grouped(items: InsightInfo[]): [string, InsightInfo[]][] {
   const out = new Map<string, InsightInfo[]>();
@@ -46,6 +55,32 @@ export function grouped(items: InsightInfo[]): [string, InsightInfo[]][] {
     out.set(key, [...(out.get(key) ?? []), it]);
   }
   return [...out.entries()];
+}
+
+/** Pure: the ids in the order shown after `id` moves one place up (-1) or down (1) among the
+ * charts of its own group; the same order when it cannot move. */
+export function moved(items: InsightInfo[], id: string, dir: -1 | 1): string[] {
+  const ids = items.map((i) => i.id);
+  const me = items.find((i) => i.id === id);
+  if (!me) return ids;
+  const key = (i: InsightInfo) => (i.saved ? "Pinned by you" : i.group || "Other");
+  const mates = items.filter((i) => key(i) === key(me)).map((i) => i.id);
+  const swap = mates[mates.indexOf(id) + dir];
+  if (swap === undefined) return ids;
+  const a = ids.indexOf(id), b = ids.indexOf(swap);
+  [ids[a], ids[b]] = [ids[b], ids[a]];
+  return ids;
+}
+
+/** Pure: the ids in the order shown after `from` is dropped on `to`, both of one group: it
+ * takes the place of `to`, the others making room; the same order for another group or an unknown id. */
+export function placed(items: InsightInfo[], from: string, to: string): string[] {
+  const ids = items.map((i) => i.id);
+  const a = items.find((i) => i.id === from), b = items.find((i) => i.id === to);
+  if (!a || !b || from === to || groupKey(a) !== groupKey(b)) return ids;
+  const rest = ids.filter((x) => x !== from);
+  rest.splice(ids.indexOf(to), 0, from);
+  return rest;
 }
 
 // columns that hold a person's name: it opens that person on Team, by the row's Team key when it
@@ -88,6 +123,23 @@ function Rows({ data }: { data: InsightResult }) {
         </tbody>
       </table>
       {data.truncated && <p className="pt-1 text-[12px] text-muted">{data.total_rows ? `First ${data.row_count} of ${data.total_rows} rows.` : `Only the first ${data.row_count} rows are shown.`}</p>}
+      <div className="pt-1">
+        <ExcelExportButton
+          title={data.title}
+          req={() => ({
+            title: data.title,
+            tables: [{
+              title: data.title,
+              columns: data.columns,
+              rows: data.rows,
+              sql: data.sql,
+              as_of: data.as_of,
+              total_rows: data.total_rows ?? null,
+              truncated: Boolean(data.truncated || (data.total_rows != null && data.rows.length < data.total_rows)),
+            }],
+          })}
+        />
+      </div>
     </div>
   );
 }
@@ -225,13 +277,18 @@ export type TileEntry = { result?: InsightResult; error?: { code: string; messag
  * `entry`: given by a dashboard that reads every chart in one request (the tile then asks for
  * nothing itself, until Refresh, unless the stream left it for `later`); `streaming`: that
  * dashboard is still reading. A tile that reads itself does so once it nears the view. */
-export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, streaming }: { item: InsightInfo; onRemoved?: () => void; entry?: TileEntry; streaming?: boolean }) {
+/** What a person can do to a tile while arranging their dashboard. */
+export type Arrange = { up?: () => void; down?: () => void; off: () => void; start: () => void; drop: () => void; dragging: boolean };
+
+export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, streaming, arrange }: { item: InsightInfo; onRemoved?: () => void; entry?: TileEntry; streaming?: boolean; arrange?: Arrange }) {
   const [data, setData] = useState<InsightResult | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
   const [round, setRound] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [all, setAll] = useState(false);
+  const [proposeState, setProposeState] = useState<"idle" | "saving" | "sent" | "failed">("idle");
+  const [proposeProblem, setProposeProblem] = useState("");
   const retry = useCallback(() => setRound((n) => n + 1), []);
   // the filters shown are the tile's own statement's, kept while a changed read is shown
   const [filtered, setFiltered] = useState(false);
@@ -247,19 +304,24 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
     else if (entry?.error) setError(new ApiError(entry.error.status, entry.error.code, undefined, entry.error.message));
   }, [fed, entry]);
   // its own read starts once it nears the view (or is the one opened from Home): a dashboard
-  // of 61 tiles asked for every one at once, and the server read them all cold together
-  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined" || isTarget(item.id));
+  // of 61 tiles asked for every one at once, and the server read them all cold together.
+  // It is drawn only while it is near the view too: 40 charts drawn at once were 7,172 nodes.
+  const noObserver = typeof IntersectionObserver === "undefined";
+  const [near, setNear] = useState(() => noObserver || isTarget(item.id));
+  const [inView, setInView] = useState(() => noObserver || isTarget(item.id));
+  const body = useRef<HTMLDivElement>(null);
+  const drawnHeight = useRef(160);   // what it measured when it left, so the page does not jump
   useEffect(() => {
-    if (fed || near || !here.current) return;
+    if (!here.current || typeof IntersectionObserver === "undefined") return;
     const seen = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) {
-        setNear(true);
-        seen.disconnect();
-      }
+      const on = entries.some((e) => e.isIntersecting);
+      if (on) setNear(true);
+      else if (body.current?.offsetHeight) drawnHeight.current = body.current.offsetHeight;
+      setInView(on);
     }, { rootMargin: NEAR_MARGIN });
     seen.observe(here.current);
     return () => seen.disconnect();
-  }, [near, fed]);
+  }, []);
   useEffect(() => {
     if (fed || !near) return;
     const ctl = new AbortController();
@@ -280,39 +342,89 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
       setError(e);
     }
   };
+  const propose = async () => {
+    if (!data?.sql) return;
+    setProposeState("saving");
+    setProposeProblem("");
+    try {
+      await proposeMeasureCandidate({
+        insight_id: item.id,
+        title: item.title,
+        question: item.question || undefined,
+        sql: data.sql,
+        source_kind: "saved_tile",
+      });
+      setProposeState("sent");
+    } catch (e) {
+      setProposeProblem(plainError(e));
+      setProposeState("failed");
+    }
+  };
   return (
-    <section id={`insight-${item.id}`} ref={here} className="cv-auto cv-tile space-y-2 border-t border-border pt-3" data-testid={`insight-${item.id}`} aria-labelledby={`insight-${item.id}-title`}>
-      <div className="flex items-baseline gap-2">
-        <h3 id={`insight-${item.id}-title`} className="flex-1 text-[14px] font-semibold">{item.title}</h3>
-        {/* no prefetch: every tile has one, each a different question to the same Ask page (12+ server renders a visit) */}
-        <Link prefetch={false} href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`} className={`${quiet} inline-flex items-center`}>Ask about this</Link>
-        <button type="button" className={quiet} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-          {open ? "Hide details" : "Details"}
-        </button>
-        {item.saved && <button type="button" className={quiet} onClick={remove}>Remove</button>}
+    <section id={`insight-${item.id}`} ref={here}
+      className={`cv-auto cv-tile flex min-w-0 scroll-mt-24 flex-col gap-3.5 rounded-lg border bg-surface/50 p-5 transition-colors duration-100 ${arrange ? "cursor-grab border-dashed border-control hover:border-accent" : "border-border"} ${arrange?.dragging ? "opacity-50" : ""}`}
+      draggable={!!arrange}
+      onDragStart={arrange ? (e) => { e.dataTransfer?.setData("text/plain", item.id); arrange.start(); } : undefined}
+      onDragOver={arrange ? (e) => e.preventDefault() : undefined}
+      onDrop={arrange ? (e) => { e.preventDefault(); arrange.drop(); } : undefined}
+      data-testid={`insight-${item.id}`} aria-labelledby={`insight-${item.id}-title`}>
+      <div className="space-y-1">
+        <div className="flex items-start gap-2">
+          <h3 id={`insight-${item.id}-title`} className="flex-1 text-[16px] font-semibold leading-6 text-fg">{item.title}</h3>
+          {item.saved && <button type="button" className={quiet} onClick={remove}>Remove</button>}
+        </div>
+        {data?.about && !data.not_measurable && (
+          data.about.length > 110 ? (
+            <details className="group" data-testid={`takeaway-${item.id}`}>
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-[13px] leading-5 text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+                <span className="min-w-0 truncate">{data.about}</span>
+                <span className="shrink-0 text-[12px] font-medium text-accent group-open:hidden">How this is calculated</span>
+                <span className="hidden shrink-0 text-[12px] font-medium text-muted group-open:inline">Hide</span>
+              </summary>
+              <p className="mt-2 rounded-md border border-border/70 bg-bg/70 p-3 text-[13px] leading-relaxed text-muted">{data.about}</p>
+            </details>
+          ) : (
+            <p className="text-[13px] leading-5 text-muted" data-testid={`takeaway-${item.id}`}>{data.about}</p>
+          )
+        )}
       </div>
+      {arrange && (
+        <div className="flex flex-wrap items-center gap-1.5" data-testid={`arrange-${item.id}`}>
+          <span className="text-[13px] text-muted">Drag to move, or</span>
+          <button type="button" className={quiet} disabled={!arrange.up} onClick={arrange.up} aria-label={`Move ${item.title} up`}>Up</button>
+          <button type="button" className={quiet} disabled={!arrange.down} onClick={arrange.down} aria-label={`Move ${item.title} down`}>Down</button>
+          <button type="button" className={quiet} onClick={arrange.off} aria-label={`Take ${item.title} off your dashboard`}>Remove from dashboard</button>
+        </div>
+      )}
       {item.saved && <ScheduleControl item={item} columns={data?.columns} />}
       {error ? (
         <LoadProblem message={tileError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
       ) : !near && !fed && !data ? (
-        <div className="h-40" data-testid={`unread-${item.id}`} />
+        <div className="h-60" data-testid={`unread-${item.id}`} />
       ) : !data ? (
-        <Pending label="Reading" />
+        <div className="min-h-60" aria-busy><ChartSkeleton /><Pending label="Reading" bars={0} /></div>
+      ) : !inView ? (
+        <div style={{ height: drawnHeight.current }} data-testid={`undrawn-${item.id}`} aria-hidden />
       ) : (
-        <>
+        <div ref={body} className="space-y-3">
           {data.not_measurable && <p className="text-[13px] text-muted" data-testid={`unmeasurable-${item.id}`}>{data.not_measurable}</p>}
-          {data.not_measurable ? null : data.drawn ? <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} /> : <Rows data={data} />}
+          {data.not_measurable ? null : data.drawn ? (
+            <div className={all ? "max-h-[28rem] overflow-y-auto" : ""} data-testid={`chart-body-${item.id}`}>
+              <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} />
+            </div>
+          ) : <Rows data={data} />}
           {(data.excluded ?? []).map((x) => (
             <p key={x.parameter} className="text-[13px] text-muted" data-testid={`excluded-${item.id}-${x.parameter}`}>
               {x.n === null || x.n === undefined ? `Not counted: what is ${x.says} (${x.why ?? "not read"})` : `${x.n.toLocaleString()} more ${x.says}`}
             </p>
           ))}
-          {(data as InsightResult & { checked?: { status: string; says: string } | null }).checked && (
+          {/* a "not checked" line says nothing a reader can use (no second figure exists): only a reconciliation or a difference is shown */}
+          {["reconciles", "differs"].includes((data as InsightResult & { checked?: { status: string } | null }).checked?.status ?? "") && (
             <p className={`text-[13px] ${(data as InsightResult & { checked?: { status: string } | null }).checked?.status === "differs" ? "text-red-700" : "text-muted"}`} data-testid={`checked-${item.id}`}>
               Checked: {(data as InsightResult & { checked?: { says: string } | null }).checked?.says}
             </p>
           )}
-          <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted">
             {item.fixed_dates && <span data-testid={`fixed-${item.id}`}>Dates fixed when pinned: {item.fixed_dates}</span>}
             {filtered && <span data-testid={`filtered-${item.id}`}>Your filters (not saved)</span>}
             <span>
@@ -326,11 +438,24 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
             )}
             <button type="button" className={quiet} onClick={() => { setFiltered(false); retry(); }}>Refresh</button>
           </p>
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
+            <Link prefetch={false} href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`} className={`${quiet} inline-flex items-center`}>Ask about this</Link>
+            <button type="button" className={quiet} aria-expanded={open} onClick={() => setOpen((o) => !o)}>{open ? "Hide details" : "Details"}</button>
+            {item.saved && data.sql && (
+              proposeState === "sent" ? (
+                <span className="px-2 text-[12px] text-muted" data-testid={`proposed-${item.id}`}>Proposed for review</span>
+              ) : (
+                <button type="button" className={quiet} disabled={proposeState === "saving"} onClick={propose} data-testid={`propose-${item.id}`}>
+                  {proposeState === "saving" ? "Proposing" : "Propose as shared definition"}
+                </button>
+              )
+            )}
+            {proposeState === "failed" && proposeProblem && <span className="text-[12px] text-muted" role="alert">{proposeProblem}</span>}
+          </div>
           {item.measure && <DefinitionLines definitions={[item.measure]} testId={`measure-definition-${item.id}`} />}
           {item.measure && item.id.startsWith("measure_") && data.columns.includes("month") && <WhyDidItChange id={item.id} testId={`why-${item.id}`} />}
           {open && (
             <div className="space-y-2" data-testid="insight-definition">
-              {data.about && <p className="text-[13px] leading-5">{data.about}</p>}
               {work && (
                 <ShowWork
                   key={round}
@@ -350,7 +475,7 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
               <QueryToggle sql={data.sql} testId={`insight-query-${item.id}`} />
             </div>
           )}
-        </>
+        </div>
       )}
     </section>
   );
@@ -428,28 +553,158 @@ export function Measures({ measures }: { measures: Measure[] }) {
   );
 }
 
-export function InsightsDashboard({ list, onChanged, feed, streaming }: { list: InsightList; onChanged: () => void; feed?: Record<string, TileEntry>; streaming?: boolean }) {
+/** Customize: the one visible button at the top. Arranging lets you drag a chart (or move it
+ * up or down) within its group, remove it, add one from the catalogue (the charts you took
+ * off, with a search) or go back to the standard dashboard. Kept per person on the server. */
+function Customise({
+  list,
+  editing,
+  onToggle,
+  onArrange,
+  inHeader,
+}: {
+  list: InsightList;
+  editing: boolean;
+  onToggle: () => void;
+  onArrange: (order: string[], hidden: string[]) => void;
+  inHeader?: boolean;
+}) {
+  const hidden = list.hidden ?? [];
+  const [find, setFind] = useState("");
+  const q = find.trim().toLowerCase();
+  const shownHidden = q ? hidden.filter((h) => `${h.title} ${h.group}`.toLowerCase().includes(q)) : hidden;
+  if (inHeader && !editing && !list.customised && !list.layout_problem) return null;
   return (
-    <div className="space-y-8">
+    <section className="space-y-3" aria-label="Customize your dashboard" data-testid="customise">
+      <div className="flex flex-wrap items-center gap-3">
+        {!inHeader && (
+          <button type="button" className={quiet} aria-pressed={editing} onClick={onToggle}>{editing ? "Done" : "Customize"}</button>
+        )}
+        {editing && <button type="button" className={quiet} disabled={!list.customised} onClick={() => onArrange([], [])}>Reset to the standard dashboard</button>}
+        {!editing && list.customised && <><span className="text-[13px] text-muted">Your own arrangement</span><button type="button" className={quiet} onClick={() => onArrange([], [])}>Back to the standard dashboard</button></>}
+        {editing && <span className="text-[13px] text-muted">Drag a chart, or use its Up and Down. Changes are saved for you.</span>}
+      </div>
+      {list.layout_problem && <p className="text-[14px] text-muted" role="status" data-testid="layout-problem">{list.layout_problem}</p>}
+      {editing && (
+        <div className="space-y-2 rounded-md border border-border bg-surface p-4" data-testid="hidden-charts">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="flex-1 text-[15px] font-semibold">Add a chart ({hidden.length})</h2>
+            {hidden.length > 0 && (
+              <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Search the charts you took off" aria-label="Search the charts you took off"
+                className="h-9 w-72 max-w-full rounded-md border border-control bg-bg px-3 text-[14px]" />
+            )}
+          </div>
+          {hidden.length === 0 ? <p className="text-[14px] text-muted">None. Remove a chart from your dashboard and it waits here to be added back.</p> : shownHidden.length === 0 ? <p className="text-[14px] text-muted">No chart matches that.</p> : (
+            <ul className="divide-y divide-border border-y border-border">
+              {shownHidden.map((h) => (
+                <li key={h.id} className="flex items-center gap-3 py-2 text-[14px]">
+                  <span className="flex-1">{h.title}<span className="pl-2 text-[13px] text-muted">{h.group}</span></span>
+                  <button type="button" className={quiet} aria-label={`Add ${h.title} back`} onClick={() => onArrange([...list.items.map((i) => i.id), h.id], hidden.filter((x) => x.id !== h.id).map((x) => x.id))}>Add</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function InsightsDashboard({
+  list,
+  onChanged,
+  feed,
+  streaming,
+  onArrange,
+  editing: controlledEditing,
+  onEditingChange,
+}: {
+  list: InsightList;
+  onChanged: () => void;
+  feed?: Record<string, TileEntry>;
+  streaming?: boolean;
+  onArrange?: (order: string[], hidden: string[]) => void;
+  editing?: boolean;
+  onEditingChange?: (next: boolean) => void;
+}) {
+  const [ownEditing, setOwnEditing] = useState(false);
+  const editing = controlledEditing ?? ownEditing;
+  const toggleEditing = () => {
+    if (onEditingChange) onEditingChange(!editing);
+    else setOwnEditing((e) => !e);
+  };
+  const drag = useRef<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const shown = list.items.map((i) => i.id);
+  const away = (list.hidden ?? []).map((h) => h.id);
+  const arrangeOf = (it: InsightInfo): Arrange | undefined => {
+    if (!editing || !onArrange) return undefined;
+    const up = moved(list.items, it.id, -1), down = moved(list.items, it.id, 1);
+    return {
+      up: up.some((x, i) => x !== shown[i]) ? () => onArrange(up, away) : undefined,
+      down: down.some((x, i) => x !== shown[i]) ? () => onArrange(down, away) : undefined,
+      off: () => onArrange(shown.filter((x) => x !== it.id), [...away, it.id]),
+      start: () => { drag.current = it.id; setDragging(it.id); },
+      drop: () => {
+        const from = drag.current;
+        drag.current = null;
+        setDragging(null);
+        if (!from) return;
+        const next = placed(list.items, from, it.id);
+        if (next.some((x, i) => x !== shown[i])) onArrange(next, away);
+      },
+      dragging: dragging === it.id,
+    };
+  };
+  const allGroups = grouped(list.items);
+  const measureGroups = allGroups.filter(([g]) => /^Measures:\s*/i.test(g));
+  const viewGroups = allGroups.filter(([g]) => !/^Measures:\s*/i.test(g));
+  const groupChip = (group: string, items: InsightInfo[], label: string) => (
+    <a
+      key={group}
+      href={`#insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg"
+    >
+      <span>{label}</span>
+      <span className="num text-[11px] text-faint">{items.length}</span>
+    </a>
+  );
+  return (
+    <div className="mx-auto w-full max-w-[1800px] space-y-6 text-[14px] leading-6">
+      {list.saving && onArrange && (
+        <Customise list={list} editing={editing} onToggle={toggleEditing} onArrange={onArrange} inHeader={onEditingChange !== undefined} />
+      )}
+      {list.saving && <InsightsAsk onPinned={onChanged} />}
       {list.scope === "self" && (
         <p className="text-[13px] text-muted">The team views show your own row only.</p>
       )}
       {list.saving && <Monitors items={list.items} />}
-      {/* many charts: a line of the groups to jump to, each with how many it holds */}
-      {grouped(list.items).length > 2 && (
-        <nav aria-label="Groups" className="flex flex-wrap gap-x-4 gap-y-1 text-[13px]" data-testid="insight-groups">
-          {grouped(list.items).map(([group, items]) => (
-            <a key={group} href={`#insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="text-muted hover:text-fg hover:underline">
-              {group} <span className="num text-faint">{items.length}</span>
-            </a>
-          ))}
+      {/* many charts: sticky filter pill bar split into Views and Measures when both are present */}
+      {allGroups.length > 2 && (
+        <nav aria-label="Groups" className="sticky top-0 z-10 space-y-2 rounded-lg border border-border/80 bg-bg/95 px-3.5 py-2.5 backdrop-blur-sm" data-testid="insight-groups">
+          {measureGroups.length > 0 && viewGroups.length > 0 ? (
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">Views</span>
+                {viewGroups.map(([group, items]) => groupChip(group, items, group))}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">Measures</span>
+                {measureGroups.map(([group, items]) => groupChip(group, items, group.replace(/^Measures:\s*/i, "")))}
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {allGroups.map(([group, items]) => groupChip(group, items, group))}
+            </div>
+          )}
         </nav>
       )}
-      {grouped(list.items).map(([group, items]) => (
-        <section key={group} id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="scroll-mt-16 space-y-4" aria-label={group}>
-          <h2 className="text-[15px] font-semibold">{group}</h2>
-          <div className="grid gap-6 xl:grid-cols-2">
-            {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} entry={feed?.[it.id]} streaming={feed ? !!streaming : undefined} />)}
+      {allGroups.map(([group, items]) => (
+        <section key={group} id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="scroll-mt-16 space-y-3" aria-label={group}>
+          <h2 className="flex items-baseline gap-2 border-b border-border pb-2 text-[17px] font-semibold">{group}<span className="num text-[13px] font-normal text-muted">{items.length}</span></h2>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} entry={feed?.[it.id]} streaming={feed ? !!streaming : undefined} arrange={arrangeOf(it)} />)}
           </div>
         </section>
       ))}

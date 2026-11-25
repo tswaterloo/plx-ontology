@@ -55,7 +55,7 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 MOVED_USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comm-text plx-assist-readings plx-assist-worker plx-assist-precedents plx-assist-plan plx-source-coverage plx-qbank-refresh plx-link-marks"
+SYS_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-reply-drafts plx-labour plx-doc-style plx-learning plx-write-readiness plx-spark-health plx-ask-canary plx-exclusion-leak plx-bare-mentions plx-own-issued plx-people-excluded plx-answer-bank plx-business-views plx-alerts plx-comm-text plx-assist-readings plx-assist-worker plx-assist-job plx-assist-precedents plx-assist-plan plx-source-coverage plx-qbank-refresh plx-link-marks"
 SYS_PATHS="plx-autopilot-follow plx-assist-readings-fresh"                 # also started by a .path unit
 RETIRED_SYS_UNITS="plx-autopilot-fast plx-comms-findings"               # no longer shipped: stopped and removed
 SYS_DAEMONS="plx-autopilot-fast-serve"                 # a service that runs continuously

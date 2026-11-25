@@ -70,6 +70,10 @@ export type BizKind = BizPage["kind"];
 export type RecordList = S["RecordList"];
 export type RecordViews = S["RecordViews"];
 export type HomeResponse = S["Home"];
+export type HomeNeeds = S["HomeNeeds"];
+export type HomeNeedItem = S["HomeNeedItem"];
+export type HomeNeedFacet = S["HomeNeedFacet"];
+export type HomeNeedPart = S["HomeNeedPart"];
 export type SidebarResponse = S["Sidebar"];
 export type NeedsAttention = S["NeedsAttention"];
 export type LatePo = S["LatePo"];
@@ -266,7 +270,9 @@ export type AskChatUpdate = S["AskChatUpdate"];
 export type MemoryItem = S["MemoryItem"];
 export type MemoryItems = S["MemoryItems"];
 export type InsightInfo = S["InsightInfo"];
-export type InsightList = S["InsightList"];
+/** The dashboard: the charts shown in the person's own order, the ones they took off (`hidden`),
+ * and a said reason when their arrangement could not be read (the standard one is shown). */
+export type InsightList = S["InsightList"] & { hidden?: InsightInfo[]; customised?: boolean; layout_problem?: string | null };
 export type InsightResult = S["InsightResult"];
 export type InsightSave = S["InsightSave"];
 export type InsightSchedule = S["InsightSchedule"];
@@ -289,3 +295,57 @@ export type RecurringInstruction = S["RecurringInstruction"];
 export type RecurringInstructions = S["RecurringInstructions"];
 export type RecurringKeep = S["RecurringKeep"];
 export type RecurringChange = S["RecurringChange"];
+
+/** What Ask or Genie asked for that no view or measure defines (`GET /api/answers/gaps`). */
+export interface GapRow { kind: "view" | "measure"; name: string; asked: number; first: string; last: string; defined: boolean }
+export interface GapList { on: boolean; gaps: GapRow[] }
+
+export type MeasureCandidate = S["MeasureCandidate"];
+export type MeasureCandidateList = S["MeasureCandidateList"];
+export type MeasureCandidatePropose = S["MeasureCandidatePropose"];
+export type MeasureCandidateApprove = S["MeasureCandidateApprove"];
+export type MeasureCandidateDismiss = S["MeasureCandidateDismiss"];
+export type MeasureCandidateStatus = MeasureCandidate["status"];
+
+/** How the Ask has been doing per day, from what each answer kept (`GET /api/answers/observed`). */
+export interface AskDay { day: string; answered: number; failed: number; unavailable: number; median_ms: number | null; slowest_ms: number | null; median_steps: number | null; cost_usd?: string | null; cost_answers?: number }
+export interface AskObserved { available: boolean; days: AskDay[]; failures: { at: string; question: string | null; error: string | null }[] }
+
+/** Draft an email for a brief or answer with its chart (`POST /api/email-draft`). */
+export interface EmailDraftRequest {
+  title: string;
+  summary?: string;
+  to?: string | null;
+  charts?: Record<string, unknown>[];
+  citations?: Record<string, unknown>[];
+  format?: "xlsx" | "docx" | "pptx" | "pdf";
+  attach_file?: boolean;
+}
+export interface EmailDraftPrepared {
+  card_id: string;
+  kind: "send_email";
+  subject: string;
+  body: string;
+  to: string | null;
+  attachment_name: string | null;
+  upload_id: string | null;
+}
+
+/** Export any chart, table or answer to Excel (`POST /api/export/xlsx`). */
+export interface ExportTable {
+  title?: string;
+  columns: string[];
+  rows: (string | null)[][];
+  sql?: string | null;
+  as_of?: string | null;
+  total_rows?: number | null;
+  records?: number | null;
+  truncated?: boolean;
+}
+export interface ExportXlsxRequest {
+  title?: string;
+  summary?: string;
+  tables?: ExportTable[];
+  charts?: S["AskChart"][];
+  citations?: Record<string, unknown>[];
+}

@@ -505,6 +505,21 @@ def make_views(write: Any, biz: str | None = None, *,
                 return True
             if run(one, f"{dst}.{v.name}"):
                 made.append(f"{dst}.{v.name}")
+
+        def measure_values_view(w: Any, dst: str = dst, role: str = role,
+                                ai: bool = ai) -> bool:
+            if ai:
+                w.execute(f"DROP VIEW IF EXISTS {dst}.measure_values")
+                return False
+            if w.execute("SELECT to_regclass(%s)", (f"{s}.measure_values",)).fetchone()[0] \
+                    is None or not door.is_class_guarded(w, s, "measure_values"):
+                w.execute(f"DROP VIEW IF EXISTS {dst}.measure_values")
+                return False
+            sql_views.put(w, f"{dst}.measure_values", door.measure_values_ddl(w, s, dst))
+            _grant(w, role, f"{dst}.measure_values")
+            return True
+        if run(measure_values_view, f"{dst}.measure_values"):
+            made.append(f"{dst}.measure_values")
     run(lambda w: door._bump(w, s), f"{s} door stamp")
     return made
 

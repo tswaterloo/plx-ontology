@@ -11,22 +11,22 @@
   --bg: #ffffff; /* panes */
   --bg-subtle: #f5f6f8; /* sidebar, window chrome */
   --sidebar: #f5f6f8;
-  --surface: #f6f7f9; /* inputs, wells, inspector */
-  --surface-2: #edeef1; /* hover, sunken fills */
+  --surface: #f7f8fa; /* elevated cards, inputs, wells, inspector */
+  --surface-2: #edeef2; /* hover, sunken fills */
   --raised: #ffffff; /* popovers, menus, drawer */
   --hover: rgb(24 107 202 / 0.06); /* rows warm to the accent on hover */
-  --list: #f7f8fa; /* the list pane, so its selected row can sit on it as a sheet */
+  --list: #f6f7f9; /* the list pane, so its selected row can sit on it as a sheet */
   --row-on: #ffffff;
-  --lift: 0 0 0 1px #e3e5e9; /* a sheet is set off by a hairline, not a shadow */
+  --lift: 0 1px 2px rgb(16 24 40 / 0.05), 0 0 0 1px #e4e6ec; /* subtle surface lift */
   --selected: #e6f2ff; /* the selected row of a list: the cube's blue as a tint */
   --selected-strong: #186bca; /* the selected row while its list has focus */
-  --fg: #1d1d1f; /* 16:1 */
-  --fg-muted: #636366; /* 6:1 */
-  --fg-faint: #6b6b70; /* 4.6:1 on the sidebar and the selected tint */
-  --border: #e3e5e9;
-  --border-strong: #d1d5db;
-  --rule-ink: #d1d5db;
-  --control-border: #c6cbd2;
+  --fg: #18181b; /* 17:1 */
+  --fg-muted: #5f6368; /* 6.1:1 */
+  --fg-faint: #6c7077; /* 4.8:1 on the sidebar and the selected tint */
+  --border: #e4e6ec;
+  --border-strong: #d0d5dd;
+  --rule-ink: #d0d5dd;
+  --control-border: #c5cbd3;
   --accent: #186bca; /* the cube's blue deepened: 5.3:1 on white, 4.6:1 on the selected tint */
   --accent-fg: #ffffff; /* 5.3:1 on the accent */
   --accent-soft: #e6f2ff;
@@ -104,25 +104,25 @@
 }
 
 .dark {
-  --bg: #17191d;
-  --bg-subtle: #1c1f24;
-  --sidebar: #1c1f24;
-  --surface: #20232a;
-  --surface-2: #282c33;
-  --raised: #262a30;
-  --hover: rgb(77 168 255 / 0.07); /* rows warm to the accent on hover */
-  --list: #1a1d21;
-  --row-on: #2a2e35;
-  --lift: 0 0 0 1px #2a2e35;
+  --bg: #13151a;
+  --bg-subtle: #181b21;
+  --sidebar: #181b21;
+  --surface: #1c2028;
+  --surface-2: #242934;
+  --raised: #222630;
+  --hover: rgb(77 168 255 / 0.08); /* rows warm to the accent on hover */
+  --list: #15181e;
+  --row-on: #232834;
+  --lift: 0 1px 2px rgb(0 0 0 / 0.35), 0 0 0 1px #2a2f3a;
   --selected: #123a66; /* the cube's navy */
   --selected-strong: #1a6fd0;
-  --fg: #f2f3f5; /* 15:1 */
-  --fg-muted: #a6a8ad; /* 7.6:1; 4.6:1 on the navy row */
-  --fg-faint: #8d9097; /* 5:1 on the sidebar */
-  --border: #2a2e35;
-  --border-strong: #383d45;
-  --rule-ink: #383d45;
-  --control-border: #474d57;
+  --fg: #f3f4f6; /* 15.5:1 */
+  --fg-muted: #a8aeb8; /* 7.8:1; 4.8:1 on the navy row */
+  --fg-faint: #8b929e; /* 5.1:1 on the sidebar */
+  --border: #2a2f3a;
+  --border-strong: #394050;
+  --rule-ink: #394050;
+  --control-border: #485062;
   --accent: #4da8ff; /* the cube's blue: 7:1 */
   --accent-fg: #001a3d; /* 6.9:1 on the accent; white would be 2.5:1 */
   --accent-soft: #123a66;
@@ -255,35 +255,35 @@
   --shadow-sm: var(--shadow-sm);
   --shadow-lift: var(--lift);
 
-  /* App radii: 2 to 4 px everywhere, an internal tool's square corners. */
-  --radius-xs: 2px;
-  --radius-sm: 3px;
-  --radius-md: 3px;
-  --radius-lg: 4px;
-  --radius-xl: 4px;
-  --radius-2xl: 4px;
-  --radius-3xl: 4px;
+  /* Comfortable, modern radii across cards, controls, and dialogs. */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-3xl: 16px;
 
-  /* Type: 13 px is the app's body, as in a desktop app; weight and grey carry the rest. */
+  /* Type: crisp 14 px readable body, clear 16 px titles, well-contrasted 12 px metadata. */
   --text-display: var(--fs-display);
   --text-display--line-height: var(--lh-display);
   --text-display--font-weight: 600;
   --text-display--letter-spacing: -0.015em;
-  --text-title: var(--fs-title);
-  --text-title--line-height: var(--lh-title);
+  --text-title: 16px;
+  --text-title--line-height: 22px;
   --text-title--font-weight: 600;
-  --text-answer: var(--fs-answer);
-  --text-answer--line-height: var(--lh-answer);
+  --text-answer: 14px;
+  --text-answer--line-height: 23px;
   --text-answer--font-weight: 400;
-  --text-section: 13px;
-  --text-section--line-height: 18px;
+  --text-section: 14px;
+  --text-section--line-height: 20px;
   --text-section--font-weight: 600;
-  --text-body: 13px;
-  --text-body--line-height: 20px;
-  --text-row: 13px;
-  --text-row--line-height: 18px;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-row: 13.5px;
+  --text-row--line-height: 20px;
   --text-meta: 12px;
-  --text-meta--line-height: 16px;
+  --text-meta--line-height: 17px;
   --text-label: 12px;
   --text-label--line-height: 16px;
   --text-label--font-weight: 500;

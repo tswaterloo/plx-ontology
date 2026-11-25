@@ -140,11 +140,13 @@ export function useRead<T>(key: string, load: (signal: AbortSignal) => Promise<T
   const [round, setRound] = useState(0);
   const loadRef = useRef(load);
   const running = useRef(false);   // a read is under way: a retry never aborts it or overlaps it
+  const abortRetries = useRef(0);
   loadRef.current = load;
   // a new key paints its own kept value (or nothing), never the last key's
   let data = state.data;
   if (state.key !== key) {
     data = keptRead<T>(key);
+    abortRetries.current = 0;
     setState({ key, data, at: data === null ? null : keptAt(key) });
   }
   useEffect(() => {
@@ -172,12 +174,20 @@ export function useRead<T>(key: string, load: (signal: AbortSignal) => Promise<T
           return;
         }
         keepRead(key, v);
+        abortRetries.current = 0;
         shownAt.current = Date.now();
         setState({ key, data: v, at: null });
       },
       (e) => {
         running.current = false;
-        if (!ctl.signal.aborted) setError(e);
+        if (ctl.signal.aborted) return;
+        // an internal abort (e.g. a sibling route resetting shared caches) is not a server error: retry cleanly once
+        if (e instanceof DOMException && e.name === "AbortError" && abortRetries.current < 2) {
+          abortRetries.current += 1;
+          setRound((n) => n + 1);
+          return;
+        }
+        setError(e);
       },
     );
     return () => {

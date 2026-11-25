@@ -83,6 +83,28 @@ class FeedbackLoop(unittest.TestCase):
         self.ben = client_for(self.backend, "staff:ben")
         self.owner = client_for(self.backend, "staff:owner")
 
+    def test_the_gap_list_is_shown_to_the_owner_and_admins_only_with_how_often_and_whether_it_is_defined_now(self):
+        from operating import gap_list
+        listing = Path(self.tmp.name) / "gaps.jsonl"
+        with mock.patch.dict(os.environ, {gap_list.ENV: str(listing)}):
+            for _ in range(3):
+                gap_list.record("measure", "freight_cost_per_kg")
+            gap_list.record("view", "no_such_view")
+            gap_list.record("measure", "revenue")          # defined: a gap closed since it was asked
+            self.assertEqual(self.ana.get("/api/answers/gaps").status_code, 403)
+            got = self.owner.get("/api/answers/gaps").json()
+        self.assertTrue(got["on"])
+        by = {(g["kind"], g["name"]): g for g in got["gaps"]}
+        self.assertEqual(by[("measure", "freight_cost_per_kg")]["asked"], 3)
+        self.assertFalse(by[("measure", "freight_cost_per_kg")]["defined"])
+        self.assertTrue(by[("measure", "revenue")]["defined"])
+        self.assertEqual(got["gaps"][0]["name"], "freight_cost_per_kg")      # most asked first
+        # off: said, never an empty list read as "no gaps"
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(gap_list.ENV, None)
+            off = self.owner.get("/api/answers/gaps").json()
+        self.assertEqual((off["on"], off["gaps"]), (False, []))
+
     def test_answer_feedback_attaches_the_answer_and_stays_with_its_reader(self):
         answer_id = asked(self.ana)
         sent = self.ana.post("/api/feedback", json={
@@ -133,6 +155,19 @@ class FeedbackLoop(unittest.TestCase):
             "answer_id": answer_id, "rating": -1, "note": whole + "y"}).status_code, 422)
         from operator_api import models as mm
         mm.TemplateProposeRequest(text="t" * 100000)   # a long draft is proposed from whole
+
+    def test_a_review_is_asked_for_on_a_wrong_answer_with_the_fix_proposed(self):
+        answer_id = asked(self.ana)
+        self.assertEqual(self.ana.post("/api/feedback", json={
+            "answer_id": answer_id, "rating": 1, "review": True}).status_code, 422)
+        self.assertEqual(self.ana.post("/api/feedback", json={
+            "answer_id": answer_id, "rating": -1, "expected": "12 Nov", "review": True}).status_code, 200)
+        other = asked(self.ana)
+        self.assertEqual(self.ana.post("/api/feedback", json={
+            "answer_id": other, "rating": -1, "note": "wrong"}).status_code, 200)
+        entries = self.ana.get("/api/feedback").json()["entries"]
+        self.assertEqual({e["expected"]: e["review_requested"] for e in entries},
+                         {"12 Nov": True, None: False})
 
     def test_item_feedback_suppresses_for_its_reader_and_owner_wrong_for_everyone(self):
         for client, item, verdict in ((self.ana, "gap-1", "not_useful"),

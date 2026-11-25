@@ -3,6 +3,7 @@ the automated-sender hint (split from ``integrations.capture_mail``, which re-ex
 from __future__ import annotations
 
 from datetime import timedelta
+import fcntl
 from hashlib import sha256
 import json
 import re
@@ -98,38 +99,46 @@ class MailPriority:
     @classmethod
     def _update(cls, store: Any) -> None:
         """Add the versions stored since the last run to the aggregates (one pass over
-        those only, by version id), so a run's start costs what was stored since."""
-        through = cls._through(store)
-        folders: dict[tuple[str, str], list[str]] = {}
-        senders: dict[tuple[str, str, str], list[int]] = {}
-        last = through
-        for row in store.db.execute(
-                "SELECT version_id, mailbox_id, folder_id, json_extract(record, "
-                "'$.received_at') AS r, lower(json_extract(record, '$.from')) AS f "
-                "FROM messages WHERE version_id > ? ORDER BY version_id", (through,)):
-            last = row["version_id"]
-            key, received = (row["mailbox_id"], row["folder_id"]), row["r"] or ""
-            if received:
-                span = folders.setdefault(key, [received, received])
-                span[0], span[1] = min(span[0], received), max(span[1], received)
-            sender = row["f"] or ""
-            held = senders.setdefault((*key, sha256(sender.encode("utf-8")).hexdigest()),
-                                      [0, int(automated_sender(sender))])
-            held[0] += 1
-        if last == through:
-            return
-        with store.db:
-            store.db.executemany(
-                "INSERT INTO priority_folders VALUES (?,?,?,?) ON CONFLICT (mailbox_id, "
-                "folder_id) DO UPDATE SET oldest=min(coalesce(oldest, excluded.oldest), "
-                "excluded.oldest), newest=max(coalesce(newest, excluded.newest), "
-                "excluded.newest)", [(*k, v[0], v[1]) for k, v in folders.items()])
-            store.db.executemany(
-                "INSERT INTO priority_senders VALUES (?,?,?,?,?) ON CONFLICT (mailbox_id, "
-                "folder_id, sender) DO UPDATE SET n=n+excluded.n",
-                [(*k, v[1], v[0]) for k, v in senders.items()])
-            store.db.execute("INSERT OR REPLACE INTO meta VALUES ('priority_through', ?)",
-                             (str(last),))
+        those only, by version id), so a run's start costs what was stored since.
+
+        Disjoint mailbox captures may write the store beside each other. The aggregate
+        itself is global, so its scan-and-watermark step is one critical section across
+        every process of the store; the high watermark is read first, so versions written
+        while the scan runs wait for the next pass rather than racing it."""
+        lock_path = store.root / "priority-aggregate.lock"
+        with open(lock_path, "a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            through = cls._through(store)
+            high = store.db.execute("SELECT MAX(version_id) FROM messages").fetchone()[0] or 0
+            folders: dict[tuple[str, str], list[str]] = {}
+            senders: dict[tuple[str, str, str], list[int]] = {}
+            for row in store.db.execute(
+                    "SELECT version_id, mailbox_id, folder_id, json_extract(record, "
+                    "'$.received_at') AS r, lower(json_extract(record, '$.from')) AS f "
+                    "FROM messages WHERE version_id > ? AND version_id <= ? "
+                    "ORDER BY version_id", (through, high)):
+                key, received = (row["mailbox_id"], row["folder_id"]), row["r"] or ""
+                if received:
+                    span = folders.setdefault(key, [received, received])
+                    span[0], span[1] = min(span[0], received), max(span[1], received)
+                sender = row["f"] or ""
+                held = senders.setdefault((*key, sha256(sender.encode("utf-8")).hexdigest()),
+                                          [0, int(automated_sender(sender))])
+                held[0] += 1
+            if high == through:
+                return
+            with store.db:
+                store.db.executemany(
+                    "INSERT INTO priority_folders VALUES (?,?,?,?) ON CONFLICT (mailbox_id, "
+                    "folder_id) DO UPDATE SET oldest=min(coalesce(oldest, excluded.oldest), "
+                    "excluded.oldest), newest=max(coalesce(newest, excluded.newest), "
+                    "excluded.newest)", [(*k, v[0], v[1]) for k, v in folders.items()])
+                store.db.executemany(
+                    "INSERT INTO priority_senders VALUES (?,?,?,?,?) ON CONFLICT (mailbox_id, "
+                    "folder_id, sender) DO UPDATE SET n=n+excluded.n",
+                    [(*k, v[1], v[0]) for k, v in senders.items()])
+                store.db.execute("INSERT OR REPLACE INTO meta VALUES ('priority_through', ?)",
+                                 (str(high),))
 
     @staticmethod
     def _bulk(held: Sequence[tuple[int, bool]]) -> bool:

@@ -65,10 +65,24 @@ export function PreparedFeedback({ item }: { item: PreparedItem }) {
           </button>
         </form>
       ) : (
-        <span className="flex items-baseline gap-2.5">
-          <span>Was this right?</span>
-          <button type="button" disabled={state === "sending"} onClick={() => void send("useful")} className="hover:text-fg hover:underline cursor-pointer">Right</button>
-          <button type="button" disabled={state === "sending"} onClick={() => setState("why")} className="hover:text-fg hover:underline cursor-pointer">Wrong</button>
+        <span className="inline-flex items-center gap-2">
+          <span className="text-[11.5px] text-muted">Was this right?</span>
+          <button
+            type="button"
+            disabled={state === "sending"}
+            onClick={() => void send("useful")}
+            className="inline-flex h-6 items-center rounded-md border border-border bg-bg px-2 text-[11.5px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg disabled:opacity-60 cursor-pointer"
+          >
+            Right
+          </button>
+          <button
+            type="button"
+            disabled={state === "sending"}
+            onClick={() => setState("why")}
+            className="inline-flex h-6 items-center rounded-md border border-border bg-bg px-2 text-[11.5px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg disabled:opacity-60 cursor-pointer"
+          >
+            Wrong
+          </button>
         </span>
       )}
       {failed && <span role="alert" className="ml-2 text-fg">Couldn&apos;t save that; try again</span>}

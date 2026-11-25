@@ -234,3 +234,19 @@ describe("plainDates keeps a stated local time", () => {
     expect(plainDates("at 2026-11-01T02:00:00Z")).toBe(`at ${formatDate("2026-10-31")}`);
   });
 });
+
+describe("formatMoneyCents, percent spacing, and progress UUID scrubbing", () => {
+  it("rounds order totals half-up to 2 decimal places without floats", async () => {
+    const { formatMoneyCents, scrubProgressUuids } = await import("./format");
+    expect(formatMoneyCents("9923.208", "CAD")).toBe("$9,923.21 CAD");
+    expect(formatMoneyCents("1233.1125", "CAD")).toBe("$1,233.11 CAD");
+    expect(formatMoneyCents("15.5714", "CAD")).toBe("$15.57 CAD");
+    expect(formatMoneyCents("642.6875", "CAD")).toBe("$642.69 CAD");
+    expect(formatMoneyCents("9.999", "CAD")).toBe("$10.00 CAD");
+    expect(formatMoneyCents("-0.001", "CAD")).toBe("$0.00 CAD");
+    expect(formatMoneyCents("1200", "USD")).toBe("$1,200.00 USD");
+    expect(readable("Customer paid 28 % below usual price and dropped 45 %")).toBe("Customer paid 28% below usual price and dropped 45%");
+    expect(readable("Due 2026-10-29 and 2026-06-24", { shortDates: true, now: new Date("2026-11-25T12:00:00Z") })).toBe("Due 29 Oct and 24 Jun");
+    expect(scrubProgressUuids('Reading "a3b3038e-336f-f111-8070-002248ae586a" and PO 106001')).toBe("Reading that record and PO 106001");
+  });
+});

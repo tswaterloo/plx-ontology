@@ -149,6 +149,20 @@ describe("Team dashboard", () => {
     expect(within(bea).getByTestId("team-roles")).toHaveTextContent(/^Receivables$/);
   });
 
+  it("formats comma-separated roles with spaces and deduplicates against team case-insensitively", () => {
+    const mixed: TeamView = {
+      ...view,
+      people: [
+        person("k-v", "Venessa Bandiera", { team: "IT", roles: ["Customer service,Purchasing,Receivables"] }),
+        person("k-m", "Maria Hooper", { team: "Customer Service", roles: ["Customer service", "Purchasing", "Receivables"] }),
+      ],
+    };
+    render(<TeamDashboard data={mixed} />);
+    const [venessa, maria] = ["Venessa Bandiera", "Maria Hooper"].map((n) => screen.getAllByTestId("team-row").find((r) => r.textContent?.includes(n))!);
+    expect(within(venessa).getByTestId("team-roles")).toHaveTextContent("Customer service, Purchasing, Receivables");
+    expect(within(maria).getByTestId("team-roles")).toHaveTextContent("Purchasing, Receivables");
+  });
+
   it("formats reply times and busiest hours", () => {
     expect([minutes(0.2), minutes(45), minutes(200), minutes(3000), minutes(null)]).toEqual(["1m", "45m", "3.3h", "2.1d", ""]);
     expect(busiest(hours)).toBe("9a, 10a, 2p");
@@ -237,5 +251,27 @@ describe("shared mailboxes and accounts are listed apart from the people", () =>
     expect(within(section).getByText("info")).toBeTruthy();
     expect(section).toHaveTextContent("Shared mailboxes and accounts 1");
     expect(within(screen.getByTestId("team-totals")).getByText("People").parentElement).toHaveTextContent(String((view.people ?? []).length));
+  });
+
+  it("normalizes missing comma spaces in team/roles and right-aligns single-column numeric group headers", () => {
+    const tight: TeamView = {
+      ...view,
+      people: [
+        person("k1", "Avery Lindqvist", {
+          team: "Customer service,Purchasing,Receivables",
+          roles: ["Customer service,Purchasing"],
+          d7: { mail_sent: 12, teams: 3 },
+          d28: { mail_sent: 40, teams: 30 },
+          awaiting_reply: 2,
+        }),
+      ],
+    };
+    render(<TeamDashboard data={tight} />);
+    const table = screen.getByTestId("team-table");
+    expect(table).toHaveTextContent("Customer service, Purchasing, Receivables");
+    expect(table).not.toHaveTextContent("service,Purchasing");
+    // Single-column numeric group headers align right over their numeric columns
+    const mailGroup = within(table).getByRole("columnheader", { name: "Mail" });
+    expect(mailGroup.className).toContain("text-right");
   });
 });

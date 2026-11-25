@@ -342,10 +342,13 @@ class SqlTool:
         if nxt < len(rows):
             profile["page"] = (f"rows {nxt} to {len(rows) - 1} are held: read them with "
                                f'{{"page": "{result}", "offset": {nxt}}}')
+        scope_head = kept.get("scope_head")
+        scope_text = (f"{scope_head}; {len(shown)} of {len(rows)} rows shown"
+                      + (f" (from row {offset})" if offset else "")) if scope_head else \
+            result_profile.scope_line(kept.get("sql") or "", kept.get("views") or [],
+                                      profile, len(shown))
         out: dict[str, Any] = {"result": result,
-                               "scope": result_profile.scope_line(
-                                   kept.get("sql") or "", kept.get("views") or [], profile,
-                                   len(shown)),
+                               "scope": scope_text,
                                **({"continue": {"shown": len(shown), "from": offset,
                                                 "rows_found": len(rows),
                                                 "next": {"page": result, "offset": nxt}}}
@@ -629,13 +632,15 @@ class SqlTool:
                      and (files or v not in cs.SEARCH_ONLY)]
             who = cs.party(args["participant"], pg, biz) if args.get("participant") else None
             side = cs.sidecar(pg) if q is not None else {}
+            tm = "teams_messages" in views and cs.teams_members_ready(pg, guarded)
             sql = cs.search_sql(views, guarded=guarded, biz=biz, query=q is not None,
                                 party_kind=who.kind if who else None, since=since is not None,
                                 until=until is not None,
                                 cursor=cur is not None and cur[2] is not None,
                                 cursor_tier=cur[0] if cur and cur[0] is not None else 0,
                                 side=frozenset(side),
-                                direct=cs.direct_reads(pg, q, views, side, biz=biz))
+                                direct=cs.direct_reads(pg, q, views, side, biz=biz),
+                                teams_members=tm)
             if not sql:
                 return views, who, []
             return views, who, pg.execute(sql, {
@@ -955,7 +960,7 @@ class SqlTool:
             return []
 
         def work(pg: Any) -> list[Any]:
-            common = cs.walk_rows(pg, q) > 1
+            common = cs.walk_rows(pg, q, cs.ATTACH_COMMON_CHUNKS) > 1
             depth["common"] = common
             want = 2 * room + len(seen) + spare
             kind = who.kind if who else None
@@ -1056,8 +1061,10 @@ class SqlTool:
         def work(pg: Any) -> list[Any]:
             views = [v for v in cs.present(pg, guarded) if cs.VIEWS[v][2] in wanted
                      and (files or v not in cs.SEARCH_ONLY)]
+            tm = "teams_messages" in views and cs.teams_members_ready(pg, guarded)
             sql = cs.meaning_sql(views, guarded=guarded, biz=bv.SCHEMA, party_kind=None,
-                                 since=since is not None, until=until is not None)
+                                 since=since is not None, until=until is not None,
+                                 teams_members=tm)
             return pg.execute(sql, {
                 "ids": everyone, "q": cs.tsquery_any(query) or cs.tsquery(query),
                 "q_all": cs.tsquery(query), "party": None, "since": since,
@@ -1119,11 +1126,13 @@ class SqlTool:
         def search(pg: Any, qq: str, k: int) -> list[Any]:
             """The word search's rows for the tsquery ``qq`` through the guarded views."""
             side = cs.sidecar(pg)
+            tm = "teams_messages" in views and cs.teams_members_ready(pg, guarded)
             sql = cs.search_sql(views, guarded=guarded, biz=bv.SCHEMA, query=True,
                                 party_kind=who.kind if who else None,
                                 since=since is not None, until=until is not None,
                                 cursor=False, side=frozenset(side),
-                                direct=cs.direct_reads(pg, qq, views, side, biz=bv.SCHEMA))
+                                direct=cs.direct_reads(pg, qq, views, side, biz=bv.SCHEMA),
+                                teams_members=tm)
             return pg.execute(sql, {
                 "q": qq, "party": who.value if who else None, "since": since,
                 "until": until, "c_at": None, "c_h": None, "k": k, "k_own": k,
@@ -1148,8 +1157,10 @@ class SqlTool:
                 held = set(ids)
                 near = [r for r in read_ahead if r[-1] in held]
             elif ids:
+                tm = "teams_messages" in views and cs.teams_members_ready(pg, guarded)
                 sql = cs.meaning_sql(views, guarded=guarded, biz=bv.SCHEMA, party_kind=who.kind if who else None,
-                                     since=since is not None, until=until is not None)
+                                     since=since is not None, until=until is not None,
+                                     teams_members=tm)
                 near = pg.execute(sql, {
                     "ids": ids, "q": cs.tsquery_any(query) or cs.tsquery(query),
                     "q_all": cs.tsquery(query),
@@ -1293,7 +1304,9 @@ class SqlTool:
             views = cs.present(pg, guarded, opening=True)
             if not views:
                 return None
-            rows = pg.execute(cs.open_sql(views, guarded=guarded, biz=biz),
+            tm = "teams_messages" in views and cs.teams_members_ready(pg, guarded)
+            rows = pg.execute(cs.open_sql(views, guarded=guarded, biz=biz,
+                                          teams_members=tm),
                               {"h": handle}).fetchall()
             if rows:
                 if rows[0][0] == "teams_messages":
@@ -1882,7 +1895,12 @@ class SqlTool:
                 name: f"{entry['about']} Columns: {', '.join(entry['columns'])}"
                 for name, entry in doc["views"].items()},
                 "more": "plx.sql {\"describe\": \"<view>\"}: a view's column meanings, "
-                        "sample rows and commonest values", **ins.listed()}
+                        "sample rows and commonest values; {\"describe\": \"dictionary\"}: "
+                        "every record type's date, amount, party keys and links with counts", **ins.listed()}
+        if what == "dictionary":
+            conn, scope = self._reader(actor)
+            from operating import ontology_tools_dict
+            return ontology_tools_dict.all_types(self, conn, scope, actor)
         if isinstance(what, str) and (what in GENERIC or what in COMMS_DERIVED):
             return {**doc, "views": {what: doc["views"][what]}}
         if isinstance(what, str) and what not in bv.listed() and \
@@ -1990,7 +2008,9 @@ class SqlTool:
                 "GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2", (what,)).fetchall()
             (total,) = pg.execute("SELECT count(*) FROM records WHERE type = %s",
                                   (what,)).fetchone()
-            return entry, sample, common, total
+            from operating import ontology_tools_dict
+            summary = ontology_tools_dict.for_type(pg, entry, total)
+            return entry, sample, common, total, summary
 
         got = self._scoped(conn, Door(reader_grant(scope, full=self._full(actor))), work)
         if got is None:
@@ -1998,12 +2018,12 @@ class SqlTool:
                             "plx.sql {\"describe\": true} lists the views; "
                             "SELECT type, name FROM record_types lists the record types"
                             ).uncovered("view", what)
-        entry, sample, common, total = got
+        entry, sample, common, total, summary = got
         values: dict[str, list[Any]] = {}
         for key, value, n in common:
             if len(values.setdefault(key, [])) < SAMPLE_VALUES:
                 values[key].append([value, n])
-        return _fitted_type({"rules": RULES, "record_type": {
+        return _fitted_type({"rules": RULES, "dictionary": summary, "record_type": {
             k: (_cell(v)[0] if not isinstance(v, (list, dict)) else v)
             for k, v in entry.items()}}, total, sample, values)
 
@@ -2276,6 +2296,12 @@ def _decide(pg: Any, grant: Grant) -> dict[str, Any]:
     decided = door.reader_scope(
         pg, src, audience_keys=grant.keys, marking_sets=grant.sets, held=grant.held,
         holds_every_doc=grant.every_doc, hidden_docs=documents)
+    # The store's door value keys on what this reader may read, not on the schema-wide
+    # stamp: a rebuild moves that stamp even when this access decision is byte-for-byte
+    # the same. Compute it before _ranges_only drops one encoding of the same allow-lists.
+    access = door.access_mark(decided, used[0] if used else None, grant.digest)
+    if access is not None:
+        decided["access_mark"] = access
     if _ranges_only(pg):
         # every guarded view reads the ranges: the int4[] lists of the views made before
         # them (``door.RANGE_SETTINGS``) are not sent (any view re-created moves the stamp)

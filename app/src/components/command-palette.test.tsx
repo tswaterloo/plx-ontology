@@ -72,7 +72,7 @@ describe("the command bar's Enter", () => {
     expect(nav.push).toHaveBeenCalledWith("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412");
   });
 
-  it("goes to Insights, Help, and (for an ops reader) Reliability and Trust by name", async () => {
+  it("goes to Insights, Help, and (for an ops reader) Reliability and Data health by name", async () => {
     await typeAndEnter("insights", /Lavender bar/);
     expect(nav.push).toHaveBeenCalledWith("/insights");
   });
